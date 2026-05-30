@@ -39,6 +39,7 @@ import {
   NotebookRail,
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
+import { NotebookDocumentShell } from "@/components/notebook-shell";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
 import { DebugBanner } from "./components/DebugBanner";
@@ -1965,140 +1966,146 @@ function AppContent() {
           onCreate={handleEnvBuildCreate}
           creating={envBuildCreating}
         />
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <NotebookRail
-            activePanelId={activeRailPanel}
-            collapsed={railCollapsed}
-            outlineItems={outlineItems}
-            outlineCellIds={cellIds}
-            activeOutlineItemId={activeOutlineItemId}
-            selectedOutlineItemId={selectedOutlineItemId}
-            selectedOutlineCellId={focusedCellId}
-            packagesSummary={railPackageSummary}
-            onActivePanelChange={handleRailPanelChange}
-            onCollapsedChange={setRailCollapsed}
-            onSelectOutlineItem={handleSelectOutlineItem}
-            onNavigateOutlineItem={handleNavigateOutlineItem}
-            packagesPanel={
-              <NotebookPackagesPanel>
-                {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
-                  <div className="rounded-md border border-amber-300 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
-                    <div className="mb-2 flex items-center gap-2 font-medium">
-                      <span className="shrink-0">&#9888;</span>
-                      <span>This notebook has both uv and conda dependencies.</span>
+        <NotebookDocumentShell
+          stageLabel="Notebook editor"
+          stageClassName="flex-row min-w-0 flex-1"
+          rail={
+            <NotebookRail
+              activePanelId={activeRailPanel}
+              collapsed={railCollapsed}
+              outlineItems={outlineItems}
+              outlineCellIds={cellIds}
+              activeOutlineItemId={activeOutlineItemId}
+              selectedOutlineItemId={selectedOutlineItemId}
+              selectedOutlineCellId={focusedCellId}
+              packagesSummary={railPackageSummary}
+              onActivePanelChange={handleRailPanelChange}
+              onCollapsedChange={setRailCollapsed}
+              onSelectOutlineItem={handleSelectOutlineItem}
+              onNavigateOutlineItem={handleNavigateOutlineItem}
+              packagesPanel={
+                <NotebookPackagesPanel>
+                  {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
+                    <div className="rounded-md border border-amber-300 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+                      <div className="mb-2 flex items-center gap-2 font-medium">
+                        <span className="shrink-0">&#9888;</span>
+                        <span>This notebook has both uv and conda dependencies.</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          disabled={clearingDeps}
+                          onClick={async () => {
+                            setClearingDeps(true);
+                            try {
+                              await clearAllCondaDeps();
+                            } finally {
+                              setClearingDeps(false);
+                            }
+                          }}
+                          className="rounded border border-fuchsia-300 bg-fuchsia-100 px-2 py-0.5 text-xs font-medium text-fuchsia-800 transition-colors hover:bg-fuchsia-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300 dark:hover:bg-fuchsia-800/50"
+                        >
+                          Use uv ({dependencies?.dependencies?.length ?? 0}{" "}
+                          {(dependencies?.dependencies?.length ?? 0) === 1 ? "package" : "packages"}
+                          )
+                        </button>
+                        <button
+                          disabled={clearingDeps}
+                          onClick={async () => {
+                            setClearingDeps(true);
+                            try {
+                              await clearAllUvDeps();
+                            } finally {
+                              setClearingDeps(false);
+                            }
+                          }}
+                          className="rounded border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 dark:hover:bg-emerald-800/50"
+                        >
+                          Use conda ({condaDependencies?.dependencies?.length ?? 0}{" "}
+                          {(condaDependencies?.dependencies?.length ?? 0) === 1
+                            ? "package"
+                            : "packages"}
+                          )
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      <button
-                        disabled={clearingDeps}
-                        onClick={async () => {
-                          setClearingDeps(true);
-                          try {
-                            await clearAllCondaDeps();
-                          } finally {
-                            setClearingDeps(false);
-                          }
-                        }}
-                        className="rounded border border-fuchsia-300 bg-fuchsia-100 px-2 py-0.5 text-xs font-medium text-fuchsia-800 transition-colors hover:bg-fuchsia-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300 dark:hover:bg-fuchsia-800/50"
-                      >
-                        Use uv ({dependencies?.dependencies?.length ?? 0}{" "}
-                        {(dependencies?.dependencies?.length ?? 0) === 1 ? "package" : "packages"})
-                      </button>
-                      <button
-                        disabled={clearingDeps}
-                        onClick={async () => {
-                          setClearingDeps(true);
-                          try {
-                            await clearAllUvDeps();
-                          } finally {
-                            setClearingDeps(false);
-                          }
-                        }}
-                        className="rounded border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 dark:hover:bg-emerald-800/50"
-                      >
-                        Use conda ({condaDependencies?.dependencies?.length ?? 0}{" "}
-                        {(condaDependencies?.dependencies?.length ?? 0) === 1
-                          ? "package"
-                          : "packages"}
-                        )
-                      </button>
+                  )}
+                  {runtime === "deno" && (
+                    <DenoDependencyHeader
+                      variant="rail"
+                      denoConfigInfo={denoConfigInfo}
+                      flexibleNpmImports={flexibleNpmImports}
+                      onSetFlexibleNpmImports={setFlexibleNpmImports}
+                      syncState={denoDerivedSyncState}
+                      syncing={kernelStatus === KERNEL_STATUS.STARTING}
+                      onSyncNow={handleSyncDeps}
+                      justSynced={justSynced}
+                    />
+                  )}
+                  {runtime === "python" && envType === "conda" && (
+                    <CondaDependencyHeader
+                      variant="rail"
+                      dependencies={condaDependencies?.dependencies ?? []}
+                      channels={condaDependencies?.channels ?? []}
+                      python={condaDependencies?.python ?? null}
+                      loading={condaDepsLoading}
+                      syncState={condaDerivedSyncState}
+                      onAdd={addCondaDependency}
+                      onRemove={removeCondaDependency}
+                      onSetChannels={setCondaChannels}
+                      onSetPython={setCondaPython}
+                      onSyncNow={handleSyncDeps}
+                      onRetryLaunch={tryStartKernel}
+                      envProgress={envProgress.envType === "conda" ? envProgress : null}
+                      onResetProgress={envProgress.reset}
+                      environmentYmlInfo={environmentYmlInfo}
+                      environmentYmlDeps={environmentYmlDeps}
+                      justSynced={justSynced}
+                    />
+                  )}
+                  {runtime === "python" && envType === "pixi" && (
+                    <PixiDependencyHeader
+                      variant="rail"
+                      pixiInfo={pixiInfo}
+                      envSource={envSource}
+                      syncState={pixiDerivedSyncState}
+                      onSyncNow={handleSyncDeps}
+                      justSynced={justSynced}
+                    />
+                  )}
+                  {runtime === "python" && envType !== "conda" && envType !== "pixi" && (
+                    <DependencyHeader
+                      variant="rail"
+                      dependencies={dependencies?.dependencies ?? []}
+                      requiresPython={dependencies?.requires_python ?? null}
+                      loading={depsLoading}
+                      onAdd={addDependency}
+                      onRemove={removeDependency}
+                      onSetRequiresPython={setRequiresPython}
+                      syncState={uvDerivedSyncState}
+                      onSyncNow={handleSyncDeps}
+                      pyprojectInfo={pyprojectInfo}
+                      pyprojectDeps={pyprojectDeps}
+                      onImportFromPyproject={importFromPyproject}
+                      onUseProjectEnv={handleStartKernelWithPyproject}
+                      isUsingProjectEnv={envSource === "uv:pyproject"}
+                      justSynced={justSynced}
+                    />
+                  )}
+                  {runtime === null && (
+                    <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                      Runtime metadata is still loading.
                     </div>
-                  </div>
-                )}
-                {runtime === "deno" && (
-                  <DenoDependencyHeader
-                    variant="rail"
-                    denoConfigInfo={denoConfigInfo}
-                    flexibleNpmImports={flexibleNpmImports}
-                    onSetFlexibleNpmImports={setFlexibleNpmImports}
-                    syncState={denoDerivedSyncState}
-                    syncing={kernelStatus === KERNEL_STATUS.STARTING}
-                    onSyncNow={handleSyncDeps}
-                    justSynced={justSynced}
-                  />
-                )}
-                {runtime === "python" && envType === "conda" && (
-                  <CondaDependencyHeader
-                    variant="rail"
-                    dependencies={condaDependencies?.dependencies ?? []}
-                    channels={condaDependencies?.channels ?? []}
-                    python={condaDependencies?.python ?? null}
-                    loading={condaDepsLoading}
-                    syncState={condaDerivedSyncState}
-                    onAdd={addCondaDependency}
-                    onRemove={removeCondaDependency}
-                    onSetChannels={setCondaChannels}
-                    onSetPython={setCondaPython}
-                    onSyncNow={handleSyncDeps}
-                    onRetryLaunch={tryStartKernel}
-                    envProgress={envProgress.envType === "conda" ? envProgress : null}
-                    onResetProgress={envProgress.reset}
-                    environmentYmlInfo={environmentYmlInfo}
-                    environmentYmlDeps={environmentYmlDeps}
-                    justSynced={justSynced}
-                  />
-                )}
-                {runtime === "python" && envType === "pixi" && (
-                  <PixiDependencyHeader
-                    variant="rail"
-                    pixiInfo={pixiInfo}
-                    envSource={envSource}
-                    syncState={pixiDerivedSyncState}
-                    onSyncNow={handleSyncDeps}
-                    justSynced={justSynced}
-                  />
-                )}
-                {runtime === "python" && envType !== "conda" && envType !== "pixi" && (
-                  <DependencyHeader
-                    variant="rail"
-                    dependencies={dependencies?.dependencies ?? []}
-                    requiresPython={dependencies?.requires_python ?? null}
-                    loading={depsLoading}
-                    onAdd={addDependency}
-                    onRemove={removeDependency}
-                    onSetRequiresPython={setRequiresPython}
-                    syncState={uvDerivedSyncState}
-                    onSyncNow={handleSyncDeps}
-                    pyprojectInfo={pyprojectInfo}
-                    pyprojectDeps={pyprojectDeps}
-                    onImportFromPyproject={importFromPyproject}
-                    onUseProjectEnv={handleStartKernelWithPyproject}
-                    isUsingProjectEnv={envSource === "uv:pyproject"}
-                    justSynced={justSynced}
-                  />
-                )}
-                {runtime === null && (
-                  <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                    Runtime metadata is still loading.
-                  </div>
-                )}
-                {runtime !== null && runtime !== "python" && runtime !== "deno" && (
-                  <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                    No package controls for this runtime.
-                  </div>
-                )}
-              </NotebookPackagesPanel>
-            }
-          />
+                  )}
+                  {runtime !== null && runtime !== "python" && runtime !== "deno" && (
+                    <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                      No package controls for this runtime.
+                    </div>
+                  )}
+                </NotebookPackagesPanel>
+              }
+            />
+          }
+        >
           <div className="flex min-w-0 flex-1">
             <CrdtBridgeProvider
               getHandle={getHandle}
@@ -2125,7 +2132,7 @@ function AppContent() {
               />
             </CrdtBridgeProvider>
           </div>
-        </div>
+        </NotebookDocumentShell>
       </div>
     </PresenceProvider>
   );

@@ -35,6 +35,7 @@ import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
+import { NotebookDocumentShell } from "@/components/notebook-shell";
 import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -1178,153 +1179,164 @@ function NotebookViewer({
     refreshAuthState();
   }, [refreshAuthState]);
 
+  const rail = (
+    <NotebookRail
+      activePanelId={activeRailPanel}
+      collapsed={railCollapsed}
+      outlineItems={outlineItems}
+      selectedOutlineItemId={selectedOutlineItemId}
+      packagesPanel={<CloudRailPackagesPanel />}
+      onActivePanelChange={setActiveRailPanel}
+      onCollapsedChange={setRailCollapsed}
+      onSelectOutlineItem={handleSelectOutlineItem}
+      onNavigateOutlineItem={handleNavigateOutlineItem}
+      className="cloud-notebook-rail"
+    />
+  );
+
+  const toolbar = (
+    <>
+      <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
+
+      <div className="cloud-toolbar-actions">
+        <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
+
+        {connectionScope === "owner" ? (
+          <CloudSharingControls
+            aclEndpoint={config.aclEndpoint}
+            invitesEndpoint={config.invitesEndpoint}
+            authState={authState}
+          />
+        ) : null}
+
+        <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+
+        <CloudNotebookEditModeButton
+          authState={authState}
+          connectionScope={connectionScope}
+          onAuthStateChange={refreshAuthState}
+        />
+
+        <CloudAuthControls
+          authConfig={authConfig}
+          authState={authState}
+          connectionActorLabel={connectionActorLabel}
+          connectionError={connectionError}
+          connectionScope={connectionScope}
+          onAuthStateChange={refreshAuthState}
+        />
+
+        {status.kind === "ready" && codeCellCount > 0 ? (
+          <button
+            type="button"
+            className="cloud-code-toggle"
+            aria-pressed={showCode}
+            aria-label={showCode ? "Hide code cells" : "Show code cells"}
+            title={showCode ? "Hide code cells" : "Show code cells"}
+            onClick={() => setShowCode((current) => !current)}
+          >
+            {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+            <Code2 aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+    </>
+  );
+
   return (
-    <main className="cloud-notebook-shell">
+    <NotebookDocumentShell
+      rootElement="main"
+      className="cloud-notebook-shell"
+      stageClassName="cloud-notebook-stage"
+      toolbar={toolbar}
+      toolbarClassName="cloud-report-toolbar"
+      toolbarLabel="Notebook view status and controls"
+      rail={rail}
+      stageLabel="Hosted notebook"
+    >
       <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
-      <NotebookRail
-        activePanelId={activeRailPanel}
-        collapsed={railCollapsed}
-        outlineItems={outlineItems}
-        selectedOutlineItemId={selectedOutlineItemId}
-        packagesPanel={<CloudRailPackagesPanel />}
-        onActivePanelChange={setActiveRailPanel}
-        onCollapsedChange={setRailCollapsed}
-        onSelectOutlineItem={handleSelectOutlineItem}
-        onNavigateOutlineItem={handleNavigateOutlineItem}
-        className="cloud-notebook-rail"
-      />
-
-      <section className="cloud-notebook-stage" aria-label="Hosted notebook">
-        <div className="cloud-report-toolbar" aria-label="Notebook view status and controls">
-          <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
-
-          <div className="cloud-toolbar-actions">
-            <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
-
-            {connectionScope === "owner" ? (
-              <CloudSharingControls
-                aclEndpoint={config.aclEndpoint}
-                invitesEndpoint={config.invitesEndpoint}
-                authState={authState}
-              />
-            ) : null}
-
-            <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-
-            <CloudNotebookEditModeButton
-              authState={authState}
-              connectionScope={connectionScope}
-              onAuthStateChange={refreshAuthState}
-            />
-
-            <CloudAuthControls
-              authConfig={authConfig}
-              authState={authState}
-              connectionActorLabel={connectionActorLabel}
-              connectionError={connectionError}
-              connectionScope={connectionScope}
-              onAuthStateChange={refreshAuthState}
-            />
-
-            {status.kind === "ready" && codeCellCount > 0 ? (
-              <button
-                type="button"
-                className="cloud-code-toggle"
-                aria-pressed={showCode}
-                aria-label={showCode ? "Hide code cells" : "Show code cells"}
-                title={showCode ? "Hide code cells" : "Show code cells"}
-                onClick={() => setShowCode((current) => !current)}
-              >
-                {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-                <Code2 aria-hidden="true" />
-              </button>
-            ) : null}
-          </div>
+      {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
+        <div className="cloud-state cloud-auth-state" data-kind="error">
+          <span>{prototypeAuthSummary(authState)}</span>
+          <button type="button" onClick={resetPrototypeAuth}>
+            <RotateCcw aria-hidden="true" />
+            Reset to anonymous
+          </button>
         </div>
+      ) : null}
 
-        {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
-          <div className="cloud-state cloud-auth-state" data-kind="error">
-            <span>{prototypeAuthSummary(authState)}</span>
+      {authRenewal.kind !== "idle" ? (
+        <div
+          className="cloud-state cloud-auth-state"
+          data-kind={authRenewal.kind === "failed" ? "error" : "loading"}
+        >
+          <span>{authRenewal.message}</span>
+          {authRenewal.kind === "failed" ? (
             <button type="button" onClick={resetPrototypeAuth}>
               <RotateCcw aria-hidden="true" />
               Reset to anonymous
             </button>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
+      ) : null}
 
-        {authRenewal.kind !== "idle" ? (
-          <div
-            className="cloud-state cloud-auth-state"
-            data-kind={authRenewal.kind === "failed" ? "error" : "loading"}
-          >
-            <span>{authRenewal.message}</span>
-            {authRenewal.kind === "failed" ? (
-              <button type="button" onClick={resetPrototypeAuth}>
-                <RotateCcw aria-hidden="true" />
-                Reset to anonymous
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+      {connectionError ? (
+        <div className="cloud-state cloud-auth-state" data-kind="error">
+          <span>Live room connection failed: {connectionError}</span>
+          <button type="button" onClick={resetPrototypeAuth}>
+            <RotateCcw aria-hidden="true" />
+            Reset to anonymous
+          </button>
+        </div>
+      ) : null}
 
-        {connectionError ? (
-          <div className="cloud-state cloud-auth-state" data-kind="error">
-            <span>Live room connection failed: {connectionError}</span>
-            <button type="button" onClick={resetPrototypeAuth}>
-              <RotateCcw aria-hidden="true" />
-              Reset to anonymous
-            </button>
-          </div>
-        ) : null}
+      {status.kind === "ready" ? null : (
+        <div className="cloud-state" data-kind={status.kind}>
+          {status.message}
+        </div>
+      )}
 
-        {status.kind === "ready" ? null : (
-          <div className="cloud-state" data-kind={status.kind}>
-            {status.message}
-          </div>
-        )}
-
-        {canEditMarkdown ? (
-          <CloudLiveNotebook
-            cells={cells}
-            priority={CLOUD_VIEWER_PRIORITY}
-            hostContext={outputHostContext}
-            showCode={showCode}
-            livePresence={livePresence}
-            getHandle={getLiveNotebookHandle}
-            localActorLabel={connectionActorLabel}
-            textAttributionQueue={textAttributionQueue}
-            onMarkdownSourceChange={handleMarkdownSourceChange}
-            onMarkdownSyncNeeded={handleMarkdownSyncNeeded}
-            onPresenceCursor={handlePresenceCursor}
-            onPresenceSelection={handlePresenceSelection}
-            resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-            onNavigateToTracebackCell={handleTracebackCellNavigate}
-          />
-        ) : (
-          <ReadOnlyNotebook
-            cells={readOnlyCells}
-            priority={CLOUD_VIEWER_PRIORITY}
-            hostContext={outputHostContext}
-            displayMode="report"
-            showCode={showCode}
-            className="cloud-report-notebook"
-            cellClassName="cloud-cell"
-            sourceClassName="cloud-source-block"
-            outputClassName="cloud-output-block"
-            deferIsolatedFrameUntilVisible
-            deferredIsolatedFrameRootMargin="600px 0px"
-            resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-            onNavigateToTracebackCell={handleTracebackCellNavigate}
-            renderCellError={(error, _cell, index) => (
-              <div className="cloud-state" data-kind="error">
-                Unable to render cell {index + 1}: {error.message}
-              </div>
-            )}
-          />
-        )}
-      </section>
-    </main>
+      {canEditMarkdown ? (
+        <CloudLiveNotebook
+          cells={cells}
+          priority={CLOUD_VIEWER_PRIORITY}
+          hostContext={outputHostContext}
+          showCode={showCode}
+          livePresence={livePresence}
+          getHandle={getLiveNotebookHandle}
+          localActorLabel={connectionActorLabel}
+          textAttributionQueue={textAttributionQueue}
+          onMarkdownSourceChange={handleMarkdownSourceChange}
+          onMarkdownSyncNeeded={handleMarkdownSyncNeeded}
+          onPresenceCursor={handlePresenceCursor}
+          onPresenceSelection={handlePresenceSelection}
+          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+          onNavigateToTracebackCell={handleTracebackCellNavigate}
+        />
+      ) : (
+        <ReadOnlyNotebook
+          cells={readOnlyCells}
+          priority={CLOUD_VIEWER_PRIORITY}
+          hostContext={outputHostContext}
+          displayMode="report"
+          showCode={showCode}
+          className="cloud-report-notebook"
+          cellClassName="cloud-cell"
+          sourceClassName="cloud-source-block"
+          outputClassName="cloud-output-block"
+          deferIsolatedFrameUntilVisible
+          deferredIsolatedFrameRootMargin="600px 0px"
+          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+          onNavigateToTracebackCell={handleTracebackCellNavigate}
+          renderCellError={(error, _cell, index) => (
+            <div className="cloud-state" data-kind="error">
+              Unable to render cell {index + 1}: {error.message}
+            </div>
+          )}
+        />
+      )}
+    </NotebookDocumentShell>
   );
 }
 
