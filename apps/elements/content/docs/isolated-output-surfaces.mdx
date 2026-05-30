@@ -1,0 +1,35 @@
+---
+title: Output isolation surfaces
+description: Runtime-free frame, host-context, and MCP output mapping surfaces.
+---
+
+import { IsolatedOutputSurfacesExample } from "@/components/isolated-output-surfaces-example";
+
+Notebook output isolation is nteract-owned UI infrastructure. It decides which
+outputs stay in the notebook DOM, which move into sandboxed frames, how hosted
+output documents receive theme and asset context, and how MCP app structured
+content becomes shared output manifests.
+
+<IsolatedOutputSurfacesExample />
+
+## What is real here
+
+The page imports current helpers from `src/components/isolated/**`: output lane
+policy, frame sizing, host-context theme variables, MCP host-context conversion,
+MCP structured content conversion, and the production `McpAppOutputFrame`
+wrapper. Frame document selection and sandbox policy use a docs-local alias for
+the production helper so Next does not import the raw Tauri `frame.html?raw`
+bundle. The MCP frame surface uses a fixture renderer bundle for resolved
+HTML/text payloads, while the docs-local `IsolatedFrame` adapter keeps payload
+shape and host context visible without Vite virtual renderer artifacts. The
+daemon renderer asset section imports the production MIME-to-plugin metadata,
+output-frame CSP gate, renderer asset URL helpers, and plugin loader. It fetches
+tiny docs-served renderer-plugin fixtures instead of daemon-generated artifacts.
+
+## What stays behind adapters
+
+The production frame runtime still owns JavaScript evaluation, renderer plugin
+execution, widget comm replay, untrusted raw HTML execution, generated asset hash
+injection, and daemon blob-route authorization. The catalog should keep those as
+explicit adapters until they can be exercised without importing desktop runtime
+state or executing untrusted output code in the docs app.

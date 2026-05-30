@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "46",
+    value: "100+",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, expanded renderer, editor, and widget surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, isolated output policy, widget-view MIME handoff, plugin renderer, editor, widget controls, widget media, hydrated widget buffers, widget output, ipycanvas, and anywidget surfaces",
   },
 ];
 
@@ -41,7 +41,7 @@ const phases = [
     title: "Separate renderers",
     state: "active",
     icon: FileCode2,
-    summary: "ANSI, JSON, image, traceback, MIME priority, and isolated-renderer blockers.",
+    summary: "ANSI, JSON, image, traceback, MIME priority, frame policy, and isolated adapters.",
   },
   {
     title: "Expose notebook themes",
@@ -71,7 +71,7 @@ const families = [
     target: "nteract shell",
     status: "active",
     intent:
-      "NotebookToolbar, NotebookRail, NotebookPackagesPanel, and the package panel DependencyHeader now render from current source with fixture-owned panel state and inert host callbacks.",
+      "NotebookToolbar now has a dedicated runtime-state matrix, while NotebookRail, NotebookPackagesPanel, and the package panel DependencyHeader render from current source with fixture-owned panel state and inert host callbacks.",
   },
   {
     family: "Notebook search",
@@ -113,7 +113,7 @@ const families = [
     target: "nteract cells",
     status: "active",
     intent:
-      "CellContainer, CompactExecutionButton, and ExecutionCount now render from current source; unused legacy helpers have been removed instead of cataloged.",
+      "CellContainer, CompactExecutionButton, ExecutionCount, and CellPresenceIndicators now render from current source; unused legacy helpers have been removed instead of cataloged.",
   },
   {
     family: "Editors",
@@ -138,15 +138,25 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; production iframe bootstrapping, plugin-backed HTML/Plotly/Vega/GeoJSON, widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
+      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable with static TableData, a HuggingFace Parquet URL, and an Arrow stream manifest decoded by docs-served Sift WASM now render from fixtures; live JavaScript execution, real third-party renderer execution, and live kernel widget comm transport remain explicit adapter boundaries.",
+  },
+  {
+    family: "Output isolation",
+    source:
+      "src/components/isolated/{mcp-app-output-frame,output-embed,host-context,mcp-app-structured-content,output-frame-sizing,output-lane-policy}.ts + apps/elements/components/isolated/{index.tsx,frame-config-adapter.ts}",
+    target: "nteract renderers",
+    status: "active",
+    intent:
+      "Host-context theme merging, output lane routing, sizing, MCP structured output mapping, daemon renderer asset URL routing, MIME-to-plugin metadata, docs-served renderer-plugin fixture loading, the production McpAppOutputFrame/createNteractOutputEmbed wrapper, and the docs IsolatedFrame/frame-config adapters now render with fixture-owned iframe readiness instead of desktop renderer artifacts.",
   },
   {
     family: "Widgets",
-    source: "src/components/widgets/**",
+    source:
+      "src/components/widgets/{widget-view,widget-store-context,widget-store}.tsx + src/components/widgets/controls/index.ts",
     target: "nteract widgets",
     status: "active",
     intent:
-      "WidgetView, WidgetStore, selected built-in controls, unsupported fallback, and static snapshots now render from comm-state fixtures.",
+      "WidgetView, WidgetStore, WidgetUpdateManager, AnyWidgetView, the AFM model proxy, inline and URL-backed anywidget assets, the current built-in controls registry, form, selection, numeric, status, media, hydrated DataView image buffers, docs-local bufferPaths URL hydration, binary upload ContentRef handoff, file upload, OutputModel with nested widget-view output and local replay, layout containers, ControllerModel polling against a fixture Gamepad API, ipycanvas CanvasModel command replay and image_data restore, unsupported fallback, and static snapshots now render from comm-state fixtures.",
   },
   {
     family: "Runtime decisions",
