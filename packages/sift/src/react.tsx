@@ -461,19 +461,21 @@ export function SiftTable({
       const handle = mod.create_arrow_stream_store();
       disposePendingStore = () => mod.free(handle);
 
-      const chunkFetches: Promise<ChunkFetchResult>[] = chunks.map((chunk, index) =>
+      const fetchChunkResult = (chunk: ArrowStreamManifestChunk, index: number) =>
         fetchChunkBytes(chunk, index).then(
-          (bytes) => ({ ok: true, bytes }),
-          (error: unknown) => ({ ok: false, error }),
-        ),
-      );
-      const readChunkBytes = async (index: number) => {
-        const result = await chunkFetches[index];
+          (bytes) => ({ ok: true as const, bytes }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+      const readChunkBytes = async (fetchResult: Promise<ChunkFetchResult>) => {
+        const result = await fetchResult;
         if (!result.ok) throw result.error;
         return result.bytes;
       };
 
-      const firstBytes = await readChunkBytes(0);
+      const firstBytes = await readChunkBytes(fetchChunkResult(chunks[0], 0));
+      const trailingChunkFetches = chunks
+        .slice(1)
+        .map((chunk, index) => fetchChunkResult(chunk, index + 1));
       if (cancelled) return;
       emitLoadMilestone(startedAt, {
         source: "arrow-stream-manifest",
@@ -533,7 +535,7 @@ export function SiftTable({
         if (cancelled) return;
         await new Promise((r) => setTimeout(r, 0));
         if (cancelled) return;
-        const bytes = await readChunkBytes(i);
+        const bytes = await readChunkBytes(trailingChunkFetches[i - 1]);
         if (cancelled) return;
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
