@@ -120,6 +120,39 @@ export function summarizePerformanceResources(resources, milestones = {}) {
   return { milestones, resources_by_kind: byKind };
 }
 
+export const VIEWER_MILESTONE_PREFIX = "nteract:notebook-cloud:";
+
+export function summarizeViewerMilestones(entries) {
+  const milestones = {};
+
+  for (const entry of entries ?? []) {
+    if (!entry || typeof entry.name !== "string") {
+      continue;
+    }
+    if (!entry.name.startsWith(VIEWER_MILESTONE_PREFIX)) {
+      continue;
+    }
+
+    const name = entry.name
+      .slice(VIEWER_MILESTONE_PREFIX.length)
+      .replace(/[^a-zA-Z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase();
+    if (!name) {
+      continue;
+    }
+
+    const startTime = Number(entry.startTime);
+    if (!Number.isFinite(startTime)) {
+      continue;
+    }
+
+    milestones[name] ??= Math.round(startTime);
+  }
+
+  return milestones;
+}
+
 export function withTiming(result, started, ended) {
   if (!result) {
     return result;

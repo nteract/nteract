@@ -5,6 +5,7 @@ import {
   classifyPerformanceResource,
   refinePerformanceResourceKind,
   summarizePerformanceResources,
+  summarizeViewerMilestones,
   withTiming,
 } from "../scripts/hosted-render-smoke-performance.mjs";
 
@@ -193,5 +194,21 @@ describe("hosted smoke performance diagnostics", () => {
       status: 200,
       timing_ms: { start: 10, end: 20, duration: 10 },
     });
+  });
+
+  it("summarizes viewer load marks by milestone name", () => {
+    assert.deepEqual(
+      summarizeViewerMilestones([
+        { name: "nteract:notebook-cloud:viewer-start", startTime: 3.4 },
+        { name: "nteract:notebook-cloud:live-room-ready", startTime: 24.6 },
+        { name: "nteract:notebook-cloud:live-room-ready", startTime: 99 },
+        { name: "other:mark", startTime: 12 },
+        { name: "nteract:notebook-cloud:snapshot-ready", startTime: Number.NaN },
+      ]),
+      {
+        viewer_start: 3,
+        live_room_ready: 25,
+      },
+    );
   });
 });

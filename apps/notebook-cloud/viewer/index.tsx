@@ -78,6 +78,7 @@ import {
   type CloudLivePresenceSnapshot,
 } from "./live-presence";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
+import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
   cloudViewerPresenceDisplay,
@@ -649,6 +650,10 @@ function NotebookViewer({
   );
 
   useEffect(() => {
+    markCloudViewerLoadMilestone("viewer-start");
+  }, []);
+
+  useEffect(() => {
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
 
@@ -763,6 +768,7 @@ function NotebookViewer({
             shouldContinue: () => !cancelled && !liveMaterializedRef.current,
             onInitialCells(syncCells) {
               if (syncCells.length === 0) return;
+              markCloudViewerLoadMilestone("snapshot-initial-cells");
               setCells(syncCells);
               setStatus({
                 kind: "loading",
@@ -795,6 +801,7 @@ function NotebookViewer({
           kind: "ready",
           message: `Rendering ${resolvedCells.length} cells from pinned Automerge snapshots.`,
         });
+        markCloudViewerLoadMilestone("snapshot-ready");
       } catch (error) {
         if (!cancelled) {
           snapshotResolvedRef.current = true;
@@ -888,6 +895,7 @@ function NotebookViewer({
           onInitialCells(syncCells) {
             if (syncCells.length === 0) return;
             liveMaterializedRef.current = true;
+            markCloudViewerLoadMilestone("live-initial-cells");
             preloadSiftWasm(syncCells);
             setCells(syncCells);
             setStatus({
@@ -921,6 +929,9 @@ function NotebookViewer({
               message: `Rendering ${resolvedCells.length} cells from the live notebook room.`,
             },
       );
+      if (resolvedCells.length > 0) {
+        markCloudViewerLoadMilestone("live-ready");
+      }
     };
 
     const materializeLiveCellsSafely = (liveRuntime: CloudSyncRuntime) => {
@@ -952,6 +963,7 @@ function NotebookViewer({
           setPresence((state) => reduceCloudViewerPresenceMessage(state, message));
         }
         if (message.type === "cloud_room_ready") {
+          markCloudViewerLoadMilestone("live-room-ready");
           setConnectionError(null);
           setConnectionScope(message.connection_scope);
           setConnectionActorLabel(message.actor_label);
