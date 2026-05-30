@@ -13,6 +13,8 @@
         "./components/isolated/iframe-libraries.ts"
       ],
       "@/components/isolated/*": ["../../src/components/isolated/*"],
+      "@/components/notebook-rail": ["../../src/components/notebook-rail/index.ts"],
+      "@/components/notebook-rail/*": ["../../src/components/notebook-rail/*"],
       "@/components/outputs/*": ["../../src/components/outputs/*"],
       "@/components/ui/*": ["../../src/components/ui/*"],
       "@/components/widgets/*": ["../../src/components/widgets/*"],

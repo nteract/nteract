@@ -9,10 +9,10 @@ The rail outline is the first production direction for a notebook table of
 contents. It keeps reading navigation available while leaving clear sibling
 slots for packages, variables, renderers, and future notebook tools.
 
-This fixture now renders the current notebook app toolbar directly. The rail
-itself stays catalog-owned until the notebook app has a production left-rail
-component to import, but the package panel already renders the current
-`DependencyHeader` inside that rail frame.
+This fixture now renders the current notebook app toolbar and shared
+`NotebookRail` directly. The package panel is supplied through
+`NotebookPackagesPanel` and hosts the current `DependencyHeader` with static
+dependency state.
 
 <RailOutlineExample />
 
@@ -22,13 +22,15 @@ component to import, but the package panel already renders the current
   moving cells into the sidebar.
 - `NotebookToolbar` is imported from `apps/notebook/src/components` with inert
   fixture callbacks and runtime status props.
+- `NotebookRail` and `NotebookPackagesPanel` come from
+  `src/components/notebook-rail`, with docs-owned active panel, collapsed state,
+  outline selection, and inert navigation callbacks.
 - The package panel imports `DependencyHeader` from the notebook app with
   fixture dependency and sync state.
 - The outline should start from materialized markdown headings.
-- Keep the rail icon-led: outline, packages, variables, renderers, and future
-  side panels should scan as compact tools before a panel opens.
-- Package and variable panels should become sibling rail panels, not sections
-  embedded inside the outline.
+- Keep the rail icon-led. The current shared rail exposes outline and packages;
+  variables, renderers, and future side panels are tracked as planned sibling
+  panels until the app has current components for them.
 - This example is fixture-backed and intentionally avoids `App.tsx`,
   `useAutomergeNotebook`, `usePresence`, `CrdtBridgeProvider`, and generated
   `runtimed-wasm` imports.
