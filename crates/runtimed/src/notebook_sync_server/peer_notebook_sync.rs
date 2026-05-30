@@ -8,7 +8,7 @@ use super::{
     check_and_broadcast_sync_state, check_and_update_trust_state, process_markdown_assets,
     NotebookRoom, RoomConnectionIdentity,
 };
-use notebook_doc::diff::{diff_metadata_touched, extract_change_actors};
+use notebook_doc::diff::{diff_metadata_touched, extract_change_actor_hashes};
 
 pub(super) async fn handle_notebook_doc_frame(
     room: &NotebookRoom,
@@ -37,9 +37,8 @@ pub(super) async fn handle_notebook_doc_frame(
                 "doc-auth-preview",
             ) {
                 Ok(()) => {
-                    let actors = extract_change_actors(preview.doc_mut(), &heads_before);
-                    connection_identity
-                        .validate_actor_labels(actors.iter().map(std::string::String::as_str))?;
+                    let actors = extract_change_actor_hashes(preview.doc_mut(), &heads_before);
+                    connection_identity.validate_notebook_change_actors(actors.iter())?;
                 }
                 Err(e) => {
                     warn!("[notebook-sync] doc auth preview failed: {}", e);

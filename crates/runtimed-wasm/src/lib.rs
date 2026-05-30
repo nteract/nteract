@@ -10,7 +10,10 @@
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
-use notebook_doc::diff::{diff_doc, extract_change_actors, CellChangeset, TextPatch};
+use notebook_doc::diff::{
+    diff_doc, extract_change_actor_hashes, extract_change_actors, CellChangeset, ChangeActor,
+    TextPatch,
+};
 use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
@@ -606,10 +609,10 @@ impl RoomHostHandle {
                     "cloud-room-doc-auth-preview",
                 )
                 .map_err(|e| JsError::new(&format!("notebook auth preview failed: {e}")))?;
-            let actors = extract_change_actors(preview.doc_mut(), &heads_before);
-            validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
+            let actors = extract_change_actor_hashes(preview.doc_mut(), &heads_before);
+            validate_room_notebook_change_actors(principal, actors.iter())?;
             if !can_write_all_notebook_changes {
-                validate_markdown_source_only_changes(&mut preview, &heads_before)?;
+                validate_markdown_source_only_changes(&mut preview, &heads_before, actors.iter())?;
             }
         }
 
@@ -855,12 +858,61 @@ fn validate_room_actor_labels<'a>(
     Ok(())
 }
 
-fn validate_markdown_source_only_changes(
+fn validate_room_notebook_change_actors<'a>(
+    principal: &str,
+    changes: impl IntoIterator<Item = &'a ChangeActor>,
+) -> Result<(), JsError> {
+    validate_room_notebook_change_actors_inner(principal, changes)
+        .map_err(|error| JsError::new(&error))
+}
+
+fn validate_room_notebook_change_actors_inner<'a>(
+    principal: &str,
+    changes: impl IntoIterator<Item = &'a ChangeActor>,
+) -> Result<(), String> {
+    let expected = Principal::new(principal.to_string())
+        .map_err(|e| format!("authenticated principal is invalid: {e}"))?;
+    for change in changes {
+        if NotebookDoc::is_canonical_schema_seed_change(&change.actor_label, &change.hash) {
+            continue;
+        }
+
+        match ActorLabel::parse(change.actor_label.clone()) {
+            Ok(actor) if actor.principal() == expected.as_str() => {}
+            Ok(actor) => {
+                return Err(format!(
+                    "actor principal {} is not authorized for authenticated principal {}",
+                    actor.principal(),
+                    expected
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "actor label {:?} is invalid: {error}",
+                    change.actor_label
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_markdown_source_only_changes<'a>(
     preview: &mut NotebookDoc,
     heads_before: &[automerge::ChangeHash],
+    allowed_changes: impl IntoIterator<Item = &'a ChangeActor>,
 ) -> Result<(), JsError> {
+    let mut effective_heads_before = heads_before.to_vec();
+    for change in allowed_changes {
+        if NotebookDoc::is_canonical_schema_seed_change(&change.actor_label, &change.hash)
+            && !effective_heads_before.contains(&change.hash)
+        {
+            effective_heads_before.push(change.hash);
+        }
+    }
+
     let heads_after = preview.get_heads();
-    let changeset = diff_doc(preview.doc_mut(), heads_before, &heads_after);
+    let changeset = diff_doc(preview.doc_mut(), &effective_heads_before, &heads_after);
     if changeset.metadata_changed {
         return Err(JsError::new(
             "editor scope cannot change notebook metadata in hosted markdown-only mode",
@@ -3019,6 +3071,59 @@ mod tests {
         val: serde_json::Value,
     ) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
         resolve_comm_state_for_frontend(&val, 1234, true)
+    }
+
+    #[test]
+    fn notebook_actor_validation_accepts_only_the_canonical_schema_seed_hash() {
+        let seed_hash = NotebookDoc::canonical_schema_seed_change_hashes()
+            .into_iter()
+            .next()
+            .expect("seed hash");
+
+        validate_room_notebook_change_actors_inner(
+            "user:dev:alice",
+            [ChangeActor {
+                actor_label: "nteract:notebook-schema:v5".to_string(),
+                hash: seed_hash,
+            }]
+            .iter(),
+        )
+        .expect("canonical seed change is allowed");
+
+        let error = validate_room_notebook_change_actors_inner(
+            "user:dev:alice",
+            [ChangeActor {
+                actor_label: "nteract:notebook-schema:v5".to_string(),
+                hash: automerge::ChangeHash([1; 32]),
+            }]
+            .iter(),
+        )
+        .expect_err("spoofed seed actor must remain rejected");
+
+        assert!(error.contains("actor label"));
+    }
+
+    #[test]
+    fn markdown_only_policy_ignores_canonical_schema_seed_maps() {
+        let seed_hash = NotebookDoc::canonical_schema_seed_change_hashes()
+            .into_iter()
+            .next()
+            .expect("seed hash");
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+
+        validate_markdown_source_only_changes(
+            &mut preview,
+            &[],
+            [ChangeActor {
+                actor_label: "nteract:notebook-schema:v5".to_string(),
+                hash: seed_hash,
+            }]
+            .iter(),
+        )
+        .expect("canonical schema seed maps are not editor metadata edits");
     }
 
     #[test]
