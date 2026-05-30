@@ -1,0 +1,95 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { cloudNotebookShellCapabilities } from "../viewer/shell-capabilities";
+import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
+
+function authState(mode: CloudPrototypeAuthState["mode"]): CloudPrototypeAuthState {
+  return {
+    mode,
+    token: mode === "anonymous" ? null : "token",
+    user: mode === "anonymous" ? null : "user@example.test",
+    oidcClaims: null,
+    requestedScope: null,
+    problem: mode === "invalid" || mode === "oidc_expired" ? "auth problem" : null,
+  };
+}
+
+test("cloud shell capabilities keep viewer scope read-only", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("anonymous"),
+    connectionScope: "viewer",
+    hasCodeCells: true,
+  });
+
+  assert.equal(capabilities.canRead, true);
+  assert.equal(capabilities.canEditMarkdown, false);
+  assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canExecute, false);
+  assert.equal(capabilities.canToggleCode, true);
+  assert.equal(capabilities.canManageSharing, false);
+  assert.equal(capabilities.access.level, "viewer");
+  assert.equal(capabilities.access.source, "cloud");
+  assert.equal(capabilities.access.isPublic, true);
+});
+
+test("cloud shell capabilities grant editor writes without execute/package management", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc"),
+    connectionScope: "editor",
+    hasCodeCells: false,
+  });
+
+  assert.equal(capabilities.canEditMarkdown, true);
+  assert.equal(capabilities.canEditCells, true);
+  assert.equal(capabilities.canExecute, false);
+  assert.equal(capabilities.canToggleCode, false);
+  assert.equal(capabilities.canManagePackages, false);
+  assert.equal(capabilities.access.level, "editor");
+  assert.equal(capabilities.access.identityLabel, "user@example.test");
+  assert.equal(capabilities.auth.canUseAuthenticatedIdentity, true);
+});
+
+test("cloud shell capabilities reserve sharing for owners", () => {
+  assert.equal(
+    cloudNotebookShellCapabilities({
+      authState: authState("dev"),
+      connectionScope: "owner",
+      hasCodeCells: true,
+    }).canManageSharing,
+    true,
+  );
+
+  assert.equal(
+    cloudNotebookShellCapabilities({
+      authState: authState("dev"),
+      connectionScope: "editor",
+      hasCodeCells: true,
+    }).canManageSharing,
+    false,
+  );
+});
+
+test("cloud shell capabilities expose expired auth attention", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc_expired"),
+    connectionScope: "viewer",
+    hasCodeCells: false,
+  });
+
+  assert.equal(capabilities.auth.needsAttention, true);
+  assert.equal(capabilities.auth.canUseAuthenticatedIdentity, false);
+  assert.equal(capabilities.auth.canSignIn, true);
+});
+
+test("cloud shell capabilities preserve room actor labels for shared access UI", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc"),
+    connectionScope: "owner",
+    connectionActorLabel: "user:anaconda:alice/browser:tab",
+    hasCodeCells: false,
+  });
+
+  assert.equal(capabilities.access.level, "owner");
+  assert.equal(capabilities.access.actorLabel, "user:anaconda:alice/browser:tab");
+  assert.equal(capabilities.access.identityLabel, "user@example.test");
+});

@@ -1,4 +1,5 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
+import type { NotebookViewCell } from "@/components/notebook-shell";
 import {
   isOutputManifest,
   resolveContentRef,
@@ -19,7 +20,7 @@ export interface RenderCell {
   metadata?: unknown;
 }
 
-export interface ResolvedCell {
+export interface ResolvedCell extends NotebookViewCell {
   id: string;
   cellType: "code" | "markdown" | "raw";
   source: string;

@@ -90,6 +90,7 @@ export function useAutomergeNotebook() {
   const prevPathRef = useRef<string | null>(null);
   const actorLabelRef = useRef(`desktop:${sessionIdRef.current}`);
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
+  const [connectionScope, setConnectionScope] = useState<string | null>(null);
 
   const [handleHost] = useState(
     () =>
@@ -291,6 +292,7 @@ export function useAutomergeNotebook() {
           actorLabelRef.current = trigger.payload.actor_label;
           setLocalActor(trigger.payload.actor_label);
         }
+        setConnectionScope(trigger.payload.connection_scope ?? null);
         storeBridge.resetReadiness();
         refreshBlobPort();
         resetNotebookCells();
@@ -579,5 +581,6 @@ export function useAutomergeNotebook() {
     sessionStatus$,
     triggerSync,
     localActor,
+    connectionScope,
   };
 }

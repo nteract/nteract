@@ -16,6 +16,7 @@ import {
 } from "./markdown-heading-navigation";
 import { OutputArea } from "./OutputArea";
 import type { JupyterOutput } from "./jupyter-output";
+import { notebookCellAnchorId } from "runtimed";
 
 export interface ReadOnlyNotebookCellProps {
   id: string;
@@ -99,6 +100,7 @@ export function ReadOnlyNotebookCell({
 
     return (
       <article
+        id={notebookCellAnchorId(id)}
         className={cn("flex min-w-0 flex-col", className)}
         data-cell-id={id}
         data-cell-type={cellType}

@@ -14,6 +14,7 @@ import {
   type TextAttributionLike,
 } from "../../notebook/src/lib/crdt-editor-bridge";
 import { presenceSenderExtension } from "../../notebook/src/lib/presence-sender";
+import { notebookCellAnchorId } from "runtimed";
 import type { ResolvedCell } from "./render-resolution";
 import type { NotebookHandle } from "./runtimed-wasm-client";
 
@@ -138,6 +139,7 @@ export function EditableMarkdownCell({
   return (
     <SharedEditableMarkdownCell
       id={cell.id}
+      elementId={notebookCellAnchorId(cell.id)}
       source={cell.source}
       editing={editing}
       onEditingChange={setEditing}
