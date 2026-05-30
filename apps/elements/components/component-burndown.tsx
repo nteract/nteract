@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "63",
+    value: "64",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, plugin renderer, editor, and expanded widget surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, plugin renderer, editor, and expanded widget surfaces",
   },
 ];
 
@@ -113,7 +113,7 @@ const families = [
     target: "nteract cells",
     status: "active",
     intent:
-      "CellContainer, CompactExecutionButton, and ExecutionCount now render from current source; unused legacy helpers have been removed instead of cataloged.",
+      "CellContainer, CompactExecutionButton, ExecutionCount, and CellPresenceIndicators now render from current source; unused legacy helpers have been removed instead of cataloged.",
   },
   {
     family: "Editors",

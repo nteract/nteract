@@ -9,9 +9,15 @@ import {
   Search,
   ShieldCheck,
 } from "lucide-react";
+import { useEffect, type ReactNode } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { ExecutionCount } from "@/components/cell/ExecutionCount";
+import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
+import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
+import { emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
+
+const primaryCellId = "fixture-code-cell";
 
 const layers = [
   {
@@ -30,6 +36,12 @@ const layers = [
     name: "ExecutionCount",
     source: "src/components/cell/ExecutionCount.tsx",
     role: "Read-only gutter count used when notebook cells are rendered without execution controls.",
+    status: "rendered",
+  },
+  {
+    name: "CellPresenceIndicators",
+    source: "apps/notebook/src/components/cell/CellPresenceIndicators.tsx",
+    role: "Remote peer markers in the cell gutter, backed by the cursor registry and presence bus.",
     status: "rendered",
   },
   {
@@ -76,6 +88,72 @@ const contracts = [
   "Cell identity and stable DOM order stay outside the visual component.",
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",
 ];
+
+const presenceSnapshot = {
+  type: "snapshot",
+  peer_id: "local-docs-peer",
+  peers: [
+    {
+      peer_id: "peer-forecast",
+      peer_label: "forecast reviewer",
+      actor_label: "Forecast Reviewer",
+      channels: [
+        {
+          channel: "cursor",
+          data: { cell_id: primaryCellId, line: 2, column: 18 },
+        },
+      ],
+    },
+    {
+      peer_id: "peer-runtime",
+      peer_label: "runtime analyst",
+      actor_label: "Runtime Analyst",
+      channels: [
+        {
+          channel: "focus",
+          data: { cell_id: primaryCellId },
+        },
+      ],
+    },
+    {
+      peer_id: "peer-output",
+      peer_label: "output reviewer",
+      actor_label: "Output Reviewer",
+      channels: [
+        {
+          channel: "selection",
+          data: {
+            cell_id: primaryCellId,
+            anchor_line: 1,
+            anchor_col: 0,
+            head_line: 1,
+            head_col: 16,
+          },
+        },
+        {
+          channel: "cursor",
+          data: { cell_id: primaryCellId, line: 1, column: 16 },
+        },
+      ],
+    },
+  ],
+};
+
+function PresenceFixtureProvider({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    const stopCursorDispatch = startCursorDispatch("local-docs-peer");
+
+    emitPresence(presenceSnapshot);
+    const retry = window.setTimeout(() => emitPresence(presenceSnapshot), 0);
+
+    return () => {
+      window.clearTimeout(retry);
+      stopCursorDispatch();
+    };
+  }, []);
+
+  return children;
+}
 
 function SourceFixture() {
   return (
@@ -158,33 +236,29 @@ export function CellAnatomyExample() {
           <div className="hidden text-right sm:block">real shell, fixture content</div>
         </div>
         <div className="bg-background py-4 pl-12 pr-2">
-          <CellContainer
-            id="fixture-code-cell"
-            cellType="code"
-            isFocused
-            className="mx-0 px-0"
-            gutterContent={<CompactExecutionButton count={12} />}
-            codeContent={<SourceFixture />}
-            outputContent={<OutputFixture />}
-            rightGutterContent={
-              <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-900">
-                real
-              </span>
-            }
-            outputRightGutterContent={
-              <span className="rounded-full bg-fd-muted px-1.5 py-0.5 text-[10px] font-medium text-fd-muted-foreground">
-                fixture
-              </span>
-            }
-            presenceIndicators={
-              <div className="mt-1 flex flex-col gap-1" aria-label="Fixture presence markers">
-                <span className="size-1.5 rounded-full bg-rose-500" />
-                <span className="size-1.5 rounded-full bg-amber-500" />
-                <span className="size-1.5 rounded-full bg-sky-500" />
-              </div>
-            }
-            dragHandleProps={{ "aria-label": "Fixture drag handle" }}
-          />
+          <PresenceFixtureProvider>
+            <CellContainer
+              id={primaryCellId}
+              cellType="code"
+              isFocused
+              className="mx-0 px-0"
+              gutterContent={<CompactExecutionButton count={12} />}
+              codeContent={<SourceFixture />}
+              outputContent={<OutputFixture />}
+              rightGutterContent={
+                <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-900">
+                  real
+                </span>
+              }
+              outputRightGutterContent={
+                <span className="rounded-full bg-fd-muted px-1.5 py-0.5 text-[10px] font-medium text-fd-muted-foreground">
+                  fixture
+                </span>
+              }
+              presenceIndicators={<CellPresenceIndicators cellId={primaryCellId} />}
+              dragHandleProps={{ "aria-label": "Fixture drag handle" }}
+            />
+          </PresenceFixtureProvider>
         </div>
       </section>
 

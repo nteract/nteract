@@ -28,10 +28,12 @@ contract while preserving the existing `NotebookView` DOM-order invariant.
 
 This docs site should keep moving component by component toward runtime-free
 fixtures. The cell frame, compact execution button, execution count,
-cell-type gutter accents, and the full code/markdown/raw cell components now
-render from current source. Markdown preview mode remains an isolated-renderer
-adapter boundary before the docs app should render it as production notebook
-preview output.
+cell-type gutter accents, cell-level presence indicators, and the full
+code/markdown/raw cell components now render from current source. The presence
+example seeds the notebook cursor registry through a fixture presence snapshot,
+without connecting runtimed or generated WASM. Markdown preview mode remains an
+isolated-renderer adapter boundary before the docs app should render it as
+production notebook preview output.
 
 Unused legacy cell helper components should be removed rather than cataloged.
 Catalog entries need to trace to notebook app usage, an active migration target,
