@@ -511,9 +511,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
             </button>
           )}
           <a href="/n/topic-viz">Open topic-viz</a>
-          {authState.mode === "invalid" ||
-          authState.mode === "access" ||
-          authState.mode === "oidc_expired" ? (
+          {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
             <button type="button" onClick={resetAuth}>
               <RotateCcw aria-hidden="true" />
               Reset
@@ -1734,11 +1732,9 @@ function CloudAuthControls({
       ? `Dev ${authState.user ?? "browser-editor"}`
       : authState.mode === "oidc"
         ? (authState.user ?? "Signed in")
-        : authState.mode === "access"
-          ? "Browser session"
-          : authState.mode === "invalid" || authState.mode === "oidc_expired"
-            ? "Auth needs attention"
-            : "Anonymous";
+        : authState.mode === "invalid" || authState.mode === "oidc_expired"
+          ? "Auth needs attention"
+          : "Anonymous";
   const diagnostics = prototypeAuthDiagnostics(authState, {
     actorLabel: connectionActorLabel,
     connectionError,

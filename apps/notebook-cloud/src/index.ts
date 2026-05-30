@@ -2,10 +2,8 @@ import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.
 import type { BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
-  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   AuthError,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
-  CLOUDFLARE_ACCESS_JWT_HEADER,
   allowsBlobUpload,
   allowsPublish,
   authenticateRequestWithProviders,
@@ -115,7 +113,6 @@ const worker: ExportedHandler<Env> = {
         deployment_env: env.DEPLOYMENT_ENV ?? "development",
         auth: {
           anaconda_api_key: anacondaApiKeyHealth(env),
-          cloudflare_access: cloudflareAccessHealth(env),
           oidc: oidcHealth(env),
         },
       });
@@ -350,9 +347,7 @@ function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | 
 }
 
 function requiresWebSocketOrigin(request: Request): boolean {
-  return (
-    hasCloudflareAccessSessionCredential(request) || hasCredentialWebSocketSubprotocol(request)
-  );
+  return hasCredentialWebSocketSubprotocol(request);
 }
 
 function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | null {
@@ -363,9 +358,6 @@ function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | n
     return json({ error: "request origin is not allowed" }, 403);
   }
   if (!origin) {
-    if (hasCloudflareAccessSessionCredential(request)) {
-      return json({ error: "request origin is required" }, 403);
-    }
     return null;
   }
   if (!allowedOrigins.has(origin)) {
@@ -405,22 +397,6 @@ function hasOriginHeader(value: string | null): boolean {
   return Boolean(value?.trim());
 }
 
-function hasCloudflareAccessCookie(request: Request): boolean {
-  const cookie = request.headers.get("Cookie");
-  if (!cookie) {
-    return false;
-  }
-
-  return cookie.split(";").some((part) => part.trim().split("=")[0] === "CF_Authorization");
-}
-
-function hasCloudflareAccessSessionCredential(request: Request): boolean {
-  return (
-    hasCloudflareAccessCookie(request) ||
-    Boolean(request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER)?.trim())
-  );
-}
-
 function hasCredentialWebSocketSubprotocol(request: Request): boolean {
   const protocol = request.headers.get("Sec-WebSocket-Protocol");
   if (!protocol) {
@@ -429,32 +405,10 @@ function hasCredentialWebSocketSubprotocol(request: Request): boolean {
   return protocol
     .split(",")
     .some((part) =>
-      [
-        ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
-        BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
-        DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
-      ].some((prefix) => part.trim().startsWith(prefix)),
+      [BEARER_AUTH_TOKEN_PROTOCOL_PREFIX, DEV_AUTH_TOKEN_PROTOCOL_PREFIX].some((prefix) =>
+        part.trim().startsWith(prefix),
+      ),
     );
-}
-
-function cloudflareAccessHealth(env: Env): {
-  status: "configured" | "partial" | "disabled";
-  jwks: "remote" | "pinned" | "none";
-} {
-  const hasTeamDomain = Boolean(env.NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?.trim());
-  const hasAudience = Boolean(env.NOTEBOOK_CLOUD_ACCESS_AUD?.trim());
-  const hasPinnedJwks = Boolean(env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?.trim());
-  const status =
-    hasTeamDomain && hasAudience
-      ? "configured"
-      : hasTeamDomain || hasAudience || hasPinnedJwks
-        ? "partial"
-        : "disabled";
-
-  return {
-    status,
-    jwks: hasPinnedJwks ? "pinned" : status === "configured" ? "remote" : "none",
-  };
 }
 
 function anacondaApiKeyHealth(env: Env): {
@@ -1545,7 +1499,7 @@ async function authenticateRequestOrResponse(
 }
 
 async function resolveLoginInvites(env: Env, identity: AuthenticatedConnection): Promise<void> {
-  if (identity.metadata.provider !== "cloudflare-access" && identity.metadata.provider !== "oidc") {
+  if (identity.metadata.provider !== "oidc") {
     return;
   }
 
@@ -1691,7 +1645,7 @@ function withCors(response: Response): Response {
   response.headers.set("Access-Control-Allow-Methods", "DELETE, GET, HEAD, POST, PUT, OPTIONS");
   response.headers.set(
     "Access-Control-Allow-Headers",
-    `Authorization, Cf-Access-Jwt-Assertion, CF-Access-Token, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, X-Runtime-State-Doc-Id, ${DEV_AUTH_TOKEN_HEADER}`,
+    `Authorization, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, X-Runtime-State-Doc-Id, ${DEV_AUTH_TOKEN_HEADER}`,
   );
   return response;
 }

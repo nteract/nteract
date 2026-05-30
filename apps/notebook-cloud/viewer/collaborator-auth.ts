@@ -38,7 +38,7 @@ export interface CloudSyncAuth {
 }
 
 export interface CloudPrototypeAuthState {
-  mode: "anonymous" | "access" | "dev" | "invalid" | "oidc" | "oidc_expired";
+  mode: "anonymous" | "dev" | "invalid" | "oidc" | "oidc_expired";
   token: string | null;
   user: string | null;
   oidcClaims: CloudOidcClaims | null;
@@ -130,16 +130,6 @@ export function readCloudPrototypeAuth(
         problem: "Stored OIDC session is expired. Sign in again.",
       };
     }
-    if (requestedScope) {
-      return {
-        mode: "access",
-        token: null,
-        user: null,
-        oidcClaims: null,
-        requestedScope,
-        problem: null,
-      };
-    }
     return anonymousAuthState();
   }
 
@@ -167,15 +157,6 @@ export function readCloudPrototypeAuth(
 }
 
 export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthState): CloudSyncAuth {
-  if (state.mode === "access") {
-    return {
-      headers: {},
-      protocols: [],
-      user: null,
-      operator: null,
-      requestedScope: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
-    };
-  }
   if (state.mode === "oidc" && state.token) {
     return {
       headers: cloudHttpHeadersFromPrototypeAuthState(state),
@@ -248,16 +229,6 @@ export function storeCloudPrototypeDevAuth(
   storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, input.scope);
 }
 
-export function storeCloudAccessAuth(
-  storage: Pick<CloudPrototypeAuthStorage, "removeItem" | "setItem">,
-  input: { scope: ConnectionScope },
-): void {
-  clearCloudOidcAuth(storage);
-  storage.removeItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY);
-  storage.removeItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY);
-  storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, input.scope);
-}
-
 export function storeCloudRequestedScope(
   storage: Pick<CloudPrototypeAuthStorage, "setItem">,
   scope: ConnectionScope,
@@ -310,9 +281,6 @@ export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
   }
   if (state.mode === "oidc_expired") {
     return `${state.user ?? "OIDC session"} needs sign-in renewal.`;
-  }
-  if (state.mode === "access") {
-    return `Browser session requesting ${state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE}`;
   }
   if (state.mode === "invalid") {
     return state.problem ?? "Stored collaborator token is invalid.";
@@ -387,21 +355,6 @@ export function prototypeAuthDiagnostics(
         tone: "warning",
       });
     }
-  } else if (state.mode === "access") {
-    rows.push(
-      {
-        label: "Requested identity",
-        value: "Browser session credential, validated by the Worker.",
-      },
-      {
-        label: "Requested scope",
-        value: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
-      },
-      {
-        label: "Credential",
-        value: "No token in JavaScript; Cloudflare Access supplies the assertion.",
-      },
-    );
   } else if (state.mode === "invalid") {
     rows.push(
       {

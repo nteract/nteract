@@ -15,7 +15,6 @@ import {
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
   readCloudPrototypeAuth,
-  storeCloudAccessAuth,
   storeCloudPrototypeDevAuth,
   storeCloudRequestedScope,
   validatePrototypeToken,
@@ -203,24 +202,6 @@ describe("cloud collaborator auth", () => {
     assert.match(diagnostics.copyText, /Sign-in: Stored OIDC session is expired/);
     assert.match(diagnostics.copyText, /Effective auth: No expired bearer token is sent/);
     assert.doesNotMatch(diagnostics.copyText, new RegExp(accessToken.replaceAll(".", "\\.")));
-  });
-
-  it("can request an editor role from a browser Access session without JS token material", () => {
-    const storage = new MemoryStorage();
-    storeCloudAccessAuth(storage, { scope: "editor" });
-
-    const state = readCloudPrototypeAuth(storage);
-    const auth = cloudSyncAuthFromPrototypeAuthState(state);
-
-    assert.equal(state.mode, "access");
-    assert.equal(state.token, null);
-    assert.equal(state.user, null);
-    assert.equal(auth.requestedScope, "editor");
-    assert.deepEqual(auth.headers, {});
-    assert.deepEqual(auth.protocols, []);
-    assert.match(prototypeAuthSummary(state), /Browser session requesting editor/);
-    assert.equal(storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY), null);
-    assert.equal(storage.getItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY), null);
   });
 
   it("switches requested scope without replacing stored OIDC token material", () => {

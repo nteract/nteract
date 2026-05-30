@@ -15,8 +15,8 @@ import {
 describe("hosted notebook sharing prototype", () => {
   it("resolves a pending email invite to a principal ACL grant on first verified login", () => {
     const invite = pendingInvite({ email: " Alice@Example.COM " });
-    const login = accessLogin({
-      principal: "user:cloudflare-access:access-sub-1",
+    const login = oidcLogin({
+      principal: "user:oidc:oidc-sub-1",
       email: "alice@example.com",
       displayName: "Alice Example",
     });
@@ -31,7 +31,7 @@ describe("hosted notebook sharing prototype", () => {
       {
         notebookId: "notebook-1",
         subjectKind: "principal",
-        subject: "user:cloudflare-access:access-sub-1",
+        subject: "user:oidc:oidc-sub-1",
         scope: "editor",
         actorLabel: "system/invite-resolution",
         inviteId: "invite-1",
@@ -42,19 +42,19 @@ describe("hosted notebook sharing prototype", () => {
   });
 
   it("does not resolve invites from unverified emails or the wrong provider", () => {
-    const invite = pendingInvite({ providerHint: "cloudflare-access" });
+    const invite = pendingInvite({ providerHint: "oidc" });
 
     assert.equal(
       resolvePendingInvitesForLogin({
         invites: [invite],
-        login: accessLogin({ emailVerified: false }),
+        login: oidcLogin({ emailVerified: false }),
       }).aclGrants.length,
       0,
     );
     assert.equal(
       resolvePendingInvitesForLogin({
         invites: [invite],
-        login: accessLogin({ provider: "dev" }),
+        login: oidcLogin({ provider: "dev" }),
       }).aclGrants.length,
       0,
     );
@@ -63,7 +63,7 @@ describe("hosted notebook sharing prototype", () => {
   it("does not throw when an unverified login has a malformed email claim", () => {
     const resolution = resolvePendingInvitesForLogin({
       invites: [pendingInvite()],
-      login: accessLogin({ email: "noatsign", emailVerified: false }),
+      login: oidcLogin({ email: "noatsign", emailVerified: false }),
     });
 
     assert.equal(resolution.profile.email, null);
@@ -78,7 +78,7 @@ describe("hosted notebook sharing prototype", () => {
         pendingInvite({ id: "invite-bad-email", email: "bad invite" }),
         validInvite,
       ],
-      login: accessLogin(),
+      login: oidcLogin(),
     });
 
     assert.deepEqual(
@@ -90,7 +90,7 @@ describe("hosted notebook sharing prototype", () => {
   it("expires invites with numeric time comparisons instead of ISO string ordering", () => {
     const resolution = resolvePendingInvitesForLogin({
       invites: [pendingInvite({ expiresAt: "2026-05-24T00:00:00Z" })],
-      login: accessLogin(),
+      login: oidcLogin(),
       now: "2026-05-24T00:00:00.000Z",
     });
 
@@ -98,24 +98,21 @@ describe("hosted notebook sharing prototype", () => {
   });
 
   it("normalizes provider hints before resolving pending invites", () => {
-    const invite = pendingInvite({ providerHint: " Cloudflare-Access " });
+    const invite = pendingInvite({ providerHint: " OIDC " });
 
     const resolution = resolvePendingInvitesForLogin({
       invites: [invite],
-      login: accessLogin({ provider: "cloudflare-access" }),
+      login: oidcLogin({ provider: "oidc" }),
     });
 
     assert.equal(resolution.aclGrants.length, 1);
-    assert.equal(resolution.profile.provider, "cloudflare-access");
+    assert.equal(resolution.profile.provider, "oidc");
   });
 
   it("keeps pending invite lookup keyed by normalized email plus provider hint", () => {
     assert.equal(normalizeInviteEmail(" Alice@Example.COM "), "alice@example.com");
-    assert.equal(normalizeProviderHint(" Cloudflare-Access "), "cloudflare-access");
-    assert.equal(
-      inviteLookupKey(" Cloudflare-Access ", " Alice@Example.COM "),
-      "cloudflare-access:alice@example.com",
-    );
+    assert.equal(normalizeProviderHint(" OIDC "), "oidc");
+    assert.equal(inviteLookupKey(" OIDC ", " Alice@Example.COM "), "oidc:alice@example.com");
     assert.equal(inviteLookupKey(null, "alice@example.com"), "*:alice@example.com");
   });
 
@@ -139,8 +136,8 @@ describe("hosted notebook sharing prototype", () => {
   it("builds display labels for resolved principals, pending invites, and public viewers", () => {
     const principal = shareTargetDisplay({
       profile: {
-        principal: "user:cloudflare-access:access-sub-1",
-        provider: "cloudflare-access",
+        principal: "user:oidc:oidc-sub-1",
+        provider: "oidc",
         email: "alice@example.com",
         displayName: "Alice Example",
         firstSeenAt: "2026-05-24T12:00:00.000Z",
@@ -169,22 +166,20 @@ function pendingInvite(overrides: Partial<PendingNotebookInvite> = {}): PendingN
     id: "invite-1",
     notebookId: "notebook-1",
     email: "alice@example.com",
-    providerHint: "cloudflare-access",
+    providerHint: "oidc",
     scope: "editor",
     status: "pending",
-    createdByActorLabel: "user:cloudflare-access:owner/smoke:owner",
+    createdByActorLabel: "user:oidc:owner/smoke:owner",
     createdAt: "2026-05-24T11:00:00.000Z",
     expiresAt: "2026-06-24T11:00:00.000Z",
     ...overrides,
   };
 }
 
-function accessLogin(
-  overrides: Partial<AuthenticatedLoginProfile> = {},
-): AuthenticatedLoginProfile {
+function oidcLogin(overrides: Partial<AuthenticatedLoginProfile> = {}): AuthenticatedLoginProfile {
   return {
-    principal: "user:cloudflare-access:access-sub-1",
-    provider: "cloudflare-access",
+    principal: "user:oidc:oidc-sub-1",
+    provider: "oidc",
     email: "alice@example.com",
     emailVerified: true,
     displayName: "Alice Example",

@@ -1,5 +1,4 @@
 import {
-  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -9,7 +8,6 @@ import {
 } from "./auth-shared.ts";
 
 export {
-  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -37,9 +35,6 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?: string;
-  NOTEBOOK_CLOUD_ACCESS_AUD?: string;
-  NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?: string;
-  NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
   NOTEBOOK_CLOUD_OIDC_AUDIENCE?: string;
   NOTEBOOK_CLOUD_OIDC_CLIENT_ID?: string;
   NOTEBOOK_CLOUD_OIDC_ISSUER?: string;
@@ -48,19 +43,13 @@ export interface IdentityEnvironment {
 }
 
 export interface AuthenticatedConnectionMetadata {
-  provider: "anonymous" | "dev" | "cloudflare-access" | "oidc" | "anaconda-api-key";
+  provider: "anonymous" | "dev" | "oidc" | "anaconda-api-key";
   transport:
     | "anonymous"
     | "loopback-dev"
     | "dev-token-header"
     | "dev-token-subprotocol"
     | "api-key-bearer"
-    | "access-assertion"
-    | "access-token-header"
-    | "access-bearer"
-    | "access-cookie"
-    | "access-cookie-assertion"
-    | "access-subprotocol"
     | "oidc-bearer"
     | "oidc-subprotocol";
   principalNamespace: string;
@@ -82,13 +71,6 @@ export const TRUSTED_DISPLAY_NAME_HEADER = "x-nteract-display-name";
 export const TRUSTED_EMAIL_HEADER = "x-nteract-email";
 const AUTH_PROVIDER_HEADER = "x-notebook-cloud-auth-provider";
 const ANACONDA_API_KEY_AUTH_PROVIDER = "anaconda-api-key";
-export const CLOUDFLARE_ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
-
-interface AccessCredential {
-  token: string;
-  transport: AuthenticatedConnectionMetadata["transport"];
-  webSocketProtocol?: string;
-}
 
 interface OidcCredential {
   token: string;
@@ -102,12 +84,6 @@ interface OidcCredential {
 interface AnacondaApiKeyCredential {
   token: string;
   transport: Extract<AuthenticatedConnectionMetadata["transport"], "api-key-bearer">;
-}
-
-interface AccessConfig {
-  audience: string;
-  issuer: string;
-  jwksJson?: string;
 }
 
 interface OidcConfig {
@@ -235,9 +211,7 @@ export async function authenticateRequestWithProviders(
   const anacondaApiKeyCredential = anacondaApiKeyCredentialFromRequest(request, {
     allowJwtShapeFallback: !oidcConfig && !oidcPartial,
   });
-  const accessConfig = accessConfigFromEnv(env);
   const routeBearerToOidc = shouldRouteBearerToOidc(request, {
-    accessConfig,
     anacondaApiKeyCredential,
     oidcConfig,
     oidcPartial,
@@ -247,12 +221,7 @@ export async function authenticateRequestWithProviders(
     : oidcConfig || oidcPartial || hasOidcCredentialTransport(request)
       ? oidcCredentialFromRequest(request, { includeBearer: routeBearerToOidc })
       : undefined;
-  const accessCredential = anacondaApiKeyCredential
-    ? undefined
-    : accessCredentialFromRequest(request, {
-        includeBearer: !routeBearerToOidc,
-      });
-  if ([anacondaApiKeyCredential, oidcCredential, accessCredential].filter(Boolean).length > 1) {
+  if ([anacondaApiKeyCredential, oidcCredential].filter(Boolean).length > 1) {
     throw new AuthError("multiple identity credentials presented", 400);
   }
   if (anacondaApiKeyCredential && !anacondaApiKeyConfig) {
@@ -263,9 +232,6 @@ export async function authenticateRequestWithProviders(
       oidcPartial ? "OIDC auth is not fully configured" : "OIDC auth is not configured",
       503,
     );
-  }
-  if (accessCredential && !accessConfig && hasPartialAccessConfig(env)) {
-    throw new AuthError("Cloudflare Access auth is not fully configured", 503);
   }
   if (oidcCredential && oidcConfig) {
     if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
@@ -279,63 +245,8 @@ export async function authenticateRequestWithProviders(
     }
     return authenticateAnacondaApiKeyRequest(request, env, anacondaApiKeyCredential);
   }
-  if (accessCredential && accessConfig) {
-    if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
-      throw new AuthError("multiple identity credentials presented", 400);
-    }
-    return authenticateCloudflareAccessRequest(request, env, accessCredential);
-  }
 
   return authenticateRequest(request, env);
-}
-
-export async function authenticateCloudflareAccessRequest(
-  request: Request,
-  env: IdentityEnvironment,
-  credential = accessCredentialFromRequest(request),
-): Promise<AuthenticatedConnection> {
-  if (!credential) {
-    throw new AuthError("missing Cloudflare Access token", 401);
-  }
-
-  const config = accessConfigFromEnv(env);
-  if (!config) {
-    throw new AuthError("Cloudflare Access auth is not configured", 503);
-  }
-
-  const payload = await verifyCloudflareAccessJwt(credential.token, config);
-  const subject = payload.sub?.trim();
-  if (!subject) {
-    throw new AuthError("Cloudflare Access token is missing sub", 401);
-  }
-
-  const url = new URL(request.url);
-  const principal = `user:cloudflare-access:${encodePrincipalComponent(subject)}`;
-  const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
-  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
-
-  validatePrincipal(principal);
-  validateOperator(operator);
-
-  const identity = {
-    principal,
-    operator,
-    actorLabel: `${principal}/${operator}`,
-    scope,
-    metadata: {
-      provider: "cloudflare-access" as const,
-      transport: credential.transport,
-      principalNamespace: "user:cloudflare-access",
-      ...(payload.name?.trim() || payload.email?.trim()
-        ? { displayName: payload.name?.trim() || payload.email?.trim() || undefined }
-        : {}),
-      ...(payload.email?.trim() ? { email: payload.email.trim() } : {}),
-      ...(payload.email?.trim() ? { emailVerified: true } : {}),
-    },
-  };
-  return credential.webSocketProtocol
-    ? { ...identity, webSocketProtocol: credential.webSocketProtocol }
-    : identity;
 }
 
 export async function authenticateOidcRequest(
@@ -812,11 +723,7 @@ function parseTrustedMetadata(
 
 function isMetadataProvider(value: string): value is AuthenticatedConnectionMetadata["provider"] {
   return (
-    value === "anonymous" ||
-    value === "dev" ||
-    value === "cloudflare-access" ||
-    value === "oidc" ||
-    value === "anaconda-api-key"
+    value === "anonymous" || value === "dev" || value === "oidc" || value === "anaconda-api-key"
   );
 }
 
@@ -827,12 +734,6 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
     value === "dev-token-header" ||
     value === "dev-token-subprotocol" ||
     value === "api-key-bearer" ||
-    value === "access-assertion" ||
-    value === "access-token-header" ||
-    value === "access-bearer" ||
-    value === "access-cookie" ||
-    value === "access-cookie-assertion" ||
-    value === "access-subprotocol" ||
     value === "oidc-bearer" ||
     value === "oidc-subprotocol"
   );
@@ -933,56 +834,6 @@ function validDevTokenCredential(
   return undefined;
 }
 
-function accessCredentialFromRequest(
-  request: Request,
-  options: { includeBearer?: boolean } = {},
-): AccessCredential | undefined {
-  const includeBearer = options.includeBearer ?? true;
-  const candidates: AccessCredential[] = [];
-  const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
-  const assertionToken = request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER)?.trim() || undefined;
-  if (assertionToken) {
-    candidates.push({
-      token: assertionToken,
-      transport: cookieToken ? "access-cookie-assertion" : "access-assertion",
-    });
-  } else {
-    const accessToken = request.headers.get("cf-access-token")?.trim() || undefined;
-    if (accessToken) {
-      candidates.push({ token: accessToken, transport: "access-token-header" });
-    }
-
-    if (includeBearer) {
-      const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
-      if (bearerToken) {
-        candidates.push({ token: bearerToken, transport: "access-bearer" });
-      }
-    }
-
-    if (cookieToken && candidates.length === 0) {
-      candidates.push({ token: cookieToken, transport: "access-cookie" });
-    }
-  }
-
-  const webSocketProtocol = tokenFromWebSocketProtocol(
-    request.headers.get("sec-websocket-protocol"),
-    ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
-  );
-  if (webSocketProtocol) {
-    candidates.push({
-      token: webSocketProtocol.token,
-      transport: "access-subprotocol",
-      webSocketProtocol: webSocketProtocol.webSocketProtocol,
-    });
-  }
-
-  if (candidates.length > 1) {
-    throw new AuthError("multiple identity credentials presented", 400);
-  }
-
-  return candidates[0];
-}
-
 function oidcCredentialFromRequest(
   request: Request,
   options: { includeBearer?: boolean } = {},
@@ -1043,7 +894,6 @@ function hasOidcCredentialTransport(request: Request): boolean {
 function shouldRouteBearerToOidc(
   request: Request,
   config: {
-    accessConfig: AccessConfig | undefined;
     anacondaApiKeyCredential: AnacondaApiKeyCredential | undefined;
     oidcConfig: OidcConfig | undefined;
     oidcPartial: boolean;
@@ -1056,21 +906,7 @@ function shouldRouteBearerToOidc(
   if (config.anacondaApiKeyCredential) {
     return false;
   }
-  if (!config.oidcConfig) {
-    return config.oidcPartial && !config.accessConfig;
-  }
-  if (!config.accessConfig) {
-    return true;
-  }
-
-  const issuer = unverifiedJwtIssuer(bearerToken);
-  if (!issuer) {
-    throw new AuthError(
-      "bearer token must be a JWT with issuer when Access and OIDC are both configured",
-      401,
-    );
-  }
-  return issuer !== config.accessConfig.issuer;
+  return Boolean(config.oidcConfig || config.oidcPartial);
 }
 
 function anacondaApiKeyConfigFromEnv(env: IdentityEnvironment): AnacondaApiKeyConfig | undefined {
@@ -1086,38 +922,6 @@ function anacondaApiKeyConfigFromEnv(env: IdentityEnvironment): AnacondaApiKeyCo
         "user:anaconda",
     ),
   };
-}
-
-function hasPartialAccessConfig(env: IdentityEnvironment): boolean {
-  const audience = env.NOTEBOOK_CLOUD_ACCESS_AUD?.trim();
-  const rawTeamDomain = env.NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?.trim();
-  const jwksJson = env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?.trim();
-  if (!audience && !rawTeamDomain && !jwksJson) {
-    return false;
-  }
-  return !audience || !rawTeamDomain;
-}
-
-function accessConfigFromEnv(env: IdentityEnvironment): AccessConfig | undefined {
-  const audience = env.NOTEBOOK_CLOUD_ACCESS_AUD?.trim();
-  const rawTeamDomain = env.NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?.trim();
-  if (!audience || !rawTeamDomain) {
-    return undefined;
-  }
-
-  return {
-    audience,
-    issuer: normalizeAccessIssuer(rawTeamDomain),
-    jwksJson: env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON,
-  };
-}
-
-function normalizeAccessIssuer(value: string): string {
-  if (value.startsWith("https://")) {
-    return value.replace(/\/+$/, "");
-  }
-  const host = value.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  return `https://${host}`;
 }
 
 function hasPartialOidcConfig(env: IdentityEnvironment): boolean {
@@ -1181,22 +985,6 @@ function normalizePrincipalNamespace(value: string | undefined): string {
   return namespace;
 }
 
-async function verifyCloudflareAccessJwt(token: string, config: AccessConfig): Promise<JwtPayload> {
-  const { header, payload, signingInput, signature } = decodeJwt(token, "Cloudflare Access");
-  if (header.alg !== "RS256") {
-    throw new AuthError("Cloudflare Access token must use RS256", 401);
-  }
-
-  const keys = selectJwks(await loadAccessJwks(config), header, "Cloudflare Access");
-  const verified = await verifyWithAnyAccessKey(keys, signingInput, signature);
-  if (!verified) {
-    throw new AuthError("Cloudflare Access token signature is invalid", 401);
-  }
-
-  validateAccessJwtClaims(payload, config);
-  return payload;
-}
-
 async function verifyOidcJwt(token: string, config: OidcConfig): Promise<JwtPayload> {
   const { header, payload, signingInput, signature } = decodeJwt(token, "OIDC");
   if (header.alg !== "RS256") {
@@ -1204,7 +992,7 @@ async function verifyOidcJwt(token: string, config: OidcConfig): Promise<JwtPayl
   }
 
   const keys = selectJwks(await loadOidcJwks(config), header, "OIDC");
-  const verified = await verifyWithAnyAccessKey(keys, signingInput, signature);
+  const verified = await verifyWithAnySigningKey(keys, signingInput, signature);
   if (!verified) {
     throw new AuthError("OIDC token signature is invalid", 401);
   }
@@ -1215,7 +1003,7 @@ async function verifyOidcJwt(token: string, config: OidcConfig): Promise<JwtPayl
 
 function decodeJwt(
   token: string,
-  label: "Cloudflare Access" | "OIDC",
+  label: "OIDC",
 ): {
   header: JwtHeader;
   payload: JwtPayload;
@@ -1240,14 +1028,6 @@ function decodeJwt(
   };
 }
 
-async function loadAccessJwks(config: AccessConfig): Promise<JsonWebKeySet> {
-  if (config.jwksJson?.trim()) {
-    return parseJwks(config.jwksJson, "Cloudflare Access");
-  }
-
-  return loadRemoteJwks(`${config.issuer}/cdn-cgi/access/certs`, "Cloudflare Access");
-}
-
 async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
   if (config.jwksJson?.trim()) {
     return parseJwks(config.jwksJson, "OIDC");
@@ -1256,10 +1036,7 @@ async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
   return loadRemoteJwks(`${config.issuer}/.well-known/jwks.json`, "OIDC");
 }
 
-async function loadRemoteJwks(
-  url: string,
-  label: "Cloudflare Access" | "OIDC",
-): Promise<JsonWebKeySet> {
+async function loadRemoteJwks(url: string, label: "OIDC"): Promise<JsonWebKeySet> {
   const cached = jwksCache.get(url);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.ready;
@@ -1288,7 +1065,7 @@ async function loadRemoteJwks(
   return ready;
 }
 
-function parseJwks(value: string, label: "Cloudflare Access" | "OIDC"): JsonWebKeySet {
+function parseJwks(value: string, label: "OIDC"): JsonWebKeySet {
   try {
     const parsed = JSON.parse(value) as JsonWebKeySet;
     if (!Array.isArray(parsed.keys)) {
@@ -1300,11 +1077,7 @@ function parseJwks(value: string, label: "Cloudflare Access" | "OIDC"): JsonWebK
   }
 }
 
-function selectJwks(
-  jwks: JsonWebKeySet,
-  header: JwtHeader,
-  label: "Cloudflare Access" | "OIDC",
-): JsonWebKey[] {
+function selectJwks(jwks: JsonWebKeySet, header: JwtHeader, label: "OIDC"): JsonWebKey[] {
   const keys = jwks.keys ?? [];
   const candidates = keys.filter((key) => {
     if (key.kty !== "RSA") return false;
@@ -1321,7 +1094,7 @@ function selectJwks(
   return candidates;
 }
 
-async function verifyWithAnyAccessKey(
+async function verifyWithAnySigningKey(
   keys: JsonWebKey[],
   signingInput: string,
   signature: Uint8Array,
@@ -1350,25 +1123,6 @@ async function verifyWithAnyAccessKey(
     }
   }
   return false;
-}
-
-function validateAccessJwtClaims(payload: JwtPayload, config: AccessConfig): void {
-  if (payload.iss !== config.issuer) {
-    throw new AuthError("Cloudflare Access token issuer is invalid", 401);
-  }
-
-  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (!audiences.includes(config.audience)) {
-    throw new AuthError("Cloudflare Access token audience is invalid", 401);
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now - JWT_CLOCK_TOLERANCE_SECONDS) {
-    throw new AuthError("Cloudflare Access token is expired", 401);
-  }
-  if (typeof payload.nbf === "number" && payload.nbf > now + JWT_CLOCK_TOLERANCE_SECONDS) {
-    throw new AuthError("Cloudflare Access token is not valid yet", 401);
-  }
 }
 
 function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
@@ -1437,22 +1191,6 @@ function bearerTokenFromAuthorization(value: string | null): string | undefined 
   return match?.[1]?.trim() || undefined;
 }
 
-function unverifiedJwtIssuer(token: string): string | undefined {
-  const payload = unverifiedJwtPayload(token);
-  return typeof payload?.iss === "string" ? payload.iss : undefined;
-}
-
-function cookieValue(value: string | null, name: string): string | undefined {
-  if (!value) return undefined;
-  for (const part of value.split(";")) {
-    const [rawKey, ...rawValue] = part.trim().split("=");
-    if (rawKey === name) {
-      return rawValue.join("=") || undefined;
-    }
-  }
-  return undefined;
-}
-
 function tokenFromWebSocketProtocol(
   value: string | null,
   prefix = DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -1497,7 +1235,7 @@ function decodeBase64Url(value: string): string | undefined {
   }
 }
 
-function decodeBase64UrlJson<T>(value: string, label: "Cloudflare Access" | "OIDC"): T {
+function decodeBase64UrlJson<T>(value: string, label: "OIDC"): T {
   const decoded = decodeBase64Url(value);
   if (!decoded) {
     throw new AuthError(`${label} token contains invalid base64url JSON`, 401);
