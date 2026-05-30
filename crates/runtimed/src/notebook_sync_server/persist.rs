@@ -243,21 +243,21 @@ pub(crate) async fn save_notebook_to_disk(
     .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
     let cell_count = v4_notebook.cells.len();
 
-    // Zeroing guard (automatic saves only). A failed/incomplete streaming load
-    // empties the room doc (peer_session clears all cells on load failure).
-    // Autosave and kernel-teardown both call this with `target_path = None`, so
-    // without this guard an empty room would overwrite a populated `.ipynb` and
-    // destroy the user's notebook. Skip the write when the in-memory doc has 0
-    // cells, the room was emptied by a failed load (`load_failed`), and a
-    // non-empty file already exists on disk; return Ok so the autosave debouncer
-    // keeps running (Unrecoverable would disable it). This keys on
-    // `target_path = None`, which is the automatic autosave/teardown path — but
-    // note an explicit in-place Save (Cmd+S / SDK `save()`) ALSO passes `None`;
-    // only Save As passes `Some`. So an explicit in-place Save of a failed-load
-    // empty room is skipped here too: the file is preserved (no data loss), but
-    // the save reports success without writing. Distinguishing autosave from
-    // explicit in-place Save, and
-    // surfacing the failed load to the client instead of a silent success, is
+    // Zeroing guard (in-place saves). A failed/incomplete streaming load empties
+    // the room doc (peer_session clears all cells on load failure). Writing that
+    // empty room back to its own file overwrites a populated `.ipynb` and
+    // destroys the notebook. Skip the write when the save is IN-PLACE, the
+    // in-memory doc has 0 cells, the room was emptied by a failed load
+    // (`load_failed`), and a non-empty file already exists on disk; return Ok so
+    // the autosave debouncer keeps running (Unrecoverable would disable it).
+    //
+    // "In-place" = the save targets the room's current bound path. Desktop
+    // autosave/teardown/Save pass `target_path = None`; MCP/Node/Python
+    // `save(path)` pass `Some(current_path)`. BOTH are in-place and must be
+    // protected — keying on `None` alone would let a same-path `Some` save zero
+    // the file. Only a genuine Save As to a DIFFERENT path bypasses the guard
+    // (the user is deliberately writing elsewhere). A failed-load room's in-place
+    // save still reports success without writing; surfacing that to the client is
     // deferred to the honest-failure-messaging work (Step 1). A genuinely empty
     // doc over an empty/absent file still round-trips, and a brand-new untitled
     // notebook has no existing file to protect.
@@ -281,7 +281,15 @@ pub(crate) async fn save_notebook_to_disk(
     // clobbered by a crashed prior write, and well-formed populated notebooks
     // alike. The only cost is that an unparseable file is never auto-overwritten
     // by an empty doc, which is the safe direction for a data-loss guard.
-    if target_path.is_none() && cell_count == 0 && room.load_failed() {
+    let is_in_place_save = match target_path {
+        None => true,
+        Some(_) => {
+            room.file_binding
+                .path_matches(notebook_path.as_path())
+                .await
+        }
+    };
+    if is_in_place_save && cell_count == 0 && room.load_failed() {
         let disk_has_content = existing_raw
             .as_ref()
             .is_some_and(|bytes| bytes.iter().any(|b| !b.is_ascii_whitespace()));
@@ -1412,15 +1420,6 @@ pub(crate) fn spawn_notebook_file_watcher(
                             };
                             let external_metadata = parse_metadata_from_ipynb(&json);
 
-                            // Reaching here means a valid notebook was just read
-                            // from disk and is being reconciled into this resident
-                            // room — a recovery path that does NOT go through
-                            // `try_start_loading`. Clear any failed-load hazard
-                            // flag so a later legitimate empty save is not blocked
-                            // by the zeroing guard (the file watcher is the other
-                            // recovery path besides a load retry).
-                            room.clear_load_failed();
-
                             // Check if kernel is running (to preserve outputs)
                             let has_kernel = room.has_kernel().await;
 
@@ -1433,6 +1432,18 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 has_kernel,
                             )
                             .await;
+
+                            // The file watcher is a recovery path that does not go
+                            // through `try_start_loading`. Clear the failed-load
+                            // hazard ONLY once the watcher has actually reconciled
+                            // file content into the doc — parsing valid JSON is not
+                            // enough (apply can still fail, e.g. on bad
+                            // attachments, leaving the room empty). Gate on the doc
+                            // now holding cells, so a failed apply keeps the file
+                            // protected.
+                            if room.doc.read().await.cell_count() > 0 {
+                                room.clear_load_failed();
+                            }
 
                             // Apply metadata changes to Automerge doc.
                             // Only update when the external file has a metadata

@@ -9257,6 +9257,47 @@ async fn save_based_recovery_clears_failed_flag() {
     );
 }
 
+/// Codex P1: a same-path explicit save (MCP/SDK `save(current_path)`) is an
+/// in-place save, not a Save As, so a failed-load empty room must NOT zero the
+/// file through it. Only a Save As to a DIFFERENT path bypasses the guard.
+#[tokio::test]
+async fn same_path_explicit_save_is_in_place_and_protected() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "inplace.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.clear_all_cells().unwrap();
+    }
+    room.mark_load_failed();
+
+    // Same-path Some save == in-place == must be skipped; the file is preserved.
+    save_notebook_to_disk(&room, Some(notebook_path.to_str().unwrap()))
+        .await
+        .expect("in-place save no-ops cleanly");
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        2,
+        "a same-path save of a failed-load empty room must not zero the file"
+    );
+
+    // A Save As to a DIFFERENT path is deliberate and bypasses the guard.
+    let other = tmp.path().join("saveas.ipynb");
+    save_notebook_to_disk(&room, Some(other.to_str().unwrap()))
+        .await
+        .expect("Save As to a new path writes");
+    assert_eq!(
+        disk_cell_count(&other),
+        0,
+        "Save As to a new path writes the (empty) doc through"
+    );
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        2,
+        "the original file is untouched after a Save As elsewhere"
+    );
+}
+
 /// A file that is only whitespace carries no cells to lose, so the guard must
 /// not fire: an empty doc over a whitespace-only file still writes through.
 #[tokio::test]
