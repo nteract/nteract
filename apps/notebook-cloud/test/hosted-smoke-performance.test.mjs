@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   classifyPerformanceResource,
+  performanceBudgetFailures,
   refinePerformanceResourceKind,
   summarizePerformanceResources,
   summarizeViewerMilestones,
@@ -392,6 +393,52 @@ describe("hosted smoke performance diagnostics", () => {
         viewer_start: 3,
         live_room_ready: 25,
       },
+    );
+  });
+
+  it("reports explicit hosted performance budget failures", () => {
+    const diagnostics = {
+      live_path: {
+        first_useful_render_ms: 5_025,
+        live_sync_websocket_ms: 1_323,
+      },
+      sidecar_assets: {
+        sift_wasm_complete_ms: 3_025,
+        arrow_data_complete_ms: null,
+      },
+    };
+
+    assert.deepEqual(
+      performanceBudgetFailures(diagnostics, {
+        first_useful_render_ms: 5_500,
+        live_sync_websocket_ms: null,
+        sift_wasm_complete_ms: 3_000,
+        arrow_data_complete_ms: 8_000,
+      }),
+      [
+        {
+          kind: "performance-budget",
+          metric: "sift_wasm_complete_ms",
+          text: "Sift WASM took 3025 ms, expected <= 3000 ms",
+          expected_ms: 3000,
+          actual_ms: 3025,
+        },
+        {
+          kind: "performance-budget",
+          metric: "arrow_data_complete_ms",
+          text: "Arrow data timing was missing; expected <= 8000 ms",
+          expected_ms: 8000,
+          actual_ms: null,
+        },
+      ],
+    );
+  });
+
+  it("rejects unknown hosted performance budget metrics", () => {
+    assert.throws(
+      () =>
+        performanceBudgetFailures({ live_path: {}, sidecar_assets: {} }, { made_up_metric_ms: 1 }),
+      /Unknown performance budget metric: made_up_metric_ms/,
     );
   });
 });

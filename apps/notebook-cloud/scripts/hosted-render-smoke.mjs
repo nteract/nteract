@@ -20,6 +20,7 @@ import {
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
 import {
   classifyPerformanceResource,
+  performanceBudgetFailures,
   refinePerformanceResourceKind,
   summarizePerformanceResources,
   summarizeViewerMilestones,
@@ -83,6 +84,24 @@ const minSupplementalViewerCssCount = parsePositiveInteger(
   1,
   "NOTEBOOK_CLOUD_MIN_SUPPLEMENTAL_VIEWER_CSS_COUNT",
 );
+const performanceBudgets = {
+  first_useful_render_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_FIRST_USEFUL_RENDER_MS"),
+  live_sync_websocket_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_LIVE_SYNC_WEBSOCKET_MS"),
+  source_text_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_SOURCE_TEXT_MS"),
+  rendered_cell_marker_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_RENDERED_CELL_MARKER_MS"),
+  first_output_iframe_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_FIRST_OUTPUT_IFRAME_MS"),
+  frame_texts_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_FRAME_TEXTS_MS"),
+  viewer_shell_complete_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_VIEWER_SHELL_COMPLETE_MS"),
+  runtimed_wasm_complete_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_RUNTIMED_WASM_COMPLETE_MS"),
+  isolated_renderer_complete_ms: parseOptionalBudget(
+    "NOTEBOOK_CLOUD_MAX_ISOLATED_RENDERER_COMPLETE_MS",
+  ),
+  output_document_complete_ms: parseOptionalBudget(
+    "NOTEBOOK_CLOUD_MAX_OUTPUT_DOCUMENT_COMPLETE_MS",
+  ),
+  sift_wasm_complete_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_SIFT_WASM_COMPLETE_MS"),
+  arrow_data_complete_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_ARROW_DATA_COMPLETE_MS"),
+};
 const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES", [
   "light",
   "dark",
@@ -488,6 +507,8 @@ async function main() {
         requests: renderCacheRequests,
       });
     }
+    const performanceDiagnostics = summarizePerformanceResources(performanceResources, timingsMs);
+    failures.push(...performanceBudgetFailures(performanceDiagnostics, performanceBudgets));
     if (screenshotPath) {
       await saveScreenshot(page);
     }
@@ -521,7 +542,8 @@ async function main() {
           requireLatestRevisionRuntimeStateDocId,
           timings_ms: timingsMs,
           viewer_milestones_ms: viewerMilestones,
-          performanceDiagnostics: summarizePerformanceResources(performanceResources, timingsMs),
+          performanceDiagnostics,
+          performanceBudgets,
           catalogApiCheck,
           viewerCssCheck,
           runtimeWasmHintCheck,
@@ -582,6 +604,10 @@ function parseExpectedTexts(envName, fallback) {
     .split("|")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function parseOptionalBudget(envName) {
+  return parsePositiveInteger(process.env[envName], null, envName);
 }
 
 function markTiming(name) {
