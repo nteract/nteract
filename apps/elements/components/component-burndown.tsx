@@ -17,9 +17,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "28",
+    value: "31",
     detail:
-      "used shell toolbar, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
+      "used shell toolbar, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -69,8 +69,9 @@ const families = [
     family: "Cells",
     source: "apps/notebook/src/components/{CodeCell,MarkdownCell,RawCell}.tsx",
     target: "nteract cells",
-    status: "next",
-    intent: "Document code, markdown, and raw cells after their runtime hooks can be fixture-fed.",
+    status: "active",
+    intent:
+      "CodeCell, MarkdownCell, and RawCell now render with seeded store state and a null CRDT handle; markdown preview still documents its isolated-renderer adapter boundary.",
   },
   {
     family: "Cell internals",
@@ -102,7 +103,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, TracebackOutput, and MIME priority now render from fixtures.",
+      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, TracebackOutput, and MIME priority now render from fixtures; Sift can join via a URL-backed Hugging Face parquet fixture like the demo page.",
   },
   {
     family: "Widgets",
