@@ -13,17 +13,22 @@ import {
   Table2,
   Terminal,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { AudioOutput } from "@/components/outputs/audio-output";
 import { ImageOutput } from "@/components/outputs/image-output";
 import { JavaScriptOutput } from "@/components/outputs/javascript-output";
+import { GeoJsonOutput } from "@/components/outputs/geojson-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { MathOutput } from "@/components/outputs/math-output";
+import { PdfOutput } from "@/components/outputs/pdf-output";
+import { PlotlyOutput } from "@/components/outputs/plotly-output";
 import { selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { TracebackOutput } from "@/components/outputs/traceback-output";
+import { VegaOutput } from "@/components/outputs/vega-output";
+import { VideoOutput } from "@/components/outputs/video-output";
 import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
 
 const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
@@ -63,6 +68,61 @@ const jsonFixture = {
   },
   artifacts: ["forecast.parquet", "diagnostics.json"],
 };
+
+const plotlyFixture = {
+  data: [
+    {
+      type: "bar",
+      x: ["baseline", "promo", "weather"],
+      y: [8.42, 6.8, 7.14],
+      marker: { color: ["#2563eb", "#0f766e", "#f97316"] },
+      name: "MAE",
+    },
+  ],
+  layout: {
+    title: { text: "Forecast error by feature group" },
+    yaxis: { title: { text: "MAE" } },
+  },
+};
+
+const vegaFixture = {
+  $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+  title: "Weekly forecast lift",
+  data: {
+    values: [
+      { week: "W01", lift: 0.12 },
+      { week: "W02", lift: 0.18 },
+      { week: "W03", lift: 0.09 },
+      { week: "W04", lift: 0.22 },
+    ],
+  },
+  mark: "line",
+  encoding: {
+    x: { field: "week", type: "ordinal" },
+    y: { field: "lift", type: "quantitative" },
+  },
+};
+
+const geoJsonFixture = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: { name: "North hub" },
+      geometry: { type: "Point", coordinates: [-122.4194, 37.7749] },
+    },
+    {
+      type: "Feature",
+      properties: { name: "South hub" },
+      geometry: { type: "Point", coordinates: [-118.2437, 34.0522] },
+    },
+  ],
+};
+
+const pdfDataUrl =
+  "data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMTAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA0NCA+PgpzdHJlYW0KQlQKL0YxIDE4IFRmCjIwIDUwIFRkCihudGVyYWN0IGZpeHR1cmUpIFRqCkVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnRyYWlsZXIKPDwgL1Jvb3QgMSAwIFIgPj4KJSVFT0Y=";
+
+const videoDataUrl = "data:video/mp4;base64,AAAAHGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE=";
 
 const siftRows: unknown[][] = [
   [
@@ -275,6 +335,226 @@ const siftUrlMilestones = [
   },
 ];
 
+type PlotlyFixture = {
+  newPlot: (element: HTMLElement, payload: { data?: unknown[] }) => void;
+  relayout: (element: HTMLElement) => void;
+  purge: (element: HTMLElement) => void;
+  Plots: { resize: (element: HTMLElement) => void };
+};
+
+type VegaFixtureView = {
+  finalize: () => void;
+  background: (color: string | null) => void;
+};
+
+type VegaEmbedFixture = (
+  element: HTMLElement,
+  spec: Record<string, unknown>,
+  options: Record<string, unknown>,
+) => Promise<{ view: VegaFixtureView }>;
+
+type LeafletFixtureLayer = {
+  _url?: string;
+  addTo: (map: LeafletFixtureMap) => LeafletFixtureLayer;
+  remove: () => void;
+};
+
+type LeafletFixtureMap = {
+  layers: LeafletFixtureLayer[];
+  eachLayer: (callback: (layer: LeafletFixtureLayer) => void) => void;
+  fitBounds: () => void;
+  invalidateSize: () => void;
+  remove: () => void;
+  renderGeoJson: (data: unknown) => void;
+  setView: () => void;
+};
+
+type LeafletFixture = {
+  map: (element: HTMLElement) => LeafletFixtureMap;
+  tileLayer: (url: string) => LeafletFixtureLayer;
+  geoJSON: (data: unknown) => LeafletFixtureLayer & {
+    getBounds: () => { isValid: () => boolean };
+    setStyle: () => void;
+  };
+  circleMarker: () => Record<string, never>;
+};
+
+type RendererFixtureWindow = Window & {
+  Plotly?: PlotlyFixture;
+  vegaEmbed?: VegaEmbedFixture;
+  L?: LeafletFixture;
+};
+
+function featureCount(data: unknown): number {
+  if (!data || typeof data !== "object" || !("features" in data)) return 0;
+  const features = (data as { features?: unknown }).features;
+  return Array.isArray(features) ? features.length : 0;
+}
+
+function renderFixturePanel(element: HTMLElement, title: string, detail: string, rows: string[]) {
+  const wrapper = document.createElement("div");
+  wrapper.className =
+    "rounded-md border border-fd-border bg-fd-background p-3 text-sm text-fd-foreground";
+  wrapper.dataset.elementsRendererFixture = title;
+
+  const heading = document.createElement("div");
+  heading.className = "font-semibold";
+  heading.textContent = title;
+  wrapper.appendChild(heading);
+
+  const description = document.createElement("div");
+  description.className = "mt-1 text-xs leading-5 text-fd-muted-foreground";
+  description.textContent = detail;
+  wrapper.appendChild(description);
+
+  const grid = document.createElement("div");
+  grid.className = "mt-3 grid grid-cols-4 gap-2";
+  rows.forEach((row, index) => {
+    const bar = document.createElement("div");
+    bar.className = "rounded bg-sky-500/20 p-2 text-center text-[11px] text-sky-900";
+    bar.style.minHeight = `${32 + index * 12}px`;
+    bar.textContent = row;
+    grid.appendChild(bar);
+  });
+  wrapper.appendChild(grid);
+
+  element.replaceChildren(wrapper);
+}
+
+function createPlotlyFixture(): PlotlyFixture {
+  return {
+    newPlot(element, payload) {
+      renderFixturePanel(
+        element,
+        "Plotly fixture adapter",
+        `${payload.data?.length ?? 0} trace rendered through PlotlyOutput without loading plotly.js`,
+        ["baseline", "promo", "weather", "holdout"],
+      );
+    },
+    relayout() {},
+    purge(element) {
+      element.replaceChildren();
+    },
+    Plots: { resize() {} },
+  };
+}
+
+function createVegaEmbedFixture(): VegaEmbedFixture {
+  return async (element, spec) => {
+    renderFixturePanel(
+      element,
+      "Vega fixture adapter",
+      `${String(spec.title ?? "Vega-Lite spec")} rendered through VegaOutput with injected vegaEmbed`,
+      ["W01", "W02", "W03", "W04"],
+    );
+    return {
+      view: {
+        finalize: () => element.replaceChildren(),
+        background: () => {},
+      },
+    };
+  };
+}
+
+function createLeafletFixture(): LeafletFixture {
+  return {
+    map(element) {
+      renderFixturePanel(
+        element,
+        "Leaflet fixture adapter",
+        "Map shell created through GeoJsonOutput with injected Leaflet APIs",
+        ["tile", "bounds", "zoom", "theme"],
+      );
+      const map: LeafletFixtureMap = {
+        layers: [],
+        eachLayer(callback) {
+          this.layers.forEach(callback);
+        },
+        fitBounds() {},
+        invalidateSize() {},
+        remove() {
+          element.replaceChildren();
+        },
+        renderGeoJson(data) {
+          renderFixturePanel(
+            element,
+            "GeoJSON fixture adapter",
+            `${featureCount(data)} feature(s) rendered through GeoJsonOutput without fetching map tiles`,
+            ["north", "south", "route", "bounds"],
+          );
+        },
+        setView() {},
+      };
+      return map;
+    },
+    tileLayer(url) {
+      const layer: LeafletFixtureLayer = {
+        _url: url,
+        addTo(map) {
+          map.layers.push(layer);
+          return layer;
+        },
+        remove() {},
+      };
+      return layer;
+    },
+    geoJSON(data) {
+      const layer = {
+        addTo(map: LeafletFixtureMap) {
+          map.layers.push(layer);
+          map.renderGeoJson(data);
+          return layer;
+        },
+        getBounds: () => ({ isValid: () => true }),
+        remove() {},
+        setStyle() {},
+      };
+      return layer;
+    },
+    circleMarker() {
+      return {};
+    },
+  };
+}
+
+function RendererLibraryFixtureProvider({ children }: { children: React.ReactNode }) {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const fixtureWindow = window as RendererFixtureWindow;
+    const hadPlotly = "Plotly" in fixtureWindow;
+    const hadVegaEmbed = "vegaEmbed" in fixtureWindow;
+    const hadLeaflet = "L" in fixtureWindow;
+    const previousPlotly = fixtureWindow.Plotly;
+    const previousVegaEmbed = fixtureWindow.vegaEmbed;
+    const previousLeaflet = fixtureWindow.L;
+
+    fixtureWindow.Plotly ??= createPlotlyFixture();
+    fixtureWindow.vegaEmbed ??= createVegaEmbedFixture();
+    fixtureWindow.L ??= createLeafletFixture();
+    setReady(true);
+
+    return () => {
+      if (hadPlotly) fixtureWindow.Plotly = previousPlotly;
+      else delete fixtureWindow.Plotly;
+      if (hadVegaEmbed) fixtureWindow.vegaEmbed = previousVegaEmbed;
+      else delete fixtureWindow.vegaEmbed;
+      if (hadLeaflet) fixtureWindow.L = previousLeaflet;
+      else delete fixtureWindow.L;
+    };
+  }, []);
+
+  if (!ready) {
+    return (
+      <div className="rounded-md border border-fd-border bg-fd-background p-3 text-sm text-fd-muted-foreground">
+        Loading fixture renderer adapters...
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
 const tracebackFixture = {
   ename: "ValueError",
   evalue: "feature matrix contains null values",
@@ -431,6 +711,31 @@ const renderedPieces = [
     note: "nteract-owned structured traceback renderer with source context and copy affordance.",
   },
   {
+    name: "PlotlyOutput",
+    source: "src/components/outputs/plotly-output.tsx",
+    note: "Plotly component path rendered with a docs-local Plotly fixture adapter instead of loading plotly.js into the catalog bundle.",
+  },
+  {
+    name: "VegaOutput",
+    source: "src/components/outputs/vega-output.tsx",
+    note: "Vega/Vega-Lite component path rendered with an injected vegaEmbed fixture.",
+  },
+  {
+    name: "GeoJsonOutput",
+    source: "src/components/outputs/geojson-output.tsx",
+    note: "Leaflet-backed GeoJSON component path rendered with a deterministic map-library fixture.",
+  },
+  {
+    name: "PdfOutput",
+    source: "src/components/outputs/pdf-output.tsx",
+    note: "PDF wrapper exercised with a data URL fixture and download affordance.",
+  },
+  {
+    name: "VideoOutput",
+    source: "src/components/outputs/video-output.tsx",
+    note: "Video wrapper exercised with a data URL fixture so media chrome remains catalog-visible.",
+  },
+  {
     name: "SiftTable",
     source: "packages/sift/src/react.tsx",
     note: "nteract-owned Arrow/parquet table UI rendered here with static TableData and a fixture-backed URL handoff.",
@@ -441,7 +746,7 @@ const adapterBoundaries = [
   {
     name: "IsolatedFrame",
     reason:
-      "Required for HTML, markdown with raw HTML, executable JavaScript, Plotly, Vega, and GeoJSON plugin surfaces.",
+      "Required in production for HTML, markdown with raw HTML, executable JavaScript, and renderer library bootstrap. This page uses deterministic fixture globals for visible Plotly, Vega, and GeoJSON component paths.",
   },
   {
     name: "Widget output",
@@ -595,6 +900,37 @@ export function OutputRenderersExample() {
           />
         </RendererCard>
       </section>
+
+      <RendererCard
+        title="Plugin renderer fixtures"
+        source="src/components/outputs/{plotly,vega,geojson,pdf,video}-output.tsx"
+        icon={Database}
+      >
+        <RendererLibraryFixtureProvider>
+          <div className="grid gap-3 lg:grid-cols-2" data-testid="plugin-renderer-surfaces">
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="mb-2 text-xs font-semibold text-fd-muted-foreground">Plotly</div>
+              <PlotlyOutput data={plotlyFixture} />
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="mb-2 text-xs font-semibold text-fd-muted-foreground">Vega-Lite</div>
+              <VegaOutput data={vegaFixture} />
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3 lg:col-span-2">
+              <div className="mb-2 text-xs font-semibold text-fd-muted-foreground">GeoJSON</div>
+              <GeoJsonOutput data={geoJsonFixture} />
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="mb-2 text-xs font-semibold text-fd-muted-foreground">PDF</div>
+              <PdfOutput data={pdfDataUrl} />
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="mb-2 text-xs font-semibold text-fd-muted-foreground">Video</div>
+              <VideoOutput data={videoDataUrl} mediaType="video/mp4" />
+            </div>
+          </div>
+        </RendererLibraryFixtureProvider>
+      </RendererCard>
 
       <RendererCard
         title="Output area lanes"

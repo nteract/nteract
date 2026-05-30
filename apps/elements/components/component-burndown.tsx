@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "58",
+    value: "63",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, expanded renderer, editor, and expanded widget surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, plugin renderer, editor, and expanded widget surfaces",
   },
 ];
 
@@ -138,7 +138,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; production iframe bootstrapping, plugin-backed HTML/Plotly/Vega/GeoJSON, widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
+      "OutputArea lane composition, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; production iframe bootstrapping, HTML/markdown isolation, third-party renderer loading, widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
   },
   {
     family: "Widgets",

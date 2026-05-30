@@ -17,16 +17,20 @@ state, iframe bootstrapping, or plugin injection.
 
 The rendered surfaces import current output components directly: `OutputArea`
 lane composition, ANSI streams and errors, JSON trees, image output, math
-output, SVG output, audio output, the JavaScript isolation fallback, the
-structured traceback renderer, and `SiftTable` with static `TableData`. The Sift
-section also shows the HuggingFace parquet URL handoff the demo uses, then
-renders the decoded table fixture so the docs app stays runtime-free. The MIME
-selection table uses the same priority helper the notebook uses before
-rendering.
+output, SVG output, audio output, the JavaScript isolation fallback, Plotly,
+Vega/Vega-Lite, GeoJSON, PDF, video, the structured traceback renderer, and
+`SiftTable` with static `TableData`. The plugin renderer examples use
+docs-local fixture globals for Plotly, `vegaEmbed`, and Leaflet, so they exercise
+the current nteract components without bundling third-party renderer libraries
+into the catalog. The Sift section also shows the HuggingFace parquet URL
+handoff the demo uses, then renders the decoded table fixture so the docs app
+stays runtime-free. The MIME selection table uses the same priority helper the
+notebook uses before rendering.
 
 ## What still needs an adapter
 
-Production `IsolatedFrame` bootstrapping, executable JavaScript,
-Plotly/Vega/GeoJSON plugin renderers, widget views, and generated Sift
-parquet/Arrow WASM decoding still need fixture-backed isolation, widget-store,
-or generated asset adapters before this docs app should render those paths.
+Production `IsolatedFrame` bootstrapping, executable JavaScript, raw HTML and
+markdown iframe rendering, live widget views, third-party renderer library
+loading, and generated Sift parquet/Arrow WASM decoding still need
+fixture-backed isolation, widget-store, or generated asset adapters before this
+docs app should own those runtime paths.
