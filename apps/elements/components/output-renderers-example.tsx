@@ -831,7 +831,7 @@ const renderedPieces = [
   {
     name: "JsonOutput",
     source: "src/components/outputs/json-output.tsx",
-    note: "Expandable notebook JSON tree using the current shadcn Collapsible primitive.",
+    note: "Expandable notebook JSON tree using the current collapsible tree behavior.",
   },
   {
     name: "ImageOutput",
