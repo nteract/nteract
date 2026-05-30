@@ -379,6 +379,7 @@ export const CodeCell = memo(function CodeCell({
       isFocused={isFocused}
       compactIdle={isSourceEmpty}
       submittedByActorLabel={submittedByActorLabel}
+      activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
       onExecute={onExecute}
       onInterrupt={onInterrupt}
     />
@@ -396,7 +397,6 @@ export const CodeCell = memo(function CodeCell({
         outputDimmed={outputDimmed}
         onFocus={onFocus}
         rightGutterContent={rightGutterContent}
-        presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}
         codeContent={

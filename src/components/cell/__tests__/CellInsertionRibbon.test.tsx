@@ -18,6 +18,21 @@ describe("CellInsertionRibbon", () => {
     expect(onInsert).toHaveBeenCalledWith("code");
   });
 
+  it("uses the left insertion channel as a primary code target", () => {
+    const onInsert = vi.fn();
+    const { container } = render(<CellInsertionRibbon onInsert={onInsert} />);
+
+    const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
+    expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
+
+    fireEvent.pointerEnter(hitTarget!);
+    fireEvent.click(hitTarget!);
+
+    const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
+    expect(intent).toHaveClass("bg-sky-400");
+    expect(onInsert).toHaveBeenCalledWith("code");
+  });
+
   it("uses the controlled active type for catalog fixtures", () => {
     const { container } = render(
       <CellInsertionRibbon activeType="markdown" forceActionsVisible onInsert={() => undefined} />,

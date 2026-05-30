@@ -239,7 +239,7 @@ describe("CodeCell output focus", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     expect(footer?.getAttribute("data-execution-label")).toBe("Execution 12");
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12,completed");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12·completed");
     expect(footer?.textContent).not.toContain("In [12]");
   });
 
@@ -368,7 +368,7 @@ describe("CodeCell output focus", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     expect(queryByTestId("editor")).toBeNull();
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run4,completed");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run4·completed");
   });
 
   it("omits output chrome for short stream output", () => {

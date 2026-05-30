@@ -111,7 +111,24 @@ describe("CodeCellCurrentLine", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     expect(footer).toHaveAttribute("data-execution-label", "Execution 12");
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12,completedin1.5s");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12·completedin1.5s");
     expect(footer).not.toHaveTextContent("In [12]");
+  });
+
+  it("can carry activity context after the run state", () => {
+    const { container } = render(
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={12}
+        activityContent={<span data-testid="peer-activity">Kyle</span>}
+        onExecute={() => undefined}
+        onInterrupt={() => undefined}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+
+    expect(footer).toHaveTextContent("Kyle");
+    expect(screen.getByTestId("peer-activity")).toBeInTheDocument();
   });
 });

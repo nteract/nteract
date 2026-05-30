@@ -1,7 +1,7 @@
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { cellContentColumnOffset, notebookCellLayoutVars } from "./cell-layout";
+import { notebookCellLayoutVars } from "./cell-layout";
 
 export type CellInsertionType = "code" | "markdown";
 
@@ -94,12 +94,28 @@ export function CellInsertionRibbon({
           />
         ) : null}
       </div>
+      <button
+        type="button"
+        data-slot="cell-adder-primary-hit-target"
+        title="Add code cell from insertion margin"
+        aria-label="Add code cell from insertion margin"
+        onPointerEnter={() => setActiveType("code")}
+        onFocus={() => setActiveType("code")}
+        onClick={() => onInsert("code")}
+        className={cn(
+          "h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 rounded-none transition-colors duration-150",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
+          resolvedActiveType === "code" ? "bg-sky-400/5" : "hover:bg-muted/20",
+          terminal && "h-7",
+        )}
+      >
+        <span className="sr-only">Add code cell</span>
+      </button>
       <div
         data-slot="cell-adder-actions"
         className={cn(
           "flex items-center gap-1 transition-opacity duration-150",
           terminal && "pt-0.5",
-          cellContentColumnOffset,
           forceActionsVisible
             ? "opacity-100"
             : "opacity-0 group-hover/adder:opacity-100 group-hover/adder:delay-75 group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",

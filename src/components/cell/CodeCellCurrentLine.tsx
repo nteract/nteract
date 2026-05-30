@@ -1,4 +1,5 @@
 import { Play, Square } from "lucide-react";
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export interface CodeCellCurrentLineProps {
@@ -10,6 +11,7 @@ export interface CodeCellCurrentLineProps {
   isFocused?: boolean;
   compactIdle?: boolean;
   submittedByActorLabel?: string | null;
+  activityContent?: ReactNode;
   onExecute: () => void;
   onInterrupt: () => void;
   className?: string;
@@ -48,8 +50,8 @@ function executionDetail({
   if (isQueued) return "Queued";
   if (count !== null) {
     return elapsedMs === null
-      ? `${runPrefix}, completed`
-      : `${runPrefix}, completed in ${formatElapsedMs(elapsedMs)}`;
+      ? `${runPrefix} · completed`
+      : `${runPrefix} · completed in ${formatElapsedMs(elapsedMs)}`;
   }
 
   return "Ready";
@@ -92,6 +94,7 @@ export function CodeCellCurrentLine({
   isFocused = false,
   compactIdle = false,
   submittedByActorLabel = null,
+  activityContent,
   onExecute,
   onInterrupt,
   className,
@@ -208,13 +211,16 @@ export function CodeCellCurrentLine({
         </span>
       </span>
       {!isCompactIdle && (
-        <div
-          data-slot="code-cell-current-line-rule"
-          className={cn(
-            "h-px min-w-6 flex-1 rounded-full transition-colors duration-150",
-            executionLineClass({ isExecuting, isQueued, isFocused }),
-          )}
-        />
+        <>
+          {activityContent}
+          <div
+            data-slot="code-cell-current-line-rule"
+            className={cn(
+              "h-px min-w-6 flex-1 rounded-full transition-colors duration-150",
+              executionLineClass({ isExecuting, isQueued, isFocused }),
+            )}
+          />
+        </>
       )}
     </div>
   );

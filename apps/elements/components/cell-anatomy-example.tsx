@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   CircleDot,
   FileText,
+  Play,
   Rows3,
   Search,
   ShieldCheck,
@@ -169,9 +170,59 @@ const currentLineStateFixtures = [
         languageLabel="Python"
         count={12}
         elapsedMs={1476}
+        activityContent={<StaticPresenceActivity />}
         onExecute={() => {}}
         onInterrupt={() => {}}
       />
+    ),
+  },
+];
+
+const currentLineConceptFixtures = [
+  {
+    label: "Production",
+    detail: "Control, language, run state, activity, and rule in one boundary line.",
+    line: (
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={26}
+        elapsedMs={1476}
+        isFocused
+        activityContent={<StaticPresenceActivity />}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
+    ),
+  },
+  {
+    label: "Run state chip",
+    detail: "Makes completion feel like metadata instead of sentence copy.",
+    line: (
+      <CurrentLineConcept>
+        <span className="rounded-sm bg-muted/60 px-1.5 py-0.5 font-medium text-foreground/70">
+          Python
+        </span>
+        <span className="rounded-full border border-border bg-background px-2 py-0.5 font-medium tabular-nums text-foreground/65">
+          Run 26
+        </span>
+        <span className="text-muted-foreground/55">completed in 1.5s</span>
+        <StaticPresenceDots />
+      </CurrentLineConcept>
+    ),
+  },
+  {
+    label: "Activity edge",
+    detail: "Keeps the run text shorter and lets peer activity sit against the rule.",
+    line: (
+      <CurrentLineConcept>
+        <span className="rounded-sm bg-muted/60 px-1.5 py-0.5 font-medium text-foreground/70">
+          Python
+        </span>
+        <span className="font-medium tabular-nums text-foreground/65">Run 26</span>
+        <span className="text-muted-foreground/45">completed</span>
+        <div className="h-px min-w-8 flex-1 rounded-full bg-border/45" />
+        <StaticPresenceDots />
+      </CurrentLineConcept>
     ),
   },
 ];
@@ -331,6 +382,9 @@ function SourceFixture() {
         count={12}
         elapsedMs={1476}
         isFocused
+        activityContent={
+          <CellPresenceIndicators cellId={primaryCellId} variant="inline" prefixSeparator />
+        }
         onExecute={() => {}}
         onInterrupt={() => {}}
       />
@@ -479,7 +533,6 @@ export function CellAnatomyExample() {
                   fixture
                 </span>
               }
-              presenceIndicators={<CellPresenceIndicators cellId={primaryCellId} />}
               dragHandleProps={{ "aria-label": "Fixture drag handle" }}
             />
           </PresenceFixtureProvider>
@@ -562,6 +615,30 @@ export function CellAnatomyExample() {
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="border-b border-fd-border p-4">
+          <h2 className="text-sm font-semibold">Current Line Studio</h2>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            These are low-risk composition sketches for the source/result boundary. They keep the
+            production run button and layout nearby while letting the activity and completion copy
+            move around.
+          </p>
+        </div>
+        <div className="divide-y divide-fd-border bg-background">
+          {currentLineConceptFixtures.map((concept) => (
+            <div key={concept.label} className="grid gap-3 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+              <div>
+                <h3 className="text-sm font-semibold">{concept.label}</h3>
+                <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{concept.detail}</p>
+              </div>
+              <div className="group min-w-0 rounded-md border border-fd-border bg-fd-card px-3 py-4">
+                {concept.line}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
           <h2 className="text-sm font-semibold">Hidden Boundaries</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
             The current line belongs to the source/result boundary. It remains when either side is
@@ -635,6 +712,46 @@ export function CellAnatomyExample() {
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function StaticPresenceDots() {
+  return (
+    <span
+      className="inline-flex items-center gap-0.5"
+      title="forecast reviewer, runtime analyst, output reviewer"
+      aria-label="forecast reviewer, runtime analyst, output reviewer"
+    >
+      <span className="size-2 rounded-full bg-emerald-500" />
+      <span className="size-2 rounded-full bg-sky-500" />
+      <span className="size-2 rounded-full bg-violet-500" />
+    </span>
+  );
+}
+
+function StaticPresenceActivity() {
+  return (
+    <>
+      <span className="text-muted-foreground/30" aria-hidden="true">
+        ·
+      </span>
+      <StaticPresenceDots />
+    </>
+  );
+}
+
+function CurrentLineConcept({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-6 min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground/70">
+      <button
+        type="button"
+        className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground/55 transition-colors hover:bg-muted hover:text-foreground"
+        aria-label="Run cell"
+      >
+        <Play className="size-2.5 fill-current" aria-hidden="true" />
+      </button>
+      {children}
     </div>
   );
 }
