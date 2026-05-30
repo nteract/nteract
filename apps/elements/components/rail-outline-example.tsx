@@ -1,4 +1,15 @@
-import { Boxes, ListTree, Package, PanelLeft, Variable } from "lucide-react";
+"use client";
+
+import { Boxes, ListTree, Package, PanelLeft, ShieldCheck, Variable } from "lucide-react";
+import { KERNEL_STATUS, RUNTIME_STATUS, type RuntimeLifecycle } from "runtimed";
+import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
+
+const noop = () => {};
+
+const runningIdleLifecycle: RuntimeLifecycle = {
+  lifecycle: "Running",
+  activity: "Idle",
+};
 
 const outlineItems = [
   { title: "Load data", depth: 0, active: true },
@@ -29,6 +40,28 @@ const cells = [
 export function RailOutlineExample() {
   return (
     <div className="not-prose overflow-hidden rounded-lg border border-fd-border bg-fd-card text-fd-card-foreground shadow-sm">
+      <NotebookToolbar
+        kernelStatus={KERNEL_STATUS.IDLE}
+        statusKey={RUNTIME_STATUS.RUNNING_IDLE}
+        lifecycle={runningIdleLifecycle}
+        errorReason={null}
+        kernelErrorMessage={null}
+        envSource="uv:inline"
+        envTypeHint="uv"
+        envProgress={null}
+        runtime="python"
+        focusedCellId="cell-clean-columns"
+        lastCellId="cell-findings"
+        onStartKernel={noop}
+        onInterruptKernel={noop}
+        onRestartKernel={noop}
+        onRunAllCells={noop}
+        onRestartAndRunAll={noop}
+        onAddCell={noop}
+        onToggleDependencies={noop}
+        isDepsOpen={false}
+        depsOutOfSync={false}
+      />
       <div className="grid min-h-[420px] grid-cols-[48px_260px_minmax(420px,1fr)] overflow-x-auto">
         <aside className="flex flex-col items-center gap-2 border-r border-fd-border bg-fd-muted/40 px-2 py-3">
           <div className="mb-3 flex size-8 items-center justify-center rounded-md bg-fd-primary text-fd-primary-foreground">
@@ -86,6 +119,16 @@ export function RailOutlineExample() {
 
         <main className="bg-fd-muted/20 p-6">
           <div className="mx-auto max-w-2xl space-y-3">
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs leading-5 text-emerald-900 dark:text-emerald-300">
+              <div className="mb-1 flex items-center gap-2 font-semibold">
+                <ShieldCheck className="size-3.5" aria-hidden="true" />
+                NotebookToolbar is rendered from the notebook app.
+              </div>
+              <p>
+                The rail and outline data remain fixture-backed until the app has a production rail
+                component and heading adapter.
+              </p>
+            </div>
             {cells.map((cell) => (
               <section
                 key={cell.title}

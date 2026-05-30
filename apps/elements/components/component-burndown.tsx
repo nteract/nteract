@@ -17,8 +17,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "21",
-    detail: "used shell, runtime, theme, renderer, editor, and widget surfaces",
+    value: "28",
+    detail:
+      "used shell toolbar, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -51,17 +52,18 @@ const phases = [
     title: "Document runtime surfaces",
     state: "active",
     icon: ShieldCheck,
-    summary: "Trust, dependency headers, environment decisions, and runtime adapter blockers.",
+    summary: "Trust, dependency headers, environment decisions, daemon state, and launch banners.",
   },
 ];
 
 const families = [
   {
     family: "Notebook workspace",
-    source: "apps/notebook/src/components/NotebookView.tsx",
+    source: "apps/notebook/src/components/{NotebookView,NotebookToolbar}.tsx",
     target: "nteract shell",
     status: "active",
-    intent: "Own the reading frame, sidebar rail, scroll handles, and top-level notebook chrome.",
+    intent:
+      "NotebookToolbar now renders from current source; the sidebar rail remains a fixture-backed adapter until the app owns that component.",
   },
   {
     family: "Cells",
@@ -76,7 +78,7 @@ const families = [
     target: "nteract cells",
     status: "active",
     intent:
-      "CellContainer and CompactExecutionButton now render from current source; unused legacy helpers have been removed instead of cataloged.",
+      "CellContainer, CompactExecutionButton, and ExecutionCount now render from current source; unused legacy helpers have been removed instead of cataloged.",
   },
   {
     family: "Editors",
@@ -112,11 +114,11 @@ const families = [
   },
   {
     family: "Runtime decisions",
-    source: "apps/notebook/src/components/*Dialog.tsx",
+    source: "apps/notebook/src/components/{*Dialog,*Banner,DependencyHeader}.tsx",
     target: "nteract runtime",
     status: "active",
     intent:
-      "TrustDialog, RuntimeDecisionDialog, EnvBuildDecisionDialog, and DependencyHeader now render with fixture state; runtime-value banners still need adapters.",
+      "TrustDialog, RuntimeDecisionDialog, EnvBuildDecisionDialog, DependencyHeader, and runtime banners now render with fixture state and a host adapter for settings actions.",
   },
   {
     family: "Generic primitives",
