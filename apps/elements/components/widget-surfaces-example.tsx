@@ -29,6 +29,21 @@ type FixtureModel = {
   bufferPaths?: string[][];
 };
 
+const binaryImageSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 96">
+  <rect width="220" height="96" rx="12" fill="#f0fdf4"/>
+  <rect x="18" y="18" width="58" height="60" rx="8" fill="#10b981"/>
+  <circle cx="126" cy="48" r="28" fill="#0ea5e9"/>
+  <path d="M158 70 L194 28" stroke="#111827" stroke-width="8" stroke-linecap="round"/>
+  <text x="18" y="88" font-family="ui-sans-serif, system-ui" font-size="12" font-weight="700" fill="#111827">DataView ImageModel</text>
+</svg>`;
+
+function textDataView(value: string): DataView {
+  const bytes = new TextEncoder().encode(value);
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return new DataView(copy.buffer);
+}
+
 const anyWidgetEsm = `
 export default {
   render({ model, el }) {
@@ -180,6 +195,19 @@ const fixtureModels: FixtureModel[] = [
     },
   },
   {
+    id: "widget-binary-image",
+    state: {
+      _model_name: "ImageModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "binary image",
+      value: textDataView(binaryImageSvg),
+      format: "svg+xml",
+      width: "220",
+      height: "96",
+    },
+    bufferPaths: [["value"]],
+  },
+  {
     id: "widget-audio",
     state: {
       _model_name: "AudioModel",
@@ -287,6 +315,7 @@ const fixtureModels: FixtureModel[] = [
       _model_module: "@jupyter-widgets/controls",
       children: [
         "IPY_MODEL_widget-image",
+        "IPY_MODEL_widget-binary-image",
         "IPY_MODEL_widget-audio",
         "IPY_MODEL_widget-video",
         "IPY_MODEL_widget-file-upload",
@@ -706,7 +735,7 @@ const renderedWidgets = [
   {
     name: "Media widgets",
     source: "src/components/widgets/controls/{image-widget,audio-widget,video-widget}.tsx",
-    role: "Image, audio, and video widgets render through buildMediaSrc with static data URLs instead of kernel-provided buffers.",
+    role: "Image, audio, and video widgets render through buildMediaSrc with static data URLs and a hydrated DataView ImageModel fixture.",
   },
   {
     name: "FileUploadWidget",
@@ -755,7 +784,7 @@ const adapterBoundaries = [
   {
     title: "Binary buffers",
     icon: FileJson,
-    body: "Media widgets render from static data URLs here; ipycanvas replays a local DataView command buffer, while live kernel bufferPaths and blob hydration remain adapter concerns.",
+    body: "Media widgets now cover a hydrated DataView value and ipycanvas replays a local DataView command buffer; live kernel bufferPaths, blob URL fetching, and sync hydration remain adapter concerns.",
   },
   {
     title: "Anywidget ESM",
@@ -1063,7 +1092,8 @@ export function WidgetSurfacesExample() {
                 <h3 className="text-sm font-semibold">Media and captured output widgets</h3>
                 <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
                   Image, audio, video, file upload, and OutputModel fixtures render through
-                  WidgetView with saved comm state and static payloads.
+                  WidgetView with saved comm state, static payloads, and a hydrated DataView image
+                  value.
                 </p>
               </div>
               <div className="space-y-4">
@@ -1157,7 +1187,7 @@ export function WidgetSurfacesExample() {
           <div>
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              The remaining widget catalog work is narrower now: binary buffer hydration, live
+              The remaining widget catalog work is narrower now: live blob URL hydration,
               ControllerModel Gamepad polling, output-widget nesting, richer ipycanvas image
               buffers, and remote anywidget ESM/CSS URLs need explicit iframe/runtime adapters
               before they can render here.

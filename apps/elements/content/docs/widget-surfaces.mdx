@@ -14,7 +14,10 @@ The catalog now includes saved-state fixtures for control widgets, media
 widgets, `FileUploadModel`, `OutputModel`, layout containers, play controls, and
 controller sub-controls. It also renders `CanvasModel` through the ipycanvas
 path with a local binary command buffer routed by the CanvasManager adapter, and
-an `AnyModel` fixture through `AnyWidgetView` with inline `_esm` and `_css`.
+an `AnyModel` fixture through `AnyWidgetView` with inline `_esm` and `_css`. The
+media section includes an `ImageModel` whose `value` is a hydrated `DataView`, so
+the same `buildMediaSrc` binary path used by ipywidgets media traitlets is visible
+in the catalog.
 
 <WidgetSurfacesExample />
 
@@ -23,7 +26,7 @@ an `AnyModel` fixture through `AnyWidgetView` with inline `_esm` and `_css`.
 The live notebook receives widget state from `RuntimeStateDoc` through
 `SyncEngine.commChanges$`, then forwards it to isolated output frames over the
 comm bridge. The catalog keeps those host responsibilities outside the rendered
-component examples. Browser APIs, blob/DataView conversion, nested
-output-widget routing, live controller/gamepad input, richer ipycanvas image
-buffers, remote anywidget ESM/CSS URLs, and generated WASM handoffs remain
-explicit adapter boundaries for later catalog slices.
+component examples. Browser APIs, live blob URL fetching, nested output-widget
+routing, live controller/gamepad input, richer ipycanvas image buffers, remote
+anywidget ESM/CSS URLs, and generated WASM handoffs remain explicit adapter
+boundaries for later catalog slices.
