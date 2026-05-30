@@ -16,4 +16,7 @@ surface without importing daemon hooks or notebook state.
 
 Toolbar previews own only props and callbacks. Kernel start, interrupt, restart,
 dependency toggles, update restarts, and cell insertion stay inert in the docs
-app until a host adapter is deliberately introduced.
+app until a host adapter is deliberately introduced. The rendered boundary map
+keeps runtime status projection, kernel actions, dependency drawer state, cell
+insertion, and desktop update restart behavior named separately so future
+toolbar work can move one adapter at a time.
