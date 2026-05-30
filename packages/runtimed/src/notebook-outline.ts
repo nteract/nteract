@@ -1,3 +1,9 @@
+/**
+ * Host-neutral notebook outline projection.
+ *
+ * This lives in `runtimed` rather than the rail UI so desktop, cloud, and
+ * future document surfaces share one deterministic heading/cell outline shape.
+ */
 export type NotebookOutlineItemKind = "heading" | "cell";
 
 export interface NotebookOutlineSourceCell {
@@ -14,28 +20,35 @@ export interface NotebookOutlineItem {
   title: string;
   level: number;
   kind: NotebookOutlineItemKind;
+  anchor?: string | null;
   detail?: string | null;
   statusLabel?: string | null;
 }
 
-export interface DeriveNotebookOutlineOptions<TCell extends NotebookOutlineSourceCell> {
+export interface NotebookOutlineProjection {
+  items: NotebookOutlineItem[];
+  source: "headings" | "cells" | "empty";
+}
+
+export interface ProjectNotebookOutlineOptions<TCell extends NotebookOutlineSourceCell> {
   getStatusLabel?: (cell: TCell) => string | null | undefined;
   fallbackToCells?: boolean;
 }
 
-interface ParsedHeading {
+export interface ParsedNotebookHeading {
   title: string;
   level: number;
 }
 
 const MAX_OUTLINE_TITLE_LENGTH = 96;
 
-export function deriveNotebookOutlineItems<TCell extends NotebookOutlineSourceCell>(
+export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
   cells: readonly TCell[],
-  options: DeriveNotebookOutlineOptions<TCell> = {},
-): NotebookOutlineItem[] {
+  options: ProjectNotebookOutlineOptions<TCell> = {},
+): NotebookOutlineProjection {
   const fallbackToCells = options.fallbackToCells ?? true;
   const headings: NotebookOutlineItem[] = [];
+  const anchorCounts = new Map<string, number>();
 
   for (const cell of cells) {
     if (cellKind(cell) !== "markdown") continue;
@@ -47,31 +60,40 @@ export function deriveNotebookOutlineItems<TCell extends NotebookOutlineSourceCe
         title: heading.title,
         level: heading.level,
         kind: "heading",
+        anchor: nextHeadingAnchor(heading.title, anchorCounts),
         statusLabel: options.getStatusLabel?.(cell) ?? null,
       });
     });
   }
 
-  if (headings.length > 0 || !fallbackToCells) {
-    return headings;
+  if (headings.length > 0) {
+    return { items: headings, source: "headings" };
   }
 
-  return cells.map((cell, index) => {
-    const kind = cellKind(cell);
-    return {
-      id: `${cell.id}:cell`,
-      cellId: cell.id,
-      title: summarizeCell(cell, index),
-      level: 1,
-      kind: "cell",
-      detail: detailLabel(kind),
-      statusLabel: options.getStatusLabel?.(cell) ?? null,
-    };
-  });
+  if (!fallbackToCells) {
+    return { items: [], source: "empty" };
+  }
+
+  return {
+    source: cells.length > 0 ? "cells" : "empty",
+    items: cells.map((cell, index) => {
+      const kind = cellKind(cell);
+      return {
+        id: `${cell.id}:cell`,
+        cellId: cell.id,
+        title: summarizeCell(cell, index),
+        level: 1,
+        kind: "cell",
+        anchor: null,
+        detail: detailLabel(kind),
+        statusLabel: options.getStatusLabel?.(cell) ?? null,
+      };
+    }),
+  };
 }
 
-export function parseMarkdownHeadings(source: string): ParsedHeading[] {
-  const headings: ParsedHeading[] = [];
+export function parseMarkdownHeadings(source: string): ParsedNotebookHeading[] {
+  const headings: ParsedNotebookHeading[] = [];
   let fencedBy: string | null = null;
 
   for (const rawLine of source.split(/\r?\n/)) {
@@ -101,6 +123,31 @@ export function parseMarkdownHeadings(source: string): ParsedHeading[] {
   }
 
   return headings;
+}
+
+export function deriveNotebookOutlineItems<TCell extends NotebookOutlineSourceCell>(
+  cells: readonly TCell[],
+  options: ProjectNotebookOutlineOptions<TCell> = {},
+): NotebookOutlineItem[] {
+  return projectNotebookOutline(cells, options).items;
+}
+
+export function slugifyNotebookHeading(title: string): string {
+  const slug = cleanOutlineTitle(title)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return slug || "heading";
+}
+
+function nextHeadingAnchor(title: string, anchorCounts: Map<string, number>): string {
+  const base = slugifyNotebookHeading(title);
+  const count = anchorCounts.get(base) ?? 0;
+  anchorCounts.set(base, count + 1);
+  return count === 0 ? base : `${base}-${count}`;
 }
 
 function summarizeCell(cell: NotebookOutlineSourceCell, index: number): string {

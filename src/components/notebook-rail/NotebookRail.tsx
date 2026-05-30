@@ -7,8 +7,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import type { NotebookOutlineItem } from "runtimed";
 import { cn } from "@/lib/utils";
-import type { NotebookOutlineItem } from "./outline";
 
 export type NotebookRailPanelId = "outline" | "packages";
 

@@ -130,6 +130,20 @@ export {
   projectEnvProgress,
 } from "./env-progress";
 
+// Notebook outline projection
+export {
+  deriveNotebookOutlineItems,
+  parseMarkdownHeadings,
+  projectNotebookOutline,
+  slugifyNotebookHeading,
+  type NotebookOutlineItem,
+  type NotebookOutlineItemKind,
+  type NotebookOutlineProjection,
+  type NotebookOutlineSourceCell,
+  type ParsedNotebookHeading,
+  type ProjectNotebookOutlineOptions,
+} from "./notebook-outline";
+
 // Comm diffing
 export {
   type CommChanges,

@@ -9,11 +9,4 @@ export {
   type NotebookRailPanelId,
   type NotebookRailProps,
 } from "./NotebookRail";
-export {
-  deriveNotebookOutlineItems,
-  parseMarkdownHeadings,
-  type DeriveNotebookOutlineOptions,
-  type NotebookOutlineItem,
-  type NotebookOutlineItemKind,
-  type NotebookOutlineSourceCell,
-} from "./outline";
+export type { NotebookOutlineItem, NotebookOutlineItemKind } from "runtimed";

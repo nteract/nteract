@@ -10,9 +10,11 @@ import {
 import {
   deriveEnvManager,
   deriveRuntimeKind,
+  projectNotebookOutline,
   type DependencyGuard,
   type GuardedNotebookProvenance,
   NotebookClient,
+  type NotebookOutlineItem,
   putBlob,
   type SessionStatus,
 } from "runtimed";
@@ -30,10 +32,8 @@ import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import {
-  deriveNotebookOutlineItems,
   NotebookPackagesPanel,
   NotebookRail,
-  type NotebookOutlineItem,
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
@@ -622,7 +622,7 @@ function AppContent() {
     const executingCellId = notebookQueueProjection.executing_cell_id;
     const queuedOutlineCellIds = new Set(notebookQueueProjection.queued_cell_ids);
 
-    return deriveNotebookOutlineItems(getNotebookCellsSnapshot(), {
+    return projectNotebookOutline(getNotebookCellsSnapshot(), {
       getStatusLabel: (cell) => {
         if (cell.id === executingCellId) return "Running";
         if (queuedOutlineCellIds.has(cell.id)) return "Queued";
@@ -631,7 +631,7 @@ function AppContent() {
         }
         return null;
       },
-    });
+    }).items;
   }, [
     cellIds,
     sourceVersion,
