@@ -88,6 +88,7 @@ export function ReadOnlyNotebookCell({
         priority={priority}
         hostContext={hostContext}
         className={outputClassName}
+        layoutInset={displayMode === "notebook" ? "cell-output" : "standalone"}
         deferIsolatedFrameUntilVisible={deferIsolatedFrameUntilVisible}
         deferredIsolatedFrameRootMargin={deferredIsolatedFrameRootMargin}
         resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
@@ -158,6 +159,7 @@ function renderReadOnlyCellSource({
         source={source}
         priority={priority}
         hostContext={hostContext}
+        layoutInset="none"
         className={cn("pl-0 pr-0", sourceClassName)}
       />
     );

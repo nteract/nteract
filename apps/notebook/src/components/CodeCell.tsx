@@ -2,6 +2,7 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
 import { ChevronRight, Code2, EyeOff, Play, Square } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
+import { cellOutputInnerInset } from "@/components/cell/cell-layout";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { languageDisplayNames, type SupportedLanguage } from "@/components/editor/languages";
@@ -177,18 +178,18 @@ function executionLineClass({
   isFocused: boolean;
 }) {
   if (isExecuting) {
-    return "bg-gradient-to-r from-destructive/45 via-destructive/20 to-border/40";
+    return "bg-destructive/35";
   }
 
   if (isQueued) {
-    return "bg-gradient-to-r from-sky-400/45 via-sky-400/20 to-border/40";
+    return "bg-sky-400/35";
   }
 
   if (isFocused) {
-    return "bg-gradient-to-r from-primary/35 via-primary/20 to-border/45";
+    return "bg-border/70";
   }
 
-  return "bg-gradient-to-r from-border/70 via-border/45 to-transparent";
+  return "bg-transparent group-hover:bg-border/45";
 }
 
 function CodeCellCurrentLine({
@@ -243,14 +244,8 @@ function CodeCellCurrentLine({
       data-execution-state={state}
       data-execution-count={count ?? undefined}
       data-execution-label={countLabel ?? undefined}
-      className="mt-2 flex h-6 items-center gap-2 text-[11px] leading-none text-muted-foreground/65"
+      className="mt-2 flex min-h-6 items-center gap-2 text-[11px] leading-none text-muted-foreground/65"
     >
-      <div
-        className={cn(
-          "h-px w-4 shrink-0 rounded-full transition-colors duration-150",
-          executionLineClass({ isExecuting, isQueued, isFocused }),
-        )}
-      />
       <button
         type="button"
         onClick={handleClick}
@@ -312,7 +307,7 @@ function CodeCellCurrentLine({
       )}
       <div
         className={cn(
-          "h-px min-w-4 flex-1 rounded-full transition-colors duration-150",
+          "h-px min-w-6 flex-1 rounded-full transition-colors duration-150",
           executionLineClass({ isExecuting, isQueued, isFocused }),
         )}
       />
@@ -642,7 +637,7 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && outputs.length > 0 ? (
-            <div className="flex items-center justify-start mt-0.5 pl-6">
+            <div className={cn("flex items-center justify-start mt-0.5", cellOutputInnerInset)}>
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
@@ -667,6 +662,7 @@ export const CodeCell = memo(function CodeCell({
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
               onDiagnostic={logNotebookIsolatedDiagnostic}
+              layoutInset="cell-output"
               resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
               onNavigateToTracebackCell={handleTracebackCellNavigate}
               focused={outputFocused}

@@ -190,6 +190,14 @@ function getOutputContent(container: HTMLElement): HTMLElement {
   return outputContent;
 }
 
+function getOutputArea(container: HTMLElement): HTMLElement {
+  const outputArea = container.querySelector('[data-slot="output-area"]');
+  if (!(outputArea instanceof HTMLElement)) {
+    throw new Error("Expected output area to render");
+  }
+  return outputArea;
+}
+
 describe("OutputArea iframe theme sync", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerHeight", {
@@ -524,6 +532,30 @@ describe("OutputArea iframe theme sync", () => {
     const outputContent = getOutputContent(container);
     expect(outputContent.getAttribute("class") ?? "").not.toContain("overflow-y-auto");
     expect(outputContent.style.maxHeight).toBe("");
+  });
+
+  it("keeps standalone output padding by default", () => {
+    const { container } = render(<OutputArea outputs={makeStreamOutput()} />);
+
+    expect(getOutputArea(container).getAttribute("class") ?? "").toContain("pl-6");
+  });
+
+  it("opts into cell output inset without applying standalone padding", () => {
+    const { container } = render(
+      <OutputArea outputs={makeStreamOutput()} layoutInset="cell-output" />,
+    );
+
+    const className = getOutputArea(container).getAttribute("class") ?? "";
+    expect(className).toContain("pl-[var(--cell-output-inner-inset,1.5rem)]");
+    expect(className).not.toContain("pl-6");
+  });
+
+  it("can render with no left output inset", () => {
+    const { container } = render(<OutputArea outputs={makeStreamOutput()} layoutInset="none" />);
+
+    const className = getOutputArea(container).getAttribute("class") ?? "";
+    expect(className).not.toContain("pl-6");
+    expect(className).not.toContain("cell-output-inner-inset");
   });
 
   it("segments mixed auto outputs into DOM, interactive iframe, and standalone sift iframe lanes", async () => {

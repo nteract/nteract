@@ -1,5 +1,6 @@
 import { forwardRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { cellContentColumnInset, cellOutputRowInset, notebookCellLayoutVars } from "./cell-layout";
 import { type GutterColorConfig, getGutterColors } from "./gutter-colors";
 
 interface CellContainerProps {
@@ -95,6 +96,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         data-focus-state={focusState}
         className={cn(
           "cell-container group relative flex transition-colors duration-150",
+          notebookCellLayoutVars,
           bgColor,
           isFocused && "-mr-4 pr-4",
           isDragging && "opacity-50",
@@ -131,7 +133,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               />
               <div
                 className={cn(
-                  "min-w-0 flex-1 pt-1.5 pl-[3.25rem] pr-3",
+                  "min-w-0 flex-1 pt-1.5 pr-3",
+                  cellContentColumnInset,
                   hasOutput && !hideOutput ? "pb-1.5" : "pb-3",
                 )}
               >
@@ -140,7 +143,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               {/* Code row right gutter — always rendered as spacer for consistent width */}
               <div
                 className={cn(
-                  "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
+                  "flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none sm:w-10",
                   rightGutterContent && "opacity-100 transition-opacity duration-150",
                   rightGutterContent &&
                     "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
@@ -160,7 +163,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 />
                 <div
                   className={cn(
-                    "min-w-0 flex-1 pt-1 pb-2 pl-7 transition-opacity duration-150",
+                    "min-w-0 flex-1 pt-1 pb-2 transition-opacity duration-150",
+                    cellOutputRowInset,
                     !outputFocused &&
                       !isFocused &&
                       !isPreviousCellFromFocused &&
@@ -177,7 +181,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 {/* Output row right gutter — always rendered as spacer for consistent width */}
                 <div
                   className={cn(
-                    "sticky top-2 flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
+                    "sticky top-2 flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none sm:w-10",
                     outputRightGutterContent && "opacity-100 transition-opacity duration-150",
                     outputRightGutterContent &&
                       "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
@@ -203,12 +207,14 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-[3.25rem] pr-3">{children}</div>
+              <div className={cn("min-w-0 flex-1 pt-1.5 pb-3 pr-3", cellContentColumnInset)}>
+                {children}
+              </div>
             </div>
             {/* Right margin for legacy layout — always rendered as spacer */}
             <div
               className={cn(
-                "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
+                "flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none sm:w-10",
                 rightGutterContent && "opacity-100 transition-opacity duration-150",
                 rightGutterContent &&
                   "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",

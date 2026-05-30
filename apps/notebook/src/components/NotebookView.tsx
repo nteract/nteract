@@ -19,6 +19,7 @@ import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId } from "runtimed";
+import { cellContentColumnOffset, notebookCellLayoutVars } from "@/components/cell/cell-layout";
 import { Button } from "@/components/ui/button";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
@@ -93,18 +94,23 @@ function CellAdder({
   const ribbonClass = adderRibbonClasses[cellType] ?? defaultAdderRibbonClass;
 
   return (
-    <div data-slot="cell-adder" className="group/adder flex h-7 w-full items-center select-none">
+    <div
+      data-slot="cell-adder"
+      className={cn("group/adder flex h-7 w-full items-center select-none", notebookCellLayoutVars)}
+    >
       <div
         data-slot="cell-adder-ribbon"
         className={cn(
-          "h-full w-1 shrink-0 bg-gray-200 transition-colors duration-150 dark:bg-gray-700",
+          "h-full w-1 shrink-0 bg-gray-200 opacity-0 transition-colors duration-150 dark:bg-gray-700",
+          "group-hover/adder:opacity-100 group-focus-within/adder:opacity-100",
           ribbonClass,
         )}
       />
       <div
         data-slot="cell-adder-actions"
         className={cn(
-          "ml-[3.25rem] flex items-center gap-1 opacity-0 transition-opacity duration-150",
+          "flex items-center gap-1 opacity-0 transition-opacity duration-150",
+          cellContentColumnOffset,
           "group-hover/adder:opacity-100 group-hover/adder:delay-75",
           "group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
         )}
