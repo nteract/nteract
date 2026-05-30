@@ -12,7 +12,10 @@ catalog starts from current imports instead of a new visual fork or outdated
 helpers. The left edge is currently ribbon-first: the ribbon carries cell type
 and focus color without reserving permanent layout space for execution state.
 Editable code cells place execution identity in a quiet current line at the
-source/result boundary.
+source/result boundary. Add-cell rows now belong to the same spine: they keep a
+neutral continuation visible between cells, paint only the hovered or focused
+insertion action, and fade the terminal spine into the notebook tail instead of
+ending with a hard marker.
 
 <CellAnatomyExample />
 
@@ -39,10 +42,10 @@ contract while preserving the existing `NotebookView` DOM-order invariant.
 This docs site should keep moving component by component toward runtime-free
 fixtures. The cell frame, compact execution button, execution count,
 cell-type ribbon accents, code-cell current line, `CodeMirrorEditor`,
-`OutputArea`, cell-level presence
-indicators, and the full code/markdown/raw cell components now render from
-current source. The presence example seeds the notebook cursor registry through
-a fixture presence snapshot, without connecting runtimed or generated WASM.
+`OutputArea`, cell-level presence indicators, focused edge controls, insertion
+rows, and the full code/markdown/raw cell components now render from current
+source. The presence example seeds the notebook cursor registry through a
+fixture presence snapshot, without connecting runtimed or generated WASM.
 The full `MarkdownCell` fixture now starts in preview mode and sends its
 `text/markdown` payload through the docs `IsolatedFrame` adapter, keeping the
 production component path visible while the runtime iframe bundle stays outside
