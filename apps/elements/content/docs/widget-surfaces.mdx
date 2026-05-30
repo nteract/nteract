@@ -12,7 +12,8 @@ the production controls registry and render through `WidgetView`, so the page is
 tracking nteract-owned widget surfaces instead of page-local form stand-ins.
 The catalog now includes saved-state fixtures for control widgets, media
 widgets, `FileUploadModel`, `OutputModel`, layout containers, play controls, and
-controller sub-controls.
+controller sub-controls. It also renders `CanvasModel` through the ipycanvas
+path with a local binary command buffer routed by the CanvasManager adapter.
 
 <WidgetSurfacesExample />
 
@@ -22,6 +23,6 @@ The live notebook receives widget state from `RuntimeStateDoc` through
 `SyncEngine.commChanges$`, then forwards it to isolated output frames over the
 comm bridge. The catalog keeps those host responsibilities outside the rendered
 component examples. Browser APIs, blob/DataView conversion, nested
-output-widget routing, live controller/gamepad input, anywidget ESM loading, and
-generated WASM handoffs remain explicit adapter boundaries for later catalog
-slices.
+output-widget routing, live controller/gamepad input, richer ipycanvas image
+buffers, anywidget ESM loading, and generated WASM handoffs remain explicit
+adapter boundaries for later catalog slices.

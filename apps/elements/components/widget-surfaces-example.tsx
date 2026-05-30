@@ -12,7 +12,14 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import "@/components/widgets/controls";
-import { WidgetStoreContext, useWidgetModels } from "@/components/widgets/widget-store-context";
+import "@/components/widgets/ipycanvas";
+import { COMMANDS } from "@/components/widgets/ipycanvas/ipycanvas-commands";
+import {
+  WidgetStoreContext,
+  createCanvasManagerRouter,
+  useWidgetModels,
+  useWidgetStoreRequired,
+} from "@/components/widgets/widget-store-context";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 import { WidgetView } from "@/components/widgets/widget-view";
 
@@ -120,6 +127,17 @@ const fixtureModels: FixtureModel[] = [
           },
         },
       ],
+    },
+  },
+  {
+    id: "widget-canvas",
+    state: {
+      _model_name: "CanvasModel",
+      _model_module: "ipycanvas",
+      _canvas_manager: "IPY_MODEL_widget-canvas-manager",
+      _send_client_ready_event: true,
+      width: 320,
+      height: 180,
     },
   },
   {
@@ -561,6 +579,11 @@ const renderedWidgets = [
     role: "Captured outputs flow through the widget OutputModel path and MediaRouter without a live comm channel.",
   },
   {
+    name: "ipycanvas widget",
+    source: "src/components/widgets/ipycanvas/{canvas-widget,ipycanvas-commands}.tsx",
+    role: "CanvasModel renders through WidgetView and replays a local binary command buffer via the CanvasManager router.",
+  },
+  {
     name: "Layout containers",
     source: "src/components/widgets/controls/{gridbox,tab,accordion,stack}-widget.tsx",
     role: "Container widgets resolve IPY_MODEL children and render nested WidgetView surfaces from saved state.",
@@ -587,7 +610,7 @@ const adapterBoundaries = [
   {
     title: "Binary buffers",
     icon: FileJson,
-    body: "Media widgets render from static data URLs here; bufferPaths and DataView replacement remain adapter concerns for live kernel bytes.",
+    body: "Media widgets render from static data URLs here; ipycanvas replays a local DataView command buffer, while live kernel bufferPaths and blob hydration remain adapter concerns.",
   },
   {
     title: "Anywidget ESM",
@@ -612,6 +635,99 @@ function seedStore(store: WidgetStore) {
   }
 }
 
+function canvasCommand(name: (typeof COMMANDS)[number], args: unknown[] = []) {
+  const index = COMMANDS.indexOf(name);
+  if (index < 0) throw new Error(`Unknown ipycanvas command: ${name}`);
+  return [index, args];
+}
+
+const canvasCommands = [
+  canvasCommand("switchCanvas", ["IPY_MODEL_widget-canvas"]),
+  canvasCommand("clear"),
+  canvasCommand("set", [0, "#eff6ff"]),
+  canvasCommand("fillRect", [0, 0, 320, 180]),
+  canvasCommand("set", [0, "#0ea5e9"]),
+  canvasCommand("fillRect", [24, 32, 84, 104]),
+  canvasCommand("set", [0, "#10b981"]),
+  canvasCommand("fillCircle", [166, 84, 38]),
+  canvasCommand("set", [1, "#111827"]),
+  canvasCommand("set", [8, 4]),
+  canvasCommand("strokeLine", [36, 146, 294, 46]),
+  canvasCommand("set", [0, "#111827"]),
+  canvasCommand("set", [3, "16px ui-sans-serif, system-ui"]),
+  canvasCommand("fillText", ["ipycanvas fixture", 104, 158]),
+];
+
+function encodeCanvasCommands(commands: unknown[]): ArrayBuffer {
+  const bytes = new TextEncoder().encode(JSON.stringify(commands));
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
+function CanvasCommandFixture() {
+  const { store } = useWidgetStoreRequired();
+  const [replayCount, setReplayCount] = useState(0);
+
+  const replayCommands = useCallback(() => {
+    store.emitCustomMessage("widget-canvas-manager", { dtype: "uint8" }, [
+      encodeCanvasCommands(canvasCommands),
+    ]);
+    setReplayCount((count) => count + 1);
+  }, [store]);
+
+  useEffect(() => {
+    replayCommands();
+  }, [replayCommands]);
+
+  return (
+    <div
+      className="rounded-lg border border-fd-border bg-fd-background p-4"
+      data-testid="widget-canvas-suite"
+    >
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">ipycanvas command replay</h3>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+            CanvasModel renders through WidgetView. The fixture sends the same binary command buffer
+            shape the CanvasManager router receives from the kernel, without a live comm.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={replayCommands}>
+          Replay commands
+        </Button>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,360px)_1fr]">
+        <div className="overflow-hidden rounded-md border border-fd-border bg-white p-2 dark:bg-neutral-950">
+          <WidgetView modelId="widget-canvas" className="max-w-full" />
+        </div>
+        <div className="rounded-md border border-fd-border bg-fd-card p-3">
+          <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+            Command buffer
+          </div>
+          <div className="mt-2 grid gap-2 text-xs">
+            <div className="flex justify-between gap-3">
+              <span className="text-fd-muted-foreground">commands</span>
+              <span className="font-mono">{canvasCommands.length}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-fd-muted-foreground">dtype</span>
+              <span className="font-mono">uint8</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-fd-muted-foreground">replays</span>
+              <span className="font-mono">{replayCount}</span>
+            </div>
+          </div>
+          <div className="mt-3 break-words font-mono text-[11px] leading-5 text-fd-muted-foreground [overflow-wrap:anywhere]">
+            {"switchCanvas -> clear -> set -> fillRect -> fillCircle -> strokeLine -> fillText"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WidgetFixtureProvider({ children }: { children: ReactNode }) {
   const storeRef = useRef<WidgetStore | null>(null);
   if (!storeRef.current) {
@@ -632,6 +748,7 @@ function WidgetFixtureProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     resetFixtures();
   }, [resetFixtures]);
+  useEffect(() => createCanvasManagerRouter(store), [store]);
 
   const sendUpdate = useCallback(
     async (commId: string, state: Record<string, unknown>) => {
@@ -776,6 +893,7 @@ export function WidgetSurfacesExample() {
                 <WidgetView modelId="widget-output" />
               </div>
             </div>
+            <CanvasCommandFixture />
             <div
               className="rounded-lg border border-fd-border bg-fd-background p-4"
               data-testid="widget-layout-suite"
@@ -860,8 +978,9 @@ export function WidgetSurfacesExample() {
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: binary buffer hydration, live
-              ControllerModel Gamepad polling, ipycanvas, output-widget nesting, and anywidget ESM
-              loading need explicit iframe/runtime adapters before they can render here.
+              ControllerModel Gamepad polling, output-widget nesting, richer ipycanvas image
+              buffers, and anywidget ESM loading need explicit iframe/runtime adapters before they
+              can render here.
             </p>
           </div>
         </div>
