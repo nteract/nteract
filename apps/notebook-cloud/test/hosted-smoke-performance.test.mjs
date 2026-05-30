@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   classifyPerformanceResource,
+  refinePerformanceResourceKind,
   summarizePerformanceResources,
   withTiming,
 } from "../scripts/hosted-render-smoke-performance.mjs";
@@ -60,10 +61,70 @@ describe("hosted smoke performance diagnostics", () => {
     );
     assert.equal(
       classifyPerformanceResource(
+        "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/isolated-renderer.js",
+        origins,
+      ),
+      "renderer_asset_js",
+    );
+    assert.equal(
+      classifyPerformanceResource(
+        "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/isolated-renderer.css",
+        origins,
+      ),
+      "renderer_asset_css",
+    );
+    assert.equal(
+      classifyPerformanceResource(
+        "https://preview.runt.run/renderer-assets/isolated-renderer.js",
+        origins,
+      ),
+      "renderer_asset_js",
+    );
+    assert.equal(
+      classifyPerformanceResource(
         "https://preview.runtusercontent.com/frame/?nteract_theme=light",
         origins,
       ),
       "output_document_frame",
+    );
+    assert.equal(
+      classifyPerformanceResource("https://preview.runtusercontent.com/assets/frame.js", origins),
+      "output_document_js",
+    );
+    assert.equal(
+      classifyPerformanceResource("https://preview.runtusercontent.com/assets/frame.css", origins),
+      "output_document_css",
+    );
+  });
+
+  it("refines notebook blobs by response content type", () => {
+    assert.deepEqual(
+      refinePerformanceResourceKind({
+        kind: "notebook_blob",
+        url: "https://preview.runt.run/api/n/topic-viz/blobs/arrow",
+        contentType: "application/vnd.apache.arrow.stream",
+      }),
+      {
+        kind: "arrow_stream_blob",
+        url: "https://preview.runt.run/api/n/topic-viz/blobs/arrow",
+        contentType: "application/vnd.apache.arrow.stream",
+      },
+    );
+    assert.deepEqual(
+      refinePerformanceResourceKind({
+        kind: "notebook_blob",
+        url: "https://preview.runt.run/api/n/topic-viz/blobs/manifest",
+        contentType: "application/vnd.nteract.arrow-stream-manifest+json",
+      }),
+      {
+        kind: "arrow_manifest_blob",
+        url: "https://preview.runt.run/api/n/topic-viz/blobs/manifest",
+        contentType: "application/vnd.nteract.arrow-stream-manifest+json",
+      },
+    );
+    assert.equal(
+      refinePerformanceResourceKind({ kind: "notebook_blob", contentType: "text/plain" }).kind,
+      "notebook_blob",
     );
   });
 
