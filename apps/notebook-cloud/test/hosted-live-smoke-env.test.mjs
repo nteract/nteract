@@ -32,7 +32,7 @@ describe("hosted live smoke environment", () => {
     assert.equal(
       Object.hasOwn(smokeEnv, "NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE"),
       false,
-      "live smoke should use the latest viewer path without requiring /render by default",
+      "live smoke should use catalog plus Automerge snapshots without requiring a render API",
     );
   });
 

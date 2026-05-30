@@ -22,14 +22,14 @@ describe("notebook-cloud observability", () => {
   });
 
   it("omits undefined fields so log-derived counters stay sparse", () => {
-    const record = structuredCloudLog("render.materialization.completed", {
+    const record = structuredCloudLog("snapshot_pair.validation.completed", {
       notebook_id: "demo",
       runtime_heads_hash: undefined,
-      counter: "render_materializations",
+      counter: "snapshot_pair_validations",
       counter_delta: 1,
     });
 
     assert.equal("runtime_heads_hash" in record, false);
-    assert.equal(record.counter, "render_materializations");
+    assert.equal(record.counter, "snapshot_pair_validations");
   });
 });

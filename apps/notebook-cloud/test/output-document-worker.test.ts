@@ -66,7 +66,7 @@ describe("output document Worker", () => {
 
   it("does not expose app APIs, room sockets, viewer bundles, renderer assets, or blobs", async () => {
     const blockedRoutes = [
-      "/api/n/demo/renders/heads-demo",
+      "/api/n/demo/snapshots/heads-demo",
       "/api/n/demo/blobs/sha256-demo",
       "/n/demo/sync",
       "/assets/notebook-cloud-viewer.js",

@@ -208,9 +208,19 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    let render = publisher.get_render(&notebook_heads_hash).await?;
-    if render.get("source").and_then(Value::as_str) != Some("snapshot-pair") {
-        bail!("latest render was not materialized from the uploaded snapshot pair");
+    let catalog = publisher.get_catalog().await?;
+    let revisions = catalog
+        .get("revisions")
+        .and_then(Value::as_array)
+        .context("published catalog did not include revisions")?;
+    let published_revision = revisions.iter().any(|revision| {
+        revision.get("notebook_heads_hash").and_then(Value::as_str)
+            == Some(notebook_heads_hash.as_str())
+            && revision.get("runtime_heads_hash").and_then(Value::as_str)
+                == Some(runtime_heads_hash.as_str())
+    });
+    if !published_revision {
+        bail!("published catalog did not include the uploaded snapshot pair");
     }
 
     println!(
@@ -227,7 +237,6 @@ async fn main() -> Result<()> {
             "initial_blob_refs": initial_ref_count,
             "total_blob_refs": refs.len(),
             "uploaded_blobs": uploaded_blobs,
-            "render_source": render.get("source").and_then(Value::as_str),
         }))?
     );
 
@@ -408,15 +417,8 @@ impl Publisher {
         serde_json::from_str(&text).with_context(|| format!("decode JSON response from {url}"))
     }
 
-    async fn get_render(&self, notebook_heads_hash: &str) -> Result<Value> {
-        self.get_json(&[
-            "api",
-            "n",
-            &self.notebook_id,
-            "renders",
-            notebook_heads_hash,
-        ])
-        .await
+    async fn get_catalog(&self) -> Result<Value> {
+        self.get_json(&["api", "n", &self.notebook_id]).await
     }
 
     fn add_identity_headers(
@@ -996,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn publisher_verifies_materialized_render_by_heads_hash() {
+    fn publisher_reads_catalog_by_notebook_id() {
         let publisher = Publisher {
             client: reqwest::Client::new(),
             base_url: Url::parse("https://cloud.test/").unwrap(),
@@ -1013,16 +1015,10 @@ mod tests {
 
         assert_eq!(
             publisher
-                .endpoint(&[
-                    "api",
-                    "n",
-                    &publisher.notebook_id,
-                    "renders",
-                    "heads-fixture"
-                ])
+                .endpoint(&["api", "n", &publisher.notebook_id])
                 .unwrap()
                 .as_str(),
-            "https://cloud.test/api/n/topic-viz/renders/heads-fixture"
+            "https://cloud.test/api/n/topic-viz"
         );
     }
 }

@@ -16,11 +16,7 @@ import {
   parsePositiveInteger,
 } from "./hosted-render-smoke-assets.mjs";
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
-import {
-  catalogApiUrlForViewer,
-  expectedRenderSourceForViewer,
-  renderApiUrlForViewer,
-} from "./hosted-render-smoke-routes.mjs";
+import { catalogApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
@@ -46,10 +42,6 @@ const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEX
   "Schema at a glance",
   "PROBLEM_MARKDOWN",
 ]);
-const expectedRenderSource = expectedRenderSourceForViewer(
-  targetUrl,
-  process.env.NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE,
-);
 const expectedCatalogOwnerPrincipal =
   process.env.NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL ?? DEFAULT_CATALOG_OWNER_PRINCIPAL;
 const expectedLatestRevisionActorLabel =
@@ -94,7 +86,6 @@ const runtimedWasmRequests = [];
 const rendererCompletions = [];
 const fatalIsolatedDiagnostics = [];
 const diagnosticTasks = [];
-let renderApiCheck = null;
 let catalogApiCheck = null;
 let viewerCssCheck = null;
 let screenshotSaved = false;
@@ -176,7 +167,6 @@ async function main() {
 
   try {
     if (
-      expectedRenderSource ||
       expectedCatalogOwnerPrincipal ||
       expectedLatestRevisionActorLabel ||
       expectedLatestRevisionNotebookHeadsHash ||
@@ -188,13 +178,6 @@ async function main() {
         expectedLatestRevisionNotebookHeadsHash,
         expectedLatestRevisionRuntimeHeadsHash,
       });
-    }
-    if (expectedRenderSource) {
-      renderApiCheck = await checkHostedRenderApi(
-        targetUrl,
-        expectedRenderSource,
-        catalogApiCheck?.latestRevisionNotebookHeadsHash ?? null,
-      );
     }
     if (requireViewerCssSplit) {
       viewerCssCheck = await checkViewerCssSplit(targetUrl, {
@@ -418,13 +401,11 @@ async function main() {
           expectedPresenceText,
           expectedFrameTexts,
           expectedOutputDocumentOrigin,
-          expectedRenderSource,
           expectedCatalogOwnerPrincipal,
           expectedLatestRevisionActorLabel,
           expectedLatestRevisionNotebookHeadsHash,
           expectedLatestRevisionRuntimeHeadsHash,
           timings_ms: timingsMs,
-          renderApiCheck,
           catalogApiCheck,
           viewerCssCheck,
           executionCounts,
@@ -738,43 +719,6 @@ function isThemeOutputFrameCloseAbort(request) {
     return false;
   }
   return new URL(request.url()).origin === outputDocumentOrigin;
-}
-
-async function checkHostedRenderApi(viewerUrl, expectedSource, headsHash) {
-  const renderUrl = renderApiUrlForViewer(viewerUrl, headsHash);
-  if (!renderUrl) {
-    failures.push({
-      kind: "render-api",
-      text: `Could not derive pinned render URL from ${viewerUrl}`,
-    });
-    return null;
-  }
-
-  const response = await fetch(renderUrl);
-  if (!response.ok) {
-    failures.push({
-      kind: "render-api",
-      text: `${renderUrl} returned ${response.status}`,
-    });
-    return { url: renderUrl, status: response.status };
-  }
-
-  const json = await response.json();
-  const source = typeof json.source === "string" ? json.source : null;
-  const cellCount = Array.isArray(json.cells) ? json.cells.length : null;
-  if (source !== expectedSource) {
-    failures.push({
-      kind: "render-api",
-      text: `expected render source ${expectedSource}, got ${source ?? "missing"}`,
-      url: renderUrl,
-    });
-  }
-  return {
-    url: renderUrl,
-    status: response.status,
-    source,
-    cellCount,
-  };
 }
 
 async function checkHostedCatalogApi(
