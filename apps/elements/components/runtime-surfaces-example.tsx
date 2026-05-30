@@ -85,6 +85,30 @@ const runtimePieces = [
   },
 ];
 
+const runtimeAdapterRows = [
+  {
+    boundary: "Desktop host actions",
+    catalogPath: "NotebookHostProvider fixture",
+    productionBoundary: "notebook shell host commands",
+    detail:
+      "Pool settings, clipboard, and command callbacks stay inert in the catalog while the production app routes them through the host bridge.",
+  },
+  {
+    boundary: "Runtime side effects",
+    catalogPath: "static decisions with async no-ops",
+    productionBoundary: "daemon and kernel lifecycle",
+    detail:
+      "Trust, environment build, retry, dismiss, and sync actions render with the current components but do not start kernels or mutate runtime state.",
+  },
+  {
+    boundary: "Dependency and trust state",
+    catalogPath: "typed fixture records",
+    productionBoundary: "settings, pyproject, and RuntimeStateDoc updates",
+    detail:
+      "The catalog owns deterministic package, typosquat, and pyproject data; live settings and runtime documents remain outside the docs app.",
+  },
+];
+
 const fixtureHost = createFixtureNotebookHost();
 
 const trustInfo = {
@@ -127,7 +151,7 @@ const kernelLaunchError = [
 function RuntimeDialogs() {
   const [trustOpen, setTrustOpen] = useState(false);
   const [envOpen, setEnvOpen] = useState(false);
-  const [genericOpen, setGenericOpen] = useState(false);
+  const [decisionShellOpen, setDecisionShellOpen] = useState(false);
 
   return (
     <div className="grid gap-3 lg:grid-cols-3" data-elements-slot="runtime-dialog-fixtures">
@@ -176,21 +200,21 @@ function RuntimeDialogs() {
         <p className="mt-2 min-h-[3rem] text-xs leading-5 text-fd-muted-foreground">
           Opens the shared runtime decision shell with catalog-owned fixture content.
         </p>
-        <Button className="mt-4" size="sm" onClick={() => setGenericOpen(true)}>
+        <Button className="mt-4" size="sm" onClick={() => setDecisionShellOpen(true)}>
           Open RuntimeDecisionDialog
         </Button>
         <RuntimeDecisionDialog
-          open={genericOpen}
-          onOpenChange={setGenericOpen}
+          open={decisionShellOpen}
+          onOpenChange={setDecisionShellOpen}
           icon={<PackageCheck className="size-5 text-emerald-600" aria-hidden="true" />}
           title="Use project environment"
           description="This notebook can start with the detected project environment."
           footer={
             <>
-              <Button variant="outline" onClick={() => setGenericOpen(false)}>
+              <Button variant="outline" onClick={() => setDecisionShellOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={() => setGenericOpen(false)}>Use project env</Button>
+              <Button onClick={() => setDecisionShellOpen(false)}>Use project env</Button>
             </>
           }
         >
@@ -457,9 +481,48 @@ export function RuntimeSurfacesExample() {
             <h2 className="text-sm font-semibold">Adapter Boundary</h2>
           </div>
           <p className="text-xs leading-5 text-fd-muted-foreground">
-            Components that import runtime value constants or host-backed hooks should get a small
-            fixture adapter before they move from adapter needed to rendered.
+            Components that need runtime values, daemon actions, or host-backed hooks should name
+            the boundary first, then move through a small fixture adapter before joining the
+            rendered catalog.
           </p>
+          <div className="mt-4 overflow-hidden rounded-md border border-fd-border">
+            <div className="hidden grid-cols-[190px_210px_230px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+              <span>Boundary</span>
+              <span>Catalog path</span>
+              <span>Production boundary</span>
+              <span>Notes</span>
+            </div>
+            {runtimeAdapterRows.map((row) => (
+              <div
+                key={row.boundary}
+                className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[190px_210px_230px_minmax(0,1fr)] xl:gap-3"
+              >
+                <div>
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                    Boundary
+                  </div>
+                  <div className="font-semibold">{row.boundary}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                    Catalog path
+                  </div>
+                  <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                    {row.catalogPath}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                    Production boundary
+                  </div>
+                  <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                    {row.productionBoundary}
+                  </div>
+                </div>
+                <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
     </div>

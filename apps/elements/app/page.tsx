@@ -5,9 +5,11 @@ import {
   Cloud,
   FileCode2,
   Frame,
+  PackageCheck,
   Palette,
   PanelLeft,
   PanelTop,
+  Search,
   ShieldCheck,
   SlidersHorizontal,
   TextCursorInput,
@@ -28,6 +30,12 @@ const entries = [
     icon: PanelTop,
   },
   {
+    title: "Package managers",
+    description: "Dependency headers and package-state controls from the notebook app.",
+    href: "/docs/package-manager-surfaces",
+    icon: PackageCheck,
+  },
+  {
     title: "Cell anatomy",
     description: "Inventory map for current nteract cells.",
     href: "/docs/cell-anatomy",
@@ -38,6 +46,12 @@ const entries = [
     description: "CodeMirror fixtures for notebook source editing.",
     href: "/docs/editor-surfaces",
     icon: TextCursorInput,
+  },
+  {
+    title: "Search surfaces",
+    description: "Global find and history search with fixture-backed notebook state.",
+    href: "/docs/search-surfaces",
+    icon: Search,
   },
   {
     title: "Output renderers",

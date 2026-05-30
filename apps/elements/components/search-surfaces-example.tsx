@@ -1,7 +1,7 @@
 "use client";
 
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { History, Search, TextCursorInput } from "lucide-react";
+import { FileSearch, History, Search, TextCursorInput } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { HistoryEntry, NotebookRequest, NotebookResponse } from "runtimed";
 import { Button } from "@/components/ui/button";
@@ -118,6 +118,37 @@ const historyFixtureHost = createFixtureNotebookHost({
     },
   },
 });
+
+const searchBoundaryRows = [
+  {
+    boundary: "Find state projection",
+    catalogPath: "notebookCells[] + GlobalFindBar props",
+    productionBoundary: "NotebookView cell sources, focus, and selection",
+    detail:
+      "The catalog owns static cell text and match counts. The notebook app still owns live cell projection, keyboard shortcuts, focus restoration, and editor selections.",
+  },
+  {
+    boundary: "History transport",
+    catalogPath: "createFixtureNotebookHost(get_history)",
+    productionBoundary: "NotebookHost -> runtimed history request",
+    detail:
+      "HistorySearchDialog stays on the real hook path. The docs host answers only typed get_history requests and never opens a daemon or kernel session.",
+  },
+  {
+    boundary: "Selection handoff",
+    catalogPath: "setSelectedHistorySource",
+    productionBoundary: "focused editor insertion",
+    detail:
+      "Selecting history updates local preview state here. Production inserts the selected source into the focused notebook editor through the notebook host.",
+  },
+  {
+    boundary: "Match navigation",
+    catalogPath: "inert next/previous callbacks",
+    productionBoundary: "cell scroll and active-match focus",
+    detail:
+      "The fixture cycles a counter so the toolbar surface is interactive. Production navigation scrolls to matched cells and keeps active match state synchronized with editors.",
+  },
+];
 
 function countMatches(source: string, query: string) {
   const needle = query.trim().toLowerCase();
@@ -293,6 +324,56 @@ export function SearchSurfacesExample() {
           <pre className="min-w-0 overflow-x-auto whitespace-pre-wrap rounded-md border border-fd-border bg-fd-background p-3 font-mono text-xs leading-6 text-fd-foreground">
             {selectedHistorySource}
           </pre>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <FileSearch className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Adapter boundary</h2>
+        </div>
+        <p className="text-xs leading-5 text-fd-muted-foreground">
+          Search is rendered through current notebook components, but the docs app owns only static
+          cell text, deterministic history entries, and inert handoff callbacks. Live notebook
+          projection, daemon history, focus, and editor insertion stay behind app adapters.
+        </p>
+        <div className="mt-4 overflow-hidden rounded-md border border-fd-border bg-fd-card">
+          <div className="hidden grid-cols-[190px_230px_230px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+            <span>Boundary</span>
+            <span>Catalog path</span>
+            <span>Production boundary</span>
+            <span>Notes</span>
+          </div>
+          {searchBoundaryRows.map((row) => (
+            <div
+              key={row.boundary}
+              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[190px_230px_230px_minmax(0,1fr)] xl:gap-3"
+            >
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Boundary
+                </div>
+                <div className="font-semibold">{row.boundary}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Catalog path
+                </div>
+                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {row.catalogPath}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Production boundary
+                </div>
+                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                  {row.productionBoundary}
+                </div>
+              </div>
+              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+            </div>
+          ))}
         </div>
       </section>
     </div>

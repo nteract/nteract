@@ -16,6 +16,7 @@ import {
   FileText,
   FileWarning,
   ListFilter,
+  Palette,
   SlidersHorizontal,
   Table2,
   Terminal,
@@ -860,7 +861,7 @@ const renderedPieces = [
   {
     name: "MathOutput",
     source: "src/components/outputs/math-output.tsx",
-    note: "KaTeX-backed text/latex rendering that is safe in the main output lane.",
+    note: "KaTeX-backed text/latex rendering that is safe in the main output lane; its KaTeX stylesheet is owned by the output component, not the docs app shell.",
   },
   {
     name: "SvgOutput",
@@ -938,7 +939,7 @@ const rendererBoundaryRows = [
     catalogPath: "direct component render",
     productionBoundary: "none",
     detail:
-      "ANSI, JSON, image, math, SVG, audio, PDF, video, and traceback examples render through the current output components with static nbformat-like fixtures.",
+      "ANSI, JSON, image, math, SVG, audio, PDF, video, and traceback examples render through the current output components with static nbformat-like fixtures. MathOutput brings its own KaTeX stylesheet with the component import.",
   },
   {
     surface: "JavaScript output",
@@ -967,6 +968,30 @@ const rendererBoundaryRows = [
     productionBoundary: "live comm capture and replay",
     detail:
       "OutputArea resolves widget-view MIME against local widget state. RuntimeStateDoc capture, comm replay, and shell transport are handled by the widget catalog boundary.",
+  },
+];
+
+const stylesheetBoundaryRows = [
+  {
+    surface: "text/latex in main DOM",
+    catalogPath: "MathOutput import",
+    productionPath: "MathOutput import",
+    detail:
+      "The catalog imports the production component directly, so KaTeX markup and KaTeX CSS travel together. This keeps plain math output independent from global app or docs CSS.",
+  },
+  {
+    surface: "markdown math in iframe",
+    catalogPath: "docs IsolatedFrame adapter",
+    productionPath: "MarkdownOutput inside isolated frame",
+    detail:
+      "MarkdownOutput also imports KaTeX CSS, but it must render inside a sandboxed output frame because markdown may include raw HTML.",
+  },
+  {
+    surface: "renderer plugin CSS",
+    catalogPath: "docs fixture CSS bytes",
+    productionPath: "daemon renderer-plugin CSS route",
+    detail:
+      "The isolated output catalog covers plugin CSS fetch and install with fixture files. Production fetches CSS beside renderer plugin JavaScript from daemon asset routes.",
   },
 ];
 
@@ -1524,6 +1549,52 @@ export function OutputRenderersExample() {
                 </div>
                 <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
                   {row.productionBoundary}
+                </div>
+              </div>
+              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
+          <div className="flex items-center gap-2">
+            <Palette className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+            <h2 className="text-sm font-semibold">Stylesheet Boundaries</h2>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            Renderer styles stay with the output surface that needs them. The catalog imports those
+            production components or fixture plugin assets directly instead of relying on a global
+            docs stylesheet.
+          </p>
+        </div>
+        <div className="divide-y divide-fd-border">
+          {stylesheetBoundaryRows.map((row) => (
+            <div
+              key={row.surface}
+              className="grid gap-2 p-4 text-xs lg:grid-cols-[180px_200px_220px_minmax(0,1fr)] lg:gap-3"
+            >
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground lg:hidden">
+                  Surface
+                </div>
+                <div className="font-semibold">{row.surface}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground lg:hidden">
+                  Catalog path
+                </div>
+                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {row.catalogPath}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground lg:hidden">
+                  Production path
+                </div>
+                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                  {row.productionPath}
                 </div>
               </div>
               <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>

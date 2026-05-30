@@ -16,10 +16,13 @@ helpers.
 ## Full cell surfaces
 
 The next cell slice imports the notebook app cell components directly and feeds
-them fixture state through the same stores they use in the desktop app. The
-rendered boundary map makes the split explicit: catalog fixtures seed cell,
-execution, output, focus, and CRDT-provider state, while notebook document
-projection, kernel execution, iframe bootstrap, and Automerge sync remain
+them fixture state through the same stores they use in the desktop app. It also
+mounts the production `NotebookView` workspace shell with local visual order so
+stable DOM ordering, hidden-cell grouping, cell adders, and navigation chrome
+are visible without opening a notebook document. The rendered boundary map makes
+the split explicit: catalog fixtures seed cell, execution, output, focus,
+CRDT-provider state, and local order, while notebook document projection, kernel
+execution, iframe bootstrap, DnD persistence, and Automerge sync remain
 production boundaries.
 
 <FullCellSurfacesClient />
@@ -39,9 +42,10 @@ a fixture presence snapshot, without connecting runtimed or generated WASM.
 The full `MarkdownCell` fixture now starts in preview mode and sends its
 `text/markdown` payload through the docs `IsolatedFrame` adapter, keeping the
 production component path visible while the runtime iframe bundle stays outside
-the catalog. Full cell entries should use the same rule: import production cell
-components, then isolate any notebook document, runtime, sync, or iframe
-responsibility behind a named fixture adapter.
+the catalog. The `NotebookView` fixture uses the same rule at the workspace
+level: import the production shell first, then keep order mutation, notebook
+documents, runtime, sync, and iframe responsibilities behind named fixture
+adapters.
 
 Unused legacy cell helper components should be removed rather than cataloged.
 Catalog entries need to trace to notebook app usage, an active migration target,

@@ -4,6 +4,7 @@ import { FileCode2, FileText, Rows3, ShieldCheck } from "lucide-react";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { CodeCell } from "@/notebook-components/CodeCell";
 import { MarkdownCell } from "@/notebook-components/MarkdownCell";
+import { NotebookView } from "@/notebook-components/NotebookView";
 import { RawCell } from "@/notebook-components/RawCell";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import {
@@ -65,6 +66,60 @@ const rawCell: RawCellType = {
   },
 };
 
+const viewCodeCell: CodeCellType = {
+  cell_type: "code",
+  id: "elements-view-code-cell",
+  source: [
+    "features = orders.assign(month=orders.date.dt.month)",
+    "predictions = model.predict(features_holdout)",
+    "display(predictions.head())",
+  ].join("\n"),
+  execution_count: 18,
+  outputs: [],
+  metadata: {},
+};
+
+const viewMarkdownCell: MarkdownCellType = {
+  cell_type: "markdown",
+  id: "elements-view-markdown-cell",
+  source: [
+    "## Model notes",
+    "",
+    "The workspace fixture renders through the production `NotebookView` shell.",
+  ].join("\n"),
+  metadata: {},
+};
+
+const viewHiddenCodeCell: CodeCellType = {
+  cell_type: "code",
+  id: "elements-view-hidden-code-cell",
+  source: "cached = features.sample(2000, random_state=42)",
+  execution_count: 17,
+  outputs: [],
+  metadata: {
+    jupyter: {
+      source_hidden: true,
+      outputs_hidden: true,
+    },
+  },
+};
+
+const viewRawCell: RawCellType = {
+  cell_type: "raw",
+  id: "elements-view-raw-cell",
+  source: "runtime: python\nowner: forecasting",
+  metadata: {
+    format: "yaml",
+  },
+};
+
+const initialNotebookViewCellIds = [
+  viewMarkdownCell.id,
+  viewCodeCell.id,
+  viewHiddenCodeCell.id,
+  viewRawCell.id,
+];
+
 const fullCellRows = [
   {
     label: "CodeCell",
@@ -92,7 +147,7 @@ const fullCellBoundaryRows = [
     catalogPath: "replaceNotebookCells fixture seed",
     productionBoundary: "NotebookView document projection",
     detail:
-      "The catalog writes three static cells into the notebook cell store so CodeCell, MarkdownCell, and RawCell can subscribe normally without opening a notebook document.",
+      "The catalog writes direct-cell and workspace-shell fixtures into the notebook cell store so the production cells can subscribe normally without opening a notebook document.",
   },
   {
     surface: "Execution and output state",
@@ -122,12 +177,27 @@ const fullCellBoundaryRows = [
     detail:
       "The production MarkdownCell preview path stays visible while renderer bootstrapping and untrusted markdown execution remain behind the output adapter.",
   },
+  {
+    surface: "NotebookView shell",
+    catalogPath: "seeded cell store plus local cellIds order",
+    productionBoundary: "Automerge order, DnD mutations, and keyboard navigation",
+    detail:
+      "The catalog can render the production workspace shell with fixture cells, but moving, adding, and deleting cells stop at local state callbacks.",
+  },
 ];
 
 const noop = () => {};
 
 function seedFullCellFixtures() {
-  replaceNotebookCells([codeCell, markdownCell, rawCell]);
+  replaceNotebookCells([
+    codeCell,
+    markdownCell,
+    rawCell,
+    viewMarkdownCell,
+    viewCodeCell,
+    viewHiddenCodeCell,
+    viewRawCell,
+  ]);
   resetNotebookOutputs();
   resetNotebookExecutions();
 
@@ -155,6 +225,30 @@ function seedFullCellFixtures() {
   });
   setCellExecutionPointer(codeCell.id, "elements-execution");
 
+  setOutput("elements-view-output-stream", {
+    output_id: "elements-view-output-stream",
+    output_type: "stream",
+    name: "stdout",
+    text: "workspace fixture rendered through NotebookView\n",
+  });
+  setOutput("elements-view-output-result", {
+    output_id: "elements-view-output-result",
+    output_type: "execute_result",
+    execution_count: 18,
+    data: {
+      "text/plain": "3 rows x 8 columns",
+    },
+    metadata: {},
+  });
+  setExecution("elements-view-execution", {
+    execution_count: 18,
+    status: "done",
+    success: true,
+    output_ids: ["elements-view-output-stream", "elements-view-output-result"],
+    submitted_by_actor_label: "local:kyle",
+  });
+  setCellExecutionPointer(viewCodeCell.id, "elements-view-execution");
+
   setFocusedCellId(codeCell.id);
   setExecutingCellIds(new Set());
   setQueuedCellIds(new Set());
@@ -170,6 +264,7 @@ function focusFixtureCell(cellId: string) {
 
 export function FullCellSurfacesExample() {
   const [fixturesSeeded, setFixturesSeeded] = useState(false);
+  const [notebookViewCellIds, setNotebookViewCellIds] = useState(initialNotebookViewCellIds);
 
   useLayoutEffect(() => {
     seedFullCellFixtures();
@@ -192,6 +287,16 @@ export function FullCellSurfacesExample() {
       </div>
     );
   }
+
+  const moveNotebookViewCell = (cellId: string, afterCellId?: string | null) => {
+    setNotebookViewCellIds((current) => {
+      const withoutMoved = current.filter((id) => id !== cellId);
+      const nextIndex =
+        afterCellId == null ? 0 : withoutMoved.findIndex((id) => id === afterCellId) + 1;
+      if (nextIndex <= 0 && afterCellId != null) return current;
+      return [...withoutMoved.slice(0, nextIndex), cellId, ...withoutMoved.slice(nextIndex)];
+    });
+  };
 
   return (
     <div className="not-prose space-y-6">
@@ -305,6 +410,40 @@ export function FullCellSurfacesExample() {
                 </span>
               }
             />
+          </div>
+        </section>
+      </CrdtBridgeProvider>
+
+      <CrdtBridgeProvider {...adapterValue}>
+        <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+          <div className="border-b border-fd-border p-4">
+            <div className="flex items-center gap-2">
+              <Rows3 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+              <h2 className="text-sm font-semibold">NotebookView workspace shell</h2>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+              This fixture imports the production workspace renderer, seeds the split cell and
+              output stores, then hands `NotebookView` a local visual order. Stable DOM ordering,
+              hidden-cell grouping, adders, and cell navigation remain visible without opening a
+              notebook document or WASM handle.
+            </p>
+          </div>
+          <div className="bg-background p-3">
+            <div className="flex h-[560px] flex-col overflow-hidden rounded-lg border border-border bg-background">
+              <NotebookView
+                cellIds={notebookViewCellIds}
+                runtime="python"
+                sessionRuntimeState="ready"
+                onFocusCell={focusFixtureCell}
+                onExecuteCell={noop}
+                onInterruptKernel={noop}
+                onDeleteCell={noop}
+                onAddCell={() => null}
+                onMoveCell={moveNotebookViewCell}
+                onSetCellSourceHidden={noop}
+                onSetCellOutputsHidden={noop}
+              />
+            </div>
           </div>
         </section>
       </CrdtBridgeProvider>

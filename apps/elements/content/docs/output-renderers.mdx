@@ -29,7 +29,10 @@ fixture-backed `WidgetStore`, matching the notebook app's widget MIME handoff
 without booting a live comm bridge. The plugin renderer examples use docs-local
 fixture globals for Plotly, `vegaEmbed`, and Leaflet, so they exercise the
 current nteract components without bundling third-party renderer libraries into
-the catalog. The Sift section fetches the same kind of public HuggingFace
+the catalog. Math output is rendered by the production `MathOutput` component,
+which imports KaTeX CSS itself; markdown math follows the same stylesheet
+ownership but must stay inside the isolated markdown frame because markdown can
+carry raw HTML. The Sift section fetches the same kind of public HuggingFace
 Parquet URL used by the Sift demo, then lets `SiftTable` detect and decode it
 through the docs static WASM asset; the Arrow manifest section points at a
 static Arrow IPC chunk and exercises `create_arrow_stream_store` /
@@ -38,6 +41,9 @@ helper the notebook uses before rendering. The renderer boundary map separates
 direct component rendering from docs fixture adapters and production-only
 execution paths, so JavaScript execution and third-party renderer library
 execution stay visible as adapter boundaries rather than silent catalog behavior.
+The stylesheet boundary map keeps renderer-specific CSS attached to the relevant
+output component or plugin asset path instead of promoting it to global docs
+styling.
 
 ## What still needs an adapter
 
@@ -53,4 +59,7 @@ behind the isolated-frame adapter. The Sift Parquet URL path now has a
 docs-owned static WASM asset, and the Arrow stream manifest path now runs
 through a docs-served Arrow IPC chunk. The widget catalog covers local
 `OutputModel` replay through `WidgetStore`; the remaining output-widget boundary
-is the live kernel capture and comm transport.
+is the live kernel capture and comm transport. Hosted output-frame behavior is
+documented on the isolation page: MCP hosts only use the daemon `/output-frame`
+document when `frameDomains` allows the daemon blob origin, and renderer plugin
+CSS is fetched beside daemon plugin JavaScript rather than from this docs shell.

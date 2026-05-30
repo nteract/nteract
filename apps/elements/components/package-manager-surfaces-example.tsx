@@ -67,6 +67,30 @@ const packageSurfaces = [
   },
 ];
 
+const packageBoundaryRows = [
+  {
+    boundary: "Notebook metadata",
+    catalogPath: "static package-manager records",
+    productionBoundary: "Automerge notebook metadata and pyproject/environment files",
+    detail:
+      "uv, Conda, Pixi, and Deno headers receive the same prop shapes they use in the notebook app without mutating notebook documents.",
+  },
+  {
+    boundary: "Manager actions",
+    catalogPath: "inert async callbacks",
+    productionBoundary: "host commands, daemon sync, and environment solves",
+    detail:
+      "Add, remove, import, sync, retry, and restart affordances stay visible while side effects remain outside the docs runtime.",
+  },
+  {
+    boundary: "Trust and rebuild flow",
+    catalogPath: "rendered status fixtures",
+    productionBoundary: "trust re-signing, package pool warming, and kernel restart lifecycle",
+    detail:
+      "Progress and dirty states are fixture-backed here; live trust decisions and environment rebuilds stay with runtime surfaces.",
+  },
+];
+
 export function PackageManagerSurfacesExample() {
   return (
     <div className="not-prose space-y-6" data-elements-slot="package-manager-surfaces">
@@ -235,6 +259,44 @@ export function PackageManagerSurfacesExample() {
           the notebook app, while live notebook metadata writes, daemon sync, and environment
           rebuilding stay outside the docs runtime.
         </p>
+        <div className="mt-4 overflow-hidden rounded-md border border-fd-border bg-fd-card">
+          <div className="hidden grid-cols-[190px_210px_240px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+            <span>Boundary</span>
+            <span>Catalog path</span>
+            <span>Production boundary</span>
+            <span>Notes</span>
+          </div>
+          {packageBoundaryRows.map((row) => (
+            <div
+              key={row.boundary}
+              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[190px_210px_240px_minmax(0,1fr)] xl:gap-3"
+            >
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Boundary
+                </div>
+                <div className="font-semibold">{row.boundary}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Catalog path
+                </div>
+                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {row.catalogPath}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Production boundary
+                </div>
+                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                  {row.productionBoundary}
+                </div>
+              </div>
+              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );

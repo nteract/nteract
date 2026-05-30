@@ -1,6 +1,6 @@
 "use client";
 
-import { BadgeCheck, PanelTop, PlayCircle, TimerReset } from "lucide-react";
+import { BadgeCheck, CircleDot, PanelTop, PlayCircle, TimerReset } from "lucide-react";
 import type { ComponentProps } from "react";
 import {
   KERNEL_ERROR_REASON,
@@ -173,6 +173,44 @@ const contractItems = [
   },
 ];
 
+const toolbarBoundaryRows = [
+  {
+    boundary: "Runtime status projection",
+    catalogPath: "toolbarProps(status fixtures)",
+    productionBoundary: "RuntimeStateDoc + kernel lifecycle",
+    detail:
+      "The catalog passes deterministic status props. Production derives them from runtime state, kernel lifecycle, environment progress, and launch errors.",
+  },
+  {
+    boundary: "Kernel actions",
+    catalogPath: "inert callbacks",
+    productionBoundary: "Notebook action handlers",
+    detail:
+      "Start, interrupt, restart, run-all, and restart-and-run-all buttons render here without side effects. The notebook app wires them to execution and runtime control paths.",
+  },
+  {
+    boundary: "Dependency drawer",
+    catalogPath: "isDepsOpen + depsOutOfSync props",
+    productionBoundary: "Package rail and notebook metadata",
+    detail:
+      "The fixture toggles visual dependency state only. Production opens package UI, writes notebook metadata, and coordinates environment rebuild decisions.",
+  },
+  {
+    boundary: "Cell insertion",
+    catalogPath: "focusedCellId + lastCellId fixtures",
+    productionBoundary: "NotebookView focus and CRDT mutation",
+    detail:
+      "The add-cell affordance receives stable fixture IDs. Production inserts new cells through the notebook document and restores editor focus.",
+  },
+  {
+    boundary: "Desktop update restart",
+    catalogPath: "updateStatus + onRestartToUpdate",
+    productionBoundary: "Tauri updater host action",
+    detail:
+      "The update-ready surface renders with a no-op restart callback. Desktop builds still own update installation and app restart behavior outside the docs runtime.",
+  },
+];
+
 export function NotebookToolbarSurfacesExample() {
   return (
     <div className="not-prose space-y-6" data-elements-slot="notebook-toolbar-surfaces">
@@ -216,6 +254,56 @@ export function NotebookToolbarSurfacesExample() {
             </div>
           </article>
         ))}
+      </section>
+
+      <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <CircleDot className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Adapter boundary</h2>
+        </div>
+        <p className="text-xs leading-5 text-fd-muted-foreground">
+          NotebookToolbar renders from the production component, but this page owns only static
+          status props and inert callbacks. Runtime state, kernel controls, dependency writes, cell
+          insertion, and desktop update restarts stay behind the notebook app adapters.
+        </p>
+        <div className="mt-4 overflow-hidden rounded-md border border-fd-border bg-fd-card">
+          <div className="hidden grid-cols-[190px_220px_240px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+            <span>Boundary</span>
+            <span>Catalog path</span>
+            <span>Production boundary</span>
+            <span>Notes</span>
+          </div>
+          {toolbarBoundaryRows.map((row) => (
+            <div
+              key={row.boundary}
+              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[190px_220px_240px_minmax(0,1fr)] xl:gap-3"
+            >
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Boundary
+                </div>
+                <div className="font-semibold">{row.boundary}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Catalog path
+                </div>
+                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {row.catalogPath}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Production boundary
+                </div>
+                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                  {row.productionBoundary}
+                </div>
+              </div>
+              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );
