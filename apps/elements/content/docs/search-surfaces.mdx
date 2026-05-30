@@ -17,4 +17,7 @@ dialog with static notebook text and a docs-local host adapter.
 still uses the real `useHistorySearch` hook, but the docs app supplies a
 `NotebookHost` transport that only answers `get_history` requests with static
 entries. The catalog does not start a daemon, sync a notebook, or import
-generated WASM to render these search surfaces.
+generated WASM to render these search surfaces. The rendered boundary map keeps
+the live search projection, history transport, selection handoff, and match
+navigation responsibilities visible before any future adapter wiring moves them
+closer to production behavior.
