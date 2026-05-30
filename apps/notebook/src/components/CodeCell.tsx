@@ -2,10 +2,11 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
 import { ChevronRight, Code2, EyeOff } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
-import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
+import { cellOutputInnerInset } from "@/components/cell/cell-layout";
+import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
-import type { SupportedLanguage } from "@/components/editor/languages";
+import { languageDisplayNames, type SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
@@ -187,6 +188,9 @@ export const CodeCell = memo(function CodeCell({
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
+  const languageLabel =
+    language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
+  const isSourceEmpty = cell.source.trim().length === 0;
   const showOutputChrome = useMemo(() => needsOutputChrome(outputs), [outputs]);
 
   // Check cell metadata for visibility (JupyterLab convention)
@@ -366,12 +370,16 @@ export const CodeCell = memo(function CodeCell({
     [onNavigateToCell],
   );
 
-  const gutterContent = bothHidden ? null : (
-    <CompactExecutionButton
+  const currentLine = (
+    <CodeCellCurrentLine
+      languageLabel={languageLabel}
       count={executionCount}
       isExecuting={isExecuting}
       isQueued={isQueued}
+      isFocused={isFocused}
+      compactIdle={isSourceEmpty}
       submittedByActorLabel={submittedByActorLabel}
+      activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
       onExecute={onExecute}
       onInterrupt={onInterrupt}
     />
@@ -388,9 +396,7 @@ export const CodeCell = memo(function CodeCell({
         outputFocused={outputFocused}
         outputDimmed={outputDimmed}
         onFocus={onFocus}
-        gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}
-        presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}
         codeContent={
@@ -432,36 +438,42 @@ export const CodeCell = memo(function CodeCell({
                 </button>
               </div>
             ) : isSourceHidden ? (
-              <div className="flex items-center justify-start mt-0.5">
-                <button
-                  type="button"
-                  onClick={() => onToggleSourceHidden?.(false)}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
-                  title="Show source"
-                >
-                  <Code2 className="h-3 w-3" />
-                  <span className="font-mono truncate max-w-48">
-                    {cell.source.split("\n")[0] || "source"}
-                  </span>
-                  <ChevronRight className="h-3 w-3" />
-                </button>
-              </div>
+              <>
+                <div className="flex items-center justify-start mt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => onToggleSourceHidden?.(false)}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                    title="Show source"
+                  >
+                    <Code2 className="h-3 w-3" />
+                    <span className="font-mono truncate max-w-48">
+                      {cell.source.split("\n")[0] || "source"}
+                    </span>
+                    <ChevronRight className="h-3 w-3" />
+                  </button>
+                </div>
+                {currentLine}
+              </>
             ) : (
-              <CodeMirrorEditor
-                ref={editorRef}
-                initialValue={cell.source}
-                language={language}
-                keyMap={keyMap}
-                extensions={editorExtensions}
-                placeholder="Enter code..."
-                autoFocus={isFocused}
-              />
+              <>
+                <CodeMirrorEditor
+                  ref={editorRef}
+                  initialValue={cell.source}
+                  language={language}
+                  keyMap={keyMap}
+                  extensions={editorExtensions}
+                  placeholder="Enter code..."
+                  autoFocus={isFocused}
+                />
+                {currentLine}
+              </>
             )}
           </>
         }
         outputContent={
           isOutputsHidden && outputs.length > 0 ? (
-            <div className="flex items-center justify-start mt-0.5 pl-6">
+            <div className={cn("flex items-center justify-start mt-0.5", cellOutputInnerInset)}>
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
@@ -486,6 +498,7 @@ export const CodeCell = memo(function CodeCell({
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
               onDiagnostic={logNotebookIsolatedDiagnostic}
+              layoutInset="cell-output"
               resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
               onNavigateToTracebackCell={handleTracebackCellNavigate}
               focused={outputFocused}

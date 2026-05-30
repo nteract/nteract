@@ -5,6 +5,9 @@
  * The staggered animation delays give a subtle wave effect while loading.
  */
 
+import { cellContentColumnInset, notebookCellLayoutVars } from "@/components/cell/cell-layout";
+import { cn } from "@/lib/utils";
+
 const skeletonCells = [
   { height: "2.5rem", delay: "0ms" },
   { height: "5rem", delay: "75ms" },
@@ -13,15 +16,12 @@ const skeletonCells = [
 
 function SkeletonCell({ height, delay }: { height: string; delay: string }) {
   return (
-    <div className="flex py-4">
-      {/* Gutter area — matches CellContainer's w-10 gutter */}
-      <div className="w-10 flex-shrink-0" />
-
+    <div className={cn("flex py-4", notebookCellLayoutVars)}>
       {/* Ribbon — self-stretch to fill container height */}
       <div className="w-1 self-stretch rounded-sm bg-muted/40" />
 
       {/* Editor area placeholder */}
-      <div className="min-w-0 flex-1 py-3 pl-6 pr-3">
+      <div className={cn("min-w-0 flex-1 py-3 pr-3", cellContentColumnInset)}>
         <div
           className="rounded bg-muted/30 animate-pulse"
           style={{ minHeight: height, animationDelay: delay }}

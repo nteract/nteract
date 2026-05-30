@@ -19,6 +19,7 @@ import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId } from "runtimed";
+import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
 import { Button } from "@/components/ui/button";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
@@ -41,7 +42,7 @@ import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 
 type AddCellResult = NotebookCell | null;
-type AddCellHandler = (type: "code" | "markdown", afterCellId?: string | null) => AddCellResult;
+type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
 
 export interface NotebookViewProps {
   cellIds: string[];
@@ -62,82 +63,19 @@ export interface NotebookViewProps {
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
 }
 
-/** Tailwind classes for cell adder ribbon colors — must be static strings for tree-shaking. */
-const adderRibbonClasses: Record<string, string> = {
-  code: [
-    "group-hover/adder:bg-sky-400 dark:group-hover/adder:bg-sky-600",
-    "group-focus-within/adder:bg-sky-400 dark:group-focus-within/adder:bg-sky-600",
-  ].join(" "),
-  markdown: [
-    "group-hover/adder:bg-emerald-400 dark:group-hover/adder:bg-emerald-600",
-    "group-focus-within/adder:bg-emerald-400 dark:group-focus-within/adder:bg-emerald-600",
-  ].join(" "),
-  raw: [
-    "group-hover/adder:bg-rose-400 dark:group-hover/adder:bg-rose-600",
-    "group-focus-within/adder:bg-rose-400 dark:group-focus-within/adder:bg-rose-600",
-  ].join(" "),
-};
-const defaultAdderRibbonClass = adderRibbonClasses.code;
-const NOTEBOOK_TAIL_SPACE = "clamp(12rem, 35vh, 22rem)";
+const NOTEBOOK_TAIL_SPACE = "clamp(4rem, 10vh, 6rem)";
 const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 
 function CellAdder({
   afterCellId,
   onAdd,
-  cellType = "code",
+  terminal = false,
 }: {
   afterCellId?: string | null;
   onAdd: AddCellHandler;
-  cellType?: string;
+  terminal?: boolean;
 }) {
-  const ribbonClass = adderRibbonClasses[cellType] ?? defaultAdderRibbonClass;
-
-  return (
-    <div className="flex h-7 w-full items-center select-none">
-      {/* Hover zone limited to gutter + ribbon area */}
-      <div className="group/adder flex h-full flex-shrink-0 items-center pr-3">
-        {/* Gutter spacer — matches cell gutter w-10 */}
-        <div className="w-10" />
-        {/* Ribbon zone — widens on hover to reveal cell type options */}
-        <div
-          className={cn(
-            "flex h-full flex-shrink-0 items-center overflow-hidden",
-            "w-1 bg-gray-200 transition-all duration-200 ease-out dark:bg-gray-700",
-            "group-hover/adder:w-auto group-hover/adder:rounded-r-sm group-hover/adder:pr-1",
-            "group-focus-within/adder:w-auto group-focus-within/adder:rounded-r-sm group-focus-within/adder:pr-1",
-            ribbonClass,
-          )}
-        >
-          <div
-            className={cn(
-              "flex items-center gap-0.5 pl-1.5 opacity-0 transition-opacity duration-150",
-              "group-hover/adder:opacity-100 group-hover/adder:delay-75",
-              "group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
-            )}
-          >
-            <button
-              type="button"
-              title="Add code cell"
-              onClick={() => onAdd("code", afterCellId)}
-              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/20 hover:text-white"
-            >
-              + Code
-            </button>
-            <button
-              type="button"
-              title="Add markdown cell"
-              onClick={() => onAdd("markdown", afterCellId)}
-              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/20 hover:text-white"
-            >
-              + Markdown
-            </button>
-          </div>
-        </div>
-      </div>
-      {/* Content area — no hover trigger */}
-      <div className="flex-1" />
-    </div>
-  );
+  return <CellInsertionRibbon terminal={terminal} onInsert={(type) => onAdd(type, afterCellId)} />;
 }
 
 function CellErrorFallback({
@@ -282,15 +220,14 @@ const CellRenderer = memo(function CellRenderer({
 /** Wrapper component for sortable cells */
 function SortableCell({
   cellId,
-  nextCellId,
   index,
   renderCell,
   onAddCell,
   onDeleteCell,
+  isLastCell,
   isHiddenInGroup,
 }: {
   cellId: string;
-  nextCellId?: string;
   index: number;
   renderCell: (
     cell: NotebookCell,
@@ -300,10 +237,9 @@ function SortableCell({
   ) => React.ReactNode;
   onAddCell: AddCellHandler;
   onDeleteCell: (cellId: string) => void;
+  isLastCell?: boolean;
   isHiddenInGroup?: boolean;
 }) {
-  const cell = useCell(cellId);
-  const nextCell = useCell(nextCellId ?? "");
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: cellId,
   });
@@ -326,13 +262,9 @@ function SortableCell({
     return <div id={anchorId} ref={setNodeRef} style={style} />;
   }
 
-  const cellType = cell?.cell_type ?? "code";
-  // Adder color matches the cell below; for the last cell, fall back to its own type
-  const nextCellType = nextCell?.cell_type ?? cellType;
-
   return (
     <div id={anchorId} ref={setNodeRef} style={style}>
-      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} cellType={cellType} />}
+      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
@@ -350,7 +282,7 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      <CellAdder afterCellId={cellId} onAdd={onAddCell} cellType={nextCellType} />
+      <CellAdder afterCellId={cellId} onAdd={onAddCell} terminal={isLastCell} />
     </div>
   );
 }
@@ -430,7 +362,7 @@ function NotebookViewContent({
   // cell's iframe (Sift, HTML) never fires onFocusCell because the iframe
   // absorbs the event. Same goes for clicks on page chrome between cells.
   // Scope the dismiss to the focused cell's container so clicks on its own
-  // gutter buttons (focus, expand, eye) still hit their handlers.
+  // right-gutter buttons (focus, expand, eye) still hit their handlers.
   useEffect(() => {
     if (outputFocusedCellId === null) return;
     const handleMouseDown = (event: MouseEvent) => {
@@ -780,10 +712,11 @@ function NotebookViewContent({
         const isOutputsHidden =
           (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden === true;
         const bothHidden = isSourceHidden && isOutputsHidden;
+        const hasSourceText = cell.source.trim().length > 0;
 
         rightGutterContent = (
           <div className="flex flex-col gap-0.5">
-            {onSetCellSourceHidden && !bothHidden && (
+            {onSetCellSourceHidden && !bothHidden && (hasSourceText || isSourceHidden) && (
               <button
                 type="button"
                 tabIndex={-1}
@@ -930,12 +863,12 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth py-4 pl-8 pr-2"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth pt-0 pb-4 pl-0 pr-2"
       style={{
         contain: "paint",
         overflowAnchor: "none",
         paddingBottom: NOTEBOOK_TAIL_SPACE,
-        scrollPaddingBlock: `1rem ${NOTEBOOK_TAIL_SPACE}`,
+        scrollPaddingBlock: `0rem ${NOTEBOOK_TAIL_SPACE}`,
       }}
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-session-runtime-state={sessionRuntimeState ?? "unknown"}
@@ -998,11 +931,11 @@ function NotebookViewContent({
                   <SortableCell
                     key={cellId}
                     cellId={cellId}
-                    nextCellId={cellIds[index + 1]}
                     index={index}
                     renderCell={renderCell}
                     onAddCell={onAddCell}
                     onDeleteCell={onDeleteCell}
+                    isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}
                   />
                 );

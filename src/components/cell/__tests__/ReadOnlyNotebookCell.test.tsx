@@ -148,7 +148,9 @@ describe("ReadOnlyNotebookCell", () => {
     expect(screen.getByTestId("readonly-codemirror")).toHaveAttribute("data-line-wrapping", "true");
     expect(screen.getByTestId("readonly-codemirror")).toHaveClass("cloud-source");
 
-    expect(screen.getByText("[7]:")).toHaveAttribute("data-slot", "execution-count");
+    const executionCount = document.querySelector('[data-slot="execution-count"]');
+    expect(executionCount).toHaveAttribute("data-execution-count", "7");
+    expect(executionCount).toHaveAttribute("data-execution-state", "ran");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-cell-id", "cell-code");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-execution-count", "7");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-focused", "false");

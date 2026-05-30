@@ -327,12 +327,12 @@ async function main() {
             "[data-slot='read-only-report-cell']",
           ).length;
           const counts = Array.from(document.querySelectorAll("[data-slot='execution-count']")).map(
-            (node) => node.textContent?.trim() ?? "",
+            (node) => node.getAttribute("data-execution-count") ?? node.textContent?.trim() ?? "",
           );
           if (expected) {
             return counts.includes(expected);
           }
-          return reportCellCount > 0 || counts.some((count) => /^\[\d+\]:$/.test(count));
+          return reportCellCount > 0 || counts.some((count) => /^\d+$/.test(count));
         },
         expectedExecutionCount,
         { timeout: timeoutMs },

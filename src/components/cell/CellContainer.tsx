@@ -1,5 +1,6 @@
 import { forwardRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { cellContentColumnInset, cellOutputRowInset, notebookCellLayoutVars } from "./cell-layout";
 import { type GutterColorConfig, getGutterColors } from "./gutter-colors";
 
 interface CellContainerProps {
@@ -16,7 +17,7 @@ interface CellContainerProps {
   hideOutput?: boolean;
   /** Legacy children prop - use codeContent/outputContent for segmented ribbon support */
   children?: ReactNode;
-  /** Content to render in the left gutter action area (e.g., play button, execution count) */
+  /** Content to render in the left state lane (e.g., play button, execution marker) */
   gutterContent?: ReactNode;
   /** Content to render in the right margin aligned with code row (e.g., cell controls) */
   rightGutterContent?: ReactNode;
@@ -46,6 +47,34 @@ interface CellContainerProps {
   /** Whether this cell is currently being dragged */
   isDragging?: boolean;
   className?: string;
+}
+
+function CellActionOverlay({
+  children,
+  dataSlot,
+  visible = false,
+}: {
+  children?: ReactNode;
+  dataSlot: string;
+  visible?: boolean;
+}) {
+  if (!children) return null;
+
+  return (
+    <div
+      data-slot={dataSlot}
+      className={cn(
+        "absolute right-2 top-1 z-20 flex flex-col items-center gap-0.5 rounded-sm px-0.5 py-0.5 select-none",
+        "bg-background/80 shadow-sm ring-1 ring-border/40 backdrop-blur-sm",
+        "pointer-events-none opacity-0 transition-opacity duration-150",
+        "group-hover:pointer-events-auto group-hover:opacity-100",
+        "focus-within:pointer-events-auto focus-within:opacity-100",
+        visible && "pointer-events-auto opacity-100",
+      )}
+    >
+      {children}
+    </div>
+  );
 }
 
 export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
@@ -94,9 +123,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         data-cell-type={cellType}
         data-focus-state={focusState}
         className={cn(
-          "cell-container group flex transition-colors duration-150",
+          "cell-container group relative flex transition-colors duration-150",
+          notebookCellLayoutVars,
           bgColor,
-          isFocused && "-mx-16 px-16",
+          isFocused && "-mr-4 pr-4",
           isDragging && "opacity-50",
           // Output focus dim wins over the existing opacity-70 dim on the
           // output row. Applied to the whole cell container so the editor
@@ -105,9 +135,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
           className,
         )}
       >
-        {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
+        {/* Optional state lane - lives inside the source inset so clipped scroll containers do not hide it. */}
         <div
-          className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3.5 select-none"
+          data-slot="cell-state-lane"
+          className="absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-3.5 select-none"
           onMouseDown={onFocus}
         >
           {gutterContent}
@@ -117,9 +148,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {useSegmentedRibbon ? (
           <div className="flex min-w-0 flex-1 flex-col">
             {/* Code row - ribbon + content + right gutter */}
-            <div className="flex" onMouseDown={onFocus}>
+            <div className="relative flex" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
+                data-slot="cell-ribbon"
                 className={cn(
                   "w-1 transition-colors duration-150",
                   ribbonColor,
@@ -127,63 +159,61 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{codeContent}</div>
-              {/* Code row right gutter — always rendered as spacer for consistent width */}
               <div
+                data-slot="cell-code-content"
                 className={cn(
-                  "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
-                  rightGutterContent && "opacity-100 transition-opacity duration-150",
-                  rightGutterContent &&
-                    "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                  rightGutterContent && isFocused && "sm:opacity-100",
+                  "min-w-0 flex-1 pt-1.5",
+                  cellContentColumnInset,
+                  rightGutterContent ? "pr-14" : "pr-3",
+                  hasOutput && !hideOutput ? "pb-1.5" : "pb-3",
                 )}
               >
-                {rightGutterContent}
+                {codeContent}
               </div>
+              <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
+                {rightGutterContent}
+              </CellActionOverlay>
             </div>
             {/* Output row - ribbon + content + right gutter
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
-              <div className={cn("flex", hideOutput && "hidden")} onMouseDown={onFocus}>
-                <div className={cn("w-1 transition-colors duration-150", outputRibbonColor)} />
+              <div className={cn("relative flex", hideOutput && "hidden")} onMouseDown={onFocus}>
                 <div
+                  data-slot="cell-output-ribbon"
+                  className={cn("w-1 transition-colors duration-150", outputRibbonColor)}
+                />
+                <div
+                  data-slot="cell-output-content"
                   className={cn(
-                    "min-w-0 flex-1 py-2 transition-opacity duration-150",
+                    "min-w-0 flex-1 pt-1 pb-2 transition-opacity duration-150",
+                    cellOutputRowInset,
+                    outputRightGutterContent ? "pr-14" : "pr-3",
                     !outputFocused &&
                       !isFocused &&
                       !isPreviousCellFromFocused &&
                       !isNextCellFromFocused &&
                       "opacity-70",
-                    // Elevate via top + bottom edges only. The cell's
-                    // existing left ribbon (line 145 above) plus this slab
-                    // forms a three-sided frame that reads as "this row is
-                    // the active one" without the card-like ring aesthetic.
+                    // Elevate via top + bottom edges only. The cell's left
+                    // ribbon plus this slab forms a three-sided frame that
+                    // reads as active without the card-like ring aesthetic.
                     outputFocused && "border-y border-primary/40 bg-primary/5",
                   )}
                 >
                   {outputContent}
                 </div>
-                {/* Output row right gutter — always rendered as spacer for consistent width */}
-                <div
-                  className={cn(
-                    "sticky top-2 flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
-                    outputRightGutterContent && "opacity-100 transition-opacity duration-150",
-                    outputRightGutterContent &&
-                      "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                    outputRightGutterContent && isFocused && "sm:opacity-100",
-                  )}
-                >
+                <CellActionOverlay dataSlot="cell-output-action-overlay" visible={isFocused}>
                   {outputRightGutterContent}
-                </div>
+                </CellActionOverlay>
               </div>
             )}
           </div>
         ) : (
           <>
             {/* Legacy layout - ribbon + content side by side */}
-            <div className="flex min-w-0 flex-1" onMouseDown={onFocus}>
+            <div className="relative flex min-w-0 flex-1" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
+                data-slot="cell-ribbon"
                 className={cn(
                   "w-1 self-stretch transition-colors duration-150",
                   ribbonColor,
@@ -191,19 +221,19 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{children}</div>
-            </div>
-            {/* Right margin for legacy layout — always rendered as spacer */}
-            <div
-              className={cn(
-                "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
-                rightGutterContent && "opacity-100 transition-opacity duration-150",
-                rightGutterContent &&
-                  "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                rightGutterContent && isFocused && "sm:opacity-100",
-              )}
-            >
-              {rightGutterContent}
+              <div
+                data-slot="cell-code-content"
+                className={cn(
+                  "min-w-0 flex-1 pt-1.5 pb-3",
+                  cellContentColumnInset,
+                  rightGutterContent ? "pr-14" : "pr-3",
+                )}
+              >
+                {children}
+              </div>
+              <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
+                {rightGutterContent}
+              </CellActionOverlay>
             </div>
           </>
         )}

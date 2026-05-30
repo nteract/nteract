@@ -8,6 +8,9 @@ import { RailOutlineExample } from "@/components/rail-outline-example";
 The rail outline is the first production direction for a notebook table of
 contents. It keeps reading navigation available while leaving clear sibling
 slots for packages, variables, renderers, and future notebook tools.
+The rail owns notebook-level navigation and tools; the ribbon and code-cell
+chrome remain inside the notebook surface for per-cell focus and execution
+state.
 
 This fixture now renders the current notebook app toolbar and shared
 `NotebookRail` directly. The outline is projected with the same

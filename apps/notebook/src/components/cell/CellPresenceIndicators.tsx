@@ -6,16 +6,27 @@
  */
 
 import { useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
 import { getPeersForCell, type PeerCursorInfo, subscribeToCell } from "../../lib/cursor-registry";
 
 interface CellPresenceIndicatorsProps {
   cellId: string;
+  variant?: "stack" | "inline";
+  maxVisible?: number;
+  prefixSeparator?: boolean;
+  className?: string;
 }
 
 /** Maximum visible indicators before showing overflow count */
 const MAX_VISIBLE = 3;
 
-export function CellPresenceIndicators({ cellId }: CellPresenceIndicatorsProps) {
+export function CellPresenceIndicators({
+  cellId,
+  variant = "stack",
+  maxVisible = MAX_VISIBLE,
+  prefixSeparator = false,
+  className,
+}: CellPresenceIndicatorsProps) {
   const [peers, setPeers] = useState<PeerCursorInfo[]>([]);
 
   // Subscribe to presence changes for this cell
@@ -35,16 +46,30 @@ export function CellPresenceIndicators({ cellId }: CellPresenceIndicatorsProps) 
     return null;
   }
 
-  const visiblePeers = peers.slice(0, MAX_VISIBLE);
-  const overflowCount = peers.length - MAX_VISIBLE;
+  const visiblePeers = peers.slice(0, maxVisible);
+  const overflowCount = peers.length - maxVisible;
 
   return (
-    <div className="flex flex-col items-center gap-0.5" title={formatTooltip(peers)}>
+    <div
+      data-slot="cell-presence-indicators"
+      className={cn(
+        "flex items-center gap-0.5",
+        variant === "stack" ? "flex-col" : "flex-row",
+        className,
+      )}
+      title={formatTooltip(peers)}
+      aria-label={formatTooltip(peers)}
+    >
+      {prefixSeparator && (
+        <span className="text-muted-foreground/30" aria-hidden="true">
+          ·
+        </span>
+      )}
       {visiblePeers.map((peer) => (
         <PresenceDot key={peer.peerId} peer={peer} />
       ))}
       {overflowCount > 0 && (
-        <span className="text-[9px] font-medium text-muted-foreground leading-none">
+        <span className="text-[9px] leading-none font-medium text-muted-foreground">
           +{overflowCount}
         </span>
       )}

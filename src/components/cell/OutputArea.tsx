@@ -52,6 +52,7 @@ import { ErrorBoundary } from "@/lib/error-boundary";
 import { highlightTextInDom } from "@/lib/highlight-text";
 import { OutputErrorFallback } from "@/lib/output-error-fallback";
 import { cn } from "@/lib/utils";
+import { cellOutputInnerInset } from "./cell-layout";
 
 const handleIframeError = (err: { message: string; stack?: string }) =>
   console.error("[OutputArea] iframe error:", err);
@@ -88,6 +89,17 @@ const DEFERRED_OUTPUT_PLACEHOLDER_HEIGHT = 96;
 const SIFT_VIEWPORT_TOP_INSET_PX = 96;
 const SIFT_VIEWPORT_BOTTOM_INSET_PX = 32;
 const DEFAULT_DEFERRED_ISOLATED_FRAME_ROOT_MARGIN = "1200px 0px";
+
+function outputAreaInsetClass(layoutInset: NonNullable<OutputAreaProps["layoutInset"]>) {
+  switch (layoutInset) {
+    case "cell-output":
+      return cellOutputInnerInset;
+    case "none":
+      return undefined;
+    case "standalone":
+      return "pl-6";
+  }
+}
 
 function siftFocusAccent(isDark: boolean, colorTheme?: string): string {
   if (colorTheme === "cream") {
@@ -218,6 +230,13 @@ interface OutputAreaProps {
    * Additional CSS classes for the container.
    */
   className?: string;
+  /**
+   * Left inset behavior for the output content.
+   *
+   * `standalone` preserves the default renderer padding. `cell-output` aligns
+   * output content with a surrounding CellContainer's content column.
+   */
+  layoutInset?: "standalone" | "cell-output" | "none";
   /**
    * Custom renderers passed to MediaRouter.
    */
@@ -593,6 +612,7 @@ function OutputAreaSingle({
   focused = false,
   useOutputWell = true,
   className,
+  layoutInset = "standalone",
   renderers,
   priority = DEFAULT_PRIORITY,
   isolated = "auto",
@@ -996,14 +1016,18 @@ function OutputAreaSingle({
   // Hide the entire output area when only preloading (no visible outputs)
   const isPreloadOnly = showPreloadedIframe && outputs.length === 0;
 
-  // pl-6 pr-3 matches the code editor row padding so outputs align
-  // flush with the editor content. The CellContainer output wrapper
-  // has no horizontal padding — it must live here because the iframe
-  // ignores padding on its parent container.
+  // Keep the output's own inset here because isolated iframes ignore
+  // padding on parent wrappers. CellContainer may add row-level inset
+  // outside this component to align the output text with the editor.
   return (
     <div
       data-slot="output-area"
-      className={cn("output-area pl-6 pr-3", isPreloadOnly && "hidden", className)}
+      className={cn(
+        "output-area pr-3",
+        outputAreaInsetClass(layoutInset),
+        isPreloadOnly && "hidden",
+        className,
+      )}
     >
       {/* Collapse toggle */}
       {hasCollapseControl && (

@@ -88,6 +88,7 @@ export function ReadOnlyNotebookCell({
         priority={priority}
         hostContext={hostContext}
         className={outputClassName}
+        layoutInset={displayMode === "notebook" ? "cell-output" : "standalone"}
         deferIsolatedFrameUntilVisible={deferIsolatedFrameUntilVisible}
         deferredIsolatedFrameRootMargin={deferredIsolatedFrameRootMargin}
         resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
@@ -217,6 +218,7 @@ function ReadOnlyMarkdownSource({
         isolated="auto"
         priority={priority}
         hostContext={hostContext}
+        layoutInset="none"
         className={className}
         onIsolatedFrameHandleChange={handleFrameHandleChange}
       />
