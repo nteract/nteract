@@ -86,6 +86,44 @@ const fullCellRows = [
   },
 ];
 
+const fullCellBoundaryRows = [
+  {
+    surface: "Cell document state",
+    catalogPath: "replaceNotebookCells fixture seed",
+    productionBoundary: "NotebookView document projection",
+    detail:
+      "The catalog writes three static cells into the notebook cell store so CodeCell, MarkdownCell, and RawCell can subscribe normally without opening a notebook document.",
+  },
+  {
+    surface: "Execution and output state",
+    catalogPath: "setExecution and setOutput fixtures",
+    productionBoundary: "runtimed execution pipeline",
+    detail:
+      "The code cell sees the same execution pointer and output IDs as production, but queueing, kernel lifecycle, and output mutation still stay outside the docs runtime.",
+  },
+  {
+    surface: "Transient cell UI state",
+    catalogPath: "focused/search/queued store setters",
+    productionBoundary: "NotebookView focus, search, and runtime events",
+    detail:
+      "Focus and search state are seeded directly so cell chrome can render focused and preview states without notebook keyboard routing or global find ownership.",
+  },
+  {
+    surface: "Source CRDT bridge",
+    catalogPath: "CrdtBridgeProvider with null handle",
+    productionBoundary: "WASM NotebookHandle and Automerge sync",
+    detail:
+      "Editors receive the production provider shape, but edits cannot call splice_source or schedule daemon sync from the catalog.",
+  },
+  {
+    surface: "Markdown preview output",
+    catalogPath: "docs IsolatedFrame adapter",
+    productionBoundary: "isolated markdown iframe bundle",
+    detail:
+      "The production MarkdownCell preview path stays visible while renderer bootstrapping and untrusted markdown execution remain behind the output adapter.",
+  },
+];
+
 const noop = () => {};
 
 function seedFullCellFixtures() {
@@ -270,6 +308,54 @@ export function FullCellSurfacesExample() {
           </div>
         </section>
       </CrdtBridgeProvider>
+
+      <section className="rounded-lg border border-fd-border bg-fd-card p-4">
+        <h2 className="text-sm font-semibold">Full Cell Boundary Map</h2>
+        <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+          These rows describe why the page can import the full notebook cell components while still
+          staying runtime-free. The catalog seeds the same stores and provider shapes the cells read
+          in production, then stops before notebook documents, kernel execution, iframe bootstrap,
+          or Automerge sync can run.
+        </p>
+        <div className="mt-4 overflow-hidden rounded-md border border-fd-border">
+          <div className="hidden grid-cols-[180px_220px_230px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+            <span>Surface</span>
+            <span>Catalog path</span>
+            <span>Production boundary</span>
+            <span>Notes</span>
+          </div>
+          {fullCellBoundaryRows.map((row) => (
+            <div
+              key={row.surface}
+              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[180px_220px_230px_minmax(0,1fr)] xl:gap-3"
+            >
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Surface
+                </div>
+                <div className="font-semibold">{row.surface}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Catalog path
+                </div>
+                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {row.catalogPath}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Production boundary
+                </div>
+                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                  {row.productionBoundary}
+                </div>
+              </div>
+              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <section className="grid gap-3 md:grid-cols-3">
         {fullCellRows.map((row) => (
