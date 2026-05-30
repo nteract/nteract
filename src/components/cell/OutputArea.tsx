@@ -284,6 +284,11 @@ interface OutputAreaProps {
    */
   onIframeMouseDown?: () => void;
   /**
+   * Exposes the mounted isolated frame handle to shared cell surfaces that need
+   * iframe RPCs, such as markdown heading measurement for outline navigation.
+   */
+  onIsolatedFrameHandleChange?: (handle: IsolatedFrameHandle | null) => void;
+  /**
    * Callback for structured isolated renderer diagnostics.
    */
   onDiagnostic?: IsolatedDiagnosticHandler;
@@ -599,6 +604,7 @@ function OutputAreaSingle({
   searchQuery,
   onSearchMatchCount,
   onIframeMouseDown,
+  onIsolatedFrameHandleChange,
   onDiagnostic,
   hostContext,
   resolveTracebackExecutionTarget,
@@ -696,6 +702,13 @@ function OutputAreaSingle({
           : undefined,
       } as React.CSSProperties)
     : undefined;
+  const setIsolatedFrameHandle = useCallback(
+    (handle: IsolatedFrameHandle | null) => {
+      frameRef.current = handle;
+      onIsolatedFrameHandleChange?.(handle);
+    },
+    [onIsolatedFrameHandleChange],
+  );
   const deferredIsolatedFramePlaceholderStyle = shouldDeferIsolatedFrame
     ? {
         minHeight: `${hasSiftOutputs ? MIN_OUTPUT_WELL_HEIGHT : DEFERRED_OUTPUT_PLACEHOLDER_HEIGHT}px`,
@@ -1045,7 +1058,7 @@ function OutputAreaSingle({
             >
               {shouldMountIsolatedFrame ? (
                 <IsolatedFrame
-                  ref={frameRef}
+                  ref={setIsolatedFrameHandle}
                   name={frameName}
                   darkMode={darkMode}
                   colorTheme={colorTheme}

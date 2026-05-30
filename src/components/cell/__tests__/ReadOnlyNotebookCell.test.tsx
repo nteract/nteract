@@ -2,9 +2,23 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { ReadOnlyNotebookCell } from "../ReadOnlyNotebookCell";
 import type { JupyterOutput } from "../jupyter-output";
+import { navigateMarkdownHeading } from "../markdown-heading-navigation";
 
 const outputAreaCalls = vi.hoisted(() => ({
   outputs: [] as unknown[],
+  frameCallbacks: [] as Array<
+    | ((
+        handle: {
+          isReady: boolean;
+          measureElement: (headingAnchorId: string) => Promise<{
+            found: boolean;
+            top: number;
+            height: number;
+          }>;
+        } | null,
+      ) => void)
+    | undefined
+  >,
 }));
 
 vi.mock("../OutputArea", () => ({
@@ -14,6 +28,7 @@ vi.mock("../OutputArea", () => ({
     executionCount,
     focused,
     hostContext,
+    onIsolatedFrameHandleChange,
     onNavigateToTracebackCell,
     outputs,
     priority,
@@ -24,12 +39,23 @@ vi.mock("../OutputArea", () => ({
     executionCount?: number | null;
     focused?: boolean;
     hostContext?: unknown;
+    onIsolatedFrameHandleChange?: (
+      handle: {
+        isReady: boolean;
+        measureElement: (headingAnchorId: string) => Promise<{
+          found: boolean;
+          top: number;
+          height: number;
+        }>;
+      } | null,
+    ) => void;
     onNavigateToTracebackCell?: unknown;
     outputs: JupyterOutput[];
     priority?: readonly string[];
     resolveTracebackExecutionTarget?: unknown;
   }) => {
     outputAreaCalls.outputs.push(outputs);
+    outputAreaCalls.frameCallbacks.push(onIsolatedFrameHandleChange);
     return (
       <div
         data-cell-id={cellId}
@@ -48,7 +74,9 @@ vi.mock("../OutputArea", () => ({
           .join(",")}
         data-priority={priority?.join(",") ?? ""}
         data-testid="output-area"
-      />
+      >
+        <iframe data-slot="isolated-frame" title="read-only markdown" />
+      </div>
     );
   },
 }));
@@ -79,6 +107,7 @@ vi.mock("@/components/editor/readonly-codemirror", () => ({
 describe("ReadOnlyNotebookCell", () => {
   beforeEach(() => {
     outputAreaCalls.outputs.length = 0;
+    outputAreaCalls.frameCallbacks.length = 0;
   });
 
   it("renders code through shared cell chrome with execution count and outputs", () => {
@@ -181,6 +210,37 @@ describe("ReadOnlyNotebookCell", () => {
     expect(outputArea).toHaveAttribute("data-mimes", "text/markdown");
     expect(outputArea).toHaveAttribute("data-priority", "text/markdown,text/plain");
     expect(outputArea).toHaveAttribute("data-class-name", "pl-0 pr-0 markdown-source");
+  });
+
+  it("registers read-only markdown heading navigation for outline links", async () => {
+    const scrollTo = vi.fn();
+    Object.defineProperty(window, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+    const measureElement = vi.fn(async () => ({ found: true, top: 72, height: 24 }));
+
+    render(
+      <ReadOnlyNotebookCell
+        id="readonly-markdown"
+        cellType="markdown"
+        source="## Target"
+        outputs={[]}
+      />,
+    );
+
+    outputAreaCalls.frameCallbacks.at(-1)?.({
+      isReady: true,
+      measureElement,
+    });
+
+    await expect(
+      navigateMarkdownHeading("readonly-markdown", "notebook-cell-readonly-heading-target", {
+        behavior: "auto",
+      }),
+    ).resolves.toBe(true);
+    expect(measureElement).toHaveBeenCalledWith("notebook-cell-readonly-heading-target");
+    expect(scrollTo).toHaveBeenCalledWith({ top: 72 - 16, behavior: "auto" });
   });
 
   it("omits the output row for code cells with no outputs", () => {

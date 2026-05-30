@@ -11,6 +11,7 @@ export function deriveCloudNotebookOutlineItems(
   cells: readonly CloudNotebookOutlineCell[],
 ): NotebookOutlineItem[] {
   return projectNotebookOutline(cells, {
+    hrefTarget: "heading",
     getStatusLabel: (cell) => {
       if (
         cell.cellType === "code" &&
