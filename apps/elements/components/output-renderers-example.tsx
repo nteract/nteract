@@ -4,6 +4,7 @@ import { SiftTable, type TableData, type TableEngineState } from "@nteract/sift"
 import {
   AlertTriangle,
   Braces,
+  Database,
   FileAudio,
   FileImage,
   FileText,
@@ -251,6 +252,28 @@ const siftData: TableData = {
   ],
 };
 
+const siftParquetUrl =
+  "https://huggingface.co/datasets/mstz/heart_failure/resolve/refs%2Fconvert%2Fparquet/death/train/0000.parquet";
+
+const siftUrlMilestones = [
+  {
+    phase: "Resolve",
+    value: "mstz/heart_failure - death/train/0000.parquet",
+  },
+  {
+    phase: "Fetch",
+    value: "12 KB parquet source from HuggingFace",
+  },
+  {
+    phase: "Decode boundary",
+    value: "generated sift-wasm load_parquet_row_group",
+  },
+  {
+    phase: "Render",
+    value: "SiftTable mounted with fixture TableData",
+  },
+];
+
 const tracebackFixture = {
   ename: "ValueError",
   evalue: "feature matrix contains null values",
@@ -374,7 +397,7 @@ const renderedPieces = [
   {
     name: "SiftTable",
     source: "packages/sift/src/react.tsx",
-    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData.",
+    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData and a fixture-backed URL handoff.",
   },
 ];
 
@@ -395,9 +418,9 @@ const adapterBoundaries = [
       "Needs fixture-backed WidgetStore and saved widget state before controls can be shown without kernel comm state.",
   },
   {
-    name: "Sift URL loader",
+    name: "Generated Sift WASM decode",
     reason:
-      "Parquet and Arrow URL sources need generated sift-wasm glue and a served WASM asset; this catalog uses TableData until the docs app owns that asset path.",
+      "Parquet and Arrow URL bytes still need generated sift-wasm glue and a served WASM asset; this catalog shows the URL handoff with decoded TableData until the docs app owns that asset path.",
   },
 ];
 
@@ -435,6 +458,7 @@ function RendererCard({
 
 export function OutputRenderersExample() {
   const [siftState, setSiftState] = useState<TableEngineState | null>(null);
+  const [siftUrlState, setSiftUrlState] = useState<TableEngineState | null>(null);
 
   return (
     <div className="not-prose space-y-6" data-testid="output-renderers-example">
@@ -555,13 +579,76 @@ export function OutputRenderersExample() {
           <div className="grid gap-2 text-xs text-fd-muted-foreground md:grid-cols-[minmax(0,1fr)_auto]">
             <div>
               Static TableData mirrors the renderer handoff after parquet/Arrow bytes have been
-              decoded. The production URL path is still tracked as an adapter boundary.
+              decoded. The generated WASM decode path is still tracked as an adapter boundary.
             </div>
             <div className="font-mono">
               {siftState
                 ? `${siftState.filteredCount}/${siftState.totalCount} rows`
                 : `${siftData.rowCount}/${siftData.rowCount} rows`}
             </div>
+          </div>
+        </div>
+      </RendererCard>
+
+      <RendererCard
+        title="Sift parquet URL handoff"
+        source="packages/sift/src/react.tsx"
+        icon={Database}
+      >
+        <div className="space-y-4" data-testid="sift-parquet-url-surface">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">
+                HuggingFace parquet source
+              </div>
+              <a
+                href={siftParquetUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 block break-words font-mono text-xs leading-5 text-fd-foreground [overflow-wrap:anywhere]"
+              >
+                {siftParquetUrl}
+              </a>
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">Catalog source</div>
+              <div className="mt-2 font-mono text-xs text-fd-foreground">
+                source.kind = table-data
+              </div>
+              <div className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+                The URL is real; the docs surface stays runtime-free by rendering the decoded table
+                fixture.
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-4">
+            {siftUrlMilestones.map((milestone) => (
+              <div
+                key={milestone.phase}
+                className="rounded-md border border-fd-border bg-fd-background p-3"
+              >
+                <div className="text-xs font-semibold">{milestone.phase}</div>
+                <div className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                  {milestone.value}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="h-[320px] min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background">
+            <SiftTable source={{ kind: "table-data", data: siftData }} onChange={setSiftUrlState} />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-fd-muted-foreground">
+            <span>
+              This keeps the visible renderer faithful to the Sift UI while keeping network, blob,
+              and generated WASM concerns outside the docs runtime.
+            </span>
+            <span className="font-mono">
+              {siftUrlState
+                ? `${siftUrlState.filteredCount}/${siftUrlState.totalCount} rows`
+                : `${siftData.rowCount}/${siftData.rowCount} rows`}
+            </span>
           </div>
         </div>
       </RendererCard>

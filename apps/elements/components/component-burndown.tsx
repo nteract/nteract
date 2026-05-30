@@ -136,7 +136,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, TracebackOutput, MIME priority, and SiftTable now render from fixtures; plugin-backed HTML/Plotly/Vega/GeoJSON and Sift URL loading remain explicit adapter boundaries.",
+      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; plugin-backed HTML/Plotly/Vega/GeoJSON and generated Sift WASM decoding remain explicit adapter boundaries.",
   },
   {
     family: "Widgets",
