@@ -59,3 +59,27 @@ test("cloud viewer exposes the shared theme toggle and shared theme hook", () =>
   assert.match(sourceText, /<ThemeToggle/);
   assert.match(sourceText, /className="cloud-theme-toggle"/);
 });
+
+test("cloud viewer defers supplemental CSS loading until the notebook surface mounts", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceFile = ts.createSourceFile(
+    sourcePath.pathname,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+
+  const topLevelSupplementalLoads = sourceFile.statements.filter(
+    (statement) =>
+      ts.isExpressionStatement(statement) &&
+      statement.expression.getText(sourceFile) === "loadSupplementalViewerCss()",
+  );
+
+  assert.equal(topLevelSupplementalLoads.length, 0);
+  assert.match(
+    sourceText,
+    /function CloudNotebookProviders[\s\S]*useEffect\(\(\) => \{\s*loadSupplementalViewerCss\(\);\s*\}, \[\]\);/,
+  );
+});
