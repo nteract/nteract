@@ -24,6 +24,7 @@ import { selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { TracebackOutput } from "@/components/outputs/traceback-output";
+import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
 
 const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
   <rect width="420" height="180" rx="16" fill="#f8fafc"/>
@@ -317,6 +318,36 @@ const tracebackFixture = {
   ],
 };
 
+const outputAreaFixtures: JupyterOutput[] = [
+  {
+    output_id: "output-area-stream",
+    output_type: "stream",
+    name: "stdout",
+    text: "loaded 22,767 rows\nvalidated fold 02 with mae=8.42\n",
+  },
+  {
+    output_id: "output-area-html",
+    output_type: "display_data",
+    data: {
+      "text/html": "<strong>unsafe HTML fixture</strong>",
+      "text/plain": "unsafe HTML fixture",
+    },
+    metadata: {},
+  },
+  {
+    output_id: "output-area-parquet",
+    output_type: "display_data",
+    data: {
+      "application/vnd.apache.parquet": {
+        url: siftParquetUrl,
+        rows: siftData.rowCount,
+      },
+      "text/plain": "heart_failure parquet fixture",
+    },
+    metadata: {},
+  },
+];
+
 const mimeFixtures = [
   {
     label: "Rich traceback beats text",
@@ -349,6 +380,11 @@ const mimeFixtures = [
 ];
 
 const renderedPieces = [
+  {
+    name: "OutputArea",
+    source: "src/components/cell/OutputArea.tsx",
+    note: "Notebook output lane composition, collapse control, DOM-vs-isolated segmentation, and search count plumbing rendered with static outputs.",
+  },
   {
     name: "AnsiStreamOutput",
     source: "src/components/outputs/ansi-output.tsx",
@@ -403,11 +439,6 @@ const renderedPieces = [
 
 const adapterBoundaries = [
   {
-    name: "OutputArea",
-    reason:
-      "Owns output focus, scroll handoff, iframe sizing, search highlighting, and widget bridge wiring.",
-  },
-  {
     name: "IsolatedFrame",
     reason:
       "Required for HTML, markdown with raw HTML, executable JavaScript, Plotly, Vega, and GeoJSON plugin surfaces.",
@@ -459,6 +490,8 @@ function RendererCard({
 export function OutputRenderersExample() {
   const [siftState, setSiftState] = useState<TableEngineState | null>(null);
   const [siftUrlState, setSiftUrlState] = useState<TableEngineState | null>(null);
+  const [outputAreaCollapsed, setOutputAreaCollapsed] = useState(false);
+  const [outputAreaMatchCount, setOutputAreaMatchCount] = useState(0);
 
   return (
     <div className="not-prose space-y-6" data-testid="output-renderers-example">
@@ -468,9 +501,9 @@ export function OutputRenderersExample() {
           <div>
             <h2 className="text-sm font-semibold">Output fixture adapter</h2>
             <p className="mt-1 text-xs leading-5">
-              These examples render current output components directly with static nbformat-like
-              fixtures. The iframe and widget paths stay documented as adapter boundaries until the
-              docs app has a runtime-free isolation fixture.
+              These examples render current output components with static nbformat-like fixtures.
+              OutputArea uses the docs isolated-frame adapter for iframe lanes, while widget comms,
+              plugin injection, and generated WASM stay explicit adapter boundaries.
             </p>
           </div>
         </div>
@@ -562,6 +595,56 @@ export function OutputRenderersExample() {
           />
         </RendererCard>
       </section>
+
+      <RendererCard
+        title="Output area lanes"
+        source="src/components/cell/OutputArea.tsx"
+        icon={ListFilter}
+      >
+        <div className="space-y-3" data-testid="output-area-lanes-surface">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">
+                Static output sequence
+              </div>
+              <div className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                Stream output stays in the document lane. HTML and parquet split into the docs
+                isolated-frame adapter, matching the production lane policy without loading a
+                runtime iframe bundle.
+              </div>
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">Search fixture</div>
+              <div className="mt-2 font-mono text-xs text-fd-foreground">
+                query=fold · matches={outputAreaMatchCount}
+              </div>
+              <button
+                type="button"
+                className="mt-3 rounded-md border border-fd-border px-2 py-1 text-xs font-medium text-fd-foreground transition-colors hover:bg-fd-muted"
+                onClick={() => setOutputAreaCollapsed((value) => !value)}
+              >
+                {outputAreaCollapsed ? "Show outputs" : "Collapse outputs"}
+              </button>
+            </div>
+          </div>
+          <div className="rounded-md border border-fd-border bg-background py-3">
+            <OutputArea
+              outputs={outputAreaFixtures}
+              cellId="elements-output-area"
+              executionCount={12}
+              collapsed={outputAreaCollapsed}
+              onToggleCollapse={() => setOutputAreaCollapsed((value) => !value)}
+              searchQuery="fold"
+              onSearchMatchCount={setOutputAreaMatchCount}
+              hostContext={{
+                nteract: {
+                  colorTheme: "classic",
+                },
+              }}
+            />
+          </div>
+        </div>
+      </RendererCard>
 
       <RendererCard
         title="Rich traceback"
