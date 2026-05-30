@@ -13,13 +13,13 @@ import {
 
 const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
-  { label: "notebook domains", value: "8", detail: "first catalog targets" },
+  { label: "notebook domains", value: "10", detail: "first catalog targets" },
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "33",
+    value: "36",
     detail:
-      "used shell toolbar, package header, search, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
+      "used shell toolbar, package headers, search, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -72,6 +72,15 @@ const families = [
     status: "active",
     intent:
       "GlobalFindBar and HistorySearchDialog now render from fixture search state; the history dialog uses a docs-local NotebookHost transport that only serves get_history.",
+  },
+  {
+    family: "Package managers",
+    source:
+      "apps/notebook/src/components/{DependencyHeader,CondaDependencyHeader,PixiDependencyHeader,DenoDependencyHeader}.tsx",
+    target: "nteract shell",
+    status: "active",
+    intent:
+      "The package manager page renders the current uv, Conda, Pixi, and Deno dependency headers with static metadata and inert callbacks, giving the rail package panel real notebook UI to converge on.",
   },
   {
     family: "Cells",
