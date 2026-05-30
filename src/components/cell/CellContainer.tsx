@@ -49,6 +49,25 @@ interface CellContainerProps {
   className?: string;
 }
 
+function CellActionOverlay({ children, dataSlot }: { children?: ReactNode; dataSlot: string }) {
+  if (!children) return null;
+
+  return (
+    <div
+      data-slot={dataSlot}
+      className={cn(
+        "absolute right-2 top-1 z-20 flex flex-col items-center gap-0.5 rounded-sm px-0.5 py-0.5 select-none",
+        "bg-background/80 shadow-sm ring-1 ring-border/40 backdrop-blur-sm",
+        "pointer-events-none opacity-0 transition-opacity duration-150",
+        "group-hover:pointer-events-auto group-hover:opacity-100",
+        "focus-within:pointer-events-auto focus-within:opacity-100",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
   (
     {
@@ -120,7 +139,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {useSegmentedRibbon ? (
           <div className="flex min-w-0 flex-1 flex-col">
             {/* Code row - ribbon + content + right gutter */}
-            <div className="flex" onMouseDown={onFocus}>
+            <div className="relative flex" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
                 data-slot="cell-ribbon"
@@ -140,21 +159,14 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               >
                 {codeContent}
               </div>
-              {/* Code row right gutter — always rendered as spacer for consistent width */}
-              <div
-                className={cn(
-                  "flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none sm:w-10",
-                  rightGutterContent &&
-                    "pointer-events-none opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
-                )}
-              >
+              <CellActionOverlay dataSlot="cell-action-overlay">
                 {rightGutterContent}
-              </div>
+              </CellActionOverlay>
             </div>
             {/* Output row - ribbon + content + right gutter
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
-              <div className={cn("flex", hideOutput && "hidden")} onMouseDown={onFocus}>
+              <div className={cn("relative flex", hideOutput && "hidden")} onMouseDown={onFocus}>
                 <div
                   data-slot="cell-output-ribbon"
                   className={cn("w-1 transition-colors duration-150", outputRibbonColor)}
@@ -176,23 +188,16 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 >
                   {outputContent}
                 </div>
-                {/* Output row right gutter — always rendered as spacer for consistent width */}
-                <div
-                  className={cn(
-                    "sticky top-2 flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none sm:w-10",
-                    outputRightGutterContent &&
-                      "pointer-events-none opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
-                  )}
-                >
+                <CellActionOverlay dataSlot="cell-output-action-overlay">
                   {outputRightGutterContent}
-                </div>
+                </CellActionOverlay>
               </div>
             )}
           </div>
         ) : (
           <>
             {/* Legacy layout - ribbon + content side by side */}
-            <div className="flex min-w-0 flex-1" onMouseDown={onFocus}>
+            <div className="relative flex min-w-0 flex-1" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
                 data-slot="cell-ribbon"
@@ -206,16 +211,9 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               <div className={cn("min-w-0 flex-1 pt-1.5 pb-3 pr-3", cellContentColumnInset)}>
                 {children}
               </div>
-            </div>
-            {/* Right margin for legacy layout — always rendered as spacer */}
-            <div
-              className={cn(
-                "flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none sm:w-10",
-                rightGutterContent &&
-                  "pointer-events-none opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
-              )}
-            >
-              {rightGutterContent}
+              <CellActionOverlay dataSlot="cell-action-overlay">
+                {rightGutterContent}
+              </CellActionOverlay>
             </div>
           </>
         )}
