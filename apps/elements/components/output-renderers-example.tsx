@@ -4,7 +4,9 @@ import { SiftTable, type TableData, type TableEngineState } from "@nteract/sift"
 import {
   AlertTriangle,
   Braces,
+  FileAudio,
   FileImage,
+  FileText,
   FileWarning,
   ListFilter,
   Table2,
@@ -12,10 +14,14 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
+import { AudioOutput } from "@/components/outputs/audio-output";
 import { ImageOutput } from "@/components/outputs/image-output";
+import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
+import { MathOutput } from "@/components/outputs/math-output";
 import { selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
+import { SvgOutput } from "@/components/outputs/svg-output";
 import { TracebackOutput } from "@/components/outputs/traceback-output";
 
 const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
@@ -30,6 +36,18 @@ const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180"
 </svg>`;
 
 const imageDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgFigure)}`;
+
+const svgOutputFixture = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
+  <rect width="420" height="180" rx="16" fill="#eef2ff"/>
+  <circle cx="92" cy="92" r="36" fill="#3b82f6" opacity="0.85"/>
+  <circle cx="174" cy="72" r="44" fill="#10b981" opacity="0.82"/>
+  <circle cx="280" cy="98" r="52" fill="#f59e0b" opacity="0.78"/>
+  <path d="M56 142 H360" stroke="#475569" stroke-width="3" stroke-linecap="round"/>
+  <text x="56" y="38" fill="#1e293b" font-family="ui-sans-serif, system-ui" font-size="16" font-weight="700">svg-output fixture</text>
+</svg>`;
+
+const silentAudioDataUrl =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
 
 const jsonFixture = {
   run: {
@@ -329,6 +347,26 @@ const renderedPieces = [
     note: "Notebook media frame with data URL and preload handling.",
   },
   {
+    name: "MathOutput",
+    source: "src/components/outputs/math-output.tsx",
+    note: "KaTeX-backed text/latex rendering that is safe in the main output lane.",
+  },
+  {
+    name: "SvgOutput",
+    source: "src/components/outputs/svg-output.tsx",
+    note: "SVG insertion and responsive sizing for vector notebook figures.",
+  },
+  {
+    name: "AudioOutput",
+    source: "src/components/outputs/audio-output.tsx",
+    note: "Notebook audio player for data URLs, blob URLs, and base64 payloads.",
+  },
+  {
+    name: "JavaScriptOutput",
+    source: "src/components/outputs/javascript-output.tsx",
+    note: "Main-DOM safety fallback for JavaScript output; execution remains isolated only.",
+  },
+  {
     name: "TracebackOutput",
     source: "src/components/outputs/traceback-output.tsx",
     note: "nteract-owned structured traceback renderer with source context and copy affordance.",
@@ -349,7 +387,7 @@ const adapterBoundaries = [
   {
     name: "IsolatedFrame",
     reason:
-      "Required for HTML, markdown with raw HTML, SVG insertion, JavaScript, Plotly, Vega, and GeoJSON plugin surfaces.",
+      "Required for HTML, markdown with raw HTML, executable JavaScript, Plotly, Vega, and GeoJSON plugin surfaces.",
   },
   {
     name: "Widget output",
@@ -444,6 +482,44 @@ export function OutputRenderersExample() {
           icon={FileImage}
         >
           <ImageOutput data={imageDataUrl} mediaType="image/svg+xml" alt="Fixture line chart" />
+        </RendererCard>
+
+        <RendererCard
+          title="Math output"
+          source="src/components/outputs/math-output.tsx"
+          icon={Braces}
+        >
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <MathOutput content="$$\\operatorname{MAE}=\\frac{1}{n}\\sum_{i=1}^{n}|y_i-\\hat{y}_i|=8.42$$" />
+          </div>
+        </RendererCard>
+
+        <RendererCard
+          title="SVG output"
+          source="src/components/outputs/svg-output.tsx"
+          icon={FileImage}
+        >
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <SvgOutput data={svgOutputFixture} />
+          </div>
+        </RendererCard>
+
+        <RendererCard
+          title="Audio output"
+          source="src/components/outputs/audio-output.tsx"
+          icon={FileAudio}
+        >
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <AudioOutput data={silentAudioDataUrl} mediaType="audio/wav" />
+          </div>
+        </RendererCard>
+
+        <RendererCard
+          title="JavaScript output boundary"
+          source="src/components/outputs/javascript-output.tsx"
+          icon={FileText}
+        >
+          <JavaScriptOutput code="element.textContent = 'executed in isolated iframe only';" />
         </RendererCard>
 
         <RendererCard

@@ -16,13 +16,14 @@ state, iframe bootstrapping, or plugin injection.
 ## What is real here
 
 The rendered surfaces import current output components directly: ANSI streams
-and errors, JSON trees, image output, the structured traceback renderer, and
+and errors, JSON trees, image output, math output, SVG output, audio output,
+the JavaScript isolation fallback, the structured traceback renderer, and
 `SiftTable` with static `TableData`. The MIME selection table uses the same
 priority helper the notebook uses before rendering.
 
 ## What still needs an adapter
 
-`OutputArea`, isolated HTML/markdown/SVG/JavaScript, Plotly/Vega/GeoJSON plugin
-renderers, widget views, and Sift parquet/Arrow URL loading still need
-fixture-backed isolation, widget-store, or generated WASM asset adapters before
-this docs app should render those paths.
+`OutputArea`, isolated HTML/markdown, executable JavaScript,
+Plotly/Vega/GeoJSON plugin renderers, widget views, and Sift parquet/Arrow URL
+loading still need fixture-backed isolation, widget-store, or generated WASM
+asset adapters before this docs app should render those paths.

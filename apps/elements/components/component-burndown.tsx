@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "39",
+    value: "43",
     detail:
-      "used shell toolbar, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
+      "used shell toolbar, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, expanded renderer, editor, and widget surfaces",
   },
 ];
 
@@ -136,7 +136,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, TracebackOutput, MIME priority, and SiftTable now render from fixtures; Sift parquet/Arrow URL loading remains an explicit WASM asset adapter boundary.",
+      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, TracebackOutput, MIME priority, and SiftTable now render from fixtures; plugin-backed HTML/Plotly/Vega/GeoJSON and Sift URL loading remain explicit adapter boundaries.",
   },
   {
     family: "Widgets",
