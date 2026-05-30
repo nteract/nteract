@@ -155,7 +155,7 @@ vi.mock("../cell/CellPresenceIndicators", () => ({
 
 import { CodeCell } from "../CodeCell";
 
-function makeCell(): CodeCellType {
+function makeCell(overrides: Partial<CodeCellType> = {}): CodeCellType {
   return {
     cell_type: "code",
     execution_count: null,
@@ -163,6 +163,7 @@ function makeCell(): CodeCellType {
     source: "import polars as pl\n\npl.DataFrame({'x': [1]})",
     metadata: {},
     outputs: [],
+    ...overrides,
   };
 }
 
@@ -238,7 +239,7 @@ describe("CodeCell output focus", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     expect(footer?.getAttribute("data-execution-label")).toBe("Execution 12");
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("CompletedinPython·run12");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12,completed");
     expect(footer?.textContent).not.toContain("In [12]");
   });
 
@@ -263,7 +264,7 @@ describe("CodeCell output focus", () => {
     const stopButton = getByTestId("execute-button");
 
     expect(footer?.getAttribute("data-execution-state")).toBe("running");
-    expect(status?.textContent).toBe("Running in Python");
+    expect(status?.textContent).toBe("Python·Running");
     expect(status).toHaveClass("text-primary");
     expect(status).not.toHaveClass("text-destructive/80");
     expect(rule).toHaveClass("bg-primary/45");
@@ -289,10 +290,10 @@ describe("CodeCell output focus", () => {
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer?.getAttribute("data-execution-state")).toBe("idle");
-    expect(status?.textContent).toBe("Ready to run in Python");
+    expect(status?.textContent).toBe("Python·Ready");
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
-    expect(status).toHaveClass("group-hover:max-w-40");
+    expect(status).toHaveClass("group-hover:max-w-64");
     expect(rule).toHaveClass("bg-transparent");
   });
 
@@ -313,10 +314,37 @@ describe("CodeCell output focus", () => {
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
-    expect(status?.textContent).toBe("Ready to run in Python");
-    expect(status).toHaveClass("max-w-40");
+    expect(status?.textContent).toBe("Python·Ready");
+    expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
     expect(status).not.toHaveClass("max-w-0");
+  });
+
+  it("keeps the current line visible when source is hidden but output remains visible", () => {
+    mockOutputs = [
+      {
+        output_type: "stream",
+        name: "stdout",
+        text: "visible output\n",
+      },
+    ];
+    mockExecution = { execution_count: 4, submitted_by_actor_label: null };
+
+    const { container, queryByTestId } = render(
+      <CodeCell
+        cell={makeCell({ metadata: { jupyter: { source_hidden: true } } })}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleSourceHidden={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+
+    expect(queryByTestId("editor")).toBeNull();
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run4,completed");
   });
 
   it("omits output chrome for short stream output", () => {

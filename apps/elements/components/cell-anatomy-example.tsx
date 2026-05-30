@@ -2,6 +2,8 @@
 
 import {
   Braces,
+  ChevronRight,
+  Code2,
   CheckCircle2,
   CircleDot,
   FileText,
@@ -12,7 +14,7 @@ import {
 import { useEffect, type ReactNode } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CellInsertionRibbon } from "@/components/cell/CellInsertionRibbon";
-import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
+import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
@@ -50,9 +52,9 @@ const layers = [
     status: "rendered",
   },
   {
-    name: "CompactExecutionButton",
-    source: "src/components/cell/CompactExecutionButton.tsx",
-    role: "Legacy side-marker exploration retained while execution moves into the code-cell current line.",
+    name: "CodeCellCurrentLine",
+    source: "src/components/cell/CodeCellCurrentLine.tsx",
+    role: "Natural-language run state, execution count, and bottom run/stop affordance.",
     status: "rendered",
   },
   {
@@ -105,26 +107,72 @@ const cellTypeFixtures = [
   },
 ];
 
-const executionStateFixtures = [
+const currentLineStateFixtures = [
   {
-    label: "Never run",
-    detail: "play",
-    control: <CompactExecutionButton count={null} />,
+    label: "Idle",
+    detail: "Quiet until hover, focus, or keyboard focus.",
+    line: (
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={null}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
+    ),
   },
   {
-    label: "Ran",
-    detail: "count",
-    control: <CompactExecutionButton count={12} />,
+    label: "Focused idle",
+    detail: "Language becomes readable when the cell owns focus.",
+    line: (
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={null}
+        isFocused
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
+    ),
   },
   {
     label: "Queued",
-    detail: "waiting",
-    control: <CompactExecutionButton count={12} isQueued submittedByActorLabel="local:kyle" />,
+    detail: "Waiting uses the queue accent without becoming an error.",
+    line: (
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={12}
+        isQueued
+        submittedByActorLabel="local:kyle"
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
+    ),
   },
   {
-    label: "Busy",
-    detail: "interrupt",
-    control: <CompactExecutionButton count={12} isExecuting submittedByActorLabel="local:kyle" />,
+    label: "Running",
+    detail: "Status reads active; the stop control carries danger.",
+    line: (
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={12}
+        isExecuting
+        submittedByActorLabel="local:kyle"
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
+    ),
+  },
+  {
+    label: "Completed",
+    detail: "The finished state leads with language, then compact run metadata.",
+    line: (
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={12}
+        elapsedMs={1476}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
+    ),
   },
 ];
 
@@ -134,7 +182,8 @@ const contracts = [
   "Cell identity and stable DOM order stay outside the visual component.",
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",
   "The rail owns notebook navigation; the ribbon owns type, focus, insertion intent, and document continuity.",
-  "The code-cell current line owns run state.",
+  "The code-cell current line owns the source/result boundary and run state.",
+  "Hidden source keeps the current line when output remains visible; fully hidden cells collapse to one reveal affordance.",
 ];
 
 const insertionRibbonRows = [
@@ -150,6 +199,33 @@ const insertionRibbonRows = [
       "The final add row keeps the action line in place while the spine fades into whitespace.",
     activeType: "code" as const,
     terminal: true,
+  },
+];
+
+const hiddenBoundaryRows = [
+  {
+    id: "source-hidden-output-visible",
+    label: "Input hidden",
+    detail: "The source reveal sits above the current line; output still follows the boundary.",
+    codeContent: <BoundarySourceFixture sourceHidden />,
+    outputContent: <BoundaryOutputFixture />,
+    hideOutput: false,
+  },
+  {
+    id: "output-hidden-source-visible",
+    label: "Output hidden",
+    detail: "The current line stays with the source; the hidden output reveal owns the output row.",
+    codeContent: <BoundarySourceFixture />,
+    outputContent: <HiddenOutputFixture />,
+    hideOutput: false,
+  },
+  {
+    id: "both-hidden",
+    label: "Input and output hidden",
+    detail: "When both sides disappear, the cell collapses to one reveal affordance.",
+    codeContent: <HiddenCellFixture />,
+    outputContent: <HiddenOutputFixture />,
+    hideOutput: true,
   },
 ];
 
@@ -221,7 +297,7 @@ function PresenceFixtureProvider({ children }: { children: ReactNode }) {
 
 function SourceFixture() {
   return (
-    <div className="min-w-0">
+    <div className="group min-w-0">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Rows3 className="size-4 flex-none text-fd-muted-foreground" aria-hidden="true" />
@@ -250,6 +326,14 @@ function SourceFixture() {
           readOnly
         />
       </div>
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={12}
+        elapsedMs={1476}
+        isFocused
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
     </div>
   );
 }
@@ -288,6 +372,69 @@ function InsertionRibbonFixture({
       forceActionsVisible
       onInsert={() => undefined}
     />
+  );
+}
+
+function BoundarySourceFixture({ sourceHidden = false }: { sourceHidden?: boolean }) {
+  return (
+    <div className="group min-w-0">
+      {sourceHidden ? (
+        <button
+          type="button"
+          className="inline-flex max-w-full items-center gap-1 rounded bg-muted/50 px-2 py-0.5 font-mono text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Code2 className="size-3 flex-none" aria-hidden="true" />
+          <span className="truncate">{sourceFixture.split("\n")[0]}</span>
+          <ChevronRight className="size-3 flex-none" aria-hidden="true" />
+        </button>
+      ) : (
+        <pre className="m-0 overflow-hidden rounded border border-border bg-background px-3 py-2 font-mono text-xs leading-5 text-foreground">
+          {sourceFixture.split("\n").slice(0, 2).join("\n")}
+        </pre>
+      )}
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={12}
+        elapsedMs={1476}
+        isFocused
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+      />
+    </div>
+  );
+}
+
+function BoundaryOutputFixture() {
+  return (
+    <div className="px-3 py-2 text-xs leading-5 text-fd-muted-foreground">
+      MAE=8.42&nbsp;&nbsp;MAPE=6.8%&nbsp;&nbsp;Backtest=16 weeks
+    </div>
+  );
+}
+
+function HiddenOutputFixture() {
+  return (
+    <div className="px-3 py-2">
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 rounded bg-muted/50 px-2 py-0.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <span>2 outputs</span>
+        <ChevronRight className="size-3" aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+function HiddenCellFixture() {
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded bg-muted/50 px-2 py-0.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+    >
+      <span>Cell hidden</span>
+      <ChevronRight className="size-3" aria-hidden="true" />
+    </button>
   );
 }
 
@@ -391,23 +538,52 @@ export function CellAnatomyExample() {
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="border-b border-fd-border p-4">
-          <h2 className="text-sm font-semibold">Execution Marker Alternatives</h2>
+          <h2 className="text-sm font-semibold">Current Line States</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            These side markers are kept separate from the main cell anatomy while the executable
-            state moves toward the code-cell current line at the source/result boundary.
+            Execution state sits at the source/result boundary. The language leads as cell identity,
+            and the run state reads as compact metadata.
           </p>
         </div>
-        <div className="grid gap-3 bg-background p-4 sm:grid-cols-2 lg:grid-cols-4">
-          {executionStateFixtures.map((state) => (
+        <div className="grid gap-3 bg-background p-4 lg:grid-cols-2">
+          {currentLineStateFixtures.map((state) => (
             <div
               key={state.label}
-              className="flex items-center gap-3 rounded-md border border-fd-border bg-fd-card p-3"
+              className="group rounded-md border border-fd-border bg-fd-card p-3"
             >
-              <div className="flex w-7 justify-end">{state.control}</div>
               <div className="min-w-0">
                 <div className="text-sm font-medium">{state.label}</div>
                 <div className="mt-1 text-xs text-fd-muted-foreground">{state.detail}</div>
               </div>
+              <div className="mt-3 min-w-0">{state.line}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
+          <h2 className="text-sm font-semibold">Hidden Boundaries</h2>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            The current line belongs to the source/result boundary. It remains when either side is
+            still visible and disappears only when the whole cell is intentionally collapsed.
+          </p>
+        </div>
+        <div className="divide-y divide-fd-border bg-background py-2">
+          {hiddenBoundaryRows.map((row) => (
+            <div key={row.id} className="grid gap-3 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+              <div>
+                <h3 className="text-sm font-semibold">{row.label}</h3>
+                <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{row.detail}</p>
+              </div>
+              <CellContainer
+                id={row.id}
+                cellType="code"
+                isFocused
+                className="mx-0 px-0"
+                codeContent={row.codeContent}
+                outputContent={row.outputContent}
+                hideOutput={row.hideOutput}
+              />
             </div>
           ))}
         </div>
