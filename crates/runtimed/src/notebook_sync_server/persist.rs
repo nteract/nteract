@@ -111,6 +111,18 @@ pub(crate) async fn save_notebook_to_disk(
     // intact and the next open re-streams from it. A genuine "user deleted all
     // cells" save is unaffected — that path loaded successfully, so
     // `load_failed` is false.
+    //
+    // Scope note (deferred to the root-cause fix, which removes the failed-load
+    // trigger by matching the frontend genesis seed to the daemon):
+    //  - An explicit in-place Save (`NotebookRequest::SaveNotebook`) passes
+    //    `target_path = None`, the same as autosave, so it is skipped silently
+    //    here and reported as a (phantom) success rather than surfaced. Only an
+    //    explicit Save As (`Some`) returns an error. Distinguishing them needs a
+    //    save-origin signal threaded from the request handler.
+    //  - A successful *empty* external reload (`cells: []`) leaves `load_failed`
+    //    set (the watcher only clears on a non-empty reload), so a legitimately
+    //    empty notebook stays guarded until a cell is added or it is reopened.
+    // Neither is data loss — both keep the file intact.
     if cells.is_empty() && room.load_failed() {
         let disk_has_content = existing_raw
             .as_deref()
