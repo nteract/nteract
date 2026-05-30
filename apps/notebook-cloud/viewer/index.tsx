@@ -47,6 +47,7 @@ import { EditableMarkdownCell, type CloudTextAttributionQueue } from "./editable
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import {
   clearCloudPrototypeDevAuth,
+  cloudNotebookSignInCopy,
   cloudPrototypeAuthFromWindow,
   cloudSyncAuthFromPrototypeAuthState,
   fetchWithCloudPrototypeAuth,
@@ -1640,6 +1641,7 @@ function CloudNotebookSignInButton({
   if (!authConfig.oidc || authState.mode === "oidc") {
     return null;
   }
+  const copy = cloudNotebookSignInCopy(authState, authAction, error);
 
   const beginOidcAuth = async () => {
     if (!authConfig.oidc) return;
@@ -1664,11 +1666,11 @@ function CloudNotebookSignInButton({
       className="cloud-sign-in-button"
       data-state={error ? "error" : authAction}
       disabled={authAction === "starting"}
-      title={error ?? "Sign in with Anaconda"}
+      title={copy.title}
       onClick={beginOidcAuth}
     >
       <LogIn aria-hidden="true" />
-      <span>{error ? "Sign-in failed" : authAction === "starting" ? "Signing in" : "Sign in"}</span>
+      <span>{copy.label}</span>
     </button>
   );
 }

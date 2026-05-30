@@ -75,6 +75,13 @@ export interface CloudPrototypeAuthDiagnostics {
   copyText: string;
 }
 
+export type CloudNotebookSignInAction = "idle" | "starting";
+
+export interface CloudNotebookSignInCopy {
+  label: string;
+  title: string;
+}
+
 export function cloudPrototypeAuthFromWindow(): CloudPrototypeAuthState {
   if (typeof window === "undefined") {
     return anonymousAuthState();
@@ -286,6 +293,41 @@ export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
     return state.problem ?? "Stored collaborator token is invalid.";
   }
   return "Anonymous read-only viewer";
+}
+
+export function cloudNotebookSignInCopy(
+  state: CloudPrototypeAuthState,
+  action: CloudNotebookSignInAction,
+  error: string | null = null,
+): CloudNotebookSignInCopy {
+  if (error) {
+    return {
+      label: "Sign-in failed",
+      title: error,
+    };
+  }
+  if (action === "starting") {
+    return {
+      label: "Signing in",
+      title: "Starting Anaconda sign-in",
+    };
+  }
+  if (state.mode === "oidc_expired") {
+    return {
+      label: "Sign in again",
+      title: "Renew your Anaconda sign-in for this notebook",
+    };
+  }
+  if (state.mode === "invalid") {
+    return {
+      label: "Sign in",
+      title: "Replace the invalid stored auth state with Anaconda sign-in",
+    };
+  }
+  return {
+    label: "Sign in",
+    title: "Sign in with Anaconda",
+  };
 }
 
 export function prototypeAuthDiagnostics(
