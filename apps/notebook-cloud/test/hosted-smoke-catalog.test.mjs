@@ -20,6 +20,7 @@ describe("hosted render smoke catalog checks", () => {
           actor_label: "user:dev:live-publish/agent:publish-live",
           notebook_heads_hash: "heads-notebook",
           runtime_heads_hash: "heads-runtime",
+          runtime_state_doc_id: "runtime-state-doc-id",
         },
       ],
     });
@@ -30,6 +31,7 @@ describe("hosted render smoke catalog checks", () => {
       latestRevisionActorLabel: "user:dev:live-publish/agent:publish-live",
       latestRevisionNotebookHeadsHash: "heads-notebook",
       latestRevisionRuntimeHeadsHash: "heads-runtime",
+      latestRevisionRuntimeStateDocId: "runtime-state-doc-id",
       revisionCount: 2,
     });
   });
@@ -44,6 +46,7 @@ describe("hosted render smoke catalog checks", () => {
     assert.equal(summary.latestRevisionActorLabel, null);
     assert.equal(summary.latestRevisionNotebookHeadsHash, null);
     assert.equal(summary.latestRevisionRuntimeHeadsHash, null);
+    assert.equal(summary.latestRevisionRuntimeStateDocId, null);
   });
 
   it("reports catalog expectation mismatches", () => {
@@ -60,6 +63,8 @@ describe("hosted render smoke catalog checks", () => {
           expectedLatestRevisionActorLabel: "user:dev:live-publish/agent:publish-live",
           expectedLatestRevisionNotebookHeadsHash: "heads-notebook",
           expectedLatestRevisionRuntimeHeadsHash: "heads-runtime",
+          expectedLatestRevisionRuntimeStateDocId: "runtime-state-doc-id",
+          requireLatestRevisionRuntimeStateDocId: true,
         },
       ),
       [
@@ -75,7 +80,27 @@ describe("hosted render smoke catalog checks", () => {
         {
           text: "expected latest runtime heads heads-runtime, got missing",
         },
+        {
+          text: "expected latest revision runtime_state_doc_id, got missing",
+        },
+        {
+          text: "expected latest runtime_state_doc_id runtime-state-doc-id, got missing",
+        },
       ],
+    );
+  });
+
+  it("accepts any present latest runtime_state_doc_id when only presence is required", () => {
+    assert.deepEqual(
+      catalogExpectationFailures(
+        {
+          latestRevisionRuntimeStateDocId: "runtime-state-doc-id",
+        },
+        {
+          requireLatestRevisionRuntimeStateDocId: true,
+        },
+      ),
+      [],
     );
   });
 });

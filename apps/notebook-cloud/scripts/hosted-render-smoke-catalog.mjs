@@ -19,6 +19,10 @@ export function summarizeCatalog(json) {
     typeof latestRevision?.runtime_heads_hash === "string"
       ? latestRevision.runtime_heads_hash
       : null;
+  const latestRevisionRuntimeStateDocId =
+    typeof latestRevision?.runtime_state_doc_id === "string"
+      ? latestRevision.runtime_state_doc_id
+      : null;
 
   return {
     ownerPrincipal,
@@ -26,6 +30,7 @@ export function summarizeCatalog(json) {
     latestRevisionActorLabel,
     latestRevisionNotebookHeadsHash,
     latestRevisionRuntimeHeadsHash,
+    latestRevisionRuntimeStateDocId,
     revisionCount: revisions.length,
   };
 }
@@ -37,6 +42,8 @@ export function catalogExpectationFailures(
     expectedLatestRevisionActorLabel,
     expectedLatestRevisionNotebookHeadsHash,
     expectedLatestRevisionRuntimeHeadsHash,
+    expectedLatestRevisionRuntimeStateDocId,
+    requireLatestRevisionRuntimeStateDocId,
   },
 ) {
   const failures = [];
@@ -74,6 +81,21 @@ export function catalogExpectationFailures(
     failures.push({
       text: `expected latest runtime heads ${expectedLatestRevisionRuntimeHeadsHash}, got ${
         summary.latestRevisionRuntimeHeadsHash ?? "missing"
+      }`,
+    });
+  }
+  if (requireLatestRevisionRuntimeStateDocId && !summary.latestRevisionRuntimeStateDocId) {
+    failures.push({
+      text: "expected latest revision runtime_state_doc_id, got missing",
+    });
+  }
+  if (
+    expectedLatestRevisionRuntimeStateDocId &&
+    summary.latestRevisionRuntimeStateDocId !== expectedLatestRevisionRuntimeStateDocId
+  ) {
+    failures.push({
+      text: `expected latest runtime_state_doc_id ${expectedLatestRevisionRuntimeStateDocId}, got ${
+        summary.latestRevisionRuntimeStateDocId ?? "missing"
       }`,
     });
   }

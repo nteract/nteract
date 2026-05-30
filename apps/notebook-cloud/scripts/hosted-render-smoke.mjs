@@ -61,6 +61,10 @@ const expectedLatestRevisionNotebookHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH ?? "";
 const expectedLatestRevisionRuntimeHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH ?? "";
+const expectedLatestRevisionRuntimeStateDocId =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_STATE_DOC_ID ?? "";
+const requireLatestRevisionRuntimeStateDocId =
+  process.env.NOTEBOOK_CLOUD_REQUIRE_LATEST_REVISION_RUNTIME_STATE_DOC_ID !== "0";
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const expectedSiftLoadMilestones = parseExpectedTexts(
   "NOTEBOOK_CLOUD_EXPECTED_SIFT_LOAD_MILESTONES",
@@ -231,7 +235,9 @@ async function main() {
       expectedCatalogOwnerPrincipal ||
       expectedLatestRevisionActorLabel ||
       expectedLatestRevisionNotebookHeadsHash ||
-      expectedLatestRevisionRuntimeHeadsHash
+      expectedLatestRevisionRuntimeHeadsHash ||
+      expectedLatestRevisionRuntimeStateDocId ||
+      requireLatestRevisionRuntimeStateDocId
     ) {
       const started = elapsedMs();
       catalogApiCheck = await checkHostedCatalogApi(targetUrl, {
@@ -239,6 +245,8 @@ async function main() {
         expectedLatestRevisionActorLabel,
         expectedLatestRevisionNotebookHeadsHash,
         expectedLatestRevisionRuntimeHeadsHash,
+        expectedLatestRevisionRuntimeStateDocId,
+        requireLatestRevisionRuntimeStateDocId,
       });
       catalogApiCheck = withTiming(catalogApiCheck, started, elapsedMs());
     }
@@ -509,6 +517,8 @@ async function main() {
           expectedLatestRevisionActorLabel,
           expectedLatestRevisionNotebookHeadsHash,
           expectedLatestRevisionRuntimeHeadsHash,
+          expectedLatestRevisionRuntimeStateDocId,
+          requireLatestRevisionRuntimeStateDocId,
           timings_ms: timingsMs,
           viewer_milestones_ms: viewerMilestones,
           performanceDiagnostics: summarizePerformanceResources(performanceResources, timingsMs),
@@ -884,6 +894,8 @@ async function checkHostedCatalogApi(
     expectedLatestRevisionActorLabel,
     expectedLatestRevisionNotebookHeadsHash,
     expectedLatestRevisionRuntimeHeadsHash,
+    expectedLatestRevisionRuntimeStateDocId,
+    requireLatestRevisionRuntimeStateDocId,
   },
 ) {
   const catalogUrl = catalogApiUrlForViewer(viewerUrl);
@@ -911,6 +923,8 @@ async function checkHostedCatalogApi(
     expectedLatestRevisionActorLabel,
     expectedLatestRevisionNotebookHeadsHash,
     expectedLatestRevisionRuntimeHeadsHash,
+    expectedLatestRevisionRuntimeStateDocId,
+    requireLatestRevisionRuntimeStateDocId,
   })) {
     failures.push({
       ...failure,
