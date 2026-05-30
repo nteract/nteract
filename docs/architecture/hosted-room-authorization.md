@@ -24,9 +24,8 @@ Neighbors:
 
 - `docs/architecture/identity-and-trust.md` - principal/operator labels,
   connection scopes, provider validation, and actor-principal enforcement.
-- `docs/architecture/hosted-credential-transport.md` - direct OIDC, optional
-  Cloudflare Access, JupyterHub, browser WebSocket credential transports, and
-  origin policy.
+- `docs/architecture/hosted-credential-transport.md` - direct OIDC, JupyterHub,
+  browser WebSocket credential transports, and origin policy.
 - `docs/architecture/hosted-notebook-artifacts.md` - R2 snapshot pair and
   render-cache layout.
 - `docs/architecture/blob-storage-and-content-addressing.md` - BlobResolver

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { FrameType } from "runtimed";
-import { openWebSocket } from "./hosted-access-smoke-ws.mjs";
+import { openWebSocket } from "./raw-websocket-client.mjs";
 import { credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
 
 const wasmJsPath = new URL(

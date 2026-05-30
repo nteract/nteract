@@ -14,9 +14,8 @@ layers:
   per-frame actor validation.
 - `hosted-room-authorization.md` defines the hosted room ACL and makes the
   Durable Object the live document host.
-- `hosted-credential-transport.md` defines how direct OIDC, optional
-  Cloudflare Access, JupyterHub, browser WebSockets, and native clients present
-  credentials.
+- `hosted-credential-transport.md` defines how direct OIDC, JupyterHub,
+  browser WebSockets, and native clients present credentials.
 - `hosted-notebook-artifacts.md` defines the durable snapshot pair and blob
   layout.
 - `hosted-output-origin-isolation.md` defines why authenticated app origins,
@@ -116,9 +115,7 @@ the nteract room ACL still grants `runtime_peer`, `editor`, or `owner`.
 Anaconda auth fits the hosted room side as an OIDC identity source. The
 Anaconda-friendly deployment uses direct OIDC against Anaconda stage on
 `preview.runt.run`, and the Worker validates Anaconda-issued bearer JWTs before
-consulting the room ACL. Cloudflare Access can remain an optional outer
-perimeter for deployments that deliberately want it, but it is not the default
-notebook-cloud login path.
+consulting the room ACL.
 
 References:
 
@@ -278,7 +275,7 @@ Examples:
 | Locator | Room host | Auth boundary | Notes |
 |---------|-----------|---------------|-------|
 | `local-daemon:<uuid>` | local daemon | Unix peer credential / same-user trust | Local room, optional file binding |
-| `https://notebooks.example/n/<id>` | Cloudflare Worker + DO | Access/OIDC/JupyterHub/native credential, then room ACL | Hosted document engine |
+| `https://notebooks.example/n/<id>` | Cloudflare Worker + DO | OIDC/JupyterHub/native credential, then room ACL | Hosted document engine |
 | `wss://notebooks.example/n/<id>/sync` | Cloudflare Worker + DO | Same as hosted URL | Direct sync endpoint |
 | `hub.example/user/alice/n/<id>` | Hub deployment, if implemented | Hub token/OAuth, then room ACL | Possible self-hosted room host, not the preferred Anaconda-hosted topology |
 

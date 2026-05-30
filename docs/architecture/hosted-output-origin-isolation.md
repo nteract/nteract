@@ -106,7 +106,6 @@ or blob resolver, not by giving the output frame application-origin powers.
 Output document JavaScript must not receive:
 
 - direct OIDC access or refresh tokens;
-- Cloudflare Access cookies or Access JWTs if an outer Access perimeter is used;
 - notebook room bearer tokens, one-time tickets, or dev tokens;
 - `Authorization` material;
 - trusted identity headers;

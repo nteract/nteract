@@ -12,8 +12,8 @@ The base identity ADR (`identity-and-trust.md`) already decides the principal /
 operator actor-label model and the per-room ACL model. The hosted authorization
 ADR (`hosted-room-authorization.md`) already decides that D1 ACL rows are the
 room authority. This ADR decides how credentials reach the hosted room and how
-direct OIDC providers, optional Cloudflare Access deployments, JupyterHub,
-native clients, and browser WebSockets fit into that model.
+direct OIDC providers, JupyterHub, native clients, and browser WebSockets fit
+into that model.
 
 Important constraints:
 
@@ -27,10 +27,8 @@ Important constraints:
 - JupyterHub deployments often prefer Hub tokens over Hub cookies for API and
   WebSocket clients. Cookie auth can work, but it is not the generic Hub
   recommendation because Hub cookie flows also bring CSRF handling.
-- Anaconda is an OIDC identity provider. The earlier Cloudflare Access path
-  added a second paid auth product in front of credentials we already control,
-  so the first hosted notebook-cloud path should validate Anaconda-issued OIDC
-  tokens directly in the Worker.
+- Anaconda is an OIDC identity provider, so the first hosted notebook-cloud path
+  should validate Anaconda-issued OIDC tokens directly in the Worker.
 - `runtimed/intheloop` already has deployed OIDC precedent: `app.runt.run`
   uses production Anaconda OIDC, while `preview.runt.run` uses stage Anaconda
   OIDC and redirects to `/oidc`. The preview app is no longer the active
@@ -45,8 +43,6 @@ answers "what may this principal do in this notebook room?"
 
 The listener normalizes transport-specific inputs into a credential:
 
-- Access assertion header from Cloudflare Access.
-- Access token header from `cloudflared access token` / CLI clients.
 - Bearer token from `Authorization` for native clients.
 - Bearer token from a WebSocket subprotocol for browser clients that already
   hold a token.
@@ -56,17 +52,13 @@ The listener normalizes transport-specific inputs into a credential:
 
 Exactly one identity-bearing credential transport is accepted for a connection.
 If a request presents multiple credentials, the listener rejects it unless the
-deployment has explicitly defined that combination as one credential. The common
-exception is Cloudflare Access: an Access application cookie and the
-`Cf-Access-Jwt-Assertion` derived from it are one Access credential, and the
-Worker validates the assertion rather than treating the cookie as an independent
-provider credential.
+deployment has explicitly defined that combination as one credential.
 
-Do not rely on "first credential wins" behavior. If an Access assertion, bearer
-header, subprotocol token, or ticket appear together and could authenticate
-different principals, reject the upgrade instead of choosing one silently. This
-prevents confused-deputy bugs where JavaScript supplies one identity while an
-ambient cookie supplies another.
+Do not rely on "first credential wins" behavior. If a bearer header,
+subprotocol token, ticket, or provider cookie appear together and could
+authenticate different principals, reject the upgrade instead of choosing one
+silently. This prevents confused-deputy bugs where JavaScript supplies one
+identity while an ambient cookie supplies another.
 
 The provider validates the normalized credential and yields:
 
@@ -102,9 +94,9 @@ browser flow directly:
 9. The Durable Object receives only trusted headers stamped by the Worker. It
    never trusts browser-provided identity headers.
 
-This removes Cloudflare Access from the default auth path. Cloudflare still
-hosts the Worker, Durable Object, D1, R2, assets, and custom domain, but it does
-not own the notebook user's login session for this deployment.
+Cloudflare still hosts the Worker, Durable Object, D1, R2, assets, and custom
+domain, but it does not own the notebook user's login session for this
+deployment.
 
 ### Staging and production domain reuse
 
@@ -153,12 +145,11 @@ selects the real application protocol (`nteract.v4`) in the response. The
 credential subprotocol is not echoed back.
 
 The "not echoed back" rule is also a prototype requirement. The hosted Worker
-strips the current `nteract-access-token.*` and `nteract-dev-token.*`
-credential-bearing subprotocols before it forwards the upgrade to the room
-host. If the client offered the non-sensitive application protocol, the Worker
-selects only `nteract.v4`; if it did not, the Worker selects no subprotocol.
-Tests must assert that credential-bearing protocol elements are never returned
-in upgrade responses or trusted room headers.
+strips credential-bearing subprotocols before it forwards the upgrade to the
+room host. If the client offered the non-sensitive application protocol, the
+Worker selects only `nteract.v4`; if it did not, the Worker selects no
+subprotocol. Tests must assert that credential-bearing protocol elements are
+never returned in upgrade responses or trusted room headers.
 
 This is better than `?token=...` because the bearer does not enter the URL,
 browser history, referrer paths, or ordinary route metrics. It is still a
@@ -175,10 +166,8 @@ Subprotocol bearer tokens are appropriate for:
   short-lived token to the page.
 
 `nteract-bearer.*` is the proposed generic bearer-token convention. The hosted
-prototype currently has narrower prefixes for already-implemented paths:
-`nteract-access-token.*` for Access JWTs and `nteract-dev-token.*` for deployed
-dev-token smoke tests. Those prefixes can coexist while direct OIDC/JupyterHub
-bearer support lands. A later cleanup may migrate them behind the generic
+prototype also has a narrower `nteract-dev-token.*` prefix for deployed
+dev-token smoke tests. A later cleanup may migrate that path behind the generic
 `nteract-bearer.*` prefix once the credential payload carries enough issuer
 metadata to dispatch safely.
 
@@ -225,14 +214,6 @@ long-lived bearer token in a WebSocket URL.
 Cookies are acceptable only when the deployment owns the CSRF and origin policy
 for the provider.
 
-For Cloudflare Access browser sessions:
-
-- the cookie is the Access application session, not a notebook room token;
-- the Worker validates `Cf-Access-Jwt-Assertion`, not arbitrary user headers;
-- cookie-backed WebSocket upgrades must pass an explicit `Origin` allowlist;
-- public viewer sockets may still use the same origin checks when cookies are
-  present, so public read does not accidentally become authenticated write.
-
 For JupyterHub:
 
 - prefer Hub-issued tokens for native clients and API-style clients;
@@ -254,11 +235,6 @@ upgrade when the platform allows it:
 - CLI or TUI;
 - local or hosted agent process;
 - remote runtime sidecar or kernel service.
-
-Cloudflare Access service tokens are deployment-specific and not part of the
-default direct-OIDC path. If a host elects to add Access as an outer perimeter,
-the Worker must still validate the resulting assertion or bearer token before it
-stamps trusted room headers.
 
 Longer term replay mitigation is out of scope for this ADR. DPoP,
 proof-of-possession tokens, mTLS, device posture, and short token lifetimes can
@@ -349,7 +325,7 @@ shape live in `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
    - `NOTEBOOK_CLOUD_OIDC_REDIRECT_URI`
 5. Keep credential subprotocol stripping covered by tests. The listener must
    return only a non-sensitive application protocol such as `nteract.v4`, never
-   `nteract-access-token.*`, `nteract-dev-token.*`, or `nteract-bearer.*`.
+   `nteract-dev-token.*` or `nteract-bearer.*`.
 6. Configure `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` for any notebook application
    origin that is not the Worker origin itself.
 7. Keep notebook sharing in D1 ACL rows:
@@ -399,14 +375,10 @@ namespace, and optional perimeter configuration.
   resolution.
 - `docs/architecture/hosted-output-origin-isolation.md` - hosted output
   document, renderer asset, and blob-origin separation.
-- `apps/notebook-cloud/src/identity.ts` - current Cloudflare Access JWT and
-  dev-token credential extraction.
+- `apps/notebook-cloud/src/identity.ts` - current OIDC and dev-token credential
+  extraction.
 - Cloudflare WebSockets docs:
   `https://developers.cloudflare.com/network/websockets/`
-- Cloudflare Access authorization cookie docs:
-  `https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/`
-- Cloudflare Access JWT validation docs:
-  `https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/`
 - JupyterHub services auth implementation:
   `jupyterhub/services/auth.py`
 - PR #2801 review discussion:
