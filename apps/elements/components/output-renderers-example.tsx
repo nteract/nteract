@@ -932,6 +932,44 @@ const adapterBoundaries = [
   },
 ];
 
+const rendererBoundaryRows = [
+  {
+    surface: "Main DOM outputs",
+    catalogPath: "direct component render",
+    productionBoundary: "none",
+    detail:
+      "ANSI, JSON, image, math, SVG, audio, PDF, video, and traceback examples render through the current output components with static nbformat-like fixtures.",
+  },
+  {
+    surface: "JavaScript output",
+    catalogPath: "JavaScriptOutput fallback",
+    productionBoundary: "isolated execution frame",
+    detail:
+      "The catalog shows the safe placeholder path only. It does not evaluate notebook JavaScript in the docs app.",
+  },
+  {
+    surface: "Plotly, Vega, and GeoJSON",
+    catalogPath: "docs fixture globals",
+    productionBoundary: "renderer plugin execution",
+    detail:
+      "The component wrappers run against tiny deterministic Plotly, vegaEmbed, and Leaflet fixtures. Production renderer library loading remains an isolated-frame concern.",
+  },
+  {
+    surface: "Sift parquet and Arrow",
+    catalogPath: "docs-served WASM and fixture assets",
+    productionBoundary: "daemon blobs and frame bootstrap",
+    detail:
+      "The visible SiftTable path is real, including the HuggingFace URL and Arrow stream manifest loaders; daemon blob URL signing stays outside this runtime-free page.",
+  },
+  {
+    surface: "Widget-view outputs",
+    catalogPath: "fixture WidgetStore",
+    productionBoundary: "live comm capture and replay",
+    detail:
+      "OutputArea resolves widget-view MIME against local widget state. RuntimeStateDoc capture, comm replay, and shell transport are handled by the widget catalog boundary.",
+  },
+];
+
 function RendererCard({
   title,
   source,
@@ -1445,6 +1483,52 @@ export function OutputRenderersExample() {
               </div>
             );
           })}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-fd-border bg-fd-card p-4">
+        <h2 className="text-sm font-semibold">Renderer Boundary Map</h2>
+        <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+          The catalog separates visible component paths from production execution surfaces so output
+          examples stay inspectable without booting notebook runtime, daemon, or iframe bundles.
+        </p>
+        <div className="mt-4 overflow-hidden rounded-md border border-fd-border">
+          <div className="hidden grid-cols-[170px_180px_190px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+            <span>Surface</span>
+            <span>Catalog path</span>
+            <span>Production boundary</span>
+            <span>Notes</span>
+          </div>
+          {rendererBoundaryRows.map((row) => (
+            <div
+              key={row.surface}
+              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[170px_180px_190px_minmax(0,1fr)] xl:gap-3"
+            >
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Surface
+                </div>
+                <div className="font-semibold">{row.surface}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Catalog path
+                </div>
+                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {row.catalogPath}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Production boundary
+                </div>
+                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                  {row.productionBoundary}
+                </div>
+              </div>
+              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+            </div>
+          ))}
         </div>
       </section>
 

@@ -34,7 +34,10 @@ Parquet URL used by the Sift demo, then lets `SiftTable` detect and decode it
 through the docs static WASM asset; the Arrow manifest section points at a
 static Arrow IPC chunk and exercises `create_arrow_stream_store` /
 `append_arrow_stream_chunk`. The MIME selection table uses the same priority
-helper the notebook uses before rendering.
+helper the notebook uses before rendering. The renderer boundary map separates
+direct component rendering from docs fixture adapters and production-only
+execution paths, so JavaScript execution and third-party renderer library
+execution stay visible as adapter boundaries rather than silent catalog behavior.
 
 ## What still needs an adapter
 
@@ -42,11 +45,12 @@ The [output isolation surfaces](/docs/isolated-output-surfaces) page now covers
 frame policy, host-context conversion, sizing, lane routing, MCP structured
 output mapping, daemon renderer asset URLs, renderer plugin metadata, and the
 production MCP output-frame wrapper with a fixture renderer bundle for resolved
-HTML/text payloads. Executable JavaScript, raw HTML and markdown runtime
-execution, real third-party renderer execution, and live output-widget comm
-transport still need fixture-backed iframe, widget-store, or generated asset
-adapters before this docs app should own those runtime paths. The Sift Parquet
-URL path now has a docs-owned static WASM asset, and the Arrow stream manifest
-path now runs through a docs-served Arrow IPC chunk. The widget catalog covers
-local `OutputModel` replay through `WidgetStore`; the remaining output-widget
-boundary is the live kernel capture and comm transport.
+HTML/text payloads. This page intentionally does not execute notebook
+JavaScript, raw HTML, markdown with raw HTML, or third-party renderer libraries
+inside the docs runtime. The visible Plotly, Vega, and GeoJSON paths use
+deterministic fixture globals, while production renderer plugin execution stays
+behind the isolated-frame adapter. The Sift Parquet URL path now has a
+docs-owned static WASM asset, and the Arrow stream manifest path now runs
+through a docs-served Arrow IPC chunk. The widget catalog covers local
+`OutputModel` replay through `WidgetStore`; the remaining output-widget boundary
+is the live kernel capture and comm transport.
