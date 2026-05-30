@@ -158,6 +158,40 @@ export function summarizeViewerMilestones(entries) {
   return milestones;
 }
 
+export function performanceBudgetFailures(diagnostics, budgets = {}) {
+  const failures = [];
+  for (const [metric, budget] of Object.entries(budgets)) {
+    if (budget === null || budget === undefined) {
+      continue;
+    }
+    const spec = PERFORMANCE_BUDGET_METRICS[metric];
+    if (!spec) {
+      throw new Error(`Unknown performance budget metric: ${metric}`);
+    }
+    const value = diagnostics?.[spec.group]?.[metric] ?? null;
+    if (value === null) {
+      failures.push({
+        kind: "performance-budget",
+        metric,
+        text: `${spec.label} timing was missing; expected <= ${budget} ms`,
+        expected_ms: budget,
+        actual_ms: null,
+      });
+      continue;
+    }
+    if (value > budget) {
+      failures.push({
+        kind: "performance-budget",
+        metric,
+        text: `${spec.label} took ${value} ms, expected <= ${budget} ms`,
+        expected_ms: budget,
+        actual_ms: value,
+      });
+    }
+  }
+  return failures;
+}
+
 export function withTiming(result, started, ended) {
   if (!result) {
     return result;
@@ -273,3 +307,54 @@ function delta(start, end) {
 function firstDefined(...values) {
   return values.find((value) => value !== null && value !== undefined) ?? null;
 }
+
+const PERFORMANCE_BUDGET_METRICS = {
+  first_useful_render_ms: {
+    group: "live_path",
+    label: "first useful render",
+  },
+  live_sync_websocket_ms: {
+    group: "live_path",
+    label: "live sync WebSocket",
+  },
+  source_text_ms: {
+    group: "live_path",
+    label: "source text",
+  },
+  rendered_cell_marker_ms: {
+    group: "live_path",
+    label: "rendered cell marker",
+  },
+  first_output_iframe_ms: {
+    group: "live_path",
+    label: "first output iframe",
+  },
+  frame_texts_ms: {
+    group: "live_path",
+    label: "expected output frame text",
+  },
+  viewer_shell_complete_ms: {
+    group: "sidecar_assets",
+    label: "viewer shell assets",
+  },
+  runtimed_wasm_complete_ms: {
+    group: "sidecar_assets",
+    label: "runtimed WASM assets",
+  },
+  isolated_renderer_complete_ms: {
+    group: "sidecar_assets",
+    label: "isolated renderer assets",
+  },
+  output_document_complete_ms: {
+    group: "sidecar_assets",
+    label: "output document assets",
+  },
+  sift_wasm_complete_ms: {
+    group: "sidecar_assets",
+    label: "Sift WASM",
+  },
+  arrow_data_complete_ms: {
+    group: "sidecar_assets",
+    label: "Arrow data",
+  },
+};
