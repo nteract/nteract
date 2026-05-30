@@ -117,7 +117,12 @@ export function summarizePerformanceResources(resources, milestones = {}) {
     }
   }
 
-  return { milestones, resources_by_kind: byKind };
+  return {
+    milestones,
+    live_path: summarizeLivePath(byKind, milestones),
+    sidecar_assets: summarizeSidecarAssets(byKind),
+    resources_by_kind: byKind,
+  };
 }
 
 export function withTiming(result, started, ended) {
@@ -163,4 +168,75 @@ function trackSlowResource(slowest, resource, duration) {
   });
   slowest.sort((a, b) => b.duration_ms - a.duration_ms || a.start_ms - b.start_ms);
   slowest.splice(5);
+}
+
+function summarizeLivePath(byKind, milestones) {
+  const notebookSnapshotEndMs = kindFirstEnd(byKind, "notebook_snapshot");
+  const runtimeSnapshotEndMs = kindFirstEnd(byKind, "runtime_snapshot");
+  const snapshotPairCompleteMs = maxDefined(notebookSnapshotEndMs, runtimeSnapshotEndMs);
+  const renderedCellMarkerMs = timing(milestones, "rendered_cell_marker");
+  const frameTextsMs = timing(milestones, "frame_texts");
+
+  return {
+    catalog_api_ms: kindFirstEnd(byKind, "catalog_api"),
+    notebook_snapshot_ms: notebookSnapshotEndMs,
+    runtime_snapshot_ms: runtimeSnapshotEndMs,
+    snapshot_pair_complete_ms: snapshotPairCompleteMs,
+    live_sync_websocket_ms: timing(milestones, "live_sync_websocket"),
+    source_text_ms: timing(milestones, "source_text"),
+    rendered_cell_marker_ms: renderedCellMarkerMs,
+    first_output_iframe_ms: timing(milestones, "first_output_iframe"),
+    frame_texts_ms: frameTextsMs,
+    first_useful_render_ms: firstDefined(
+      frameTextsMs,
+      renderedCellMarkerMs,
+      timing(milestones, "source_text"),
+    ),
+    snapshot_pair_to_rendered_cell_ms: delta(snapshotPairCompleteMs, renderedCellMarkerMs),
+    snapshot_pair_to_frame_texts_ms: delta(snapshotPairCompleteMs, frameTextsMs),
+  };
+}
+
+function summarizeSidecarAssets(byKind) {
+  return {
+    viewer_shell_complete_ms: maxOfKinds(byKind, ["viewer_document", "viewer_js", "viewer_css"]),
+    runtimed_wasm_complete_ms: maxOfKinds(byKind, ["runtimed_wasm_js", "runtimed_wasm_binary"]),
+    isolated_renderer_complete_ms: maxOfKinds(byKind, ["renderer_asset_js", "renderer_asset_css"]),
+    output_document_complete_ms: maxOfKinds(byKind, [
+      "output_document_frame",
+      "output_document_js",
+      "output_document_css",
+      "output_document_asset",
+    ]),
+    sift_wasm_complete_ms: kindMaxEnd(byKind, "sift_wasm_binary"),
+    arrow_data_complete_ms: maxOfKinds(byKind, ["arrow_manifest_blob", "arrow_stream_blob"]),
+  };
+}
+
+function timing(milestones, name) {
+  const value = milestones[name];
+  return typeof value === "number" ? value : null;
+}
+
+function kindFirstEnd(byKind, kind) {
+  return byKind[kind]?.first_end_ms ?? null;
+}
+
+function kindMaxEnd(byKind, kind) {
+  return byKind[kind]?.max_end_ms ?? null;
+}
+
+function maxOfKinds(byKind, kinds) {
+  return kinds.reduce((current, kind) => maxDefined(current, kindMaxEnd(byKind, kind)), null);
+}
+
+function delta(start, end) {
+  if (start === null || start === undefined || end === null || end === undefined) {
+    return null;
+  }
+  return end - start;
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== null && value !== undefined) ?? null;
 }
