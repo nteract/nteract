@@ -125,6 +125,8 @@ fn main() {
         }
         "renderer-plugins" => cmd_renderer_plugins(),
         "verify-plugins" => cmd_verify_plugins(),
+        "verify-genesis" => cmd_verify_genesis(),
+        "wasm-ensure" => cmd_wasm_ensure(),
         "mcpb" => {
             let output = args
                 .windows(2)
@@ -212,6 +214,12 @@ Other:
                              (every wasm-bindgen import in the plugin JS must be
                              exported by the paired wasm binary). Catches #2048-style
                              drift without requiring cross-platform byte reproducibility.
+  verify-genesis             Check the built runtimed-wasm embeds the current Automerge
+                             genesis seeds, so the frontend and daemon share a root.
+                             Catches a stale wasm after a schema/seed bump (#3086).
+  wasm-ensure                Like verify-genesis, but rebuild runtimed-wasm when stale or
+                             missing instead of failing. Run by the app `prebuild` so a
+                             desktop build never packages a divergent genesis seed.
   icons [source.png]         Generate icon variants
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
   mcpb --variant nightly     Build nightly variant (different name/icon)
@@ -1278,6 +1286,10 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
         );
         let _ = fs::remove_file("apps/notebook/src/wasm/runtimed-wasm/.gitignore");
         println!("WASM build complete. Output: apps/notebook/src/wasm/runtimed-wasm/");
+        // Self-check: a fresh build must embed the current genesis seeds. This
+        // turns a silently-stale bundle into a loud failure at build time, not
+        // a broken notebook at runtime.
+        cmd_verify_genesis();
     }
 
     if build_sift {
@@ -1421,6 +1433,126 @@ fn cmd_verify_plugins() {
     }
 
     println!("All renderer plugin bundles match their wasm artifacts.");
+}
+
+/// Genesis seeds that must be embedded byte-for-byte in the built
+/// `runtimed-wasm`. These `.am` files are the frozen Automerge roots the daemon
+/// loads via `include_bytes!`; the frontend wasm is compiled from the same
+/// crates and so embeds the same bytes in its data section. If a schema bump
+/// regenerates a seed but the gitignored wasm bundle is not rebuilt, the daemon
+/// and frontend end up on different roots, their docs cannot sync-merge, and
+/// opening a notebook fails (see the v4->v5 regression in #3086). This check
+/// catches that drift before it ships.
+const GENESIS_SEEDS_IN_WASM: &[(&str, &str)] = &[
+    (
+        "notebook genesis",
+        "crates/notebook-doc/assets/notebook_genesis_v5.am",
+    ),
+    (
+        "runtime-state genesis",
+        "crates/runtime-doc/assets/runtime_state_genesis_v2.am",
+    ),
+];
+
+const RUNTIMED_WASM_BINARY: &str = "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm";
+
+/// Verify the built `runtimed-wasm` embeds the current genesis seeds, so the
+/// frontend and daemon agree on the Automerge root. Run after the wasm is built
+/// (CI `build-runtime-artifacts`, or `cargo xtask wasm`).
+fn cmd_verify_genesis() {
+    ensure_workspace_root_cwd();
+    if !genesis_seeds_embedded(true) {
+        eprintln!();
+        eprintln!(
+            "runtimed-wasm is out of sync with the genesis seed(s). The frontend would load a \
+             different Automerge root than the daemon, breaking notebook open/sync. \
+             Rebuild and commit: `cargo xtask wasm runtimed --skip-renderer-plugins`."
+        );
+        exit(1);
+    }
+    println!("runtimed-wasm embeds the current genesis seeds.");
+}
+
+/// Ensure the built `runtimed-wasm` embeds the current genesis seeds, rebuilding
+/// it if stale or missing. Wired into the app build (`prebuild`) so a desktop
+/// build can never package a wasm whose Automerge root diverges from the daemon
+/// — the exact gap that shipped the #3086 regression from a local build where
+/// the daemon was rebuilt but the gitignored wasm was not.
+fn cmd_wasm_ensure() {
+    ensure_workspace_root_cwd();
+    if genesis_seeds_embedded(false) {
+        println!("runtimed-wasm genesis seeds are current; skipping rebuild.");
+        return;
+    }
+    println!("runtimed-wasm is stale or missing; rebuilding from source...");
+    cmd_wasm(Some("runtimed"), true);
+    // cmd_wasm self-verifies on the runtimed path, so a still-stale result there
+    // already aborts. This re-check covers the missing-wasm case.
+    if !genesis_seeds_embedded(true) {
+        eprintln!("::error::runtimed-wasm still does not embed the current genesis after rebuild.");
+        exit(1);
+    }
+}
+
+/// Check whether the built `runtimed-wasm` embeds every current genesis seed.
+/// When `verbose`, prints per-seed ok/error lines (GitHub-annotated). Returns
+/// `false` if the wasm is missing or any seed is absent.
+fn genesis_seeds_embedded(verbose: bool) -> bool {
+    let wasm = match fs::read(RUNTIMED_WASM_BINARY) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            if verbose {
+                eprintln!(
+                    "::error file={RUNTIMED_WASM_BINARY}::cannot read runtimed-wasm ({e}). \
+                     Build it with `cargo xtask wasm runtimed`."
+                );
+            }
+            return false;
+        }
+    };
+
+    let mut all_present = true;
+    for (label, seed_path) in GENESIS_SEEDS_IN_WASM {
+        let seed = match fs::read(seed_path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                if verbose {
+                    eprintln!("::error file={seed_path}::cannot read {label} seed ({e})");
+                }
+                all_present = false;
+                continue;
+            }
+        };
+        if bytes_contain(&wasm, &seed) {
+            if verbose {
+                println!("  ok  runtimed-wasm embeds current {label} ({seed_path})");
+            }
+        } else {
+            if verbose {
+                eprintln!(
+                    "::error file={seed_path}::runtimed-wasm does NOT embed the current {label}. \
+                     The wasm bundle is stale relative to the source seed."
+                );
+            }
+            all_present = false;
+        }
+    }
+    all_present
+}
+
+/// True if `haystack` contains `needle` as a contiguous byte sequence. Naive
+/// search keyed on the first byte; fine for a one-shot check of a ~200-byte
+/// seed against a few-MB wasm, and keeps xtask free of a search dependency.
+fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    let first = needle[0];
+    haystack[..=haystack.len() - needle.len()]
+        .iter()
+        .enumerate()
+        .filter(|(_, &b)| b == first)
+        .any(|(i, _)| &haystack[i..i + needle.len()] == needle)
 }
 
 /// Inspect a wasm file's imports, scanning for the wasm-bindgen glue names
@@ -3656,6 +3788,21 @@ mod tests {
             Some(UNIX_EPOCH + Duration::from_secs(9)),
         ];
         assert_eq!(freshness_reason(Some(stamp), watched), None);
+    }
+
+    #[test]
+    fn bytes_contain_matches_subsequences() {
+        let hay = b"the genesis seed lives here";
+        assert!(bytes_contain(hay, b"genesis seed"));
+        assert!(bytes_contain(hay, b"the")); // at start
+        assert!(bytes_contain(hay, b"here")); // at end
+        assert!(bytes_contain(hay, hay)); // whole haystack
+        assert!(!bytes_contain(hay, b"absent"));
+        assert!(!bytes_contain(hay, b"")); // empty needle never matches
+        assert!(!bytes_contain(b"short", b"this needle is longer"));
+        // First-byte match but full sequence differs.
+        assert!(!bytes_contain(b"abcabd", b"abce"));
+        assert!(bytes_contain(b"abcabd", b"abd"));
     }
 
     #[test]
