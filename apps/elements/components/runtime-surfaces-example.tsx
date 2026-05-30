@@ -1,6 +1,6 @@
 "use client";
 
-import { NotebookHostProvider, type NotebookHost } from "@nteract/notebook-host";
+import { NotebookHostProvider } from "@nteract/notebook-host";
 import {
   AlertTriangle,
   CircleDot,
@@ -12,6 +12,12 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  asyncNoop,
+  asyncTrue,
+  createFixtureNotebookHost,
+  noop,
+} from "@/components/fixture-notebook-host";
 import { DaemonStatusBanner } from "@/notebook-components/DaemonStatusBanner";
 import { DebugBanner } from "@/notebook-components/DebugBanner";
 import { DependencyHeader } from "@/notebook-components/DependencyHeader";
@@ -21,23 +27,6 @@ import { PoolErrorBanner } from "@/notebook-components/PoolErrorBanner";
 import { RuntimeDecisionDialog } from "@/notebook-components/RuntimeDecisionDialog";
 import { TrustDialog } from "@/notebook-components/TrustDialog";
 import { UntrustedBanner } from "@/notebook-components/UntrustedBanner";
-
-const noop = () => {};
-const asyncNoop = async () => {};
-const asyncTrue = async () => true;
-const unlisten = () => {};
-const fixtureTransport: NotebookHost["transport"] = {
-  sendFrame: asyncNoop,
-  sendTypedRequest: async () => {
-    throw new Error("Fixture host does not send typed requests.");
-  },
-  onFrame: () => unlisten,
-  sendRequest: async () => {
-    throw new Error("Fixture host does not send requests.");
-  },
-  connected: true,
-  disconnect: noop,
-};
 
 const runtimePieces = [
   {
@@ -96,82 +85,7 @@ const runtimePieces = [
   },
 ];
 
-const fixtureHost: NotebookHost = {
-  name: "elements-fixture",
-  transport: fixtureTransport,
-  daemon: {
-    isConnected: async () => true,
-    reconnect: asyncNoop,
-    getInfo: async () => null,
-    getReadyInfo: async () => null,
-  },
-  daemonEvents: {
-    onReadyLive: () => unlisten,
-    onReady: () => unlisten,
-    onProgress: () => unlisten,
-    onDisconnected: () => unlisten,
-    onUnavailable: () => unlisten,
-  },
-  relay: {
-    requiresReadyGeneration: false,
-    notifySyncReady: asyncNoop,
-  },
-  blobs: {
-    port: async () => 0,
-    resolver: async () => {
-      throw new Error("Fixture host does not resolve blobs.");
-    },
-  },
-  trust: {
-    approve: asyncNoop,
-  },
-  deps: {
-    checkTyposquats: async () => [],
-  },
-  notebook: {
-    applyPathChanged: asyncNoop,
-    getDefaultSaveDirectory: async () => "/Users/kyle/notebooks",
-    saveAs: asyncNoop,
-    openInNewWindow: asyncNoop,
-    cloneToEphemeral: async () => "fixture-room",
-  },
-  window: {
-    getTitle: async () => "fixture.ipynb",
-    setTitle: asyncNoop,
-    onFocusChange: () => unlisten,
-  },
-  system: {
-    getGitInfo: async () => null,
-    getUsername: async () => "kyle",
-  },
-  dialog: {
-    openFile: async () => null,
-    saveFile: async () => null,
-  },
-  externalLinks: {
-    open: asyncNoop,
-  },
-  updater: {
-    getSnapshot: () => ({ status: "idle", version: null, error: null }),
-    subscribe: () => unlisten,
-    check: async () => ({ status: "idle", version: null, error: null }),
-    beginUpgrade: asyncNoop,
-  },
-  settings: {
-    openWindow: asyncNoop,
-  },
-  commands: {
-    register: () => unlisten,
-    run: asyncNoop,
-    list: () => [],
-  },
-  log: {
-    debug: noop,
-    info: noop,
-    warn: noop,
-    error: noop,
-  },
-};
+const fixtureHost = createFixtureNotebookHost();
 
 const trustInfo = {
   status: "untrusted" as const,
