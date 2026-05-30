@@ -13,7 +13,7 @@ export interface GutterColorConfig {
 }
 
 /**
- * Default gutter colors for built-in cell types.
+ * Default ribbon colors for built-in cell types.
  * Colors are designed to keep cell-type ribbons visually consistent.
  */
 export const defaultGutterColors: Record<string, GutterColorConfig> = {
@@ -112,7 +112,7 @@ export const fallbackGutterColors: GutterColorConfig = {
 };
 
 /**
- * Get gutter colors for a cell type.
+ * Get ribbon colors for a cell type.
  * Falls back to neutral gray for unknown types.
  *
  * @param cellType - The cell type to get colors for

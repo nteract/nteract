@@ -125,7 +125,7 @@ const fullCellRows = [
     label: "CodeCell",
     source: "apps/notebook/src/components/CodeCell.tsx",
     detail:
-      "Rendered with seeded execution and output stores, real CodeMirror source, CompactExecutionButton, and OutputArea.",
+      "Rendered with seeded execution and output stores, ribbon-first CellContainer, code-cell current line, and OutputArea.",
   },
   {
     label: "MarkdownCell",
@@ -322,11 +322,11 @@ export function FullCellSurfacesExample() {
               <h2 className="text-sm font-semibold">CodeCell</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              The output count, execution button, and rendered text outputs come from the same
-              stores the notebook app consumes.
+              The code-cell current line and rendered text outputs come from the same stores the
+              notebook app consumes.
             </p>
           </div>
-          <div className="bg-background py-4 pl-12 pr-2">
+          <div className="bg-background py-4 pl-4 pr-2">
             <CodeCell
               cell={codeCell}
               language="python"
@@ -358,7 +358,7 @@ export function FullCellSurfacesExample() {
             </p>
           </div>
           <div className="grid gap-4 bg-background p-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-            <div className="min-w-0 pl-8 pr-2">
+            <div className="min-w-0 pl-6 pr-2">
               <MarkdownCell
                 cell={markdownCell}
                 onFocus={() => focusFixtureCell(markdownCell.id)}
@@ -396,7 +396,7 @@ export function FullCellSurfacesExample() {
               component.
             </p>
           </div>
-          <div className="bg-background py-4 pl-12 pr-2">
+          <div className="bg-background py-4 pl-4 pr-2">
             <RawCell
               cell={rawCell}
               onFocus={() => focusFixtureCell(rawCell.id)}

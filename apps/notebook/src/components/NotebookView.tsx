@@ -94,10 +94,8 @@ function CellAdder({
 
   return (
     <div className="flex h-7 w-full items-center select-none">
-      {/* Hover zone limited to gutter + ribbon area */}
+      {/* Hover zone limited to the ribbon area */}
       <div className="group/adder flex h-full flex-shrink-0 items-center pr-3">
-        {/* Gutter spacer — matches cell gutter w-10 */}
-        <div className="w-10" />
         {/* Ribbon zone — widens on hover to reveal cell type options */}
         <div
           className={cn(
@@ -430,7 +428,7 @@ function NotebookViewContent({
   // cell's iframe (Sift, HTML) never fires onFocusCell because the iframe
   // absorbs the event. Same goes for clicks on page chrome between cells.
   // Scope the dismiss to the focused cell's container so clicks on its own
-  // gutter buttons (focus, expand, eye) still hit their handlers.
+  // right-gutter buttons (focus, expand, eye) still hit their handlers.
   useEffect(() => {
     if (outputFocusedCellId === null) return;
     const handleMouseDown = (event: MouseEvent) => {
@@ -930,7 +928,7 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth py-4 pl-8 pr-2"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth py-4 pl-0 pr-2"
       style={{
         contain: "paint",
         overflowAnchor: "none",

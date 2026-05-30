@@ -9,7 +9,10 @@ import { FullCellSurfacesClient } from "@/components/full-cell-surfaces-client";
 The first component family to document is the existing cell frame. This page
 now renders the production-used cell shell pieces with fixture content, so the
 catalog starts from current imports instead of a new visual fork or outdated
-helpers.
+helpers. The left edge is currently ribbon-first: the ribbon carries cell type
+and focus color without reserving permanent layout space for execution state.
+Editable code cells place execution identity in a quiet current line at the
+source/result boundary.
 
 <CellAnatomyExample />
 
@@ -35,7 +38,8 @@ contract while preserving the existing `NotebookView` DOM-order invariant.
 
 This docs site should keep moving component by component toward runtime-free
 fixtures. The cell frame, compact execution button, execution count,
-cell-type gutter accents, `CodeMirrorEditor`, `OutputArea`, cell-level presence
+cell-type ribbon accents, code-cell current line, `CodeMirrorEditor`,
+`OutputArea`, cell-level presence
 indicators, and the full code/markdown/raw cell components now render from
 current source. The presence example seeds the notebook cursor registry through
 a fixture presence snapshot, without connecting runtimed or generated WASM.

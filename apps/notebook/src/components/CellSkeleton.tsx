@@ -14,14 +14,11 @@ const skeletonCells = [
 function SkeletonCell({ height, delay }: { height: string; delay: string }) {
   return (
     <div className="flex py-4">
-      {/* Gutter area — matches CellContainer's w-10 gutter */}
-      <div className="w-10 flex-shrink-0" />
-
       {/* Ribbon — self-stretch to fill container height */}
       <div className="w-1 self-stretch rounded-sm bg-muted/40" />
 
       {/* Editor area placeholder */}
-      <div className="min-w-0 flex-1 py-3 pl-6 pr-3">
+      <div className="min-w-0 flex-1 py-3 pl-[3.25rem] pr-3">
         <div
           className="rounded bg-muted/30 animate-pulse"
           style={{ minHeight: height, animationDelay: delay }}

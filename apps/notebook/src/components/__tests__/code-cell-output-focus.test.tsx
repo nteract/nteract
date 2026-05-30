@@ -5,6 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { CodeCell as CodeCellType } from "../../types";
 
 let mockOutputs: unknown[] = [];
+let mockExecution: {
+  execution_count: number | null;
+  submitted_by_actor_label?: string | null;
+} | null = null;
 const mockEditorBlur = vi.fn();
 
 vi.mock("@/components/cell/CellContainer", () => ({
@@ -27,10 +31,6 @@ vi.mock("@/components/cell/CellContainer", () => ({
       {outputRightGutterContent}
     </div>
   ),
-}));
-
-vi.mock("@/components/cell/CompactExecutionButton", () => ({
-  CompactExecutionButton: () => null,
 }));
 
 vi.mock("@/components/cell/OutputArea", () => ({
@@ -126,8 +126,8 @@ vi.mock("../../lib/kernel-completion", () => ({
 }));
 
 vi.mock("../../lib/notebook-executions", () => ({
-  useCellExecutionId: () => null,
-  useExecution: () => null,
+  useCellExecutionId: () => (mockExecution ? "execution-1" : null),
+  useExecution: () => mockExecution,
 }));
 
 vi.mock("../../lib/notebook-outputs", () => ({
@@ -165,6 +165,7 @@ function makeCell(): CodeCellType {
 
 describe("CodeCell output focus", () => {
   beforeEach(() => {
+    mockExecution = null;
     mockOutputs = [
       {
         output_type: "display_data",
@@ -212,6 +213,27 @@ describe("CodeCell output focus", () => {
     );
 
     expect(getByTestId("output").getAttribute("data-focused")).toBe("true");
+  });
+
+  it("labels completed execution state with readable footer language", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: 12, submitted_by_actor_label: null };
+
+    const { container } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+
+    expect(footer?.getAttribute("data-execution-label")).toBe("Execution 12");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("CompletedinPython·run12");
+    expect(footer?.textContent).not.toContain("In [12]");
   });
 
   it("omits output chrome for short stream output", () => {

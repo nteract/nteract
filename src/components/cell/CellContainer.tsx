@@ -16,7 +16,7 @@ interface CellContainerProps {
   hideOutput?: boolean;
   /** Legacy children prop - use codeContent/outputContent for segmented ribbon support */
   children?: ReactNode;
-  /** Content to render in the left gutter action area (e.g., play button, execution count) */
+  /** Content to render in the left state lane (e.g., play button, execution marker) */
   gutterContent?: ReactNode;
   /** Content to render in the right margin aligned with code row (e.g., cell controls) */
   rightGutterContent?: ReactNode;
@@ -94,9 +94,9 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         data-cell-type={cellType}
         data-focus-state={focusState}
         className={cn(
-          "cell-container group flex transition-colors duration-150",
+          "cell-container group relative flex transition-colors duration-150",
           bgColor,
-          isFocused && "-mx-16 px-16",
+          isFocused && "-mx-4 px-4",
           isDragging && "opacity-50",
           // Output focus dim wins over the existing opacity-70 dim on the
           // output row. Applied to the whole cell container so the editor
@@ -105,9 +105,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
           className,
         )}
       >
-        {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
+        {/* Optional state lane - floats outside layout so the ribbon can lead the cell surface. */}
         <div
-          className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3.5 select-none"
+          data-slot="cell-state-lane"
+          className="absolute left-0 top-0 z-10 flex -translate-x-full flex-col items-end justify-start gap-0.5 pr-1 pt-3.5 select-none"
           onMouseDown={onFocus}
         >
           {gutterContent}
@@ -120,6 +121,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
             <div className="flex" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
+                data-slot="cell-ribbon"
                 className={cn(
                   "w-1 transition-colors duration-150",
                   ribbonColor,
@@ -127,7 +129,14 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{codeContent}</div>
+              <div
+                className={cn(
+                  "min-w-0 flex-1 pt-1.5 pl-[3.25rem] pr-3",
+                  hasOutput && !hideOutput ? "pb-1.5" : "pb-3",
+                )}
+              >
+                {codeContent}
+              </div>
               {/* Code row right gutter — always rendered as spacer for consistent width */}
               <div
                 className={cn(
@@ -145,19 +154,21 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
               <div className={cn("flex", hideOutput && "hidden")} onMouseDown={onFocus}>
-                <div className={cn("w-1 transition-colors duration-150", outputRibbonColor)} />
+                <div
+                  data-slot="cell-output-ribbon"
+                  className={cn("w-1 transition-colors duration-150", outputRibbonColor)}
+                />
                 <div
                   className={cn(
-                    "min-w-0 flex-1 py-2 transition-opacity duration-150",
+                    "min-w-0 flex-1 pt-1 pb-2 pl-7 transition-opacity duration-150",
                     !outputFocused &&
                       !isFocused &&
                       !isPreviousCellFromFocused &&
                       !isNextCellFromFocused &&
                       "opacity-70",
-                    // Elevate via top + bottom edges only. The cell's
-                    // existing left ribbon (line 145 above) plus this slab
-                    // forms a three-sided frame that reads as "this row is
-                    // the active one" without the card-like ring aesthetic.
+                    // Elevate via top + bottom edges only. The cell's left
+                    // ribbon plus this slab forms a three-sided frame that
+                    // reads as active without the card-like ring aesthetic.
                     outputFocused && "border-y border-primary/40 bg-primary/5",
                   )}
                 >
@@ -184,6 +195,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
             <div className="flex min-w-0 flex-1" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
+                data-slot="cell-ribbon"
                 className={cn(
                   "w-1 self-stretch transition-colors duration-150",
                   ribbonColor,
@@ -191,7 +203,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{children}</div>
+              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-[3.25rem] pr-3">{children}</div>
             </div>
             {/* Right margin for legacy layout — always rendered as spacer */}
             <div

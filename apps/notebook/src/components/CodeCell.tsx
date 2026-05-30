@@ -1,11 +1,10 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff } from "lucide-react";
+import { ChevronRight, Code2, EyeOff, Play, Square } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
-import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
-import type { SupportedLanguage } from "@/components/editor/languages";
+import { languageDisplayNames, type SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
@@ -137,6 +136,188 @@ function needsOutputChrome(outputs: readonly JupyterOutput[]): boolean {
   }
 
   return totalChars > SIMPLE_OUTPUT_MAX_CHARS || totalLines > SIMPLE_OUTPUT_MAX_LINES;
+}
+
+function formatExecutionCount(count: number): string {
+  return count > 999 ? "999+" : String(count);
+}
+
+function executionPhrase({
+  count,
+  isExecuting,
+  isQueued,
+  languageLabel,
+}: {
+  count: number | null;
+  isExecuting: boolean;
+  isQueued: boolean;
+  languageLabel: string;
+}): string {
+  if (isExecuting) return `Running in ${languageLabel}`;
+  if (isQueued) return `Queued to run in ${languageLabel}`;
+  if (count !== null) return `Completed in ${languageLabel}`;
+  return `Ready to run in ${languageLabel}`;
+}
+
+function visibleExecutionCountLabel(count: number | null): string | null {
+  return count === null ? null : `run ${formatExecutionCount(count)}`;
+}
+
+function executionCountLabel(count: number | null): string | null {
+  return count === null ? null : `Execution ${formatExecutionCount(count)}`;
+}
+
+function executionLineClass({
+  isExecuting,
+  isQueued,
+  isFocused,
+}: {
+  isExecuting: boolean;
+  isQueued: boolean;
+  isFocused: boolean;
+}) {
+  if (isExecuting) {
+    return "bg-gradient-to-r from-destructive/45 via-destructive/20 to-border/40";
+  }
+
+  if (isQueued) {
+    return "bg-gradient-to-r from-sky-400/45 via-sky-400/20 to-border/40";
+  }
+
+  if (isFocused) {
+    return "bg-gradient-to-r from-primary/35 via-primary/20 to-border/45";
+  }
+
+  return "bg-gradient-to-r from-border/70 via-border/45 to-transparent";
+}
+
+function CodeCellCurrentLine({
+  language,
+  count,
+  isExecuting,
+  isQueued,
+  isFocused,
+  submittedByActorLabel,
+  onExecute,
+  onInterrupt,
+}: {
+  language: SupportedLanguage;
+  count: number | null;
+  isExecuting: boolean;
+  isQueued: boolean;
+  isFocused: boolean;
+  submittedByActorLabel: string | null;
+  onExecute: () => void;
+  onInterrupt: () => void;
+}) {
+  const languageLabel =
+    language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
+  const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
+  const statusLabel = executionPhrase({ count, isExecuting, isQueued, languageLabel });
+  const countLabel = executionCountLabel(count);
+  const visibleCountLabel = visibleExecutionCountLabel(count);
+  const actionTitle = isExecuting
+    ? submittedByActorLabel
+      ? `Stop execution submitted by ${submittedByActorLabel}`
+      : "Stop execution"
+    : isQueued
+      ? submittedByActorLabel
+        ? `Queued for execution by ${submittedByActorLabel}`
+        : "Queued for execution"
+      : count !== null
+        ? `Run cell again; last execution ${count}`
+        : "Run cell";
+
+  const handleClick = () => {
+    if (isQueued) return;
+    if (isExecuting) {
+      onInterrupt();
+    } else {
+      onExecute();
+    }
+  };
+
+  return (
+    <div
+      data-slot="code-cell-current-line"
+      data-execution-state={state}
+      data-execution-count={count ?? undefined}
+      data-execution-label={countLabel ?? undefined}
+      className="mt-2 flex h-6 items-center gap-2 text-[11px] leading-none text-muted-foreground/65"
+    >
+      <div
+        className={cn(
+          "h-px w-4 shrink-0 rounded-full transition-colors duration-150",
+          executionLineClass({ isExecuting, isQueued, isFocused }),
+        )}
+      />
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={isQueued}
+        title={actionTitle}
+        aria-label={actionTitle}
+        aria-busy={isExecuting || undefined}
+        data-testid="execute-button"
+        data-execution-state={state}
+        data-execution-count={count ?? undefined}
+        className={cn(
+          "inline-flex size-5 shrink-0 items-center justify-center rounded-full",
+          "transition-colors duration-150",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+          !isFocused && state === "idle" && "opacity-55 group-hover:opacity-100",
+          state === "idle" && "hover:bg-muted hover:text-foreground",
+          state === "ran" && "hover:bg-primary/5 hover:text-primary",
+          state === "queued" && "cursor-default text-sky-600 dark:text-sky-400",
+          state === "running" && "text-destructive hover:bg-destructive/10",
+        )}
+      >
+        {isExecuting ? (
+          <Square className="size-3 fill-current animate-exec-squish" aria-hidden="true" />
+        ) : isQueued ? (
+          <span
+            className="block size-1.5 rounded-full bg-current animate-queue-breathe"
+            aria-hidden="true"
+          />
+        ) : (
+          <Play className="size-3 fill-current" aria-hidden="true" />
+        )}
+      </button>
+      <span
+        className={cn(
+          "shrink-0 font-medium transition-colors duration-150",
+          isFocused && "text-foreground/70",
+          isExecuting && "text-destructive/80",
+          isQueued && "text-sky-700 dark:text-sky-300",
+        )}
+      >
+        {statusLabel}
+      </span>
+      {visibleCountLabel && (
+        <>
+          <span className="shrink-0 text-muted-foreground/35" aria-hidden="true">
+            ·
+          </span>
+          <span
+            className={cn(
+              "shrink-0 tabular-nums transition-colors duration-150",
+              isFocused && "text-foreground/75",
+              isExecuting && "text-destructive/80",
+              isQueued && "text-sky-700 dark:text-sky-300",
+            )}
+          >
+            {visibleCountLabel}
+          </span>
+        </>
+      )}
+      <div
+        className={cn(
+          "h-px min-w-4 flex-1 rounded-full transition-colors duration-150",
+          executionLineClass({ isExecuting, isQueued, isFocused }),
+        )}
+      />
+    </div>
+  );
 }
 
 export const CodeCell = memo(function CodeCell({
@@ -366,17 +547,6 @@ export const CodeCell = memo(function CodeCell({
     [onNavigateToCell],
   );
 
-  const gutterContent = bothHidden ? null : (
-    <CompactExecutionButton
-      count={executionCount}
-      isExecuting={isExecuting}
-      isQueued={isQueued}
-      submittedByActorLabel={submittedByActorLabel}
-      onExecute={onExecute}
-      onInterrupt={onInterrupt}
-    />
-  );
-
   return (
     <>
       <CellContainer
@@ -388,7 +558,6 @@ export const CodeCell = memo(function CodeCell({
         outputFocused={outputFocused}
         outputDimmed={outputDimmed}
         onFocus={onFocus}
-        gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}
         presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
         dragHandleProps={dragHandleProps}
@@ -447,21 +616,33 @@ export const CodeCell = memo(function CodeCell({
                 </button>
               </div>
             ) : (
-              <CodeMirrorEditor
-                ref={editorRef}
-                initialValue={cell.source}
-                language={language}
-                keyMap={keyMap}
-                extensions={editorExtensions}
-                placeholder="Enter code..."
-                autoFocus={isFocused}
-              />
+              <>
+                <CodeMirrorEditor
+                  ref={editorRef}
+                  initialValue={cell.source}
+                  language={language}
+                  keyMap={keyMap}
+                  extensions={editorExtensions}
+                  placeholder="Enter code..."
+                  autoFocus={isFocused}
+                />
+                <CodeCellCurrentLine
+                  language={language}
+                  count={executionCount}
+                  isExecuting={isExecuting}
+                  isQueued={isQueued}
+                  isFocused={isFocused}
+                  submittedByActorLabel={submittedByActorLabel}
+                  onExecute={onExecute}
+                  onInterrupt={onInterrupt}
+                />
+              </>
             )}
           </>
         }
         outputContent={
           isOutputsHidden && outputs.length > 0 ? (
-            <div className="flex items-center justify-start mt-0.5 pl-6">
+            <div className="flex items-center justify-start mt-0.5 pl-5">
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}

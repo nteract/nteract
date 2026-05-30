@@ -996,10 +996,9 @@ function OutputAreaSingle({
   // Hide the entire output area when only preloading (no visible outputs)
   const isPreloadOnly = showPreloadedIframe && outputs.length === 0;
 
-  // pl-6 pr-3 matches the code editor row padding so outputs align
-  // flush with the editor content. The CellContainer output wrapper
-  // has no horizontal padding — it must live here because the iframe
-  // ignores padding on its parent container.
+  // Keep the output's own inset here because isolated iframes ignore
+  // padding on parent wrappers. CellContainer may add row-level inset
+  // outside this component to align the output text with the editor.
   return (
     <div
       data-slot="output-area"

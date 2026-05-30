@@ -12,7 +12,6 @@ import {
 import { useEffect, type ReactNode } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
-import { ExecutionCount } from "@/components/cell/ExecutionCount";
 import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
@@ -46,25 +45,25 @@ const layers = [
   {
     name: "CellContainer",
     source: "src/components/cell/CellContainer.tsx",
-    role: "Frame, focus state, gutter ribbon, drag handle, and segmented source/output layout.",
+    role: "Frame, focus state, ribbon separator, drag handle, and segmented source/output layout.",
     status: "rendered",
   },
   {
     name: "CompactExecutionButton",
     source: "src/components/cell/CompactExecutionButton.tsx",
-    role: "Run/interrupt affordance that belongs to code cells, not a generic button variant.",
+    role: "Legacy side-marker exploration retained while execution moves into the code-cell current line.",
     status: "rendered",
   },
   {
     name: "ExecutionCount",
     source: "src/components/cell/ExecutionCount.tsx",
-    role: "Read-only gutter count used when notebook cells are rendered without execution controls.",
+    role: "Read-only execution marker used by report-style notebook renders.",
     status: "rendered",
   },
   {
     name: "CellPresenceIndicators",
     source: "apps/notebook/src/components/cell/CellPresenceIndicators.tsx",
-    role: "Remote peer markers in the cell gutter, backed by the cursor registry and presence bus.",
+    role: "Remote peer markers backed by the cursor registry and presence bus.",
     status: "rendered",
   },
   {
@@ -87,21 +86,44 @@ const cellTypeFixtures = [
     type: "code",
     label: "Code cell",
     count: 7,
-    body: "Read-only code cells use the execution count while editable code cells use the compact run control.",
+    body: "Editable code cells keep the ribbon clean and move execution state into a quiet current line.",
   },
   {
     id: "fixture-markdown-count",
     type: "markdown",
     label: "Markdown cell",
     count: null,
-    body: "Markdown keeps the same container contract but shifts to the markdown gutter accent when focused.",
+    body: "Markdown keeps the same container contract but shifts to the markdown ribbon accent when focused.",
   },
   {
     id: "fixture-raw-count",
     type: "raw",
     label: "Raw cell",
     count: null,
-    body: "Raw cells use the raw gutter accent while sharing the same frame and drag affordance.",
+    body: "Raw cells use the raw ribbon accent while sharing the same frame and drag affordance.",
+  },
+];
+
+const executionStateFixtures = [
+  {
+    label: "Never run",
+    detail: "play",
+    control: <CompactExecutionButton count={null} />,
+  },
+  {
+    label: "Ran",
+    detail: "count",
+    control: <CompactExecutionButton count={12} />,
+  },
+  {
+    label: "Queued",
+    detail: "waiting",
+    control: <CompactExecutionButton count={12} isQueued submittedByActorLabel="local:kyle" />,
+  },
+  {
+    label: "Busy",
+    detail: "interrupt",
+    control: <CompactExecutionButton count={12} isExecuting submittedByActorLabel="local:kyle" />,
   },
 ];
 
@@ -110,6 +132,7 @@ const contracts = [
   "Fixture content may stand in for runtime/editor/output systems until an adapter exists.",
   "Cell identity and stable DOM order stay outside the visual component.",
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",
+  "The rail owns notebook navigation; the ribbon owns type/focus; the code-cell current line owns run state.",
 ];
 
 const presenceSnapshot = {
@@ -250,19 +273,18 @@ export function CellAnatomyExample() {
       </section>
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-        <div className="grid border-b border-fd-border bg-fd-muted/20 px-4 py-3 text-xs text-fd-muted-foreground sm:grid-cols-[96px_1fr_190px]">
-          <div>gutter</div>
+        <div className="grid border-b border-fd-border bg-fd-muted/20 px-4 py-3 text-xs text-fd-muted-foreground sm:grid-cols-[72px_1fr_190px]">
+          <div>ribbon</div>
           <div>source and output</div>
           <div className="hidden text-right sm:block">real shell, fixture content</div>
         </div>
-        <div className="bg-background py-4 pl-12 pr-2">
+        <div className="bg-background py-4 pl-4 pr-2">
           <PresenceFixtureProvider>
             <CellContainer
               id={primaryCellId}
               cellType="code"
               isFocused
               className="mx-0 px-0"
-              gutterContent={<CompactExecutionButton count={12} />}
               codeContent={<SourceFixture />}
               outputContent={<OutputFixture />}
               rightGutterContent={
@@ -284,28 +306,16 @@ export function CellAnatomyExample() {
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="border-b border-fd-border p-4">
-          <h2 className="text-sm font-semibold">Cell Type Gutters</h2>
+          <h2 className="text-sm font-semibold">Cell Type Ribbons</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            These rows reuse the current CellContainer gutter colors and ExecutionCount component,
-            with fixture content standing in for the editor or renderer.
+            These rows reuse the current CellContainer ribbon colors with fixture content standing
+            in for the editor or renderer.
           </p>
         </div>
         <div className="divide-y divide-fd-border bg-background py-2">
           {cellTypeFixtures.map((cell) => (
-            <div key={cell.id} className="py-2 pl-12 pr-2">
-              <CellContainer
-                id={cell.id}
-                cellType={cell.type}
-                isFocused
-                className="mx-0 px-0"
-                gutterContent={
-                  cell.type === "code" ? (
-                    <ExecutionCount count={cell.count} />
-                  ) : (
-                    <ExecutionCount count={cell.count} className="opacity-50" />
-                  )
-                }
-              >
+            <div key={cell.id} className="py-2 pl-4 pr-2">
+              <CellContainer id={cell.id} cellType={cell.type} isFocused className="mx-0 px-0">
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center justify-between gap-3">
                     <h3 className="truncate text-sm font-semibold">{cell.label}</h3>
@@ -318,28 +328,30 @@ export function CellAnatomyExample() {
               </CellContainer>
             </div>
           ))}
-          <div className="py-2 pl-12 pr-2">
-            <CellContainer
-              id="fixture-executing-count"
-              cellType="code"
-              isFocused
-              className="mx-0 px-0"
-              gutterContent={<ExecutionCount count={null} isExecuting />}
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
+          <h2 className="text-sm font-semibold">Execution Marker Alternatives</h2>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            These side markers are kept separate from the main cell anatomy while the executable
+            state moves toward the code-cell current line at the source/result boundary.
+          </p>
+        </div>
+        <div className="grid gap-3 bg-background p-4 sm:grid-cols-2 lg:grid-cols-4">
+          {executionStateFixtures.map((state) => (
+            <div
+              key={state.label}
+              className="flex items-center gap-3 rounded-md border border-fd-border bg-fd-card p-3"
             >
+              <div className="flex w-7 justify-end">{state.control}</div>
               <div className="min-w-0">
-                <div className="flex min-w-0 items-center justify-between gap-3">
-                  <h3 className="truncate text-sm font-semibold">Executing count state</h3>
-                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[11px] font-medium text-sky-700 dark:text-sky-300">
-                    running
-                  </span>
-                </div>
-                <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-                  ExecutionCount renders the notebook convention for active read-only cells without
-                  requiring kernel state in the catalog.
-                </p>
+                <div className="text-sm font-medium">{state.label}</div>
+                <div className="mt-1 text-xs text-fd-muted-foreground">{state.detail}</div>
               </div>
-            </CellContainer>
-          </div>
+            </div>
+          ))}
         </div>
       </section>
 
