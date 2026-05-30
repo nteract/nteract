@@ -47,6 +47,57 @@ function textDataView(value: string): DataView {
   return new DataView(copy.buffer);
 }
 
+function fixtureAssetUrl(pathname: string): string {
+  return new URL(pathname, window.location.origin).href;
+}
+
+function isHydratableFixtureUrl(value: string): boolean {
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.origin === window.location.origin && url.pathname.startsWith("/fixtures/");
+  } catch {
+    return false;
+  }
+}
+
+async function resolveFixtureBufferUrlsInPlace(
+  state: Record<string, unknown>,
+  bufferPaths: string[][] | undefined,
+): Promise<string[]> {
+  if (!bufferPaths || bufferPaths.length === 0) return [];
+
+  const hydratedPaths: string[] = [];
+  await Promise.all(
+    bufferPaths.map(async (path) => {
+      if (path.length === 0) return;
+
+      let current: unknown = state;
+      for (const segment of path) {
+        if (typeof current !== "object" || current === null) return;
+        current = (current as Record<string, unknown>)[segment];
+      }
+
+      if (typeof current !== "string" || !isHydratableFixtureUrl(current)) return;
+
+      const response = await fetch(current);
+      if (!response.ok) return;
+
+      let parent: Record<string, unknown> = state;
+      for (let i = 0; i < path.length - 1; i++) {
+        const segment = path[i];
+        const next = parent[segment];
+        if (typeof next !== "object" || next === null) return;
+        parent = next as Record<string, unknown>;
+      }
+
+      parent[path[path.length - 1]] = new DataView(await response.arrayBuffer());
+      hydratedPaths.push(path.join("."));
+    }),
+  );
+
+  return hydratedPaths;
+}
+
 const anyWidgetEsm = `
 export default {
   render({ model, el }) {
@@ -211,6 +262,19 @@ const fixtureModels: FixtureModel[] = [
     bufferPaths: [["value"]],
   },
   {
+    id: "widget-buffer-url-image",
+    state: {
+      _model_name: "ImageModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "buffer URL",
+      value: "",
+      format: "svg+xml",
+      width: "260",
+      height: "112",
+    },
+    bufferPaths: [["value"]],
+  },
+  {
     id: "widget-audio",
     state: {
       _model_name: "AudioModel",
@@ -354,6 +418,7 @@ const fixtureModels: FixtureModel[] = [
       children: [
         "IPY_MODEL_widget-image",
         "IPY_MODEL_widget-binary-image",
+        "IPY_MODEL_widget-buffer-url-image",
         "IPY_MODEL_widget-audio",
         "IPY_MODEL_widget-video",
         "IPY_MODEL_widget-file-upload",
@@ -773,7 +838,7 @@ const renderedWidgets = [
   {
     name: "Media widgets",
     source: "src/components/widgets/controls/{image-widget,audio-widget,video-widget}.tsx",
-    role: "Image, audio, and video widgets render through buildMediaSrc with static data URLs and a hydrated DataView ImageModel fixture.",
+    role: "Image, audio, and video widgets render through buildMediaSrc with static data URLs, hydrated DataViews, and a bufferPaths URL fixture.",
   },
   {
     name: "FileUploadWidget",
@@ -822,7 +887,7 @@ const adapterBoundaries = [
   {
     title: "Binary buffers",
     icon: FileJson,
-    body: "Media widgets now cover a hydrated DataView value and ipycanvas replays a local DataView command buffer; live kernel bufferPaths, blob URL fetching, and sync hydration remain adapter concerns.",
+    body: "Media widgets now cover inline DataViews and a docs-local bufferPaths URL hydrator; ipycanvas replays a local DataView command buffer. Live kernel blob resolver state and sync hydration remain adapter concerns.",
   },
   {
     title: "Anywidget ESM",
@@ -841,18 +906,27 @@ const savedPasswordModel = {
   },
 };
 
-function seedStore(store: WidgetStore) {
+async function seedStore(store: WidgetStore): Promise<string[]> {
+  const hydratedModels: string[] = [];
+
   for (const model of fixtureModels) {
-    const state =
-      model.id === "widget-anywidget-url"
-        ? {
-            ...model.state,
-            _esm: new URL("/fixtures/anywidget-url-fixture.js", window.location.origin).href,
-            _css: new URL("/fixtures/anywidget-url-fixture.css", window.location.origin).href,
-          }
-        : model.state;
+    const state = structuredClone(model.state) as Record<string, unknown>;
+    if (model.id === "widget-anywidget-url") {
+      state._esm = fixtureAssetUrl("/fixtures/anywidget-url-fixture.js");
+      state._css = fixtureAssetUrl("/fixtures/anywidget-url-fixture.css");
+    } else if (model.id === "widget-buffer-url-image") {
+      state.value = fixtureAssetUrl("/fixtures/widget-buffer-url-image.svg");
+    }
+
+    const hydratedPaths = await resolveFixtureBufferUrlsInPlace(state, model.bufferPaths);
+    if (hydratedPaths.length > 0) {
+      hydratedModels.push(`${model.id}: ${hydratedPaths.join(", ")}`);
+    }
+
     store.createModel(model.id, state, model.bufferPaths);
   }
+
+  return hydratedModels;
 }
 
 function canvasCommand(name: (typeof COMMANDS)[number], args: unknown[] = []) {
@@ -1003,13 +1077,16 @@ function WidgetFixtureProvider({ children }: { children: ReactNode }) {
     setEvents((current) => [event, ...current].slice(0, 5));
   }, []);
 
-  const resetFixtures = useCallback(() => {
-    seedStore(store);
+  const resetFixtures = useCallback(async () => {
+    const hydratedModels = await seedStore(store);
     logEvent("seeded fixture comm state");
+    for (const model of hydratedModels) {
+      logEvent(`hydrated ${model}`);
+    }
   }, [logEvent, store]);
 
   useEffect(() => {
-    resetFixtures();
+    void resetFixtures();
   }, [resetFixtures]);
   useEffect(() => createCanvasManagerRouter(store), [store]);
 
@@ -1062,7 +1139,7 @@ function WidgetFixtureProvider({ children }: { children: ReactNode }) {
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <WidgetInventory />
-            <Button size="sm" variant="outline" onClick={resetFixtures}>
+            <Button size="sm" variant="outline" onClick={() => void resetFixtures()}>
               Reset fixtures
             </Button>
           </div>
@@ -1159,8 +1236,8 @@ export function WidgetSurfacesExample() {
                 <h3 className="text-sm font-semibold">Media and captured output widgets</h3>
                 <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
                   Image, audio, video, file upload, and OutputModel fixtures render through
-                  WidgetView with saved comm state, static payloads, a hydrated DataView image
-                  value, and a nested widget-view MIME output.
+                  WidgetView with saved comm state, static payloads, hydrated DataView image values,
+                  a docs-local buffer URL fixture, and a nested widget-view MIME output.
                 </p>
               </div>
               <div className="space-y-4">
@@ -1254,7 +1331,7 @@ export function WidgetSurfacesExample() {
           <div>
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              The remaining widget catalog work is narrower now: live blob URL hydration,
+              The remaining widget catalog work is narrower now: live kernel blob resolver state,
               ControllerModel Gamepad polling, live output-widget comm replay, richer ipycanvas
               image buffers, and kernel-originated anywidget asset URLs need explicit iframe/runtime
               adapters before they can render here.
