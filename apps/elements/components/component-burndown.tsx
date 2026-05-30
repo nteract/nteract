@@ -17,8 +17,8 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "10",
-    detail: "used shell, runtime, theme, and renderer surfaces",
+    value: "15",
+    detail: "used shell, runtime, theme, renderer, and editor surfaces",
   },
 ];
 
@@ -82,8 +82,9 @@ const families = [
     family: "Editors",
     source: "src/components/editor/**",
     target: "nteract editor",
-    status: "planned",
-    intent: "Document CodeMirror wrappers, themes, keymaps, and source-editing affordances.",
+    status: "active",
+    intent:
+      "CodeMirrorEditor, ReadOnlyCodeMirror, StaticCodeBlock, search highlighting, remote cursors, text attribution, languages, and themes now render from fixtures.",
   },
   {
     family: "Theme surfaces",
@@ -138,7 +139,7 @@ const rules = [
   {
     title: "Use current components first",
     icon: ShieldCheck,
-    body: "Catalog pages render existing components through fixtures as soon as isolation allows. Cell, runtime, theme, and output pages now start with real notebook pieces.",
+    body: "Catalog pages render existing components through fixtures as soon as isolation allows. Cell, runtime, theme, editor, and output pages now start with real notebook pieces.",
   },
   {
     title: "Audit before cataloging",
