@@ -18,6 +18,7 @@ export {
   notebookViewCellsToReadOnlyCells,
   notebookViewCellToReadOnlyCell,
   notebookViewCellsToTracebackTargets,
+  notebookOutlineItemsToMarkdownHeadingAnchors,
   type CreateNotebookViewModelOptions,
   type NotebookViewModel,
   type NotebookViewCell,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createNotebookViewModel,
+  notebookOutlineItemsToMarkdownHeadingAnchors,
   notebookViewCellsToOutlineItems,
   notebookViewCellsToReadOnlyCells,
   notebookViewCellsToTracebackTargets,
@@ -130,6 +131,7 @@ describe("notebook shell view model", () => {
       cellId: "code-1",
       label: "In [7]",
     });
+    expect(viewModel.markdownHeadingAnchorsByCellId.get("code-1")).toBeUndefined();
   });
 
   it("projects traceback execution ids to notebook cells", () => {
@@ -169,6 +171,38 @@ describe("notebook shell view model", () => {
     expect([...targets.entries()]).toEqual([
       ["exec-1", { cellId: "code-1", label: "In [4]" }],
       ["exec-2", { cellId: "code-2" }],
+    ]);
+  });
+
+  it("projects outline headings to markdown heading anchors by cell", () => {
+    const outlineItems = notebookViewCellsToOutlineItems([
+      {
+        id: "intro",
+        cellType: "markdown",
+        source: "# Intro\n\n## Setup",
+        language: null,
+        executionId: null,
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+    ]);
+
+    expect(notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems).get("intro")).toEqual([
+      {
+        itemId: "intro:heading:0",
+        title: "Intro",
+        level: 1,
+        anchor: "intro",
+        headingAnchorId: "notebook-cell-intro-heading-intro",
+      },
+      {
+        itemId: "intro:heading:1",
+        title: "Setup",
+        level: 2,
+        anchor: "setup",
+        headingAnchorId: "notebook-cell-intro-heading-setup",
+      },
     ]);
   });
 });

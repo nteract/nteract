@@ -1,6 +1,7 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { ReadOnlyNotebookCellData } from "@/components/cell/ReadOnlyNotebook";
 import type { SupportedLanguage } from "@/components/editor/languages";
+import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { projectNotebookOutline, type NotebookOutlineItem } from "runtimed";
 
 export type NotebookViewCellType = "code" | "markdown" | "raw";
@@ -30,6 +31,7 @@ export interface NotebookViewModel {
   cellIds: string[];
   readOnlyCells: ReadOnlyNotebookCellData[];
   outlineItems: NotebookOutlineItem[];
+  markdownHeadingAnchorsByCellId: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   tracebackTargetsByExecutionId: ReadonlyMap<string, NotebookTracebackCellTarget>;
   codeCellCount: number;
 }
@@ -42,11 +44,13 @@ export function createNotebookViewModel(
   cells: readonly NotebookViewCell[],
   options: CreateNotebookViewModelOptions,
 ): NotebookViewModel {
+  const outlineItems = notebookViewCellsToOutlineItems(cells);
   return {
     cells,
     cellIds: cells.map((cell) => cell.id),
     readOnlyCells: notebookViewCellsToReadOnlyCells(cells, options.resolveLanguage),
-    outlineItems: notebookViewCellsToOutlineItems(cells),
+    outlineItems,
+    markdownHeadingAnchorsByCellId: notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems),
     tracebackTargetsByExecutionId: notebookViewCellsToTracebackTargets(cells),
     codeCellCount: cells.filter((cell) => cell.cellType === "code").length,
   };
@@ -96,6 +100,25 @@ export function notebookViewCellsToTracebackTargets(
     targets.set(cell.executionId, target);
   }
   return targets;
+}
+
+export function notebookOutlineItemsToMarkdownHeadingAnchors(
+  outlineItems: readonly NotebookOutlineItem[],
+): ReadonlyMap<string, readonly MarkdownHeadingAnchor[]> {
+  const map = new Map<string, MarkdownHeadingAnchor[]>();
+  for (const item of outlineItems) {
+    if (item.kind !== "heading" || item.headingAnchorId === null) continue;
+    const anchors = map.get(item.cellId) ?? [];
+    anchors.push({
+      itemId: item.id,
+      title: item.title,
+      level: item.level,
+      anchor: item.anchor ?? null,
+      headingAnchorId: item.headingAnchorId,
+    });
+    map.set(item.cellId, anchors);
+  }
+  return map;
 }
 
 function notebookViewCellOutlineStatusLabel(cell: NotebookViewCell): string | null {

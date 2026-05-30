@@ -22,7 +22,6 @@ import {
 } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
-import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import { SavedWidgetStateProvider } from "@/components/widgets/saved-widget-state-context";
 import {
@@ -39,7 +38,11 @@ import {
   NotebookRail,
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
-import { navigateNotebookOutlineItem, NotebookDocumentShell } from "@/components/notebook-shell";
+import {
+  navigateNotebookOutlineItem,
+  NotebookDocumentShell,
+  notebookOutlineItemsToMarkdownHeadingAnchors,
+} from "@/components/notebook-shell";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
 import { DebugBanner } from "./components/DebugBanner";
@@ -766,20 +769,7 @@ function AppContent() {
     notebookQueueProjection.queued_cell_ids,
   ]);
   const markdownHeadingAnchorsByCellId = useMemo(() => {
-    const map = new Map<string, MarkdownHeadingAnchor[]>();
-    for (const item of outlineItems) {
-      if (item.kind !== "heading" || item.headingAnchorId === null) continue;
-      const anchors = map.get(item.cellId) ?? [];
-      anchors.push({
-        itemId: item.id,
-        title: item.title,
-        level: item.level,
-        anchor: item.anchor ?? null,
-        headingAnchorId: item.headingAnchorId,
-      });
-      map.set(item.cellId, anchors);
-    }
-    return map;
+    return notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems);
   }, [outlineItems]);
   const activeOutlineItemId = useActiveOutlineItemId(
     outlineItems,
