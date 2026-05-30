@@ -43,8 +43,8 @@ The live notebook receives widget state from `RuntimeStateDoc` through
 comm bridge. The catalog keeps those host responsibilities outside the rendered
 component examples. Browser APIs beyond the docs-owned Gamepad fixture, live blob
 URL fetching, live output-widget comm transport, kernel-originated anywidget
-asset URLs, production daemon blob resolver lifecycle, and generated WASM handoffs remain
+asset URLs, and generated WASM handoffs remain
 explicit adapter boundaries for later catalog slices. The docs-local media URL
-hydrator only fetches static assets from this app; production daemon blob
-resolver lifecycle and sync-originated `bufferPaths` still stay outside the
-catalog runtime.
+hydrator and blob uploader only handle static assets and stub `ContentRef`
+objects; production daemon blob resolver lifecycle and sync-originated
+`bufferPaths` still stay outside the catalog runtime.
