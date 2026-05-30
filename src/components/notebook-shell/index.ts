@@ -9,6 +9,10 @@ export {
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
+  navigateNotebookOutlineItem,
+  type NavigateNotebookOutlineItemOptions,
+} from "./outline-navigation";
+export {
   createNotebookViewModel,
   notebookViewCellsToOutlineItems,
   notebookViewCellsToReadOnlyCells,

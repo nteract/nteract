@@ -31,8 +31,11 @@ import { ReadOnlyNotebook } from "@/components/cell/ReadOnlyNotebook";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
-import { createNotebookViewModel, NotebookDocumentShell } from "@/components/notebook-shell";
-import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
+import {
+  createNotebookViewModel,
+  navigateNotebookOutlineItem,
+  NotebookDocumentShell,
+} from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
@@ -1072,34 +1075,9 @@ function NotebookViewer({
   }, []);
   const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
     setSelectedOutlineItemId(item.id);
-    const target = findCellElement(item.cellId);
-    if (!target) return false;
-
-    if (item.headingAnchorId) {
-      void navigateMarkdownHeading(item.cellId, item.headingAnchorId, {
-        behavior: "smooth",
-      }).then((handled) => {
-        if (!handled) {
-          target.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          });
-        }
-      });
-    } else {
-      target.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    }
-    if (href.startsWith("#")) {
-      window.history.replaceState(
-        null,
-        "",
-        `${window.location.pathname}${window.location.search}${href}`,
-      );
-    }
-    return true;
+    return navigateNotebookOutlineItem(item, href, {
+      findCellElement: (outlineItem) => findCellElement(outlineItem.cellId),
+    });
   }, []);
   const shellCapabilities = useMemo(
     () =>

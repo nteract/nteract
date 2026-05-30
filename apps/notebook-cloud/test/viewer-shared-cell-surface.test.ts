@@ -58,7 +58,7 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
   assert.match(sourceText, /createNotebookViewModel\(cells/);
   assert.match(sourceText, /<NotebookRail[\s\S]*outlineItems=\{outlineItems\}/);
   assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
-  assert.match(sourceText, /navigateMarkdownHeading\(item\.cellId, item\.headingAnchorId/);
+  assert.match(sourceText, /navigateNotebookOutlineItem\(item, href/);
 });
 
 test("cloud viewer shell keeps render endpoints out of the interactive load path", () => {

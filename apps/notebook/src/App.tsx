@@ -39,7 +39,7 @@ import {
   NotebookRail,
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
-import { NotebookDocumentShell } from "@/components/notebook-shell";
+import { navigateNotebookOutlineItem, NotebookDocumentShell } from "@/components/notebook-shell";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
 import { DebugBanner } from "./components/DebugBanner";
@@ -89,7 +89,6 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
-import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { getNotebookCellsSnapshot, useSourceVersion } from "./lib/notebook-cells";
 import { useNotebookQueueProjection } from "./lib/notebook-executions";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
@@ -967,32 +966,7 @@ function AppContent() {
   );
 
   const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
-    if (!href.startsWith("#")) return false;
-    const fallbackHref = `#${item.cellAnchorId}`;
-    const target = document.getElementById(
-      item.headingAnchorId ? item.cellAnchorId : href.slice(1),
-    );
-    if (!target) return false;
-
-    if (item.headingAnchorId) {
-      void navigateMarkdownHeading(item.cellId, item.headingAnchorId, { behavior: "smooth" }).then(
-        (handled) => {
-          if (!handled) {
-            target.scrollIntoView({ block: "start", behavior: "smooth" });
-          }
-        },
-      );
-    } else {
-      target.scrollIntoView({ block: "start", behavior: "smooth" });
-    }
-    window.history.replaceState(
-      null,
-      "",
-      `${window.location.pathname}${window.location.search}${
-        item.headingAnchorId ? fallbackHref : href
-      }`,
-    );
-    return true;
+    return navigateNotebookOutlineItem(item, href);
   }, []);
 
   const setBlockedTrustAction = useCallback((action: PendingTrustAction | null) => {
