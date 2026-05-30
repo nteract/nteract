@@ -22,6 +22,7 @@ import {
   classifyPerformanceResource,
   refinePerformanceResourceKind,
   summarizePerformanceResources,
+  summarizeViewerMilestones,
   withTiming,
 } from "./hosted-render-smoke-performance.mjs";
 import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
@@ -107,6 +108,7 @@ let viewerCssCheck = null;
 let runtimeWasmHintCheck = null;
 let screenshotSaved = false;
 let pageTextMatches = {};
+let viewerMilestones = {};
 let themeModeChecks = [];
 const siftLoadMilestoneMatches = {};
 const smokeStartedAt = performance.now();
@@ -369,6 +371,7 @@ async function main() {
       .locator(".cloud-presence")
       .textContent({ timeout: 1_000 })
       .catch(() => null);
+    viewerMilestones = summarizeViewerMilestones(await collectViewerLoadMarks(page));
 
     if (requireSiftWasm && siftWasmRequests.length === 0) {
       failures.push({ kind: "sift-wasm", text: "Sift WASM was not requested" });
@@ -492,6 +495,7 @@ async function main() {
           expectedLatestRevisionNotebookHeadsHash,
           expectedLatestRevisionRuntimeHeadsHash,
           timings_ms: timingsMs,
+          viewer_milestones_ms: viewerMilestones,
           performanceDiagnostics: summarizePerformanceResources(performanceResources, timingsMs),
           catalogApiCheck,
           viewerCssCheck,
@@ -789,6 +793,15 @@ async function collectRuntimeWasmHints(page) {
       type: link.getAttribute("type") ?? "",
       crossorigin: link.getAttribute("crossorigin"),
       crossOrigin: link.crossOrigin,
+    })),
+  );
+}
+
+async function collectViewerLoadMarks(page) {
+  return page.evaluate(() =>
+    performance.getEntriesByType("mark").map((entry) => ({
+      name: entry.name,
+      startTime: entry.startTime,
     })),
   );
 }
