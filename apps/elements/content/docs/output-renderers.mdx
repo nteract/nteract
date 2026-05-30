@@ -1,0 +1,26 @@
+---
+title: Output renderers
+description: Runtime-free fixtures for nteract-owned notebook output components.
+---
+
+import { OutputRenderersExample } from "@/components/output-renderers-example";
+
+Notebook outputs are nteract-owned UI, not generic cards or prose examples.
+This page starts the renderer catalog with current components from
+`src/components/outputs/**` and fixture data that does not require runtimed,
+WASM materialization, sync state, iframe bootstrapping, or plugin injection.
+
+<OutputRenderersExample />
+
+## What is real here
+
+The rendered surfaces import current output components directly: ANSI streams
+and errors, JSON trees, image output, and the structured traceback renderer.
+The MIME selection table uses the same priority helper the notebook uses before
+rendering.
+
+## What still needs an adapter
+
+`OutputArea`, isolated HTML/markdown/SVG/JavaScript, Plotly/Vega/GeoJSON plugin
+renderers, and widget views still need fixture-backed isolation and widget-store
+adapters before this docs app should render them.

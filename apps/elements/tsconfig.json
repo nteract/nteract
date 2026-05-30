@@ -7,7 +7,10 @@
     "jsx": "preserve",
     "paths": {
       "@/components/cell/*": ["../../src/components/cell/*"],
+      "@/components/editor/*": ["../../src/components/editor/*"],
+      "@/components/outputs/*": ["../../src/components/outputs/*"],
       "@/components/ui/*": ["../../src/components/ui/*"],
+      "@/lib/dark-mode": ["../../src/lib/dark-mode"],
       "@/lib/utils": ["../../src/lib/utils"],
       "@/notebook-components/*": ["../../apps/notebook/src/components/*"],
       "@/*": ["./*"],
