@@ -84,6 +84,7 @@ import {
   setSearchQuery as storeSetSearchQuery,
 } from "./lib/cell-ui-state";
 import { startCursorDispatch } from "./lib/cursor-registry";
+import { desktopNotebookShellCapabilities } from "./lib/desktop-shell-capabilities";
 import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kernel-status";
 import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
@@ -359,6 +360,7 @@ function AppContent() {
     sessionStatus$,
     triggerSync,
     localActor,
+    connectionScope,
   } = useAutomergeNotebook();
 
   // Daemon sync status. Drives the kernel-action gate: until the daemon
@@ -368,6 +370,16 @@ function AppContent() {
   // `useObservable` seeds with `null` until the engine emits.
   const sessionStatus = useObservable<SessionStatus | null>(sessionStatus$, null);
   const sessionReady = sessionStatus?.runtime_state === "ready";
+  const shellCapabilities = useMemo(
+    () =>
+      desktopNotebookShellCapabilities({
+        canAcceptCellMutations,
+        sessionReady,
+        localActor,
+        connectionScope,
+      }),
+    [canAcceptCellMutations, connectionScope, localActor, sessionReady],
+  );
 
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cellIds);
@@ -1967,6 +1979,7 @@ function AppContent() {
           creating={envBuildCreating}
         />
         <NotebookDocumentShell
+          capabilities={shellCapabilities}
           stageLabel="Notebook editor"
           stageClassName="flex-row min-w-0 flex-1"
           rail={
