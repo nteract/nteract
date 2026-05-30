@@ -32,12 +32,10 @@ import {
   grantNotebookAclRow,
   recordBlob,
   recordRevision,
-  renderKey,
   revokeNotebookAclRow,
   runtimeStateSnapshotKey,
   snapshotKey,
   type NotebookAclRow,
-  type RevisionRow,
 } from "./storage.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
 import {
@@ -78,18 +76,17 @@ const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
 const DEFAULT_RUNTIMED_WASM_BASE_PATH = "/assets/";
 const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
-const RENDER_BLOB_HEAD_CONCURRENCY = 16;
+const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
 
-interface MissingRenderBlob {
+interface MissingSnapshotBlob {
   hash: string;
   size: number | null;
   media_type: string | null;
 }
 
-type RenderMaterializationResult =
+type SnapshotPairValidationResult =
   | {
       ok: true;
-      body: string;
     }
   | {
       ok: false;
@@ -184,16 +181,6 @@ const worker: ExportedHandler<Env> = {
         env,
         decodeURIComponent(inviteItemMatch[1]),
         decodeURIComponent(inviteItemMatch[2]),
-      );
-    }
-
-    const renderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/renders\/([^/]+)$/);
-    if (renderMatch) {
-      return routeRender(
-        request,
-        env,
-        decodeURIComponent(renderMatch[1]),
-        decodeURIComponent(renderMatch[2]),
       );
     }
 
@@ -566,8 +553,6 @@ async function routeSnapshot(
   const runtimeKey = runtimeHeadsHash
     ? runtimeStateSnapshotKey(runtimeStateDocId, runtimeHeadsHash)
     : null;
-  const renderCacheKey = renderKey(notebookId, headsHash);
-  let renderCacheWritten = false;
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
@@ -593,7 +578,7 @@ async function routeSnapshot(
       );
     }
 
-    const materialized = await materializeSnapshotRenderCache({
+    const validated = await validateSnapshotPair({
       request,
       env,
       notebookId,
@@ -601,13 +586,11 @@ async function routeSnapshot(
       runtimeHeadsHash,
       notebookBytes: new Uint8Array(body),
       runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
-      immutable: true,
     });
-    if (!materialized.ok) {
+    if (!validated.ok) {
       await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
-      return json(materialized.body, materialized.status);
+      return json(validated.body, validated.status);
     }
-    renderCacheWritten = true;
   }
 
   let revisionId: string;
@@ -624,9 +607,6 @@ async function routeSnapshot(
     });
   } catch (error) {
     await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
-    if (renderCacheWritten) {
-      await env.NOTEBOOK_SNAPSHOTS.delete(renderCacheKey).catch(() => undefined);
-    }
     throw error;
   }
 
@@ -1111,118 +1091,7 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   return json(catalog);
 }
 
-async function routeRender(
-  request: Request,
-  env: Env,
-  notebookId: string,
-  headsHash: string,
-): Promise<Response> {
-  if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
-    if (identity instanceof Response) {
-      return identity;
-    }
-    const catalog = await getNotebookCatalog(env, notebookId);
-    const revision = catalog?.revisions.find(
-      (candidate) => candidate.notebook_heads_hash === headsHash,
-    );
-    return revision
-      ? getRenderObjectOrMaterialize(request, env, notebookId, revision, true)
-      : getRenderObject(env, notebookId, headsHash, true);
-  }
-
-  return json({ error: "method not allowed" }, 405);
-}
-
-async function getRenderObjectOrMaterialize(
-  request: Request,
-  env: Env,
-  notebookId: string,
-  revision: RevisionRow,
-  immutable: boolean,
-): Promise<Response> {
-  const cached = await getRenderObject(env, notebookId, revision.notebook_heads_hash, immutable);
-  if (cached.status !== 404) {
-    return cached;
-  }
-
-  return materializeSnapshotRender(request, env, notebookId, revision, immutable);
-}
-
-async function getRenderObject(
-  env: Env,
-  notebookId: string,
-  headsHash: string,
-  immutable: boolean,
-): Promise<Response> {
-  const key = renderKey(notebookId, headsHash);
-  const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
-  if (!object) {
-    return json({ error: "render cache not found" }, 404);
-  }
-
-  const headers = new Headers({
-    "Cache-Control": immutable
-      ? "public, max-age=31536000, immutable"
-      : "public, max-age=30, stale-while-revalidate=300",
-    "Content-Type": object.httpMetadata?.contentType ?? "application/json; charset=utf-8",
-    ETag: object.httpEtag,
-  });
-  return withCors(new Response(object.body, { headers }));
-}
-
-async function materializeSnapshotRender(
-  request: Request,
-  env: Env,
-  notebookId: string,
-  revision: RevisionRow,
-  immutable: boolean,
-): Promise<Response> {
-  if (!env.NOTEBOOK_SNAPSHOTS) {
-    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
-  }
-  if (!revision.runtime_snapshot_key) {
-    return json({ error: "revision has no runtime-state snapshot" }, 404);
-  }
-
-  const [notebookObject, runtimeObject] = await Promise.all([
-    env.NOTEBOOK_SNAPSHOTS.get(revision.snapshot_key),
-    env.NOTEBOOK_SNAPSHOTS.get(revision.runtime_snapshot_key),
-  ]);
-  if (!notebookObject) {
-    return json({ error: "notebook snapshot not found" }, 404);
-  }
-  if (!runtimeObject) {
-    return json({ error: "runtime snapshot not found" }, 404);
-  }
-
-  const materialized = await materializeSnapshotRenderCache({
-    request,
-    env,
-    notebookId,
-    notebookHeadsHash: revision.notebook_heads_hash,
-    runtimeHeadsHash: revision.runtime_heads_hash,
-    notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
-    runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
-    immutable,
-  });
-  if (!materialized.ok) {
-    return json(materialized.body, materialized.status);
-  }
-
-  return withCors(
-    new Response(materialized.body, {
-      headers: {
-        "Cache-Control": immutable
-          ? "public, max-age=31536000, immutable"
-          : "public, max-age=30, stale-while-revalidate=300",
-        "Content-Type": "application/json; charset=utf-8",
-      },
-    }),
-  );
-}
-
-async function materializeSnapshotRenderCache(options: {
+async function validateSnapshotPair(options: {
   request: Request;
   env: Env;
   notebookId: string;
@@ -1230,8 +1099,7 @@ async function materializeSnapshotRenderCache(options: {
   runtimeHeadsHash: string | null;
   notebookBytes: Uint8Array;
   runtimeStateBytes: Uint8Array;
-  immutable: boolean;
-}): Promise<RenderMaterializationResult> {
+}): Promise<SnapshotPairValidationResult> {
   const startedAt = Date.now();
   const bucket = options.env.NOTEBOOK_SNAPSHOTS;
   if (!bucket) {
@@ -1256,86 +1124,70 @@ async function materializeSnapshotRenderCache(options: {
       }),
     });
   } catch (error) {
-    cloudLog("warn", "render.materialization.failed", {
+    cloudLog("warn", "snapshot_pair.validation.failed", {
       notebook_id: options.notebookId,
       notebook_heads_hash: options.notebookHeadsHash,
       runtime_heads_hash: options.runtimeHeadsHash,
       duration_ms: durationMs(startedAt),
       error: errorMessage(error),
-      counter: "render_materialization_failures",
+      counter: "snapshot_pair_validation_failures",
       counter_delta: 1,
     });
     return {
       ok: false,
       status: 422,
       body: {
-        error: "render materialization failed",
+        error: "snapshot pair validation failed",
         details: errorMessage(error),
       },
     };
   }
 
-  const missingBlobs = await findMissingRenderBlobs(bucket, options.notebookId, render);
+  const missingBlobs = await findMissingSnapshotBlobs(bucket, options.notebookId, render);
   if (missingBlobs.length > 0) {
-    cloudLog("warn", "render.materialization.missing_blobs", {
+    cloudLog("warn", "snapshot_pair.validation.missing_blobs", {
       notebook_id: options.notebookId,
       notebook_heads_hash: options.notebookHeadsHash,
       runtime_heads_hash: options.runtimeHeadsHash,
       duration_ms: durationMs(startedAt),
       missing_blob_count: missingBlobs.length,
       missing_blob_hashes: missingBlobs.map((blob) => blob.hash).slice(0, 20),
-      counter: "render_materialization_missing_blobs",
+      counter: "snapshot_pair_validation_missing_blobs",
       counter_delta: 1,
     });
     return {
       ok: false,
       status: 424,
       body: {
-        error: "render materialization missing blobs",
+        error: "snapshot pair validation missing blobs",
         missing_blobs: missingBlobs,
       },
     };
   }
 
-  const body = JSON.stringify(render);
-  await bucket.put(renderKey(options.notebookId, options.notebookHeadsHash), body, {
-    httpMetadata: {
-      contentType: "application/json; charset=utf-8",
-      cacheControl: options.immutable
-        ? "public, max-age=31536000, immutable"
-        : "public, max-age=30, stale-while-revalidate=300",
-    },
-    customMetadata: {
-      notebook_id: options.notebookId,
-      notebook_heads_hash: options.notebookHeadsHash,
-      runtime_heads_hash: options.runtimeHeadsHash ?? "",
-      artifact: "materialized-render",
-    },
-  });
-  cloudLog("info", "render.materialization.completed", {
+  cloudLog("info", "snapshot_pair.validation.completed", {
     notebook_id: options.notebookId,
     notebook_heads_hash: options.notebookHeadsHash,
     runtime_heads_hash: options.runtimeHeadsHash,
     duration_ms: durationMs(startedAt),
     cell_count: Array.isArray(render.cells) ? render.cells.length : undefined,
     blob_ref_count: Object.keys(render.blob_urls).length,
-    byte_length: body.length,
-    counter: "render_materializations",
+    counter: "snapshot_pair_validations",
     counter_delta: 1,
   });
-  return { ok: true, body };
+  return { ok: true };
 }
 
-async function findMissingRenderBlobs(
+async function findMissingSnapshotBlobs(
   bucket: NonNullable<Env["NOTEBOOK_SNAPSHOTS"]>,
   notebookId: string,
   render: unknown,
-): Promise<MissingRenderBlob[]> {
-  const refs = collectRenderBlobRefs(render);
-  const missing: Array<MissingRenderBlob | null> = [];
+): Promise<MissingSnapshotBlob[]> {
+  const refs = collectSnapshotBlobRefs(render);
+  const missing: Array<MissingSnapshotBlob | null> = [];
 
-  for (let index = 0; index < refs.length; index += RENDER_BLOB_HEAD_CONCURRENCY) {
-    const batch = refs.slice(index, index + RENDER_BLOB_HEAD_CONCURRENCY);
+  for (let index = 0; index < refs.length; index += SNAPSHOT_BLOB_HEAD_CONCURRENCY) {
+    const batch = refs.slice(index, index + SNAPSHOT_BLOB_HEAD_CONCURRENCY);
     missing.push(
       ...(await Promise.all(
         batch.map(async (ref) => {
@@ -1353,11 +1205,11 @@ async function findMissingRenderBlobs(
   }
 
   return missing
-    .filter((entry): entry is MissingRenderBlob => entry !== null)
+    .filter((entry): entry is MissingSnapshotBlob => entry !== null)
     .sort((left, right) => left.hash.localeCompare(right.hash));
 }
 
-function collectRenderBlobRefs(render: unknown): BlobRef[] {
+function collectSnapshotBlobRefs(render: unknown): BlobRef[] {
   const refs = collectBlobRefs(render);
   const blobUrls = isRecord(render) ? render.blob_urls : undefined;
   if (isRecord(blobUrls)) {
@@ -1816,7 +1668,7 @@ function withCors(response: Response): Response {
   response.headers.set("Access-Control-Allow-Methods", "DELETE, GET, HEAD, POST, PUT, OPTIONS");
   response.headers.set(
     "Access-Control-Allow-Headers",
-    `Authorization, Cf-Access-Jwt-Assertion, CF-Access-Token, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, ${DEV_AUTH_TOKEN_HEADER}`,
+    `Authorization, Cf-Access-Jwt-Assertion, CF-Access-Token, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, X-Runtime-State-Doc-Id, ${DEV_AUTH_TOKEN_HEADER}`,
   );
   return response;
 }
@@ -1916,7 +1768,9 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
-    pinnedRenderBasePath: `${notebookApiBasePath}/renders/`,
+    catalogEndpoint: notebookApiBasePath,
+    snapshotBasePath: `${notebookApiBasePath}/snapshots/`,
+    runtimeSnapshotBasePath: `${notebookApiBasePath}/runtime-snapshots/`,
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,

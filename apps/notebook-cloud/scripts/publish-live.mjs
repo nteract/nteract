@@ -58,10 +58,15 @@ try {
     },
   );
 
-  const rendered = await fetchJson(
-    `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`,
+  const catalog = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}`);
+  assert(
+    catalog.revisions?.some(
+      (revision) =>
+        revision.notebook_heads_hash === headsHash &&
+        revision.runtime_heads_hash === runtimeHeadsHash,
+    ),
+    "published catalog did not include the snapshot pair",
   );
-  assert(rendered.source === "snapshot-pair", "pinned render was not materialized from snapshots");
 
   console.log(
     JSON.stringify(
@@ -81,7 +86,7 @@ try {
           "live_session_snapshot_pair",
           "runtime_state_output_manifests",
           "local_blob_uploads",
-          "pinned_snapshot_materialization",
+          "published_snapshot_catalog",
         ],
       },
       null,

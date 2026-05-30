@@ -404,7 +404,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-function isContentRefLike(value: unknown, mimeType?: string): boolean {
+function isContentRefLike(value: unknown, mimeType?: string): value is ContentRef {
   if (typeof value !== "object" || value === null) return false;
   const ref = value as Record<string, unknown>;
   if ("inline" in ref) return typeof ref.inline === "string";

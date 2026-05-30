@@ -69,7 +69,9 @@ describe("HTML script serialization", () => {
       "theme bootstrap must run before the stylesheet to avoid dark-to-light first paint",
     );
     assert.doesNotMatch(html, /"renderEndpoint"/);
-    assert.match(html, /"pinnedRenderBasePath":"\/api\/n\/demo\/renders\/"/);
+    assert.match(html, /"catalogEndpoint":"\/api\/n\/demo"/);
+    assert.match(html, /"snapshotBasePath":"\/api\/n\/demo\/snapshots\/"/);
+    assert.match(html, /"runtimeSnapshotBasePath":"\/api\/n\/demo\/runtime-snapshots\/"/);
     assert.match(html, /"aclEndpoint":"\/api\/n\/demo\/acl"/);
     assert.match(html, /"invitesEndpoint":"\/api\/n\/demo\/invites"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
@@ -92,7 +94,9 @@ describe("HTML script serialization", () => {
     assert.match(html, /id="nteract-cloud-viewer-config"/);
     assert.match(html, /"headsHash":null/);
     assert.doesNotMatch(html, /"renderEndpoint"/);
-    assert.match(html, /"pinnedRenderBasePath":"\/api\/n\/demo\/renders\/"/);
+    assert.doesNotMatch(html, /"pinnedRenderBasePath"/);
+    assert.match(html, /"catalogEndpoint":"\/api\/n\/demo"/);
+    assert.match(html, /"snapshotBasePath":"\/api\/n\/demo\/snapshots\/"/);
     assert.match(html, /"syncEndpoint":"\/n\/demo\/sync"/);
   });
 

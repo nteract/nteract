@@ -59,16 +59,15 @@ await putBytes(
   },
 );
 
-const rendered = await fetchJson(
-  `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`,
+const catalog = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}`);
+assert(
+  catalog.revisions?.some(
+    (revision) =>
+      revision.notebook_heads_hash === headsHash &&
+      revision.runtime_heads_hash === runtimeHeadsHash,
+  ),
+  "published catalog did not include the fixture snapshot pair",
 );
-assert(rendered.source === "snapshot-pair", "pinned render was not materialized from snapshots");
-for (const blob of fixtureBlobs) {
-  assert(
-    rendered.blob_urls?.[blob.hash],
-    `materialized render did not include blob URL for ${blob.hash}`,
-  );
-}
 
 console.log(
   JSON.stringify(
@@ -89,7 +88,7 @@ console.log(
       checks: [
         "fixture_snapshot_pair_publish",
         "runtime_state_output_manifests",
-        "pinned_snapshot_materialization",
+        "published_snapshot_catalog",
         ...(fixtureBlobs.length > 0 ? ["fixture_blob_uploads", "blob_resolver_urls"] : []),
       ],
     },

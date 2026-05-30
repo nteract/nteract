@@ -47,6 +47,16 @@ export async function createBootstrapNotebookHandle(
   return module.NotebookHandle.create_bootstrap(actorLabel);
 }
 
+export async function loadSnapshotPairHandle(
+  notebookBytes: Uint8Array,
+  runtimeStateBytes: Uint8Array,
+  modulePath: string | URL,
+  moduleOrPath: WasmModuleOrPath,
+): Promise<NotebookHandle> {
+  const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
+  return module.NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+}
+
 export function encodeHeartbeatPresenceAfterInit(peerId: string): Uint8Array {
   return runtimedWasmModuleAfterInit().encode_heartbeat_presence(peerId);
 }

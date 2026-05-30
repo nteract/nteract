@@ -31,7 +31,7 @@ handle.update_source(
     "This public viewer is backed by the live notebook room.",
     "",
     "- The NotebookDoc and RuntimeStateDoc .am snapshots are stored in R2.",
-    "- Pinned revisions can still be materialized by runtimed-wasm from those snapshots.",
+    "- Pinned revisions are loaded from Automerge snapshots and the live room uses sync.",
   ].join("\n"),
 );
 handle.add_cell_after("hello", "code", "intro");
@@ -64,13 +64,14 @@ await putBytes(
   },
 );
 
-const rendered = await fetchJson(
-  `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`,
-);
-assert(rendered.source === "snapshot-pair", "pinned render was not materialized from snapshots");
+const catalog = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}`);
 assert(
-  rendered.cells.some((cell) => cell.id === "hello" && cell.source.includes("nteract cloud")),
-  "pinned snapshot render did not include the demo code cell",
+  catalog.revisions?.some(
+    (revision) =>
+      revision.notebook_heads_hash === headsHash &&
+      revision.runtime_heads_hash === runtimeHeadsHash,
+  ),
+  "published catalog did not include the demo snapshot pair",
 );
 
 console.log(
@@ -87,7 +88,7 @@ console.log(
         "runtimed_wasm_snapshot_pair",
         "r2_runtime_snapshot_publish",
         "r2_snapshot_publish",
-        "pinned_snapshot_materialization",
+        "published_snapshot_catalog",
       ],
     },
     null,

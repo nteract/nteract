@@ -53,12 +53,9 @@ The revision row records:
 - `runtime_snapshot_key`
 - `actor_label`
 
-Render caches may exist, but they are derived caches. They are not the source of
-truth and can be regenerated from the snapshot pair.
-
-The publish API may materialize that cache before recording the catalog row.
-This is a validation step, not a change in durability: if the `NotebookDoc` /
-`RuntimeStateDoc` pair cannot load, or if any rendered cell, widget comm, or
+Derived render JSON is not a durable artifact. The publish API validates the
+snapshot pair before recording the catalog row: if the `NotebookDoc` /
+`RuntimeStateDoc` pair cannot load, or if any projected cell, widget comm, or
 manifest child points at a missing blob object, the host rejects the publish and
 leaves no revision row.
 
@@ -70,7 +67,6 @@ The current compatibility layout for a notebook `n/:id` is:
 n/{id}/snapshots/{notebookHeadsHash}.am
 n/{id}/snapshots/runtime-state/{runtimeHeadsHash}.am
 n/{id}/blobs/{sha256}
-n/{id}/renders/{notebookHeadsHash}.json
 ```
 
 New storage work should move toward the first-class document namespace in
@@ -82,17 +78,15 @@ docs/{docId}/incremental/{chunkHash}
 blobs/{sha256}
 ```
 
-The render path is derived. Snapshot paths and blob paths are the durable
-publish artifact set; incremental paths are an optional future optimization that
-should follow Automerge Repo's logical storage shape rather than introduce a
-new file-extension convention. Hosts can precompute the render path at publish
-time to prove the snapshot pair and blob set are complete.
+Snapshot paths and blob paths are the durable publish artifact set; incremental
+paths are an optional future optimization that should follow Automerge Repo's
+logical storage shape rather than introduce a new file-extension convention. The
+host can load the snapshot pair at publish time to prove the snapshot pair and
+blob set are complete.
 
-For connected notebook pages, the live room supersedes the render path. `/render`
-is a warm-start cache and static/export read model, not a separate state lane.
-After the WebSocket materializes, viewers and editors render the same live
-`NotebookDoc` + `RuntimeStateDoc`; permission differences only change which
-frames the client may author.
+For connected notebook pages, the live room is the primary read model. Viewers
+and editors render the same live `NotebookDoc` + `RuntimeStateDoc`; permission
+differences only change which frames the client may author.
 
 ## Decision 3: Materialization uses runtimed-wasm
 
@@ -107,8 +101,8 @@ uses. This keeps execution-id lookup and output manifest projection in the Rust
 runtime document code rather than duplicating projection in a Worker-local JSON
 format.
 
-In the current prototype the Worker materializes a JSON render response on
-request. The browser viewer normalizes that host response into shared
+The browser viewer loads raw snapshot bytes for pinned revisions, opens them
+through `runtimed-wasm`, normalizes the resulting cell/runtime state into shared
 `ReadOnlyNotebookCellData`, then renders through the same React notebook output
 stack as desktop: `ReadOnlyNotebook` → `ReadOnlyNotebookCell` → `OutputArea` →
 `MediaRouter` / isolated iframe. The framework-agnostic
@@ -116,13 +110,13 @@ stack as desktop: `ReadOnlyNotebook` → `ReadOnlyNotebookCell` → `OutputArea`
 but the cloud notebook viewer itself should not fork a separate DOM renderer.
 
 Widget comm state has one additional host-specific projection step. The Worker
-serializes `widget_comms` alongside rendered cells, resolving comm
-`ContentRef`s through the hosted `BlobResolver`. The viewer then seeds a
-read-only `WidgetStore`: `_esm` / `_css` stay URL strings for browser loading,
-text refs listed in `text_paths` are fetched and inlined by the viewer, and
-binary refs listed in `buffer_paths` are installed as `DataView`s. This keeps
-the rendered widget components shared while making the blob authority boundary
-explicit in the host.
+validates comm `ContentRef`s through the hosted `BlobResolver` during publish.
+The viewer projects comm topology from `RuntimeStateDoc` and seeds a read-only
+`WidgetStore`: `_esm` / `_css` stay URL strings for browser loading, text refs
+listed in `text_paths` are fetched and inlined by the viewer, and binary refs
+listed in `buffer_paths` are installed as `DataView`s. This keeps the rendered
+widget components shared while making the blob authority boundary explicit in
+the host.
 
 ## Decision 4: Blob refs stay host-neutral
 
@@ -175,8 +169,7 @@ The bundle imports the shared isolated output embed API and the existing
 renderer plugin virtual modules. It receives notebook-specific configuration
 from the Worker HTML shell as JSON:
 
-- render endpoint (`/api/n/:id/render` or pinned `/renders/:headsHash`) for
-  warm start;
+- catalog endpoint plus snapshot endpoints for pinned revision discovery;
 - sync endpoint for the live notebook room;
 - blob base path (`/api/n/:id/blobs/`);
 - renderer asset base URL;
@@ -196,11 +189,11 @@ API or blob origin.
 
 The cloud renderer boundary is intentionally narrow:
 
-- Worker: authenticate reads, load snapshot pairs, materialize render-cache JSON,
-  and map content-addressed blobs to host URLs.
+- Worker: authenticate reads, validate snapshot pairs, serve snapshot/blob
+  artifacts, and map content-addressed blobs to host URLs.
 - Cloud viewer: own the browser shell, live-room bridge, theme selection,
-  presence chrome, and normalization from render JSON to shared cell/output
-  props.
+  presence chrome, and normalization from live or pinned Automerge documents to
+  shared cell/output props.
 - Shared renderer components: own MIME priority, output manifest resolution,
   plugin installation, iframe sandboxing, scroll handoff, and output DOM.
 
