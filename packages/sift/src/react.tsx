@@ -54,6 +54,17 @@ export type SiftSource =
   | { kind: "url"; url: string }
   | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest };
 
+export type SiftLoadMilestone = {
+  source: SiftSource["kind"];
+  phase: string;
+  elapsedMs: number;
+  chunkIndex?: number;
+  chunkCount?: number;
+  rowCount?: number;
+  byteLength?: number;
+  format?: "arrow-ipc" | "parquet";
+};
+
 export type SiftTableProps = {
   /** Normalized table source. Prefer this for new source types. */
   source?: SiftSource;
@@ -67,6 +78,8 @@ export type SiftTableProps = {
   columnOverrides?: Record<string, Partial<Column>>;
   /** Called whenever sort or filter state changes from UI interaction. */
   onChange?: (state: TableEngineState) => void;
+  /** Called as URL/manifest data loads, decodes, and mounts. Intended for host diagnostics. */
+  onLoadMilestone?: (milestone: SiftLoadMilestone) => void;
   /** Optional control rendered in Sift's footer before built-in buttons. */
   footerControl?: ReactNode;
   /** CSS class name for the container div. */
@@ -273,6 +286,7 @@ export function SiftTable({
   typeOverrides,
   columnOverrides,
   onChange,
+  onLoadMilestone,
   footerControl,
   className,
   style,
@@ -289,10 +303,22 @@ export function SiftTable({
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onLoadMilestoneRef = useRef(onLoadMilestone);
+  onLoadMilestoneRef.current = onLoadMilestone;
 
   const stableOnChange = useCallback((state: TableEngineState) => {
     onChangeRef.current?.(state);
   }, []);
+
+  const emitLoadMilestone = useCallback(
+    (startedAt: number, milestone: Omit<SiftLoadMilestone, "elapsedMs">) => {
+      onLoadMilestoneRef.current?.({
+        ...milestone,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      });
+    },
+    [],
+  );
 
   const getFooterControlElement = useCallback(() => {
     if (!hasFooterControl) return undefined;
@@ -342,9 +368,15 @@ export function SiftTable({
   // Mount engine when `data` prop is provided directly
   useEffect(() => {
     if (!dataSource || !containerRef.current) return;
+    const startedAt = performance.now();
 
     if (engineRef.current) {
       engineRef.current.replaceData(dataSource);
+      emitLoadMilestone(startedAt, {
+        source: "table-data",
+        phase: "engine-data-replaced",
+        rowCount: dataSource.rowCount,
+      });
       setStatus("ready");
       return;
     }
@@ -356,14 +388,20 @@ export function SiftTable({
       onChange: stableOnChange,
       footerControl: getFooterControlElement(),
     });
+    emitLoadMilestone(startedAt, {
+      source: "table-data",
+      phase: "engine-mounted",
+      rowCount: dataSource.rowCount,
+    });
     setStatus("ready");
-  }, [dataSource, stableOnChange, getFooterControlElement, getEngineElement]);
+  }, [dataSource, stableOnChange, getFooterControlElement, getEngineElement, emitLoadMilestone]);
 
   // Load Arrow stream manifest chunks through the appendable WASM store.
   useEffect(() => {
     if (!manifestSource || !containerRef.current) return;
 
     const manifest = manifestSource;
+    const startedAt = performance.now();
     let cancelled = false;
     let disposePendingStore: (() => void) | null = null;
 
@@ -403,9 +441,19 @@ export function SiftTable({
       if (chunks.length === 0) {
         throw new Error("Arrow stream manifest has no chunks");
       }
+      emitLoadMilestone(startedAt, {
+        source: "arrow-stream-manifest",
+        phase: "load-start",
+        chunkCount: chunks.length,
+      });
 
       await ensureModule();
       if (cancelled) return;
+      emitLoadMilestone(startedAt, {
+        source: "arrow-stream-manifest",
+        phase: "wasm-ready",
+        chunkCount: chunks.length,
+      });
 
       const mod = getModuleSync();
       const handle = mod.create_arrow_stream_store();
@@ -413,7 +461,21 @@ export function SiftTable({
 
       const firstBytes = await fetchChunkBytes(chunks[0], 0);
       if (cancelled) return;
+      emitLoadMilestone(startedAt, {
+        source: "arrow-stream-manifest",
+        phase: "first-chunk-fetched",
+        chunkIndex: 0,
+        chunkCount: chunks.length,
+        byteLength: firstBytes.byteLength,
+      });
       mod.append_arrow_stream_chunk(handle, firstBytes);
+      emitLoadMilestone(startedAt, {
+        source: "arrow-stream-manifest",
+        phase: "first-chunk-appended",
+        chunkIndex: 0,
+        chunkCount: chunks.length,
+        rowCount: mod.num_rows(handle),
+      });
 
       const columnHints = mod.arrow_ipc_column_hints_with_row_count(
         firstBytes,
@@ -425,14 +487,32 @@ export function SiftTable({
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () =>
         updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+      emitLoadMilestone(startedAt, {
+        source: "arrow-stream-manifest",
+        phase: "table-data-created",
+        chunkCount: chunks.length,
+        rowCount: tableData.rowCount,
+      });
 
       applyParquetColumnHints(columns, columnHints);
       applyColumnOverrides(columns, columnOverrides);
 
       updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+      emitLoadMilestone(startedAt, {
+        source: "arrow-stream-manifest",
+        phase: "summaries-ready",
+        chunkCount: chunks.length,
+        rowCount: tableData.rowCount,
+      });
 
       if (cancelled) return;
       mountEngine(tableData);
+      emitLoadMilestone(startedAt, {
+        source: "arrow-stream-manifest",
+        phase: "engine-mounted",
+        chunkCount: chunks.length,
+        rowCount: tableData.rowCount,
+      });
       setStatus("ready");
 
       for (let i = 1; i < chunks.length; i++) {
@@ -441,15 +521,35 @@ export function SiftTable({
         if (cancelled) return;
         const bytes = await fetchChunkBytes(chunks[i], i);
         if (cancelled) return;
+        emitLoadMilestone(startedAt, {
+          source: "arrow-stream-manifest",
+          phase: "chunk-fetched",
+          chunkIndex: i,
+          chunkCount: chunks.length,
+          byteLength: bytes.byteLength,
+        });
         mod.append_arrow_stream_chunk(handle, bytes);
         tableData.rowCount = mod.num_rows(handle);
         updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
         engineRef.current?.onBatchAppended();
+        emitLoadMilestone(startedAt, {
+          source: "arrow-stream-manifest",
+          phase: "chunk-appended",
+          chunkIndex: i,
+          chunkCount: chunks.length,
+          rowCount: tableData.rowCount,
+        });
       }
 
       if (manifest.complete !== false) {
         mod.finish_arrow_stream_store(handle);
         engineRef.current?.setStreamingDone();
+        emitLoadMilestone(startedAt, {
+          source: "arrow-stream-manifest",
+          phase: "streaming-complete",
+          chunkCount: chunks.length,
+          rowCount: tableData.rowCount,
+        });
       }
     }
 
@@ -466,7 +566,14 @@ export function SiftTable({
       disposePendingStore?.();
       disposePendingStore = null;
     };
-  }, [manifestKey, columnOverrides, stableOnChange, getFooterControlElement, getEngineElement]);
+  }, [
+    manifestKey,
+    columnOverrides,
+    stableOnChange,
+    getFooterControlElement,
+    getEngineElement,
+    emitLoadMilestone,
+  ]);
 
   // Load from URL when `url` prop is provided.
   // Detects format via Content-Type header + magic byte fallback:
@@ -476,6 +583,7 @@ export function SiftTable({
     if (!urlSource || !containerRef.current) return;
 
     const sourceUrl = urlSource;
+    const startedAt = performance.now();
     let cancelled = false;
     let disposePendingStore: (() => void) | null = null;
 
@@ -498,6 +606,12 @@ export function SiftTable({
       await ensureModule();
       const mod = getModuleSync();
       if (cancelled) return;
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "wasm-ready",
+        format: "parquet",
+        byteLength: parquetBytes.byteLength,
+      });
 
       const meta = mod.parquet_metadata(parquetBytes);
       const numRowGroups = meta[0];
@@ -520,14 +634,32 @@ export function SiftTable({
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () =>
         updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "table-data-created",
+        format: "parquet",
+        rowCount: tableData.rowCount,
+      });
 
       applyParquetColumnHints(columns, columnHints);
       applyColumnOverrides(columns, columnOverrides);
 
       updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "summaries-ready",
+        format: "parquet",
+        rowCount: tableData.rowCount,
+      });
 
       if (cancelled) return;
       mountEngine(tableData);
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "engine-mounted",
+        format: "parquet",
+        rowCount: tableData.rowCount,
+      });
       setStatus("ready");
 
       // Stream remaining row groups progressively
@@ -547,12 +679,23 @@ export function SiftTable({
     async function loadArrowIpc(source: Response | ReadableStream<Uint8Array>) {
       await ensureModule();
       if (cancelled) return;
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "wasm-ready",
+        format: "arrow-ipc",
+      });
 
       const bytes =
         source instanceof Response
           ? new Uint8Array(await source.arrayBuffer())
           : await streamToBytes(source);
       if (cancelled) return;
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "arrow-bytes-ready",
+        format: "arrow-ipc",
+        byteLength: bytes.byteLength,
+      });
 
       const handle = await loadIpc(bytes);
       if (cancelled) {
@@ -568,14 +711,32 @@ export function SiftTable({
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () =>
         updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "table-data-created",
+        format: "arrow-ipc",
+        rowCount: tableData.rowCount,
+      });
 
       applyParquetColumnHints(columns, columnHints);
       applyColumnOverrides(columns, columnOverrides);
 
       updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "summaries-ready",
+        format: "arrow-ipc",
+        rowCount: tableData.rowCount,
+      });
 
       if (cancelled) return;
       mountEngine(tableData);
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "engine-mounted",
+        format: "arrow-ipc",
+        rowCount: tableData.rowCount,
+      });
       setStatus("ready");
       engineRef.current?.setStreamingDone();
     }
@@ -601,14 +762,22 @@ export function SiftTable({
     async function loadFromUrl() {
       setStatus("loading");
       setError(null);
+      emitLoadMilestone(startedAt, { source: "url", phase: "load-start" });
 
       const response = await fetch(sourceUrl);
       if (!response.ok) {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }
+      emitLoadMilestone(startedAt, { source: "url", phase: "fetch-complete" });
 
       const detected = await detectFormat(response);
       if (cancelled) return;
+      emitLoadMilestone(startedAt, {
+        source: "url",
+        phase: "format-detected",
+        format: detected.format,
+        byteLength: detected.format === "parquet" ? detected.bytes.byteLength : undefined,
+      });
 
       if (detected.format === "parquet") {
         await loadParquet(detected.bytes);
@@ -637,6 +806,7 @@ export function SiftTable({
     stableOnChange,
     getFooterControlElement,
     getEngineElement,
+    emitLoadMilestone,
   ]);
 
   return (

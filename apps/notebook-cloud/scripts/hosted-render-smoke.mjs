@@ -90,6 +90,7 @@ const siftWasmRequests = [];
 const runtimedWasmRequests = [];
 const rendererCompletions = [];
 const fatalIsolatedDiagnostics = [];
+const siftDiagnostics = [];
 const diagnosticTasks = [];
 const performanceResources = [];
 const performanceRequests = new Map();
@@ -463,6 +464,7 @@ async function main() {
           siftWasmRequests,
           runtimedWasmRequests,
           rendererCompletions: rendererCompletions.length,
+          siftDiagnostics,
           warnings,
         },
         null,
@@ -839,6 +841,9 @@ function captureIsolatedDiagnostic(message, parsedDiagnostic) {
     text: message.text(),
     details: null,
   };
+  if (diagnostic.phase === "sift-load-milestone") {
+    siftDiagnostics.push(diagnostic);
+  }
   if (isFatalIsolatedDiagnostic(diagnostic)) {
     fatalIsolatedDiagnostics.push(diagnostic);
   }
