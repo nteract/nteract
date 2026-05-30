@@ -46,10 +46,10 @@ import { cloudLog, durationMs } from "./observability.ts";
 import {
   createPendingNotebookInvite,
   getPrincipalProfiles,
-  getPendingNotebookInvitesForLogin,
   listNotebookInvites,
   resolveNotebookInvitesForLogin,
   revokePendingNotebookInvite,
+  upsertPrincipalProfile,
   type ListedPendingNotebookInviteRow,
   type PendingNotebookInviteRow,
   type PrincipalProfileRow,
@@ -1472,7 +1472,7 @@ async function authenticateRequestOrResponse(
 ): Promise<AuthenticatedConnection | Response> {
   try {
     const identity = await authenticateRequestWithProviders(request, env);
-    await resolveLoginInvites(env, identity);
+    await syncAuthenticatedProfile(env, identity);
     return identity;
   } catch (error) {
     if (error instanceof AuthError) {
@@ -1498,27 +1498,37 @@ async function authenticateRequestOrResponse(
   }
 }
 
-async function resolveLoginInvites(env: Env, identity: AuthenticatedConnection): Promise<void> {
-  if (identity.metadata.provider !== "oidc") {
+async function syncAuthenticatedProfile(
+  env: Env,
+  identity: AuthenticatedConnection,
+): Promise<void> {
+  if (identity.metadata.provider !== "oidc" && identity.metadata.provider !== "anaconda-api-key") {
     return;
   }
 
   try {
-    // The identity provider has already authenticated this email claim; use it
-    // only to resolve pending invite rows into principal ACL rows before
-    // authorization.
-    const login = {
+    const profile = {
       principal: identity.principal,
       provider: identity.metadata.provider,
       email: identity.metadata.email ?? null,
-      emailVerified: identity.metadata.emailVerified === true,
       displayName: identity.metadata.displayName ?? null,
     };
-    const pendingInvites = await getPendingNotebookInvitesForLogin(env, login);
-    if (pendingInvites.length === 0) {
+
+    if (identity.metadata.provider === "anaconda-api-key") {
+      await upsertPrincipalProfile(env, {
+        ...profile,
+        emailVerified: Boolean(identity.metadata.email),
+      });
       return;
     }
-    const resolution = await resolveNotebookInvitesForLogin(env, login);
+
+    // The identity provider has already authenticated this email claim; use it
+    // to keep profile labels current and resolve pending invite rows into
+    // principal ACL rows before authorization.
+    const resolution = await resolveNotebookInvitesForLogin(env, {
+      ...profile,
+      emailVerified: identity.metadata.emailVerified === true,
+    });
     if (resolution.acceptedInvites.length === 0 && resolution.aclGrants.length === 0) {
       return;
     }
@@ -1531,11 +1541,11 @@ async function resolveLoginInvites(env: Env, identity: AuthenticatedConnection):
       counter_delta: resolution.acceptedInvites.length,
     });
   } catch (error) {
-    cloudLog("warn", "invites.resolution.failed", {
+    cloudLog("warn", "profile.sync.failed", {
       principal: identity.principal,
       provider: identity.metadata.provider,
       reason: error instanceof Error ? error.message : String(error),
-      counter: "invite_resolution_failures",
+      counter: "profile_sync_failures",
       counter_delta: 1,
     });
   }
