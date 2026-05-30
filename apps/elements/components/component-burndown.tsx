@@ -19,7 +19,7 @@ const stats = [
     label: "current imports",
     value: "31",
     detail:
-      "used shell toolbar, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
+      "used shell toolbar, package header, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -59,11 +59,11 @@ const phases = [
 const families = [
   {
     family: "Notebook workspace",
-    source: "apps/notebook/src/components/{NotebookView,NotebookToolbar}.tsx",
+    source: "apps/notebook/src/components/{NotebookView,NotebookToolbar,DependencyHeader}.tsx",
     target: "nteract shell",
     status: "active",
     intent:
-      "NotebookToolbar now renders from current source; the sidebar rail remains a fixture-backed adapter until the app owns that component.",
+      "NotebookToolbar renders from current source; the sidebar rail remains a fixture-backed adapter, and its package panel now hosts the current DependencyHeader instead of a catalog-only package list.",
   },
   {
     family: "Cells",
