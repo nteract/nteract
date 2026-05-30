@@ -67,18 +67,27 @@ test("cloud package rail renders package metadata through the shared shell panel
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NotebookPackageSummaryPanel/);
-  assert.match(sourceText, /packagesSummary=\{notebookViewModel\.packages\.summary\}/);
+  assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
   assert.match(sourceText, /packages=\{notebookViewModel\.packages\}/);
   assert.doesNotMatch(sourceText, /Package details are not surfaced/);
+});
+
+test("cloud rail binds through the shared document rail adapter", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookDocumentRail/);
+  assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
+  assert.doesNotMatch(sourceText, /<NotebookRail[\s>]/);
 });
 
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /NotebookRail/);
+  assert.match(sourceText, /NotebookDocumentRail/);
   assert.match(sourceText, /createNotebookViewModel\(cells/);
-  assert.match(sourceText, /<NotebookRail[\s\S]*outlineItems=\{outlineItems\}/);
+  assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
   assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
   assert.match(sourceText, /navigateNotebookOutlineItem\(item, href/);
   assert.doesNotMatch(sourceText, /findCellElement: \(outlineItem\)/);

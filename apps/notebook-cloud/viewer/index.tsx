@@ -29,10 +29,11 @@ import {
 } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
-import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
+import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   createNotebookViewModel,
   navigateNotebookOutlineItem,
+  NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
   NotebookReadOnlyView,
@@ -1137,12 +1138,11 @@ function NotebookViewer({
   }, [refreshAuthState]);
 
   const rail = (
-    <NotebookRail
+    <NotebookDocumentRail
+      viewModel={notebookViewModel}
       activePanelId={activeRailPanel}
       collapsed={railCollapsed}
-      outlineItems={outlineItems}
       selectedOutlineItemId={selectedOutlineItemId}
-      packagesSummary={notebookViewModel.packages.summary}
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
