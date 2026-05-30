@@ -101,8 +101,7 @@ function CellAdder({
       <div
         data-slot="cell-adder-ribbon"
         className={cn(
-          "h-full w-1 shrink-0 bg-gray-200 opacity-0 transition-colors duration-150 dark:bg-gray-700",
-          "group-hover/adder:opacity-100 group-focus-within/adder:opacity-100",
+          "h-full w-1 shrink-0 bg-gray-200/55 transition-colors duration-150 dark:bg-gray-700/55",
           ribbonClass,
         )}
       />
