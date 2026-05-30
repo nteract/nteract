@@ -252,7 +252,7 @@ function AppContent() {
   const globalFind = useGlobalFind(cellIds);
 
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(true);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
@@ -1868,6 +1868,7 @@ function AppContent() {
                 )}
                 {runtime === "deno" && (
                   <DenoDependencyHeader
+                    variant="rail"
                     denoConfigInfo={denoConfigInfo}
                     flexibleNpmImports={flexibleNpmImports}
                     onSetFlexibleNpmImports={setFlexibleNpmImports}
@@ -1879,6 +1880,7 @@ function AppContent() {
                 )}
                 {runtime === "python" && envType === "conda" && (
                   <CondaDependencyHeader
+                    variant="rail"
                     dependencies={condaDependencies?.dependencies ?? []}
                     channels={condaDependencies?.channels ?? []}
                     python={condaDependencies?.python ?? null}
@@ -1899,6 +1901,7 @@ function AppContent() {
                 )}
                 {runtime === "python" && envType === "pixi" && (
                   <PixiDependencyHeader
+                    variant="rail"
                     pixiInfo={pixiInfo}
                     envSource={envSource}
                     syncState={pixiDerivedSyncState}
@@ -1908,6 +1911,7 @@ function AppContent() {
                 )}
                 {runtime === "python" && envType !== "conda" && envType !== "pixi" && (
                   <DependencyHeader
+                    variant="rail"
                     dependencies={dependencies?.dependencies ?? []}
                     requiresPython={dependencies?.requires_python ?? null}
                     loading={depsLoading}

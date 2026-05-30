@@ -1,5 +1,6 @@
 import { AlertCircle, Check, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
+import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
 import type { EnvProgressState } from "runtimed";
 import type {
@@ -13,6 +14,7 @@ interface CondaDependencyHeaderProps {
   channels: string[];
   python: string | null;
   loading: boolean;
+  variant?: "header" | "rail";
   syncState: CondaSyncState | null;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
@@ -37,6 +39,7 @@ export function CondaDependencyHeader({
   channels,
   python,
   loading,
+  variant = "header",
   syncState,
   onAdd,
   onRemove,
@@ -53,6 +56,7 @@ export function CondaDependencyHeader({
   const [newDep, setNewDep] = useState("");
   const [newChannel, setNewChannel] = useState("");
   const [showChannelInput, setShowChannelInput] = useState(false);
+  const isRail = variant === "rail";
 
   const handleAdd = useCallback(async () => {
     if (newDep.trim()) {
@@ -117,15 +121,30 @@ export function CondaDependencyHeader({
 
   return (
     <div
-      className="border-b bg-emerald-50/30 dark:bg-emerald-950/10"
+      className={cn(isRail ? "space-y-3" : "border-b bg-emerald-50/30 dark:bg-emerald-950/10")}
       data-testid="conda-deps-panel"
+      data-variant={variant}
     >
-      <div className="px-3 py-3">
+      <div className={cn(!isRail && "px-3 py-3")}>
         {/* Conda badge */}
-        <div className="mb-2 flex items-center gap-2">
-          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-            conda
-          </span>
+        <div
+          className={cn(
+            "mb-2 flex items-center gap-2",
+            isRail &&
+              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+              conda
+            </span>
+            {isRail && <span className="truncate text-xs text-muted-foreground">Environment</span>}
+          </div>
+          {isRail && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              {packageCountLabel(dependencies.length)}
+            </span>
+          )}
         </div>
 
         {/* Environment preparation progress */}
@@ -244,8 +263,15 @@ export function CondaDependencyHeader({
 
         {/* Environment drift notice - kernel restart needed */}
         {syncState?.status === "dirty" && (
-          <div className="mb-3 flex items-center justify-between rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
+              isRail
+                ? "flex flex-col gap-2 px-3 py-2"
+                : "flex items-center justify-between px-2 py-1.5",
+            )}
+          >
+            <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
               <span>Dependencies changed — re-initialize environment to apply</span>
             </div>
@@ -254,7 +280,10 @@ export function CondaDependencyHeader({
               onClick={onSyncNow}
               disabled={loading}
               data-testid="deps-restart-button"
-              className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
+              className={cn(
+                "flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50",
+                isRail && "self-start py-1",
+              )}
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
               Re-initialize
@@ -264,14 +293,14 @@ export function CondaDependencyHeader({
 
         {/* Channels */}
         <div className="mb-2">
-          <div className="mb-1 text-xs text-muted-foreground">Channels:</div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Channels</div>
           <div className="flex flex-wrap gap-1.5 items-center">
             {displayChannels.map((channel) => (
               <div
                 key={channel}
-                className="flex items-center gap-1 rounded bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 text-xs border border-emerald-200 dark:border-emerald-800"
+                className="flex max-w-full items-center gap-1 rounded border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-xs dark:border-emerald-800 dark:bg-emerald-900/30"
               >
-                <span className="font-mono">{channel}</span>
+                <span className="min-w-0 truncate font-mono">{channel}</span>
                 {isUsingDefault && (
                   <span className="text-[10px] text-muted-foreground ml-0.5">(default)</span>
                 )}
@@ -334,19 +363,24 @@ export function CondaDependencyHeader({
         </div>
 
         {/* Python version */}
-        <div className="mb-2 flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Python:</span>
+        <label
+          className={cn("mb-2 flex items-center gap-2", isRail && "flex-col items-stretch gap-1.5")}
+        >
+          <span className="text-xs font-medium text-muted-foreground">Python</span>
           <input
             type="text"
             value={python ?? ""}
             onChange={handlePythonChange}
             placeholder="3.11"
-            className="w-20 rounded border bg-background px-1.5 py-0.5 text-xs font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className={cn(
+              "rounded border bg-background px-1.5 py-0.5 font-mono text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary",
+              isRail ? "w-full" : "w-20",
+            )}
             disabled={loading}
             autoComplete="off"
             spellCheck={false}
           />
-        </div>
+        </label>
 
         {/* Dependencies list */}
         {dependencies.length > 0 ? (
@@ -354,9 +388,9 @@ export function CondaDependencyHeader({
             {dependencies.map((dep) => (
               <div
                 key={dep}
-                className="flex items-center gap-1 rounded bg-background px-2 py-1 text-xs border"
+                className="flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 text-xs"
               >
-                <span className="font-mono">{dep}</span>
+                <span className="min-w-0 truncate font-mono">{dep}</span>
                 <button
                   type="button"
                   onClick={() => onRemove(dep)}
@@ -403,4 +437,8 @@ export function CondaDependencyHeader({
       </div>
     </div>
   );
+}
+
+function packageCountLabel(count: number): string {
+  return count === 1 ? "1 package" : `${count} packages`;
 }

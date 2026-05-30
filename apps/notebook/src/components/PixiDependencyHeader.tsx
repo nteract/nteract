@@ -1,5 +1,6 @@
 import { Check, FileText, Info, Package, Plus, RefreshCw, Terminal, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
+import { cn } from "@/lib/utils";
 import type { EnvSyncState } from "./runtime-surface-types";
 import { addPixiDependency, removePixiDependency, usePixiDeps } from "../lib/notebook-metadata";
 import type { PixiInfo } from "../hooks/usePixiDetection";
@@ -8,6 +9,7 @@ import { PixiIcon } from "./icons";
 interface PixiDependencyHeaderProps {
   pixiInfo: PixiInfo | null;
   envSource: string | null;
+  variant?: "header" | "rail";
   syncState?: EnvSyncState | null;
   onSyncNow?: () => Promise<boolean>;
   justSynced?: boolean;
@@ -16,6 +18,7 @@ interface PixiDependencyHeaderProps {
 export function PixiDependencyHeader({
   pixiInfo,
   envSource,
+  variant = "header",
   syncState,
   onSyncNow,
   justSynced,
@@ -24,6 +27,7 @@ export function PixiDependencyHeader({
   const isInlineMode = envSource === "pixi:inline" || envSource === "pixi:prewarmed";
   const [newDep, setNewDep] = useState("");
   const [loading, setLoading] = useState(false);
+  const isRail = variant === "rail";
 
   const handleAdd = useCallback(async () => {
     if (newDep.trim()) {
@@ -57,17 +61,33 @@ export function PixiDependencyHeader({
   }, []);
 
   return (
-    <div className="border-b bg-amber-50/30 dark:bg-amber-950/10">
-      <div className="px-3 py-3">
+    <div
+      className={cn(isRail ? "space-y-3" : "border-b bg-amber-50/30 dark:bg-amber-950/10")}
+      data-variant={variant}
+    >
+      <div className={cn(!isRail && "px-3 py-3")}>
         {/* Pixi badge */}
-        <div className="mb-2 flex items-center gap-2">
-          <span className="flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-            <PixiIcon className="h-2.5 w-2.5" />
-            Pixi
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {isInlineMode ? "Dependencies" : "Environment"}
-          </span>
+        <div
+          className={cn(
+            "mb-2 flex items-center gap-2",
+            isRail &&
+              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+              <PixiIcon className="h-2.5 w-2.5" />
+              Pixi
+            </span>
+            <span className="truncate text-xs text-muted-foreground">
+              {isInlineMode ? "Dependencies" : "Environment"}
+            </span>
+          </div>
+          {isRail && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              {isInlineMode ? packageCountLabel(pixiDeps?.dependencies.length ?? 0) : "Project"}
+            </span>
+          )}
         </div>
 
         {/* Success feedback after sync */}
@@ -80,8 +100,15 @@ export function PixiDependencyHeader({
 
         {/* Sync state drift banner */}
         {syncState?.status === "dirty" && onSyncNow && (
-          <div className="mb-3 flex items-center justify-between rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
+              isRail
+                ? "flex flex-col gap-2 px-3 py-2"
+                : "flex items-center justify-between px-2 py-1.5",
+            )}
+          >
+            <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
               <span>
                 Dependencies changed
@@ -93,7 +120,10 @@ export function PixiDependencyHeader({
               type="button"
               onClick={onSyncNow}
               disabled={loading}
-              className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
+              className={cn(
+                "flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50",
+                isRail && "self-start py-1",
+              )}
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
               Restart
@@ -168,9 +198,9 @@ export function PixiDependencyHeader({
                 {pixiDeps.dependencies.map((dep) => (
                   <div
                     key={dep}
-                    className="flex items-center gap-1 rounded bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-xs border border-amber-200 dark:border-amber-800"
+                    className="flex max-w-full items-center gap-1 rounded border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs dark:border-amber-800 dark:bg-amber-900/30"
                   >
-                    <span>{dep}</span>
+                    <span className="min-w-0 truncate">{dep}</span>
                     <button
                       type="button"
                       onClick={() => handleRemove(dep)}
@@ -232,4 +262,8 @@ export function PixiDependencyHeader({
       </div>
     </div>
   );
+}
+
+function packageCountLabel(count: number): string {
+  return count === 1 ? "1 package" : `${count} packages`;
 }
