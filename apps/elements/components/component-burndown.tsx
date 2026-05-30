@@ -1,6 +1,7 @@
 import {
   CheckCircle2,
   CircleDotDashed,
+  Cloud,
   Code2,
   FileCode2,
   ListChecks,
@@ -13,13 +14,13 @@ import {
 
 const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
-  { label: "notebook domains", value: "10", detail: "first catalog targets" },
+  { label: "notebook domains", value: "11", detail: "first catalog targets" },
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "36",
+    value: "39",
     detail:
-      "used shell toolbar, package headers, search, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
+      "used shell toolbar, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -53,6 +54,12 @@ const phases = [
     state: "active",
     icon: ShieldCheck,
     summary: "Trust, dependency headers, environment decisions, daemon state, and launch banners.",
+  },
+  {
+    title: "Capture hosted notebooks",
+    state: "active",
+    icon: Cloud,
+    summary: "Read-only notebook cells, cloud/report paths, loading states, and output adapters.",
   },
 ];
 
@@ -89,6 +96,15 @@ const families = [
     status: "active",
     intent:
       "CodeCell, MarkdownCell, and RawCell now render with seeded store state and a null CRDT handle; markdown preview still documents its isolated-renderer adapter boundary.",
+  },
+  {
+    family: "Read-only notebooks",
+    source:
+      "src/components/cell/{ReadOnlyNotebook,ReadOnlyNotebookCell}.tsx + apps/notebook/src/components/CellSkeleton.tsx",
+    target: "nteract hosted",
+    status: "active",
+    intent:
+      "ReadOnlyNotebook, ReadOnlyNotebookCell, and CellSkeleton now render from fixture nbformat output data, covering the shared cloud and hosted artifact path without live runtime state.",
   },
   {
     family: "Cell internals",
@@ -199,7 +215,7 @@ export function ComponentBurndown() {
           <CircleDotDashed className="size-4 text-fd-muted-foreground" aria-hidden="true" />
           <h2 className="text-sm font-semibold">Next Phases</h2>
         </div>
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {phases.map((phase, index) => (
             <div
               key={phase.title}

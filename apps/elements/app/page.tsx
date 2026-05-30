@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   ArrowRight,
   Boxes,
+  Cloud,
   FileCode2,
   ListChecks,
   Palette,
@@ -42,6 +43,12 @@ const entries = [
     description: "Runtime-free fixtures for current nteract output components.",
     href: "/docs/output-renderers",
     icon: Boxes,
+  },
+  {
+    title: "Read-only notebooks",
+    description: "Hosted and cloud notebook cells rendered through shared components.",
+    href: "/docs/read-only-notebook-surfaces",
+    icon: Cloud,
   },
   {
     title: "Runtime surfaces",

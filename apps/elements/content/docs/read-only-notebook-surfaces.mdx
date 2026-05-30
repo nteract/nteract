@@ -1,0 +1,21 @@
+---
+title: Read-only notebook surfaces
+description: Shared hosted notebook components rendered from runtime-free fixtures.
+---
+
+import { ReadOnlyNotebookSurfacesExample } from "@/components/read-only-notebook-surfaces-example";
+
+Hosted notebooks and cloud previews should not fork the notebook cell stack.
+This page renders the shared read-only path from current nteract components
+with static nbformat-style fixtures.
+
+<ReadOnlyNotebookSurfacesExample />
+
+## Implementation intent
+
+- `ReadOnlyNotebook` and `ReadOnlyNotebookCell` come from `src/components/cell`.
+- `CellSkeleton` comes from the notebook app loading state.
+- The examples exercise `OutputArea` through static outputs, not a kernel,
+  daemon, CRDT handle, live room, or generated WASM binding.
+- Markdown output uses the docs app isolated-frame adapter so the production
+  component path can render without server or runtime dependencies.
