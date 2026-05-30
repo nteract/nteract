@@ -12,6 +12,7 @@ import {
 } from "./hosted-collab-smoke-env.mjs";
 import { summarizeCollabPerformanceTimings } from "./hosted-collab-smoke-performance.mjs";
 import { performanceBudgetFailures } from "./hosted-render-smoke-performance.mjs";
+import { isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -21,6 +22,7 @@ const providedViewerUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_COLLAB_V
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const convergenceRounds = Number(process.env.NOTEBOOK_CLOUD_COLLAB_ROUNDS ?? 4);
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
+const forbidRenderCacheRequests = process.env.NOTEBOOK_CLOUD_FORBID_RENDER_CACHE_REQUESTS !== "0";
 const timingsMs = {};
 const editableMarkdownCellSelector = ".cloud-editable-markdown-cell";
 const editableMarkdownEditorSelector = `${editableMarkdownCellSelector} .cm-content[contenteditable='true']`;
@@ -61,6 +63,7 @@ async function main() {
   });
   const failures = [];
   const visitedUrls = new Set();
+  const renderCacheRequests = [];
   const contexts = [];
 
   try {
@@ -77,6 +80,7 @@ async function main() {
         }),
         failures,
         visitedUrls,
+        renderCacheRequests,
       }),
     );
     const bob = await timed("bob_open", () =>
@@ -92,6 +96,7 @@ async function main() {
         }),
         failures,
         visitedUrls,
+        renderCacheRequests,
       }),
     );
     const anonymous = await timed("anonymous_open", () =>
@@ -102,6 +107,7 @@ async function main() {
         storageState: undefined,
         failures,
         visitedUrls,
+        renderCacheRequests,
       }),
     );
     contexts.push(alice.context, bob.context, anonymous.context);
@@ -221,6 +227,9 @@ ${bobMarker}
 
     assertTokenAbsentFromUrls(visitedUrls, token);
     checks.push("token_absent_from_urls");
+    if (renderCacheRequests.length === 0) {
+      checks.push("render_cache_not_requested");
+    }
 
     const timingSummary = {
       ...timingsMs,
@@ -250,6 +259,8 @@ ${bobMarker}
           timings_ms: timingSummary,
           performance: performanceDiagnostics,
           performanceBudgets,
+          forbidRenderCacheRequests,
+          renderCacheRequests,
           screenshot: screenshotPath ?? null,
         },
         null,
@@ -286,6 +297,7 @@ async function openNotebookContext({
   storageState,
   failures,
   visitedUrls,
+  renderCacheRequests,
   allowSyncFailure = false,
 }) {
   const context = await browser.newContext({
@@ -294,15 +306,36 @@ async function openNotebookContext({
     deviceScaleFactor: 1,
   });
   const page = await context.newPage();
-  instrumentPage({ page, name, failures, visitedUrls, allowSyncFailure });
+  instrumentPage({ page, name, failures, visitedUrls, renderCacheRequests, allowSyncFailure });
   await page.goto(viewerUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
   await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
   return { context, page };
 }
 
-function instrumentPage({ page, name, failures, visitedUrls, allowSyncFailure }) {
+function instrumentPage({
+  page,
+  name,
+  failures,
+  visitedUrls,
+  renderCacheRequests,
+  allowSyncFailure,
+}) {
   page.on("request", (request) => {
-    visitedUrls.add(request.url());
+    const url = request.url();
+    visitedUrls.add(url);
+    if (forbidRenderCacheRequests && isRenderCacheApiUrl(url)) {
+      const requestSummary = {
+        page: name,
+        method: request.method(),
+        url,
+      };
+      renderCacheRequests.push(requestSummary);
+      failures.push({
+        kind: "render-cache-request",
+        text: "Hosted collaboration smoke requested stale render-cache endpoints instead of live sync materialization",
+        ...requestSummary,
+      });
+    }
   });
   page.on("response", (response) => {
     visitedUrls.add(response.url());
