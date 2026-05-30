@@ -490,6 +490,9 @@ describe("Worker artifact routes", () => {
       seenAuthorizations.push(request.headers.get("authorization") ?? "");
       return jsonResponse(
         anacondaWhoami({
+          email: "rgbkrk@gmail.com",
+          firstName: "Kyle",
+          lastName: "Kelley",
           userId: "fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
           scopes: ["cloud:write"],
         }),
@@ -533,6 +536,19 @@ describe("Worker artifact routes", () => {
       ),
       true,
     );
+    const profile = env.DB.profiles.get("user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0");
+    assert.deepEqual(profile, {
+      principal: "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+      provider: "anaconda-api-key",
+      provider_subject: null,
+      email_normalized: "rgbkrk@gmail.com",
+      email_verified: 1,
+      display_name: "Kyle Kelley",
+      avatar_url: null,
+      first_seen_at: profile?.first_seen_at,
+      last_seen_at: profile?.last_seen_at,
+      raw_claims_json: null,
+    });
   });
 
   it("requires RuntimeStateDoc ids for snapshot publishes", async () => {
@@ -1520,6 +1536,51 @@ describe("Worker artifact routes", () => {
       forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
       NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
     );
+  });
+
+  it("stores OIDC profile labels even when there are no pending invites", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      email: "kkelley@anaconda.com",
+      extraPayload: { email_verified: true },
+      name: "Kyle Kelley",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => new Response("room ok"),
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "oidc-profile-demo");
+    seedAcl(env, {
+      notebookId: "oidc-profile-demo",
+      subject: "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/oidc-profile-demo/sync?operator=browser:tab&scope=viewer", {
+        headers: {
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+            token,
+          )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const profile = env.DB.profiles.get("user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375");
+    assert.equal(profile?.provider, "oidc");
+    assert.equal(profile?.email_normalized, "kkelley@anaconda.com");
+    assert.equal(profile?.email_verified, 1);
+    assert.equal(profile?.display_name, "Kyle Kelley");
   });
 
   it("resolves pending email invites for OIDC editor WebSocket requests", async () => {
