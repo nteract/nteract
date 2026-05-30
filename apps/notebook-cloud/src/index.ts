@@ -1916,6 +1916,7 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
+    catalogEndpoint: notebookApiBasePath,
     pinnedRenderBasePath: `${notebookApiBasePath}/renders/`,
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,

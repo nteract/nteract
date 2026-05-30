@@ -126,6 +126,7 @@ loadSupplementalViewerCss();
 interface CloudViewerConfig {
   notebookId: string;
   headsHash: string | null;
+  catalogEndpoint: string | null;
   pinnedRenderBasePath: string;
   aclEndpoint: string;
   invitesEndpoint: string;
@@ -152,6 +153,18 @@ interface SnapshotRender {
   source?: string;
   cells?: unknown;
   widget_comms?: unknown;
+}
+
+interface CatalogRevision {
+  id?: string | null;
+  notebook_heads_hash?: string | null;
+}
+
+interface CatalogResponse {
+  notebook?: {
+    latest_revision_id?: string | null;
+  } | null;
+  revisions?: CatalogRevision[];
 }
 
 type ViewerStatus =
@@ -197,6 +210,7 @@ function loadConfig(): CloudViewerConfig {
   return {
     notebookId: parsed.notebookId,
     headsHash: parsed.headsHash ?? null,
+    catalogEndpoint: parsed.catalogEndpoint ?? null,
     pinnedRenderBasePath: parsed.pinnedRenderBasePath,
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
@@ -597,6 +611,7 @@ function NotebookViewer({
   const cellsRef = useRef<ResolvedCell[]>([]);
   const notebookLanguageRef = useRef("python");
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
+  const materializeLiveRuntimeRef = useRef<((liveRuntime: CloudSyncRuntime) => void) | null>(null);
   const liveMaterializedRef = useRef(false);
   const snapshotResolvedRef = useRef(false);
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
@@ -651,39 +666,55 @@ function NotebookViewer({
     cellsRef.current = cells;
   }, [cells]);
 
+  const markSnapshotResolved = useCallback(() => {
+    snapshotResolvedRef.current = true;
+    const liveRuntime = liveRuntimeRef.current;
+    if (liveRuntime) {
+      materializeLiveRuntimeRef.current?.(liveRuntime);
+    }
+  }, []);
+
   useEffect(() => {
     if (authRenewal.kind === "refreshing") {
       return;
     }
     if (!loadingPolicy.shouldFetchSnapshotRender) {
-      snapshotResolvedRef.current = true;
+      markSnapshotResolved();
       return;
     }
-    const renderEndpoint = pinnedRenderEndpoint(config);
-    if (!renderEndpoint) {
-      snapshotResolvedRef.current = true;
-      setStatus({ kind: "error", message: "Pinned notebook heads are not configured." });
-      return;
-    }
+    const snapshotMode = loadingPolicy.snapshotRenderMode;
 
     let cancelled = false;
 
     void (async () => {
       try {
+        const renderEndpoint = await snapshotRenderEndpoint(config, snapshotMode, authState);
+        if (cancelled) return;
+        if (!renderEndpoint) {
+          markSnapshotResolved();
+          if (snapshotMode === "pinned") {
+            setStatus({ kind: "empty", message: "No published snapshot is available yet." });
+          }
+          return;
+        }
         const response = await fetch(
           renderEndpoint,
           withCloudPrototypeAuthHeaders({ headers: { Accept: "application/json" } }, authState),
         );
         if (!response.ok) {
           if (!cancelled) {
-            snapshotResolvedRef.current = true;
-            setStatus({
-              kind: response.status === 404 ? "empty" : "error",
-              message:
-                response.status === 404
-                  ? "No published snapshot is available for this notebook yet."
-                  : `Unable to load notebook render: ${response.status}`,
-            });
+            markSnapshotResolved();
+            if (snapshotMode === "pinned") {
+              setStatus({
+                kind: response.status === 404 ? "empty" : "error",
+                message:
+                  response.status === 404
+                    ? "No published snapshot is available for this notebook yet."
+                    : `Unable to load notebook render: ${response.status}`,
+              });
+            } else {
+              console.warn(`[notebook-cloud] latest render warm-start skipped: ${response.status}`);
+            }
           }
           return;
         }
@@ -701,7 +732,10 @@ function NotebookViewer({
           setCells(syncCells);
           setStatus({
             kind: "loading",
-            message: `Rendering ${syncCells.length} cells while resolving output payloads...`,
+            message:
+              snapshotMode === "latest-warm-start"
+                ? `Showing ${syncCells.length} cached cells while connecting to the live notebook room...`
+                : `Rendering ${syncCells.length} cells while resolving output payloads...`,
           });
         }
         const resolvedCells = await Promise.all(
@@ -711,7 +745,7 @@ function NotebookViewer({
         );
         if (cancelled || liveMaterializedRef.current) return;
 
-        snapshotResolvedRef.current = true;
+        markSnapshotResolved();
         await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
           isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
           shouldContinue: () => !cancelled && !liveMaterializedRef.current,
@@ -720,19 +754,28 @@ function NotebookViewer({
         preloadSiftWasm(resolvedCells);
         setCells(resolvedCells);
         if (resolvedCells.length === 0) {
-          setStatus({ kind: "empty", message: "This published notebook has no cells." });
+          if (snapshotMode === "pinned") {
+            setStatus({ kind: "empty", message: "This published notebook has no cells." });
+          }
           return;
         }
 
         const source = render.source === "snapshot-pair" ? "snapshot pair" : "render cache";
         setStatus({
-          kind: "ready",
-          message: `Rendering ${resolvedCells.length} cells from a persisted ${source}.`,
+          kind: snapshotMode === "latest-warm-start" ? "loading" : "ready",
+          message:
+            snapshotMode === "latest-warm-start"
+              ? `Showing ${resolvedCells.length} cached cells while connecting to the live notebook room.`
+              : `Rendering ${resolvedCells.length} cells from a persisted ${source}.`,
         });
       } catch (error) {
         if (!cancelled) {
-          snapshotResolvedRef.current = true;
-          setStatus({ kind: "error", message: `Unable to load notebook: ${String(error)}` });
+          markSnapshotResolved();
+          if (snapshotMode === "pinned") {
+            setStatus({ kind: "error", message: `Unable to load notebook: ${String(error)}` });
+          } else {
+            console.warn("[notebook-cloud] latest render warm-start failed", error);
+          }
         }
       }
     })();
@@ -745,9 +788,12 @@ function NotebookViewer({
     authState,
     blobResolver,
     config.blobBasePath,
+    config.catalogEndpoint,
     config.headsHash,
     config.pinnedRenderBasePath,
     loadingPolicy.shouldFetchSnapshotRender,
+    loadingPolicy.snapshotRenderMode,
+    markSnapshotResolved,
     preloadSiftWasm,
     widgetStore,
   ]);
@@ -850,6 +896,7 @@ function NotebookViewer({
         console.warn("[notebook-cloud] live room materialization failed", error);
       });
     };
+    materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
     setPresence(initialCloudViewerPresence());
     setLivePresence(emptyCloudLivePresenceSnapshot());
@@ -945,6 +992,9 @@ function NotebookViewer({
       }
       disposeCurrentRuntime();
       livePresenceStore = null;
+      if (materializeLiveRuntimeRef.current === materializeLiveCellsSafely) {
+        materializeLiveRuntimeRef.current = null;
+      }
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
       setLivePresence(emptyCloudLivePresenceSnapshot());
     };
@@ -2018,14 +2068,62 @@ function isConfiguredBlobUrl(value: string, blobBasePath: string): boolean {
   }
 }
 
+async function snapshotRenderEndpoint(
+  config: CloudViewerConfig,
+  mode: "latest-warm-start" | "pinned" | null,
+  authState: CloudPrototypeAuthState,
+): Promise<string | null> {
+  if (mode === "pinned") {
+    return pinnedRenderEndpoint(config);
+  }
+  if (mode !== "latest-warm-start") {
+    return null;
+  }
+  if (!config.catalogEndpoint) {
+    return null;
+  }
+
+  const latestHeadsHash = await latestRevisionNotebookHeadsHash(config.catalogEndpoint, authState);
+  if (!latestHeadsHash) {
+    return null;
+  }
+  return renderEndpointForHeads(config.pinnedRenderBasePath, latestHeadsHash);
+}
+
+async function latestRevisionNotebookHeadsHash(
+  catalogEndpoint: string,
+  authState: CloudPrototypeAuthState,
+): Promise<string | null> {
+  const response = await fetch(
+    catalogEndpoint,
+    withCloudPrototypeAuthHeaders({ headers: { Accept: "application/json" } }, authState),
+  );
+  if (!response.ok) {
+    return null;
+  }
+
+  const catalog = (await response.json()) as CatalogResponse;
+  const latestRevisionId = catalog.notebook?.latest_revision_id?.trim();
+  const revisions = Array.isArray(catalog.revisions) ? catalog.revisions : [];
+  const latestRevision = latestRevisionId
+    ? (revisions.find((revision) => revision.id === latestRevisionId) ?? null)
+    : (revisions[0] ?? null);
+  const headsHash = latestRevision?.notebook_heads_hash?.trim();
+  return headsHash || null;
+}
+
 function pinnedRenderEndpoint(config: CloudViewerConfig): string | null {
   if (!config.headsHash) {
     return null;
   }
-  const basePath = config.pinnedRenderBasePath.endsWith("/")
-    ? config.pinnedRenderBasePath
-    : `${config.pinnedRenderBasePath}/`;
-  return `${basePath}${encodeURIComponent(config.headsHash)}`;
+  return renderEndpointForHeads(config.pinnedRenderBasePath, config.headsHash);
+}
+
+function renderEndpointForHeads(pinnedRenderBasePath: string, headsHash: string): string {
+  const basePath = pinnedRenderBasePath.endsWith("/")
+    ? pinnedRenderBasePath
+    : `${pinnedRenderBasePath}/`;
+  return `${basePath}${encodeURIComponent(headsHash)}`;
 }
 
 createRoot(requireElement("#root")).render(

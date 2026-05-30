@@ -69,6 +69,7 @@ describe("HTML script serialization", () => {
       "theme bootstrap must run before the stylesheet to avoid dark-to-light first paint",
     );
     assert.doesNotMatch(html, /"renderEndpoint"/);
+    assert.match(html, /"catalogEndpoint":"\/api\/n\/demo"/);
     assert.match(html, /"pinnedRenderBasePath":"\/api\/n\/demo\/renders\/"/);
     assert.match(html, /"aclEndpoint":"\/api\/n\/demo\/acl"/);
     assert.match(html, /"invitesEndpoint":"\/api\/n\/demo\/invites"/);
@@ -80,7 +81,7 @@ describe("HTML script serialization", () => {
     assert.doesNotMatch(html, /id="notebook"/);
   });
 
-  it("serves latest notebook viewers as live-sync shells without a latest render endpoint", async () => {
+  it("serves latest notebook viewers as live-sync shells with catalog warm-start config", async () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/demo"),
       fakeEnv(),
@@ -92,6 +93,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /id="nteract-cloud-viewer-config"/);
     assert.match(html, /"headsHash":null/);
     assert.doesNotMatch(html, /"renderEndpoint"/);
+    assert.match(html, /"catalogEndpoint":"\/api\/n\/demo"/);
     assert.match(html, /"pinnedRenderBasePath":"\/api\/n\/demo\/renders\/"/);
     assert.match(html, /"syncEndpoint":"\/n\/demo\/sync"/);
   });

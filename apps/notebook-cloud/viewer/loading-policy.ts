@@ -5,6 +5,7 @@ export interface CloudViewerLoadingPolicyConfig {
 export interface CloudViewerLoadingPolicy {
   shouldConnectLiveRoom: boolean;
   shouldFetchSnapshotRender: boolean;
+  snapshotRenderMode: "latest-warm-start" | "pinned" | null;
   initialStatusMessage: string;
 }
 
@@ -15,13 +16,15 @@ export function cloudViewerLoadingPolicy({
     return {
       shouldConnectLiveRoom: false,
       shouldFetchSnapshotRender: true,
+      snapshotRenderMode: "pinned",
       initialStatusMessage: "Loading pinned notebook snapshot...",
     };
   }
 
   return {
     shouldConnectLiveRoom: true,
-    shouldFetchSnapshotRender: false,
+    shouldFetchSnapshotRender: true,
+    snapshotRenderMode: "latest-warm-start",
     initialStatusMessage: "Connecting to live notebook room...",
   };
 }
