@@ -21,7 +21,8 @@ const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
 const wasmBytes = await readFile(wasmBytesUrl);
 initSync({ module: wasmBytes });
 
-const handle = NotebookHandle.create_bootstrap(actorLabel);
+const handle = new NotebookHandle(notebookId);
+handle.set_actor(actorLabel);
 handle.add_cell_after("intro", "markdown", null);
 handle.update_source(
   "intro",
@@ -48,12 +49,16 @@ const heads = handle.get_heads_hex();
 const runtimeHeads = handle.get_runtime_state_heads_hex();
 const headsHash = headsDigest(heads);
 const runtimeHeadsHash = headsDigest(runtimeHeads);
+const runtimeStateDocId = requiredRuntimeStateDocId(handle);
 const cells = JSON.parse(handle.get_cells_json());
 
 await putBytes(
   `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeadsHash)}`,
   runtimeSnapshotBytes,
   "application/octet-stream",
+  {
+    "X-Runtime-State-Doc-Id": runtimeStateDocId,
+  },
 );
 await putBytes(
   `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(headsHash)}`,
@@ -61,6 +66,7 @@ await putBytes(
   "application/octet-stream",
   {
     "X-Runtime-Heads-Hash": runtimeHeadsHash,
+    "X-Runtime-State-Doc-Id": runtimeStateDocId,
   },
 );
 
@@ -81,6 +87,7 @@ console.log(
       baseUrl,
       notebookId,
       viewerUrl: new URL(`/n/${encodeURIComponent(notebookId)}`, baseUrl).href,
+      runtimeStateDocId,
       headsHash,
       runtimeHeadsHash,
       cells: cells.length,
@@ -99,6 +106,15 @@ console.log(
 function headsDigest(heads) {
   const input = heads.length > 0 ? heads.slice().sort().join("\n") : "empty";
   return `heads-${createHash("sha256").update(input).digest("hex").slice(0, 24)}`;
+}
+
+function requiredRuntimeStateDocId(handle) {
+  const runtimeStateDocId = handle.get_runtime_state_doc_id();
+  assert(
+    typeof runtimeStateDocId === "string" && runtimeStateDocId.length > 0,
+    "NotebookDoc snapshot is missing runtime_state_doc_id",
+  );
+  return runtimeStateDocId;
 }
 
 async function assertWasmBuildExists() {

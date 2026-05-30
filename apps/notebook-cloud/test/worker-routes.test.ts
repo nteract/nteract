@@ -753,6 +753,19 @@ describe("Worker artifact routes", () => {
       error: "X-Runtime-State-Doc-Id header is required",
     });
 
+    const notebookPutWithoutRuntimeHeads = await ownerPut(
+      env,
+      "/api/n/runtime-id-required/snapshots/heads",
+      body,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:runtime-id-required",
+      },
+    );
+    assert.equal(notebookPutWithoutRuntimeHeads.status, 400);
+    assert.deepEqual(await notebookPutWithoutRuntimeHeads.json(), {
+      error: "X-Runtime-Heads-Hash header is required",
+    });
+
     assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
     assert.equal(env.DB.revisions.length, 0);
   });

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { FrameType } from "runtimed";
+import { openWebSocket } from "./hosted-access-smoke-ws.mjs";
+import { credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
 
 const wasmJsPath = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
@@ -28,7 +30,6 @@ const [fixtureNotebookBytes, fixtureRuntimeBytes] = await Promise.all([
     ),
   ),
 ]);
-
 if (typeof WebSocket === "undefined") {
   throw new Error("This smoke script requires Node.js with a global WebSocket implementation");
 }
@@ -210,8 +211,11 @@ const snapshotHeads = `heads-${roomId}`;
 const runtimeHeads = `runtime-${roomId}`;
 const runtimePath = `/api/n/${encodeURIComponent(roomId)}/runtime-snapshots/${encodeURIComponent(runtimeHeads)}`;
 const snapshotPath = `/api/n/${encodeURIComponent(roomId)}/snapshots/${encodeURIComponent(snapshotHeads)}`;
-const snapshotBytes = fixtureNotebookBytes;
-const runtimeBytes = fixtureRuntimeBytes;
+const {
+  notebookBytes: snapshotBytes,
+  runtimeBytes,
+  runtimeStateDocId,
+} = snapshotPairForNotebook(roomId);
 const invalidAuthResponse = await fetch(new URL(snapshotPath, baseUrl), {
   method: "PUT",
   headers: {
@@ -226,15 +230,18 @@ assert(
   invalidAuthResponse.status === 400,
   `invalid auth should return 400, got ${invalidAuthResponse.status}`,
 );
-const runtimePut = await putBytes(runtimePath, runtimeBytes, "application/octet-stream");
+const runtimePut = await putBytes(runtimePath, runtimeBytes, "application/octet-stream", {
+  "X-Runtime-State-Doc-Id": runtimeStateDocId,
+});
 assert(runtimePut.ok === true, `runtime snapshot PUT failed: ${JSON.stringify(runtimePut)}`);
 assertBytesEqual(
-  await fetchBytes(runtimePath),
+  await fetchBytes(runtimePath, { "X-Runtime-State-Doc-Id": runtimeStateDocId }),
   runtimeBytes,
   "runtime snapshot GET did not round-trip",
 );
 const snapshotPut = await putBytes(snapshotPath, snapshotBytes, "application/octet-stream", {
   "X-Runtime-Heads-Hash": runtimeHeads,
+  "X-Runtime-State-Doc-Id": runtimeStateDocId,
 });
 assert(snapshotPut.ok === true, `snapshot PUT failed: ${JSON.stringify(snapshotPut)}`);
 assertBytesEqual(await fetchBytes(snapshotPath), snapshotBytes, "snapshot GET did not round-trip");
@@ -311,19 +318,21 @@ process.exit(0);
 async function seedNotebook(notebookId, ownerUser, grants = []) {
   const runtimeHeads = `bootstrap-runtime-${notebookId}`;
   const snapshotHeads = `bootstrap-heads-${notebookId}`;
+  const { notebookBytes, runtimeBytes, runtimeStateDocId } = snapshotPairForNotebook(notebookId);
   await putBytes(
     `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeads)}`,
-    fixtureRuntimeBytes,
+    runtimeBytes,
     "application/octet-stream",
-    { "X-User": ownerUser },
+    { "X-User": ownerUser, "X-Runtime-State-Doc-Id": runtimeStateDocId },
   );
   await putBytes(
     `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(snapshotHeads)}`,
-    fixtureNotebookBytes,
+    notebookBytes,
     "application/octet-stream",
     {
       "X-User": ownerUser,
       "X-Runtime-Heads-Hash": runtimeHeads,
+      "X-Runtime-State-Doc-Id": runtimeStateDocId,
     },
   );
   for (const grant of grants) {
@@ -433,8 +442,15 @@ async function connect(notebookId, user, operator, scope) {
   const safeUrl = url.href;
   const protocols = devAuthProtocols();
 
-  const socket = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
-  socket.binaryType = "arraybuffer";
+  const socket = protocols
+    ? await openWebSocket(url, {
+        origin: credentialedSmokeOrigin({ baseUrl, protocols }),
+        protocols,
+      })
+    : new WebSocket(url);
+  if ("binaryType" in socket) {
+    socket.binaryType = "arraybuffer";
+  }
   const queue = [];
   const waiters = [];
   socket.addEventListener("message", async (event) => {
@@ -450,12 +466,14 @@ async function connect(notebookId, user, operator, scope) {
     waiter.resolve(frame);
   });
 
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", () => reject(new Error(`failed to connect ${safeUrl}`)), {
-      once: true,
+  if (!protocols) {
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", () => reject(new Error(`failed to connect ${safeUrl}`)), {
+        once: true,
+      });
     });
-  });
+  }
 
   const client = {
     socket,
@@ -584,9 +602,30 @@ async function putBytes(pathname, body, contentType, extraHeaders = {}) {
   return response.json();
 }
 
-async function fetchBytes(pathname) {
+function snapshotPairForNotebook(notebookId) {
+  const handle = wasm.NotebookHandle.load_snapshot(fixtureNotebookBytes, fixtureRuntimeBytes);
+  try {
+    handle.set_runtime_state_doc_id(`runtime:${notebookId}`);
+    const savedNotebookBytes = handle.save();
+    const savedRuntimeBytes = handle.save_state_doc();
+    const runtimeStateDocId = handle.get_runtime_state_doc_id();
+    assert(
+      typeof runtimeStateDocId === "string" && runtimeStateDocId.length > 0,
+      "NotebookDoc smoke fixture is missing runtime_state_doc_id",
+    );
+    return {
+      notebookBytes: savedNotebookBytes,
+      runtimeBytes: savedRuntimeBytes,
+      runtimeStateDocId,
+    };
+  } finally {
+    handle.free();
+  }
+}
+
+async function fetchBytes(pathname, extraHeaders = {}) {
   const url = new URL(pathname, baseUrl);
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: extraHeaders });
   assert(response.ok, `${url.href} returned ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }

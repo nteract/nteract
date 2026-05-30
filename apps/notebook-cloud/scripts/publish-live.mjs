@@ -35,7 +35,10 @@ const session = sourceNotebookId
 
 try {
   const snapshot = await session.exportSnapshotPair();
-  const cells = await cellsFromSnapshotPair(snapshot.notebookBytes, snapshot.runtimeStateBytes);
+  const { cells, runtimeStateDocId } = await snapshotPairMetadata(
+    snapshot.notebookBytes,
+    snapshot.runtimeStateBytes,
+  );
   const blobRefs = collectBlobRefs(cells);
   const headsHash = headsDigest(snapshot.notebookHeads);
   const runtimeHeadsHash = headsDigest(snapshot.runtimeStateHeads);
@@ -48,6 +51,9 @@ try {
     `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeadsHash)}`,
     snapshot.runtimeStateBytes,
     "application/octet-stream",
+    {
+      "X-Runtime-State-Doc-Id": runtimeStateDocId,
+    },
   );
   await putBytes(
     `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(headsHash)}`,
@@ -55,6 +61,7 @@ try {
     "application/octet-stream",
     {
       "X-Runtime-Heads-Hash": runtimeHeadsHash,
+      "X-Runtime-State-Doc-Id": runtimeStateDocId,
     },
   );
 
@@ -78,6 +85,7 @@ try {
         sourceNotebookId: sourceNotebookId ?? session.notebookId,
         notebookId,
         viewerUrl: new URL(`/n/${encodeURIComponent(notebookId)}`, baseUrl).href,
+        runtimeStateDocId,
         headsHash,
         runtimeHeadsHash,
         cells: Array.isArray(cells) ? cells.length : null,
@@ -100,16 +108,28 @@ try {
   await session.close().catch(() => {});
 }
 
-async function cellsFromSnapshotPair(notebookBytes, runtimeStateBytes) {
+async function snapshotPairMetadata(notebookBytes, runtimeStateBytes) {
   const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
   const wasmBytes = await readFile(wasmBytesUrl);
   initSync({ module: wasmBytes });
   const handle = NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
   try {
-    return JSON.parse(handle.get_cells_json());
+    return {
+      cells: JSON.parse(handle.get_cells_json()),
+      runtimeStateDocId: requiredRuntimeStateDocId(handle),
+    };
   } finally {
     handle.free();
   }
+}
+
+function requiredRuntimeStateDocId(handle) {
+  const runtimeStateDocId = handle.get_runtime_state_doc_id();
+  assert(
+    typeof runtimeStateDocId === "string" && runtimeStateDocId.length > 0,
+    "NotebookDoc live snapshot is missing runtime_state_doc_id",
+  );
+  return runtimeStateDocId;
 }
 
 async function uploadLiveBlob(ref, snapshot) {

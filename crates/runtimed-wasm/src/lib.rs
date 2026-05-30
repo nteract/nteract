@@ -1262,6 +1262,22 @@ impl NotebookHandle {
         self.doc.runtime_state_doc_id()
     }
 
+    /// Set the RuntimeStateDoc identity on both documents in this snapshot pair.
+    ///
+    /// This is intentionally narrower than changing notebook identity: fixture
+    /// publishers can clone a canned NotebookDoc + RuntimeStateDoc pair into a
+    /// route-specific runtime document namespace without creating a legacy
+    /// route-derived fallback.
+    pub fn set_runtime_state_doc_id(&mut self, runtime_state_doc_id: &str) -> Result<(), JsError> {
+        self.doc
+            .set_runtime_state_doc_id(runtime_state_doc_id)
+            .map_err(|e| JsError::new(&format!("set notebook runtime_state_doc_id failed: {e}")))?;
+        self.state_doc
+            .set_runtime_state_doc_id(Some(runtime_state_doc_id))
+            .map_err(|e| JsError::new(&format!("set runtime state doc id failed: {e}")))?;
+        Ok(())
+    }
+
     /// Get the actor identity label for this document.
     pub fn get_actor_id(&self) -> String {
         self.doc.get_actor_id()
