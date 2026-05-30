@@ -27,6 +27,10 @@ import { PoolErrorBanner } from "@/notebook-components/PoolErrorBanner";
 import { RuntimeDecisionDialog } from "@/notebook-components/RuntimeDecisionDialog";
 import { TrustDialog } from "@/notebook-components/TrustDialog";
 import { UntrustedBanner } from "@/notebook-components/UntrustedBanner";
+import {
+  getElementsNotebookScenario,
+  type ElementsNotebookScenario,
+} from "@/components/notebook-scenarios";
 
 const runtimePieces = [
   {
@@ -111,30 +115,6 @@ const runtimeAdapterRows = [
 
 const fixtureHost = createFixtureNotebookHost();
 
-const trustInfo = {
-  status: "untrusted" as const,
-  uv_dependencies: ["pandas>=2", "reqeusts[security]>=2.0"],
-  approved_uv_dependencies: ["pandas>=2"],
-  conda_dependencies: ["python=3.13", "scikit-learn"],
-  approved_conda_dependencies: [],
-  conda_channels: ["conda-forge"],
-  approved_conda_channels: ["conda-forge"],
-  pixi_dependencies: ["numpy"],
-  approved_pixi_dependencies: [],
-  pixi_pypi_dependencies: ["polars"],
-  approved_pixi_pypi_dependencies: [],
-  pixi_channels: ["conda-forge"],
-  approved_pixi_channels: ["conda-forge"],
-};
-
-const typosquatWarnings = [
-  {
-    package: "reqeusts",
-    similar_to: "requests",
-    distance: 2,
-  },
-];
-
 const envBuildDetails = `Environment named "mathnet" was not found.
 
 conda env create -f /Users/kyle/notebooks/environment.yml
@@ -148,7 +128,7 @@ const kernelLaunchError = [
   "hint: rebuild the environment or verify the project interpreter.",
 ].join("\n");
 
-function RuntimeDialogs() {
+function RuntimeDialogs({ scenario }: { scenario: ElementsNotebookScenario }) {
   const [trustOpen, setTrustOpen] = useState(false);
   const [envOpen, setEnvOpen] = useState(false);
   const [decisionShellOpen, setDecisionShellOpen] = useState(false);
@@ -167,13 +147,13 @@ function RuntimeDialogs() {
         <TrustDialog
           open={trustOpen}
           onOpenChange={setTrustOpen}
-          trustInfo={trustInfo}
-          typosquatWarnings={typosquatWarnings}
+          trustInfo={scenario.trustState.trustInfo}
+          typosquatWarnings={[...scenario.trustState.typosquatWarnings]}
           onApprove={asyncTrue}
           onApproveOnly={asyncTrue}
           onDecline={noop}
           daemonMode
-          approvalError="Typosquat check completed with one warning. Review before trusting."
+          approvalError={scenario.trustState.approvalError}
         />
       </div>
 
@@ -230,7 +210,7 @@ function RuntimeDialogs() {
   );
 }
 
-function DependencyHeaderFixture() {
+function DependencyHeaderFixture({ scenario }: { scenario: ElementsNotebookScenario }) {
   return (
     <section
       className="overflow-hidden rounded-lg border border-fd-border bg-fd-card"
@@ -243,33 +223,16 @@ function DependencyHeaderFixture() {
         </p>
       </div>
       <DependencyHeader
-        dependencies={["pandas>=2", "polars", "matplotlib"]}
-        requiresPython=">=3.13"
+        dependencies={[...scenario.packageState.dependencies]}
+        requiresPython={scenario.packageState.requiresPython}
         loading={false}
         onAdd={asyncNoop}
         onRemove={asyncNoop}
         onSetRequiresPython={asyncNoop}
-        syncState={{ status: "dirty", added: ["scikit-learn"], removed: [] }}
+        syncState={scenario.packageState.syncState}
         onSyncNow={asyncTrue}
-        pyprojectInfo={{
-          path: "/Users/kyle/notebooks/pyproject.toml",
-          relative_path: "pyproject.toml",
-          project_name: "mathnet",
-          has_dependencies: true,
-          dependency_count: 3,
-          has_dev_dependencies: true,
-          requires_python: ">=3.13",
-          has_venv: true,
-        }}
-        pyprojectDeps={{
-          path: "/Users/kyle/notebooks/pyproject.toml",
-          relative_path: "pyproject.toml",
-          project_name: "mathnet",
-          dependencies: ["pandas>=2", "polars"],
-          dev_dependencies: ["pytest"],
-          requires_python: ">=3.13",
-          index_url: null,
-        }}
+        pyprojectInfo={scenario.packageState.pyprojectInfo}
+        pyprojectDeps={scenario.packageState.pyprojectDeps}
         onImportFromPyproject={asyncNoop}
         onUseProjectEnv={asyncNoop}
         isUsingProjectEnv={false}
@@ -411,6 +374,8 @@ function BannerFixture({
 }
 
 export function RuntimeSurfacesExample() {
+  const scenario = getElementsNotebookScenario("runtime-unavailable");
+
   return (
     <div className="not-prose space-y-6">
       <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-900 dark:text-emerald-900">
@@ -427,7 +392,7 @@ export function RuntimeSurfacesExample() {
         </div>
       </section>
 
-      <DependencyHeaderFixture />
+      <DependencyHeaderFixture scenario={scenario} />
 
       <RuntimeBanners />
 
@@ -439,7 +404,7 @@ export function RuntimeSurfacesExample() {
             existing components.
           </p>
         </div>
-        <RuntimeDialogs />
+        <RuntimeDialogs scenario={scenario} />
       </section>
 
       <section className="grid gap-3">

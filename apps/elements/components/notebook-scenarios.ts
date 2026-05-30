@@ -5,6 +5,13 @@ import {
   type NotebookViewCell,
   type NotebookViewModel,
 } from "@/components/notebook-shell";
+import type {
+  EnvSyncState,
+  PyProjectDeps,
+  PyProjectInfo,
+  TrustInfo,
+  TyposquatWarning,
+} from "@/notebook-components/runtime-surface-types";
 
 export type ElementsNotebookScenarioId =
   | "desktop-local-owner"
@@ -22,9 +29,24 @@ export interface ElementsNotebookScenario {
   viewModel: NotebookViewModel;
   runtimeLabel: string;
   packageSummary: string;
-  dependencies: readonly string[];
+  packageState: ElementsNotebookPackageState;
+  trustState: ElementsNotebookTrustState;
   variables: readonly ElementsNotebookVariable[];
   renderers: readonly ElementsNotebookRenderer[];
+}
+
+export interface ElementsNotebookPackageState {
+  dependencies: readonly string[];
+  requiresPython: string;
+  syncState: EnvSyncState;
+  pyprojectInfo: PyProjectInfo;
+  pyprojectDeps: PyProjectDeps;
+}
+
+export interface ElementsNotebookTrustState {
+  trustInfo: TrustInfo;
+  typosquatWarnings: readonly TyposquatWarning[];
+  approvalError: string | null;
 }
 
 export interface ElementsNotebookVariable {
@@ -166,7 +188,56 @@ const viewModel = createNotebookViewModel(notebookCells, {
   resolveLanguage: resolveElementsNotebookLanguage,
 });
 
-const dependencies = ["pandas>=2", "polars", "plotly", "scikit-learn"] as const;
+const packageState: ElementsNotebookPackageState = {
+  dependencies: ["pandas>=2", "polars", "plotly", "scikit-learn"],
+  requiresPython: ">=3.13",
+  syncState: { status: "dirty", added: ["altair"], removed: [] },
+  pyprojectInfo: {
+    path: "/Users/kyle/notebooks/pyproject.toml",
+    relative_path: "pyproject.toml",
+    project_name: "mathnet",
+    has_dependencies: true,
+    dependency_count: 4,
+    has_dev_dependencies: true,
+    requires_python: ">=3.13",
+    has_venv: true,
+  },
+  pyprojectDeps: {
+    path: "/Users/kyle/notebooks/pyproject.toml",
+    relative_path: "pyproject.toml",
+    project_name: "mathnet",
+    dependencies: ["pandas>=2", "polars", "plotly", "scikit-learn"],
+    dev_dependencies: ["pytest", "ruff"],
+    requires_python: ">=3.13",
+    index_url: null,
+  },
+};
+
+const trustState: ElementsNotebookTrustState = {
+  trustInfo: {
+    status: "untrusted",
+    uv_dependencies: ["pandas>=2", "reqeusts[security]>=2.0"],
+    approved_uv_dependencies: ["pandas>=2"],
+    conda_dependencies: ["python=3.13", "scikit-learn"],
+    approved_conda_dependencies: [],
+    conda_channels: ["conda-forge"],
+    approved_conda_channels: ["conda-forge"],
+    pixi_dependencies: ["numpy"],
+    approved_pixi_dependencies: [],
+    pixi_pypi_dependencies: ["polars"],
+    approved_pixi_pypi_dependencies: [],
+    pixi_channels: ["conda-forge"],
+    approved_pixi_channels: ["conda-forge"],
+  },
+  typosquatWarnings: [
+    {
+      package: "reqeusts",
+      similar_to: "requests",
+      distance: 2,
+    },
+  ],
+  approvalError: "Typosquat check completed with one warning. Review before trusting.",
+};
 
 const variables: readonly ElementsNotebookVariable[] = [
   { name: "orders", type: "DataFrame", value: "2,148 rows x 18 columns" },
@@ -351,7 +422,8 @@ function createScenario({
     viewModel,
     runtimeLabel,
     packageSummary,
-    dependencies,
+    packageState,
+    trustState,
     variables,
     renderers,
   };

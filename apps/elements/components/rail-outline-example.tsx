@@ -341,8 +341,8 @@ function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario 
       </div>
       <div className="overflow-hidden rounded-md border border-fd-border bg-fd-card">
         <DependencyHeader
-          dependencies={[...scenario.dependencies]}
-          requiresPython=">=3.13"
+          dependencies={[...scenario.packageState.dependencies]}
+          requiresPython={scenario.packageState.requiresPython}
           loading={false}
           variant="rail"
           onAdd={asyncNoop}
@@ -350,12 +350,12 @@ function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario 
           onSetRequiresPython={asyncNoop}
           syncState={
             scenario.capabilities.canManagePackages
-              ? { status: "dirty", added: ["altair"], removed: [] }
+              ? scenario.packageState.syncState
               : { status: "synced" }
           }
           onSyncNow={asyncTrue}
-          pyprojectInfo={null}
-          pyprojectDeps={null}
+          pyprojectInfo={scenario.packageState.pyprojectInfo}
+          pyprojectDeps={scenario.packageState.pyprojectDeps}
           isUsingProjectEnv={false}
           justSynced={false}
         />
