@@ -361,6 +361,16 @@ pub struct RoomPersistence {
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     is_loading: AtomicBool,
+    /// Hazard flag set only when a FAILED streaming load empties this room.
+    /// Set true at the one production point that zeroes a room out from under a
+    /// possibly-non-empty file: the streaming-load Err branch in peer_session,
+    /// co-located with `doc.clear_all_cells()`. Cleared on a fresh load attempt
+    /// (`try_start_loading` winning the claim) since a retry supersedes any
+    /// prior failure. The zeroing guard in `save_notebook_to_disk` reads this:
+    /// a room emptied by a failed load (flag true) must not autosave its empty
+    /// state over a non-empty/corrupt file, while a legitimately-empty room from
+    /// ANY init path (flag false) always saves.
+    load_failed: AtomicBool,
 }
 
 /// The debounced `.automerge` persist channels. See `spawn_persist_debouncer`.
@@ -385,6 +395,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
+            load_failed: AtomicBool::new(false),
         }
     }
 
@@ -402,6 +413,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
+            load_failed: AtomicBool::new(false),
         }
     }
 
@@ -477,6 +489,12 @@ impl RoomPersistence {
     /// Atomically claim the loading role. Returns `true` if this caller won
     /// the race and should perform the streaming load.
     pub fn try_start_loading(&self) -> bool {
+        // Note: load_failed is deliberately NOT cleared here. Clearing at the
+        // START of a retry opens a race — an in-flight autosave that already
+        // passed its is_loading() check could then see load_failed == false with
+        // the room still empty mid-retry and zero the file. The flag is cleared
+        // only on recovery COMPLETION (a successful load in peer_session, a
+        // watcher reconcile, or a successful save).
         self.is_loading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
@@ -490,6 +508,26 @@ impl RoomPersistence {
     /// True if a streaming load is currently in progress.
     pub fn is_loading(&self) -> bool {
         self.is_loading.load(Ordering::Acquire)
+    }
+
+    /// Flag the room as emptied by a failed streaming load. Set at the one
+    /// production point that zeroes the room (peer_session Err branch); the
+    /// zeroing guard then refuses to autosave this empty doc over a file.
+    pub fn mark_load_failed(&self) {
+        self.load_failed.store(true, Ordering::Release);
+    }
+
+    /// True if the room was emptied by a failed streaming load and not yet
+    /// retried. See `mark_load_failed` and the zeroing guard in
+    /// `save_notebook_to_disk`.
+    pub fn load_failed(&self) -> bool {
+        self.load_failed.load(Ordering::Acquire)
+    }
+
+    /// Clear the failed-load hazard flag. Called when a fresh load attempt
+    /// wins the loading claim, since the retry supersedes the prior failure.
+    pub fn clear_load_failed(&self) {
+        self.load_failed.store(false, Ordering::Release);
     }
 }
 
@@ -730,6 +768,10 @@ impl NotebookRoom {
         blob_store: Arc<BlobStore>,
         ephemeral: bool,
     ) -> Self {
+        // A fresh room has `load_failed = false` by default, so the zeroing
+        // guard does not fire for it: a legitimately-empty room from any init
+        // path always saves. Tests that need the guard to fire drive a doc
+        // empty and then call `mark_load_failed()` to model a failed load.
         Self::new_fresh_with_trusted_packages(
             uuid,
             path,
@@ -1028,6 +1070,24 @@ impl NotebookRoom {
     /// Mark the streaming load complete.
     pub fn finish_loading(&self) {
         self.persistence.finish_loading();
+    }
+
+    /// Flag the room as emptied by a failed streaming load. See
+    /// `RoomPersistence::mark_load_failed`.
+    pub fn mark_load_failed(&self) {
+        self.persistence.mark_load_failed();
+    }
+
+    /// True if the room was emptied by a failed streaming load and not yet
+    /// retried. See `RoomPersistence::load_failed`.
+    pub fn load_failed(&self) -> bool {
+        self.persistence.load_failed()
+    }
+
+    /// Clear the failed-load hazard flag. See
+    /// `RoomPersistence::clear_load_failed`.
+    pub fn clear_load_failed(&self) {
+        self.persistence.clear_load_failed();
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

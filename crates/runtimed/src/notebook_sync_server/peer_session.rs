@@ -169,6 +169,11 @@ where
     {
         Ok(count) => {
             room.finish_loading();
+            // The load succeeded and the room now reflects the file on disk, so
+            // any prior failed-load hazard is resolved. Clear it here (on
+            // completion, not at retry start) to avoid racing an in-flight
+            // autosave during the retry window.
+            room.clear_load_failed();
             info!(
                 "[notebook-sync] Streaming load complete: {} cells from {}",
                 count,
@@ -215,6 +220,10 @@ where
                     );
                 }
             }
+            // The room was just emptied by a failed load; mark it so the
+            // persistence guard refuses to autosave this empty doc over a
+            // non-empty file.
+            room.mark_load_failed();
             room.finish_loading();
             let _ = room.broadcasts.changed_tx.send(());
             warn!(
