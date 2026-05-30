@@ -29,6 +29,7 @@ import {
   addTextAttributions,
   textAttributionExtension,
 } from "@/components/editor/text-attribution";
+import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 
 type SampleKey = "python" | "sql" | "markdown" | "json";
 
@@ -185,9 +186,11 @@ function SectionHeader({
 
 export function EditorSurfacesExample() {
   const [sampleKey, setSampleKey] = useState<SampleKey>("python");
-  const [mode, setMode] = useState<"light" | "dark">("light");
-  const [colorTheme, setColorTheme] = useState<ColorTheme>("classic");
   const [draftSource, setDraftSource] = useState(codeSamples.python.source);
+  const isDark = useDarkMode();
+  const documentColorTheme = useColorTheme();
+  const mode = isDark ? "dark" : "light";
+  const colorTheme: ColorTheme = documentColorTheme === "cream" ? "cream" : "classic";
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const sample = codeSamples[sampleKey];
   const activeOffset = useMemo(
@@ -263,7 +266,7 @@ export function EditorSurfacesExample() {
 
     frame = window.requestAnimationFrame(applyFixtureState);
     return () => window.cancelAnimationFrame(frame);
-  }, [colorTheme, mode, sample.search, sample.source]);
+  }, [sample.search, sample.source]);
 
   const detectedMagic = detectCellMagic(magicSource);
   const magicLanguage = detectedMagic ? getCellMagicLanguage(detectedMagic) : "plain";
@@ -309,38 +312,9 @@ export function EditorSurfacesExample() {
               </button>
             ))}
             <span className="mx-1 h-5 w-px bg-fd-border" aria-hidden="true" />
-            {(["light", "dark"] as const).map((nextMode) => (
-              <button
-                key={nextMode}
-                type="button"
-                aria-pressed={mode === nextMode}
-                onClick={() => setMode(nextMode)}
-                className={[
-                  "rounded-md border px-3 py-1.5 text-xs font-medium capitalize transition-colors",
-                  mode === nextMode
-                    ? "border-fd-primary bg-fd-primary text-fd-primary-foreground"
-                    : "border-fd-border bg-fd-background text-fd-muted-foreground hover:bg-fd-muted",
-                ].join(" ")}
-              >
-                {nextMode}
-              </button>
-            ))}
-            {(["classic", "cream"] as const).map((nextTheme) => (
-              <button
-                key={nextTheme}
-                type="button"
-                aria-pressed={colorTheme === nextTheme}
-                onClick={() => setColorTheme(nextTheme)}
-                className={[
-                  "rounded-md border px-3 py-1.5 text-xs font-medium capitalize transition-colors",
-                  colorTheme === nextTheme
-                    ? "border-fd-primary bg-fd-primary text-fd-primary-foreground"
-                    : "border-fd-border bg-fd-background text-fd-muted-foreground hover:bg-fd-muted",
-                ].join(" ")}
-              >
-                {nextTheme}
-              </button>
-            ))}
+            <span className="text-xs font-medium capitalize text-fd-muted-foreground">
+              {mode} / {colorTheme}
+            </span>
           </div>
 
           <div className="overflow-hidden rounded-lg border border-border bg-background">
@@ -360,8 +334,6 @@ export function EditorSurfacesExample() {
               ref={editorRef}
               initialValue={sample.source}
               language={sample.language}
-              theme={mode}
-              colorTheme={colorTheme}
               lineWrapping
               extensions={editorExtensions}
               onValueChange={setDraftSource}

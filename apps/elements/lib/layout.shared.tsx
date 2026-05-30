@@ -1,5 +1,4 @@
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
-import { NotebookPaletteToggle } from "@/components/notebook-palette-toggle";
 
 export function baseOptions(): BaseLayoutProps {
   return {
@@ -12,11 +11,6 @@ export function baseOptions(): BaseLayoutProps {
         text: "Catalog",
         url: "/docs",
         active: "nested-url",
-      },
-      {
-        type: "custom",
-        secondary: true,
-        children: <NotebookPaletteToggle />,
       },
     ],
   };

@@ -1,7 +1,8 @@
 "use client";
 
+import { ChevronDown, Palette } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Palette } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 type NotebookPalette = "classic" | "cream";
 
@@ -10,17 +11,14 @@ const storageKey = "notebook-color-theme";
 const options: Array<{
   value: NotebookPalette;
   label: string;
-  swatch: string;
 }> = [
   {
     value: "classic",
     label: "Classic",
-    swatch: "bg-white",
   },
   {
     value: "cream",
     label: "Cream",
-    swatch: "bg-[#f5f2ec]",
   },
 ];
 
@@ -41,7 +39,7 @@ function applyPalette(value: NotebookPalette) {
   document.documentElement.setAttribute("data-color-theme", value);
 }
 
-export function NotebookPaletteToggle() {
+export function NotebookPaletteToggle({ className }: { className?: string }) {
   const [palette, setPalette] = useState<NotebookPalette>("classic");
 
   useEffect(() => {
@@ -62,38 +60,34 @@ export function NotebookPaletteToggle() {
 
   return (
     <div
-      className="flex items-center gap-1 rounded-lg border border-fd-border bg-fd-secondary/50 p-0.5 text-fd-muted-foreground"
-      aria-label="Notebook palette"
+      className={cn(
+        "flex items-center gap-2 rounded-lg border border-fd-border bg-fd-secondary/50 px-2 py-1 text-fd-muted-foreground",
+        className,
+      )}
+      aria-label="Notebook flavor"
     >
-      <Palette className="ml-1 size-3.5" aria-hidden="true" />
-      {options.map((option) => {
-        const isActive = palette === option.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={isActive}
-            title={`${option.label} notebook palette`}
-            onClick={() => selectPalette(option.value)}
-            className={[
-              "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors",
-              isActive
-                ? "bg-fd-background text-fd-foreground shadow-sm"
-                : "hover:bg-fd-accent hover:text-fd-accent-foreground",
-            ].join(" ")}
-          >
-            <span
-              className={[
-                "size-2.5 rounded-full border",
-                option.swatch,
-                option.value === "cream" ? "border-[#d8cec3]" : "border-fd-border",
-              ].join(" ")}
-              aria-hidden="true"
-            />
-            {option.label}
-          </button>
-        );
-      })}
+      <Palette className="size-4 flex-none" aria-hidden="true" />
+      <label className="sr-only" htmlFor="notebook-flavor-select">
+        Notebook flavor
+      </label>
+      <div className="relative min-w-0 flex-1">
+        <select
+          id="notebook-flavor-select"
+          value={palette}
+          onChange={(event) => selectPalette(event.target.value as NotebookPalette)}
+          className="h-8 w-full appearance-none rounded-md bg-fd-background py-0 pe-8 ps-3 text-sm font-medium text-fd-foreground shadow-sm outline-none transition-colors hover:bg-fd-accent focus-visible:ring-2 focus-visible:ring-fd-ring"
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown
+          className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2"
+          aria-hidden="true"
+        />
+      </div>
     </div>
   );
 }
