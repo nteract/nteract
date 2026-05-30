@@ -361,21 +361,16 @@ pub struct RoomPersistence {
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     is_loading: AtomicBool,
-    /// Monotonic "this room has been in a known-good state" latch. Set true
-    /// (and never cleared) the first time the room is known ready: a streaming
-    /// load completes (peer_session) or the doc is observed with >=1 cell
-    /// (save_notebook_to_disk). The zeroing guard in `save_notebook_to_disk`
-    /// reads this to tell a legitimately-emptied loaded notebook (write the
-    /// empty state) apart from a room emptied by a failed/never-completed load
-    /// (skip, preserve disk). Set-once means no clear-point lifecycle.
-    ///
-    /// Production room creation (`new_fresh_with_trusted_packages`) does NOT
-    /// latch this: a real untitled notebook never reaches the guard because
-    /// `save_notebook_to_disk` returns early when no path is bound, and a real
-    /// file-backed room latches via the load-success or >=1-cell set-point. The
-    /// test-only `new_fresh` marks ready for convenience; tests needing a
-    /// not-ready file-backed room use `test_room_with_path` (leaves it false).
-    ever_ready: AtomicBool,
+    /// Hazard flag set only when a FAILED streaming load empties this room.
+    /// Set true at the one production point that zeroes a room out from under a
+    /// possibly-non-empty file: the streaming-load Err branch in peer_session,
+    /// co-located with `doc.clear_all_cells()`. Cleared on a fresh load attempt
+    /// (`try_start_loading` winning the claim) since a retry supersedes any
+    /// prior failure. The zeroing guard in `save_notebook_to_disk` reads this:
+    /// a room emptied by a failed load (flag true) must not autosave its empty
+    /// state over a non-empty/corrupt file, while a legitimately-empty room from
+    /// ANY init path (flag false) always saves.
+    load_failed: AtomicBool,
 }
 
 /// The debounced `.automerge` persist channels. See `spawn_persist_debouncer`.
@@ -400,7 +395,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
-            ever_ready: AtomicBool::new(false),
+            load_failed: AtomicBool::new(false),
         }
     }
 
@@ -418,7 +413,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
-            ever_ready: AtomicBool::new(false),
+            load_failed: AtomicBool::new(false),
         }
     }
 
@@ -494,9 +489,17 @@ impl RoomPersistence {
     /// Atomically claim the loading role. Returns `true` if this caller won
     /// the race and should perform the streaming load.
     pub fn try_start_loading(&self) -> bool {
-        self.is_loading
+        let won = self
+            .is_loading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+            .is_ok();
+        if won {
+            // A fresh load attempt supersedes any prior failure; clear the
+            // hazard flag so a stale failed-load state cannot keep blocking
+            // autosaves after this retry.
+            self.clear_load_failed();
+        }
+        won
     }
 
     /// Mark loading complete (success or failure).
@@ -509,17 +512,24 @@ impl RoomPersistence {
         self.is_loading.load(Ordering::Acquire)
     }
 
-    /// Latch the room as known-ready. Monotonic: once set it is never cleared,
-    /// so callers can fire it freely (load success, fresh-room creation, any
-    /// observed non-empty doc) without coordinating a clear point.
-    pub fn mark_ready(&self) {
-        self.ever_ready.store(true, Ordering::Release);
+    /// Flag the room as emptied by a failed streaming load. Set at the one
+    /// production point that zeroes the room (peer_session Err branch); the
+    /// zeroing guard then refuses to autosave this empty doc over a file.
+    pub fn mark_load_failed(&self) {
+        self.load_failed.store(true, Ordering::Release);
     }
 
-    /// True once the room has been observed in a known-good state. See
-    /// `mark_ready` and the zeroing guard in `save_notebook_to_disk`.
-    pub fn ever_ready(&self) -> bool {
-        self.ever_ready.load(Ordering::Acquire)
+    /// True if the room was emptied by a failed streaming load and not yet
+    /// retried. See `mark_load_failed` and the zeroing guard in
+    /// `save_notebook_to_disk`.
+    pub fn load_failed(&self) -> bool {
+        self.load_failed.load(Ordering::Acquire)
+    }
+
+    /// Clear the failed-load hazard flag. Called when a fresh load attempt
+    /// wins the loading claim, since the retry supersedes the prior failure.
+    pub fn clear_load_failed(&self) {
+        self.load_failed.store(false, Ordering::Release);
     }
 }
 
@@ -769,17 +779,10 @@ impl NotebookRoom {
             crate::trusted_packages::TrustedPackageStore::unavailable("not configured"),
         )
         .expect("create test notebook room runtime state");
-        // Test-only convenience: a room built straight from `new_fresh` has no
-        // streaming load to latch it, so mark it ready here to model the
-        // common "already in a good state" case tests want. Production room
-        // creation goes through `new_fresh_with_trusted_packages`, which does
-        // NOT mark ready; a real file-backed room latches ready via the
-        // load-success set-point (peer_session) or the >=1-cell set-point
-        // (save_notebook_to_disk), and a real untitled notebook never reaches
-        // the zeroing guard (save_notebook_to_disk returns early without a
-        // bound path). Tests that need a not-ready file-backed room build it
-        // via `test_room_with_path` instead, which leaves ever_ready false.
-        room.mark_ready();
+        // A fresh room has `load_failed = false` by default, so the zeroing
+        // guard does not fire for it: a legitimately-empty room from any init
+        // path always saves. Tests that need the guard to fire drive a doc
+        // empty and then call `mark_load_failed()` to model a failed load.
         room
     }
 
@@ -1072,16 +1075,22 @@ impl NotebookRoom {
         self.persistence.finish_loading();
     }
 
-    /// Latch the room as known-ready (monotonic, never cleared). See
-    /// `RoomPersistence::mark_ready`.
-    pub fn mark_ready(&self) {
-        self.persistence.mark_ready();
+    /// Flag the room as emptied by a failed streaming load. See
+    /// `RoomPersistence::mark_load_failed`.
+    pub fn mark_load_failed(&self) {
+        self.persistence.mark_load_failed();
     }
 
-    /// True once the room has been observed in a known-good state. See
-    /// `RoomPersistence::ever_ready`.
-    pub fn ever_ready(&self) -> bool {
-        self.persistence.ever_ready()
+    /// True if the room was emptied by a failed streaming load and not yet
+    /// retried. See `RoomPersistence::load_failed`.
+    pub fn load_failed(&self) -> bool {
+        self.persistence.load_failed()
+    }
+
+    /// Clear the failed-load hazard flag. See
+    /// `RoomPersistence::clear_load_failed`.
+    pub fn clear_load_failed(&self) {
+        self.persistence.clear_load_failed();
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

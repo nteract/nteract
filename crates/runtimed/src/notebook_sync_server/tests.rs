@@ -8950,12 +8950,14 @@ async fn autosave_skips_zeroing_write_after_failed_load() {
     let (room, notebook_path) = test_room_with_path(&tmp, "failed_load.ipynb");
     write_two_cell_notebook(&notebook_path).await;
 
-    // Reproduce the post-failed-load room state: doc emptied, loading done.
+    // Reproduce the post-failed-load room state: doc emptied, loading done,
+    // failed-load hazard flagged (peer_session does this in the Err branch).
     {
         let mut doc = room.doc.write().await;
         doc.clear_all_cells().unwrap();
         assert_eq!(doc.cell_count(), 0);
     }
+    room.mark_load_failed();
     room.finish_loading();
 
     // Autosave / kernel-teardown path.
@@ -9054,12 +9056,13 @@ async fn autosave_skips_zeroing_write_over_corrupt_file() {
     let corrupt = b"{ \"nbformat\": 4, \"cells\": [ {\"id\": \"a\", trunc";
     tokio::fs::write(&notebook_path, corrupt).await.unwrap();
 
-    // Post-failed-load room state: doc emptied, loading done.
+    // Post-failed-load room state: doc emptied, loading done, hazard flagged.
     {
         let mut doc = room.doc.write().await;
         doc.clear_all_cells().unwrap();
         assert_eq!(doc.cell_count(), 0);
     }
+    room.mark_load_failed();
     room.finish_loading();
 
     save_notebook_to_disk(&room, None)
@@ -9091,6 +9094,7 @@ async fn autosave_skips_zeroing_write_when_disk_cells_not_array() {
         doc.clear_all_cells().unwrap();
         assert_eq!(doc.cell_count(), 0);
     }
+    room.mark_load_failed();
     room.finish_loading();
 
     save_notebook_to_disk(&room, None)
@@ -9105,11 +9109,11 @@ async fn autosave_skips_zeroing_write_when_disk_cells_not_array() {
     );
 }
 
-/// Codex P1: the user deletes the last cell of a notebook that loaded
-/// successfully (e.g. via MCP/Python). The room legitimately has 0 cells and
-/// the on-disk file still has bytes, so the old guard skipped the write and
-/// reported success — disk kept stale content. With the `ever_ready` latch set
-/// by load success, this autosave WRITES the empty notebook.
+/// Codex P1, the key "legit empty saves" case: the user deletes the last cell
+/// of a notebook that loaded successfully (e.g. via MCP/Python). The room
+/// legitimately has 0 cells and the on-disk file still has bytes, but the load
+/// did NOT fail, so `load_failed` stays false and the guard does not fire: this
+/// autosave WRITES the empty notebook over the populated file.
 #[tokio::test]
 async fn autosave_writes_empty_doc_after_successful_load_then_emptied() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -9117,14 +9121,16 @@ async fn autosave_writes_empty_doc_after_successful_load_then_emptied() {
     write_two_cell_notebook(&notebook_path).await;
 
     // Reproduce a successful streaming load: the load populates the doc and
-    // latches the room ready (peer_session calls mark_ready on the Ok branch).
+    // does NOT flag load_failed (peer_session sets the flag only in the Err
+    // branch). The room is built via test_room_with_path, so load_failed is
+    // false by default.
     {
         let mut doc = room.doc.write().await;
         doc.add_cell(0, "cell-a", "code").unwrap();
         doc.add_cell(1, "cell-b", "markdown").unwrap();
     }
     room.finish_loading();
-    room.mark_ready();
+    assert!(!room.load_failed());
 
     // User now deletes every cell.
     {
@@ -9145,9 +9151,8 @@ async fn autosave_writes_empty_doc_after_successful_load_then_emptied() {
 }
 
 /// Codex P1, second case: a metadata/dependency edit on an already-saved EMPTY
-/// notebook. The room has 0 cells and the file has bytes, so the old guard
-/// skipped. Because the room loaded successfully (ever_ready true), the write
-/// goes through and the metadata edit lands on disk.
+/// notebook. The room has 0 cells and the file has bytes, but no load failed,
+/// so `load_failed` is false and the write goes through, landing the edit.
 #[tokio::test]
 async fn autosave_writes_metadata_edit_on_loaded_empty_notebook() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -9161,9 +9166,9 @@ async fn autosave_writes_metadata_edit_on_loaded_empty_notebook() {
     .await
     .unwrap();
 
-    // The room loaded that empty notebook successfully.
+    // The room loaded that empty notebook successfully (no failed load).
     room.finish_loading();
-    room.mark_ready();
+    assert!(!room.load_failed());
     assert_eq!(room.doc.read().await.cell_count(), 0);
 
     // A metadata edit lands; the doc stays at 0 cells.
@@ -9182,42 +9187,41 @@ async fn autosave_writes_metadata_edit_on_loaded_empty_notebook() {
     );
 }
 
-/// Observing a doc with >=1 cell latches the room ready. This covers a room
-/// repopulated by the file watcher after an earlier failed load: once content
-/// has gone through save_notebook_to_disk, a later emptying autosaves rather
-/// than being treated as a failed-load zeroing.
+/// A retry supersedes a prior failure: after a failed load flags the room and
+/// the guard would fire, winning a fresh loading claim via `try_start_loading`
+/// clears `load_failed`, so a subsequent empty save writes through again.
 #[tokio::test]
-async fn autosave_latches_ready_on_first_populated_save_then_writes_empty() {
+async fn retry_load_clears_failed_flag_so_empty_save_writes() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "repopulated.ipynb");
+    let (room, notebook_path) = test_room_with_path(&tmp, "retry.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
 
-    // Room starts not-ready (built via with_debouncer, not new_fresh).
-    assert!(!room.ever_ready());
-
-    // First save observes one cell -> latches ready and writes.
-    {
-        let mut doc = room.doc.write().await;
-        doc.add_cell(0, "only-cell", "code").unwrap();
-        doc.update_source("only-cell", "x = 1").unwrap();
-    }
-    save_notebook_to_disk(&room, None)
-        .await
-        .expect("populated save writes");
-    assert!(room.ever_ready(), ">=1-cell save must latch the room ready");
-    assert_eq!(disk_cell_count(&notebook_path), 1);
-
-    // Now empty it; the autosave must write the empty state, not skip.
+    // First load failed: doc emptied, hazard flagged. The guard would skip.
     {
         let mut doc = room.doc.write().await;
         doc.clear_all_cells().unwrap();
     }
+    room.mark_load_failed();
+    room.finish_loading();
+    assert!(room.load_failed());
+
+    // A retry wins the loading claim, which clears the failed-load flag.
+    assert!(room.try_start_loading(), "retry must win the loading claim");
+    assert!(
+        !room.load_failed(),
+        "winning a fresh loading claim must clear the failed-load flag"
+    );
+    room.finish_loading();
+
+    // The room is still empty, but the flag is cleared, so the empty state
+    // writes through (guard does not fire).
     save_notebook_to_disk(&room, None)
         .await
-        .expect("emptying a once-populated room must write the empty state");
+        .expect("empty save after a cleared retry flag must write");
     assert_eq!(
         disk_cell_count(&notebook_path),
         0,
-        "ready room writes its empty state instead of preserving stale disk"
+        "a retried room with the flag cleared writes its empty state"
     );
 }
 
@@ -9244,44 +9248,9 @@ async fn autosave_writes_empty_doc_over_whitespace_only_file() {
     );
 }
 
-/// Codex P2a: an empty notebook explicitly saved to a path latches the room
-/// ready, so a later autosave of the still-empty room writes (is not mistaken
-/// for a failed-load empty by the zeroing guard).
-#[tokio::test]
-async fn explicit_save_of_empty_notebook_latches_ready_for_later_autosave() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "empty.ipynb");
-
-    // Starts not-ready, 0 cells, no file on disk.
-    assert!(!room.ever_ready());
-    assert_eq!(room.doc.read().await.cell_count(), 0);
-
-    // Explicit save of the empty notebook writes the file and latches ready.
-    save_notebook_to_disk(&room, Some(notebook_path.to_str().unwrap()))
-        .await
-        .expect("explicit save of empty notebook must write");
-    assert!(
-        room.ever_ready(),
-        "a completed write must latch the room ready"
-    );
-
-    // Now place real content on disk and autosave the still-empty (but ready)
-    // room: it must overwrite, proving the zeroing guard did NOT skip it.
-    write_two_cell_notebook(&notebook_path).await;
-    assert_eq!(disk_cell_count(&notebook_path), 2);
-    save_notebook_to_disk(&room, None)
-        .await
-        .expect("ready empty room must autosave through");
-    assert_eq!(
-        disk_cell_count(&notebook_path),
-        0,
-        "a ready room writes its empty state on autosave (not skipped)"
-    );
-}
-
 /// Codex P1: a valid-JSON file with no `cells` key is malformed and must fail
-/// the load (not silently load as empty), so the room stays never-ready and the
-/// zeroing guard preserves the clobbered file instead of overwriting it.
+/// the load (not silently load as empty), so the failed load sets load_failed and
+/// the zeroing guard preserves the clobbered file instead of overwriting it.
 #[test]
 fn parse_notebook_jiter_errors_on_missing_or_invalid_cells() {
     // Missing `cells` key -> Err (was previously Ok with empty cells).

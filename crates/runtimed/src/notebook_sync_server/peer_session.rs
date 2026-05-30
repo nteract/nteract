@@ -169,10 +169,6 @@ where
     {
         Ok(count) => {
             room.finish_loading();
-            // Load completed: the room now reflects disk. Latch it ready so a
-            // later legitimate emptying autosaves instead of being skipped by
-            // the zeroing guard.
-            room.mark_ready();
             info!(
                 "[notebook-sync] Streaming load complete: {} cells from {}",
                 count,
@@ -219,6 +215,10 @@ where
                     );
                 }
             }
+            // The room was just emptied by a failed load; mark it so the
+            // persistence guard refuses to autosave this empty doc over a
+            // non-empty file.
+            room.mark_load_failed();
             room.finish_loading();
             let _ = room.broadcasts.changed_tx.send(());
             warn!(

@@ -243,41 +243,34 @@ pub(crate) async fn save_notebook_to_disk(
     .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
     let cell_count = v4_notebook.cells.len();
 
-    // Any doc we observe with at least one cell is, by definition, a room in a
-    // known-good state. Latch it ready (monotonic) so a later emptying of this
-    // same room autosaves instead of being mistaken for a failed load. This
-    // also rescues a room repopulated by the file watcher after an earlier
-    // failed initial load.
-    if cell_count >= 1 {
-        room.mark_ready();
-    }
-
     // Zeroing guard (automatic saves only). A failed/incomplete streaming load
     // empties the room doc (peer_session clears all cells on load failure).
     // Autosave and kernel-teardown both call this with `target_path = None`, so
     // without this guard an empty room would overwrite a populated `.ipynb` and
     // destroy the user's notebook. Skip the write when the in-memory doc has 0
-    // cells, the room has never been ready, and a non-empty file already exists
-    // on disk; return Ok so the autosave debouncer keeps running (Unrecoverable
-    // would disable it). This keys on `target_path = None`, which is the
-    // automatic autosave/teardown path — but note an explicit in-place Save
-    // (Cmd+S / SDK `save()`) ALSO passes `None`; only Save As passes `Some`. So
-    // an explicit in-place Save of a never-ready empty room is skipped here too:
-    // the file is preserved (no data loss), but the save reports success without
-    // writing. Distinguishing autosave from explicit in-place Save, and
+    // cells, the room was emptied by a failed load (`load_failed`), and a
+    // non-empty file already exists on disk; return Ok so the autosave debouncer
+    // keeps running (Unrecoverable would disable it). This keys on
+    // `target_path = None`, which is the automatic autosave/teardown path — but
+    // note an explicit in-place Save (Cmd+S / SDK `save()`) ALSO passes `None`;
+    // only Save As passes `Some`. So an explicit in-place Save of a failed-load
+    // empty room is skipped here too: the file is preserved (no data loss), but
+    // the save reports success without writing. Distinguishing autosave from
+    // explicit in-place Save, and
     // surfacing the failed load to the client instead of a silent success, is
     // deferred to the honest-failure-messaging work (Step 1). A genuinely empty
     // doc over an empty/absent file still round-trips, and a brand-new untitled
     // notebook has no existing file to protect.
     //
-    // `!room.ever_ready()` is what separates a failed load from a legitimate
-    // emptying. `ever_ready` is a set-once latch (never cleared) flipped true
-    // when a load completes, the room is created fresh, or any doc with >=1
-    // cell is observed. So once a notebook has loaded or held content, deleting
-    // its last cell or editing metadata on a loaded-empty notebook WRITES the
-    // empty state; only a room that has never been ready (initial load failed
-    // or never ran) is protected. Because the bit is monotonic there is no
-    // clear-on-reload / clear-on-save lifecycle to get wrong.
+    // `room.load_failed()` is what separates a failed load from a legitimate
+    // emptying. The flag is set at exactly one production point — the
+    // streaming-load Err branch in peer_session, co-located with the
+    // `clear_all_cells()` that empties the room — and cleared on a fresh load
+    // attempt (`try_start_loading` winning the claim). So a legitimately-empty
+    // notebook reached via ANY init path (no failed load) is never flagged and
+    // always saves: deleting the last cell or editing metadata on a loaded room
+    // WRITES the empty state. Only a room emptied by a failed load over a
+    // non-empty/corrupt file on disk is protected.
     //
     // The disk trigger is "disk has bytes," not "disk parses to >=1 cell." The
     // most common reason a streaming load fails is that the file is corrupt
@@ -288,15 +281,15 @@ pub(crate) async fn save_notebook_to_disk(
     // clobbered by a crashed prior write, and well-formed populated notebooks
     // alike. The only cost is that an unparseable file is never auto-overwritten
     // by an empty doc, which is the safe direction for a data-loss guard.
-    if target_path.is_none() && cell_count == 0 && !room.ever_ready() {
+    if target_path.is_none() && cell_count == 0 && room.load_failed() {
         let disk_has_content = existing_raw
             .as_ref()
             .is_some_and(|bytes| bytes.iter().any(|b| !b.is_ascii_whitespace()));
         if disk_has_content {
             warn!(
                 "[notebook-sync] Skipping save of empty doc over existing on-disk content for \
-                 {:?} (room never ready, likely a failed initial load); preserving file. Save As \
-                 to a new path still writes.",
+                 {:?} (room emptied by a failed load); preserving file. Save As to a new path \
+                 still writes.",
                 notebook_path
             );
             return Ok(notebook_path.to_string_lossy().to_string());
@@ -340,10 +333,6 @@ pub(crate) async fn save_notebook_to_disk(
                 }
                 *room.persistence.last_save_sources.write().await = saved;
             }
-            // A no-op save still means the room's content matches disk — a good
-            // persisted state — so latch ready here too (the post-write
-            // mark_ready below is not reached on this early return).
-            room.mark_ready();
             return Ok(notebook_path.to_string_lossy().to_string());
         }
     }
@@ -370,16 +359,6 @@ pub(crate) async fn save_notebook_to_disk(
                 _ => SaveError::Retryable(msg),
             }
         })?;
-
-    // A completed write means this room now has a persisted good state on disk,
-    // so latch it ready (monotonic). This covers the case where an empty
-    // notebook is explicitly saved/Save-As'd to a path before it ever held a
-    // cell: without this, a later autosave of a legitimately-empty edit
-    // (e.g. metadata/dependency change) would have cell_count == 0 and
-    // ever_ready == false and be mistaken for a failed-load empty by the
-    // zeroing guard above. A failed-load room never reaches this point — the
-    // guard returns early before any write.
-    room.mark_ready();
 
     // Update last_self_write timestamp so the file watcher skips our own write.
     // Applies to all rooms (including ephemeral that were just promoted to
