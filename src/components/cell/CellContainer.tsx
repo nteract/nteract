@@ -160,9 +160,11 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 )}
               />
               <div
+                data-slot="cell-code-content"
                 className={cn(
-                  "min-w-0 flex-1 pt-1.5 pr-3",
+                  "min-w-0 flex-1 pt-1.5",
                   cellContentColumnInset,
+                  rightGutterContent ? "pr-14" : "pr-3",
                   hasOutput && !hideOutput ? "pb-1.5" : "pb-3",
                 )}
               >
@@ -181,9 +183,11 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   className={cn("w-1 transition-colors duration-150", outputRibbonColor)}
                 />
                 <div
+                  data-slot="cell-output-content"
                   className={cn(
                     "min-w-0 flex-1 pt-1 pb-2 transition-opacity duration-150",
                     cellOutputRowInset,
+                    outputRightGutterContent ? "pr-14" : "pr-3",
                     !outputFocused &&
                       !isFocused &&
                       !isPreviousCellFromFocused &&
@@ -217,7 +221,14 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className={cn("min-w-0 flex-1 pt-1.5 pb-3 pr-3", cellContentColumnInset)}>
+              <div
+                data-slot="cell-code-content"
+                className={cn(
+                  "min-w-0 flex-1 pt-1.5 pb-3",
+                  cellContentColumnInset,
+                  rightGutterContent ? "pr-14" : "pr-3",
+                )}
+              >
                 {children}
               </div>
               <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>

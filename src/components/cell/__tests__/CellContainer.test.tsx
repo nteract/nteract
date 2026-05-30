@@ -15,8 +15,27 @@ describe("CellContainer", () => {
     );
 
     const overlay = container.querySelector('[data-slot="cell-action-overlay"]');
+    const codeContent = container.querySelector('[data-slot="cell-code-content"]');
     expect(overlay).toHaveClass("opacity-100");
     expect(overlay).toHaveClass("pointer-events-auto");
+    expect(codeContent).toHaveClass("pr-14");
+  });
+
+  it("reserves output row space for output edge controls", () => {
+    const { container } = render(
+      <CellContainer
+        id="output-cell"
+        cellType="code"
+        isFocused
+        codeContent={<div>source</div>}
+        outputContent={<div>long output</div>}
+        outputRightGutterContent={<button type="button">Hide output</button>}
+      />,
+    );
+
+    const outputContent = container.querySelector('[data-slot="cell-output-content"]');
+
+    expect(outputContent).toHaveClass("pr-14");
   });
 
   it("keeps right edge controls hidden until hover or focus for unfocused cells", () => {
