@@ -259,10 +259,16 @@ pub(crate) async fn save_notebook_to_disk(
     // destroy the user's notebook. Skip the write when the in-memory doc has 0
     // cells, the room has never been ready, and a non-empty file already exists
     // on disk; return Ok so the autosave debouncer keeps running (Unrecoverable
-    // would disable it). An explicit user save (`target_path = Some`) is a
-    // deliberate action and bypasses this. A genuinely empty doc over an
-    // empty/absent file still round-trips, and a brand-new untitled notebook
-    // has no existing file to protect.
+    // would disable it). This keys on `target_path = None`, which is the
+    // automatic autosave/teardown path — but note an explicit in-place Save
+    // (Cmd+S / SDK `save()`) ALSO passes `None`; only Save As passes `Some`. So
+    // an explicit in-place Save of a never-ready empty room is skipped here too:
+    // the file is preserved (no data loss), but the save reports success without
+    // writing. Distinguishing autosave from explicit in-place Save, and
+    // surfacing the failed load to the client instead of a silent success, is
+    // deferred to the honest-failure-messaging work (Step 1). A genuinely empty
+    // doc over an empty/absent file still round-trips, and a brand-new untitled
+    // notebook has no existing file to protect.
     //
     // `!room.ever_ready()` is what separates a failed load from a legitimate
     // emptying. `ever_ready` is a set-once latch (never cleared) flipped true
@@ -288,9 +294,9 @@ pub(crate) async fn save_notebook_to_disk(
             .is_some_and(|bytes| bytes.iter().any(|b| !b.is_ascii_whitespace()));
         if disk_has_content {
             warn!(
-                "[notebook-sync] Skipping autosave of empty doc over existing on-disk content for \
-                 {:?} (room never ready, likely a failed initial load); preserving file. Explicit \
-                 save still permitted.",
+                "[notebook-sync] Skipping save of empty doc over existing on-disk content for \
+                 {:?} (room never ready, likely a failed initial load); preserving file. Save As \
+                 to a new path still writes.",
                 notebook_path
             );
             return Ok(notebook_path.to_string_lossy().to_string());
@@ -334,6 +340,10 @@ pub(crate) async fn save_notebook_to_disk(
                 }
                 *room.persistence.last_save_sources.write().await = saved;
             }
+            // A no-op save still means the room's content matches disk — a good
+            // persisted state — so latch ready here too (the post-write
+            // mark_ready below is not reached on this early return).
+            room.mark_ready();
             return Ok(notebook_path.to_string_lossy().to_string());
         }
     }
