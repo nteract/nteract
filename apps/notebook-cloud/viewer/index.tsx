@@ -27,15 +27,15 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import {
-  ReadOnlyNotebook,
-  type ReadOnlyNotebookCellData,
-} from "@/components/cell/ReadOnlyNotebook";
+import { ReadOnlyNotebook } from "@/components/cell/ReadOnlyNotebook";
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
-import { NotebookDocumentShell } from "@/components/notebook-shell";
+import {
+  NotebookDocumentShell,
+  notebookViewCellsToReadOnlyCells,
+} from "@/components/notebook-shell";
 import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -1063,18 +1063,7 @@ function NotebookViewer({
   ]);
 
   const readOnlyCells = useMemo(
-    () =>
-      cells.map(
-        (cell): ReadOnlyNotebookCellData => ({
-          id: cell.id,
-          cellType: cell.cellType,
-          source: cell.source,
-          language: cloudSourceLanguage(cell.language),
-          outputs: cell.outputs,
-          executionId: cell.executionId,
-          executionCount: cell.executionCount,
-        }),
-      ),
+    () => notebookViewCellsToReadOnlyCells(cells, cloudSourceLanguage),
     [cells],
   );
   const codeCellCount = useMemo(
