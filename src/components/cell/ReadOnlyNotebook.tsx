@@ -27,6 +27,8 @@ export interface ReadOnlyNotebookProps {
   displayMode?: "notebook" | "report";
   showCode?: boolean;
   focusOutputs?: boolean;
+  deferIsolatedFrameUntilVisible?: boolean;
+  deferredIsolatedFrameRootMargin?: string;
   className?: string;
   cellClassName?: string;
   sourceClassName?: string;
@@ -46,6 +48,8 @@ export function ReadOnlyNotebook({
   displayMode = "notebook",
   showCode = true,
   focusOutputs = false,
+  deferIsolatedFrameUntilVisible,
+  deferredIsolatedFrameRootMargin,
   className,
   cellClassName,
   sourceClassName,
@@ -95,6 +99,8 @@ export function ReadOnlyNotebook({
                 displayMode={displayMode}
                 showSource={displayMode === "report" ? cell.cellType !== "code" || showCode : true}
                 focusOutputs={focusOutputs}
+                deferIsolatedFrameUntilVisible={deferIsolatedFrameUntilVisible}
+                deferredIsolatedFrameRootMargin={deferredIsolatedFrameRootMargin}
                 className={cellClassName}
                 sourceClassName={sourceClassName}
                 outputClassName={outputClassName}
