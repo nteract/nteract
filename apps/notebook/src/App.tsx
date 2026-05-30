@@ -11,7 +11,6 @@ import {
   deriveEnvManager,
   deriveRuntimeKind,
   notebookCellAnchorId,
-  projectNotebookOutline,
   resolveNotebookOutlineSelection,
   type DependencyGuard,
   type GuardedNotebookProvenance,
@@ -39,9 +38,10 @@ import {
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
 import {
+  createNotebookViewModel,
   navigateNotebookOutlineItem,
   NotebookDocumentShell,
-  notebookOutlineItemsToMarkdownHeadingAnchors,
+  type NotebookViewCell,
 } from "@/components/notebook-shell";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
@@ -97,7 +97,7 @@ import { useNotebookQueueProjection } from "./lib/notebook-executions";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
-import type { JupyterOutput } from "./types";
+import type { JupyterOutput, NotebookCell } from "./types";
 
 /** MIME bundle type for output data */
 export type MimeBundle = Record<string, unknown>;
@@ -746,31 +746,30 @@ function AppContent() {
   );
   const queuedCellIds = new Set(notebookQueueProjection.queued_cell_ids);
   const sourceVersion = useSourceVersion();
-  const outlineItems = useMemo(() => {
+  const notebookViewModel = useMemo(() => {
     void cellIds;
     void sourceVersion;
     const executingCellId = notebookQueueProjection.executing_cell_id;
     const queuedOutlineCellIds = new Set(notebookQueueProjection.queued_cell_ids);
 
-    return projectNotebookOutline(getNotebookCellsSnapshot(), {
-      getStatusLabel: (cell) => {
+    return createNotebookViewModel(getNotebookCellsSnapshot().map(notebookCellToViewCell), {
+      getOutlineStatusLabel: (cell) => {
         if (cell.id === executingCellId) return "Running";
         if (queuedOutlineCellIds.has(cell.id)) return "Queued";
-        if (cell.cell_type === "code" && cell.execution_count !== null) {
-          return `In [${cell.execution_count}]`;
+        if (cell.cellType === "code" && cell.executionCount !== null) {
+          return `In [${cell.executionCount}]`;
         }
         return null;
       },
-    }).items;
+    });
   }, [
     cellIds,
     sourceVersion,
     notebookQueueProjection.executing_cell_id,
     notebookQueueProjection.queued_cell_ids,
   ]);
-  const markdownHeadingAnchorsByCellId = useMemo(() => {
-    return notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems);
-  }, [outlineItems]);
+  const outlineItems = notebookViewModel.outlineItems;
+  const markdownHeadingAnchorsByCellId = notebookViewModel.markdownHeadingAnchorsByCellId;
   const activeOutlineItemId = useActiveOutlineItemId(
     outlineItems,
     cellIds,
@@ -2113,6 +2112,24 @@ function AppContent() {
       </div>
     </PresenceProvider>
   );
+}
+
+function notebookCellToViewCell(cell: NotebookCell): NotebookViewCell {
+  return {
+    id: cell.id,
+    cellType: cell.cell_type,
+    source: cell.source,
+    language: cell.cell_type === "code" ? notebookCellLanguage(cell.metadata) : null,
+    executionId: null,
+    executionCount: cell.cell_type === "code" ? cell.execution_count : null,
+    outputs: cell.cell_type === "code" ? cell.outputs : [],
+    metadata: cell.metadata,
+  };
+}
+
+function notebookCellLanguage(metadata: Record<string, unknown>): string | null {
+  const language = metadata.language;
+  return typeof language === "string" ? language : null;
 }
 
 function packageCountLabel(count: number): string {
