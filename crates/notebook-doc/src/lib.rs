@@ -78,7 +78,6 @@ pub const SCHEMA_VERSION: u64 = 5;
 /// This actor authors only the shared root skeleton. Peers load that same
 /// history and then switch to their real actor before writing notebook-specific
 /// content. Do not reuse this actor for live peer edits.
-#[cfg(test)]
 const SCHEMA_SEED_ACTOR: &str = "nteract:notebook-schema:v5";
 // Frozen Automerge genesis document for notebook schema v5.
 // This shared root skeleton lets fresh clients create cells immediately while
@@ -2272,6 +2271,37 @@ impl NotebookDoc {
         seen.into_iter().collect()
     }
 
+    /// Return the canonical schema seed change hashes embedded in this build.
+    pub fn canonical_schema_seed_change_hashes() -> Vec<automerge::ChangeHash> {
+        static SEED_HASHES: std::sync::OnceLock<Vec<automerge::ChangeHash>> =
+            std::sync::OnceLock::new();
+
+        SEED_HASHES
+            .get_or_init(|| {
+                Self::schema_seed_doc(TextEncoding::UnicodeCodePoint)
+                    .get_changes(&[])
+                    .into_iter()
+                    .map(|change| change.hash())
+                    .collect()
+            })
+            .clone()
+    }
+
+    /// True when an actor/hash pair is the frozen schema seed change.
+    ///
+    /// Room hosts use this as a narrow authorization exception: the seed actor
+    /// is allowed to converge canonical root objects, but only for the exact
+    /// change hashes embedded in the genesis asset.
+    pub fn is_canonical_schema_seed_change(
+        actor_label: &str,
+        hash: &automerge::ChangeHash,
+    ) -> bool {
+        actor_label == SCHEMA_SEED_ACTOR
+            && Self::canonical_schema_seed_change_hashes()
+                .iter()
+                .any(|seed_hash| seed_hash == hash)
+    }
+
     #[cfg(test)]
     fn change_hashes_for_actor(&mut self, actor_label: &str) -> Vec<automerge::ChangeHash> {
         self.doc
@@ -3029,6 +3059,24 @@ mod tests {
             generated.get_metadata_snapshot(),
             frozen.get_metadata_snapshot()
         );
+    }
+
+    #[test]
+    fn canonical_schema_seed_change_is_hash_bound() {
+        let hashes = NotebookDoc::canonical_schema_seed_change_hashes();
+        assert_eq!(hashes.len(), 1);
+        assert!(NotebookDoc::is_canonical_schema_seed_change(
+            SCHEMA_SEED_ACTOR,
+            &hashes[0]
+        ));
+        assert!(!NotebookDoc::is_canonical_schema_seed_change(
+            SCHEMA_SEED_ACTOR,
+            &automerge::ChangeHash([1; 32])
+        ));
+        assert!(!NotebookDoc::is_canonical_schema_seed_change(
+            "user:dev:alice/desktop:a",
+            &hashes[0]
+        ));
     }
 
     #[test]

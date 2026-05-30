@@ -1,3 +1,4 @@
+use notebook_doc::diff::ChangeActor;
 use nteract_identity::{
     ActorLabel, AuthenticatedConnection, ConnectionScope, Credential, IdentityProvider,
     LocalPeerCredential, Operator,
@@ -61,23 +62,47 @@ impl RoomConnectionIdentity {
         labels: impl IntoIterator<Item = &'a str>,
     ) -> anyhow::Result<()> {
         for label in labels {
-            match ActorLabel::parse(label.to_string()) {
-                Ok(actor) if actor.principal() == self.auth.principal().as_str() => {}
-                Ok(actor) => anyhow::bail!(
-                    "actor principal {} is not authorized for authenticated principal {}",
-                    actor.principal(),
-                    self.auth.principal()
-                ),
-                Err(nteract_identity::AuthError::ActorLabelMissingDelimiter)
-                    if self
-                        .legacy_operator_actor_policy
-                        .allows_operator_only(&self.auth)
-                        && Operator::new(label.to_string()).is_ok() => {}
-                Err(error) => anyhow::bail!("actor label {label:?} is invalid: {error}"),
-            }
+            self.validate_actor_label(label)?;
         }
 
         Ok(())
+    }
+
+    pub(crate) fn validate_notebook_change_actors<'a>(
+        &self,
+        changes: impl IntoIterator<Item = &'a ChangeActor>,
+    ) -> anyhow::Result<()> {
+        for change in changes {
+            if notebook_doc::NotebookDoc::is_canonical_schema_seed_change(
+                &change.actor_label,
+                &change.hash,
+            ) {
+                continue;
+            }
+            self.validate_actor_label(&change.actor_label)?;
+        }
+
+        Ok(())
+    }
+
+    fn validate_actor_label(&self, label: &str) -> anyhow::Result<()> {
+        match ActorLabel::parse(label.to_string()) {
+            Ok(actor) if actor.principal() == self.auth.principal().as_str() => Ok(()),
+            Ok(actor) => anyhow::bail!(
+                "actor principal {} is not authorized for authenticated principal {}",
+                actor.principal(),
+                self.auth.principal()
+            ),
+            Err(nteract_identity::AuthError::ActorLabelMissingDelimiter)
+                if self
+                    .legacy_operator_actor_policy
+                    .allows_operator_only(&self.auth)
+                    && Operator::new(label.to_string()).is_ok() =>
+            {
+                Ok(())
+            }
+            Err(error) => anyhow::bail!("actor label {label:?} is invalid: {error}"),
+        }
     }
 }
 
@@ -216,6 +241,47 @@ mod tests {
         let error = identity
             .validate_actor_labels(["human:legacy-session"])
             .expect_err("remote rooms must reject legacy operator-only actors");
+
+        assert!(error.to_string().contains("actor label"));
+    }
+
+    #[test]
+    fn non_local_identity_allows_only_canonical_schema_seed_change() {
+        let principal =
+            nteract_identity::Principal::new("user:anaconda:550e".to_string()).expect("principal");
+        let operator = Operator::new("desktop:window-1".to_string()).expect("operator");
+        let auth = AuthenticatedConnection::new(principal, ConnectionScope::Editor);
+        let actor_label = auth.actor_label_for(operator.clone()).expect("actor label");
+        let identity = RoomConnectionIdentity {
+            auth,
+            actor_label,
+            fallback_operator: operator,
+            legacy_operator_actor_policy: LegacyOperatorActorPolicy::Reject,
+        };
+        let seed_hash = notebook_doc::NotebookDoc::canonical_schema_seed_change_hashes()
+            .into_iter()
+            .next()
+            .expect("seed hash");
+
+        identity
+            .validate_notebook_change_actors(
+                [ChangeActor {
+                    actor_label: "nteract:notebook-schema:v5".to_string(),
+                    hash: seed_hash,
+                }]
+                .iter(),
+            )
+            .expect("canonical schema seed change is allowed");
+
+        let error = identity
+            .validate_notebook_change_actors(
+                [ChangeActor {
+                    actor_label: "nteract:notebook-schema:v5".to_string(),
+                    hash: automerge::ChangeHash([1; 32]),
+                }]
+                .iter(),
+            )
+            .expect_err("spoofed seed actor must be rejected");
 
         assert!(error.to_string().contains("actor label"));
     }

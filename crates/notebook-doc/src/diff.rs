@@ -445,6 +445,31 @@ pub fn extract_change_actors(doc: &mut AutoCommit, before: &[ChangeHash]) -> Vec
     actors.into_iter().collect()
 }
 
+/// Actor label and hash for a change introduced after a baseline head set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeActor {
+    pub actor_label: String,
+    pub hash: ChangeHash,
+}
+
+/// Extract actor labels and hashes from the changes between a baseline and
+/// the document's current heads.
+///
+/// Use this when authorization needs to distinguish the canonical schema seed
+/// change from arbitrary writes under the same actor label.
+pub fn extract_change_actor_hashes(
+    doc: &mut AutoCommit,
+    before: &[ChangeHash],
+) -> Vec<ChangeActor> {
+    doc.get_changes(before)
+        .into_iter()
+        .map(|change| ChangeActor {
+            actor_label: crate::actor_label_from_id(change.actor_id()),
+            hash: change.hash(),
+        })
+        .collect()
+}
+
 /// Merge two changesets (e.g., when coalescing multiple sync frames).
 ///
 /// Used by the frontend's `scheduleMaterialize` to accumulate changes across
