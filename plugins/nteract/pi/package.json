@@ -27,7 +27,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/repl.ts"
     ]
   },
   "files": [
