@@ -36,6 +36,7 @@ import type {
 } from "../../../../src/components/isolated/frame-bridge";
 import type { IsolatedDiagnosticHandler } from "../../../../src/components/isolated/diagnostics";
 import type { NteractEmbedHostContextPatch } from "../../../../src/components/isolated/host-context";
+import type { NteractMeasureElementResult } from "../../../../src/components/isolated/rpc-methods";
 
 export {
   anyOutputNeedsIsolation,
@@ -97,6 +98,7 @@ export interface IsolatedFrameHandle {
   clear: () => void;
   search: (query: string, caseSensitive?: boolean) => void;
   searchNavigate: (matchIndex: number) => void;
+  measureElement: (anchorId: string) => Promise<NteractMeasureElementResult | null>;
   isReady: boolean;
   isIframeReady: boolean;
 }
@@ -216,6 +218,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         clear: () => setOutputs([]),
         search: () => {},
         searchNavigate: () => {},
+        measureElement: async () => ({ found: false }),
         isReady: true,
         isIframeReady: true,
       }),
