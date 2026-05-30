@@ -1,16 +1,43 @@
 "use client";
 
-import { AlertTriangle, CircleDot, PackageCheck, RotateCw, ShieldAlert } from "lucide-react";
-import { useState } from "react";
+import { NotebookHostProvider, type NotebookHost } from "@nteract/notebook-host";
+import {
+  AlertTriangle,
+  CircleDot,
+  GitBranch,
+  PackageCheck,
+  RotateCw,
+  Server,
+  ShieldAlert,
+} from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { DaemonStatusBanner } from "@/notebook-components/DaemonStatusBanner";
+import { DebugBanner } from "@/notebook-components/DebugBanner";
 import { DependencyHeader } from "@/notebook-components/DependencyHeader";
 import { EnvBuildDecisionDialog } from "@/notebook-components/EnvBuildDecisionDialog";
+import { KernelLaunchErrorBanner } from "@/notebook-components/KernelLaunchErrorBanner";
+import { PoolErrorBanner } from "@/notebook-components/PoolErrorBanner";
 import { RuntimeDecisionDialog } from "@/notebook-components/RuntimeDecisionDialog";
 import { TrustDialog } from "@/notebook-components/TrustDialog";
+import { UntrustedBanner } from "@/notebook-components/UntrustedBanner";
 
 const noop = () => {};
 const asyncNoop = async () => {};
 const asyncTrue = async () => true;
+const unlisten = () => {};
+const fixtureTransport: NotebookHost["transport"] = {
+  sendFrame: asyncNoop,
+  sendTypedRequest: async () => {
+    throw new Error("Fixture host does not send typed requests.");
+  },
+  onFrame: () => unlisten,
+  sendRequest: async () => {
+    throw new Error("Fixture host does not send requests.");
+  },
+  connected: true,
+  disconnect: noop,
+};
 
 const runtimePieces = [
   {
@@ -40,10 +67,111 @@ const runtimePieces = [
   {
     name: "KernelLaunchErrorBanner",
     source: "apps/notebook/src/components/KernelLaunchErrorBanner.tsx",
-    role: "Launch failure banner is adapter-blocked because it imports runtimed value constants.",
-    status: "adapter needed",
+    role: "Generic launch failure remediation with stderr details, copy, retry, and dismiss actions.",
+    status: "rendered",
+  },
+  {
+    name: "DaemonStatusBanner",
+    source: "apps/notebook/src/components/DaemonStatusBanner.tsx",
+    role: "Daemon progress and failure state surfaced before the notebook runtime is usable.",
+    status: "rendered",
+  },
+  {
+    name: "PoolErrorBanner",
+    source: "apps/notebook/src/components/PoolErrorBanner.tsx",
+    role: "Package manager pool warming failures with a host-provided settings action.",
+    status: "rendered",
+  },
+  {
+    name: "UntrustedBanner",
+    source: "apps/notebook/src/components/UntrustedBanner.tsx",
+    role: "Inline dependency approval gate that opens TrustDialog before kernel start.",
+    status: "rendered",
+  },
+  {
+    name: "DebugBanner",
+    source: "apps/notebook/src/components/DebugBanner.tsx",
+    role: "Development branch, commit, and daemon-version chrome for local notebook builds.",
+    status: "rendered",
   },
 ];
+
+const fixtureHost: NotebookHost = {
+  name: "elements-fixture",
+  transport: fixtureTransport,
+  daemon: {
+    isConnected: async () => true,
+    reconnect: asyncNoop,
+    getInfo: async () => null,
+    getReadyInfo: async () => null,
+  },
+  daemonEvents: {
+    onReadyLive: () => unlisten,
+    onReady: () => unlisten,
+    onProgress: () => unlisten,
+    onDisconnected: () => unlisten,
+    onUnavailable: () => unlisten,
+  },
+  relay: {
+    requiresReadyGeneration: false,
+    notifySyncReady: asyncNoop,
+  },
+  blobs: {
+    port: async () => 0,
+    resolver: async () => {
+      throw new Error("Fixture host does not resolve blobs.");
+    },
+  },
+  trust: {
+    approve: asyncNoop,
+  },
+  deps: {
+    checkTyposquats: async () => [],
+  },
+  notebook: {
+    applyPathChanged: asyncNoop,
+    getDefaultSaveDirectory: async () => "/Users/kyle/notebooks",
+    saveAs: asyncNoop,
+    openInNewWindow: asyncNoop,
+    cloneToEphemeral: async () => "fixture-room",
+  },
+  window: {
+    getTitle: async () => "fixture.ipynb",
+    setTitle: asyncNoop,
+    onFocusChange: () => unlisten,
+  },
+  system: {
+    getGitInfo: async () => null,
+    getUsername: async () => "kyle",
+  },
+  dialog: {
+    openFile: async () => null,
+    saveFile: async () => null,
+  },
+  externalLinks: {
+    open: asyncNoop,
+  },
+  updater: {
+    getSnapshot: () => ({ status: "idle", version: null, error: null }),
+    subscribe: () => unlisten,
+    check: async () => ({ status: "idle", version: null, error: null }),
+    beginUpgrade: asyncNoop,
+  },
+  settings: {
+    openWindow: asyncNoop,
+  },
+  commands: {
+    register: () => unlisten,
+    run: asyncNoop,
+    list: () => [],
+  },
+  log: {
+    debug: noop,
+    info: noop,
+    warn: noop,
+    error: noop,
+  },
+};
 
 const trustInfo = {
   status: "untrusted" as const,
@@ -74,6 +202,13 @@ const envBuildDetails = `Environment named "mathnet" was not found.
 conda env create -f /Users/kyle/notebooks/environment.yml
 
 The declared environment includes Python 3.13, pandas, scikit-learn, and matplotlib.`;
+
+const kernelLaunchError = [
+  "Kernel process exited immediately: exit status: 1",
+  "stderr tail:",
+  "/Users/kyle/notebooks/.venv/bin/python: No module named nteract_kernel_launcher",
+  "hint: rebuild the environment or verify the project interpreter.",
+].join("\n");
 
 function RuntimeDialogs() {
   const [trustOpen, setTrustOpen] = useState(false);
@@ -206,6 +341,137 @@ function DependencyHeaderFixture() {
   );
 }
 
+function RuntimeBanners() {
+  return (
+    <section
+      className="overflow-hidden rounded-lg border border-fd-border bg-fd-card"
+      data-elements-slot="runtime-banner-fixtures"
+    >
+      <div className="border-b border-fd-border p-4">
+        <h2 className="text-sm font-semibold">Runtime Banners</h2>
+        <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+          Rendered from notebook app components with inert callbacks and a fixture notebook host
+          where a settings action would otherwise reach the desktop shell.
+        </p>
+      </div>
+      <div className="divide-y divide-fd-border">
+        <BannerFixture
+          icon={<GitBranch className="size-4" aria-hidden="true" />}
+          name="DebugBanner"
+          description="Development build chrome for branch, commit, and daemon version."
+        >
+          <DebugBanner
+            branch="quod/elements-runtime-banners"
+            commit="755b6f6d"
+            description="docs catalog"
+            daemonVersion="2.5.2-nightly+755b6f6d"
+            isDevMode
+          />
+        </BannerFixture>
+
+        <BannerFixture
+          icon={<Server className="size-4" aria-hidden="true" />}
+          name="DaemonStatusBanner"
+          description="Startup progress and daemon failure states."
+        >
+          <div className="space-y-2">
+            <DaemonStatusBanner
+              status={{ status: "waiting_for_ready", attempt: 2, max_attempts: 8 }}
+            />
+            <DaemonStatusBanner
+              status={{
+                status: "failed",
+                error: "Socket connection timed out",
+                guidance: "Check that the dev daemon is running for this worktree.",
+              }}
+              onDismiss={noop}
+              onRetry={noop}
+            />
+          </div>
+        </BannerFixture>
+
+        <BannerFixture
+          icon={<AlertTriangle className="size-4" aria-hidden="true" />}
+          name="PoolErrorBanner"
+          description="Pool warming warnings for package manager defaults."
+        >
+          <NotebookHostProvider host={fixtureHost}>
+            <PoolErrorBanner
+              uvError={{
+                message: "Failed to warm uv environment",
+                failed_package: "reqeusts",
+                error_kind: "invalid_package",
+                consecutive_failures: 3,
+                retry_in_secs: 60,
+                receivedAt: Date.now(),
+              }}
+              condaError={{
+                message: "Conda solve timed out",
+                failed_package: "scikit-learn",
+                error_kind: "timeout",
+                consecutive_failures: 1,
+                retry_in_secs: 30,
+                receivedAt: Date.now(),
+              }}
+              pixiError={null}
+              onDismissUv={noop}
+              onDismissConda={noop}
+              onDismissPixi={noop}
+            />
+          </NotebookHostProvider>
+        </BannerFixture>
+
+        <BannerFixture
+          icon={<ShieldAlert className="size-4" aria-hidden="true" />}
+          name="UntrustedBanner"
+          description="Inline trust gate before dependency-backed kernel start."
+        >
+          <UntrustedBanner onReviewClick={noop} />
+        </BannerFixture>
+
+        <BannerFixture
+          icon={<AlertTriangle className="size-4" aria-hidden="true" />}
+          name="KernelLaunchErrorBanner"
+          description="Generic launch failure details after typed remediation cases are excluded."
+        >
+          <KernelLaunchErrorBanner
+            errorDetails={kernelLaunchError}
+            onRetry={noop}
+            onDismiss={noop}
+          />
+        </BannerFixture>
+      </div>
+    </section>
+  );
+}
+
+function BannerFixture({
+  children,
+  description,
+  icon,
+  name,
+}: {
+  children: ReactNode;
+  description: string;
+  icon: ReactNode;
+  name: string;
+}) {
+  return (
+    <div className="grid gap-3 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+      <div>
+        <div className="flex items-center gap-2 text-fd-muted-foreground">
+          {icon}
+          <h3 className="text-sm font-semibold text-fd-foreground">{name}</h3>
+        </div>
+        <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{description}</p>
+      </div>
+      <div className="min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function RuntimeSurfacesExample() {
   return (
     <div className="not-prose space-y-6">
@@ -224,6 +490,8 @@ export function RuntimeSurfacesExample() {
       </section>
 
       <DependencyHeaderFixture />
+
+      <RuntimeBanners />
 
       <section className="rounded-lg border border-fd-border bg-fd-card p-4">
         <div className="mb-4">

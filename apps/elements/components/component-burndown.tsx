@@ -17,8 +17,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "22",
-    detail: "used shell toolbar, runtime, theme, renderer, editor, and widget surfaces",
+    value: "27",
+    detail:
+      "used shell toolbar, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -51,7 +52,7 @@ const phases = [
     title: "Document runtime surfaces",
     state: "active",
     icon: ShieldCheck,
-    summary: "Trust, dependency headers, environment decisions, and runtime adapter blockers.",
+    summary: "Trust, dependency headers, environment decisions, daemon state, and launch banners.",
   },
 ];
 
@@ -113,11 +114,11 @@ const families = [
   },
   {
     family: "Runtime decisions",
-    source: "apps/notebook/src/components/*Dialog.tsx",
+    source: "apps/notebook/src/components/{*Dialog,*Banner,DependencyHeader}.tsx",
     target: "nteract runtime",
     status: "active",
     intent:
-      "TrustDialog, RuntimeDecisionDialog, EnvBuildDecisionDialog, and DependencyHeader now render with fixture state; runtime-value banners still need adapters.",
+      "TrustDialog, RuntimeDecisionDialog, EnvBuildDecisionDialog, DependencyHeader, and runtime banners now render with fixture state and a host adapter for settings actions.",
   },
   {
     family: "Generic primitives",
