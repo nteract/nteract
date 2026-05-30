@@ -7,6 +7,8 @@
     "jsx": "preserve",
     "paths": {
       "@/components/cell/*": ["../../src/components/cell/*"],
+      "@/bindings": ["../../src/bindings/index.ts"],
+      "@/bindings/*": ["../../src/bindings/*"],
       "@/components/editor/*": ["../../src/components/editor/*"],
       "@/components/isolated": ["./components/isolated/index.tsx"],
       "@/components/isolated/iframe-libraries": [
@@ -18,6 +20,7 @@
       "@/components/outputs/*": ["../../src/components/outputs/*"],
       "@/components/ui/*": ["../../src/components/ui/*"],
       "@/components/widgets/*": ["../../src/components/widgets/*"],
+      "@/hooks/*": ["../../src/hooks/*"],
       "@/lib/dark-mode": ["../../src/lib/dark-mode"],
       "@/lib/error-boundary": ["../../src/lib/error-boundary"],
       "@/lib/highlight-text": ["../../src/lib/highlight-text"],
