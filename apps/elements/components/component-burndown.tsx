@@ -138,7 +138,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, top-level widget-view MIME handoff, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; live JavaScript execution, nested OutputModel widgets, third-party renderer loading, live widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
+      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; live JavaScript execution, third-party renderer loading, live widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
   },
   {
     family: "Output isolation",
@@ -156,7 +156,7 @@ const families = [
     target: "nteract widgets",
     status: "active",
     intent:
-      "WidgetView, WidgetStore, AnyWidgetView, the AFM model proxy, the current built-in controls registry, form, selection, numeric, status, media, hydrated DataView image buffers, file upload, OutputModel, layout containers, controller sub-controls, ipycanvas CanvasModel command replay, unsupported fallback, and static snapshots now render from comm-state fixtures.",
+      "WidgetView, WidgetStore, AnyWidgetView, the AFM model proxy, the current built-in controls registry, form, selection, numeric, status, media, hydrated DataView image buffers, file upload, OutputModel with nested widget-view output, layout containers, controller sub-controls, ipycanvas CanvasModel command replay, unsupported fallback, and static snapshots now render from comm-state fixtures.",
   },
   {
     family: "Runtime decisions",

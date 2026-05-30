@@ -10,6 +10,8 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { MediaProvider } from "@/components/outputs/media-provider";
+import type { CustomRenderer } from "@/components/outputs/media-router";
 import { Button } from "@/components/ui/button";
 import "@/components/widgets/controls";
 import "@/components/widgets/ipycanvas";
@@ -22,6 +24,7 @@ import {
 } from "@/components/widgets/widget-store-context";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 import { WidgetView } from "@/components/widgets/widget-view";
+import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 type FixtureModel = {
   id: string;
@@ -282,7 +285,30 @@ const fixtureModels: FixtureModel[] = [
             "application/json": { collapsed: 1 },
           },
         },
+        {
+          output_type: "display_data",
+          data: {
+            [WIDGET_VIEW_MIME]: { model_id: "widget-output-nested-threshold" },
+            "text/plain": "IntSlider(value=41)",
+          },
+          metadata: {},
+        },
       ],
+    },
+  },
+  {
+    id: "widget-output-nested-threshold",
+    state: {
+      _model_name: "IntSliderModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "nested threshold",
+      value: 41,
+      min: 0,
+      max: 100,
+      step: 1,
+      readout: true,
+      orientation: "horizontal",
+      disabled: false,
     },
   },
   {
@@ -745,7 +771,7 @@ const renderedWidgets = [
   {
     name: "OutputWidget",
     source: "src/components/widgets/controls/output-widget.tsx",
-    role: "Captured outputs flow through the widget OutputModel path and MediaRouter without a live comm channel.",
+    role: "Captured outputs flow through the widget OutputModel path and nested widget-view MIME resolves through MediaProvider without a live comm channel.",
   },
   {
     name: "ipycanvas widget",
@@ -991,28 +1017,40 @@ function WidgetFixtureProvider({ children }: { children: ReactNode }) {
     [closeComm, sendCustom, sendUpdate, store],
   );
 
+  const widgetRenderers = useMemo<Record<string, CustomRenderer>>(
+    () => ({
+      [WIDGET_VIEW_MIME]: ({ data }) => {
+        const modelId = parseWidgetViewModelId(data);
+        return modelId ? <WidgetView modelId={modelId} /> : null;
+      },
+    }),
+    [],
+  );
+
   return (
     <WidgetStoreContext.Provider value={contextValue}>
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <WidgetInventory />
-          <Button size="sm" variant="outline" onClick={resetFixtures}>
-            Reset fixtures
-          </Button>
-        </div>
-        {children}
-        <div
-          className="rounded-lg border border-fd-border bg-fd-background p-3"
-          data-testid="widget-event-log"
-        >
-          <div className="text-xs font-medium uppercase text-fd-muted-foreground">Comm log</div>
-          <div className="mt-2 space-y-1 font-mono text-xs text-fd-muted-foreground">
-            {events.length > 0
-              ? events.map((event, index) => <div key={`${index}-${event}`}>{event}</div>)
-              : "idle"}
+      <MediaProvider renderers={widgetRenderers}>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <WidgetInventory />
+            <Button size="sm" variant="outline" onClick={resetFixtures}>
+              Reset fixtures
+            </Button>
+          </div>
+          {children}
+          <div
+            className="rounded-lg border border-fd-border bg-fd-background p-3"
+            data-testid="widget-event-log"
+          >
+            <div className="text-xs font-medium uppercase text-fd-muted-foreground">Comm log</div>
+            <div className="mt-2 space-y-1 font-mono text-xs text-fd-muted-foreground">
+              {events.length > 0
+                ? events.map((event, index) => <div key={`${index}-${event}`}>{event}</div>)
+                : "idle"}
+            </div>
           </div>
         </div>
-      </div>
+      </MediaProvider>
     </WidgetStoreContext.Provider>
   );
 }
@@ -1092,8 +1130,8 @@ export function WidgetSurfacesExample() {
                 <h3 className="text-sm font-semibold">Media and captured output widgets</h3>
                 <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
                   Image, audio, video, file upload, and OutputModel fixtures render through
-                  WidgetView with saved comm state, static payloads, and a hydrated DataView image
-                  value.
+                  WidgetView with saved comm state, static payloads, a hydrated DataView image
+                  value, and a nested widget-view MIME output.
                 </p>
               </div>
               <div className="space-y-4">
@@ -1188,8 +1226,8 @@ export function WidgetSurfacesExample() {
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: live blob URL hydration,
-              ControllerModel Gamepad polling, output-widget nesting, richer ipycanvas image
-              buffers, and remote anywidget ESM/CSS URLs need explicit iframe/runtime adapters
+              ControllerModel Gamepad polling, live output-widget comm replay, richer ipycanvas
+              image buffers, and remote anywidget ESM/CSS URLs need explicit iframe/runtime adapters
               before they can render here.
             </p>
           </div>

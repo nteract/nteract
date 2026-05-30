@@ -834,9 +834,9 @@ const adapterBoundaries = [
       "Required in production for HTML, markdown with raw HTML, executable JavaScript, widget bridge bootstrap, and renderer library bootstrap. This page uses deterministic fixture globals and a docs widget adapter for visible component paths.",
   },
   {
-    name: "Nested widget output",
+    name: "Output widget comm replay",
     reason:
-      "Top-level widget-view MIME now renders through OutputArea with fixture comm state. Widget views nested inside OutputModel outputs still use the current unsupported nested-widget guard until that production path exists.",
+      "Top-level widget-view MIME renders through OutputArea with fixture comm state. The widget catalog also covers OutputModel nested widget-view routing through MediaProvider; live comm replay remains outside this runtime-free page.",
   },
   {
     name: "Generated Sift WASM decode",
