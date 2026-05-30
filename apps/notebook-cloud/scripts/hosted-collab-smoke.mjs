@@ -10,6 +10,8 @@ import {
   storageStateForDevIdentity,
   viewerUrlForRoom,
 } from "./hosted-collab-smoke-env.mjs";
+import { summarizeCollabPerformanceTimings } from "./hosted-collab-smoke-performance.mjs";
+import { performanceBudgetFailures } from "./hosted-render-smoke-performance.mjs";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -20,6 +22,19 @@ const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const convergenceRounds = Number(process.env.NOTEBOOK_CLOUD_COLLAB_ROUNDS ?? 4);
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timingsMs = {};
+const performanceBudgets = {
+  collab_connected_ms: parseOptionalBudget(process.env.NOTEBOOK_CLOUD_MAX_COLLAB_CONNECTED_MS),
+  collab_editor_update_max_ms: parseOptionalBudget(
+    process.env.NOTEBOOK_CLOUD_MAX_COLLAB_EDITOR_UPDATE_MS,
+  ),
+  collab_anonymous_update_max_ms: parseOptionalBudget(
+    process.env.NOTEBOOK_CLOUD_MAX_COLLAB_ANONYMOUS_UPDATE_MS,
+  ),
+  collab_editor_convergence_max_ms: parseOptionalBudget(
+    process.env.NOTEBOOK_CLOUD_MAX_COLLAB_EDITOR_CONVERGENCE_MS,
+  ),
+  collab_total_ms: parseOptionalBudget(process.env.NOTEBOOK_CLOUD_MAX_COLLAB_TOTAL_MS),
+};
 
 const startedAt = performance.now();
 
@@ -206,6 +221,13 @@ ${bobMarker}
     assertTokenAbsentFromUrls(visitedUrls, token);
     checks.push("token_absent_from_urls");
 
+    const timingSummary = {
+      ...timingsMs,
+      total: elapsedMs(startedAt),
+    };
+    const performanceDiagnostics = summarizeCollabPerformanceTimings(timingSummary);
+    failures.push(...performanceBudgetFailures(performanceDiagnostics, performanceBudgets));
+
     if (screenshotPath) {
       await alice.page.screenshot({ path: screenshotPath, fullPage: true });
       checks.push("screenshot_saved");
@@ -224,10 +246,9 @@ ${bobMarker}
           viewerUrl,
           roomId: room.roomId,
           checks,
-          timings_ms: {
-            ...timingsMs,
-            total: elapsedMs(startedAt),
-          },
+          timings_ms: timingSummary,
+          performance: performanceDiagnostics,
+          performanceBudgets,
           screenshot: screenshotPath ?? null,
         },
         null,
@@ -498,6 +519,17 @@ async function timed(name, fn) {
 
 function elapsedMs(started) {
   return Math.max(0, Math.round((performance.now() - started) * 100) / 100);
+}
+
+function parseOptionalBudget(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const budget = Number(value);
+  if (!Number.isFinite(budget) || budget < 0) {
+    throw new Error(`Invalid performance budget ${JSON.stringify(value)}`);
+  }
+  return budget;
 }
 
 function capitalize(value) {
