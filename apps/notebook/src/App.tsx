@@ -29,6 +29,13 @@ import { type BlobUploader, WidgetUpdateManager } from "@/components/widgets/wid
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import {
+  deriveNotebookOutlineItems,
+  NotebookPackagesPanel,
+  NotebookRail,
+  type NotebookOutlineItem,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
 import { DebugBanner } from "./components/DebugBanner";
@@ -77,7 +84,7 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
-import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
+import { getNotebookCellsSnapshot, useSourceVersion } from "./lib/notebook-cells";
 import { useNotebookQueueProjection } from "./lib/notebook-executions";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
@@ -244,7 +251,14 @@ function AppContent() {
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cellIds);
 
-  const [dependencyHeaderOpen, setDependencyHeaderOpen] = useState(false);
+  const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
+  const [outlineNavigationTarget, setOutlineNavigationTarget] = useState<{
+    cellId: string;
+    requestId: number;
+  } | null>(null);
+  const outlineNavigationRequestIdRef = useRef(0);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
@@ -601,6 +615,29 @@ function AppContent() {
     notebookQueueProjection.executing_cell_id ? [notebookQueueProjection.executing_cell_id] : [],
   );
   const queuedCellIds = new Set(notebookQueueProjection.queued_cell_ids);
+  const sourceVersion = useSourceVersion();
+  const outlineItems = useMemo(() => {
+    void cellIds;
+    void sourceVersion;
+    const executingCellId = notebookQueueProjection.executing_cell_id;
+    const queuedOutlineCellIds = new Set(notebookQueueProjection.queued_cell_ids);
+
+    return deriveNotebookOutlineItems(getNotebookCellsSnapshot(), {
+      getStatusLabel: (cell) => {
+        if (cell.id === executingCellId) return "Running";
+        if (queuedOutlineCellIds.has(cell.id)) return "Queued";
+        if (cell.cell_type === "code" && cell.execution_count !== null) {
+          return `In [${cell.execution_count}]`;
+        }
+        return null;
+      },
+    });
+  }, [
+    cellIds,
+    sourceVersion,
+    notebookQueueProjection.executing_cell_id,
+    notebookQueueProjection.queued_cell_ids,
+  ]);
 
   // ── Sync transient UI state into the cell-ui-state store ────────────
   // Two-phase update for StrictMode safety:
@@ -721,6 +758,65 @@ function AppContent() {
     if (envSyncState.diff?.denoChanged) return { status: "dirty" };
     return null;
   }, [envSource, envSyncState]);
+
+  const packagesRailOpen = !railCollapsed && activeRailPanel === "packages";
+  const railPackageSummary = useMemo(() => {
+    if (runtime === "deno") {
+      return denoConfigInfo ? "Deno config" : "Deno imports";
+    }
+    if (runtime !== "python") return null;
+    if (envType === "conda") {
+      return `conda - ${packageCountLabel(condaDependencies?.dependencies.length ?? 0)}`;
+    }
+    if (envType === "pixi") {
+      const pixiCount =
+        (pixiInfo?.dependencies.length ?? 0) + (pixiInfo?.pypi_dependencies.length ?? 0);
+      return `pixi - ${packageCountLabel(pixiCount)}`;
+    }
+    return `uv - ${packageCountLabel(dependencies?.dependencies.length ?? 0)}`;
+  }, [
+    condaDependencies?.dependencies.length,
+    denoConfigInfo,
+    dependencies?.dependencies.length,
+    envType,
+    pixiInfo?.dependencies.length,
+    pixiInfo?.pypi_dependencies.length,
+    runtime,
+  ]);
+
+  useEffect(() => {
+    if (!selectedOutlineItemId) return;
+    if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {
+      setSelectedOutlineItemId(null);
+    }
+  }, [outlineItems, selectedOutlineItemId]);
+
+  const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
+    setActiveRailPanel(panelId);
+    setRailCollapsed(false);
+  }, []);
+
+  const handleTogglePackagesRail = useCallback(() => {
+    if (activeRailPanel === "packages" && !railCollapsed) {
+      setRailCollapsed(true);
+      return;
+    }
+    setActiveRailPanel("packages");
+    setRailCollapsed(false);
+  }, [activeRailPanel, railCollapsed]);
+
+  const handleSelectOutlineItem = useCallback(
+    (item: NotebookOutlineItem) => {
+      setSelectedOutlineItemId(item.id);
+      setFocusedCellId(item.cellId);
+      outlineNavigationRequestIdRef.current += 1;
+      setOutlineNavigationTarget({
+        cellId: item.cellId,
+        requestId: outlineNavigationRequestIdRef.current,
+      });
+    },
+    [setFocusedCellId],
+  );
 
   const setBlockedTrustAction = useCallback((action: PendingTrustAction | null) => {
     pendingTrustActionRef.current = action;
@@ -1664,120 +1760,13 @@ function AppContent() {
           focusedCellId={focusedCellId}
           lastCellId={cellIds.length > 0 ? cellIds[cellIds.length - 1] : null}
           onAddCell={handleAddCell}
-          onToggleDependencies={() => setDependencyHeaderOpen((prev) => !prev)}
-          isDepsOpen={dependencyHeaderOpen}
+          onToggleDependencies={handleTogglePackagesRail}
+          isDepsOpen={packagesRailOpen}
           depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
         />
-        {/* Dual-dependency choice: both UV and conda deps exist, let user pick */}
-        {dependencyHeaderOpen &&
-          runtime === "python" &&
-          hasUvDependencies &&
-          hasCondaDependencies && (
-            <div className="border-b bg-amber-50/50 dark:bg-amber-950/20 px-3 py-2">
-              <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
-                <span className="shrink-0">&#9888;</span>
-                <span className="font-medium">
-                  This notebook has both uv and conda dependencies.
-                </span>
-                <div className="flex gap-1.5 ml-auto shrink-0">
-                  <button
-                    disabled={clearingDeps}
-                    onClick={async () => {
-                      setClearingDeps(true);
-                      try {
-                        await clearAllCondaDeps();
-                      } finally {
-                        setClearingDeps(false);
-                      }
-                    }}
-                    className="px-2 py-0.5 text-xs font-medium rounded bg-fuchsia-100 dark:bg-fuchsia-900/40 hover:bg-fuchsia-200 dark:hover:bg-fuchsia-800/50 text-fuchsia-800 dark:text-fuchsia-300 border border-fuchsia-300 dark:border-fuchsia-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Use uv ({dependencies?.dependencies?.length ?? 0}{" "}
-                    {(dependencies?.dependencies?.length ?? 0) === 1 ? "package" : "packages"})
-                  </button>
-                  <button
-                    disabled={clearingDeps}
-                    onClick={async () => {
-                      setClearingDeps(true);
-                      try {
-                        await clearAllUvDeps();
-                      } finally {
-                        setClearingDeps(false);
-                      }
-                    }}
-                    className="px-2 py-0.5 text-xs font-medium rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Use conda ({condaDependencies?.dependencies?.length ?? 0}{" "}
-                    {(condaDependencies?.dependencies?.length ?? 0) === 1 ? "package" : "packages"})
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        {dependencyHeaderOpen && runtime === "deno" && (
-          <DenoDependencyHeader
-            denoConfigInfo={denoConfigInfo}
-            flexibleNpmImports={flexibleNpmImports}
-            onSetFlexibleNpmImports={setFlexibleNpmImports}
-            syncState={denoDerivedSyncState}
-            syncing={kernelStatus === KERNEL_STATUS.STARTING}
-            onSyncNow={handleSyncDeps}
-            justSynced={justSynced}
-          />
-        )}
-        {dependencyHeaderOpen && runtime === "python" && envType === "conda" && (
-          <CondaDependencyHeader
-            dependencies={condaDependencies?.dependencies ?? []}
-            channels={condaDependencies?.channels ?? []}
-            python={condaDependencies?.python ?? null}
-            loading={condaDepsLoading}
-            syncState={condaDerivedSyncState}
-            onAdd={addCondaDependency}
-            onRemove={removeCondaDependency}
-            onSetChannels={setCondaChannels}
-            onSetPython={setCondaPython}
-            onSyncNow={handleSyncDeps}
-            onRetryLaunch={tryStartKernel}
-            envProgress={envProgress.envType === "conda" ? envProgress : null}
-            onResetProgress={envProgress.reset}
-            environmentYmlInfo={environmentYmlInfo}
-            environmentYmlDeps={environmentYmlDeps}
-            justSynced={justSynced}
-          />
-        )}
-        {dependencyHeaderOpen && runtime === "python" && envType === "pixi" && (
-          <PixiDependencyHeader
-            pixiInfo={pixiInfo}
-            envSource={envSource}
-            syncState={pixiDerivedSyncState}
-            onSyncNow={handleSyncDeps}
-            justSynced={justSynced}
-          />
-        )}
-        {dependencyHeaderOpen &&
-          runtime === "python" &&
-          envType !== "conda" &&
-          envType !== "pixi" && (
-            <DependencyHeader
-              dependencies={dependencies?.dependencies ?? []}
-              requiresPython={dependencies?.requires_python ?? null}
-              loading={depsLoading}
-              onAdd={addDependency}
-              onRemove={removeDependency}
-              onSetRequiresPython={setRequiresPython}
-              syncState={uvDerivedSyncState}
-              onSyncNow={handleSyncDeps}
-              pyprojectInfo={pyprojectInfo}
-              pyprojectDeps={pyprojectDeps}
-              onImportFromPyproject={importFromPyproject}
-              onUseProjectEnv={handleStartKernelWithPyproject}
-              isUsingProjectEnv={envSource === "uv:pyproject"}
-              justSynced={justSynced}
-            />
-          )}
         {globalFind.isOpen && (
           <GlobalFindBar
             query={globalFind.query}
@@ -1812,32 +1801,167 @@ function AppContent() {
           onCreate={handleEnvBuildCreate}
           creating={envBuildCreating}
         />
-        <CrdtBridgeProvider
-          getHandle={getHandle}
-          onSyncNeeded={triggerSync}
-          localActor={localActor}
-        >
-          <NotebookView
-            cellIds={cellIds}
-            isLoading={isLoading}
-            canAcceptCellMutations={canAcceptCellMutations}
-            loadError={loadError}
-            runtime={runtime}
-            sessionRuntimeState={sessionStatus?.runtime_state ?? null}
-            onFocusCell={setFocusedCellId}
-            onExecuteCell={handleExecuteCell}
-            onInterruptKernel={interruptKernel}
-            onDeleteCell={deleteCell}
-            onAddCell={handleAddCell}
-            onMoveCell={moveCell}
-            onReportOutputMatchCount={globalFind.reportOutputMatchCount}
-            onSetCellSourceHidden={setCellSourceHidden}
-            onSetCellOutputsHidden={setCellOutputsHidden}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <NotebookRail
+            activePanelId={activeRailPanel}
+            collapsed={railCollapsed}
+            outlineItems={outlineItems}
+            selectedOutlineItemId={selectedOutlineItemId}
+            selectedOutlineCellId={focusedCellId}
+            packagesSummary={railPackageSummary}
+            onActivePanelChange={handleRailPanelChange}
+            onCollapsedChange={setRailCollapsed}
+            onSelectOutlineItem={handleSelectOutlineItem}
+            packagesPanel={
+              <NotebookPackagesPanel>
+                {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+                    <div className="mb-2 flex items-center gap-2 font-medium">
+                      <span className="shrink-0">&#9888;</span>
+                      <span>This notebook has both uv and conda dependencies.</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        disabled={clearingDeps}
+                        onClick={async () => {
+                          setClearingDeps(true);
+                          try {
+                            await clearAllCondaDeps();
+                          } finally {
+                            setClearingDeps(false);
+                          }
+                        }}
+                        className="rounded border border-fuchsia-300 bg-fuchsia-100 px-2 py-0.5 text-xs font-medium text-fuchsia-800 transition-colors hover:bg-fuchsia-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300 dark:hover:bg-fuchsia-800/50"
+                      >
+                        Use uv ({dependencies?.dependencies?.length ?? 0}{" "}
+                        {(dependencies?.dependencies?.length ?? 0) === 1 ? "package" : "packages"})
+                      </button>
+                      <button
+                        disabled={clearingDeps}
+                        onClick={async () => {
+                          setClearingDeps(true);
+                          try {
+                            await clearAllUvDeps();
+                          } finally {
+                            setClearingDeps(false);
+                          }
+                        }}
+                        className="rounded border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 dark:hover:bg-emerald-800/50"
+                      >
+                        Use conda ({condaDependencies?.dependencies?.length ?? 0}{" "}
+                        {(condaDependencies?.dependencies?.length ?? 0) === 1
+                          ? "package"
+                          : "packages"}
+                        )
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {runtime === "deno" && (
+                  <DenoDependencyHeader
+                    denoConfigInfo={denoConfigInfo}
+                    flexibleNpmImports={flexibleNpmImports}
+                    onSetFlexibleNpmImports={setFlexibleNpmImports}
+                    syncState={denoDerivedSyncState}
+                    syncing={kernelStatus === KERNEL_STATUS.STARTING}
+                    onSyncNow={handleSyncDeps}
+                    justSynced={justSynced}
+                  />
+                )}
+                {runtime === "python" && envType === "conda" && (
+                  <CondaDependencyHeader
+                    dependencies={condaDependencies?.dependencies ?? []}
+                    channels={condaDependencies?.channels ?? []}
+                    python={condaDependencies?.python ?? null}
+                    loading={condaDepsLoading}
+                    syncState={condaDerivedSyncState}
+                    onAdd={addCondaDependency}
+                    onRemove={removeCondaDependency}
+                    onSetChannels={setCondaChannels}
+                    onSetPython={setCondaPython}
+                    onSyncNow={handleSyncDeps}
+                    onRetryLaunch={tryStartKernel}
+                    envProgress={envProgress.envType === "conda" ? envProgress : null}
+                    onResetProgress={envProgress.reset}
+                    environmentYmlInfo={environmentYmlInfo}
+                    environmentYmlDeps={environmentYmlDeps}
+                    justSynced={justSynced}
+                  />
+                )}
+                {runtime === "python" && envType === "pixi" && (
+                  <PixiDependencyHeader
+                    pixiInfo={pixiInfo}
+                    envSource={envSource}
+                    syncState={pixiDerivedSyncState}
+                    onSyncNow={handleSyncDeps}
+                    justSynced={justSynced}
+                  />
+                )}
+                {runtime === "python" && envType !== "conda" && envType !== "pixi" && (
+                  <DependencyHeader
+                    dependencies={dependencies?.dependencies ?? []}
+                    requiresPython={dependencies?.requires_python ?? null}
+                    loading={depsLoading}
+                    onAdd={addDependency}
+                    onRemove={removeDependency}
+                    onSetRequiresPython={setRequiresPython}
+                    syncState={uvDerivedSyncState}
+                    onSyncNow={handleSyncDeps}
+                    pyprojectInfo={pyprojectInfo}
+                    pyprojectDeps={pyprojectDeps}
+                    onImportFromPyproject={importFromPyproject}
+                    onUseProjectEnv={handleStartKernelWithPyproject}
+                    isUsingProjectEnv={envSource === "uv:pyproject"}
+                    justSynced={justSynced}
+                  />
+                )}
+                {runtime === null && (
+                  <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                    Runtime metadata is still loading.
+                  </div>
+                )}
+                {runtime !== null && runtime !== "python" && runtime !== "deno" && (
+                  <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                    No package controls for this runtime.
+                  </div>
+                )}
+              </NotebookPackagesPanel>
+            }
           />
-        </CrdtBridgeProvider>
+          <div className="flex min-w-0 flex-1">
+            <CrdtBridgeProvider
+              getHandle={getHandle}
+              onSyncNeeded={triggerSync}
+              localActor={localActor}
+            >
+              <NotebookView
+                cellIds={cellIds}
+                isLoading={isLoading}
+                canAcceptCellMutations={canAcceptCellMutations}
+                loadError={loadError}
+                runtime={runtime}
+                sessionRuntimeState={sessionStatus?.runtime_state ?? null}
+                scrollTarget={outlineNavigationTarget}
+                onFocusCell={setFocusedCellId}
+                onExecuteCell={handleExecuteCell}
+                onInterruptKernel={interruptKernel}
+                onDeleteCell={deleteCell}
+                onAddCell={handleAddCell}
+                onMoveCell={moveCell}
+                onReportOutputMatchCount={globalFind.reportOutputMatchCount}
+                onSetCellSourceHidden={setCellSourceHidden}
+                onSetCellOutputsHidden={setCellOutputsHidden}
+              />
+            </CrdtBridgeProvider>
+          </div>
+        </div>
       </div>
     </PresenceProvider>
   );
+}
+
+function packageCountLabel(count: number): string {
+  return count === 1 ? "1 package" : `${count} packages`;
 }
 
 function AppErrorFallback(_error: Error, resetErrorBoundary: () => void) {

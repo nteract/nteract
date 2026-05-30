@@ -48,6 +48,7 @@ interface NotebookViewProps {
   loadError?: string | null;
   runtime?: Runtime | null;
   sessionRuntimeState?: string | null;
+  scrollTarget?: { cellId: string; requestId: number } | null;
   onFocusCell: (cellId: string) => void;
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
@@ -358,6 +359,7 @@ function NotebookViewContent({
   loadError = null,
   runtime = "python",
   sessionRuntimeState = null,
+  scrollTarget = null,
   onFocusCell,
   onExecuteCell,
   onInterruptKernel,
@@ -671,6 +673,17 @@ function NotebookViewContent({
       cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }, [searchCurrentMatch]);
+
+  // External notebook navigation, currently driven by the left rail outline.
+  useEffect(() => {
+    if (!scrollTarget) return;
+    const cellEl = containerRef.current?.querySelector(
+      `[data-cell-id="${CSS.escape(scrollTarget.cellId)}"]`,
+    );
+    if (cellEl) {
+      cellEl.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+  }, [scrollTarget]);
 
   // ── Auto-seed first cell for empty notebooks ───────────────────────
   // For new notebooks the daemon creates zero cells. Once sync completes
