@@ -16,6 +16,46 @@ body {
   margin: 0;
 }
 
+.cloud-notebook-shell {
+  display: flex;
+  min-height: 100vh;
+  min-width: 0;
+  background: var(--background);
+}
+
+.cloud-notebook-rail {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  height: 100vh;
+}
+
+.cloud-notebook-stage {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  padding-block: 1.5rem;
+}
+
+.cloud-notebook-stage > .cloud-state {
+  margin-inline: clamp(0.75rem, 4vw, 2rem) clamp(0.5rem, 2vw, 1rem);
+}
+
+.cloud-rail-panel-note {
+  border: 1px dashed color-mix(in srgb, var(--foreground) 16%, transparent);
+  border-radius: 8px;
+  padding: 0.75rem;
+  color: color-mix(in srgb, var(--foreground) 64%, transparent);
+  background: color-mix(in srgb, var(--background) 96%, var(--foreground) 4%);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.cloud-rail-panel-note p {
+  margin: 0;
+}
+
 .cloud-state {
   border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
   border-radius: 8px;
@@ -710,6 +750,25 @@ body {
 
   .cloud-share-badge {
     justify-self: end;
+  }
+}
+
+@media (max-width: 820px) {
+  .cloud-notebook-shell {
+    flex-direction: column;
+  }
+
+  .cloud-notebook-rail {
+    position: relative;
+    height: auto;
+    max-height: 45vh;
+  }
+
+  .cloud-notebook-rail [data-slot="notebook-rail-panel"] {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    flex: 1;
   }
 }
 
