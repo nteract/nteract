@@ -1402,6 +1402,15 @@ pub(crate) fn spawn_notebook_file_watcher(
                             };
                             let external_metadata = parse_metadata_from_ipynb(&json);
 
+                            // Reaching here means a valid notebook was just read
+                            // from disk and is being reconciled into this resident
+                            // room — a recovery path that does NOT go through
+                            // `try_start_loading`. Clear any failed-load hazard
+                            // flag so a later legitimate empty save is not blocked
+                            // by the zeroing guard (the file watcher is the other
+                            // recovery path besides a load retry).
+                            room.clear_load_failed();
+
                             // Check if kernel is running (to preserve outputs)
                             let has_kernel = room.has_kernel().await;
 
