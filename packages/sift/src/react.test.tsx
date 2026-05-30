@@ -215,6 +215,7 @@ describe("SiftTable", () => {
   it("loads Arrow stream manifest chunks through the appendable WASM store", async () => {
     vi.useRealTimers();
     const chunkBytes = new Uint8Array([1, 2, 3, 4]);
+    const milestones: string[] = [];
     vi.stubGlobal("fetch", () =>
       Promise.resolve({
         ok: true,
@@ -231,6 +232,7 @@ describe("SiftTable", () => {
             complete: true,
           },
         }}
+        onLoadMilestone={(milestone) => milestones.push(milestone.phase)}
       />,
     );
 
@@ -244,6 +246,16 @@ describe("SiftTable", () => {
     expect(predicateModule.append_arrow_stream_chunk.mock.calls[0][0]).toBe(9);
     expect(Array.from(predicateModule.append_arrow_stream_chunk.mock.calls[0][1])).toEqual([
       1, 2, 3, 4,
+    ]);
+    expect(milestones).toEqual([
+      "load-start",
+      "wasm-ready",
+      "first-chunk-fetched",
+      "first-chunk-appended",
+      "table-data-created",
+      "summaries-ready",
+      "engine-mounted",
+      "streaming-complete",
     ]);
 
     unmount();

@@ -14,6 +14,7 @@ import {
   SiftFocusStatus,
   SiftTable,
   type ArrowStreamManifest,
+  type SiftLoadMilestone,
   type SiftSource,
   type TableEngineState,
 } from "@nteract/sift";
@@ -243,6 +244,16 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
   const maxTableHeightRef = useRef(maxTableHeight);
   maxTableHeightRef.current = maxTableHeight;
 
+  const handleLoadMilestone = useCallback(
+    (milestone: SiftLoadMilestone) => {
+      console.debug("[isolated-renderer] sift-load-milestone", {
+        ...milestone,
+        mimeType,
+      });
+    },
+    [mimeType],
+  );
+
   useEffect(() => {
     // New url (cell re-executed) — re-evaluate sizing on the next state.
     lastTotalRef.current = null;
@@ -280,6 +291,7 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
       <SiftTable
         source={source}
         onChange={handleChange}
+        onLoadMilestone={handleLoadMilestone}
         footerControl={
           <div className="sift-footer-control">{interactionActive && <SiftFocusStatus />}</div>
         }
