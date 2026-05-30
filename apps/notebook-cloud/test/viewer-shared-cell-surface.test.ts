@@ -41,7 +41,7 @@ test("cloud markdown editor remounts with latest source state", () => {
 });
 
 test("cloud live notebook passes renderer policy into editable markdown cells", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourcePath = new URL("../viewer/cloud-live-notebook.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NotebookCellList/);

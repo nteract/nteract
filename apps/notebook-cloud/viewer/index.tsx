@@ -28,15 +28,10 @@ import {
   UsersRound,
 } from "lucide-react";
 import { ReadOnlyNotebook } from "@/components/cell/ReadOnlyNotebook";
-import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
-import {
-  createNotebookViewModel,
-  NotebookCellList,
-  NotebookDocumentShell,
-} from "@/components/notebook-shell";
+import { createNotebookViewModel, NotebookDocumentShell } from "@/components/notebook-shell";
 import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -46,8 +41,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { isTextAttributionEvent, type NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
-import { EditableMarkdownCell, type CloudTextAttributionQueue } from "./editable-markdown-cell";
-import type { RemoteCellPresence } from "@/components/editor/presence-state";
+import type { CloudTextAttributionQueue } from "./editable-markdown-cell";
 import {
   clearCloudPrototypeDevAuth,
   cloudNotebookSignInCopy,
@@ -67,6 +61,7 @@ import {
 } from "./collaborator-auth";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
+import { CloudLiveNotebook } from "./cloud-live-notebook";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
 import {
   beginOidcLogin,
@@ -77,11 +72,7 @@ import {
   type CloudOidcAuthConfig,
 } from "./oidc-auth";
 import type { ConnectionScope } from "../src/auth-shared";
-import {
-  CloudLivePresenceStore,
-  emptyCloudLivePresenceSnapshot,
-  type CloudLivePresenceSnapshot,
-} from "./live-presence";
+import { CloudLivePresenceStore, emptyCloudLivePresenceSnapshot } from "./live-presence";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
@@ -1978,96 +1969,6 @@ function findCellElement(cellId: string): HTMLElement | null {
   return null;
 }
 
-function CloudLiveNotebook({
-  cells,
-  priority,
-  hostContext,
-  showCode,
-  getHandle,
-  localActorLabel,
-  textAttributionQueue,
-  onMarkdownSourceChange,
-  onMarkdownSyncNeeded,
-  livePresence,
-  onPresenceCursor,
-  onPresenceSelection,
-  resolveTracebackExecutionTarget,
-  onNavigateToTracebackCell,
-}: {
-  cells: ResolvedCell[];
-  priority: readonly string[];
-  hostContext: NteractEmbedHostContextPatch;
-  showCode: boolean;
-  getHandle: () => CloudSyncRuntime["handle"] | null;
-  localActorLabel: string | null;
-  textAttributionQueue: CloudTextAttributionQueue;
-  livePresence: CloudLivePresenceSnapshot;
-  onMarkdownSourceChange: (cellId: string, source: string) => void;
-  onMarkdownSyncNeeded: () => void;
-  onPresenceCursor: (cellId: string, line: number, column: number) => void;
-  onPresenceSelection: (
-    cellId: string,
-    anchorLine: number,
-    anchorCol: number,
-    headLine: number,
-    headCol: number,
-  ) => void;
-  resolveTracebackExecutionTarget: (executionId: string) => TracebackCellTarget | null;
-  onNavigateToTracebackCell: (target: TracebackCellTarget) => void;
-}) {
-  return (
-    <NotebookCellList
-      cells={cells}
-      className="cloud-report-notebook"
-      slot="cloud-live-notebook"
-      renderCellError={(error, _cell, index) => (
-        <div className="cloud-state" data-kind="error">
-          Unable to render cell {index + 1}: {error.message}
-        </div>
-      )}
-      renderCell={(cell) =>
-        cell.cellType === "markdown" ? (
-          <EditableMarkdownCell
-            cell={cell}
-            className="cloud-cell cloud-editable-markdown-cell"
-            sourceClassName="cloud-source-block"
-            priority={priority}
-            hostContext={hostContext}
-            onSourceChange={onMarkdownSourceChange}
-            onSyncNeeded={onMarkdownSyncNeeded}
-            getHandle={getHandle}
-            localActorLabel={localActorLabel}
-            textAttributionQueue={textAttributionQueue}
-            remotePresence={presenceForCell(livePresence, cell.id)}
-            onPresenceCursor={onPresenceCursor}
-            onPresenceSelection={onPresenceSelection}
-          />
-        ) : (
-          <ReadOnlyNotebookCell
-            id={cell.id}
-            cellType={cell.cellType}
-            source={cell.source}
-            language={cloudSourceLanguage(cell.language)}
-            outputs={cell.outputs}
-            executionCount={cell.executionCount}
-            priority={priority}
-            hostContext={hostContext}
-            displayMode="report"
-            showSource={cell.cellType !== "code" || showCode}
-            className="cloud-cell"
-            sourceClassName="cloud-source-block"
-            outputClassName="cloud-output-block"
-            deferIsolatedFrameUntilVisible
-            deferredIsolatedFrameRootMargin="600px 0px"
-            resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-            onNavigateToTracebackCell={onNavigateToTracebackCell}
-          />
-        )
-      }
-    />
-  );
-}
-
 function CloudPresenceStatus({
   presence,
   connectionScope,
@@ -2096,18 +1997,6 @@ function CloudPresenceStatus({
     </div>
   );
 }
-
-function presenceForCell(
-  livePresence: CloudLivePresenceSnapshot,
-  cellId: string,
-): RemoteCellPresence {
-  return livePresence.cells.get(cellId) ?? EMPTY_REMOTE_CELL_PRESENCE;
-}
-
-const EMPTY_REMOTE_CELL_PRESENCE: RemoteCellPresence = {
-  cursors: [],
-  selections: [],
-};
 
 function appendEndpointPathSegment(endpoint: string, segment: string): string {
   const base = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
