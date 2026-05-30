@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "70+",
+    value: "80+",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, plugin renderer, editor, widget controls, widget media, and widget output surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, isolated output policy, plugin renderer, editor, widget controls, widget media, and widget output surfaces",
   },
 ];
 
@@ -41,7 +41,7 @@ const phases = [
     title: "Separate renderers",
     state: "active",
     icon: FileCode2,
-    summary: "ANSI, JSON, image, traceback, MIME priority, and isolated-renderer blockers.",
+    summary: "ANSI, JSON, image, traceback, MIME priority, frame policy, and isolated adapters.",
   },
   {
     title: "Expose notebook themes",
@@ -138,7 +138,16 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; production iframe bootstrapping, HTML/markdown isolation, third-party renderer loading, widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
+      "OutputArea lane composition, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; live JavaScript execution, third-party renderer loading, widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
+  },
+  {
+    family: "Output isolation",
+    source:
+      "src/components/isolated/{host-context,mcp-app-structured-content,output-frame-sizing,output-lane-policy}.ts + apps/elements/components/isolated/{index.tsx,frame-config-adapter.ts}",
+    target: "nteract renderers",
+    status: "active",
+    intent:
+      "Host-context theme merging, output lane routing, sizing, MCP structured output mapping, and the docs IsolatedFrame and frame-config adapters now render without booting production iframe scripts.",
   },
   {
     family: "Widgets",

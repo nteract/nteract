@@ -1,0 +1,31 @@
+---
+title: Output isolation surfaces
+description: Runtime-free frame, host-context, and MCP output mapping surfaces.
+---
+
+import { IsolatedOutputSurfacesExample } from "@/components/isolated-output-surfaces-example";
+
+Notebook output isolation is nteract-owned UI infrastructure. It decides which
+outputs stay in the notebook DOM, which move into sandboxed frames, how hosted
+output documents receive theme and asset context, and how MCP app structured
+content becomes shared output manifests.
+
+<IsolatedOutputSurfacesExample />
+
+## What is real here
+
+The page imports current helpers from `src/components/isolated/**`: output lane
+policy, frame sizing, host-context theme variables, MCP host-context conversion,
+and MCP structured content conversion. Frame document selection and sandbox
+policy use a docs-local adapter that mirrors the production helper while
+avoiding the raw `frame.html?raw` bundle. It also renders the docs-local
+`IsolatedFrame` adapter so payload shape and host context stay visible without
+booting production iframe scripts.
+
+## What stays behind adapters
+
+The production frame runtime still owns JavaScript evaluation, renderer plugin
+installation, widget comm replay, raw HTML execution, and generated Sift WASM
+asset loading. The catalog should keep those as explicit adapters until they can
+be exercised without importing desktop runtime state or executing untrusted
+output code in the docs app.

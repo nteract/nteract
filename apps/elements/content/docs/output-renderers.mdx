@@ -29,8 +29,9 @@ notebook uses before rendering.
 
 ## What still needs an adapter
 
-Production `IsolatedFrame` bootstrapping, executable JavaScript, raw HTML and
-markdown iframe rendering, live widget views, third-party renderer library
-loading, and generated Sift parquet/Arrow WASM decoding still need
-fixture-backed isolation, widget-store, or generated asset adapters before this
-docs app should own those runtime paths.
+The [output isolation surfaces](/docs/isolated-output-surfaces) page now covers
+frame policy, host-context conversion, sizing, lane routing, and MCP structured
+output mapping. Executable JavaScript, raw HTML and markdown runtime execution,
+live widget views, third-party renderer library loading, and generated Sift
+parquet/Arrow WASM decoding still need fixture-backed iframe, widget-store, or
+generated asset adapters before this docs app should own those runtime paths.

@@ -4,6 +4,7 @@ import {
   Boxes,
   Cloud,
   FileCode2,
+  Frame,
   ListChecks,
   Palette,
   PanelLeft,
@@ -50,6 +51,12 @@ const entries = [
     description: "Runtime-free fixtures for current nteract output components.",
     href: "/docs/output-renderers",
     icon: Boxes,
+  },
+  {
+    title: "Output isolation",
+    description: "Frame policy, host context, and MCP output mapping surfaces.",
+    href: "/docs/isolated-output-surfaces",
+    icon: Frame,
   },
   {
     title: "Read-only notebooks",
