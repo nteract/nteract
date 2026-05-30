@@ -1,18 +1,5 @@
-import { Check, Pencil } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type MouseEvent,
-} from "react";
-import { CellContainer } from "@/components/cell/CellContainer";
-import { OutputArea } from "@/components/cell/OutputArea";
-import type { JupyterOutput } from "@/components/cell/jupyter-output";
-import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { EditableMarkdownCell as SharedEditableMarkdownCell } from "@/components/cell/EditableMarkdownCell";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import {
   remoteCursorsExtension,
@@ -21,7 +8,6 @@ import {
 } from "@/components/editor/remote-cursors";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
-import { cn } from "@/lib/utils";
 import {
   createCrdtBridge,
   remoteChangesFromTextAttributions,
@@ -79,7 +65,6 @@ export function EditableMarkdownCell({
 }: EditableMarkdownCellProps) {
   const [editing, setEditing] = useState(cell.source.trim().length === 0);
   const editorRef = useRef<CodeMirrorEditorRef>(null);
-  const suppressNextToggleClickRef = useRef(false);
   const getHandleRef = useRef(getHandle);
   const onSourceChangeRef = useRef(onSourceChange);
   const onSyncNeededRef = useRef(onSyncNeeded);
@@ -116,63 +101,6 @@ export function EditableMarkdownCell({
     return editorExtensions;
   }, [bridge.extension, cell.id, onPresenceCursor, onPresenceSelection]);
 
-  const markdownOutput = useMemo<JupyterOutput>(
-    () => ({
-      output_id: `markdown-source:${cell.id}`,
-      output_type: "display_data",
-      data: { "text/markdown": cell.source },
-      metadata: {},
-    }),
-    [cell.id, cell.source],
-  );
-
-  const enterEditing = useCallback(() => {
-    setEditing(true);
-  }, []);
-
-  const exitEditing = useCallback(() => {
-    const currentSource = editorRef.current?.getEditor()?.state.doc.toString() ?? cell.source;
-    if (currentSource.trim().length > 0) {
-      setEditing(false);
-    }
-  }, [cell.source]);
-
-  const handleActionMouseDown = useCallback(
-    (event: MouseEvent<HTMLButtonElement>) => {
-      if (!editing) return;
-      event.preventDefault();
-      suppressNextToggleClickRef.current = true;
-      exitEditing();
-    },
-    [editing, exitEditing],
-  );
-
-  const handleActionClick = useCallback(
-    (event: MouseEvent<HTMLButtonElement>) => {
-      if (suppressNextToggleClickRef.current) {
-        suppressNextToggleClickRef.current = false;
-        event.preventDefault();
-        return;
-      }
-      if (editing) {
-        exitEditing();
-      } else {
-        enterEditing();
-      }
-    },
-    [editing, enterEditing, exitEditing],
-  );
-
-  const handlePreviewKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        event.preventDefault();
-        enterEditing();
-      }
-    },
-    [enterEditing],
-  );
-
   useLayoutEffect(() => {
     if (!textAttributionQueue) return;
 
@@ -201,14 +129,6 @@ export function EditableMarkdownCell({
   }, [cell.source, editing]);
 
   useEffect(() => {
-    if (!editing) return;
-    const frame = requestAnimationFrame(() => {
-      editorRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [editing]);
-
-  useEffect(() => {
     const view = editorRef.current?.getEditor();
     if (!view) return;
     setRemoteCursors(view, remotePresence?.cursors ?? []);
@@ -216,58 +136,22 @@ export function EditableMarkdownCell({
   }, [editing, remotePresence]);
 
   return (
-    <CellContainer
+    <SharedEditableMarkdownCell
       id={cell.id}
-      cellType="markdown"
+      source={cell.source}
+      editing={editing}
+      onEditingChange={setEditing}
+      editorRef={editorRef}
       className={className}
+      sourceClassName={sourceClassName}
+      editorClassName="cloud-markdown-editor"
+      previewClassName="cloud-markdown-preview"
+      previewOutputClassName="cloud-markdown-preview-output"
+      actionClassName="cloud-markdown-cell-action"
+      priority={priority}
+      hostContext={hostContext}
+      editorExtensions={extensions}
       presenceIndicators={<CloudMarkdownPresenceIndicators presence={remotePresence} />}
-      rightGutterContent={
-        <button
-          type="button"
-          className="cloud-markdown-cell-action"
-          aria-label={editing ? "Render markdown" : "Edit markdown"}
-          title={editing ? "Render markdown" : "Edit markdown"}
-          onMouseDown={handleActionMouseDown}
-          onClick={handleActionClick}
-        >
-          {editing ? <Check aria-hidden="true" /> : <Pencil aria-hidden="true" />}
-        </button>
-      }
-      codeContent={
-        editing ? (
-          <div className={sourceClassName} data-slot="cloud-editable-markdown-source">
-            <CodeMirrorEditor
-              ref={editorRef}
-              initialValue={cell.source}
-              language="markdown"
-              lineWrapping
-              onBlur={exitEditing}
-              extensions={extensions}
-              placeholder="Markdown"
-              className="cloud-markdown-editor min-h-[2rem]"
-            />
-          </div>
-        ) : (
-          <div
-            className={cn("cloud-markdown-preview", sourceClassName)}
-            data-slot="cloud-editable-markdown-preview"
-            role="textbox"
-            aria-readonly
-            tabIndex={0}
-            onDoubleClick={enterEditing}
-            onKeyDown={handlePreviewKeyDown}
-          >
-            <OutputArea
-              cellId={cell.id}
-              outputs={[markdownOutput]}
-              isolated="auto"
-              priority={priority}
-              hostContext={hostContext}
-              className="cloud-markdown-preview-output"
-            />
-          </div>
-        )
-      }
     />
   );
 }
