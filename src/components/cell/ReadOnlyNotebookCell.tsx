@@ -159,7 +159,6 @@ function renderReadOnlyCellSource({
         source={source}
         priority={priority}
         hostContext={hostContext}
-        layoutInset="none"
         className={cn("pl-0 pr-0", sourceClassName)}
       />
     );
@@ -219,6 +218,7 @@ function ReadOnlyMarkdownSource({
         isolated="auto"
         priority={priority}
         hostContext={hostContext}
+        layoutInset="none"
         className={className}
         onIsolatedFrameHandleChange={handleFrameHandleChange}
       />
