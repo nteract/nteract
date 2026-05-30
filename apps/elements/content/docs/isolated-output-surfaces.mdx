@@ -8,10 +8,15 @@ import { IsolatedOutputSurfacesExample } from "@/components/isolated-output-surf
 Notebook output isolation is nteract-owned UI infrastructure. It decides which
 outputs stay in the notebook DOM, which move into sandboxed frames, how hosted
 output documents receive theme and asset context, and how MCP app structured
-content becomes shared output manifests. It also documents the production hosted
-frame path added in #3142: when an MCP host advertises the daemon blob origin in
-`frameDomains`, nteract should use the daemon `/output-frame` document instead
-of relying on inline `srcdoc` inside the host CSP.
+content becomes shared output manifests. The catalog keeps that surface
+runtime-free: docs fixtures can show the same decisions, but they do not serve
+the daemon output document or execute generated renderer bundles.
+
+The key production wrinkle is the hosted frame path added in #3142. When an MCP
+host advertises the daemon blob origin in `frameDomains`, nteract uses the
+daemon `/output-frame` document instead of relying on inline `srcdoc` inside the
+host CSP. The rendered boundary map below calls out that split so future catalog
+slices keep static fixtures separate from host-gated daemon frame behavior.
 
 <IsolatedOutputSurfacesExample />
 
@@ -34,7 +39,7 @@ instead of daemon-generated artifacts.
 
 The production frame runtime still owns JavaScript evaluation, renderer plugin
 execution, widget comm replay, untrusted raw HTML execution, generated asset hash
-injection, daemon blob-route authorization, and the actual `/output-frame`
-document served from the daemon. The catalog should keep those as explicit
-adapters until they can be exercised without importing desktop runtime state or
-executing untrusted output code in the docs app.
+injection, daemon blob-route authorization, host `frameDomains` checks, and the
+actual `/output-frame` document served from the daemon. The catalog should keep
+those as explicit adapters until they can be exercised without importing desktop
+runtime state or executing untrusted output code in the docs app.

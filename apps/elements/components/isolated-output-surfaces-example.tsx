@@ -294,6 +294,37 @@ const productionOutputFrameUrl = daemonOutputFrameUrl(daemonBlobBaseUrl, {
   frameDomains: ["https://outputs.example.test", "http://localhost:*"],
 });
 
+const outputFrameBoundaryRows = [
+  {
+    surface: "Catalog static preview",
+    catalogPath: "docs IsolatedFrame adapter",
+    productionPath: "createNteractOutputEmbed iframe runtime",
+    trigger:
+      "The catalog renders payload shape in React so output examples stay deterministic and do not execute untrusted renderer code.",
+  },
+  {
+    surface: "Default frame document",
+    catalogPath: "srcdoc frame shell fixture",
+    productionPath: "desktop frame.html / nteract-frame URL",
+    trigger:
+      "Used when the app runtime owns the iframe document and the host does not provide an allowed daemon frame origin.",
+  },
+  {
+    surface: "MCP hosted frame",
+    catalogPath: "daemonOutputFrameUrl preview",
+    productionPath: "daemon /output-frame document",
+    trigger:
+      "Enabled only when hostCapabilities.sandbox.csp.frameDomains allows the daemon blob origin.",
+  },
+  {
+    surface: "Renderer plugin assets",
+    catalogPath: "docs-served renderer fixture files",
+    productionPath: "daemon renderer-plugin routes",
+    trigger:
+      "Markdown, Plotly, Sift, and other plugin renderers resolve through the same MIME metadata without fetching daemon artifacts in docs.",
+  },
+];
+
 const daemonRendererPluginLoadMimes = [
   "text/markdown",
   "application/vnd.plotly.v1+json",
@@ -545,6 +576,56 @@ export function IsolatedOutputSurfacesExample() {
             This covers MIME-to-plugin routing, output-frame CSP checks, plugin asset URLs, and the
             renderer plugin loader without daemon state or generated renderer artifacts.
           </p>
+        </div>
+        <div className="border-b border-fd-border p-4">
+          <h3 className="text-xs font-semibold uppercase text-fd-muted-foreground">
+            Output frame boundary map
+          </h3>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            The catalog can preview the same decision points, but it does not serve the daemon
+            output document. Production MCP hosts only switch to the daemon{" "}
+            <code className="rounded bg-fd-muted px-1 py-0.5">/output-frame</code> path after the
+            host advertises the daemon blob origin in{" "}
+            <code className="rounded bg-fd-muted px-1 py-0.5">frameDomains</code>.
+          </p>
+          <div className="mt-4 overflow-hidden rounded-md border border-fd-border">
+            <div className="hidden grid-cols-[170px_210px_230px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:grid">
+              <span>Surface</span>
+              <span>Catalog path</span>
+              <span>Production path</span>
+              <span>Trigger</span>
+            </div>
+            {outputFrameBoundaryRows.map((row) => (
+              <div
+                key={row.surface}
+                className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 2xl:grid-cols-[170px_210px_230px_minmax(0,1fr)] 2xl:gap-3"
+              >
+                <div>
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:hidden">
+                    Surface
+                  </div>
+                  <div className="font-semibold">{row.surface}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:hidden">
+                    Catalog path
+                  </div>
+                  <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                    {row.catalogPath}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:hidden">
+                    Production path
+                  </div>
+                  <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                    {row.productionPath}
+                  </div>
+                </div>
+                <p className="leading-5 text-fd-muted-foreground">{row.trigger}</p>
+              </div>
+            ))}
+          </div>
         </div>
         <div className="grid min-w-0 gap-4 p-4 xl:grid-cols-[0.9fr_1.1fr]">
           <div className="min-w-0 space-y-3">
