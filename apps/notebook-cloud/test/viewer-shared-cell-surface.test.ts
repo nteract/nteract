@@ -6,18 +6,24 @@ test("cloud editable markdown cells use shared cell and output rendering surface
   const sourcePath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /import \{ CellContainer \} from "@\/components\/cell\/CellContainer";/);
-  assert.match(sourceText, /import \{ OutputArea \} from "@\/components\/cell\/OutputArea";/);
-  assert.match(sourceText, /<CellContainer/);
-  assert.match(sourceText, /<OutputArea/);
-  assert.match(sourceText, /isolated="auto"/);
+  assert.match(
+    sourceText,
+    /import \{ EditableMarkdownCell as SharedEditableMarkdownCell \} from "@\/components\/cell\/EditableMarkdownCell";/,
+  );
+  assert.match(sourceText, /<SharedEditableMarkdownCell/);
   assert.match(sourceText, /priority=\{priority\}/);
   assert.match(sourceText, /hostContext=\{hostContext\}/);
-  assert.match(sourceText, /<CodeMirrorEditor/);
+  assert.match(sourceText, /editorExtensions=\{extensions\}/);
+  assert.doesNotMatch(sourceText, /from "@\/components\/cell\/CellContainer"/);
+  assert.doesNotMatch(sourceText, /from "@\/components\/cell\/OutputArea"/);
+  assert.doesNotMatch(sourceText, /from "@\/components\/editor\/codemirror-editor"/);
 });
 
 test("cloud markdown edit toggle avoids blur and stale-source races", () => {
-  const sourcePath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
+  const sourcePath = new URL(
+    "../../../src/components/cell/EditableMarkdownCell.tsx",
+    import.meta.url,
+  );
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /editorRef\.current\?\.getEditor\(\)\?\.state\.doc\.toString\(\)/);
