@@ -33,7 +33,29 @@ function formatElapsedMs(elapsedMs: number): string {
   return remainingSeconds === 0 ? `${minutes}m` : `${minutes}m ${remainingSeconds}s`;
 }
 
-function executionDetail({
+function visualExecutionDetail({
+  count,
+  elapsedMs,
+  isExecuting,
+  isQueued,
+}: {
+  count: number | null;
+  elapsedMs: number | null;
+  isExecuting: boolean;
+  isQueued: boolean;
+}): string {
+  const runPrefix = count === null ? null : `Run ${formatExecutionCount(count)}`;
+
+  if (isExecuting) return "Running";
+  if (isQueued) return "Queued";
+  if (count !== null) {
+    return elapsedMs === null ? `${runPrefix}` : `${runPrefix} · ${formatElapsedMs(elapsedMs)}`;
+  }
+
+  return "Ready";
+}
+
+function accessibleExecutionDetail({
   count,
   elapsedMs,
   isExecuting,
@@ -50,8 +72,8 @@ function executionDetail({
   if (isQueued) return "Queued";
   if (count !== null) {
     return elapsedMs === null
-      ? `${runPrefix} · completed`
-      : `${runPrefix} · completed in ${formatElapsedMs(elapsedMs)}`;
+      ? `${runPrefix} completed`
+      : `${runPrefix} completed in ${formatElapsedMs(elapsedMs)}`;
   }
 
   return "Ready";
@@ -101,8 +123,14 @@ export function CodeCellCurrentLine({
 }: CodeCellCurrentLineProps) {
   const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
   const isCompactIdle = compactIdle && state === "idle";
-  const isQuietIdle = state === "idle" && !isFocused;
-  const detailLabel = executionDetail({ count, elapsedMs, isExecuting, isQueued });
+  const isQuietResting = (state === "idle" || state === "ran") && !isFocused;
+  const detailLabel = visualExecutionDetail({ count, elapsedMs, isExecuting, isQueued });
+  const accessibleDetailLabel = accessibleExecutionDetail({
+    count,
+    elapsedMs,
+    isExecuting,
+    isQueued,
+  });
   const countLabel = executionCountLabel(count);
   const actionTitle = isExecuting
     ? submittedByActorLabel
@@ -151,7 +179,9 @@ export function CodeCellCurrentLine({
           "inline-flex size-4 shrink-0 items-center justify-center rounded-full",
           "transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-          !isFocused && state === "idle" && "opacity-55 group-hover:opacity-100",
+          !isFocused &&
+            (state === "idle" || state === "ran") &&
+            "opacity-45 group-hover:opacity-100",
           !isExecuting && state !== "queued" && "text-muted-foreground/55",
           isCompactIdle && "opacity-45 hover:opacity-100",
           state === "idle" && "hover:bg-muted hover:text-foreground",
@@ -173,11 +203,11 @@ export function CodeCellCurrentLine({
       </button>
       <span
         data-slot="code-cell-current-line-status"
-        aria-label={`${languageLabel}: ${detailLabel}`}
+        aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
         aria-live={isExecuting || isQueued ? "polite" : undefined}
         className={cn(
           "flex min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap font-medium transition-[color,opacity,max-width] duration-150",
-          isQuietIdle
+          isQuietResting
             ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-64 group-hover:opacity-100 group-focus-within:max-w-64 group-focus-within:opacity-100"
             : "max-w-64 opacity-100",
           isFocused && "text-foreground/70",
@@ -212,7 +242,19 @@ export function CodeCellCurrentLine({
       </span>
       {!isCompactIdle && (
         <>
-          {activityContent}
+          {activityContent ? (
+            <div
+              data-slot="code-cell-current-line-activity"
+              className={cn(
+                "flex min-w-0 shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-150",
+                isQuietResting
+                  ? "max-w-0 opacity-0 group-hover:max-w-24 group-hover:opacity-100 group-focus-within:max-w-24 group-focus-within:opacity-100"
+                  : "max-w-24 opacity-100",
+              )}
+            >
+              {activityContent}
+            </div>
+          ) : null}
           <div
             data-slot="code-cell-current-line-rule"
             className={cn(

@@ -222,7 +222,7 @@ describe("CodeCell output focus", () => {
     expect(getByTestId("output").getAttribute("data-focused")).toBe("true");
   });
 
-  it("labels completed execution state with readable footer language", () => {
+  it("keeps completed execution state readable but visually quiet", () => {
     mockOutputs = [];
     mockExecution = { execution_count: 12, submitted_by_actor_label: null };
 
@@ -237,10 +237,14 @@ describe("CodeCell output focus", () => {
     );
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(footer?.getAttribute("data-execution-label")).toBe("Execution 12");
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12·completed");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12");
     expect(footer?.textContent).not.toContain("In [12]");
+    expect(status).toHaveClass("max-w-0");
+    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
   });
 
   it("keeps running status active while the stop control carries danger", () => {
@@ -368,7 +372,7 @@ describe("CodeCell output focus", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     expect(queryByTestId("editor")).toBeNull();
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run4·completed");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run4");
   });
 
   it("omits output chrome for short stream output", () => {
