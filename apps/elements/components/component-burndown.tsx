@@ -17,8 +17,8 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "10",
-    detail: "used shell, runtime, theme, and renderer surfaces",
+    value: "11",
+    detail: "used shell, cell, runtime, theme, and renderer surfaces",
   },
 ];
 
@@ -76,7 +76,7 @@ const families = [
     target: "nteract cells",
     status: "active",
     intent:
-      "CellContainer and CompactExecutionButton now render from current source; unused legacy helpers have been removed instead of cataloged.",
+      "CellContainer, CompactExecutionButton, and ExecutionCount now render from current source; unused legacy helpers have been removed instead of cataloged.",
   },
   {
     family: "Editors",
