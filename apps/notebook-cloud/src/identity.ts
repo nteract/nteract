@@ -135,9 +135,12 @@ interface JwtPayload {
   email?: string;
   email_verified?: boolean;
   exp?: number;
+  family_name?: string;
+  given_name?: string;
   iss?: string;
   name?: string;
   nbf?: number;
+  preferred_username?: string;
   sub?: string;
   ver?: string;
 }
@@ -274,8 +277,10 @@ export async function authenticateOidcRequest(
 
   const url = new URL(request.url);
   const principal = `${config.principalNamespace}:${encodePrincipalComponent(subject)}`;
-  const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
+  const operator =
+    headerOrQuery(request, url, "x-operator", "operator") ?? defaultBrowserOperator(request, url);
   const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
+  const profile = profileFromOidcPayload(payload);
 
   validatePrincipal(principal);
   validateOperator(operator);
@@ -289,16 +294,34 @@ export async function authenticateOidcRequest(
       provider: "oidc" as const,
       transport: credential.transport,
       principalNamespace: config.principalNamespace,
-      ...(payload.name?.trim() || payload.email?.trim()
-        ? { displayName: payload.name?.trim() || payload.email?.trim() || undefined }
-        : {}),
-      ...(payload.email?.trim() ? { email: payload.email.trim() } : {}),
-      ...(payload.email?.trim() ? { emailVerified: payload.email_verified === true } : {}),
+      ...(profile.displayName ? { displayName: profile.displayName } : {}),
+      ...(profile.email ? { email: profile.email } : {}),
+      ...(profile.email ? { emailVerified: payload.email_verified === true } : {}),
     },
   };
   return credential.webSocketProtocol
     ? { ...identity, webSocketProtocol: credential.webSocketProtocol }
     : identity;
+}
+
+function profileFromOidcPayload(payload: JwtPayload): {
+  displayName?: string;
+  email?: string;
+} {
+  const email = payload.email?.trim() || undefined;
+  const displayName =
+    payload.name?.trim() ||
+    [payload.given_name, payload.family_name]
+      .map((part) => part?.trim())
+      .filter((part): part is string => Boolean(part))
+      .join(" ") ||
+    payload.preferred_username?.trim() ||
+    email;
+
+  return {
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
+  };
 }
 
 export async function authenticateAnacondaApiKeyRequest(
@@ -1256,6 +1279,14 @@ function decodeBase64UrlBytes(value: string): Uint8Array {
 
 function defaultOperator(): string {
   return `desktop:${crypto.randomUUID()}`;
+}
+
+function defaultBrowserOperator(request: Request, url: URL): string {
+  const session =
+    headerOrQuery(request, url, "x-viewer-session", "viewer_session") ??
+    headerOrQuery(request, url, "x-session", "session") ??
+    crypto.randomUUID();
+  return `browser:${encodePrincipalComponent(session.trim() || crypto.randomUUID())}`;
 }
 
 function timingSafeStringEqual(presented: string | undefined, expected: string): boolean {
