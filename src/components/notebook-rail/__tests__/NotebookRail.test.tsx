@@ -80,6 +80,23 @@ describe("NotebookRail", () => {
     expect(onActivePanelChange).toHaveBeenCalledWith("packages");
   });
 
+  it("exposes a stable panel slot for host shell layout adapters", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
+    ).toBeInTheDocument();
+  });
+
   it("lets the host handle anchor navigation without browser default navigation", () => {
     const onSelectOutlineItem = vi.fn();
     const onNavigateOutlineItem = vi.fn(() => true);

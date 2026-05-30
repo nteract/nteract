@@ -81,7 +81,10 @@ export function NotebookRail({
       </div>
 
       {!collapsed && (
-        <div className="flex min-h-0 w-80 max-w-[34vw] min-w-64 flex-col bg-background">
+        <div
+          className="flex min-h-0 w-80 max-w-[34vw] min-w-64 flex-col bg-background"
+          data-slot="notebook-rail-panel"
+        >
           <div className="border-b px-4 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">

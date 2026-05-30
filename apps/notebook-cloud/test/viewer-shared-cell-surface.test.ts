@@ -41,3 +41,22 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
 });
+
+test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookRail/);
+  assert.match(sourceText, /deriveCloudNotebookOutlineItems\(cells\)/);
+  assert.match(sourceText, /<NotebookRail[\s\S]*outlineItems=\{outlineItems\}/);
+  assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
+});
+
+test("cloud viewer shell keeps render endpoints out of the interactive load path", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.doesNotMatch(sourceText, /renderEndpoint/);
+  assert.doesNotMatch(sourceText, /pinnedRenderBasePath/);
+  assert.doesNotMatch(sourceText, /api\/n\/[^"`']+\/render/);
+});
