@@ -13,11 +13,34 @@ import { useEffect, type ReactNode } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { ExecutionCount } from "@/components/cell/ExecutionCount";
+import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
+import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 
 const primaryCellId = "fixture-code-cell";
+const sourceFixture = `features = orders.assign(month=orders.date.dt.month)
+model.fit(features[columns], target)
+predictions = model.predict(features_holdout)`;
+
+const outputFixtures: JupyterOutput[] = [
+  {
+    output_id: "cell-anatomy-stream",
+    output_type: "stream",
+    name: "stdout",
+    text: "training fold=01 mae=8.91\nvalidating fold=02 mae=8.42",
+  },
+  {
+    output_id: "cell-anatomy-result",
+    output_type: "execute_result",
+    execution_count: 12,
+    data: {
+      "text/plain": "MAE=8.42  MAPE=6.8%  Backtest=16 weeks",
+    },
+    metadata: {},
+  },
+];
 
 const layers = [
   {
@@ -48,13 +71,13 @@ const layers = [
     name: "CodeMirrorEditor",
     source: "src/components/editor/codemirror-editor.tsx",
     role: "Source editing, search highlighting, remote cursors, completion, and attribution.",
-    status: "adapter needed",
+    status: "rendered",
   },
   {
     name: "OutputArea",
     source: "src/components/cell/OutputArea.tsx",
     role: "Output focus, display mode controls, and frame-level output interaction.",
-    status: "adapter needed",
+    status: "rendered",
   },
 ];
 
@@ -164,7 +187,7 @@ function SourceFixture() {
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold">Code cell frame</h3>
             <p className="text-xs text-fd-muted-foreground">
-              Current CellContainer with fixture source content
+              Current CellContainer, CodeMirrorEditor, and OutputArea
             </p>
           </div>
         </div>
@@ -175,39 +198,36 @@ function SourceFixture() {
 
       <div className="mb-2 flex items-center gap-2 text-xs font-medium text-fd-muted-foreground">
         <Braces className="size-4" aria-hidden="true" />
-        Source editor fixture
+        CodeMirrorEditor
       </div>
-      <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-6 text-foreground">
-        <code>{`features = orders.assign(month=orders.date.dt.month)
-model.fit(features[columns], target)
-predictions = model.predict(features_holdout)`}</code>
-      </pre>
+      <div className="overflow-hidden rounded-md border border-border bg-background">
+        <CodeMirrorEditor
+          initialValue={sourceFixture}
+          language="python"
+          lineWrapping
+          maxHeight="190px"
+          readOnly
+        />
+      </div>
     </div>
   );
 }
 
 function OutputFixture() {
   return (
-    <div className="px-3 py-2">
+    <div className="px-3 py-3">
       <div className="mb-3 flex items-center gap-2 text-xs font-medium text-fd-muted-foreground">
         <FileText className="size-4" aria-hidden="true" />
-        OutputArea fixture
+        OutputArea
       </div>
-      <div className="rounded-md border border-border bg-background p-3">
-        <div className="grid gap-2 text-xs sm:grid-cols-3">
-          <div>
-            <div className="text-muted-foreground">MAE</div>
-            <div className="mt-1 text-sm font-semibold">8.42</div>
-          </div>
-          <div>
-            <div className="text-muted-foreground">MAPE</div>
-            <div className="mt-1 text-sm font-semibold">6.8%</div>
-          </div>
-          <div>
-            <div className="text-muted-foreground">Backtest</div>
-            <div className="mt-1 text-sm font-semibold">16 weeks</div>
-          </div>
-        </div>
+      <div className="rounded-md border border-border bg-background py-2">
+        <OutputArea
+          outputs={outputFixtures}
+          cellId={primaryCellId}
+          executionCount={12}
+          isolated={false}
+          useOutputWell={false}
+        />
       </div>
     </div>
   );
@@ -222,8 +242,8 @@ export function CellAnatomyExample() {
           <div>
             <h2 className="text-sm font-semibold">Catalog fidelity rule</h2>
             <p className="mt-1 text-xs leading-5">
-              This page renders only the cell shell pieces the notebook app imports today. Editor
-              and output regions remain fixture-backed until their runtime-free adapters exist.
+              This page renders the cell shell, editor, output, and presence pieces the notebook app
+              imports today. Runtime state is supplied as fixture props instead of hooks.
             </p>
           </div>
         </div>
