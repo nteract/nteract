@@ -40,10 +40,17 @@ const codeCell: CodeCellType = {
   metadata: {},
 };
 
+const markdownFixtureSource = [
+  "## Forecast review",
+  "",
+  "The production `MarkdownCell` owns edit/preview switching and the isolated markdown iframe.",
+  "This catalog renders the preview path through the docs `IsolatedFrame` adapter.",
+].join("\n");
+
 const markdownCell: MarkdownCellType = {
   cell_type: "markdown",
   id: "elements-full-markdown-cell",
-  source: "",
+  source: markdownFixtureSource,
   metadata: {},
 };
 
@@ -58,13 +65,6 @@ const rawCell: RawCellType = {
   },
 };
 
-const markdownFixtureSource = [
-  "## Forecast review",
-  "",
-  "The production `MarkdownCell` owns edit/preview switching and the isolated markdown iframe.",
-  "This catalog keeps it in edit mode until the isolated renderer bundle is wired as a docs adapter.",
-].join("\n");
-
 const fullCellRows = [
   {
     label: "CodeCell",
@@ -76,7 +76,7 @@ const fullCellRows = [
     label: "MarkdownCell",
     source: "apps/notebook/src/components/MarkdownCell.tsx",
     detail:
-      "Rendered in its source-editing state. Preview mode remains an explicit isolated-renderer adapter boundary.",
+      "Rendered in preview mode through the docs IsolatedFrame adapter, with the production edit button still available.",
   },
   {
     label: "RawCell",
@@ -210,8 +210,8 @@ export function FullCellSurfacesExample() {
               <h2 className="text-sm font-semibold">MarkdownCell</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              The production component is rendered in edit mode. Its preview path stays documented
-              as an isolated-renderer adapter boundary for the docs app.
+              The production component is rendered in preview mode. Its markdown output is routed
+              through the docs IsolatedFrame adapter instead of a runtime iframe bundle.
             </p>
           </div>
           <div className="grid gap-4 bg-background p-4 lg:grid-cols-[minmax(0,1fr)_280px]">
@@ -225,7 +225,7 @@ export function FullCellSurfacesExample() {
                 onInsertCellAfter={noop}
                 rightGutterContent={
                   <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[11px] font-medium text-sky-700 dark:text-sky-300">
-                    edit state
+                    preview adapter
                   </span>
                 }
               />
@@ -233,7 +233,7 @@ export function FullCellSurfacesExample() {
             <div className="rounded-lg border border-fd-border bg-fd-background p-3">
               <div className="mb-2 flex items-center gap-2 text-xs font-medium text-fd-muted-foreground">
                 <Rows3 className="size-3.5" aria-hidden="true" />
-                Preview adapter input
+                IsolatedFrame payload
               </div>
               <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fd-muted-foreground">
                 {markdownFixtureSource}
