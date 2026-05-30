@@ -18,8 +18,29 @@ function rendererPluginStub(): Plugin {
   };
 }
 
+/** Stub virtual:isolated-renderer for tests (real builds use the Vite plugin). */
+function isolatedRendererStub(): Plugin {
+  const id = "virtual:isolated-renderer";
+  const resolved = `\0${id}`;
+  return {
+    name: "isolated-renderer-stub",
+    resolveId(source) {
+      if (source === id) return resolved;
+    },
+    load(source) {
+      if (source === resolved) {
+        return 'export const rendererCode = ""; export const rendererCss = "";';
+      }
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [rawLibPlugin(path.resolve(__dirname, "./node_modules")), rendererPluginStub()],
+  plugins: [
+    rawLibPlugin(path.resolve(__dirname, "./node_modules")),
+    rendererPluginStub(),
+    isolatedRendererStub(),
+  ],
   test: {
     environment: "jsdom",
     include: [

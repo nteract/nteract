@@ -1,7 +1,11 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
 import "./style.css";
-import { App, type McpUiHostCapabilities, type McpUiHostContext } from "@modelcontextprotocol/ext-apps";
+import {
+  App,
+  type McpUiHostCapabilities,
+  type McpUiHostContext,
+} from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { NteractContent } from "./types";
 import { Cell } from "./components/cell";

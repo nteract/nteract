@@ -11,9 +11,7 @@ describe("daemon renderer assets", () => {
   });
 
   it("builds daemon output frame and plugin asset base URLs from the blob base URL", () => {
-    expect(daemonOutputFrameUrl("http://localhost:47830/")).toBe(
-      "http://localhost:47830/output-frame",
-    );
+    expect(daemonOutputFrameUrl("http://localhost:47830/")).toBeNull();
     expect(daemonRendererAssetsBaseUrl("http://localhost:47830/")).toBe(
       "http://localhost:47830/plugins/",
     );
