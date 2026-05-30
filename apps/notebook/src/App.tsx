@@ -956,7 +956,7 @@ function AppContent() {
   );
 
   const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
-    return navigateNotebookOutlineItem(item, href);
+    return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
   }, []);
 
   const setBlockedTrustAction = useCallback((action: PendingTrustAction | null) => {

@@ -41,7 +41,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
-import { isTextAttributionEvent, type NotebookOutlineItem } from "runtimed";
+import { isTextAttributionEvent, notebookCellAnchorId, type NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import type { CloudTextAttributionQueue } from "./editable-markdown-cell";
 import {
@@ -869,6 +869,10 @@ function NotebookViewer({
       const sequence = ++materializeSequence;
       const previousNotebookLanguage = notebookLanguageRef.current;
       const outputResolutionCache = outputResolutionCacheRef.current;
+      const rawCellCount = liveRuntime.handle.cell_count();
+      if (rawCellCount === 0 && (!snapshotResolvedRef.current || cellsRef.current.length > 0)) {
+        return;
+      }
       const materialized = await materializeCloudNotebookView(liveRuntime.handle, {
         blobResolver,
         defaultNotebookLanguage: previousNotebookLanguage ?? "python",
@@ -1075,9 +1079,7 @@ function NotebookViewer({
   }, []);
   const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
     setSelectedOutlineItemId(item.id);
-    return navigateNotebookOutlineItem(item, href, {
-      findCellElement: (outlineItem) => findCellElement(outlineItem.cellId),
-    });
+    return navigateNotebookOutlineItem(item, href);
   }, []);
   const shellCapabilities = useMemo(
     () =>
@@ -1931,6 +1933,8 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
 }
 
 function findCellElement(cellId: string): HTMLElement | null {
+  const anchored = document.getElementById(notebookCellAnchorId(cellId));
+  if (anchored) return anchored;
   for (const element of document.querySelectorAll<HTMLElement>("[data-cell-id]")) {
     if (element.dataset.cellId === cellId) return element;
   }

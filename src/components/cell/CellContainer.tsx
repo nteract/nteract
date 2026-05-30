@@ -4,6 +4,7 @@ import { type GutterColorConfig, getGutterColors } from "./gutter-colors";
 
 interface CellContainerProps {
   id: string;
+  elementId?: string;
   cellType: string;
   isFocused?: boolean;
   onFocus?: () => void;
@@ -51,6 +52,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
   (
     {
       id,
+      elementId,
       cellType,
       isFocused = false,
       onFocus,
@@ -86,6 +88,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
     return (
       <div
         ref={ref}
+        id={elementId}
         data-slot="cell-container"
         data-cell-id={id}
         data-cell-type={cellType}

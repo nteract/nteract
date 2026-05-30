@@ -5,6 +5,7 @@ export interface NavigateNotebookOutlineItemOptions {
   behavior?: ScrollBehavior;
   block?: ScrollLogicalPosition;
   findCellElement?: (item: NotebookOutlineItem, href: string) => HTMLElement | null;
+  headingHashTarget?: "heading" | "cell";
   updateHash?: boolean;
 }
 
@@ -36,7 +37,8 @@ export function navigateNotebookOutlineItem(
   }
 
   if (options.updateHash ?? true) {
-    const hash = item.headingAnchorId ? `#${item.cellAnchorId}` : href;
+    const hash =
+      item.headingAnchorId && options.headingHashTarget === "cell" ? `#${item.cellAnchorId}` : href;
     window.history.replaceState(
       null,
       "",

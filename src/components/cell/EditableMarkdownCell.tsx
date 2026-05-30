@@ -25,6 +25,7 @@ import type { JupyterOutput } from "./jupyter-output";
 
 export interface EditableMarkdownCellProps {
   id: string;
+  elementId?: string;
   source: string;
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
@@ -45,6 +46,7 @@ export interface EditableMarkdownCellProps {
 
 export function EditableMarkdownCell({
   id,
+  elementId,
   source,
   editing,
   onEditingChange,
@@ -164,6 +166,7 @@ export function EditableMarkdownCell({
     <CellContainer
       ref={viewRef}
       id={id}
+      elementId={elementId}
       cellType="markdown"
       className={className}
       presenceIndicators={presenceIndicators}

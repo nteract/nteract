@@ -28,21 +28,44 @@ describe("navigateNotebookOutlineItem", () => {
     expect(window.location.hash).toBe("#notebook-cell-code-1");
   });
 
-  it("allows hosts to provide their own cell lookup", () => {
+  it("keeps heading hrefs in the URL by default while scrolling the owning cell", async () => {
     const target = document.createElement("div");
+    target.id = "notebook-cell-cloud-cell";
     target.scrollIntoView = vi.fn();
+    document.body.append(target);
     const item = outlineItem({
       id: "cloud-cell:heading:0",
       cellAnchorId: "notebook-cell-cloud-cell",
+      headingAnchorId: "notebook-cell-cloud-cell-heading-intro",
       href: "#notebook-cell-cloud-cell-heading-intro",
     });
 
+    expect(navigateNotebookOutlineItem(item, "#notebook-cell-cloud-cell-heading-intro")).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(target.scrollIntoView).toHaveBeenCalled();
+    expect(window.location.hash).toBe("#notebook-cell-cloud-cell-heading-intro");
+  });
+
+  it("allows hosts to keep heading URL hashes at the cell anchor", async () => {
+    const target = document.createElement("div");
+    target.id = "notebook-cell-code-1";
+    target.scrollIntoView = vi.fn();
+    document.body.append(target);
+    const item = outlineItem({
+      headingAnchorId: "notebook-cell-code-1-heading-intro",
+      href: "#notebook-cell-code-1-heading-intro",
+    });
+
     expect(
-      navigateNotebookOutlineItem(item, "#notebook-cell-cloud-cell-heading-intro", {
-        findCellElement: () => target,
+      navigateNotebookOutlineItem(item, "#notebook-cell-code-1-heading-intro", {
+        headingHashTarget: "cell",
       }),
     ).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
     expect(target.scrollIntoView).toHaveBeenCalled();
+    expect(window.location.hash).toBe("#notebook-cell-code-1");
   });
 
   it("rejects non-anchor outline hrefs", () => {

@@ -92,6 +92,7 @@ describe("EditableMarkdownCell", () => {
     render(
       <Harness
         id="markdown-1"
+        elementId="notebook-cell-markdown-1"
         source="## Shared"
         editing={false}
         onEditingChange={() => undefined}
@@ -106,6 +107,10 @@ describe("EditableMarkdownCell", () => {
       />,
     );
 
+    expect(document.querySelector('[data-slot="cell-container"]')).toHaveAttribute(
+      "id",
+      "notebook-cell-markdown-1",
+    );
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-cell-id", "markdown-1");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-mimes", "text/markdown");
     expect(screen.getByTestId("output-area")).toHaveAttribute(
@@ -182,6 +187,7 @@ describe("EditableMarkdownCell", () => {
 
 function Harness({
   id,
+  elementId,
   source,
   editing,
   onEditingChange,
@@ -191,6 +197,7 @@ function Harness({
   previewOutputClassName,
 }: {
   id: string;
+  elementId?: string;
   source: string;
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
@@ -204,6 +211,7 @@ function Harness({
   return (
     <EditableMarkdownCell
       id={id}
+      elementId={elementId}
       source={source}
       editing={editing}
       onEditingChange={onEditingChange}

@@ -304,6 +304,7 @@ describe("ReadOnlyNotebookCell", () => {
 
     expect(document.querySelector('[data-slot="cell-container"]')).toBeNull();
     const reportCell = document.querySelector('[data-slot="read-only-report-cell"]');
+    expect(reportCell).toHaveAttribute("id", "notebook-cell-report-code");
     expect(reportCell).toHaveAttribute("data-cell-id", "report-code");
     expect(reportCell).toHaveAttribute("data-cell-type", "code");
     expect(screen.queryByTestId("readonly-codemirror")).toBeNull();

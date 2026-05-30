@@ -32,6 +32,7 @@ These entries define the center of gravity for the system:
 | Wire format | [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md) | Draft |
 | Document boundaries | [The Three-Document Split](three-document-split.md) | Draft |
 | Runtime-state identity | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft |
+| Notebook host shell | [Notebook Host Shell Convergence](notebook-host-shell-convergence.md) | Draft |
 | Execution ordering | [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md) | Draft |
 | Blob storage | [Blob Storage and Content Addressing](blob-storage-and-content-addressing.md) | Draft |
 | Sharing product requirements | [Hosted Notebook Sharing and Invites](hosted-sharing-invites.md) | PRD draft |
@@ -46,6 +47,7 @@ These entries define the center of gravity for the system:
 | [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md) | Draft | Frame bytes, channels, caps, and compatibility. |
 | [The Three-Document Split](three-document-split.md) | Draft | NotebookDoc, RuntimeStateDoc, and PoolDoc responsibility boundaries. |
 | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft | NotebookDoc-owned pointer to the RuntimeStateDoc identity and checkpoint-head split. |
+| [Notebook Host Shell Convergence](notebook-host-shell-convergence.md) | Draft | Shared notebook shell, capability vocabulary, and host adapter boundary across desktop, cloud, and elements. |
 | [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md) | Draft | Execution state, output ordering, and lifecycle priority. |
 | [Execution Liveness](execution-liveness.md) | Design memo | Divergence-detection framing; not a recovery decision yet. |
 | [Tokio Mutex Discipline](tokio-mutex-discipline.md) | Draft | Async lock and cancel-safety invariants. |

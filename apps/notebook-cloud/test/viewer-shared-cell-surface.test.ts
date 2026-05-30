@@ -11,6 +11,7 @@ test("cloud editable markdown cells use shared cell and output rendering surface
     /import \{ EditableMarkdownCell as SharedEditableMarkdownCell \} from "@\/components\/cell\/EditableMarkdownCell";/,
   );
   assert.match(sourceText, /<SharedEditableMarkdownCell/);
+  assert.match(sourceText, /elementId=\{notebookCellAnchorId\(cell\.id\)\}/);
   assert.match(sourceText, /priority=\{priority\}/);
   assert.match(sourceText, /hostContext=\{hostContext\}/);
   assert.match(sourceText, /editorExtensions=\{extensions\}/);
@@ -59,6 +60,18 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
   assert.match(sourceText, /<NotebookRail[\s\S]*outlineItems=\{outlineItems\}/);
   assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
   assert.match(sourceText, /navigateNotebookOutlineItem\(item, href/);
+  assert.doesNotMatch(sourceText, /findCellElement: \(outlineItem\)/);
+});
+
+test("cloud live materialization skips empty room handles before resolving outputs", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
+  assert.match(
+    sourceText,
+    /if \(rawCellCount === 0 && \(!snapshotResolvedRef\.current \|\| cellsRef\.current\.length > 0\)\) \{\s+return;\s+\}\s+const materialized = await materializeCloudNotebookView/,
+  );
 });
 
 test("cloud viewer shell keeps render endpoints out of the interactive load path", () => {
