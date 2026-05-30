@@ -34,6 +34,13 @@ describe("hosted smoke performance diagnostics", () => {
       "runtime_snapshot",
     );
     assert.equal(
+      classifyPerformanceResource(
+        "https://preview.runt.run/api/n/topic-viz/blobs/sha256-abc",
+        origins,
+      ),
+      "notebook_blob",
+    );
+    assert.equal(
       classifyPerformanceResource("https://preview.runt.run/n/topic-viz", origins),
       "viewer_document",
     );
@@ -89,10 +96,29 @@ describe("hosted smoke performance diagnostics", () => {
             first_start_ms: 10,
             first_end_ms: 30,
             max_end_ms: 50,
+            max_duration_ms: 30,
             statuses: [200, 200],
             urls: [
               "https://preview.runtusercontent.com/frame/",
               "https://preview.runtusercontent.com/frame/?two",
+            ],
+            slowest: [
+              {
+                url: "https://preview.runtusercontent.com/frame/?two",
+                start_ms: 20,
+                end_ms: 50,
+                duration_ms: 30,
+                status: 200,
+                failure: null,
+              },
+              {
+                url: "https://preview.runtusercontent.com/frame/",
+                start_ms: 10,
+                end_ms: 30,
+                duration_ms: 20,
+                status: 200,
+                failure: null,
+              },
             ],
           },
         },
