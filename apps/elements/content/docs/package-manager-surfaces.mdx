@@ -1,0 +1,22 @@
+---
+title: Package manager surfaces
+description: Fixture-backed uv, Conda, Pixi, and Deno package panels from the notebook app.
+---
+
+import { PackageManagerSurfacesExample } from "@/components/package-manager-surfaces-example";
+
+Package management is notebook UI. These surfaces are the real dependency
+headers used by the notebook app, rendered with static fixture metadata so the
+catalog can inspect package panels without a live daemon, Automerge document, or
+environment solve.
+
+<PackageManagerSurfacesExample />
+
+## Rail intent
+
+- The packages rail should become the notebook home for these manager-specific
+  panels.
+- The catalog should keep using existing notebook components, not parallel
+  package-manager mockups.
+- Live metadata mutation, trust re-signing, daemon sync, and environment rebuilds
+  stay behind app adapters.
