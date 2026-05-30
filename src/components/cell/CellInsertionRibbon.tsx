@@ -1,0 +1,149 @@
+import { Plus } from "lucide-react";
+import { useState } from "react";
+import { cn } from "@/lib/utils";
+import { cellContentColumnOffset, notebookCellLayoutVars } from "./cell-layout";
+
+export type CellInsertionType = "code" | "markdown";
+
+interface CellInsertionRibbonProps {
+  terminal?: boolean;
+  activeType?: CellInsertionType | null;
+  onActiveTypeChange?: (type: CellInsertionType | null) => void;
+  onInsert: (type: CellInsertionType) => void;
+  forceActionsVisible?: boolean;
+  className?: string;
+}
+
+const insertionRibbonClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-400 dark:bg-sky-600",
+  markdown: "bg-emerald-400 dark:bg-emerald-600",
+};
+
+const terminalInsertionRibbonClasses: Record<CellInsertionType, string> = {
+  code: "bg-gradient-to-b from-sky-400 via-sky-400/60 to-sky-400/0 dark:from-sky-600 dark:via-sky-600/60 dark:to-sky-600/0",
+  markdown:
+    "bg-gradient-to-b from-emerald-400 via-emerald-400/60 to-emerald-400/0 dark:from-emerald-600 dark:via-emerald-600/60 dark:to-emerald-600/0",
+};
+
+export function CellInsertionRibbon({
+  terminal = false,
+  activeType,
+  onActiveTypeChange,
+  onInsert,
+  forceActionsVisible = false,
+  className,
+}: CellInsertionRibbonProps) {
+  const [uncontrolledActiveType, setUncontrolledActiveType] = useState<CellInsertionType | null>(
+    null,
+  );
+  const resolvedActiveType = activeType === undefined ? uncontrolledActiveType : activeType;
+  const ribbonClass = resolvedActiveType
+    ? terminal
+      ? terminalInsertionRibbonClasses[resolvedActiveType]
+      : insertionRibbonClasses[resolvedActiveType]
+    : undefined;
+
+  const setActiveType = (type: CellInsertionType | null) => {
+    if (activeType === undefined) {
+      setUncontrolledActiveType(type);
+    }
+    onActiveTypeChange?.(type);
+  };
+
+  return (
+    <div
+      data-slot="cell-adder"
+      data-terminal={terminal || undefined}
+      className={cn(
+        "group/adder flex w-full select-none",
+        terminal ? "h-[clamp(5rem,16vh,8rem)] items-start" : "h-7 items-center",
+        notebookCellLayoutVars,
+        className,
+      )}
+      onPointerLeave={() => setActiveType(null)}
+      onBlur={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          setActiveType(null);
+        }
+      }}
+    >
+      <div
+        data-slot="cell-adder-ribbon"
+        className={cn(
+          "relative h-full w-1 shrink-0 overflow-hidden",
+          terminal &&
+            "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-2.25rem),transparent_100%)]",
+        )}
+      >
+        <div
+          data-slot="cell-adder-ribbon-continuation"
+          className={cn(
+            "absolute inset-0 dark:bg-gray-700/55",
+            terminal ? "bg-gray-200/70" : "bg-gray-200/55",
+          )}
+        />
+        {ribbonClass ? (
+          <div
+            data-slot="cell-adder-ribbon-intent"
+            className={cn(
+              "absolute left-0 top-0 w-full transition-colors duration-150",
+              terminal ? "h-10" : "h-full",
+              ribbonClass,
+            )}
+          />
+        ) : null}
+      </div>
+      <div
+        data-slot="cell-adder-actions"
+        className={cn(
+          "flex items-center gap-1 transition-opacity duration-150",
+          terminal && "pt-0.5",
+          cellContentColumnOffset,
+          forceActionsVisible
+            ? "opacity-100"
+            : "opacity-0 group-hover/adder:opacity-100 group-hover/adder:delay-75 group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
+        )}
+      >
+        <button
+          type="button"
+          title="Add code cell"
+          onPointerEnter={() => setActiveType("code")}
+          onFocus={() => setActiveType("code")}
+          onClick={() => onInsert("code")}
+          className={cn(
+            "inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium transition-colors",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+            forceActionsVisible && resolvedActiveType === "code"
+              ? "text-foreground hover:text-foreground"
+              : "text-muted-foreground/55 hover:text-foreground",
+          )}
+        >
+          <Plus className="h-3 w-3" aria-hidden="true" />
+          Add code
+        </button>
+        <span className="text-muted-foreground/30" aria-hidden="true">
+          ·
+        </span>
+        <button
+          type="button"
+          title="Add markdown cell"
+          onPointerEnter={() => setActiveType("markdown")}
+          onFocus={() => setActiveType("markdown")}
+          onClick={() => onInsert("markdown")}
+          className={cn(
+            "inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium transition-colors",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+            forceActionsVisible && resolvedActiveType === "markdown"
+              ? "text-foreground hover:text-foreground"
+              : "text-muted-foreground/55 hover:text-foreground",
+          )}
+        >
+          <Plus className="h-3 w-3" aria-hidden="true" />
+          Add markdown
+        </button>
+      </div>
+      <div className="flex-1" />
+    </div>
+  );
+}

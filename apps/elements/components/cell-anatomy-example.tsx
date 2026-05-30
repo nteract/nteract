@@ -5,18 +5,16 @@ import {
   CheckCircle2,
   CircleDot,
   FileText,
-  Plus,
   Rows3,
   Search,
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
-import { cellContentColumnOffset, notebookCellLayoutVars } from "@/components/cell/cell-layout";
+import { CellInsertionRibbon } from "@/components/cell/CellInsertionRibbon";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
-import { cn } from "@/lib/utils";
 import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
@@ -283,70 +281,13 @@ function InsertionRibbonFixture({
   activeType: "code" | "markdown";
   terminal?: boolean;
 }) {
-  const intentClass =
-    activeType === "code"
-      ? terminal
-        ? "bg-gradient-to-b from-sky-400 via-sky-400/60 to-sky-400/0 dark:from-sky-600 dark:via-sky-600/60 dark:to-sky-600/0"
-        : "bg-sky-400 dark:bg-sky-600"
-      : terminal
-        ? "bg-gradient-to-b from-emerald-400 via-emerald-400/60 to-emerald-400/0 dark:from-emerald-600 dark:via-emerald-600/60 dark:to-emerald-600/0"
-        : "bg-emerald-400 dark:bg-emerald-600";
-
   return (
-    <div
-      className={cn(
-        "flex w-full select-none",
-        terminal ? "h-24 items-start" : "h-7 items-center",
-        notebookCellLayoutVars,
-      )}
-    >
-      <div
-        className={cn(
-          "relative h-full w-1 shrink-0 overflow-hidden",
-          terminal &&
-            "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-1.5rem),transparent_100%)]",
-        )}
-      >
-        <div
-          className={cn(
-            "absolute inset-0 dark:bg-gray-700/55",
-            terminal ? "bg-gray-200/70" : "bg-gray-200/55",
-          )}
-        />
-        <div
-          className={cn("absolute left-0 top-0 w-full", terminal ? "h-14" : "h-full", intentClass)}
-        />
-      </div>
-      <div
-        className={cn(
-          "flex items-center gap-1 text-xs",
-          terminal && "pt-0.5",
-          cellContentColumnOffset,
-        )}
-      >
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 font-medium",
-            activeType === "code" ? "text-fd-foreground" : "text-fd-muted-foreground/45",
-          )}
-        >
-          <Plus className="size-3" aria-hidden="true" />
-          Add code
-        </span>
-        <span className="text-fd-muted-foreground/30" aria-hidden="true">
-          ·
-        </span>
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 font-medium",
-            activeType === "markdown" ? "text-fd-foreground" : "text-fd-muted-foreground/45",
-          )}
-        >
-          <Plus className="size-3" aria-hidden="true" />
-          Add markdown
-        </span>
-      </div>
-    </div>
+    <CellInsertionRibbon
+      activeType={activeType}
+      terminal={terminal}
+      forceActionsVisible
+      onInsert={() => undefined}
+    />
   );
 }
 

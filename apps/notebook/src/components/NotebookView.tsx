@@ -19,7 +19,7 @@ import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId } from "runtimed";
-import { cellContentColumnOffset, notebookCellLayoutVars } from "@/components/cell/cell-layout";
+import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
 import { Button } from "@/components/ui/button";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
@@ -42,7 +42,7 @@ import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 
 type AddCellResult = NotebookCell | null;
-type AddCellHandler = (type: "code" | "markdown", afterCellId?: string | null) => AddCellResult;
+type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
 
 export interface NotebookViewProps {
   cellIds: string[];
@@ -63,17 +63,7 @@ export interface NotebookViewProps {
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
 }
 
-/** Tailwind classes for cell adder ribbon colors — must be static strings for tree-shaking. */
-const adderRibbonClasses: Record<string, string> = {
-  code: "bg-sky-400 dark:bg-sky-600",
-  markdown: "bg-emerald-400 dark:bg-emerald-600",
-};
-const terminalAdderRibbonClasses: Record<string, string> = {
-  code: "bg-gradient-to-b from-sky-400 via-sky-400/60 to-sky-400/0 dark:from-sky-600 dark:via-sky-600/60 dark:to-sky-600/0",
-  markdown:
-    "bg-gradient-to-b from-emerald-400 via-emerald-400/60 to-emerald-400/0 dark:from-emerald-600 dark:via-emerald-600/60 dark:to-emerald-600/0",
-};
-const NOTEBOOK_TAIL_SPACE = "clamp(12rem, 35vh, 22rem)";
+const NOTEBOOK_TAIL_SPACE = "clamp(6rem, 18vh, 12rem)";
 const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 
 function CellAdder({
@@ -85,95 +75,7 @@ function CellAdder({
   onAdd: AddCellHandler;
   terminal?: boolean;
 }) {
-  const [activeCellType, setActiveCellType] = useState<"code" | "markdown" | null>(null);
-  const ribbonClass = activeCellType
-    ? terminal
-      ? terminalAdderRibbonClasses[activeCellType]
-      : adderRibbonClasses[activeCellType]
-    : undefined;
-
-  return (
-    <div
-      data-slot="cell-adder"
-      data-terminal={terminal || undefined}
-      className={cn(
-        "group/adder flex w-full select-none",
-        terminal ? "h-32 items-start" : "h-7 items-center",
-        notebookCellLayoutVars,
-      )}
-      onPointerLeave={() => setActiveCellType(null)}
-      onBlur={(event) => {
-        const nextTarget = event.relatedTarget;
-        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
-          setActiveCellType(null);
-        }
-      }}
-    >
-      <div
-        data-slot="cell-adder-ribbon"
-        className={cn(
-          "relative h-full w-1 shrink-0 overflow-hidden",
-          terminal &&
-            "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-2rem),transparent_100%)]",
-        )}
-      >
-        <div
-          data-slot="cell-adder-ribbon-continuation"
-          className={cn(
-            "absolute inset-0 dark:bg-gray-700/55",
-            terminal ? "bg-gray-200/70" : "bg-gray-200/55",
-          )}
-        />
-        {ribbonClass ? (
-          <div
-            data-slot="cell-adder-ribbon-intent"
-            className={cn(
-              "absolute left-0 top-0 w-full transition-colors duration-150",
-              terminal ? "h-16" : "h-full",
-              ribbonClass,
-            )}
-          />
-        ) : null}
-      </div>
-      <div
-        data-slot="cell-adder-actions"
-        className={cn(
-          "flex items-center gap-1 opacity-0 transition-opacity duration-150",
-          terminal && "pt-0.5",
-          cellContentColumnOffset,
-          "group-hover/adder:opacity-100 group-hover/adder:delay-75",
-          "group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
-        )}
-      >
-        <button
-          type="button"
-          title="Add code cell"
-          onPointerEnter={() => setActiveCellType("code")}
-          onFocus={() => setActiveCellType("code")}
-          onClick={() => onAdd("code", afterCellId)}
-          className="inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground/55 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-        >
-          <Plus className="h-3 w-3" aria-hidden="true" />
-          Add code
-        </button>
-        <span className="text-muted-foreground/30" aria-hidden="true">
-          ·
-        </span>
-        <button
-          type="button"
-          title="Add markdown cell"
-          onPointerEnter={() => setActiveCellType("markdown")}
-          onFocus={() => setActiveCellType("markdown")}
-          onClick={() => onAdd("markdown", afterCellId)}
-          className="inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground/55 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-        >
-          <Plus className="h-3 w-3" aria-hidden="true" />
-          Add markdown
-        </button>
-      </div>
-      <div className="flex-1" />
-    </div>
-  );
+  return <CellInsertionRibbon terminal={terminal} onInsert={(type) => onAdd(type, afterCellId)} />;
 }
 
 function CellErrorFallback({
