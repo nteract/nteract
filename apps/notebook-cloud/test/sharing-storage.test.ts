@@ -23,9 +23,9 @@ describe("hosted sharing storage", () => {
   it("keeps principal provider identity stable while refreshing profile metadata", async () => {
     const env = fakeEnv();
     await upsertPrincipalProfile(env, {
-      principal: "user:cloudflare-access:access-sub-1",
-      provider: "cloudflare-access",
-      providerSubject: "access-sub-1",
+      principal: "user:oidc:oidc-sub-1",
+      provider: "oidc",
+      providerSubject: "oidc-sub-1",
       email: "alice@example.com",
       emailVerified: true,
       displayName: "Alice Example",
@@ -33,7 +33,7 @@ describe("hosted sharing storage", () => {
     });
 
     const profile = await upsertPrincipalProfile(env, {
-      principal: "user:cloudflare-access:access-sub-1",
+      principal: "user:oidc:oidc-sub-1",
       provider: "github",
       providerSubject: "github-sub-1",
       email: "alice-updated@example.com",
@@ -42,8 +42,8 @@ describe("hosted sharing storage", () => {
       timestamp: "2026-05-24T12:05:00.000Z",
     });
 
-    assert.equal(profile?.provider, "cloudflare-access");
-    assert.equal(profile?.provider_subject, "access-sub-1");
+    assert.equal(profile?.provider, "oidc");
+    assert.equal(profile?.provider_subject, "oidc-sub-1");
     assert.equal(profile?.email_normalized, "alice-updated@example.com");
     assert.equal(profile?.display_name, "Alice Updated");
     assert.equal(profile?.first_seen_at, "2026-05-24T12:00:00.000Z");
@@ -53,18 +53,18 @@ describe("hosted sharing storage", () => {
   it("loads multiple principal profiles in one batch", async () => {
     const env = fakeEnv();
     await upsertPrincipalProfile(env, {
-      principal: "user:cloudflare-access:access-sub-1",
-      provider: "cloudflare-access",
-      providerSubject: "access-sub-1",
+      principal: "user:oidc:oidc-sub-1",
+      provider: "oidc",
+      providerSubject: "oidc-sub-1",
       email: "alice@example.com",
       emailVerified: true,
       displayName: "Alice Example",
       timestamp: "2026-05-24T12:00:00.000Z",
     });
     await upsertPrincipalProfile(env, {
-      principal: "user:cloudflare-access:access-sub-2",
-      provider: "cloudflare-access",
-      providerSubject: "access-sub-2",
+      principal: "user:oidc:oidc-sub-2",
+      provider: "oidc",
+      providerSubject: "oidc-sub-2",
       email: "bob@example.com",
       emailVerified: true,
       displayName: "Bob Example",
@@ -72,29 +72,26 @@ describe("hosted sharing storage", () => {
     });
 
     const profiles = await getPrincipalProfiles(env, [
-      "user:cloudflare-access:access-sub-1",
-      "user:cloudflare-access:access-sub-1",
+      "user:oidc:oidc-sub-1",
+      "user:oidc:oidc-sub-1",
       "missing",
-      "user:cloudflare-access:access-sub-2",
+      "user:oidc:oidc-sub-2",
     ]);
 
     assert.deepEqual(profiles.map((profile) => profile.principal).sort(), [
-      "user:cloudflare-access:access-sub-1",
-      "user:cloudflare-access:access-sub-2",
+      "user:oidc:oidc-sub-1",
+      "user:oidc:oidc-sub-2",
     ]);
   });
 
   it("loads principal profiles in chunks below D1 bind limits", async () => {
     const env = fakeEnv();
-    const principals = Array.from(
-      { length: 125 },
-      (_, index) => `user:cloudflare-access:access-sub-${index}`,
-    );
+    const principals = Array.from({ length: 125 }, (_, index) => `user:oidc:oidc-sub-${index}`);
     for (const [index, principal] of principals.entries()) {
       await upsertPrincipalProfile(env, {
         principal,
-        provider: "cloudflare-access",
-        providerSubject: `access-sub-${index}`,
+        provider: "oidc",
+        providerSubject: `oidc-sub-${index}`,
         email: `user-${index}@example.com`,
         emailVerified: true,
         displayName: `User ${index}`,
@@ -110,20 +107,20 @@ describe("hosted sharing storage", () => {
 
   it("backfills provider subject when a profile was first seen without one", async () => {
     const env = fakeEnv();
-    await resolveNotebookInvitesForLogin(env, accessLogin(), "2026-05-24T12:00:00.000Z");
+    await resolveNotebookInvitesForLogin(env, oidcLogin(), "2026-05-24T12:00:00.000Z");
 
     const profile = await upsertPrincipalProfile(env, {
-      principal: "user:cloudflare-access:access-sub-1",
-      provider: "cloudflare-access",
-      providerSubject: "access-sub-1",
+      principal: "user:oidc:oidc-sub-1",
+      provider: "oidc",
+      providerSubject: "oidc-sub-1",
       email: "alice@example.com",
       emailVerified: true,
       displayName: "Alice Example",
       timestamp: "2026-05-24T12:05:00.000Z",
     });
 
-    assert.equal(profile?.provider, "cloudflare-access");
-    assert.equal(profile?.provider_subject, "access-sub-1");
+    assert.equal(profile?.provider, "oidc");
+    assert.equal(profile?.provider_subject, "oidc-sub-1");
     assert.equal(profile?.first_seen_at, "2026-05-24T12:00:00.000Z");
     assert.equal(profile?.last_seen_at, "2026-05-24T12:05:00.000Z");
   });
@@ -134,16 +131,16 @@ describe("hosted sharing storage", () => {
       id: "invite-1",
       notebookId: "notebook-1",
       email: " Alice@Example.COM ",
-      providerHint: " Cloudflare-Access ",
+      providerHint: " OIDC ",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       expiresAt: "2026-06-24T11:00:00.000Z",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -152,19 +149,16 @@ describe("hosted sharing storage", () => {
       ["invite-1"],
     );
     assert.equal(
-      env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.email_normalized,
+      env.DB.profiles.get("user:oidc:oidc-sub-1")?.email_normalized,
       "alice@example.com",
     );
     assert.equal(env.DB.invites.get("invite-1")?.status, "accepted");
-    assert.equal(
-      env.DB.invites.get("invite-1")?.accepted_by_principal,
-      "user:cloudflare-access:access-sub-1",
-    );
+    assert.equal(env.DB.invites.get("invite-1")?.accepted_by_principal, "user:oidc:oidc-sub-1");
     assert.deepEqual(env.DB.acl, [
       {
         notebook_id: "notebook-1",
         subject_kind: "principal",
-        subject: "user:cloudflare-access:access-sub-1",
+        subject: "user:oidc:oidc-sub-1",
         scope: "editor",
         created_at: "2026-05-24T12:00:00.000Z",
         updated_at: "2026-05-24T12:00:00.000Z",
@@ -182,29 +176,26 @@ describe("hosted sharing storage", () => {
       email: "alice@example.com",
       providerHint: null,
       scope: "viewer",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
 
-    await resolveNotebookInvitesForLogin(env, accessLogin(), "2026-05-24T12:00:00.000Z");
+    await resolveNotebookInvitesForLogin(env, oidcLogin(), "2026-05-24T12:00:00.000Z");
     const second = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin({ displayName: "Alice Updated" }),
+      oidcLogin({ displayName: "Alice Updated" }),
       "2026-05-24T12:05:00.000Z",
     );
 
     assert.equal(second.aclGrants.length, 0);
     assert.equal(env.DB.acl.length, 1);
+    assert.equal(env.DB.profiles.get("user:oidc:oidc-sub-1")?.display_name, "Alice Updated");
     assert.equal(
-      env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.display_name,
-      "Alice Updated",
-    );
-    assert.equal(
-      env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.first_seen_at,
+      env.DB.profiles.get("user:oidc:oidc-sub-1")?.first_seen_at,
       "2026-05-24T12:00:00.000Z",
     );
     assert.equal(
-      env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.last_seen_at,
+      env.DB.profiles.get("user:oidc:oidc-sub-1")?.last_seen_at,
       "2026-05-24T12:05:00.000Z",
     );
     assert.equal(second.profile.firstSeenAt, "2026-05-24T12:00:00.000Z");
@@ -217,9 +208,9 @@ describe("hosted sharing storage", () => {
       id: "invite-1",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
     await createPendingNotebookInvite(env, {
@@ -228,13 +219,13 @@ describe("hosted sharing storage", () => {
       email: "alice@example.com",
       providerHint: null,
       scope: "viewer",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:01:00.000Z",
     });
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -266,18 +257,18 @@ describe("hosted sharing storage", () => {
       id: "invite-stolen",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
     await createPendingNotebookInvite(env, {
       id: "invite-kept",
       notebookId: "notebook-2",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "viewer",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:01:00.000Z",
     });
     env.DB.beforeInviteAccept = (inviteId) => {
@@ -286,13 +277,13 @@ describe("hosted sharing storage", () => {
       }
       const invite = env.DB.invites.get(inviteId)!;
       invite.status = "accepted";
-      invite.accepted_by_principal = "user:cloudflare-access:other";
+      invite.accepted_by_principal = "user:oidc:other";
       invite.accepted_at = "2026-05-24T11:59:00.000Z";
     };
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -316,25 +307,25 @@ describe("hosted sharing storage", () => {
       id: "invite-stale",
       notebookId: "notebook-deleted",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
     await createPendingNotebookInvite(env, {
       id: "invite-live",
       notebookId: "notebook-live",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "viewer",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:01:00.000Z",
     });
     env.DB.deletedNotebookIds.add("notebook-deleted");
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -356,18 +347,18 @@ describe("hosted sharing storage", () => {
       id: "invite-1",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
     const second = await createPendingNotebookInvite(env, {
       id: "invite-2",
       notebookId: "notebook-1",
       email: " Alice@Example.com ",
-      providerHint: " Cloudflare-Access ",
+      providerHint: " OIDC ",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:05:00.000Z",
     });
 
@@ -386,7 +377,7 @@ describe("hosted sharing storage", () => {
         provider_hint: providerHint,
         scope,
         status: "pending",
-        invited_by_actor_label: "user:cloudflare-access:owner/desktop:owner",
+        invited_by_actor_label: "user:oidc:owner/desktop:owner",
         accepted_by_principal: null,
         token_hash: null,
         created_at: "2026-05-24T11:00:00.000Z",
@@ -402,9 +393,9 @@ describe("hosted sharing storage", () => {
       id: "invite-loser",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:01:00.000Z",
     });
 
@@ -418,30 +409,27 @@ describe("hosted sharing storage", () => {
       id: "invite-1",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
     });
 
     const malformed = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin({ email: "noatsign" }),
+      oidcLogin({ email: "noatsign" }),
       "2026-05-24T12:00:00.000Z",
     );
     const unverified = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin({ emailVerified: false }),
+      oidcLogin({ emailVerified: false }),
       "2026-05-24T12:01:00.000Z",
     );
 
     assert.equal(malformed.aclGrants.length, 0);
     assert.equal(unverified.aclGrants.length, 0);
     assert.equal(env.DB.invites.get("invite-1")?.status, "pending");
-    assert.equal(
-      env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.email_normalized,
-      null,
-    );
-    assert.equal(env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.email_verified, 0);
+    assert.equal(env.DB.profiles.get("user:oidc:oidc-sub-1")?.email_normalized, null);
+    assert.equal(env.DB.profiles.get("user:oidc:oidc-sub-1")?.email_verified, 0);
   });
 
   it("honors provider hints while allowing explicit provider-wildcard invites", async () => {
@@ -452,7 +440,7 @@ describe("hosted sharing storage", () => {
       email: "alice@example.com",
       providerHint: null,
       scope: "viewer",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
     });
     await createPendingNotebookInvite(env, {
       id: "invite-github",
@@ -460,12 +448,12 @@ describe("hosted sharing storage", () => {
       email: "alice@example.com",
       providerHint: "github",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
     });
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin({ provider: "cloudflare-access" }),
+      oidcLogin({ provider: "oidc" }),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -482,16 +470,16 @@ describe("hosted sharing storage", () => {
       id: "invite-expired",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       expiresAt: "2026-05-24T11:59:59.000Z",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -507,16 +495,16 @@ describe("hosted sharing storage", () => {
       id: "invite-expired-no-fraction",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       expiresAt: "2026-05-24T00:00:00Z",
       timestamp: "2026-05-23T23:00:00.000Z",
     });
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T00:00:00.000Z",
     );
 
@@ -532,9 +520,9 @@ describe("hosted sharing storage", () => {
       id: "invite-revoked",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
       timestamp: "2026-05-24T11:00:00.000Z",
     });
     env.DB.invites.get("invite-revoked")!.status = "revoked";
@@ -542,7 +530,7 @@ describe("hosted sharing storage", () => {
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -558,9 +546,9 @@ describe("hosted sharing storage", () => {
       id: "invite-raced",
       notebookId: "notebook-1",
       email: "alice@example.com",
-      providerHint: "cloudflare-access",
+      providerHint: "oidc",
       scope: "editor",
-      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      actorLabel: "user:oidc:owner/desktop:owner",
     });
     env.DB.beforeInviteAccept = (inviteId) => {
       env.DB.invites.get(inviteId)!.status = "accepted";
@@ -569,7 +557,7 @@ describe("hosted sharing storage", () => {
 
     const resolution = await resolveNotebookInvitesForLogin(
       env,
-      accessLogin(),
+      oidcLogin(),
       "2026-05-24T12:00:00.000Z",
     );
 
@@ -585,7 +573,7 @@ describe("hosted sharing storage", () => {
           notebookId: "notebook-1",
           email: "not an email",
           scope: "viewer",
-          actorLabel: "user:cloudflare-access:owner/desktop:owner",
+          actorLabel: "user:oidc:owner/desktop:owner",
         }),
       /invite email is invalid/,
     );
@@ -595,7 +583,7 @@ describe("hosted sharing storage", () => {
           notebookId: "notebook-1",
           email: "alice@example.com",
           scope: "owner" as never,
-          actorLabel: "user:cloudflare-access:owner/desktop:owner",
+          actorLabel: "user:oidc:owner/desktop:owner",
         }),
       /invite scope must be viewer or editor/,
     );
@@ -605,7 +593,7 @@ describe("hosted sharing storage", () => {
           notebookId: "notebook-1",
           email: "alice@example.com",
           scope: "editor",
-          actorLabel: "user:cloudflare-access:owner/desktop:owner",
+          actorLabel: "user:oidc:owner/desktop:owner",
           expiresAt: "not a date",
         }),
       /invite expiry is invalid/,
@@ -617,12 +605,10 @@ function fakeEnv(): Env & { DB: FakeD1 } {
   return { DB: new FakeD1() } as Env & { DB: FakeD1 };
 }
 
-function accessLogin(
-  overrides: Partial<AuthenticatedLoginProfile> = {},
-): AuthenticatedLoginProfile {
+function oidcLogin(overrides: Partial<AuthenticatedLoginProfile> = {}): AuthenticatedLoginProfile {
   return {
-    principal: "user:cloudflare-access:access-sub-1",
-    provider: "cloudflare-access",
+    principal: "user:oidc:oidc-sub-1",
+    provider: "oidc",
     email: "alice@example.com",
     emailVerified: true,
     displayName: "Alice Example",

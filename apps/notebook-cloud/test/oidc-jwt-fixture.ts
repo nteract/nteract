@@ -1,12 +1,3 @@
-export interface AccessTokenFixture {
-  env: {
-    NOTEBOOK_CLOUD_ACCESS_AUD: string;
-    NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: string;
-    NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN: string;
-  };
-  token: string;
-}
-
 export interface OidcTokenFixture {
   env: {
     NOTEBOOK_CLOUD_OIDC_CLIENT_ID: string;
@@ -34,27 +25,6 @@ interface TokenFixtureOptions {
   notBeforeSecondsFromNow?: number;
   subject?: string | null;
   tokenIssuer?: string | null;
-}
-
-export async function accessTokenFixture(
-  options: TokenFixtureOptions,
-): Promise<AccessTokenFixture> {
-  const issuer = "https://team.cloudflareaccess.com";
-  const audience = "notebook-cloud-aud";
-  const { jwksJson, token } = await signedTokenFixture({
-    ...options,
-    audience: options.audience ?? audience,
-    issuer,
-  });
-
-  return {
-    env: {
-      NOTEBOOK_CLOUD_ACCESS_AUD: audience,
-      NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: jwksJson,
-      NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN: issuer,
-    },
-    token,
-  };
 }
 
 export async function oidcTokenFixture(options: TokenFixtureOptions): Promise<OidcTokenFixture> {
