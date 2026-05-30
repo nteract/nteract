@@ -4288,6 +4288,145 @@ mod tests {
         assert_eq!(server_ids, client_ids); // Same order after merge
     }
 
+    // ── Cross-version sync (the cloud topology) ───────────────────────
+    //
+    // Desktop ships daemon + frontend as one build, so every peer in a room
+    // runs the same schema version and none of the below can happen. Cloud
+    // (prototype) lets external, independently-versioned peers share a room
+    // through the host. These tests model that: two peers built from the
+    // *byte-identical* frozen genesis (NOTEBOOK_GENESIS_V5_BYTES), so they
+    // share a common ancestor and merge cleanly. A future vX that regenerates
+    // the genesis breaks this precondition — that is the original data-loss
+    // incident, at the sync layer.
+
+    /// Additive forward-compat across a live sync: a current (v5) peer keeps a
+    /// future (vX) peer's fields it cannot interpret. Sync exchanges ops keyed
+    /// by ObjId, not typed structs, so unknown keys merge and survive.
+    #[test]
+    fn test_cross_version_sync_preserves_additive_future_fields() {
+        let mut v5 = NotebookDoc::new_with_actor("room-nb", "peer-v5");
+        let mut future = NotebookDoc::new_with_actor("room-nb", "peer-future");
+
+        // v5 peer authors an ordinary cell.
+        v5.add_cell(0, "c-v5", "code").unwrap();
+        v5.update_source("c-v5", "print('v5')").unwrap();
+
+        // Future peer bumps the version and writes additive data a vX build
+        // might introduce: a new top-level key, and a new key inside a cell's
+        // metadata map. Cell metadata (not a bare cell field) is the additive
+        // surface — bare cell fields have no extras bag and die at the .ipynb
+        // boundary.
+        let future_version = SCHEMA_VERSION + 1;
+        future
+            .doc
+            .put(automerge::ROOT, "schema_version", future_version)
+            .unwrap();
+        future
+            .doc
+            .put(automerge::ROOT, "workspace_id", "ws-42")
+            .unwrap();
+        future.add_cell(0, "c-future", "code").unwrap();
+        future.update_source("c-future", "print('future')").unwrap();
+        future
+            .set_cell_metadata("c-future", &serde_json::json!({ "vx_pin": "abc123" }))
+            .unwrap();
+
+        // Live sync, both directions, to convergence.
+        let mut s_v5 = sync::State::new();
+        let mut s_future = sync::State::new();
+        sync_docs(&mut v5, &mut s_v5, &mut future, &mut s_future, 20);
+
+        // Cells from both peers merged cleanly, shared root not doubled.
+        let v5_ids: Vec<String> = v5.get_cells().iter().map(|c| c.id.clone()).collect();
+        let future_ids: Vec<String> = future.get_cells().iter().map(|c| c.id.clone()).collect();
+        assert_eq!(
+            v5_ids.len(),
+            2,
+            "both peers' cells present, genesis not doubled"
+        );
+        assert!(v5_ids.contains(&"c-v5".to_string()));
+        assert!(v5_ids.contains(&"c-future".to_string()));
+        assert_eq!(
+            v5_ids, future_ids,
+            "both peers converge to the same cell order"
+        );
+
+        // Only the future peer wrote schema_version (its write causally
+        // succeeds the seed), so the bump propagates cleanly — no conflict.
+        // Concurrent conflicting writes are Part 2's subject.
+        assert_eq!(v5.schema_version(), Some(future_version));
+
+        // The future peer's additive top-level key survives on the v5 peer,
+        // which has no code that reads it.
+        assert!(
+            matches!(
+                v5.doc.get(automerge::ROOT, "workspace_id"),
+                Ok(Some((automerge::Value::Scalar(_), _)))
+            ),
+            "unknown future top-level key preserved on the v5 peer"
+        );
+
+        // The future peer's additive cell metadata survives on the v5 peer.
+        let meta = v5
+            .get_cell_metadata("c-future")
+            .expect("future cell metadata present");
+        assert_eq!(meta["vx_pin"], "abc123");
+    }
+
+    /// Reproduction of the multi-writer `schema_version` hazard for cloud.
+    ///
+    /// `schema_version` is a single LWW scalar, single-writer only by
+    /// *convention* (the migrate-on-load path is the lone writer, and desktop
+    /// rooms are single-version). In a mixed-version cloud room two peers can
+    /// write it concurrently: two upgraded peers migrating a stale room doc,
+    /// or a stale peer re-stamping its old version. There is no monotonic/max
+    /// merge: the CRDT picks an LWW winner by (lamport, actor), unrelated to
+    /// which schema is newer, so a stale peer's lower version can win and stamp
+    /// the shared doc backward.
+    ///
+    /// Characterization test: it pins today's (undesirable) behavior so it is
+    /// reproducible. When the fix lands (host-enforced single-writer auth, or
+    /// monotonic-max merge semantics) this test should be updated to assert the
+    /// new guarantee.
+    #[test]
+    fn test_cross_version_schema_version_is_lww_not_monotonic() {
+        let mut old = NotebookDoc::new_with_actor("room-nb", "peer-old");
+        let mut new = NotebookDoc::new_with_actor("room-nb", "peer-new");
+
+        // Concurrent, conflicting writes (neither peer has seen the other).
+        old.doc
+            .put(automerge::ROOT, "schema_version", 4u64)
+            .unwrap();
+        new.doc
+            .put(automerge::ROOT, "schema_version", 6u64)
+            .unwrap();
+
+        let mut s_old = sync::State::new();
+        let mut s_new = sync::State::new();
+        sync_docs(&mut old, &mut s_old, &mut new, &mut s_new, 20);
+
+        // CRDT determinism holds: both peers converge to the SAME value...
+        assert_eq!(
+            old.schema_version(),
+            new.schema_version(),
+            "peers converge to a single value"
+        );
+        // ...but it is an LWW pick of one of the two written values, never
+        // their max. There is no merge rule that says "higher schema wins."
+        //
+        // Here the *older* peer wins: the converged value is 4, not 6. The tie
+        // is broken by actor id (concurrent writes have equal lamport counter),
+        // and "peer-old" sorts above "peer-new" by bytes, so the stale peer
+        // stamps the shared doc backward; v6 is silently downgraded to v4.
+        // The winner is decided by actor bytes, not by which schema is newer;
+        // swapping the labels flips it. That arbitrariness is the hazard.
+        let converged = old.schema_version().unwrap();
+        assert_eq!(
+            converged, 4,
+            "stale peer's lower version wins the LWW tie, stamping the doc backward"
+        );
+    }
+
     #[test]
     #[cfg(feature = "persistence")]
     fn test_notebook_doc_filename_deterministic() {
