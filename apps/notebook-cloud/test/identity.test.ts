@@ -711,6 +711,58 @@ describe("OIDC identity", () => {
     });
   });
 
+  it("uses standard OIDC profile claims and browser operators for web sessions", async () => {
+    const { env, token } = await oidcTokenFixture({
+      email: "alice@example.com",
+      extraPayload: {
+        email_verified: true,
+        family_name: "Example",
+        given_name: "Alice",
+        preferred_username: "alice-demo",
+      },
+      subject: "alice-subject",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?viewer_session=tab/session&scope=editor", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.operator, "browser:tab%2Fsession");
+    assert.equal(identity.actorLabel, "user:anaconda:alice-subject/browser:tab%2Fsession");
+    assert.equal(identity.metadata.displayName, "Alice Example");
+    assert.equal(identity.metadata.email, "alice@example.com");
+    assert.equal(identity.metadata.emailVerified, true);
+  });
+
+  it("falls back through preferred username and email for OIDC profile labels", async () => {
+    const { env, token } = await oidcTokenFixture({
+      email: "alice@example.com",
+      extraPayload: {
+        email_verified: true,
+        preferred_username: "alice-demo",
+      },
+      subject: "alice-subject",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?scope=viewer", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+    );
+
+    assert.match(identity.operator, /^browser:/);
+    assert.equal(identity.metadata.displayName, "alice-demo");
+    assert.equal(identity.metadata.email, "alice@example.com");
+  });
+
   it("fetches remote OIDC JWKS with Anaconda-compatible headers", async (t) => {
     const { env, token } = await oidcTokenFixture({ subject: "remote-jwks-user" });
     const calls: Array<{ accept: string | null; url: string; userAgent: string | null }> = [];
