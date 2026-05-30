@@ -74,16 +74,6 @@ describe("notebook shell view model", () => {
         outputs: [],
         metadata: {},
       },
-      {
-        id: "code-1",
-        cellType: "code",
-        source: "print('ok')",
-        language: "python",
-        executionId: "exec-1",
-        executionCount: 3,
-        outputs: [],
-        metadata: {},
-      },
     ]);
 
     expect(outline.map((item) => [item.id, item.cellId, item.title, item.level])).toEqual([
@@ -94,6 +84,31 @@ describe("notebook shell view model", () => {
       "#notebook-cell-intro-heading-intro",
       "#notebook-cell-intro-heading-setup",
     ]);
+  });
+
+  it("lets host adapters override outline status labels", () => {
+    const outline = notebookViewCellsToOutlineItems(
+      [
+        {
+          id: "code-1",
+          cellType: "code",
+          source: "print('ok')",
+          language: "python",
+          executionId: "exec-1",
+          executionCount: 3,
+          outputs: [],
+          metadata: {},
+        },
+      ],
+      {
+        getStatusLabel: (cell) => (cell.id === "code-1" ? "Running" : null),
+      },
+    );
+
+    expect(outline[0]).toMatchObject({
+      cellId: "code-1",
+      statusLabel: "Running",
+    });
   });
 
   it("builds a normalized view model for host adapters", () => {
@@ -132,6 +147,27 @@ describe("notebook shell view model", () => {
       label: "In [7]",
     });
     expect(viewModel.markdownHeadingAnchorsByCellId.get("code-1")).toBeUndefined();
+  });
+
+  it("can build outline-only projections without a read-only language resolver", () => {
+    const viewModel = createNotebookViewModel([
+      {
+        id: "code-1",
+        cellType: "code",
+        source: "print('ok')",
+        language: "python",
+        executionId: null,
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+    ]);
+
+    expect(viewModel.outlineItems[0]).toMatchObject({
+      cellId: "code-1",
+      statusLabel: null,
+    });
+    expect(viewModel.readOnlyCells[0].language).toBeNull();
   });
 
   it("projects traceback execution ids to notebook cells", () => {

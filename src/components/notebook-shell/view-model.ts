@@ -37,18 +37,30 @@ export interface NotebookViewModel {
 }
 
 export interface CreateNotebookViewModelOptions {
-  resolveLanguage: NotebookViewLanguageResolver;
+  resolveLanguage?: NotebookViewLanguageResolver;
+  getOutlineStatusLabel?: (cell: NotebookViewCell) => string | null;
 }
 
+/**
+ * Pure shell projection over already-materialized notebook cells.
+ *
+ * The live source of truth stays upstream: desktop feeds this from the
+ * WASM/change-set materialized cell store, and hosted cloud feeds it from a
+ * live/snapshot Automerge handle adapter. This function should remain free of
+ * transport, WASM, blob-fetch, and host side effects.
+ */
 export function createNotebookViewModel(
   cells: readonly NotebookViewCell[],
-  options: CreateNotebookViewModelOptions,
+  options: CreateNotebookViewModelOptions = {},
 ): NotebookViewModel {
-  const outlineItems = notebookViewCellsToOutlineItems(cells);
+  const resolveLanguage = options.resolveLanguage ?? (() => null);
+  const outlineItems = notebookViewCellsToOutlineItems(cells, {
+    getStatusLabel: options.getOutlineStatusLabel,
+  });
   return {
     cells,
     cellIds: cells.map((cell) => cell.id),
-    readOnlyCells: notebookViewCellsToReadOnlyCells(cells, options.resolveLanguage),
+    readOnlyCells: notebookViewCellsToReadOnlyCells(cells, resolveLanguage),
     outlineItems,
     markdownHeadingAnchorsByCellId: notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems),
     tracebackTargetsByExecutionId: notebookViewCellsToTracebackTargets(cells),
@@ -80,10 +92,11 @@ export function notebookViewCellToReadOnlyCell(
 
 export function notebookViewCellsToOutlineItems(
   cells: readonly NotebookViewCell[],
+  options: { getStatusLabel?: (cell: NotebookViewCell) => string | null } = {},
 ): NotebookOutlineItem[] {
   return projectNotebookOutline(cells, {
     hrefTarget: "heading",
-    getStatusLabel: notebookViewCellOutlineStatusLabel,
+    getStatusLabel: options.getStatusLabel ?? notebookViewCellOutlineStatusLabel,
   }).items;
 }
 
