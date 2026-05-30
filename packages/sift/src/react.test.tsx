@@ -266,15 +266,20 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
-  it("starts Arrow stream chunk fetches without waiting for first chunk append", async () => {
+  it("starts trailing Arrow stream chunk fetches before first chunk append", async () => {
     vi.useRealTimers();
     const fetchResolvers: ((response: {
       ok: true;
       arrayBuffer: () => Promise<ArrayBuffer>;
     }) => void)[] = [];
+    const fetchEvents: { url: string; appendCallCount: number }[] = [];
     const fetchMock = vi.fn(
-      () =>
+      (url: string) =>
         new Promise<{ ok: true; arrayBuffer: () => Promise<ArrayBuffer> }>((resolve) => {
+          fetchEvents.push({
+            url,
+            appendCallCount: predicateModule.append_arrow_stream_chunk.mock.calls.length,
+          });
           fetchResolvers.push(resolve);
         }),
     );
@@ -297,7 +302,7 @@ describe("SiftTable", () => {
     );
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
     expect(predicateModule.append_arrow_stream_chunk).not.toHaveBeenCalled();
 
@@ -310,6 +315,14 @@ describe("SiftTable", () => {
     await waitFor(() => {
       expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
     });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchEvents.map((event) => event.url)).toEqual([
+      "http://127.0.0.1:9000/blob/chunk-0",
+      "http://127.0.0.1:9000/blob/chunk-1",
+      "http://127.0.0.1:9000/blob/chunk-2",
+    ]);
+    expect(fetchEvents[1].appendCallCount).toBe(0);
+    expect(fetchEvents[2].appendCallCount).toBe(0);
 
     fetchResolvers[1](responseFor([4, 5, 6]));
     fetchResolvers[2](responseFor([7, 8, 9]));
