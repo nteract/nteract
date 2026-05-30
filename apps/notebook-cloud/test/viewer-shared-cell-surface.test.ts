@@ -53,6 +53,15 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
 });
 
+test("cloud read-only notebook renders from the shared notebook view model", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookReadOnlyView/);
+  assert.match(sourceText, /<NotebookReadOnlyView[\s\S]*viewModel=\{notebookViewModel\}/);
+  assert.doesNotMatch(sourceText, /cells=\{readOnlyCells\}/);
+});
+
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

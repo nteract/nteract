@@ -27,7 +27,6 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import { ReadOnlyNotebook } from "@/components/cell/ReadOnlyNotebook";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
@@ -35,6 +34,7 @@ import {
   createNotebookViewModel,
   navigateNotebookOutlineItem,
   NotebookDocumentShell,
+  NotebookReadOnlyView,
 } from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -1056,8 +1056,7 @@ function NotebookViewer({
     () => createNotebookViewModel(cells, { resolveLanguage: cloudSourceLanguage }),
     [cells],
   );
-  const { readOnlyCells, codeCellCount, outlineItems, tracebackTargetsByExecutionId } =
-    notebookViewModel;
+  const { codeCellCount, outlineItems, tracebackTargetsByExecutionId } = notebookViewModel;
   useEffect(() => {
     if (!selectedOutlineItemId) return;
     if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {
@@ -1266,8 +1265,8 @@ function NotebookViewer({
           onNavigateToTracebackCell={handleTracebackCellNavigate}
         />
       ) : (
-        <ReadOnlyNotebook
-          cells={readOnlyCells}
+        <NotebookReadOnlyView
+          viewModel={notebookViewModel}
           priority={CLOUD_VIEWER_PRIORITY}
           hostContext={outputHostContext}
           displayMode="report"
