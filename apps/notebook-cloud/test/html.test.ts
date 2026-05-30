@@ -210,6 +210,7 @@ describe("HTML script serialization", () => {
 
     assert.equal(response.status, 200);
     assert.match(html, /"rendererAssetsBasePath":"https:\/\/outputs\.example\/plugins\/"/);
+    assert.match(html, /rel="preconnect" href="https:\/\/outputs\.example" crossorigin/);
     assert.match(
       response.headers.get("Content-Security-Policy") ?? "",
       /connect-src 'self' ws: wss: https:\/\/outputs\.example/,
@@ -235,6 +236,7 @@ describe("HTML script serialization", () => {
       html,
       /"runtimedWasmPath":"https:\/\/wasm\.example\/runtime\/runtimed_wasm_bg\.wasm"/,
     );
+    assert.match(html, /rel="preconnect" href="https:\/\/wasm\.example" crossorigin/);
     assert.match(
       html,
       /rel="modulepreload" href="https:\/\/wasm\.example\/runtime\/runtimed_wasm\.js" crossorigin/,
@@ -261,9 +263,38 @@ describe("HTML script serialization", () => {
 
     assert.equal(response.status, 200);
     assert.match(html, /"outputDocumentBaseUrl":"https:\/\/outputs\.example\/frame\/"/);
+    assert.match(html, /rel="preconnect" href="https:\/\/outputs\.example" crossorigin/);
     assert.match(
       response.headers.get("Content-Security-Policy") ?? "",
       /frame-src 'self' blob: data: https:\/\/outputs\.example/,
+    );
+  });
+
+  it("deduplicates hosted sidecar preconnect hints by origin", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo"),
+      fakeEnv({
+        OUTPUT_DOCUMENT_BASE_URL: "https://outputs.example/frame",
+        RENDERER_ASSETS_BASE_URL: "https://outputs.example/renderer-assets",
+        RUNTIMED_WASM_BASE_URL: "https://wasm.example/runtime",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(
+      (html.match(/rel="preconnect" href="https:\/\/outputs\.example" crossorigin/g) ?? []).length,
+      1,
+    );
+    assert.equal(
+      (html.match(/rel="preconnect" href="https:\/\/wasm\.example" crossorigin/g) ?? []).length,
+      1,
+    );
+    assert.ok(
+      html.indexOf('rel="preconnect" href="https://outputs.example" crossorigin') <
+        html.indexOf('rel="modulepreload" href="/assets/notebook-cloud-viewer.js"'),
+      "hosted sidecar preconnect hints should be emitted before module fetches",
     );
   });
 
