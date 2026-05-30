@@ -47,6 +47,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     get_dependency_fingerprint(): string | undefined;
     get_heads_hex(): string[];
     get_metadata_snapshot_json(): string | undefined;
+    get_runtime_state_doc_id(): string | undefined;
     get_runtime_state(): unknown;
     get_runtime_state_heads_hex(): string[];
     receive_frame(frameBytes: Uint8Array): unknown;
