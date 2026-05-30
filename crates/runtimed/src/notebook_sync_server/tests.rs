@@ -239,6 +239,160 @@ async fn file_backed_room_has_path_some() {
     );
 }
 
+/// A valid one-cell notebook used to seed an on-disk `.ipynb`.
+const ONE_CELL_IPYNB: &str = r#"{"cells":[{"cell_type":"code","source":["print(1)"],"metadata":{},"outputs":[],"execution_count":null}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+
+fn disk_cell_count(path: &std::path::Path) -> usize {
+    let bytes = std::fs::read(path).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    v.get("cells")
+        .and_then(|c| c.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
+}
+
+/// A failed streaming load empties the room doc as a rollback. The teardown
+/// autosave must not write that empty doc over a notebook that still has cells
+/// on disk — a failed open must not delete the file.
+#[tokio::test]
+async fn failed_load_does_not_zero_existing_notebook() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let path = tmp.path().join("note.ipynb");
+    tokio::fs::write(&path, ONE_CELL_IPYNB).await.unwrap();
+
+    let room = NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        Some(path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+    // The room doc starts empty, matching the post-`clear_all_cells` state.
+    room.mark_load_failed();
+
+    let result = save_notebook_to_disk(&room, None).await;
+    assert!(result.is_ok(), "save should no-op cleanly: {result:?}");
+    assert_eq!(
+        disk_cell_count(&path),
+        1,
+        "a failed load must not zero the on-disk notebook"
+    );
+}
+
+/// The guard is scoped to failed loads only. An empty room whose load did not
+/// fail is a legitimate "user deleted every cell" save and must still write.
+#[tokio::test]
+async fn empty_room_without_failed_load_still_writes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let path = tmp.path().join("note.ipynb");
+    tokio::fs::write(&path, ONE_CELL_IPYNB).await.unwrap();
+
+    let room = NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        Some(path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+    // No load failure recorded.
+    save_notebook_to_disk(&room, None).await.unwrap();
+    assert_eq!(
+        disk_cell_count(&path),
+        0,
+        "an empty room without a failed load must still persist (legit clear)"
+    );
+}
+
+/// A malformed notebook on disk is the most important to preserve after a
+/// failed load, not the least — the guard keys off "the file has bytes," not
+/// whether it parses.
+#[tokio::test]
+async fn failed_load_does_not_overwrite_malformed_notebook() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let path = tmp.path().join("note.ipynb");
+    let garbage = b"{ this is not valid json \x00 cells".to_vec();
+    tokio::fs::write(&path, &garbage).await.unwrap();
+
+    let room = NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        Some(path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+    room.mark_load_failed();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        garbage,
+        "a failed load must not overwrite a malformed file"
+    );
+}
+
+/// Once the room recovers (e.g. the file-watcher reload clears the marker), a
+/// later legitimate delete-all-cells save must persist. Guards against a stale
+/// `load_failed` flag wedging empty saves after recovery.
+#[tokio::test]
+async fn cleared_failed_load_lets_empty_save_through() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let path = tmp.path().join("note.ipynb");
+    tokio::fs::write(&path, ONE_CELL_IPYNB).await.unwrap();
+
+    let room = NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        Some(path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+    room.mark_load_failed();
+    // Recovery clears the marker (stands in for a file-watcher reload).
+    room.clear_load_failed();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+    assert_eq!(
+        disk_cell_count(&path),
+        0,
+        "a cleared failed-load marker must not block a legit empty save"
+    );
+}
+
+/// An explicit Save (target path provided) from a failed-load-empty room over a
+/// non-empty file must fail loudly rather than silently report success — a
+/// phantom Ok would tell the UI it saved and could rebind the room path.
+#[tokio::test]
+async fn explicit_save_after_failed_load_errors_and_preserves_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let path = tmp.path().join("note.ipynb");
+    tokio::fs::write(&path, ONE_CELL_IPYNB).await.unwrap();
+
+    let room = NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        Some(path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+    room.mark_load_failed();
+
+    let result = save_notebook_to_disk(&room, Some(path.to_str().unwrap())).await;
+    assert!(
+        matches!(result, Err(SaveError::Unrecoverable(_))),
+        "explicit save from a failed-load-empty room must error, got {result:?}"
+    );
+    assert_eq!(
+        disk_cell_count(&path),
+        1,
+        "explicit save must not zero the file either"
+    );
+}
+
 #[tokio::test]
 async fn reservation_guard_increments_and_decrements_counter() {
     use std::sync::atomic::Ordering;

@@ -215,6 +215,11 @@ where
                     );
                 }
             }
+            // The rollback above emptied the room doc. Mark the load failed so
+            // the persistence layer refuses to autosave this empty doc over the
+            // notebook's on-disk content — a failed open must not delete the
+            // file. Cleared when a later connection re-attempts the load.
+            room.mark_load_failed();
             room.finish_loading();
             let _ = room.broadcasts.changed_tx.send(());
             warn!(

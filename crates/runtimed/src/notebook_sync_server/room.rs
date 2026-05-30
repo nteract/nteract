@@ -361,6 +361,12 @@ pub struct RoomPersistence {
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     is_loading: AtomicBool,
+    /// Set when the most recent streaming load failed before completing.
+    /// A failed load empties the room doc as an in-memory rollback; this flag
+    /// stops that empty doc from being autosaved over a non-empty `.ipynb`,
+    /// turning a failed *open* into a file *deletion*. Cleared when a new load
+    /// attempt is claimed via `try_start_loading`.
+    load_failed: AtomicBool,
 }
 
 /// The debounced `.automerge` persist channels. See `spawn_persist_debouncer`.
@@ -385,6 +391,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
+            load_failed: AtomicBool::new(false),
         }
     }
 
@@ -402,6 +409,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
+            load_failed: AtomicBool::new(false),
         }
     }
 
@@ -475,11 +483,17 @@ impl RoomPersistence {
     }
 
     /// Atomically claim the loading role. Returns `true` if this caller won
-    /// the race and should perform the streaming load.
+    /// the race and should perform the streaming load. A fresh attempt clears
+    /// any prior `load_failed` flag — this attempt gets to decide the outcome.
     pub fn try_start_loading(&self) -> bool {
-        self.is_loading
+        let won = self
+            .is_loading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+            .is_ok();
+        if won {
+            self.load_failed.store(false, Ordering::Release);
+        }
+        won
     }
 
     /// Mark loading complete (success or failure).
@@ -490,6 +504,29 @@ impl RoomPersistence {
     /// True if a streaming load is currently in progress.
     pub fn is_loading(&self) -> bool {
         self.is_loading.load(Ordering::Acquire)
+    }
+
+    /// Record that the most recent streaming load failed before completing.
+    /// The failure handler empties the room doc as an in-memory rollback; this
+    /// flag tells the persistence layer not to write that empty doc over
+    /// existing on-disk content.
+    pub fn mark_load_failed(&self) {
+        self.load_failed.store(true, Ordering::Release);
+    }
+
+    /// Clear the failed-load marker. Called once the room has been repopulated
+    /// from disk by some path other than `try_start_loading` (an external-change
+    /// reload) or once a non-empty save proves the room recovered real content.
+    /// Without this the stale flag would suppress a later legitimate
+    /// delete-all-cells save.
+    pub fn clear_load_failed(&self) {
+        self.load_failed.store(false, Ordering::Release);
+    }
+
+    /// True if the most recent streaming load failed and no newer attempt has
+    /// started. Used to suppress a destructive autosave of the emptied room.
+    pub fn load_failed(&self) -> bool {
+        self.load_failed.load(Ordering::Acquire)
     }
 }
 
@@ -1028,6 +1065,23 @@ impl NotebookRoom {
     /// Mark the streaming load complete.
     pub fn finish_loading(&self) {
         self.persistence.finish_loading();
+    }
+
+    /// Record that the most recent streaming load failed before completing.
+    pub fn mark_load_failed(&self) {
+        self.persistence.mark_load_failed();
+    }
+
+    /// Clear the failed-load marker after the room recovers content by a path
+    /// other than a fresh streaming load.
+    pub fn clear_load_failed(&self) {
+        self.persistence.clear_load_failed();
+    }
+
+    /// True if the most recent streaming load failed and no newer attempt has
+    /// started.
+    pub fn load_failed(&self) -> bool {
+        self.persistence.load_failed()
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

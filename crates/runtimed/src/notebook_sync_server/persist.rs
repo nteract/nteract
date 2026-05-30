@@ -101,6 +101,53 @@ pub(crate) async fn save_notebook_to_disk(
         (cells, metadata_snapshot, eids)
     };
 
+    // A failed streaming load empties the room doc as an in-memory rollback
+    // (see the failure branch in peer_session.rs). Never persist that empty doc
+    // over an existing notebook file: a failed *open* must not become a file
+    // deletion. This holds even when the file on disk is malformed JSON or has a
+    // non-array `cells` field — those are the *most* important to preserve, not
+    // the least, since the user can still recover them by hand. We only key off
+    // "the file has bytes," not whether it parses. The on-disk content stays
+    // intact and the next open re-streams from it. A genuine "user deleted all
+    // cells" save is unaffected — that path loaded successfully, so
+    // `load_failed` is false.
+    if cells.is_empty() && room.load_failed() {
+        let disk_has_content = existing_raw
+            .as_deref()
+            .is_some_and(|bytes| !bytes.is_empty());
+        if disk_has_content {
+            match target_path {
+                // Autosave / kernel-teardown save (no explicit target). These
+                // fire automatically and silently; skipping is a clean no-op
+                // that leaves the file intact and the next open re-streams it.
+                None => {
+                    warn!(
+                        "[notebook-sync] Skipping autosave of {:?}: streaming load failed and \
+                         the room is empty; preserving existing on-disk file",
+                        notebook_path
+                    );
+                    return Ok(notebook_path.to_string_lossy().to_string());
+                }
+                // Explicit Save / Save As. Refuse rather than report a phantom
+                // success: returning Ok would tell the UI the notebook saved and
+                // could rebind the room to this path, none of which happened.
+                Some(_) => {
+                    return Err(SaveError::Unrecoverable(format!(
+                        "Refusing to save {:?}: the notebook failed to load and the in-memory \
+                         copy is empty; the file on disk was left intact. Reopen the notebook \
+                         and try again.",
+                        notebook_path
+                    )));
+                }
+            }
+        }
+    } else if !cells.is_empty() {
+        // A non-empty save proves the room recovered real content; drop any
+        // stale failed-load marker so a later legitimate empty save is not
+        // blocked by the guard above.
+        room.clear_load_failed();
+    }
+
     let previous_visible_execution_ids: HashMap<String, String> = cells
         .iter()
         .filter_map(|cell| {
@@ -1361,6 +1408,18 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 has_kernel,
                             )
                             .await;
+
+                            // If the reload actually populated the room, any
+                            // earlier failed-load marker is resolved — clear it
+                            // (this path does not go through `try_start_loading`)
+                            // so a later legitimate empty save is not suppressed.
+                            // Gate on the doc being non-empty rather than on
+                            // `cells_changed`: that bool is false both for "no
+                            // diff" and for an apply failure, and a failed reapply
+                            // must not drop the guard.
+                            if room.doc.read().await.cell_count() > 0 {
+                                room.clear_load_failed();
+                            }
 
                             // Apply metadata changes to Automerge doc.
                             // Only update when the external file has a metadata
