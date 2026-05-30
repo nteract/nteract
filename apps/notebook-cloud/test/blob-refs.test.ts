@@ -34,6 +34,9 @@ describe("cloud blob ref collection", () => {
       data: {
         [ARROW_STREAM_MANIFEST_MIME]: {
           inline: JSON.stringify({
+            blob: "single-stream-hash",
+            size: 99,
+            content_type: "application/vnd.apache.arrow.stream",
             chunks: [
               { hash: "chunk-hash", size: 10 },
               { blob: "chunk-blob", media_type: "application/vnd.apache.arrow.stream" },
@@ -49,6 +52,7 @@ describe("cloud blob ref collection", () => {
       },
     });
 
+    assert.equal(refs["single-stream-hash"]?.size, 99);
     assert.equal(refs["chunk-hash"]?.size, 10);
     assert.equal(refs["chunk-blob"]?.media_type, "application/vnd.apache.arrow.stream");
     assert.ok(refs["sidecar-hash"]);

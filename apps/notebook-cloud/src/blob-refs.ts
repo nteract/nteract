@@ -102,6 +102,8 @@ function visitArrowStreamManifest(content: string, refs: Record<string, BlobRef>
   const record = manifest as Record<string, unknown>;
   const chunks = record.chunks;
 
+  addManifestBlobRef(record, refs);
+
   if (Array.isArray(chunks)) {
     for (const chunk of chunks) {
       addManifestBlobRef(chunk, refs);

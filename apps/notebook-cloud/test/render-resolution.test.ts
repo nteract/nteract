@@ -536,6 +536,33 @@ describe("cloud viewer render resolution", () => {
     }
   });
 
+  it("resolves mixed Jupyter output content refs without requiring full manifests", async () => {
+    const outputs = await resolveOutputs(
+      [
+        {
+          output_id: "mixed-image-ref",
+          output_type: "display_data",
+          data: {
+            "image/png": {
+              blob: "sha256:image",
+              size: 4096,
+            },
+            "text/plain": "<Figure size 1000x500 with 1 Axes>",
+          },
+          metadata: {},
+        },
+      ],
+      rejectingBlobResolver(),
+    );
+
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].output_type, "display_data");
+    if (outputs[0].output_type === "display_data") {
+      assert.equal(outputs[0].data["image/png"], "https://cloud.test/blobs/sha256%3Aimage");
+      assert.equal(outputs[0].data["text/plain"], "<Figure size 1000x500 with 1 Axes>");
+    }
+  });
+
   it("keeps an explicit cell execution count over output fallbacks", async () => {
     const cell = await resolveCell(
       {
