@@ -331,6 +331,13 @@ const siftData: TableData = {
 const siftParquetUrl =
   "https://huggingface.co/datasets/mstz/heart_failure/resolve/refs%2Fconvert%2Fparquet/death/train/0000.parquet";
 
+const siftArrowStreamChunkUrl = "/fixtures/sift-polars-utf8view.arrow";
+
+const siftArrowStreamManifest = {
+  chunks: [{ url: siftArrowStreamChunkUrl }],
+  complete: true,
+};
+
 const expectedSiftUrlMilestones = [
   {
     phase: "URL",
@@ -349,6 +356,50 @@ const expectedSiftUrlMilestones = [
     value: "SiftTable source.kind = url",
   },
 ];
+
+const expectedSiftManifestMilestones = [
+  {
+    phase: "Manifest",
+    value: "1 Arrow IPC chunk from docs fixtures",
+  },
+  {
+    phase: "Fetch",
+    value: "sift-polars-utf8view.arrow",
+  },
+  {
+    phase: "Append",
+    value: "create_arrow_stream_store + append_arrow_stream_chunk",
+  },
+  {
+    phase: "Render",
+    value: "SiftTable source.kind = arrow-stream-manifest",
+  },
+];
+
+function visibleSiftMilestones(
+  milestones: SiftLoadMilestone[],
+  expected: Array<{ phase: string; value: string }>,
+) {
+  if (milestones.length === 0) return expected;
+  return milestones.slice(-4).map((milestone) => ({
+    phase: milestone.phase,
+    value: [
+      milestone.format,
+      typeof milestone.chunkIndex === "number" && typeof milestone.chunkCount === "number"
+        ? `chunk ${milestone.chunkIndex + 1}/${milestone.chunkCount}`
+        : typeof milestone.chunkCount === "number"
+          ? `${milestone.chunkCount} chunk${milestone.chunkCount === 1 ? "" : "s"}`
+          : null,
+      typeof milestone.rowCount === "number" ? `${milestone.rowCount} rows` : null,
+      typeof milestone.byteLength === "number"
+        ? `${Math.round(milestone.byteLength / 1024)} KB`
+        : null,
+      `${milestone.elapsedMs} ms`,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  }));
+}
 
 type PlotlyFixture = {
   newPlot: (element: HTMLElement, payload: { data?: unknown[] }) => void;
@@ -746,6 +797,13 @@ const mimeFixtures = [
     },
   },
   {
+    label: "Arrow stream manifest selects Sift",
+    data: {
+      "application/vnd.nteract.arrow-stream-manifest+json": siftArrowStreamManifest,
+      "text/plain": "Arrow stream manifest",
+    },
+  },
+  {
     label: "Structured JSON stays inspectable",
     data: {
       "application/json": jsonFixture,
@@ -833,7 +891,7 @@ const renderedPieces = [
   {
     name: "SiftTable",
     source: "packages/sift/src/react.tsx",
-    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData and a live HuggingFace parquet URL decoded by the docs-served Sift WASM asset.",
+    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData, a live HuggingFace parquet URL, and an Arrow stream manifest decoded by the docs-served Sift WASM asset.",
   },
 ];
 
@@ -851,7 +909,7 @@ const adapterBoundaries = [
   {
     name: "Sift renderer frame wiring",
     reason:
-      "The HuggingFace parquet URL path now runs through SiftTable and docs-served sift-wasm. Production isolated-frame asset loading and Arrow stream manifests remain separate adapter slices.",
+      "The HuggingFace parquet URL and Arrow stream manifest paths now run through SiftTable and docs-served sift-wasm. Production isolated-frame asset loading remains a separate adapter slice.",
   },
 ];
 
@@ -936,28 +994,27 @@ function OutputWidgetFixtureProvider({ children }: { children: ReactNode }) {
 export function OutputRenderersExample() {
   const [siftState, setSiftState] = useState<TableEngineState | null>(null);
   const [siftUrlState, setSiftUrlState] = useState<TableEngineState | null>(null);
+  const [siftManifestState, setSiftManifestState] = useState<TableEngineState | null>(null);
   const [siftUrlLoadMilestones, setSiftUrlLoadMilestones] = useState<SiftLoadMilestone[]>([]);
+  const [siftManifestLoadMilestones, setSiftManifestLoadMilestones] = useState<SiftLoadMilestone[]>(
+    [],
+  );
   const [outputAreaCollapsed, setOutputAreaCollapsed] = useState(false);
   const [outputAreaMatchCount, setOutputAreaMatchCount] = useState(0);
   const handleSiftUrlLoadMilestone = useCallback((milestone: SiftLoadMilestone) => {
     setSiftUrlLoadMilestones((current) => [...current.slice(-7), milestone]);
   }, []);
-  const visibleSiftUrlMilestones =
-    siftUrlLoadMilestones.length > 0
-      ? siftUrlLoadMilestones.slice(-4).map((milestone) => ({
-          phase: milestone.phase,
-          value: [
-            milestone.format,
-            typeof milestone.rowCount === "number" ? `${milestone.rowCount} rows` : null,
-            typeof milestone.byteLength === "number"
-              ? `${Math.round(milestone.byteLength / 1024)} KB`
-              : null,
-            `${milestone.elapsedMs} ms`,
-          ]
-            .filter(Boolean)
-            .join(" · "),
-        }))
-      : expectedSiftUrlMilestones;
+  const handleSiftManifestLoadMilestone = useCallback((milestone: SiftLoadMilestone) => {
+    setSiftManifestLoadMilestones((current) => [...current.slice(-7), milestone]);
+  }, []);
+  const visibleSiftUrlMilestones = visibleSiftMilestones(
+    siftUrlLoadMilestones,
+    expectedSiftUrlMilestones,
+  );
+  const visibleSiftManifestMilestones = visibleSiftMilestones(
+    siftManifestLoadMilestones,
+    expectedSiftManifestMilestones,
+  );
 
   return (
     <div className="not-prose space-y-6" data-testid="output-renderers-example">
@@ -1259,6 +1316,68 @@ export function OutputRenderersExample() {
               {siftUrlState
                 ? `${siftUrlState.filteredCount}/${siftUrlState.totalCount} rows`
                 : `${siftData.rowCount}/${siftData.rowCount} rows`}
+            </span>
+          </div>
+        </div>
+      </RendererCard>
+
+      <RendererCard
+        title="Sift Arrow stream manifest"
+        source="packages/sift/src/react.tsx"
+        icon={Database}
+      >
+        <div className="space-y-4" data-testid="sift-arrow-stream-manifest-surface">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">
+                Arrow stream manifest
+              </div>
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fd-foreground">
+                {JSON.stringify(siftArrowStreamManifest, null, 2)}
+              </pre>
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">Catalog source</div>
+              <div className="mt-2 font-mono text-xs text-fd-foreground">
+                source.kind = arrow-stream-manifest
+              </div>
+              <div className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+                The manifest points at a docs-served Arrow IPC chunk and exercises SiftTable's
+                appendable WASM store without daemon blob resolution.
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-4">
+            {visibleSiftManifestMilestones.map((milestone) => (
+              <div
+                key={`${milestone.phase}-${milestone.value}`}
+                className="rounded-md border border-fd-border bg-fd-background p-3"
+              >
+                <div className="text-xs font-semibold">{milestone.phase}</div>
+                <div className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                  {milestone.value}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="h-[320px] min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background">
+            <SiftTable
+              source={{ kind: "arrow-stream-manifest", manifest: siftArrowStreamManifest }}
+              onChange={setSiftManifestState}
+              onLoadMilestone={handleSiftManifestLoadMilestone}
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-fd-muted-foreground">
+            <span>
+              This covers the nteract Arrow stream manifest handoff while leaving production blob
+              URL signing and isolated-frame asset bootstrapping outside the docs runtime.
+            </span>
+            <span className="font-mono">
+              {siftManifestState
+                ? `${siftManifestState.filteredCount}/${siftManifestState.totalCount} rows`
+                : "manifest pending"}
             </span>
           </div>
         </div>

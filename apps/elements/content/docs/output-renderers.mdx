@@ -11,7 +11,7 @@ This page starts the renderer catalog with current components from
 using fixture data that does not require runtimed, sync state, iframe
 bootstrapping, or plugin injection. The Sift URL surface is the exception: it
 uses a docs-served static `sift-wasm` asset so the catalog can exercise the real
-Parquet loader without a daemon.
+Parquet and Arrow stream manifest loaders without a daemon.
 
 <OutputRenderersExample />
 
@@ -22,7 +22,8 @@ lane composition, ANSI streams and errors, JSON trees, image output, math
 output, SVG output, audio output, the JavaScript isolation fallback, Plotly,
 Vega/Vega-Lite, GeoJSON, PDF, video, the structured traceback renderer, and
 `SiftTable` with static `TableData` plus a live HuggingFace Parquet URL. The
-page also renders top-level
+page also renders a docs-served Arrow stream manifest through `SiftTable`'s
+appendable WASM store. The page also renders top-level
 `application/vnd.jupyter.widget-view+json` output through `OutputArea` with a
 fixture-backed `WidgetStore`, matching the notebook app's widget MIME handoff
 without booting a live comm bridge. The plugin renderer examples use docs-local
@@ -30,8 +31,10 @@ fixture globals for Plotly, `vegaEmbed`, and Leaflet, so they exercise the
 current nteract components without bundling third-party renderer libraries into
 the catalog. The Sift section fetches the same kind of public HuggingFace
 Parquet URL used by the Sift demo, then lets `SiftTable` detect and decode it
-through the docs static WASM asset. The MIME selection table uses the same
-priority helper the notebook uses before rendering.
+through the docs static WASM asset; the Arrow manifest section points at a
+static Arrow IPC chunk and exercises `create_arrow_stream_store` /
+`append_arrow_stream_chunk`. The MIME selection table uses the same priority
+helper the notebook uses before rendering.
 
 ## What still needs an adapter
 
@@ -43,7 +46,7 @@ and markdown runtime execution, third-party renderer library loading, live
 output-widget comm transport, and production renderer bundle/plugin artifacts
 still need fixture-backed iframe, widget-store, or generated asset adapters
 before this docs app should own those runtime paths. The Sift Parquet URL path
-now has a docs-owned static WASM asset; Arrow stream manifests remain a separate
-renderer adapter slice. The widget catalog covers local `OutputModel` replay
-through `WidgetStore`; the remaining output-widget boundary is the live kernel
-capture and comm transport.
+now has a docs-owned static WASM asset, and the Arrow stream manifest path now
+runs through a docs-served Arrow IPC chunk. The widget catalog covers local
+`OutputModel` replay through `WidgetStore`; the remaining output-widget boundary
+is the live kernel capture and comm transport.

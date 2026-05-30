@@ -138,7 +138,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable with static TableData, and a HuggingFace Parquet URL decoded by docs-served Sift WASM now render from fixtures; live JavaScript execution, third-party renderer loading, live kernel widget comm transport, Arrow stream manifests, and production renderer asset bundles remain explicit adapter boundaries.",
+      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable with static TableData, a HuggingFace Parquet URL, and an Arrow stream manifest decoded by docs-served Sift WASM now render from fixtures; live JavaScript execution, third-party renderer loading, live kernel widget comm transport, and production renderer asset bundles remain explicit adapter boundaries.",
   },
   {
     family: "Output isolation",
