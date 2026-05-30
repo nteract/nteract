@@ -36,10 +36,13 @@ const [snapshotBytes, runtimeSnapshotBytes] = await Promise.all([
 const fixtureManifest = JSON.parse(await readFile(new URL("manifest.json", fixtureRoot), "utf8"));
 const fixtureBlobs = Array.isArray(fixtureManifest.blobs) ? fixtureManifest.blobs : [];
 const handle = NotebookHandle.load_snapshot(snapshotBytes, runtimeSnapshotBytes);
+handle.set_runtime_state_doc_id(`runtime:${notebookId}`);
 const headsHash = headsDigest(handle.get_heads_hex());
 const runtimeHeadsHash = headsDigest(handle.get_runtime_state_heads_hex());
 const runtimeStateDocId = requiredRuntimeStateDocId(handle);
 const cells = JSON.parse(handle.get_cells_json());
+const publishedSnapshotBytes = handle.save();
+const publishedRuntimeSnapshotBytes = handle.save_state_doc();
 handle.free();
 
 for (const blob of fixtureBlobs) {
@@ -48,7 +51,7 @@ for (const blob of fixtureBlobs) {
 
 await putBytes(
   `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeadsHash)}`,
-  runtimeSnapshotBytes,
+  publishedRuntimeSnapshotBytes,
   "application/octet-stream",
   {
     "X-Runtime-State-Doc-Id": runtimeStateDocId,
@@ -56,7 +59,7 @@ await putBytes(
 );
 await putBytes(
   `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(headsHash)}`,
-  snapshotBytes,
+  publishedSnapshotBytes,
   "application/octet-stream",
   {
     "X-Runtime-Heads-Hash": runtimeHeadsHash,

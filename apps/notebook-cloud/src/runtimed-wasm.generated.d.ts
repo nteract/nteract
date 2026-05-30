@@ -54,6 +54,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     receive_frame(frameBytes: Uint8Array): unknown;
     reset_sync_state(): void;
     set_actor(actorLabel: string): void;
+    set_runtime_state_doc_id(runtimeStateDocId: string): void;
     set_comm_state_batch(commId: string, patchJson: string): boolean;
     set_comm_state_property(commId: string, key: string, valueJson: string): boolean;
     update_source(cellId: string, source: string): boolean;
