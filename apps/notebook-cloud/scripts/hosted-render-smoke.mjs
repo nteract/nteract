@@ -19,6 +19,8 @@ import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
 import {
   catalogApiUrlForViewer,
   expectedRenderSourceForViewer,
+  hostedNotebookRequestKind,
+  notebookViewerUrl,
   renderApiUrlForViewer,
 } from "./hosted-render-smoke-routes.mjs";
 
@@ -59,6 +61,15 @@ const expectedLatestRevisionNotebookHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH ?? "";
 const expectedLatestRevisionRuntimeHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH ?? "";
+const latestViewerTarget = notebookViewerUrl(targetUrl);
+const expectLiveSync =
+  process.env.NOTEBOOK_CLOUD_EXPECT_LIVE_SYNC === undefined
+    ? latestViewerTarget !== null
+    : process.env.NOTEBOOK_CLOUD_EXPECT_LIVE_SYNC !== "0";
+const forbidLegacyRenderRoute = process.env.NOTEBOOK_CLOUD_FORBID_LEGACY_RENDER !== "0";
+const expectedWarmStartRenderHeadsHash =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_WARM_START_RENDER_HEADS_HASH ??
+  (latestViewerTarget ? expectedLatestRevisionNotebookHeadsHash : "");
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const requireRuntimedWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_RUNTIMED_WASM !== "0";
 const requireViewerCssSplit = process.env.NOTEBOOK_CLOUD_REQUIRE_VIEWER_CSS_SPLIT !== "0";
@@ -91,6 +102,12 @@ const failures = [];
 const warnings = [];
 const siftWasmRequests = [];
 const runtimedWasmRequests = [];
+const notebookRouteRequests = {
+  catalog: [],
+  liveSync: [],
+  renderCache: [],
+  legacyRender: [],
+};
 const rendererCompletions = [];
 const fatalIsolatedDiagnostics = [];
 const diagnosticTasks = [];
@@ -141,6 +158,14 @@ async function main() {
 
   page.on("pageerror", (error) => {
     failures.push({ kind: "page-error", text: error.message });
+  });
+
+  page.on("request", (request) => {
+    captureNotebookRouteRequest(request.url());
+  });
+
+  page.on("websocket", (socket) => {
+    captureNotebookRouteRequest(socket.url());
   });
 
   page.on("requestfailed", (request) => {
@@ -307,6 +332,32 @@ async function main() {
     if (requireRuntimedWasm && runtimedWasmRequests.length === 0) {
       failures.push({ kind: "runtimed-wasm", text: "runtimed WASM was not requested" });
     }
+    if (expectLiveSync && notebookRouteRequests.liveSync.length === 0) {
+      failures.push({
+        kind: "live-sync-route",
+        text: "Latest notebook viewer did not open the live sync route",
+        observedRoutes: notebookRouteRequests,
+      });
+    }
+    if (forbidLegacyRenderRoute && notebookRouteRequests.legacyRender.length > 0) {
+      failures.push({
+        kind: "legacy-render-route",
+        text: "Hosted viewer requested the deprecated latest render route",
+        observedRoutes: notebookRouteRequests,
+      });
+    }
+    if (
+      expectedWarmStartRenderHeadsHash &&
+      !notebookRouteRequests.renderCache.some(
+        (request) => request.headsHash === expectedWarmStartRenderHeadsHash,
+      )
+    ) {
+      failures.push({
+        kind: "warm-start-render-route",
+        text: `Latest notebook viewer did not warm start from /renders/${expectedWarmStartRenderHeadsHash}`,
+        observedRoutes: notebookRouteRequests,
+      });
+    }
     failures.push(...fatalIsolatedDiagnostics.map(isolatedDiagnosticFailure));
     for (const request of siftWasmRequests) {
       if (request.status >= 400) {
@@ -423,6 +474,9 @@ async function main() {
           expectedLatestRevisionActorLabel,
           expectedLatestRevisionNotebookHeadsHash,
           expectedLatestRevisionRuntimeHeadsHash,
+          expectLiveSync,
+          forbidLegacyRenderRoute,
+          expectedWarmStartRenderHeadsHash,
           timings_ms: timingsMs,
           renderApiCheck,
           catalogApiCheck,
@@ -434,6 +488,7 @@ async function main() {
           pageTextMatches,
           themeModeChecks,
           iframeMetrics,
+          notebookRouteRequests,
           siftWasmRequests,
           runtimedWasmRequests,
           rendererCompletions: rendererCompletions.length,
@@ -484,6 +539,28 @@ function parseExpectedTexts(envName, fallback) {
 
 function markTiming(name) {
   timingsMs[name] ??= Math.round(performance.now() - smokeStartedAt);
+}
+
+function captureNotebookRouteRequest(url) {
+  const route = hostedNotebookRequestKind(targetUrl, url);
+  if (!route) {
+    return;
+  }
+
+  switch (route.kind) {
+    case "catalog":
+      notebookRouteRequests.catalog.push({ url });
+      break;
+    case "live-sync":
+      notebookRouteRequests.liveSync.push({ url });
+      break;
+    case "render-cache":
+      notebookRouteRequests.renderCache.push({ url, headsHash: route.headsHash });
+      break;
+    case "legacy-render":
+      notebookRouteRequests.legacyRender.push({ url });
+      break;
+  }
 }
 
 function themeModeSpec(value) {

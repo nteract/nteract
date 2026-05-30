@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   catalogApiUrlForViewer,
   expectedRenderSourceForViewer,
+  hostedNotebookRequestKind,
   notebookViewerUrl,
   pinnedNotebookViewerUrl,
   renderApiUrlForViewer,
@@ -71,6 +72,34 @@ describe("hosted render smoke routes", () => {
     });
   });
 
+  it("decodes viewer URL path segments before matching hosted requests", () => {
+    assert.deepEqual(notebookViewerUrl("https://example.com/n/folder%2Fdemo/lets%20edit"), {
+      origin: "https://example.com",
+      notebookId: "folder/demo",
+      vanityName: "lets edit",
+    });
+    assert.deepEqual(pinnedNotebookViewerUrl("https://example.com/n/folder%2Fdemo/r/heads%2F1"), {
+      origin: "https://example.com",
+      notebookId: "folder/demo",
+      headsHash: "heads/1",
+    });
+    assert.deepEqual(
+      hostedNotebookRequestKind(
+        "https://example.com/n/folder%2Fdemo/lets%20edit",
+        "wss://example.com/n/folder%2Fdemo/sync",
+      ),
+      { kind: "live-sync" },
+    );
+    assert.equal(
+      catalogApiUrlForViewer("https://example.com/n/folder%2Fdemo/lets%20edit"),
+      "https://example.com/api/n/folder%2Fdemo",
+    );
+    assert.equal(
+      renderApiUrlForViewer("https://example.com/n/folder%2Fdemo/lets%20edit", "heads/2"),
+      "https://example.com/api/n/folder%2Fdemo/renders/heads%2F2",
+    );
+  });
+
   it("summarizes pinned viewer URLs separately from live viewer URLs", () => {
     assert.equal(notebookViewerUrl("https://example.com/n/foo/r/heads"), null);
     assert.deepEqual(pinnedNotebookViewerUrl("https://example.com/n/foo/r/heads"), {
@@ -91,6 +120,52 @@ describe("hosted render smoke routes", () => {
       "snapshot-pair",
     );
     assert.equal(expectedRenderSourceForViewer("https://example.com/n/foo/r/heads", ""), null);
+  });
+
+  it("classifies live notebook route requests for hosted smoke assertions", () => {
+    const viewerUrl = "https://preview.runt.run/n/01KSQKEPFJVHV4T4ZDYS9V7T80/lets-edit";
+
+    assert.deepEqual(
+      hostedNotebookRequestKind(
+        viewerUrl,
+        "wss://preview.runt.run/n/01KSQKEPFJVHV4T4ZDYS9V7T80/sync?viewer_session=abc",
+      ),
+      { kind: "live-sync" },
+    );
+    assert.deepEqual(
+      hostedNotebookRequestKind(
+        viewerUrl,
+        "https://preview.runt.run/api/n/01KSQKEPFJVHV4T4ZDYS9V7T80",
+      ),
+      { kind: "catalog" },
+    );
+    assert.deepEqual(
+      hostedNotebookRequestKind(
+        viewerUrl,
+        "https://preview.runt.run/api/n/01KSQKEPFJVHV4T4ZDYS9V7T80/renders/heads-edit",
+      ),
+      { kind: "render-cache", headsHash: "heads-edit" },
+    );
+    assert.deepEqual(
+      hostedNotebookRequestKind(
+        viewerUrl,
+        "https://preview.runt.run/api/n/01KSQKEPFJVHV4T4ZDYS9V7T80/render",
+      ),
+      { kind: "legacy-render" },
+    );
+  });
+
+  it("ignores route requests for other origins or notebooks", () => {
+    const viewerUrl = "https://preview.runt.run/n/topic-viz";
+
+    assert.equal(
+      hostedNotebookRequestKind(viewerUrl, "https://preview.runt.run/api/n/other/render"),
+      null,
+    );
+    assert.equal(
+      hostedNotebookRequestKind(viewerUrl, "https://example.com/api/n/topic-viz/render"),
+      null,
+    );
   });
 
   it("returns null for non-viewer URLs", () => {
