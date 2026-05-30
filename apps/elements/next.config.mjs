@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const siftWasmAdapterPath = path.join(dirname, "lib/sift-wasm-module.ts");
 const siftWasmAdapterImport = "./lib/sift-wasm-module.ts";
+const frameConfigSourcePath = path.join(dirname, "../../src/components/isolated/frame-config.ts");
+const frameConfigAdapterPath = path.join(dirname, "components/isolated/frame-config-adapter.ts");
+const frameConfigAdapterImport = "./components/isolated/frame-config-adapter.ts";
 
 /** @type {import("next").NextConfig} */
 const config = {
@@ -17,12 +20,16 @@ const config = {
   transpilePackages: ["@nteract/sift"],
   turbopack: {
     resolveAlias: {
+      "./frame-config": frameConfigAdapterImport,
+      [frameConfigSourcePath]: frameConfigAdapterImport,
       "sift-wasm/sift_wasm.js": siftWasmAdapterImport,
     },
   },
   webpack(nextConfig) {
     nextConfig.resolve.alias = {
       ...nextConfig.resolve.alias,
+      "./frame-config": frameConfigAdapterPath,
+      [frameConfigSourcePath]: frameConfigAdapterPath,
       "sift-wasm/sift_wasm.js": siftWasmAdapterPath,
     };
     return nextConfig;

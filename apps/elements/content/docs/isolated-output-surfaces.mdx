@@ -16,16 +16,17 @@ content becomes shared output manifests.
 
 The page imports current helpers from `src/components/isolated/**`: output lane
 policy, frame sizing, host-context theme variables, MCP host-context conversion,
-and MCP structured content conversion. Frame document selection and sandbox
-policy use a docs-local adapter that mirrors the production helper while
-avoiding the raw `frame.html?raw` bundle. It also renders the docs-local
-`IsolatedFrame` adapter so payload shape and host context stay visible without
-booting production iframe scripts.
+MCP structured content conversion, and the production `McpAppOutputFrame`
+wrapper. Frame document selection and sandbox policy use a docs-local alias for
+the production helper so Next does not import the raw Tauri `frame.html?raw`
+bundle. The MCP frame surface uses a fixture renderer bundle for resolved
+HTML/text payloads, while the docs-local `IsolatedFrame` adapter keeps payload
+shape and host context visible without Vite virtual renderer artifacts.
 
 ## What stays behind adapters
 
 The production frame runtime still owns JavaScript evaluation, renderer plugin
-installation, widget comm replay, raw HTML execution, and generated Sift WASM
-asset loading. The catalog should keep those as explicit adapters until they can
-be exercised without importing desktop runtime state or executing untrusted
-output code in the docs app.
+installation, widget comm replay, untrusted raw HTML execution, and generated
+renderer asset loading. The catalog should keep those as explicit adapters until
+they can be exercised without importing desktop runtime state or executing
+untrusted output code in the docs app.

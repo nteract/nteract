@@ -36,12 +36,14 @@ priority helper the notebook uses before rendering.
 ## What still needs an adapter
 
 The [output isolation surfaces](/docs/isolated-output-surfaces) page now covers
-frame policy, host-context conversion, sizing, lane routing, and MCP structured
-output mapping. Executable JavaScript, raw HTML and markdown runtime execution,
-third-party renderer library loading, live output-widget comm transport, and
-production isolated-frame asset loading still need fixture-backed iframe,
-widget-store, or generated asset adapters before this docs app should own those
-runtime paths. The Sift Parquet URL path now has a docs-owned static WASM asset;
-Arrow stream manifests remain a separate renderer adapter slice. The widget
-catalog covers local `OutputModel` replay through `WidgetStore`; the remaining
-output-widget boundary is the live kernel capture and comm transport.
+frame policy, host-context conversion, sizing, lane routing, MCP structured
+output mapping, and the production MCP output-frame wrapper with a fixture
+renderer bundle for resolved HTML/text payloads. Executable JavaScript, raw HTML
+and markdown runtime execution, third-party renderer library loading, live
+output-widget comm transport, and production renderer bundle/plugin artifacts
+still need fixture-backed iframe, widget-store, or generated asset adapters
+before this docs app should own those runtime paths. The Sift Parquet URL path
+now has a docs-owned static WASM asset; Arrow stream manifests remain a separate
+renderer adapter slice. The widget catalog covers local `OutputModel` replay
+through `WidgetStore`; the remaining output-widget boundary is the live kernel
+capture and comm transport.

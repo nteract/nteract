@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   ArrowDownToLine,
   Boxes,
@@ -7,6 +8,7 @@ import {
   Gauge,
   Layers3,
   LockKeyhole,
+  MonitorPlay,
   Palette,
   ShieldCheck,
 } from "lucide-react";
@@ -30,6 +32,7 @@ import {
   mcpAppStructuredContentToSharedOutputInputs,
   type McpAppStructuredContent,
 } from "@/components/isolated/mcp-app-structured-content";
+import { McpAppOutputFrame, type McpAppCellData } from "@/components/isolated/mcp-app-output-frame";
 import { outputFrameDisplayHeight } from "@/components/isolated/output-frame-sizing";
 
 const laneOutputs: JupyterOutput[] = [
@@ -125,6 +128,100 @@ const structuredContent: McpAppStructuredContent = {
   ],
 };
 
+const mcpFrameCell: McpAppCellData = {
+  cell_id: "cell-mcp-frame",
+  cell_type: "code",
+  source: "display(report_card)",
+  execution_count: 4,
+  status: "idle",
+  outputs: [
+    {
+      output_id: "mcp-frame-html",
+      output_type: "display_data",
+      data: {
+        "text/html": [
+          '<section style="font: 14px system-ui; padding: 14px; border: 1px solid #d4d4d8; border-radius: 8px;">',
+          '<div style="font-size: 12px; color: #71717a; text-transform: uppercase; letter-spacing: .04em;">MCP App Output</div>',
+          '<strong style="display: block; margin-top: 6px; font-size: 18px;">Hosted frame handoff</strong>',
+          '<p style="margin: 8px 0 0; color: #52525b;">Structured cell output resolves into the shared iframe embed API.</p>',
+          "</section>",
+        ].join(""),
+        "text/plain": "Hosted frame handoff",
+      },
+      llm_preview: { head: "Hosted frame handoff" },
+    },
+  ],
+};
+
+const docsOutputFrameRendererBundle = {
+  rendererCode: `
+    (function () {
+      if (window.__NTERACT_ELEMENTS_RENDERER__) return;
+      window.__NTERACT_ELEMENTS_RENDERER__ = true;
+      var root = document.getElementById("root");
+
+      function send(method, params) {
+        window.parent.postMessage({ jsonrpc: "2.0", method: method, params: params || {} }, "*");
+      }
+
+      function renderOne(payload) {
+        var output = document.createElement("div");
+        var mimeType = payload && payload.mimeType;
+        var data = payload && payload.data;
+
+        if (mimeType === "text/html") {
+          output.innerHTML = String(data || "");
+        } else {
+          var pre = document.createElement("pre");
+          pre.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+          output.appendChild(pre);
+        }
+
+        return output;
+      }
+
+      function complete() {
+        var height = Math.max(
+          1,
+          Math.ceil(document.documentElement.scrollHeight || document.body.scrollHeight || 1),
+        );
+        send("nteract/renderComplete", { height: height });
+        send("ui/notifications/size-changed", { height: height });
+      }
+
+      function scheduleComplete() {
+        complete();
+        requestAnimationFrame(complete);
+        window.setTimeout(complete, 0);
+      }
+
+      window.addEventListener("message", function (event) {
+        if (event.source && event.source !== window.parent) return;
+
+        var message = event.data || {};
+        if (message.jsonrpc !== "2.0") return;
+
+        if (message.method === "nteract/renderOutput") {
+          root.replaceChildren(renderOne(message.params || {}));
+          scheduleComplete();
+        }
+
+        if (message.method === "nteract/renderBatch") {
+          root.replaceChildren();
+          ((message.params && message.params.outputs) || []).forEach(function (payload) {
+            root.appendChild(renderOne(payload));
+          });
+          scheduleComplete();
+        }
+      });
+
+      send("nteract/rendererReady");
+      window.parent.postMessage({ type: "renderer_ready", payload: null }, "*");
+    })();
+  `,
+  rendererCss: "",
+};
+
 const framePayloads: RenderPayload[] = [
   {
     outputId: "html-frame",
@@ -169,6 +266,7 @@ function documentPreview(document: ReturnType<typeof createIsolatedFrameDocument
 }
 
 export function IsolatedOutputSurfacesExample() {
+  const [mcpFrameEvents, setMcpFrameEvents] = useState<string[]>([]);
   const baseContext = createNteractEmbedHostContext({
     isDark: false,
     colorTheme: "cream",
@@ -410,6 +508,72 @@ export function IsolatedOutputSurfacesExample() {
             <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-fd-muted-foreground">
               {formatJson(sharedOutputs)}
             </pre>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
+          <div className="flex items-center gap-2">
+            <MonitorPlay className="size-4 text-fd-muted-foreground" />
+            <h2 className="text-sm font-semibold">MCP App output frame</h2>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            This surface mounts the production McpAppOutputFrame and createNteractOutputEmbed path
+            with a fixture renderer bundle that handles resolved HTML/text payloads. The sandboxed
+            frame renders one resolved HTML output without daemon state or Vite virtual renderer
+            artifacts.
+          </p>
+        </div>
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+          <div className="min-h-[180px] rounded-md border border-fd-border bg-fd-background p-3">
+            <McpAppOutputFrame
+              cell={mcpFrameCell}
+              hostContext={{
+                theme: mergedContext.theme,
+                displayMode: "inline",
+                containerDimensions: { width: 720, maxHeight: 320 },
+                styles: {
+                  variables: {
+                    "--mcp-accent": "#0ea5e9",
+                  },
+                },
+              }}
+              rendererBundle={docsOutputFrameRendererBundle}
+              rendererAssetsBaseUrl="/renderer-assets"
+              autoHeight={false}
+              maxHeight={320}
+              className="overflow-hidden rounded-md"
+              onDiagnostic={(phase) => {
+                setMcpFrameEvents((events) => [...events.slice(-5), phase]);
+              }}
+              onError={(error) =>
+                setMcpFrameEvents((events) => [...events.slice(-5), `error: ${error.message}`])
+              }
+            />
+          </div>
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+              frame cell fixture
+            </div>
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-fd-muted-foreground">
+              {formatJson(mcpFrameCell)}
+            </pre>
+            <div className="mt-3 border-t border-fd-border pt-3">
+              <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                embed events
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {(mcpFrameEvents.length > 0 ? mcpFrameEvents : ["waiting"]).map((event, index) => (
+                  <span
+                    key={`${index}-${event}`}
+                    className="rounded-full border border-fd-border bg-fd-card px-2 py-1 font-mono text-[11px] text-fd-muted-foreground"
+                  >
+                    {event}
+                  </span>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </section>

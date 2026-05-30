@@ -138,16 +138,16 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable with static TableData, and a HuggingFace Parquet URL decoded by docs-served Sift WASM now render from fixtures; live JavaScript execution, third-party renderer loading, live kernel widget comm transport, Arrow stream manifests, and production isolated-frame asset loading remain explicit adapter boundaries.",
+      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable with static TableData, and a HuggingFace Parquet URL decoded by docs-served Sift WASM now render from fixtures; live JavaScript execution, third-party renderer loading, live kernel widget comm transport, Arrow stream manifests, and production renderer asset bundles remain explicit adapter boundaries.",
   },
   {
     family: "Output isolation",
     source:
-      "src/components/isolated/{host-context,mcp-app-structured-content,output-frame-sizing,output-lane-policy}.ts + apps/elements/components/isolated/{index.tsx,frame-config-adapter.ts}",
+      "src/components/isolated/{mcp-app-output-frame,output-embed,host-context,mcp-app-structured-content,output-frame-sizing,output-lane-policy}.ts + apps/elements/components/isolated/{index.tsx,frame-config-adapter.ts}",
     target: "nteract renderers",
     status: "active",
     intent:
-      "Host-context theme merging, output lane routing, sizing, MCP structured output mapping, and the docs IsolatedFrame and frame-config adapters now render without booting production iframe scripts.",
+      "Host-context theme merging, output lane routing, sizing, MCP structured output mapping, the production McpAppOutputFrame/createNteractOutputEmbed wrapper, and the docs IsolatedFrame/frame-config adapters now render with fixture-owned iframe readiness instead of desktop renderer artifacts.",
   },
   {
     family: "Widgets",
