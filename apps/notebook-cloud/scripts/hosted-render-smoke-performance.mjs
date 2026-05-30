@@ -33,10 +33,12 @@ export function classifyPerformanceResource(
     }
   }
 
-  const isRendererAsset =
-    rendererAssetOrigin && parsed.origin === rendererAssetOrigin && parsed.pathname.includes("/");
-  const isTargetAsset = targetOrigin && parsed.origin === targetOrigin;
-  if (isRendererAsset || isTargetAsset) {
+  const isRendererAsset = rendererAssetOrigin && parsed.origin === rendererAssetOrigin;
+  const isTargetRendererAsset =
+    targetOrigin &&
+    parsed.origin === targetOrigin &&
+    parsed.pathname.startsWith("/renderer-assets/");
+  if (isRendererAsset || isTargetRendererAsset) {
     if (parsed.pathname.endsWith("/runtimed_wasm.js")) {
       return "runtimed_wasm_js";
     }
@@ -46,17 +48,42 @@ export function classifyPerformanceResource(
     if (parsed.pathname.endsWith("/sift_wasm.wasm")) {
       return "sift_wasm_binary";
     }
+    if (parsed.pathname.endsWith(".js")) {
+      return "renderer_asset_js";
+    }
+    if (parsed.pathname.endsWith(".css")) {
+      return "renderer_asset_css";
+    }
   }
 
-  if (
-    outputDocumentOrigin &&
-    parsed.origin === outputDocumentOrigin &&
-    parsed.pathname.startsWith("/frame/")
-  ) {
-    return "output_document_frame";
+  if (outputDocumentOrigin && parsed.origin === outputDocumentOrigin) {
+    if (parsed.pathname.startsWith("/frame/")) {
+      return "output_document_frame";
+    }
+    if (parsed.pathname.endsWith(".js")) {
+      return "output_document_js";
+    }
+    if (parsed.pathname.endsWith(".css")) {
+      return "output_document_css";
+    }
+    return "output_document_asset";
   }
 
   return null;
+}
+
+export function refinePerformanceResourceKind(resource) {
+  if (resource.kind !== "notebook_blob") {
+    return resource;
+  }
+  const contentType = resource.contentType ?? "";
+  if (contentType.includes("application/vnd.apache.arrow.stream")) {
+    return { ...resource, kind: "arrow_stream_blob" };
+  }
+  if (contentType.includes("application/vnd.nteract.arrow-stream-manifest+json")) {
+    return { ...resource, kind: "arrow_manifest_blob" };
+  }
+  return resource;
 }
 
 export function summarizePerformanceResources(resources, milestones = {}) {

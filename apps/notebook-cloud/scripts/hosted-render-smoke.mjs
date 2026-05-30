@@ -18,6 +18,7 @@ import {
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
 import {
   classifyPerformanceResource,
+  refinePerformanceResourceKind,
   summarizePerformanceResources,
   withTiming,
 } from "./hosted-render-smoke-performance.mjs";
@@ -533,11 +534,13 @@ function finishPerformanceRequest(request, updates) {
     return;
   }
   performanceRequests.delete(request);
-  performanceResources.push({
-    ...record,
-    ...updates,
-    end_ms: elapsedMs(),
-  });
+  performanceResources.push(
+    refinePerformanceResourceKind({
+      ...record,
+      ...updates,
+      end_ms: elapsedMs(),
+    }),
+  );
 }
 
 function themeModeSpec(value) {
