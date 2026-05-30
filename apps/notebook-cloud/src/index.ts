@@ -1766,6 +1766,8 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {
+  outputDocumentBaseUrl?: string | null;
+  rendererAssetsBasePath?: string;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;
 }
@@ -1834,12 +1836,40 @@ function viewerResourceHints(config: ViewerShellConfig | null): string {
   }
 
   return [
+    ...preconnectResourceHints([
+      config.rendererAssetsBasePath,
+      config.outputDocumentBaseUrl,
+      config.runtimedWasmModulePath,
+    ]),
     viewerEntryHint,
     `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
     `<link rel="preload" href="${escapeHtml(
       config.runtimedWasmPath,
     )}" as="fetch" type="application/wasm" crossorigin />`,
   ].join("\n  ");
+}
+
+function preconnectResourceHints(urls: Array<string | null | undefined>): string[] {
+  const origins = new Set<string>();
+  const hints: string[] = [];
+  for (const value of urls) {
+    if (!value) continue;
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      continue;
+    }
+    if (origins.has(url.origin)) {
+      continue;
+    }
+    origins.add(url.origin);
+    hints.push(`<link rel="preconnect" href="${escapeHtml(url.origin)}" crossorigin />`);
+  }
+  return hints;
 }
 
 function authConfigForRequest(request: Request, env: Env): { oidc: Record<string, string> | null } {
