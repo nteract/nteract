@@ -49,7 +49,15 @@ interface CellContainerProps {
   className?: string;
 }
 
-function CellActionOverlay({ children, dataSlot }: { children?: ReactNode; dataSlot: string }) {
+function CellActionOverlay({
+  children,
+  dataSlot,
+  visible = false,
+}: {
+  children?: ReactNode;
+  dataSlot: string;
+  visible?: boolean;
+}) {
   if (!children) return null;
 
   return (
@@ -61,6 +69,7 @@ function CellActionOverlay({ children, dataSlot }: { children?: ReactNode; dataS
         "pointer-events-none opacity-0 transition-opacity duration-150",
         "group-hover:pointer-events-auto group-hover:opacity-100",
         "focus-within:pointer-events-auto focus-within:opacity-100",
+        visible && "pointer-events-auto opacity-100",
       )}
     >
       {children}
@@ -159,7 +168,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               >
                 {codeContent}
               </div>
-              <CellActionOverlay dataSlot="cell-action-overlay">
+              <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
                 {rightGutterContent}
               </CellActionOverlay>
             </div>
@@ -188,7 +197,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 >
                   {outputContent}
                 </div>
-                <CellActionOverlay dataSlot="cell-output-action-overlay">
+                <CellActionOverlay dataSlot="cell-output-action-overlay" visible={isFocused}>
                   {outputRightGutterContent}
                 </CellActionOverlay>
               </div>
@@ -211,7 +220,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               <div className={cn("min-w-0 flex-1 pt-1.5 pb-3 pr-3", cellContentColumnInset)}>
                 {children}
               </div>
-              <CellActionOverlay dataSlot="cell-action-overlay">
+              <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
                 {rightGutterContent}
               </CellActionOverlay>
             </div>

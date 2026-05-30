@@ -65,50 +65,81 @@ export interface NotebookViewProps {
 
 /** Tailwind classes for cell adder ribbon colors — must be static strings for tree-shaking. */
 const adderRibbonClasses: Record<string, string> = {
-  code: [
-    "group-hover/adder:bg-sky-400 dark:group-hover/adder:bg-sky-600",
-    "group-focus-within/adder:bg-sky-400 dark:group-focus-within/adder:bg-sky-600",
-  ].join(" "),
-  markdown: [
-    "group-hover/adder:bg-emerald-400 dark:group-hover/adder:bg-emerald-600",
-    "group-focus-within/adder:bg-emerald-400 dark:group-focus-within/adder:bg-emerald-600",
-  ].join(" "),
-  raw: [
-    "group-hover/adder:bg-rose-400 dark:group-hover/adder:bg-rose-600",
-    "group-focus-within/adder:bg-rose-400 dark:group-focus-within/adder:bg-rose-600",
-  ].join(" "),
+  code: "bg-sky-400 dark:bg-sky-600",
+  markdown: "bg-emerald-400 dark:bg-emerald-600",
 };
-const defaultAdderRibbonClass = adderRibbonClasses.code;
+const terminalAdderRibbonClasses: Record<string, string> = {
+  code: "bg-gradient-to-b from-sky-400 via-sky-400/60 to-sky-400/0 dark:from-sky-600 dark:via-sky-600/60 dark:to-sky-600/0",
+  markdown:
+    "bg-gradient-to-b from-emerald-400 via-emerald-400/60 to-emerald-400/0 dark:from-emerald-600 dark:via-emerald-600/60 dark:to-emerald-600/0",
+};
 const NOTEBOOK_TAIL_SPACE = "clamp(12rem, 35vh, 22rem)";
 const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 
 function CellAdder({
   afterCellId,
   onAdd,
-  cellType = "code",
+  terminal = false,
 }: {
   afterCellId?: string | null;
   onAdd: AddCellHandler;
-  cellType?: string;
+  terminal?: boolean;
 }) {
-  const ribbonClass = adderRibbonClasses[cellType] ?? defaultAdderRibbonClass;
+  const [activeCellType, setActiveCellType] = useState<"code" | "markdown" | null>(null);
+  const ribbonClass = activeCellType
+    ? terminal
+      ? terminalAdderRibbonClasses[activeCellType]
+      : adderRibbonClasses[activeCellType]
+    : undefined;
 
   return (
     <div
       data-slot="cell-adder"
-      className={cn("group/adder flex h-7 w-full items-center select-none", notebookCellLayoutVars)}
+      data-terminal={terminal || undefined}
+      className={cn(
+        "group/adder flex w-full select-none",
+        terminal ? "h-32 items-start" : "h-7 items-center",
+        notebookCellLayoutVars,
+      )}
+      onPointerLeave={() => setActiveCellType(null)}
+      onBlur={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          setActiveCellType(null);
+        }
+      }}
     >
       <div
         data-slot="cell-adder-ribbon"
         className={cn(
-          "h-full w-1 shrink-0 bg-gray-200/55 transition-colors duration-150 dark:bg-gray-700/55",
-          ribbonClass,
+          "relative h-full w-1 shrink-0 overflow-hidden",
+          terminal &&
+            "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-2rem),transparent_100%)]",
         )}
-      />
+      >
+        <div
+          data-slot="cell-adder-ribbon-continuation"
+          className={cn(
+            "absolute inset-0 dark:bg-gray-700/55",
+            terminal ? "bg-gray-200/70" : "bg-gray-200/55",
+          )}
+        />
+        {ribbonClass ? (
+          <div
+            data-slot="cell-adder-ribbon-intent"
+            className={cn(
+              "absolute left-0 top-0 w-full transition-colors duration-150",
+              terminal ? "h-16" : "h-full",
+              ribbonClass,
+            )}
+          />
+        ) : null}
+      </div>
       <div
         data-slot="cell-adder-actions"
         className={cn(
           "flex items-center gap-1 opacity-0 transition-opacity duration-150",
+          terminal && "pt-0.5",
           cellContentColumnOffset,
           "group-hover/adder:opacity-100 group-hover/adder:delay-75",
           "group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
@@ -117,6 +148,8 @@ function CellAdder({
         <button
           type="button"
           title="Add code cell"
+          onPointerEnter={() => setActiveCellType("code")}
+          onFocus={() => setActiveCellType("code")}
           onClick={() => onAdd("code", afterCellId)}
           className="inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground/55 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
         >
@@ -129,6 +162,8 @@ function CellAdder({
         <button
           type="button"
           title="Add markdown cell"
+          onPointerEnter={() => setActiveCellType("markdown")}
+          onFocus={() => setActiveCellType("markdown")}
           onClick={() => onAdd("markdown", afterCellId)}
           className="inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground/55 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
         >
@@ -283,15 +318,14 @@ const CellRenderer = memo(function CellRenderer({
 /** Wrapper component for sortable cells */
 function SortableCell({
   cellId,
-  nextCellId,
   index,
   renderCell,
   onAddCell,
   onDeleteCell,
+  isLastCell,
   isHiddenInGroup,
 }: {
   cellId: string;
-  nextCellId?: string;
   index: number;
   renderCell: (
     cell: NotebookCell,
@@ -301,10 +335,9 @@ function SortableCell({
   ) => React.ReactNode;
   onAddCell: AddCellHandler;
   onDeleteCell: (cellId: string) => void;
+  isLastCell?: boolean;
   isHiddenInGroup?: boolean;
 }) {
-  const cell = useCell(cellId);
-  const nextCell = useCell(nextCellId ?? "");
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: cellId,
   });
@@ -327,13 +360,9 @@ function SortableCell({
     return <div id={anchorId} ref={setNodeRef} style={style} />;
   }
 
-  const cellType = cell?.cell_type ?? "code";
-  // Adder color matches the cell below; for the last cell, fall back to its own type
-  const nextCellType = nextCell?.cell_type ?? cellType;
-
   return (
     <div id={anchorId} ref={setNodeRef} style={style}>
-      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} cellType={cellType} />}
+      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
@@ -351,7 +380,7 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      <CellAdder afterCellId={cellId} onAdd={onAddCell} cellType={nextCellType} />
+      <CellAdder afterCellId={cellId} onAdd={onAddCell} terminal={isLastCell} />
     </div>
   );
 }
@@ -931,12 +960,12 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth py-4 pl-0 pr-2"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth pt-0 pb-4 pl-0 pr-2"
       style={{
         contain: "paint",
         overflowAnchor: "none",
         paddingBottom: NOTEBOOK_TAIL_SPACE,
-        scrollPaddingBlock: `1rem ${NOTEBOOK_TAIL_SPACE}`,
+        scrollPaddingBlock: `0rem ${NOTEBOOK_TAIL_SPACE}`,
       }}
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-session-runtime-state={sessionRuntimeState ?? "unknown"}
@@ -999,11 +1028,11 @@ function NotebookViewContent({
                   <SortableCell
                     key={cellId}
                     cellId={cellId}
-                    nextCellId={cellIds[index + 1]}
                     index={index}
                     renderCell={renderCell}
                     onAddCell={onAddCell}
                     onDeleteCell={onDeleteCell}
+                    isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}
                   />
                 );
