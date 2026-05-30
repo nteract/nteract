@@ -71,8 +71,8 @@ export function NotebookPackageSummaryPanel({
 function PackageValueList({ values }: { values: readonly string[] }) {
   return (
     <div className="flex flex-wrap gap-1">
-      {values.map((value) => (
-        <code key={value} className="rounded bg-muted px-1.5 py-0.5 text-[11px]">
+      {values.map((value, index) => (
+        <code key={`${value}:${index}`} className="rounded bg-muted px-1.5 py-0.5 text-[11px]">
           {value}
         </code>
       ))}
