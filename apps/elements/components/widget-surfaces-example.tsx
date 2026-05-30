@@ -24,6 +24,7 @@ import {
   useWidgetStoreRequired,
 } from "@/components/widgets/widget-store-context";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
+import { WidgetUpdateManager, type ContentRef } from "@/components/widgets/widget-update-manager";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
@@ -59,6 +60,16 @@ function textDataView(value: string): DataView {
   return new DataView(copy.buffer);
 }
 
+function isContentRef(value: unknown): value is ContentRef {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "blob" in value &&
+    "size" in value &&
+    "media_type" in value
+  );
+}
+
 function base64ToUint8ClampedArray(value: string): Uint8ClampedArray {
   const binary = globalThis.atob(value);
   const bytes = new Uint8ClampedArray(binary.length);
@@ -70,6 +81,17 @@ function base64ToUint8ClampedArray(value: string): Uint8ClampedArray {
 
 function fixtureAssetUrl(pathname: string): string {
   return new URL(pathname, window.location.origin).href;
+}
+
+function persistedBinaryImageSvg(run: number): string {
+  const accent = run % 2 === 0 ? "#8b5cf6" : "#f97316";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 96">
+  <rect width="220" height="96" rx="12" fill="#fff7ed"/>
+  <rect x="18" y="18" width="58" height="60" rx="8" fill="${accent}"/>
+  <circle cx="126" cy="48" r="28" fill="#0ea5e9"/>
+  <path d="M158 70 L194 28" stroke="#111827" stroke-width="8" stroke-linecap="round"/>
+  <text x="18" y="88" font-family="ui-sans-serif, system-ui" font-size="12" font-weight="700" fill="#111827">persisted binary ${run}</text>
+</svg>`;
 }
 
 function isHydratableFixtureUrl(value: string): boolean {
@@ -876,7 +898,12 @@ const renderedWidgets = [
   {
     name: "WidgetStoreContext",
     source: "src/components/widgets/widget-store-context.tsx",
-    role: "Fixture provider uses the production context shape without notebook comm routing.",
+    role: "Fixture provider uses the production context shape with a docs-local CRDT/blob adapter.",
+  },
+  {
+    name: "WidgetUpdateManager",
+    source: "src/components/widgets/widget-update-manager.ts",
+    role: "Optimistic widget updates, debounced CRDT writes, binary extraction, and blob ContentRef handoff render through the docs fixture adapter.",
   },
   {
     name: "IntSlider",
@@ -967,12 +994,12 @@ const adapterBoundaries = [
   {
     title: "Comm bridge outbound",
     icon: Cable,
-    body: "State updates stay local to the fixture. Custom messages and output replay updates are logged instead of crossing JSON-RPC or shell channels.",
+    body: "State updates now flow through WidgetUpdateManager into a docs-local CRDT writer. Custom messages are still logged instead of crossing JSON-RPC or shell channels.",
   },
   {
     title: "Binary buffers",
     icon: FileJson,
-    body: "Media widgets now cover inline DataViews and a docs-local bufferPaths URL hydrator; ipycanvas replays local command buffers and saved image_data bytes. Live kernel blob resolver state and sync hydration remain adapter concerns.",
+    body: "Media widgets now cover inline DataViews, a docs-local bufferPaths URL hydrator, binary upload ContentRefs, local ipycanvas command buffers, and saved image_data bytes. Production daemon blob resolver lifecycle remains an adapter concern.",
   },
   {
     title: "Anywidget ESM",
@@ -1264,6 +1291,68 @@ function OutputWidgetReplayFixture() {
   );
 }
 
+function WidgetPersistenceFixture() {
+  const { sendUpdate } = useWidgetStoreRequired();
+  const models = useWidgetModels();
+  const model = models.get("widget-binary-image");
+  const [persistCount, setPersistCount] = useState(0);
+  const value = model?.state.value;
+  const byteLength =
+    value instanceof DataView
+      ? value.byteLength
+      : value instanceof Uint8Array
+        ? value.byteLength
+        : 0;
+  const bufferPaths = model?.bufferPaths?.map((path) => path.join(".")).join(", ") ?? "none";
+
+  const persistBinaryUpdate = useCallback(async () => {
+    const next = persistCount + 1;
+    setPersistCount(next);
+    await sendUpdate("widget-binary-image", {
+      value: textDataView(persistedBinaryImageSvg(next)),
+    });
+  }, [persistCount, sendUpdate]);
+
+  return (
+    <div
+      className="rounded-md border border-fd-border bg-fd-card p-3"
+      data-testid="widget-persistence-suite"
+    >
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold">WidgetUpdateManager persistence</h4>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+            The fixture routes `sendUpdate` through the production update manager. Binary leaves
+            stay optimistic in WidgetStore while a docs-local uploader writes ContentRefs to the
+            inert CRDT writer.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => void persistBinaryUpdate()}>
+          Persist binary update
+        </Button>
+      </div>
+      <div className="grid gap-2 text-xs text-fd-muted-foreground sm:grid-cols-3">
+        <div className="rounded-md border border-fd-border bg-fd-background p-2">
+          <div className="font-medium text-fd-foreground">bufferPaths</div>
+          <div className="mt-1 font-mono">{bufferPaths}</div>
+        </div>
+        <div className="rounded-md border border-fd-border bg-fd-background p-2">
+          <div className="font-medium text-fd-foreground">optimistic bytes</div>
+          <div className="mt-1 font-mono" data-testid="widget-persistence-byte-length">
+            {byteLength}
+          </div>
+        </div>
+        <div className="rounded-md border border-fd-border bg-fd-background p-2">
+          <div className="font-medium text-fd-foreground">updates</div>
+          <div className="mt-1 font-mono" data-testid="widget-persistence-count">
+            {persistCount}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ControllerPollingFixture() {
   const [frame, setFrame] = useState(1);
   const frameRef = useRef(frame);
@@ -1349,26 +1438,58 @@ function WidgetFixtureProvider({ children }: { children: ReactNode }) {
   const logEvent = useCallback((event: string) => {
     setEvents((current) => [event, ...current].slice(0, 5));
   }, []);
+  const logEventRef = useRef(logEvent);
+  const uploadCounterRef = useRef(0);
+  useEffect(() => {
+    logEventRef.current = logEvent;
+  }, [logEvent]);
+
+  const updateManagerRef = useRef<WidgetUpdateManager | null>(null);
+  if (!updateManagerRef.current) {
+    updateManagerRef.current = new WidgetUpdateManager({
+      getStore: () => storeRef.current,
+      getCrdtWriter: () => (commId, patch) => {
+        const keys = Object.entries(patch).map(([key, value]) =>
+          isContentRef(value) ? `${key}->${value.blob}` : key,
+        );
+        logEventRef.current(`persisted ${commId}: ${keys.join(", ")}`);
+      },
+      getBlobUploader: () => async (bytes, mediaType, durability) => {
+        uploadCounterRef.current += 1;
+        const ref: ContentRef = {
+          blob: `fixture-widget-blob-${uploadCounterRef.current.toString().padStart(2, "0")}`,
+          size: bytes.byteLength,
+          media_type: mediaType,
+        };
+        logEventRef.current(`uploaded ${ref.blob}: ${bytes.byteLength}B ${durability}`);
+        return ref;
+      },
+    });
+  }
+  const updateManager = updateManagerRef.current;
 
   const resetFixtures = useCallback(async () => {
+    updateManager.reset();
+    uploadCounterRef.current = 0;
     const hydratedModels = await seedStore(store);
     logEvent("seeded fixture comm state");
     for (const model of hydratedModels) {
       logEvent(`hydrated ${model}`);
     }
-  }, [logEvent, store]);
+  }, [logEvent, store, updateManager]);
 
   useEffect(() => {
     void resetFixtures();
   }, [resetFixtures]);
   useEffect(() => createCanvasManagerRouter(store), [store]);
+  useEffect(() => () => updateManager.dispose(), [updateManager]);
 
   const sendUpdate = useCallback(
     async (commId: string, state: Record<string, unknown>) => {
-      store.updateModel(commId, state);
       logEvent(`update ${commId}: ${Object.keys(state).join(", ")}`);
+      await updateManager.updateAndPersist(commId, state);
     },
-    [logEvent, store],
+    [logEvent, updateManager],
   );
 
   const sendCustom = useCallback(
@@ -1517,6 +1638,7 @@ export function WidgetSurfacesExample() {
               <div className="space-y-4">
                 <WidgetView modelId="widget-media-title" />
                 <WidgetView modelId="widget-media-box" />
+                <WidgetPersistenceFixture />
                 <OutputWidgetReplayFixture />
               </div>
             </div>
@@ -1601,9 +1723,9 @@ export function WidgetSurfacesExample() {
           <div>
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              The remaining widget catalog work is narrower now: live kernel blob resolver state,
-              live captured-output comm transport, and kernel-originated anywidget asset URLs need
-              explicit iframe/runtime adapters before they can render here.
+              The remaining widget catalog work is narrower now: live captured-output comm
+              transport, kernel-originated anywidget asset URLs, and production daemon blob resolver
+              lifecycle need explicit iframe/runtime adapters before they can render here.
             </p>
           </div>
         </div>
