@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  applyResourceTimingSizes,
   classifyPerformanceResource,
   performanceBudgetFailures,
   refinePerformanceResourceKind,
@@ -132,245 +133,204 @@ describe("hosted smoke performance diagnostics", () => {
   });
 
   it("summarizes first and latest timings by resource kind", () => {
-    assert.deepEqual(
-      summarizePerformanceResources(
-        [
-          {
-            kind: "catalog_api",
-            url: "https://preview.runt.run/api/n/topic-viz",
-            start_ms: 1,
-            end_ms: 6,
-            status: 200,
-          },
-          {
-            kind: "notebook_snapshot",
-            url: "https://preview.runt.run/api/n/topic-viz/snapshots/heads-a",
-            start_ms: 5,
-            end_ms: 15,
-            status: 200,
-          },
-          {
-            kind: "runtime_snapshot",
-            url: "https://preview.runt.run/api/n/topic-viz/runtime-snapshots/heads-b",
-            start_ms: 6,
-            end_ms: 18,
-            status: 200,
-          },
-          {
-            kind: "viewer_js",
-            url: "https://preview.runt.run/assets/notebook-cloud-viewer.js",
-            start_ms: 2,
-            end_ms: 12,
-            status: 200,
-          },
-          {
-            kind: "runtimed_wasm_binary",
-            url: "https://preview.runt.run/renderer-assets/runtimed_wasm_bg.wasm",
-            start_ms: 8,
-            end_ms: 44,
-            status: 200,
-          },
-          {
-            kind: "arrow_stream_blob",
-            url: "https://preview.runt.run/api/n/topic-viz/blobs/arrow",
-            start_ms: 24,
-            end_ms: 70,
-            status: 200,
-          },
-          {
-            kind: "output_document_frame",
-            url: "https://preview.runtusercontent.com/frame/",
-            start_ms: 10,
-            end_ms: 30,
-            status: 200,
-          },
-          {
-            kind: "output_document_frame",
-            url: "https://preview.runtusercontent.com/frame/?two",
-            start_ms: 20,
-            end_ms: 50,
-            status: 200,
-          },
-        ],
-        { live_sync_websocket: 11, source_text: 42, rendered_cell_marker: 55, frame_texts: 80 },
-      ),
-      {
-        milestones: {
-          live_sync_websocket: 11,
-          source_text: 42,
-          rendered_cell_marker: 55,
-          frame_texts: 80,
+    const summary = summarizePerformanceResources(
+      [
+        {
+          kind: "catalog_api",
+          url: "https://preview.runt.run/api/n/topic-viz",
+          start_ms: 1,
+          end_ms: 6,
+          status: 200,
+          contentLength: 128,
         },
-        live_path: {
-          catalog_api_ms: 6,
-          notebook_snapshot_ms: 15,
-          runtime_snapshot_ms: 18,
-          snapshot_pair_complete_ms: 18,
-          live_sync_websocket_ms: 11,
-          source_text_ms: 42,
-          rendered_cell_marker_ms: 55,
-          first_output_iframe_ms: null,
-          frame_texts_ms: 80,
-          first_useful_render_ms: 80,
-          snapshot_pair_to_rendered_cell_ms: 37,
-          snapshot_pair_to_frame_texts_ms: 62,
+        {
+          kind: "notebook_snapshot",
+          url: "https://preview.runt.run/api/n/topic-viz/snapshots/heads-a",
+          start_ms: 5,
+          end_ms: 15,
+          status: 200,
+          contentLength: 2_048,
         },
-        sidecar_assets: {
-          viewer_shell_complete_ms: 12,
-          runtimed_wasm_complete_ms: 44,
-          isolated_renderer_complete_ms: null,
-          output_document_complete_ms: 50,
-          sift_wasm_complete_ms: null,
-          arrow_data_complete_ms: 70,
+        {
+          kind: "runtime_snapshot",
+          url: "https://preview.runt.run/api/n/topic-viz/runtime-snapshots/heads-b",
+          start_ms: 6,
+          end_ms: 18,
+          status: 200,
+          contentLength: 1_024,
         },
-        resources_by_kind: {
-          catalog_api: {
-            count: 1,
-            first_start_ms: 1,
-            first_end_ms: 6,
-            max_end_ms: 6,
-            max_duration_ms: 5,
-            statuses: [200],
-            urls: ["https://preview.runt.run/api/n/topic-viz"],
-            slowest: [
-              {
-                url: "https://preview.runt.run/api/n/topic-viz",
-                start_ms: 1,
-                end_ms: 6,
-                duration_ms: 5,
-                status: 200,
-                failure: null,
-              },
-            ],
-          },
-          notebook_snapshot: {
-            count: 1,
-            first_start_ms: 5,
-            first_end_ms: 15,
-            max_end_ms: 15,
-            max_duration_ms: 10,
-            statuses: [200],
-            urls: ["https://preview.runt.run/api/n/topic-viz/snapshots/heads-a"],
-            slowest: [
-              {
-                url: "https://preview.runt.run/api/n/topic-viz/snapshots/heads-a",
-                start_ms: 5,
-                end_ms: 15,
-                duration_ms: 10,
-                status: 200,
-                failure: null,
-              },
-            ],
-          },
-          runtime_snapshot: {
-            count: 1,
-            first_start_ms: 6,
-            first_end_ms: 18,
-            max_end_ms: 18,
-            max_duration_ms: 12,
-            statuses: [200],
-            urls: ["https://preview.runt.run/api/n/topic-viz/runtime-snapshots/heads-b"],
-            slowest: [
-              {
-                url: "https://preview.runt.run/api/n/topic-viz/runtime-snapshots/heads-b",
-                start_ms: 6,
-                end_ms: 18,
-                duration_ms: 12,
-                status: 200,
-                failure: null,
-              },
-            ],
-          },
-          viewer_js: {
-            count: 1,
-            first_start_ms: 2,
-            first_end_ms: 12,
-            max_end_ms: 12,
-            max_duration_ms: 10,
-            statuses: [200],
-            urls: ["https://preview.runt.run/assets/notebook-cloud-viewer.js"],
-            slowest: [
-              {
-                url: "https://preview.runt.run/assets/notebook-cloud-viewer.js",
-                start_ms: 2,
-                end_ms: 12,
-                duration_ms: 10,
-                status: 200,
-                failure: null,
-              },
-            ],
-          },
-          runtimed_wasm_binary: {
-            count: 1,
-            first_start_ms: 8,
-            first_end_ms: 44,
-            max_end_ms: 44,
-            max_duration_ms: 36,
-            statuses: [200],
-            urls: ["https://preview.runt.run/renderer-assets/runtimed_wasm_bg.wasm"],
-            slowest: [
-              {
-                url: "https://preview.runt.run/renderer-assets/runtimed_wasm_bg.wasm",
-                start_ms: 8,
-                end_ms: 44,
-                duration_ms: 36,
-                status: 200,
-                failure: null,
-              },
-            ],
-          },
-          arrow_stream_blob: {
-            count: 1,
-            first_start_ms: 24,
-            first_end_ms: 70,
-            max_end_ms: 70,
-            max_duration_ms: 46,
-            statuses: [200],
-            urls: ["https://preview.runt.run/api/n/topic-viz/blobs/arrow"],
-            slowest: [
-              {
-                url: "https://preview.runt.run/api/n/topic-viz/blobs/arrow",
-                start_ms: 24,
-                end_ms: 70,
-                duration_ms: 46,
-                status: 200,
-                failure: null,
-              },
-            ],
-          },
-          output_document_frame: {
-            count: 2,
-            first_start_ms: 10,
-            first_end_ms: 30,
-            max_end_ms: 50,
-            max_duration_ms: 30,
-            statuses: [200, 200],
-            urls: [
-              "https://preview.runtusercontent.com/frame/",
-              "https://preview.runtusercontent.com/frame/?two",
-            ],
-            slowest: [
-              {
-                url: "https://preview.runtusercontent.com/frame/?two",
-                start_ms: 20,
-                end_ms: 50,
-                duration_ms: 30,
-                status: 200,
-                failure: null,
-              },
-              {
-                url: "https://preview.runtusercontent.com/frame/",
-                start_ms: 10,
-                end_ms: 30,
-                duration_ms: 20,
-                status: 200,
-                failure: null,
-              },
-            ],
-          },
+        {
+          kind: "viewer_js",
+          url: "https://preview.runt.run/assets/notebook-cloud-viewer.js",
+          start_ms: 2,
+          end_ms: 12,
+          status: 200,
+          contentLength: 4_096,
         },
-      },
+        {
+          kind: "runtimed_wasm_binary",
+          url: "https://preview.runt.run/renderer-assets/runtimed_wasm_bg.wasm",
+          start_ms: 8,
+          end_ms: 44,
+          status: 200,
+          contentLength: 512,
+        },
+        {
+          kind: "arrow_stream_blob",
+          url: "https://preview.runt.run/api/n/topic-viz/blobs/arrow",
+          start_ms: 24,
+          end_ms: 70,
+          status: 200,
+          contentLength: 8_192,
+        },
+        {
+          kind: "output_document_frame",
+          url: "https://preview.runtusercontent.com/frame/",
+          start_ms: 10,
+          end_ms: 30,
+          status: 200,
+          contentLength: 768,
+        },
+        {
+          kind: "output_document_frame",
+          url: "https://preview.runtusercontent.com/frame/?two",
+          start_ms: 20,
+          end_ms: 50,
+          status: 200,
+          contentLength: 1_024,
+        },
+      ],
+      { live_sync_websocket: 11, source_text: 42, rendered_cell_marker: 55, frame_texts: 80 },
     );
+
+    assert.deepEqual(summary.live_path, {
+      catalog_api_ms: 6,
+      notebook_snapshot_ms: 15,
+      runtime_snapshot_ms: 18,
+      snapshot_pair_complete_ms: 18,
+      snapshot_pair_bytes: 3_072,
+      live_sync_websocket_ms: 11,
+      source_text_ms: 42,
+      rendered_cell_marker_ms: 55,
+      first_output_iframe_ms: null,
+      frame_texts_ms: 80,
+      first_useful_render_ms: 80,
+      snapshot_pair_to_rendered_cell_ms: 37,
+      snapshot_pair_to_frame_texts_ms: 62,
+    });
+    assert.deepEqual(summary.sidecar_assets, {
+      viewer_shell_complete_ms: 12,
+      viewer_shell_bytes: 4_096,
+      runtimed_wasm_complete_ms: 44,
+      runtimed_wasm_bytes: 512,
+      isolated_renderer_complete_ms: null,
+      isolated_renderer_bytes: null,
+      output_document_complete_ms: 50,
+      output_document_bytes: 1_792,
+      sift_wasm_complete_ms: null,
+      sift_wasm_bytes: null,
+      arrow_data_complete_ms: 70,
+      arrow_data_bytes: 8_192,
+    });
+    assert.deepEqual(summary.resources_by_kind.output_document_frame.slowest, [
+      {
+        url: "https://preview.runtusercontent.com/frame/?two",
+        start_ms: 20,
+        end_ms: 50,
+        duration_ms: 30,
+        status: 200,
+        failure: null,
+      },
+      {
+        url: "https://preview.runtusercontent.com/frame/",
+        start_ms: 10,
+        end_ms: 30,
+        duration_ms: 20,
+        status: 200,
+        failure: null,
+      },
+    ]);
+    assert.equal(summary.resources_by_kind.output_document_frame.total_bytes, 1_792);
+    assert.equal(summary.resources_by_kind.output_document_frame.max_bytes, 1_024);
+    assert.equal(summary.resources_by_kind.output_document_frame.unknown_byte_count, 0);
+  });
+
+  it("does not summarize byte budgets when any grouped response size is unknown", () => {
+    const summary = summarizePerformanceResources([
+      {
+        kind: "viewer_js",
+        url: "https://preview.runt.run/assets/notebook-cloud-viewer.js",
+        start_ms: 1,
+        end_ms: 2,
+        status: 200,
+        contentLength: 4_096,
+      },
+      {
+        kind: "viewer_css",
+        url: "https://preview.runt.run/assets/notebook-cloud-viewer.css",
+        start_ms: 1,
+        end_ms: 3,
+        status: 200,
+      },
+    ]);
+
+    assert.equal(summary.resources_by_kind.viewer_css.unknown_byte_count, 1);
+    assert.equal(summary.sidecar_assets.viewer_shell_bytes, null);
+  });
+
+  it("fills missing response sizes from browser Resource Timing entries", () => {
+    const resources = [
+      {
+        kind: "viewer_js",
+        url: "https://preview.runt.run/assets/notebook-cloud-viewer.js",
+        contentLength: 123,
+      },
+      {
+        kind: "output_document_frame",
+        url: "https://preview.runtusercontent.com/frame/",
+        contentLength: null,
+      },
+      {
+        kind: "output_document_frame",
+        url: "https://preview.runtusercontent.com/frame/",
+        contentLength: null,
+      },
+      {
+        kind: "sift_wasm_binary",
+        url: "https://assets.example/sift_wasm.wasm",
+        contentLength: null,
+      },
+      {
+        kind: "renderer_asset_js",
+        url: "https://assets.example/isolated-renderer.js",
+        contentLength: null,
+      },
+    ];
+
+    applyResourceTimingSizes(resources, [
+      {
+        name: "https://preview.runt.run/assets/notebook-cloud-viewer.js",
+        encodedBodySize: 999,
+      },
+      {
+        name: "https://preview.runtusercontent.com/frame/",
+        encodedBodySize: 512,
+      },
+      {
+        name: "https://preview.runtusercontent.com/frame/",
+        encodedBodySize: 768,
+      },
+      {
+        name: "https://assets.example/sift_wasm.wasm",
+        encodedBodySize: 0,
+      },
+    ]);
+
+    assert.equal(resources[0].contentLength, 123);
+    assert.equal(resources[1].contentLength, 512);
+    assert.equal(resources[2].contentLength, 768);
+    assert.equal(resources[3].contentLength, null);
+    assert.equal(resources[4].contentLength, null);
   });
 
   it("attaches stable preflight timing without crashing on null checks", () => {
@@ -405,10 +365,12 @@ describe("hosted smoke performance diagnostics", () => {
       live_path: {
         first_useful_render_ms: 5_025,
         live_sync_websocket_ms: 1_323,
+        snapshot_pair_bytes: 4_500,
       },
       sidecar_assets: {
         sift_wasm_complete_ms: 3_025,
         arrow_data_complete_ms: null,
+        viewer_shell_bytes: null,
       },
     };
 
@@ -419,28 +381,49 @@ describe("hosted smoke performance diagnostics", () => {
         live_sync_websocket_ms: null,
         sift_wasm_complete_ms: 3_000,
         arrow_data_complete_ms: 8_000,
+        snapshot_pair_bytes: 4_000,
+        viewer_shell_bytes: 1_000,
       }),
       [
         {
           kind: "performance-budget",
           metric: "collab_anonymous_update_max_ms",
           text: "editor-to-anonymous viewer update propagation took 1250 ms, expected <= 1000 ms",
-          expected_ms: 1000,
-          actual_ms: 1250,
+          expected_value: 1000,
+          actual_value: 1250,
+          unit: "ms",
         },
         {
           kind: "performance-budget",
           metric: "sift_wasm_complete_ms",
           text: "Sift WASM took 3025 ms, expected <= 3000 ms",
-          expected_ms: 3000,
-          actual_ms: 3025,
+          expected_value: 3000,
+          actual_value: 3025,
+          unit: "ms",
         },
         {
           kind: "performance-budget",
           metric: "arrow_data_complete_ms",
           text: "Arrow data timing was missing; expected <= 8000 ms",
-          expected_ms: 8000,
-          actual_ms: null,
+          expected_value: 8000,
+          actual_value: null,
+          unit: "ms",
+        },
+        {
+          kind: "performance-budget",
+          metric: "snapshot_pair_bytes",
+          text: "snapshot pair payload was 4500 bytes, expected <= 4000 bytes",
+          expected_value: 4000,
+          actual_value: 4500,
+          unit: "bytes",
+        },
+        {
+          kind: "performance-budget",
+          metric: "viewer_shell_bytes",
+          text: "viewer shell payload size was missing; expected <= 1000 bytes",
+          expected_value: 1000,
+          actual_value: null,
+          unit: "bytes",
         },
       ],
     );

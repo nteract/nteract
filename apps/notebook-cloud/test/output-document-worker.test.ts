@@ -29,6 +29,7 @@ describe("output document Worker", () => {
     assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
     assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");
     assert.equal(response.headers.get("Cross-Origin-Resource-Policy"), "cross-origin");
+    assert.equal(response.headers.get("Timing-Allow-Origin"), "*");
     assert.match(response.headers.get("Content-Security-Policy") ?? "", /script-src/);
     assert.match(response.headers.get("Content-Security-Policy") ?? "", /frame-src 'none'/);
     assert.match(response.headers.get("Permissions-Policy") ?? "", /camera=\(\)/);

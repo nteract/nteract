@@ -75,6 +75,7 @@ function withRendererAssetCors(
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  response.headers.set("Timing-Allow-Origin", "*");
   if (options.immutable && response.ok) {
     response.headers.set("Cache-Control", "public, max-age=31536000, immutable");
   }

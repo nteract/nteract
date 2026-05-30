@@ -75,6 +75,7 @@ function withOutputDocumentHeaders(response: Response): Response {
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "no-referrer");
   response.headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+  response.headers.set("Timing-Allow-Origin", "*");
   response.headers.set("Content-Security-Policy", OUTPUT_DOCUMENT_CSP);
   response.headers.set(
     "Permissions-Policy",

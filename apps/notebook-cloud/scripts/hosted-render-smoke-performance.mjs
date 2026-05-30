@@ -96,6 +96,9 @@ export function summarizePerformanceResources(resources, milestones = {}) {
       first_end_ms: null,
       max_end_ms: null,
       max_duration_ms: null,
+      total_bytes: 0,
+      max_bytes: null,
+      unknown_byte_count: 0,
       statuses: [],
       urls: [],
       slowest: [],
@@ -106,6 +109,12 @@ export function summarizePerformanceResources(resources, milestones = {}) {
     summary.max_end_ms = maxDefined(summary.max_end_ms, resource.end_ms);
     const duration = resourceDuration(resource);
     summary.max_duration_ms = maxDefined(summary.max_duration_ms, duration);
+    if (typeof resource.contentLength === "number") {
+      summary.total_bytes += resource.contentLength;
+      summary.max_bytes = maxDefined(summary.max_bytes, resource.contentLength);
+    } else {
+      summary.unknown_byte_count += 1;
+    }
     if (resource.status !== null && resource.status !== undefined) {
       summary.statuses.push(resource.status);
     }
@@ -170,22 +179,26 @@ export function performanceBudgetFailures(diagnostics, budgets = {}) {
     }
     const value = diagnostics?.[spec.group]?.[metric] ?? null;
     if (value === null) {
+      const unit = budgetUnit(spec);
       failures.push({
         kind: "performance-budget",
         metric,
-        text: `${spec.label} timing was missing; expected <= ${budget} ms`,
-        expected_ms: budget,
-        actual_ms: null,
+        text: `${spec.label} ${missingBudgetNoun(spec)} was missing; expected <= ${budget} ${budgetUnit(spec)}`,
+        expected_value: budget,
+        actual_value: null,
+        unit,
       });
       continue;
     }
     if (value > budget) {
+      const unit = budgetUnit(spec);
       failures.push({
         kind: "performance-budget",
         metric,
-        text: `${spec.label} took ${value} ms, expected <= ${budget} ms`,
-        expected_ms: budget,
-        actual_ms: value,
+        text: `${spec.label} ${budgetVerb(spec)} ${value} ${budgetUnit(spec)}, expected <= ${budget} ${budgetUnit(spec)}`,
+        expected_value: budget,
+        actual_value: value,
+        unit,
       });
     }
   }
@@ -204,6 +217,35 @@ export function withTiming(result, started, ended) {
       duration: ended - started,
     },
   };
+}
+
+export function applyResourceTimingSizes(resources, resourceTimings) {
+  const timingsByUrl = new Map();
+  for (const timing of resourceTimings) {
+    const encodedBodySize =
+      typeof timing.encodedBodySize === "number" && timing.encodedBodySize > 0
+        ? timing.encodedBodySize
+        : null;
+    if (encodedBodySize === null) {
+      continue;
+    }
+    const timings = timingsByUrl.get(timing.name) ?? [];
+    timings.push(encodedBodySize);
+    timingsByUrl.set(timing.name, timings);
+  }
+  for (const resource of resources) {
+    if (typeof resource.contentLength === "number") {
+      continue;
+    }
+    // Playwright response events and browser Resource Timing entries arrive in
+    // fetch order for this smoke page, so duplicate URLs consume timing entries
+    // FIFO. Keep the original response header size when it exists.
+    const timings = timingsByUrl.get(resource.url);
+    const encodedBodySize = timings?.shift();
+    if (encodedBodySize !== undefined) {
+      resource.contentLength = encodedBodySize;
+    }
+  }
 }
 
 function minDefined(current, candidate) {
@@ -249,6 +291,7 @@ function summarizeLivePath(byKind, milestones) {
     notebook_snapshot_ms: notebookSnapshotEndMs,
     runtime_snapshot_ms: runtimeSnapshotEndMs,
     snapshot_pair_complete_ms: snapshotPairCompleteMs,
+    snapshot_pair_bytes: sumBytesOfKinds(byKind, ["notebook_snapshot", "runtime_snapshot"]),
     live_sync_websocket_ms: timing(milestones, "live_sync_websocket"),
     source_text_ms: timing(milestones, "source_text"),
     rendered_cell_marker_ms: renderedCellMarkerMs,
@@ -267,16 +310,27 @@ function summarizeLivePath(byKind, milestones) {
 function summarizeSidecarAssets(byKind) {
   return {
     viewer_shell_complete_ms: maxOfKinds(byKind, ["viewer_document", "viewer_js", "viewer_css"]),
+    viewer_shell_bytes: sumBytesOfKinds(byKind, ["viewer_js", "viewer_css"]),
     runtimed_wasm_complete_ms: maxOfKinds(byKind, ["runtimed_wasm_js", "runtimed_wasm_binary"]),
+    runtimed_wasm_bytes: sumBytesOfKinds(byKind, ["runtimed_wasm_js", "runtimed_wasm_binary"]),
     isolated_renderer_complete_ms: maxOfKinds(byKind, ["renderer_asset_js", "renderer_asset_css"]),
+    isolated_renderer_bytes: sumBytesOfKinds(byKind, ["renderer_asset_js", "renderer_asset_css"]),
     output_document_complete_ms: maxOfKinds(byKind, [
       "output_document_frame",
       "output_document_js",
       "output_document_css",
       "output_document_asset",
     ]),
+    output_document_bytes: sumBytesOfKinds(byKind, [
+      "output_document_frame",
+      "output_document_js",
+      "output_document_css",
+      "output_document_asset",
+    ]),
     sift_wasm_complete_ms: kindMaxEnd(byKind, "sift_wasm_binary"),
+    sift_wasm_bytes: sumBytesOfKinds(byKind, ["sift_wasm_binary"]),
     arrow_data_complete_ms: maxOfKinds(byKind, ["arrow_manifest_blob", "arrow_stream_blob"]),
+    arrow_data_bytes: sumBytesOfKinds(byKind, ["arrow_manifest_blob", "arrow_stream_blob"]),
   };
 }
 
@@ -297,6 +351,23 @@ function maxOfKinds(byKind, kinds) {
   return kinds.reduce((current, kind) => maxDefined(current, kindMaxEnd(byKind, kind)), null);
 }
 
+function sumBytesOfKinds(byKind, kinds) {
+  let total = 0;
+  let sawResource = false;
+  for (const kind of kinds) {
+    const summary = byKind[kind];
+    if (!summary) {
+      continue;
+    }
+    sawResource = true;
+    if (summary.unknown_byte_count > 0) {
+      return null;
+    }
+    total += summary.total_bytes;
+  }
+  return sawResource ? total : null;
+}
+
 function delta(start, end) {
   if (start === null || start === undefined || end === null || end === undefined) {
     return null;
@@ -306,6 +377,18 @@ function delta(start, end) {
 
 function firstDefined(...values) {
   return values.find((value) => value !== null && value !== undefined) ?? null;
+}
+
+function budgetUnit(spec) {
+  return spec.unit ?? "ms";
+}
+
+function budgetVerb(spec) {
+  return budgetUnit(spec) === "bytes" ? "was" : "took";
+}
+
+function missingBudgetNoun(spec) {
+  return budgetUnit(spec) === "bytes" ? "size" : "timing";
 }
 
 const PERFORMANCE_BUDGET_METRICS = {
@@ -376,5 +459,40 @@ const PERFORMANCE_BUDGET_METRICS = {
   arrow_data_complete_ms: {
     group: "sidecar_assets",
     label: "Arrow data",
+  },
+  snapshot_pair_bytes: {
+    group: "live_path",
+    label: "snapshot pair payload",
+    unit: "bytes",
+  },
+  viewer_shell_bytes: {
+    group: "sidecar_assets",
+    label: "viewer shell payload",
+    unit: "bytes",
+  },
+  runtimed_wasm_bytes: {
+    group: "sidecar_assets",
+    label: "runtimed WASM payload",
+    unit: "bytes",
+  },
+  isolated_renderer_bytes: {
+    group: "sidecar_assets",
+    label: "isolated renderer payload",
+    unit: "bytes",
+  },
+  output_document_bytes: {
+    group: "sidecar_assets",
+    label: "output document payload",
+    unit: "bytes",
+  },
+  sift_wasm_bytes: {
+    group: "sidecar_assets",
+    label: "Sift WASM payload",
+    unit: "bytes",
+  },
+  arrow_data_bytes: {
+    group: "sidecar_assets",
+    label: "Arrow data payload",
+    unit: "bytes",
   },
 };
