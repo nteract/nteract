@@ -716,7 +716,7 @@ function NotebookViewContent({
 
         rightGutterContent = (
           <div className="flex flex-col gap-0.5">
-            {onSetCellSourceHidden && !bothHidden && hasSourceText && (
+            {onSetCellSourceHidden && !bothHidden && (hasSourceText || isSourceHidden) && (
               <button
                 type="button"
                 tabIndex={-1}
