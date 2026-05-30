@@ -127,7 +127,7 @@ export function daemonOutputFrameUrl(
 ): string | null {
   if (!blobBaseUrl) return null;
   const url = `${trimTrailingSlash(blobBaseUrl)}/output-frame`;
-  if (!hostCsp) return url;
+  if (!hostCsp) return null;
   return frameDomainsAllowUrl(hostCsp.frameDomains, url) ? url : null;
 }
 
