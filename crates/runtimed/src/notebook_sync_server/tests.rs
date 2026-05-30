@@ -9187,11 +9187,13 @@ async fn autosave_writes_metadata_edit_on_loaded_empty_notebook() {
     );
 }
 
-/// A retry supersedes a prior failure: after a failed load flags the room and
-/// the guard would fire, winning a fresh loading claim via `try_start_loading`
-/// clears `load_failed`, so a subsequent empty save writes through again.
+/// The hazard flag clears on recovery COMPLETION, not at retry start. Winning a
+/// fresh loading claim via `try_start_loading` must NOT clear it (that would race
+/// an in-flight autosave during the retry window); only a completed recovery
+/// (here, `clear_load_failed`, as a successful load / watcher reconcile / save
+/// would call) re-enables empty saves.
 #[tokio::test]
-async fn retry_load_clears_failed_flag_so_empty_save_writes() {
+async fn failed_flag_clears_on_recovery_completion_not_retry_start() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "retry.ipynb");
     write_two_cell_notebook(&notebook_path).await;
@@ -9205,23 +9207,25 @@ async fn retry_load_clears_failed_flag_so_empty_save_writes() {
     room.finish_loading();
     assert!(room.load_failed());
 
-    // A retry wins the loading claim, which clears the failed-load flag.
+    // A retry wins the loading claim, but the flag stays set while the retry is
+    // in flight — the in-flight-autosave race fix.
     assert!(room.try_start_loading(), "retry must win the loading claim");
     assert!(
-        !room.load_failed(),
-        "winning a fresh loading claim must clear the failed-load flag"
+        room.load_failed(),
+        "the flag must stay set during the retry (cleared only on completion)"
     );
-    room.finish_loading();
 
-    // The room is still empty, but the flag is cleared, so the empty state
-    // writes through (guard does not fire).
+    // Recovery completes (a successful load / watcher reconcile / save calls
+    // clear_load_failed). Now the empty state writes through.
+    room.clear_load_failed();
+    room.finish_loading();
     save_notebook_to_disk(&room, None)
         .await
-        .expect("empty save after a cleared retry flag must write");
+        .expect("empty save after recovery completion must write");
     assert_eq!(
         disk_cell_count(&notebook_path),
         0,
-        "a retried room with the flag cleared writes its empty state"
+        "a recovered room writes its empty state"
     );
 }
 

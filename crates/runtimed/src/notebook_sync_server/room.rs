@@ -489,17 +489,15 @@ impl RoomPersistence {
     /// Atomically claim the loading role. Returns `true` if this caller won
     /// the race and should perform the streaming load.
     pub fn try_start_loading(&self) -> bool {
-        let won = self
-            .is_loading
+        // Note: load_failed is deliberately NOT cleared here. Clearing at the
+        // START of a retry opens a race — an in-flight autosave that already
+        // passed its is_loading() check could then see load_failed == false with
+        // the room still empty mid-retry and zero the file. The flag is cleared
+        // only on recovery COMPLETION (a successful load in peer_session, a
+        // watcher reconcile, or a successful save).
+        self.is_loading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok();
-        if won {
-            // A fresh load attempt supersedes any prior failure; clear the
-            // hazard flag so a stale failed-load state cannot keep blocking
-            // autosaves after this retry.
-            self.clear_load_failed();
-        }
-        won
+            .is_ok()
     }
 
     /// Mark loading complete (success or failure).
