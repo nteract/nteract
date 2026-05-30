@@ -140,14 +140,16 @@ export function createMarkdownFormattingKeyMap(): KeyBinding[] {
 
 export function createMarkdownEditModeKeyMap({
   exitEditing,
+  forceExitEditing = exitEditing,
 }: {
   exitEditing: () => void;
+  forceExitEditing?: () => void;
 }): KeyBinding[] {
   return [
     {
       key: "Ctrl-Enter",
       run: () => {
-        exitEditing();
+        forceExitEditing();
         return true;
       },
     },

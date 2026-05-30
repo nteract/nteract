@@ -1,79 +1,89 @@
-import { createEvent, fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
 
-let mockDarkMode = false;
-let mockColorTheme: string | undefined;
 let mockIsFocused = false;
-const isolatedFrameProps: Array<Record<string, unknown>> = [];
+let mockSearchQuery = "";
 
-const mockFrameHandle = {
-  send: vi.fn(),
-  render: vi.fn(),
-  renderBatch: vi.fn(),
-  eval: vi.fn(),
-  installRenderer: vi.fn(),
-  setTheme: vi.fn(),
-  setHostContext: vi.fn(),
-  clear: vi.fn(),
-  search: vi.fn(),
-  searchNavigate: vi.fn(),
-  measureElement: vi.fn(async () => null),
-  isReady: true,
-  isIframeReady: true,
-};
-
-vi.mock("@/lib/dark-mode", () => ({
-  useDarkMode: () => mockDarkMode,
-  useColorTheme: () => mockColorTheme,
+const outputAreaCalls = vi.hoisted(() => ({
+  props: [] as Array<{
+    cellId?: string;
+    className?: string;
+    onIframeMouseDown?: () => void;
+    onLinkClick?: (url: string, newTab: boolean) => void;
+    outputs: JupyterOutput[];
+    searchQuery?: string;
+  }>,
 }));
 
-vi.mock("@/components/isolated/iframe-libraries", () => ({
-  injectPluginsForMimes: vi.fn(async () => {}),
-}));
-
-vi.mock("@/components/isolated", async () => {
-  const React = await import("react");
-
-  const MockIsolatedFrame = React.forwardRef<
-    typeof mockFrameHandle,
-    Record<string, unknown> & { onMouseDown?: () => void; onReady?: () => void }
-  >(function MockIsolatedFrame(props, ref) {
-    isolatedFrameProps.push(props);
-    React.useImperativeHandle(ref, () => mockFrameHandle);
-
-    React.useEffect(() => {
-      props.onReady?.();
-    }, [props.onReady]);
-
+vi.mock("@/components/cell/OutputArea", () => ({
+  OutputArea: (props: {
+    cellId?: string;
+    className?: string;
+    onIframeMouseDown?: () => void;
+    onLinkClick?: (url: string, newTab: boolean) => void;
+    outputs: JupyterOutput[];
+    searchQuery?: string;
+  }) => {
+    outputAreaCalls.props.push(props);
     return (
-      <iframe
-        data-testid="markdown-frame"
-        data-slot="isolated-frame"
-        onMouseDown={props.onMouseDown}
+      <div
+        data-cell-id={props.cellId}
+        data-class-name={props.className ?? ""}
+        data-search-query={props.searchQuery ?? ""}
+        data-testid="markdown-output-area"
       />
     );
-  });
-
-  return {
-    IsolatedFrame: MockIsolatedFrame,
-  };
-});
+  },
+}));
 
 vi.mock("@/components/cell/CellContainer", () => ({
-  CellContainer: ({ codeContent }: { codeContent: React.ReactNode }) => <div>{codeContent}</div>,
+  CellContainer: ({
+    codeContent,
+    onFocus,
+    rightGutterContent,
+  }: {
+    codeContent: React.ReactNode;
+    onFocus?: () => void;
+    rightGutterContent?: React.ReactNode;
+  }) => (
+    <div onMouseDown={onFocus}>
+      {codeContent}
+      {rightGutterContent}
+    </div>
+  ),
 }));
 
 vi.mock("@/components/editor/codemirror-editor", () => ({
   CodeMirrorEditor: React.forwardRef(function CodeMirrorEditor(
-    props: { keyMap?: Array<{ key: string; run: () => boolean }> },
-    _ref,
+    props: {
+      initialValue?: string;
+      keyMap?: Array<{ key: string; run: () => boolean }>;
+      onBlur?: () => void;
+      placeholder?: string;
+    },
+    ref,
   ) {
+    React.useImperativeHandle(ref, () => ({
+      focus: vi.fn(),
+      setCursorPosition: vi.fn(),
+      getEditor: () => ({
+        state: {
+          doc: {
+            toString: () => props.initialValue ?? "",
+          },
+        },
+      }),
+    }));
+
     return (
       <div
+        data-placeholder={props.placeholder}
         data-testid="markdown-editor"
         tabIndex={0}
+        onBlur={props.onBlur}
         onKeyDown={(event) => {
           const key = event.ctrlKey && event.key === "Enter" ? "Ctrl-Enter" : event.key;
           const binding = props.keyMap?.find((entry) => entry.key === key);
@@ -115,7 +125,7 @@ vi.mock("../../hooks/useCrdtBridge", () => ({
 }));
 
 vi.mock("../../lib/blob-port", () => ({
-  useBlobResolver: () => null,
+  useBlobResolver: () => new Map([["asset.png", "blob://asset.png"]]),
   useBlobPort: () => null,
 }));
 
@@ -123,7 +133,7 @@ vi.mock("../../lib/cell-ui-state", () => ({
   useIsCellFocused: () => mockIsFocused,
   useIsNextCellFromFocused: () => false,
   useIsPreviousCellFromFocused: () => false,
-  useSearchQuery: () => "",
+  useSearchQuery: () => mockSearchQuery,
 }));
 
 vi.mock("../../lib/cursor-registry", () => ({
@@ -136,16 +146,21 @@ vi.mock("../../lib/editor-registry", () => ({
   unregisterCellEditor: vi.fn(),
 }));
 
-vi.mock("../../lib/logger", () => ({
-  logger: { error: vi.fn(), warn: vi.fn() },
+vi.mock("../../lib/isolated-diagnostics", () => ({
+  logNotebookIsolatedDiagnostic: vi.fn(),
 }));
 
 vi.mock("../../lib/markdown-assets", () => ({
-  rewriteMarkdownAssetRefs: (source: string) => source,
+  rewriteMarkdownAssetRefs: (
+    source: string,
+    resolvedAssets: Record<string, string> | undefined,
+    blobResolver: Map<string, string>,
+  ) => source.replace("asset.png", resolvedAssets?.["asset.png"] ?? blobResolver.get("asset.png")),
 }));
 
+const openUrlMock = vi.hoisted(() => vi.fn());
 vi.mock("../../lib/open-url", () => ({
-  openUrl: vi.fn(),
+  openUrl: openUrlMock,
 }));
 
 vi.mock("../../lib/presence-sender", () => ({
@@ -153,85 +168,37 @@ vi.mock("../../lib/presence-sender", () => ({
 }));
 
 import { MarkdownCell } from "../MarkdownCell";
-import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
 
 function makeCell(): MarkdownCellType {
   return {
     cell_type: "markdown",
     id: "md-1",
-    source: "```python\nprint('hello')\n```",
+    source: "![asset](asset.png)",
     metadata: {},
+    resolvedAssets: { "asset.png": "blob://resolved-asset.png" },
   };
 }
 
-function pointerOutWithButtons(element: HTMLElement, buttons: number) {
-  const event = createEvent.pointerOut(element);
-  Object.defineProperty(event, "buttons", { value: buttons });
-  fireEvent(element, event);
-}
-
-describe("MarkdownCell theme sync", () => {
+describe("MarkdownCell shared surface adapter", () => {
   beforeEach(() => {
-    mockDarkMode = false;
-    mockColorTheme = undefined;
     mockIsFocused = false;
-    isolatedFrameProps.length = 0;
-    mockFrameHandle.send.mockClear();
-    mockFrameHandle.render.mockClear();
-    mockFrameHandle.renderBatch.mockClear();
-    mockFrameHandle.eval.mockClear();
-    mockFrameHandle.installRenderer.mockClear();
-    mockFrameHandle.setTheme.mockClear();
-    mockFrameHandle.clear.mockClear();
-    mockFrameHandle.search.mockClear();
-    mockFrameHandle.searchNavigate.mockClear();
-    mockFrameHandle.measureElement.mockClear();
-    vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
+    mockSearchQuery = "";
+    outputAreaCalls.props.length = 0;
+    openUrlMock.mockClear();
   });
 
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it("passes the current color theme to the markdown iframe and re-syncs it on ready", async () => {
-    mockColorTheme = "cream";
-
+  it("passes resolved markdown source into the shared output surface", () => {
     render(<MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />);
 
-    await waitFor(() => {
-      expect(mockFrameHandle.setTheme).toHaveBeenCalledWith(false, "cream");
-    });
-
-    expect(isolatedFrameProps.at(-1)?.colorTheme).toBe("cream");
-
-    await waitFor(() => {
-      expect(mockFrameHandle.render).toHaveBeenCalledWith({
-        mimeType: "text/markdown",
-        data: "```python\nprint('hello')\n```",
-        outputId: "markdown:md-1",
-        cellId: "md-1",
-        replace: true,
-      });
-    });
+    const markdownOutput = outputAreaCalls.props.at(-1)?.outputs[0];
+    expect(markdownOutput?.data["text/markdown"]).toBe("![asset](blob://resolved-asset.png)");
   });
 
-  it("renders a contained fallback when the markdown renderer plugin fails to load", async () => {
-    vi.mocked(injectPluginsForMimes).mockRejectedValue(new Error("chunk failed"));
-
-    render(<MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />);
-
-    await waitFor(() => {
-      expect(mockFrameHandle.render).toHaveBeenCalledWith({
-        mimeType: "text/plain",
-        data: "Failed to load markdown renderer: chunk failed",
-        outputId: "markdown-error:md-1",
-        cellId: "md-1",
-        replace: true,
-      });
-    });
-  });
-
-  it("passes heading anchors to the markdown renderer metadata", async () => {
+  it("passes heading anchors to the shared markdown output metadata", () => {
     const headingAnchors = [
       {
         itemId: "md-1:heading:0",
@@ -251,15 +218,8 @@ describe("MarkdownCell theme sync", () => {
       />,
     );
 
-    await waitFor(() => {
-      expect(mockFrameHandle.render).toHaveBeenCalledWith({
-        mimeType: "text/markdown",
-        data: "# Load data",
-        metadata: { nteractMarkdownHeadingAnchors: headingAnchors },
-        outputId: "markdown:md-1",
-        cellId: "md-1",
-        replace: true,
-      });
+    expect(outputAreaCalls.props.at(-1)?.outputs[0]?.metadata).toEqual({
+      nteractMarkdownHeadingAnchors: headingAnchors,
     });
   });
 
@@ -280,36 +240,23 @@ describe("MarkdownCell theme sync", () => {
     });
   });
 
-  it("activates markdown iframe pointer interaction after clicking the preview", () => {
+  it("passes search, iframe focus, and link opening through the shared output surface", () => {
+    mockSearchQuery = "needle";
     const onFocus = vi.fn();
 
-    const { getByTestId } = render(
-      <MarkdownCell cell={makeCell()} onFocus={onFocus} onDelete={() => {}} />,
-    );
+    render(<MarkdownCell cell={makeCell()} onFocus={onFocus} onDelete={() => {}} />);
 
-    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
-    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+    const props = outputAreaCalls.props.at(-1);
+    expect(props?.searchQuery).toBe("needle");
 
-    const previewWrapper = getByTestId("markdown-frame").parentElement as HTMLElement;
-
-    fireEvent.pointerDown(previewWrapper);
-
+    props?.onIframeMouseDown?.();
     expect(onFocus).toHaveBeenCalled();
-    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
-    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
 
-    pointerOutWithButtons(previewWrapper, 1);
-
-    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
-    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
-
-    pointerOutWithButtons(previewWrapper, 0);
-
-    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
-    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+    props?.onLinkClick?.("https://example.test", true);
+    expect(openUrlMock).toHaveBeenCalledWith("https://example.test");
   });
 
-  it("Ctrl+Enter exits edit mode for markdown cells", async () => {
+  it("Ctrl+Enter exits edit mode for empty markdown cells", async () => {
     const cell = { ...makeCell(), source: "" };
 
     const { getByLabelText, getByTestId } = render(
