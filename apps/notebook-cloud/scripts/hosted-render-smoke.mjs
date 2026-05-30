@@ -21,6 +21,7 @@ import {
   summarizePerformanceResources,
   withTiming,
 } from "./hosted-render-smoke-performance.mjs";
+import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
 import { catalogApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz";
@@ -96,6 +97,7 @@ const performanceResources = [];
 const performanceRequests = new Map();
 let catalogApiCheck = null;
 let viewerCssCheck = null;
+let runtimeWasmHintCheck = null;
 let screenshotSaved = false;
 let pageTextMatches = {};
 let themeModeChecks = [];
@@ -238,6 +240,12 @@ async function main() {
 
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     markTiming("domcontentloaded");
+    runtimeWasmHintCheck = checkRuntimeWasmHints(await collectRuntimeWasmHints(page), {
+      expectedRendererAssetOrigin,
+      requireHints: requireRuntimedWasm,
+    });
+    failures.push(...runtimeWasmHintCheck.failures);
+    markTiming("runtime_wasm_hints");
     const networkIdleTask = page
       .waitForLoadState("networkidle", { timeout: timeoutMs })
       .then(() => markTiming("networkidle"))
@@ -454,6 +462,7 @@ async function main() {
           performanceDiagnostics: summarizePerformanceResources(performanceResources, timingsMs),
           catalogApiCheck,
           viewerCssCheck,
+          runtimeWasmHintCheck,
           executionCounts,
           reportCellCount,
           presenceText,
@@ -729,6 +738,19 @@ async function checkHostedThemeModes(browser, modes) {
   }
 
   return checks;
+}
+
+async function collectRuntimeWasmHints(page) {
+  return page.evaluate(() =>
+    Array.from(document.head.querySelectorAll("link[href*='runtimed_wasm']")).map((link) => ({
+      rel: link.getAttribute("rel") ?? "",
+      href: link.href,
+      as: link.getAttribute("as") ?? "",
+      type: link.getAttribute("type") ?? "",
+      crossorigin: link.getAttribute("crossorigin"),
+      crossOrigin: link.crossOrigin,
+    })),
+  );
 }
 
 async function waitForPageText(page, expectedTexts) {
