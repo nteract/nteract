@@ -6,38 +6,16 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { HistoryEntry, NotebookRequest, NotebookResponse } from "runtimed";
 import { Button } from "@/components/ui/button";
 import { createFixtureNotebookHost } from "@/components/fixture-notebook-host";
+import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
 import { GlobalFindBar } from "@/notebook-components/GlobalFindBar";
 import { HistorySearchDialog } from "@/notebook-components/HistorySearchDialog";
 
-const notebookCells = [
-  {
-    id: "cell-imports",
-    label: "cell 1",
-    source: [
-      "from datasets import load_dataset",
-      "import pandas as pd",
-      "from sklearn.ensemble import RandomForestRegressor",
-    ].join("\n"),
-  },
-  {
-    id: "cell-features",
-    label: "cell 2",
-    source: [
-      "features = orders.assign(month=orders.date.dt.month)",
-      "model.fit(features[columns], target)",
-      "predictions = model.predict(features_holdout)",
-      "display(predictions.head())",
-    ].join("\n"),
-  },
-  {
-    id: "cell-review",
-    label: "cell 3",
-    source: [
-      "summary = predictions.groupby(features.region).mean()",
-      "summary.sort_values('forecast_error').tail()",
-    ].join("\n"),
-  },
-];
+const searchScenario = getElementsNotebookScenario("desktop-local-owner");
+const notebookCells = searchScenario.cells.map((cell, index) => ({
+  id: cell.id,
+  label: `${cell.cellType} ${index + 1}`,
+  source: cell.source,
+}));
 
 const fixtureHistoryEntries: HistoryEntry[] = [
   {
@@ -122,10 +100,10 @@ const historyFixtureHost = createFixtureNotebookHost({
 const searchBoundaryRows = [
   {
     boundary: "Find state projection",
-    catalogPath: "notebookCells[] + GlobalFindBar props",
+    catalogPath: "ElementsNotebookScenario.cells + GlobalFindBar props",
     productionBoundary: "NotebookView cell sources, focus, and selection",
     detail:
-      "The catalog owns static cell text and match counts. The notebook app still owns live cell projection, keyboard shortcuts, focus restoration, and editor selections.",
+      "The catalog reads shared scenario cell text and owns match counts. The notebook app still owns live cell projection, keyboard shortcuts, focus restoration, and editor selections.",
   },
   {
     boundary: "History transport",
@@ -227,7 +205,7 @@ export function SearchSurfacesExample() {
               <h2 className="text-sm font-semibold text-fd-foreground">GlobalFindBar</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              Rendered from the notebook app with fixture notebook text and inert navigation
+              Rendered from the notebook app with shared scenario notebook text and inert navigation
               callbacks.
             </p>
           </div>
@@ -334,8 +312,8 @@ export function SearchSurfacesExample() {
         </div>
         <p className="text-xs leading-5 text-fd-muted-foreground">
           Search is rendered through current notebook components, but the docs app owns only static
-          cell text, deterministic history entries, and inert handoff callbacks. Live notebook
-          projection, daemon history, focus, and editor insertion stay behind app adapters.
+          scenario cell text, deterministic history entries, and inert handoff callbacks. Live
+          notebook projection, daemon history, focus, and editor insertion stay behind app adapters.
         </p>
         <div className="mt-4 overflow-hidden rounded-md border border-fd-border bg-fd-card">
           <div className="hidden grid-cols-[190px_230px_230px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
