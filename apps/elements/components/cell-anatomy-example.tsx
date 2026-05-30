@@ -106,7 +106,7 @@ const cellTypeFixtures = [
 ];
 
 const contracts = [
-  "Catalog examples import current components before using schematic markup.",
+  "Catalog examples import current components before adding fixture-only wrappers.",
   "Fixture content may stand in for runtime/editor/output systems until an adapter exists.",
   "Cell identity and stable DOM order stay outside the visual component.",
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",

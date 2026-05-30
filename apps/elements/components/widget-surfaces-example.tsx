@@ -1418,8 +1418,8 @@ function WidgetPersistenceFixture() {
 function ControllerPollingFixture() {
   const [frame, setFrame] = useState(1);
   const frameRef = useRef(frame);
-  const [mockReady, setMockReady] = useState(false);
-  const [mockError, setMockError] = useState<string | null>(null);
+  const [gamepadFixtureReady, setGamepadFixtureReady] = useState(false);
+  const [gamepadFixtureError, setGamepadFixtureError] = useState<string | null>(null);
 
   useEffect(() => {
     frameRef.current = frame;
@@ -1434,11 +1434,13 @@ function ControllerPollingFixture() {
         configurable: true,
         value: () => [fixtureGamepad(frameRef.current), null, null, null],
       });
-      setMockReady(true);
-      setMockError(null);
+      setGamepadFixtureReady(true);
+      setGamepadFixtureError(null);
     } catch (error) {
-      setMockReady(false);
-      setMockError(error instanceof Error ? error.message : "Gamepad API fixture unavailable");
+      setGamepadFixtureReady(false);
+      setGamepadFixtureError(
+        error instanceof Error ? error.message : "Gamepad API fixture unavailable",
+      );
     }
 
     return () => {
@@ -1469,11 +1471,11 @@ function ControllerPollingFixture() {
         </Button>
       </div>
       <div className="rounded-md border border-fd-border bg-fd-background p-3">
-        {mockReady ? (
+        {gamepadFixtureReady ? (
           <WidgetView modelId="widget-controller" />
         ) : (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-fd-muted-foreground">
-            Gamepad fixture unavailable{mockError ? `: ${mockError}` : "."}
+            Gamepad fixture unavailable{gamepadFixtureError ? `: ${gamepadFixtureError}` : "."}
           </div>
         )}
       </div>
