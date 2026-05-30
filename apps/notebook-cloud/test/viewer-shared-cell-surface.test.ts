@@ -53,7 +53,7 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NotebookRail/);
-  assert.match(sourceText, /deriveCloudNotebookOutlineItems\(cells\)/);
+  assert.match(sourceText, /createNotebookViewModel\(cells/);
   assert.match(sourceText, /<NotebookRail[\s\S]*outlineItems=\{outlineItems\}/);
   assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
   assert.match(sourceText, /navigateMarkdownHeading\(item\.cellId, item\.headingAnchorId/);

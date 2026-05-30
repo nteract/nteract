@@ -5,8 +5,12 @@ export {
 } from "./capabilities";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export {
+  createNotebookViewModel,
+  notebookViewCellsToOutlineItems,
   notebookViewCellsToReadOnlyCells,
   notebookViewCellToReadOnlyCell,
+  type CreateNotebookViewModelOptions,
+  type NotebookViewModel,
   type NotebookViewCell,
   type NotebookViewCellType,
   type NotebookViewLanguageResolver,

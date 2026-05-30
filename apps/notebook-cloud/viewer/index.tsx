@@ -32,10 +32,7 @@ import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
-import {
-  NotebookDocumentShell,
-  notebookViewCellsToReadOnlyCells,
-} from "@/components/notebook-shell";
+import { createNotebookViewModel, NotebookDocumentShell } from "@/components/notebook-shell";
 import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -85,7 +82,6 @@ import {
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
-import { deriveCloudNotebookOutlineItems } from "./notebook-outline";
 import {
   cloudViewerPresenceDisplay,
   type CloudViewerPresenceState,
@@ -1062,15 +1058,11 @@ function NotebookViewer({
     widgetStore,
   ]);
 
-  const readOnlyCells = useMemo(
-    () => notebookViewCellsToReadOnlyCells(cells, cloudSourceLanguage),
+  const notebookViewModel = useMemo(
+    () => createNotebookViewModel(cells, { resolveLanguage: cloudSourceLanguage }),
     [cells],
   );
-  const codeCellCount = useMemo(
-    () => readOnlyCells.filter((cell) => cell.cellType === "code").length,
-    [readOnlyCells],
-  );
-  const outlineItems = useMemo(() => deriveCloudNotebookOutlineItems(cells), [cells]);
+  const { readOnlyCells, codeCellCount, outlineItems } = notebookViewModel;
   useEffect(() => {
     if (!selectedOutlineItemId) return;
     if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {

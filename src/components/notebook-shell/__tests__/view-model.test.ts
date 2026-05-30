@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { notebookViewCellsToReadOnlyCells, type NotebookViewCell } from "../view-model";
+import {
+  createNotebookViewModel,
+  notebookViewCellsToOutlineItems,
+  notebookViewCellsToReadOnlyCells,
+  type NotebookViewCell,
+} from "../view-model";
 
 describe("notebook shell view model", () => {
   it("projects shared notebook view cells into read-only render cells", () => {
@@ -53,5 +58,72 @@ describe("notebook shell view model", () => {
         executionCount: null,
       },
     ]);
+  });
+
+  it("projects shared notebook view cells into outline items", () => {
+    const outline = notebookViewCellsToOutlineItems([
+      {
+        id: "intro",
+        cellType: "markdown",
+        source: "# Intro\n\n## Setup",
+        language: null,
+        executionId: null,
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+      {
+        id: "code-1",
+        cellType: "code",
+        source: "print('ok')",
+        language: "python",
+        executionId: "exec-1",
+        executionCount: 3,
+        outputs: [],
+        metadata: {},
+      },
+    ]);
+
+    expect(outline.map((item) => [item.id, item.cellId, item.title, item.level])).toEqual([
+      ["intro:heading:0", "intro", "Intro", 1],
+      ["intro:heading:1", "intro", "Setup", 2],
+    ]);
+    expect(outline.map((item) => item.href)).toEqual([
+      "#notebook-cell-intro-heading-intro",
+      "#notebook-cell-intro-heading-setup",
+    ]);
+  });
+
+  it("builds a normalized view model for host adapters", () => {
+    const cells: NotebookViewCell[] = [
+      {
+        id: "code-1",
+        cellType: "code",
+        source: "print('ok')",
+        language: "python",
+        executionId: "exec-1",
+        executionCount: 7,
+        outputs: [],
+        metadata: {},
+      },
+    ];
+
+    const viewModel = createNotebookViewModel(cells, {
+      resolveLanguage: (language) => language ?? "plain",
+    });
+
+    expect(viewModel.cells).toBe(cells);
+    expect(viewModel.cellIds).toEqual(["code-1"]);
+    expect(viewModel.codeCellCount).toBe(1);
+    expect(viewModel.readOnlyCells[0]).toMatchObject({
+      id: "code-1",
+      cellType: "code",
+      language: "python",
+      executionCount: 7,
+    });
+    expect(viewModel.outlineItems[0]).toMatchObject({
+      cellId: "code-1",
+      statusLabel: "In [7]",
+    });
   });
 });
