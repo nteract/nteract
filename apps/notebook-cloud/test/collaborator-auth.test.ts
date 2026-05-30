@@ -8,6 +8,7 @@ import {
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
   cloudHttpHeadersFromPrototypeAuthState,
+  cloudNotebookSignInCopy,
   clearCloudPrototypeDevAuth,
   cloudSyncAuthFromPrototypeAuthState,
   isCloudPrototypeAuthStorageKey,
@@ -202,6 +203,38 @@ describe("cloud collaborator auth", () => {
     assert.match(diagnostics.copyText, /Sign-in: Stored OIDC session is expired/);
     assert.match(diagnostics.copyText, /Effective auth: No expired bearer token is sent/);
     assert.doesNotMatch(diagnostics.copyText, new RegExp(accessToken.replaceAll(".", "\\.")));
+  });
+
+  it("uses state-specific notebook page sign-in copy", () => {
+    const anonymous = readCloudPrototypeAuth(new MemoryStorage());
+    assert.deepEqual(cloudNotebookSignInCopy(anonymous, "idle"), {
+      label: "Sign in",
+      title: "Sign in with Anaconda",
+    });
+    assert.deepEqual(cloudNotebookSignInCopy(anonymous, "starting"), {
+      label: "Signing in",
+      title: "Starting Anaconda sign-in",
+    });
+    assert.deepEqual(cloudNotebookSignInCopy(anonymous, "idle", "network failed"), {
+      label: "Sign-in failed",
+      title: "network failed",
+    });
+
+    const storage = new MemoryStorage();
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: jwt({ sub: "expired-user", name: "Expired User" }),
+        refreshToken: null,
+        expiresAt: Math.floor(Date.now() / 1000) - 3600,
+        claims: { sub: "expired-user", name: "Expired User" },
+      }),
+    );
+
+    assert.deepEqual(cloudNotebookSignInCopy(readCloudPrototypeAuth(storage), "idle"), {
+      label: "Sign in again",
+      title: "Renew your Anaconda sign-in for this notebook",
+    });
   });
 
   it("switches requested scope without replacing stored OIDC token material", () => {
