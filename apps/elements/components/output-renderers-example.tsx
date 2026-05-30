@@ -380,8 +380,27 @@ function visibleSiftMilestones(
   milestones: SiftLoadMilestone[],
   expected: Array<{ phase: string; value: string }>,
 ) {
-  if (milestones.length === 0) return expected;
-  return milestones.slice(-4).map((milestone) => ({
+  if (milestones.length === 0) {
+    return expected.map((milestone, index) => ({
+      key: `expected-${index}-${milestone.phase}`,
+      ...milestone,
+    }));
+  }
+
+  const visible = milestones.slice(-4);
+  const visibleStartIndex = milestones.length - visible.length;
+
+  return visible.map((milestone, index) => ({
+    key: [
+      visibleStartIndex + index,
+      milestone.phase,
+      milestone.format,
+      milestone.chunkIndex,
+      milestone.chunkCount,
+      milestone.rowCount,
+      milestone.byteLength,
+      milestone.elapsedMs,
+    ].join(":"),
     phase: milestone.phase,
     value: [
       milestone.format,
@@ -1291,7 +1310,7 @@ export function OutputRenderersExample() {
           <div className="grid gap-2 md:grid-cols-4">
             {visibleSiftUrlMilestones.map((milestone) => (
               <div
-                key={`${milestone.phase}-${milestone.value}`}
+                key={milestone.key}
                 className="rounded-md border border-fd-border bg-fd-background p-3"
               >
                 <div className="text-xs font-semibold">{milestone.phase}</div>
@@ -1353,7 +1372,7 @@ export function OutputRenderersExample() {
           <div className="grid gap-2 md:grid-cols-4">
             {visibleSiftManifestMilestones.map((milestone) => (
               <div
-                key={`${milestone.phase}-${milestone.value}`}
+                key={milestone.key}
                 className="rounded-md border border-fd-border bg-fd-background p-3"
               >
                 <div className="text-xs font-semibold">{milestone.phase}</div>
