@@ -6,8 +6,8 @@ import {
   PanelLeft,
   type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import type { NotebookOutlineItem } from "runtimed";
+import type { MouseEvent, ReactNode } from "react";
+import { resolveNotebookOutlineSelection, type NotebookOutlineItem } from "runtimed";
 import { cn } from "@/lib/utils";
 
 export type NotebookRailPanelId = "outline" | "packages";
@@ -23,6 +23,8 @@ export interface NotebookRailProps {
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
+  onNavigateOutlineItem?: (item: NotebookOutlineItem, href: string) => boolean | void;
+  getOutlineItemHref?: (item: NotebookOutlineItem) => string | null | undefined;
   className?: string;
 }
 
@@ -46,6 +48,8 @@ export function NotebookRail({
   onActivePanelChange,
   onCollapsedChange,
   onSelectOutlineItem,
+  onNavigateOutlineItem,
+  getOutlineItemHref,
   className,
 }: NotebookRailProps) {
   const title = activePanelId === "outline" ? "Outline" : "Packages";
@@ -110,6 +114,8 @@ export function NotebookRail({
                 selectedItemId={selectedOutlineItemId}
                 selectedCellId={selectedOutlineCellId}
                 onSelectItem={onSelectOutlineItem}
+                onNavigateItem={onNavigateOutlineItem}
+                getItemHref={getOutlineItemHref}
               />
             ) : (
               packagesPanel
@@ -163,6 +169,8 @@ export interface NotebookOutlinePanelProps {
   selectedItemId?: string | null;
   selectedCellId?: string | null;
   onSelectItem?: (item: NotebookOutlineItem) => void;
+  onNavigateItem?: (item: NotebookOutlineItem, href: string) => boolean | void;
+  getItemHref?: (item: NotebookOutlineItem) => string | null | undefined;
 }
 
 export function NotebookOutlinePanel({
@@ -170,6 +178,8 @@ export function NotebookOutlinePanel({
   selectedItemId = null,
   selectedCellId = null,
   onSelectItem,
+  onNavigateItem,
+  getItemHref,
 }: NotebookOutlinePanelProps) {
   if (items.length === 0) {
     return (
@@ -179,26 +189,28 @@ export function NotebookOutlinePanel({
     );
   }
 
+  const resolvedSelectedItemId = resolveNotebookOutlineSelection(items, {
+    selectedItemId,
+    selectedCellId,
+  });
+
   return (
     <nav className="space-y-1" aria-label="Notebook outline" data-testid="notebook-outline-panel">
       {items.map((item) => {
-        const selected =
-          selectedItemId === item.id || (!selectedItemId && selectedCellId === item.cellId);
-        return (
-          <button
-            key={item.id}
-            type="button"
-            aria-current={selected ? "location" : undefined}
-            onClick={() => onSelectItem?.(item)}
-            className={cn(
-              "flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-sm transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-              selected
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
-            style={{ paddingLeft: `${8 + Math.min(Math.max(item.level - 1, 0), 4) * 14}px` }}
-          >
+        const selected = resolvedSelectedItemId === item.id;
+        const itemHref = getItemHref?.(item) ?? item.href ?? null;
+        const className = cn(
+          "flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-sm transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+          selected
+            ? "bg-primary text-primary-foreground"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        );
+        const style = {
+          paddingLeft: `${8 + Math.min(Math.max(item.level - 1, 0), 4) * 14}px`,
+        };
+        const content = (
+          <>
             <span className="min-w-0 flex-1 truncate">{item.title}</span>
             {item.statusLabel ? (
               <span
@@ -219,6 +231,41 @@ export function NotebookOutlinePanel({
                 {item.detail}
               </span>
             ) : null}
+          </>
+        );
+
+        if (itemHref) {
+          const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+            onSelectItem?.(item);
+            if (onNavigateItem?.(item, itemHref) === true) {
+              event.preventDefault();
+            }
+          };
+
+          return (
+            <a
+              key={item.id}
+              href={itemHref}
+              aria-current={selected ? "location" : undefined}
+              onClick={handleClick}
+              className={className}
+              style={style}
+            >
+              {content}
+            </a>
+          );
+        }
+
+        return (
+          <button
+            key={item.id}
+            type="button"
+            aria-current={selected ? "location" : undefined}
+            onClick={() => onSelectItem?.(item)}
+            className={className}
+            style={style}
+          >
+            {content}
           </button>
         );
       })}

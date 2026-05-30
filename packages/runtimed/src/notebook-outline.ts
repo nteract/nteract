@@ -5,6 +5,7 @@
  * future document surfaces share one deterministic heading/cell outline shape.
  */
 export type NotebookOutlineItemKind = "heading" | "cell";
+export type NotebookOutlineHrefTarget = "cell" | "heading";
 
 export interface NotebookOutlineSourceCell {
   id: string;
@@ -20,6 +21,9 @@ export interface NotebookOutlineItem {
   title: string;
   level: number;
   kind: NotebookOutlineItemKind;
+  cellAnchorId: string;
+  headingAnchorId: string | null;
+  href: string;
   anchor?: string | null;
   detail?: string | null;
   statusLabel?: string | null;
@@ -33,6 +37,12 @@ export interface NotebookOutlineProjection {
 export interface ProjectNotebookOutlineOptions<TCell extends NotebookOutlineSourceCell> {
   getStatusLabel?: (cell: TCell) => string | null | undefined;
   fallbackToCells?: boolean;
+  hrefTarget?: NotebookOutlineHrefTarget;
+}
+
+export interface NotebookOutlineSelectionInput {
+  selectedItemId?: string | null;
+  selectedCellId?: string | null;
 }
 
 export interface ParsedNotebookHeading {
@@ -47,6 +57,7 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
   options: ProjectNotebookOutlineOptions<TCell> = {},
 ): NotebookOutlineProjection {
   const fallbackToCells = options.fallbackToCells ?? true;
+  const hrefTarget = options.hrefTarget ?? "cell";
   const headings: NotebookOutlineItem[] = [];
   const anchorCounts = new Map<string, number>();
 
@@ -54,13 +65,19 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
     if (cellKind(cell) !== "markdown") continue;
     const parsed = parseMarkdownHeadings(cell.source ?? "");
     parsed.forEach((heading, index) => {
+      const anchor = nextHeadingAnchor(heading.title, anchorCounts);
+      const cellAnchorId = notebookCellAnchorId(cell.id);
+      const headingAnchorId = notebookHeadingAnchorId(cell.id, anchor);
       headings.push({
         id: `${cell.id}:heading:${index}`,
         cellId: cell.id,
         title: heading.title,
         level: heading.level,
         kind: "heading",
-        anchor: nextHeadingAnchor(heading.title, anchorCounts),
+        cellAnchorId,
+        headingAnchorId,
+        href: notebookOutlineHref(cellAnchorId, headingAnchorId, hrefTarget),
+        anchor,
         statusLabel: options.getStatusLabel?.(cell) ?? null,
       });
     });
@@ -78,12 +95,16 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
     source: cells.length > 0 ? "cells" : "empty",
     items: cells.map((cell, index) => {
       const kind = cellKind(cell);
+      const cellAnchorId = notebookCellAnchorId(cell.id);
       return {
         id: `${cell.id}:cell`,
         cellId: cell.id,
         title: summarizeCell(cell, index),
         level: 1,
         kind: "cell",
+        cellAnchorId,
+        headingAnchorId: null,
+        href: notebookCellAnchorHref(cell.id),
         anchor: null,
         detail: detailLabel(kind),
         statusLabel: options.getStatusLabel?.(cell) ?? null,
@@ -143,11 +164,73 @@ export function slugifyNotebookHeading(title: string): string {
   return slug || "heading";
 }
 
+export function notebookCellAnchorId(cellId: string): string {
+  return `notebook-cell-${encodeNotebookAnchorComponent(cellId)}`;
+}
+
+export function notebookCellAnchorHref(cellId: string): string {
+  return `#${notebookCellAnchorId(cellId)}`;
+}
+
+export function notebookHeadingAnchorId(cellId: string, headingAnchor: string): string {
+  return `${notebookCellAnchorId(cellId)}-heading-${encodeNotebookAnchorComponent(headingAnchor)}`;
+}
+
+export function notebookHeadingAnchorHref(cellId: string, headingAnchor: string): string {
+  return `#${notebookHeadingAnchorId(cellId, headingAnchor)}`;
+}
+
+export function notebookOutlineItemHref(
+  item: Pick<NotebookOutlineItem, "cellAnchorId" | "headingAnchorId">,
+  hrefTarget: NotebookOutlineHrefTarget = "cell",
+): string {
+  return notebookOutlineHref(item.cellAnchorId, item.headingAnchorId, hrefTarget);
+}
+
+export function resolveNotebookOutlineSelection(
+  items: readonly NotebookOutlineItem[],
+  selection: NotebookOutlineSelectionInput,
+): string | null {
+  if (selection.selectedItemId && items.some((item) => item.id === selection.selectedItemId)) {
+    return selection.selectedItemId;
+  }
+
+  if (selection.selectedCellId) {
+    return items.find((item) => item.cellId === selection.selectedCellId)?.id ?? null;
+  }
+
+  return null;
+}
+
 function nextHeadingAnchor(title: string, anchorCounts: Map<string, number>): string {
   const base = slugifyNotebookHeading(title);
   const count = anchorCounts.get(base) ?? 0;
   anchorCounts.set(base, count + 1);
   return count === 0 ? base : `${base}-${count}`;
+}
+
+function notebookOutlineHref(
+  cellAnchorId: string,
+  headingAnchorId: string | null,
+  hrefTarget: NotebookOutlineHrefTarget,
+): string {
+  return `#${hrefTarget === "heading" && headingAnchorId !== null ? headingAnchorId : cellAnchorId}`;
+}
+
+function encodeNotebookAnchorComponent(value: string): string {
+  if (!value) return "empty";
+
+  let encoded = "";
+  for (const character of value) {
+    if (/^[A-Za-z0-9-]$/.test(character)) {
+      encoded += character;
+    } else if (character === "_") {
+      encoded += "__";
+    } else {
+      encoded += `_${character.codePointAt(0)?.toString(16) ?? "0"}_`;
+    }
+  }
+  return encoded;
 }
 
 function summarizeCell(cell: NotebookOutlineSourceCell, index: number): string {

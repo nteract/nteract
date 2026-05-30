@@ -18,6 +18,7 @@ import {
 import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { notebookCellAnchorId } from "runtimed";
 import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -41,14 +42,13 @@ import { RawCell } from "./RawCell";
 type AddCellResult = NotebookCell | null;
 type AddCellHandler = (type: "code" | "markdown", afterCellId?: string | null) => AddCellResult;
 
-interface NotebookViewProps {
+export interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
   canAcceptCellMutations?: boolean;
   loadError?: string | null;
   runtime?: Runtime | null;
   sessionRuntimeState?: string | null;
-  scrollTarget?: { cellId: string; requestId: number } | null;
   onFocusCell: (cellId: string) => void;
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
@@ -311,6 +311,7 @@ function SortableCell({
     transition,
     order: index,
   };
+  const anchorId = notebookCellAnchorId(cellId);
 
   // Combine listeners and attributes for the drag handle
   // This enables keyboard-initiated dragging (Space/Enter + arrows)
@@ -320,7 +321,7 @@ function SortableCell({
   };
 
   if (isHiddenInGroup) {
-    return <div ref={setNodeRef} style={style} />;
+    return <div id={anchorId} ref={setNodeRef} style={style} />;
   }
 
   const cellType = cell?.cell_type ?? "code";
@@ -328,7 +329,7 @@ function SortableCell({
   const nextCellType = nextCell?.cell_type ?? cellType;
 
   return (
-    <div ref={setNodeRef} style={style}>
+    <div id={anchorId} ref={setNodeRef} style={style}>
       {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} cellType={cellType} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
@@ -359,7 +360,6 @@ function NotebookViewContent({
   loadError = null,
   runtime = "python",
   sessionRuntimeState = null,
-  scrollTarget = null,
   onFocusCell,
   onExecuteCell,
   onInterruptKernel,
@@ -674,17 +674,6 @@ function NotebookViewContent({
     }
   }, [searchCurrentMatch]);
 
-  // External notebook navigation, currently driven by the left rail outline.
-  useEffect(() => {
-    if (!scrollTarget) return;
-    const cellEl = containerRef.current?.querySelector(
-      `[data-cell-id="${CSS.escape(scrollTarget.cellId)}"]`,
-    );
-    if (cellEl) {
-      cellEl.scrollIntoView({ block: "start", behavior: "smooth" });
-    }
-  }, [scrollTarget]);
-
   // ── Auto-seed first cell for empty notebooks ───────────────────────
   // For new notebooks the daemon creates zero cells. Once sync completes
   // (isLoading becomes false), we create the first code cell locally via
@@ -936,7 +925,7 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-2"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth py-4 pl-8 pr-2"
       style={{
         contain: "paint",
         overflowAnchor: "none",

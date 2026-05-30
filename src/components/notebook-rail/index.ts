@@ -9,4 +9,10 @@ export {
   type NotebookRailPanelId,
   type NotebookRailProps,
 } from "./NotebookRail";
-export type { NotebookOutlineItem, NotebookOutlineItemKind } from "runtimed";
+export type {
+  NotebookOutlineHrefTarget,
+  NotebookOutlineItem,
+  NotebookOutlineItemKind,
+  NotebookOutlineProjection,
+  NotebookOutlineSelectionInput,
+} from "runtimed";
