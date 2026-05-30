@@ -13,6 +13,7 @@ export interface SnapshotRender {
   generated_at: string;
   notebook_id: string;
   heads_hash: string;
+  runtime_state_doc_id: string | null;
   runtime_heads_hash: string | null;
   metadata: unknown;
   source: "snapshot-pair";
@@ -45,6 +46,7 @@ export async function materializeSnapshotPairRender(input: {
       generated_at: input.generatedAt ?? new Date().toISOString(),
       notebook_id: input.notebookId,
       heads_hash: input.notebookHeadsHash,
+      runtime_state_doc_id: handle.get_runtime_state_doc_id() ?? null,
       runtime_heads_hash: input.runtimeHeadsHash,
       metadata,
       source: "snapshot-pair",

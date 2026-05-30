@@ -584,6 +584,7 @@ async function routeSnapshot(
       notebookId,
       notebookHeadsHash: headsHash,
       runtimeHeadsHash,
+      expectedRuntimeStateDocId: runtimeStateDocId,
       notebookBytes: new Uint8Array(body),
       runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
     });
@@ -1097,6 +1098,7 @@ async function validateSnapshotPair(options: {
   notebookId: string;
   notebookHeadsHash: string;
   runtimeHeadsHash: string | null;
+  expectedRuntimeStateDocId: string;
   notebookBytes: Uint8Array;
   runtimeStateBytes: Uint8Array;
 }): Promise<SnapshotPairValidationResult> {
@@ -1139,6 +1141,28 @@ async function validateSnapshotPair(options: {
       body: {
         error: "snapshot pair validation failed",
         details: errorMessage(error),
+      },
+    };
+  }
+
+  if (render.runtime_state_doc_id !== options.expectedRuntimeStateDocId) {
+    cloudLog("warn", "snapshot_pair.validation.runtime_state_doc_id_mismatch", {
+      notebook_id: options.notebookId,
+      notebook_heads_hash: options.notebookHeadsHash,
+      runtime_heads_hash: options.runtimeHeadsHash,
+      expected_runtime_state_doc_id: options.expectedRuntimeStateDocId,
+      actual_runtime_state_doc_id: render.runtime_state_doc_id,
+      duration_ms: durationMs(startedAt),
+      counter: "snapshot_pair_validation_runtime_doc_mismatches",
+      counter_delta: 1,
+    });
+    return {
+      ok: false,
+      status: 409,
+      body: {
+        error: "snapshot pair runtime_state_doc_id mismatch",
+        expected_runtime_state_doc_id: options.expectedRuntimeStateDocId,
+        actual_runtime_state_doc_id: render.runtime_state_doc_id,
       },
     };
   }

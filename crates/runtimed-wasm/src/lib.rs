@@ -1257,6 +1257,11 @@ impl NotebookHandle {
         Ok(())
     }
 
+    /// RuntimeStateDoc identity recorded by the NotebookDoc pointer.
+    pub fn get_runtime_state_doc_id(&self) -> Option<String> {
+        self.doc.runtime_state_doc_id()
+    }
+
     /// Get the actor identity label for this document.
     pub fn get_actor_id(&self) -> String {
         self.doc.get_actor_id()

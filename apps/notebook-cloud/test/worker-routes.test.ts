@@ -2791,7 +2791,7 @@ describe("Worker artifact routes", () => {
       "/api/n/route-demo/runtime-snapshots/runtime-fixture",
       runtimeStateBytes,
       {
-        "X-Runtime-State-Doc-Id": "runtime:route-demo",
+        "X-Runtime-State-Doc-Id": "runtime:output-streaming",
       },
     );
     assert.equal(runtimePut.status, 201);
@@ -2806,16 +2806,16 @@ describe("Worker artifact routes", () => {
       notebookBytes,
       {
         "X-Runtime-Heads-Hash": "runtime-fixture",
-        "X-Runtime-State-Doc-Id": "runtime:route-demo",
+        "X-Runtime-State-Doc-Id": "runtime:output-streaming",
       },
     );
     assert.equal(notebookPut.status, 201);
     const notebookPutBody = (await notebookPut.json()) as { runtime_state_doc_id: string };
-    assert.equal(notebookPutBody.runtime_state_doc_id, "runtime:route-demo");
-    assert.equal(env.DB.revisions[0]?.runtime_state_doc_id, "runtime:route-demo");
+    assert.equal(notebookPutBody.runtime_state_doc_id, "runtime:output-streaming");
+    assert.equal(env.DB.revisions[0]?.runtime_state_doc_id, "runtime:output-streaming");
     assert.equal(
       env.DB.revisions[0]?.runtime_snapshot_key,
-      runtimeStateSnapshotKey("runtime:route-demo", "runtime-fixture"),
+      runtimeStateSnapshotKey("runtime:output-streaming", "runtime-fixture"),
     );
     assert.deepEqual(
       env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
@@ -2838,7 +2838,7 @@ describe("Worker artifact routes", () => {
 
     const runtimeResponse = await worker.fetch(
       new Request("http://localhost/api/n/route-demo/runtime-snapshots/runtime-fixture", {
-        headers: { "X-Runtime-State-Doc-Id": "runtime:route-demo" },
+        headers: { "X-Runtime-State-Doc-Id": "runtime:output-streaming" },
       }),
       env,
       fakeContext(),
@@ -2857,6 +2857,57 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(renderCacheRoute.status, 404);
+  });
+
+  it("rejects snapshot publish when the header runtime id disagrees with the NotebookDoc pointer", async () => {
+    const env = fakeEnv();
+    const [notebookBytes, runtimeStateBytes] = await Promise.all([
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/output_streaming/state_doc.bin",
+          import.meta.url,
+        ),
+      ),
+    ]);
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/route-demo/runtime-snapshots/runtime-fixture",
+      runtimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:wrong-route-demo",
+      },
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const response = await ownerPut(
+      env,
+      "/api/n/route-demo/snapshots/heads-fixture",
+      notebookBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-fixture",
+        "X-Runtime-State-Doc-Id": "runtime:wrong-route-demo",
+      },
+    );
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "snapshot pair runtime_state_doc_id mismatch",
+      expected_runtime_state_doc_id: "runtime:wrong-route-demo",
+      actual_runtime_state_doc_id: "runtime:output-streaming",
+    });
+    assert.equal(env.DB.revisions.length, 0);
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(snapshotKey("route-demo", "heads-fixture")),
+      false,
+      "rejected snapshot publish should not leave an orphan notebook snapshot",
+    );
   });
 
   it("rejects snapshot publish when the referenced runtime snapshot is missing", async () => {
@@ -2967,7 +3018,7 @@ describe("Worker artifact routes", () => {
       "/api/n/missing-blob-demo/runtime-snapshots/runtime-fixture",
       runtimeStateBytes,
       {
-        "X-Runtime-State-Doc-Id": "runtime:missing-blob-demo",
+        "X-Runtime-State-Doc-Id": "runtime:sift-arrow",
       },
     );
     assert.equal(runtimePut.status, 201);
@@ -2985,7 +3036,7 @@ describe("Worker artifact routes", () => {
         notebookBytes,
         {
           "X-Runtime-Heads-Hash": "runtime-fixture",
-          "X-Runtime-State-Doc-Id": "runtime:missing-blob-demo",
+          "X-Runtime-State-Doc-Id": "runtime:sift-arrow",
         },
       );
     } finally {
