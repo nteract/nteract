@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
+import { ExecutionCount } from "@/components/cell/ExecutionCount";
 
 const layers = [
   {
@@ -26,6 +27,12 @@ const layers = [
     status: "rendered",
   },
   {
+    name: "ExecutionCount",
+    source: "src/components/cell/ExecutionCount.tsx",
+    role: "Read-only gutter count used when notebook cells are rendered without execution controls.",
+    status: "rendered",
+  },
+  {
     name: "CodeMirrorEditor",
     source: "src/components/editor/codemirror-editor.tsx",
     role: "Source editing, search highlighting, remote cursors, completion, and attribution.",
@@ -36,6 +43,30 @@ const layers = [
     source: "src/components/cell/OutputArea.tsx",
     role: "Output focus, display mode controls, and frame-level output interaction.",
     status: "adapter needed",
+  },
+];
+
+const cellTypeFixtures = [
+  {
+    id: "fixture-code-count",
+    type: "code",
+    label: "Code cell",
+    count: 7,
+    body: "Read-only code cells use the execution count while editable code cells use the compact run control.",
+  },
+  {
+    id: "fixture-markdown-count",
+    type: "markdown",
+    label: "Markdown cell",
+    count: null,
+    body: "Markdown keeps the same container contract but shifts to the markdown gutter accent when focused.",
+  },
+  {
+    id: "fixture-raw-count",
+    type: "raw",
+    label: "Raw cell",
+    count: null,
+    body: "Raw cells use the raw gutter accent while sharing the same frame and drag affordance.",
   },
 ];
 
@@ -154,6 +185,67 @@ export function CellAnatomyExample() {
             }
             dragHandleProps={{ "aria-label": "Fixture drag handle" }}
           />
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
+          <h2 className="text-sm font-semibold">Cell Type Gutters</h2>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            These rows reuse the current CellContainer gutter colors and ExecutionCount component,
+            with fixture content standing in for the editor or renderer.
+          </p>
+        </div>
+        <div className="divide-y divide-fd-border bg-background py-2">
+          {cellTypeFixtures.map((cell) => (
+            <div key={cell.id} className="py-2 pl-12 pr-2">
+              <CellContainer
+                id={cell.id}
+                cellType={cell.type}
+                isFocused
+                className="mx-0 px-0"
+                gutterContent={
+                  cell.type === "code" ? (
+                    <ExecutionCount count={cell.count} />
+                  ) : (
+                    <ExecutionCount count={cell.count} className="opacity-50" />
+                  )
+                }
+              >
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center justify-between gap-3">
+                    <h3 className="truncate text-sm font-semibold">{cell.label}</h3>
+                    <span className="rounded-full border border-fd-border bg-fd-background px-2 py-1 font-mono text-[11px] text-fd-muted-foreground">
+                      {cell.type}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{cell.body}</p>
+                </div>
+              </CellContainer>
+            </div>
+          ))}
+          <div className="py-2 pl-12 pr-2">
+            <CellContainer
+              id="fixture-executing-count"
+              cellType="code"
+              isFocused
+              className="mx-0 px-0"
+              gutterContent={<ExecutionCount count={null} isExecuting />}
+            >
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <h3 className="truncate text-sm font-semibold">Executing count state</h3>
+                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[11px] font-medium text-sky-700 dark:text-sky-300">
+                    running
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                  ExecutionCount renders the notebook convention for active read-only cells without
+                  requiring kernel state in the catalog.
+                </p>
+              </div>
+            </CellContainer>
+          </div>
         </div>
       </section>
 
