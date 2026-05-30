@@ -1,6 +1,12 @@
 "use client";
 
-import { SiftTable, type TableData, type TableEngineState } from "@nteract/sift";
+import {
+  setWasmUrl,
+  SiftTable,
+  type SiftTableProps,
+  type TableData,
+  type TableEngineState,
+} from "@nteract/sift";
 import {
   AlertTriangle,
   Braces,
@@ -35,6 +41,10 @@ import "@/components/widgets/controls";
 import { WidgetStoreContext } from "@/components/widgets/widget-store-context";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 import { WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
+
+setWasmUrl("/wasm/sift_wasm_bg.wasm");
+
+type SiftLoadMilestone = Parameters<NonNullable<SiftTableProps["onLoadMilestone"]>>[0];
 
 const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
   <rect width="420" height="180" rx="16" fill="#f8fafc"/>
@@ -321,9 +331,9 @@ const siftData: TableData = {
 const siftParquetUrl =
   "https://huggingface.co/datasets/mstz/heart_failure/resolve/refs%2Fconvert%2Fparquet/death/train/0000.parquet";
 
-const siftUrlMilestones = [
+const expectedSiftUrlMilestones = [
   {
-    phase: "Resolve",
+    phase: "URL",
     value: "mstz/heart_failure - death/train/0000.parquet",
   },
   {
@@ -331,12 +341,12 @@ const siftUrlMilestones = [
     value: "12 KB parquet source from HuggingFace",
   },
   {
-    phase: "Decode boundary",
-    value: "generated sift-wasm load_parquet_row_group",
+    phase: "Decode",
+    value: "docs-served sift-wasm load_parquet_row_group",
   },
   {
     phase: "Render",
-    value: "SiftTable mounted with fixture TableData",
+    value: "SiftTable source.kind = url",
   },
 ];
 
@@ -823,7 +833,7 @@ const renderedPieces = [
   {
     name: "SiftTable",
     source: "packages/sift/src/react.tsx",
-    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData and a fixture-backed URL handoff.",
+    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData and a live HuggingFace parquet URL decoded by the docs-served Sift WASM asset.",
   },
 ];
 
@@ -839,9 +849,9 @@ const adapterBoundaries = [
       "Top-level widget-view MIME renders through OutputArea with fixture comm state. The widget catalog also covers OutputModel nested widget-view routing through MediaProvider; live comm replay remains outside this runtime-free page.",
   },
   {
-    name: "Generated Sift WASM decode",
+    name: "Sift renderer frame wiring",
     reason:
-      "Parquet and Arrow URL bytes still need generated sift-wasm glue and a served WASM asset; this catalog shows the URL handoff with decoded TableData until the docs app owns that asset path.",
+      "The HuggingFace parquet URL path now runs through SiftTable and docs-served sift-wasm. Production isolated-frame asset loading and Arrow stream manifests remain separate adapter slices.",
   },
 ];
 
@@ -926,8 +936,28 @@ function OutputWidgetFixtureProvider({ children }: { children: ReactNode }) {
 export function OutputRenderersExample() {
   const [siftState, setSiftState] = useState<TableEngineState | null>(null);
   const [siftUrlState, setSiftUrlState] = useState<TableEngineState | null>(null);
+  const [siftUrlLoadMilestones, setSiftUrlLoadMilestones] = useState<SiftLoadMilestone[]>([]);
   const [outputAreaCollapsed, setOutputAreaCollapsed] = useState(false);
   const [outputAreaMatchCount, setOutputAreaMatchCount] = useState(0);
+  const handleSiftUrlLoadMilestone = useCallback((milestone: SiftLoadMilestone) => {
+    setSiftUrlLoadMilestones((current) => [...current.slice(-7), milestone]);
+  }, []);
+  const visibleSiftUrlMilestones =
+    siftUrlLoadMilestones.length > 0
+      ? siftUrlLoadMilestones.slice(-4).map((milestone) => ({
+          phase: milestone.phase,
+          value: [
+            milestone.format,
+            typeof milestone.rowCount === "number" ? `${milestone.rowCount} rows` : null,
+            typeof milestone.byteLength === "number"
+              ? `${Math.round(milestone.byteLength / 1024)} KB`
+              : null,
+            `${milestone.elapsedMs} ms`,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        }))
+      : expectedSiftUrlMilestones;
 
   return (
     <div className="not-prose space-y-6" data-testid="output-renderers-example">
@@ -939,7 +969,7 @@ export function OutputRenderersExample() {
             <p className="mt-1 text-xs leading-5">
               These examples render current output components with static nbformat-like fixtures.
               OutputArea uses the docs isolated-frame adapter for iframe lanes, while widget comms,
-              plugin injection, and generated WASM stay explicit adapter boundaries.
+              plugin injection, and production frame bootstrapping stay explicit adapter boundaries.
             </p>
           </div>
         </div>
@@ -1162,7 +1192,7 @@ export function OutputRenderersExample() {
           <div className="grid gap-2 text-xs text-fd-muted-foreground md:grid-cols-[minmax(0,1fr)_auto]">
             <div>
               Static TableData mirrors the renderer handoff after parquet/Arrow bytes have been
-              decoded. The generated WASM decode path is still tracked as an adapter boundary.
+              decoded.
             </div>
             <div className="font-mono">
               {siftState
@@ -1173,11 +1203,7 @@ export function OutputRenderersExample() {
         </div>
       </RendererCard>
 
-      <RendererCard
-        title="Sift parquet URL handoff"
-        source="packages/sift/src/react.tsx"
-        icon={Database}
-      >
+      <RendererCard title="Sift parquet URL" source="packages/sift/src/react.tsx" icon={Database}>
         <div className="space-y-4" data-testid="sift-parquet-url-surface">
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
             <div className="rounded-md border border-fd-border bg-fd-background p-3">
@@ -1195,20 +1221,18 @@ export function OutputRenderersExample() {
             </div>
             <div className="rounded-md border border-fd-border bg-fd-background p-3">
               <div className="text-xs font-medium text-fd-muted-foreground">Catalog source</div>
-              <div className="mt-2 font-mono text-xs text-fd-foreground">
-                source.kind = table-data
-              </div>
+              <div className="mt-2 font-mono text-xs text-fd-foreground">source.kind = url</div>
               <div className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-                The URL is real; the docs surface stays runtime-free by rendering the decoded table
-                fixture.
+                The docs app serves Sift WASM as a static catalog asset, then lets the current
+                SiftTable URL loader fetch and decode the Parquet file.
               </div>
             </div>
           </div>
 
           <div className="grid gap-2 md:grid-cols-4">
-            {siftUrlMilestones.map((milestone) => (
+            {visibleSiftUrlMilestones.map((milestone) => (
               <div
-                key={milestone.phase}
+                key={`${milestone.phase}-${milestone.value}`}
                 className="rounded-md border border-fd-border bg-fd-background p-3"
               >
                 <div className="text-xs font-semibold">{milestone.phase}</div>
@@ -1220,12 +1244,16 @@ export function OutputRenderersExample() {
           </div>
 
           <div className="h-[320px] min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background">
-            <SiftTable source={{ kind: "table-data", data: siftData }} onChange={setSiftUrlState} />
+            <SiftTable
+              source={{ kind: "url", url: siftParquetUrl }}
+              onChange={setSiftUrlState}
+              onLoadMilestone={handleSiftUrlLoadMilestone}
+            />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-fd-muted-foreground">
             <span>
-              This keeps the visible renderer faithful to the Sift UI while keeping network, blob,
-              and generated WASM concerns outside the docs runtime.
+              This keeps the visible renderer on the Sift URL path while keeping daemon blob
+              resolution and isolated-frame production bootstrapping outside the docs runtime.
             </span>
             <span className="font-mono">
               {siftUrlState

@@ -19,3 +19,8 @@ apps/notebook/src/renderer-plugins/isolated-renderer.css filter=lfs diff=lfs mer
 # they're opaque Automerge binaries — regular git storage would bloat history
 # each time we regenerate them for a schema change.
 packages/runtimed/tests/fixtures/**/*.bin filter=lfs diff=lfs merge=lfs -text
+
+# Docs catalog static copy of the Sift WASM runtime. This lets apps/elements
+# exercise @nteract/sift URL loading without depending on ignored local
+# wasm-pack outputs at build time.
+apps/elements/public/wasm/sift_wasm_bg.wasm filter=lfs diff=lfs merge=lfs -text

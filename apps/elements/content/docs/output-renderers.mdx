@@ -8,8 +8,10 @@ import { OutputRenderersExample } from "@/components/output-renderers-example";
 Notebook outputs are nteract-owned UI, not generic cards or prose examples.
 This page starts the renderer catalog with current components from
 `src/components/outputs/**` plus the current `@nteract/sift` table component,
-using fixture data that does not require runtimed, WASM materialization, sync
-state, iframe bootstrapping, or plugin injection.
+using fixture data that does not require runtimed, sync state, iframe
+bootstrapping, or plugin injection. The Sift URL surface is the exception: it
+uses a docs-served static `sift-wasm` asset so the catalog can exercise the real
+Parquet loader without a daemon.
 
 <OutputRenderersExample />
 
@@ -19,16 +21,17 @@ The rendered surfaces import current output components directly: `OutputArea`
 lane composition, ANSI streams and errors, JSON trees, image output, math
 output, SVG output, audio output, the JavaScript isolation fallback, Plotly,
 Vega/Vega-Lite, GeoJSON, PDF, video, the structured traceback renderer, and
-`SiftTable` with static `TableData`. The page also renders top-level
+`SiftTable` with static `TableData` plus a live HuggingFace Parquet URL. The
+page also renders top-level
 `application/vnd.jupyter.widget-view+json` output through `OutputArea` with a
 fixture-backed `WidgetStore`, matching the notebook app's widget MIME handoff
 without booting a live comm bridge. The plugin renderer examples use docs-local
 fixture globals for Plotly, `vegaEmbed`, and Leaflet, so they exercise the
 current nteract components without bundling third-party renderer libraries into
-the catalog. The Sift section also shows the HuggingFace parquet URL handoff the
-demo uses, then renders the decoded table fixture so the docs app stays
-runtime-free. The MIME selection table uses the same priority helper the
-notebook uses before rendering.
+the catalog. The Sift section fetches the same kind of public HuggingFace
+Parquet URL used by the Sift demo, then lets `SiftTable` detect and decode it
+through the docs static WASM asset. The MIME selection table uses the same
+priority helper the notebook uses before rendering.
 
 ## What still needs an adapter
 
@@ -36,8 +39,9 @@ The [output isolation surfaces](/docs/isolated-output-surfaces) page now covers
 frame policy, host-context conversion, sizing, lane routing, and MCP structured
 output mapping. Executable JavaScript, raw HTML and markdown runtime execution,
 third-party renderer library loading, live output-widget comm transport, and
-generated Sift parquet/Arrow WASM decoding still need fixture-backed iframe,
+production isolated-frame asset loading still need fixture-backed iframe,
 widget-store, or generated asset adapters before this docs app should own those
-runtime paths. The widget catalog covers local `OutputModel` replay through
-`WidgetStore`; the remaining output-widget boundary is the live kernel capture
-and comm transport.
+runtime paths. The Sift Parquet URL path now has a docs-owned static WASM asset;
+Arrow stream manifests remain a separate renderer adapter slice. The widget
+catalog covers local `OutputModel` replay through `WidgetStore`; the remaining
+output-widget boundary is the live kernel capture and comm transport.
