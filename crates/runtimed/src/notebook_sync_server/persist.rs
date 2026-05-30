@@ -284,9 +284,24 @@ pub(crate) async fn save_notebook_to_disk(
     let is_in_place_save = match target_path {
         None => true,
         Some(_) => {
-            room.file_binding
-                .path_matches(notebook_path.as_path())
-                .await
+            // Recognize an in-place save even when the caller spells the bound
+            // path differently (symlink, `..`, etc.): compare canonical forms,
+            // falling back to raw equality when canonicalization fails (e.g. a
+            // genuine Save As to a not-yet-existing path — correctly NOT in-place,
+            // since it does not target the bound file).
+            match room.file_binding.path().await {
+                Some(bound) => {
+                    let same_file = match (
+                        tokio::fs::canonicalize(notebook_path.as_path()).await,
+                        tokio::fs::canonicalize(&bound).await,
+                    ) {
+                        (Ok(a), Ok(b)) => a == b,
+                        _ => bound == notebook_path,
+                    };
+                    same_file
+                }
+                None => false,
+            }
         }
     };
     if is_in_place_save && cell_count == 0 && room.load_failed() {
