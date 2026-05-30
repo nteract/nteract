@@ -47,6 +47,13 @@ describe("NotebookDocumentShell", () => {
       canViewPackages: true,
       canManagePackages: false,
       canManageSharing: true,
+      access: {
+        level: "owner",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: "user:anaconda:alice/browser:tab",
+        identityLabel: "alice@example.test",
+      },
       auth: {
         canSignIn: false,
         canUseAuthenticatedIdentity: true,
@@ -62,6 +69,8 @@ describe("NotebookDocumentShell", () => {
 
     const shell = container.querySelector("[data-slot='notebook-document-shell']");
     expect(shell).toHaveAttribute("data-authenticated", "true");
+    expect(shell).toHaveAttribute("data-access-level", "owner");
+    expect(shell).toHaveAttribute("data-access-source", "cloud");
     expect(shell).toHaveAttribute("data-can-edit", "true");
     expect(shell).toHaveAttribute("data-can-execute", "false");
     expect(shell).toHaveAttribute("data-can-share", "true");

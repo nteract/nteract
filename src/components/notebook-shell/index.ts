@@ -1,5 +1,8 @@
 export {
   readOnlyNotebookShellCapabilities,
+  type NotebookShellAccessCapabilities,
+  type NotebookShellAccessLevel,
+  type NotebookShellAccessSource,
   type NotebookShellAuthCapabilities,
   type NotebookShellCapabilities,
 } from "./capabilities";

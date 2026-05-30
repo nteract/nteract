@@ -41,6 +41,8 @@ export function NotebookDocumentShell({
     <Root
       className={cn("flex min-h-0 flex-1 overflow-hidden", className)}
       data-authenticated={capabilities?.auth.canUseAuthenticatedIdentity}
+      data-access-level={capabilities?.access.level}
+      data-access-source={capabilities?.access.source}
       data-can-edit={capabilities?.canEditCells}
       data-can-execute={capabilities?.canExecute}
       data-can-share={capabilities?.canManageSharing}

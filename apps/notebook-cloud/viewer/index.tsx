@@ -1128,9 +1128,10 @@ function NotebookViewer({
       cloudNotebookShellCapabilities({
         authState,
         connectionScope,
+        connectionActorLabel,
         hasCodeCells: codeCellCount > 0,
       }),
-    [authState, codeCellCount, connectionScope],
+    [authState, codeCellCount, connectionActorLabel, connectionScope],
   );
   const canEditMarkdown = shellCapabilities.canEditMarkdown;
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
