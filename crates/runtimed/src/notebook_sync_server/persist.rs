@@ -333,6 +333,9 @@ pub(crate) async fn save_notebook_to_disk(
                 }
                 *room.persistence.last_save_sources.write().await = saved;
             }
+            // Disk already matches the room, so any failed-load hazard is
+            // resolved — clear the flag so a later legitimate empty save writes.
+            room.clear_load_failed();
             return Ok(notebook_path.to_string_lossy().to_string());
         }
     }
@@ -359,6 +362,13 @@ pub(crate) async fn save_notebook_to_disk(
                 _ => SaveError::Retryable(msg),
             }
         })?;
+
+    // A successful write makes disk match the room, so any failed-load hazard is
+    // resolved — clear the flag so later legitimate empty saves are not blocked.
+    // (A still-failed empty room over existing content is skipped by the guard
+    // above and never reaches here, so this only clears genuine recoveries:
+    // Save As, or adding a cell to a failed-load room and saving.)
+    room.clear_load_failed();
 
     // Update last_self_write timestamp so the file watcher skips our own write.
     // Applies to all rooms (including ephemeral that were just promoted to

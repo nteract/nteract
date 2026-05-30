@@ -9225,6 +9225,38 @@ async fn retry_load_clears_failed_flag_so_empty_save_writes() {
     );
 }
 
+/// A failed-load room recovered by SAVING (a successful write makes disk match
+/// the room) clears the hazard, so later legitimate empty saves write. Covers
+/// the save-based recovery path (e.g. Save As, or add-a-cell-then-save).
+#[tokio::test]
+async fn save_based_recovery_clears_failed_flag() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "saverecover.ipynb");
+    room.mark_load_failed();
+    assert!(room.load_failed());
+
+    // An explicit save (target Some) writes to disk and recovers the room.
+    save_notebook_to_disk(&room, Some(notebook_path.to_str().unwrap()))
+        .await
+        .expect("explicit save must write and recover");
+    assert!(
+        !room.load_failed(),
+        "a successful write clears the failed-load flag"
+    );
+
+    // Put content on disk and autosave the still-empty (but recovered) room: it
+    // must write through, proving the flag was cleared by the save.
+    write_two_cell_notebook(&notebook_path).await;
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("recovered room must autosave through");
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "a save-recovered room writes its empty state on autosave"
+    );
+}
+
 /// A file that is only whitespace carries no cells to lose, so the guard must
 /// not fire: an empty doc over a whitespace-only file still writes through.
 #[tokio::test]
