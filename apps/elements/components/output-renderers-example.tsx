@@ -1070,7 +1070,9 @@ export function OutputRenderersExample() {
           icon={Braces}
         >
           <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <MathOutput content="$$\\operatorname{MAE}=\\frac{1}{n}\\sum_{i=1}^{n}|y_i-\\hat{y}_i|=8.42$$" />
+            <MathOutput
+              content={String.raw`$$\operatorname{MAE}=\frac{1}{n}\sum_{i=1}^{n}|y_i-\hat{y}_i|=8.42$$`}
+            />
           </div>
         </RendererCard>
 
