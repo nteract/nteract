@@ -6,6 +6,17 @@ export function catalogApiUrlForViewer(viewerUrl) {
   return new URL(`/api/n/${parsed.notebookId}`, parsed.origin).href;
 }
 
+export function isRenderCacheApiUrl(requestUrl) {
+  let parsed;
+  try {
+    parsed = new URL(requestUrl);
+  } catch {
+    return false;
+  }
+
+  return /^\/api\/n\/[^/]+\/(?:render|renders\/[^/]+)\/?$/.test(parsed.pathname);
+}
+
 export function notebookViewerUrl(viewerUrl) {
   const parsed = new URL(viewerUrl);
   const match = parsed.pathname.match(/^\/n\/([^/]+)(?:\/([^/]+))?\/?$/);
