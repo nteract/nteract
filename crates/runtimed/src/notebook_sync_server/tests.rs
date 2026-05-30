@@ -9278,3 +9278,23 @@ async fn explicit_save_of_empty_notebook_latches_ready_for_later_autosave() {
         "a ready room writes its empty state on autosave (not skipped)"
     );
 }
+
+/// Codex P1: a valid-JSON file with no `cells` key is malformed and must fail
+/// the load (not silently load as empty), so the room stays never-ready and the
+/// zeroing guard preserves the clobbered file instead of overwriting it.
+#[test]
+fn parse_notebook_jiter_errors_on_missing_or_invalid_cells() {
+    // Missing `cells` key -> Err (was previously Ok with empty cells).
+    let missing = br#"{"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+    assert!(
+        parse_notebook_jiter(missing).is_err(),
+        "a notebook with no cells key must fail to load"
+    );
+    // `cells` present but not an array -> Err (unchanged).
+    let not_array = br#"{"cells":{},"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+    assert!(parse_notebook_jiter(not_array).is_err());
+    // A genuine empty notebook (cells: []) still parses successfully.
+    let empty = br#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+    let ok = parse_notebook_jiter(empty).expect("cells: [] is a valid empty notebook");
+    assert_eq!(ok.cells.len(), 0);
+}

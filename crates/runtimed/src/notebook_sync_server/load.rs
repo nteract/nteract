@@ -256,14 +256,14 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
     let cells_arr = match jobj_get(obj, "cells") {
         Some(jiter::JsonValue::Array(arr)) => arr,
         Some(_) => return Err("'cells' is not an array".to_string()),
-        None => {
-            return Ok(ParsedStreamingNotebook {
-                cells: vec![],
-                metadata,
-                metadata_value,
-                attachments: HashMap::new(),
-            })
-        }
+        // A notebook with no `cells` key is malformed (nbformat requires it),
+        // exactly like a non-array `cells`. Erroring here (rather than returning
+        // an empty notebook) means the streaming load FAILS, so the room stays
+        // empty-and-never-ready and the autosave zeroing guard preserves the
+        // file on disk instead of overwriting recoverable-but-clobbered content
+        // with an empty notebook. A genuine empty notebook still has `cells: []`
+        // and loads normally.
+        None => return Err("notebook has no 'cells' key".to_string()),
     };
 
     use loro_fractional_index::FractionalIndex;
