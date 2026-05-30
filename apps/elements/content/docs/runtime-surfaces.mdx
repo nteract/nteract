@@ -15,4 +15,7 @@ surfaces with fixtures instead of live runtime state.
 
 The current fixtures keep side effects inert. Components that need desktop host
 access, such as the pool settings action, render under a small fixture host
-adapter instead of importing notebook shell state into the docs app.
+adapter instead of importing notebook shell state into the docs app. The adapter
+boundary table names the split between deterministic catalog data, host actions,
+runtime side effects, and live dependency/trust documents before new runtime
+surfaces are marked rendered.
