@@ -290,16 +290,13 @@ pub(crate) async fn save_notebook_to_disk(
             // genuine Save As to a not-yet-existing path — correctly NOT in-place,
             // since it does not target the bound file).
             match room.file_binding.path().await {
-                Some(bound) => {
-                    let same_file = match (
-                        tokio::fs::canonicalize(notebook_path.as_path()).await,
-                        tokio::fs::canonicalize(&bound).await,
-                    ) {
-                        (Ok(a), Ok(b)) => a == b,
-                        _ => bound == notebook_path,
-                    };
-                    same_file
-                }
+                Some(bound) => match (
+                    tokio::fs::canonicalize(notebook_path.as_path()).await,
+                    tokio::fs::canonicalize(&bound).await,
+                ) {
+                    (Ok(a), Ok(b)) => a == b,
+                    _ => bound == notebook_path,
+                },
                 None => false,
             }
         }

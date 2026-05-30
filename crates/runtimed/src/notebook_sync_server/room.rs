@@ -768,7 +768,11 @@ impl NotebookRoom {
         blob_store: Arc<BlobStore>,
         ephemeral: bool,
     ) -> Self {
-        let room = Self::new_fresh_with_trusted_packages(
+        // A fresh room has `load_failed = false` by default, so the zeroing
+        // guard does not fire for it: a legitimately-empty room from any init
+        // path always saves. Tests that need the guard to fire drive a doc
+        // empty and then call `mark_load_failed()` to model a failed load.
+        Self::new_fresh_with_trusted_packages(
             uuid,
             path,
             docs_dir,
@@ -776,12 +780,7 @@ impl NotebookRoom {
             ephemeral,
             crate::trusted_packages::TrustedPackageStore::unavailable("not configured"),
         )
-        .expect("create test notebook room runtime state");
-        // A fresh room has `load_failed = false` by default, so the zeroing
-        // guard does not fire for it: a legitimately-empty room from any init
-        // path always saves. Tests that need the guard to fire drive a doc
-        // empty and then call `mark_load_failed()` to model a failed load.
-        room
+        .expect("create test notebook room runtime state")
     }
 
     #[allow(private_interfaces)]
