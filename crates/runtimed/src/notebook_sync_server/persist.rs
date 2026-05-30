@@ -1435,13 +1435,14 @@ pub(crate) fn spawn_notebook_file_watcher(
 
                             // The file watcher is a recovery path that does not go
                             // through `try_start_loading`. Clear the failed-load
-                            // hazard ONLY once the watcher has actually reconciled
-                            // file content into the doc — parsing valid JSON is not
-                            // enough (apply can still fail, e.g. on bad
-                            // attachments, leaving the room empty). Gate on the doc
-                            // now holding cells, so a failed apply keeps the file
-                            // protected.
-                            if room.doc.read().await.cell_count() > 0 {
+                            // hazard once the watcher has actually reconciled the
+                            // file into the doc — i.e. the doc now matches the
+                            // parsed file's cell count. This clears on a valid
+                            // reload whether the file is empty (`cells: []`) or
+                            // populated, but NOT when apply failed (e.g. on bad
+                            // attachments) and left the doc out of sync, which
+                            // keeps the on-disk file protected.
+                            if room.doc.read().await.cell_count() == external_cells.len() {
                                 room.clear_load_failed();
                             }
 
