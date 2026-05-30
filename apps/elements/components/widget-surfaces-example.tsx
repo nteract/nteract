@@ -335,6 +335,18 @@ const fixtureModels: FixtureModel[] = [
     },
   },
   {
+    id: "widget-anywidget-url",
+    state: {
+      _model_name: "AnyModel",
+      _model_module: "anywidget",
+      _esm: "",
+      _css: "",
+      title: "AnyWidget URL fixture",
+      status: "static ESM and CSS URL loaded by AnyWidgetView",
+      value: 7,
+    },
+  },
+  {
     id: "widget-media-box",
     state: {
       _model_name: "GridBoxModel",
@@ -781,7 +793,7 @@ const renderedWidgets = [
   {
     name: "AnyWidgetView",
     source: "src/components/widgets/anywidget-view.tsx",
-    role: "Inline _esm and _css fixtures exercise the AFM model proxy, CSS injection, state save, and custom message bridge.",
+    role: "Inline and URL-backed _esm/_css fixtures exercise the AFM model proxy, CSS injection, state save, and custom message bridge.",
   },
   {
     name: "Layout containers",
@@ -815,7 +827,7 @@ const adapterBoundaries = [
   {
     title: "Anywidget ESM",
     icon: PackageOpen,
-    body: "Inline _esm and _css now mount through AnyWidgetView; remote URL loading, sandbox policy, and kernel-originated assets remain iframe/runtime adapter concerns.",
+    body: "Inline and URL-backed _esm/_css now mount through AnyWidgetView. Kernel-originated blob resolver URLs and sandbox policy remain iframe/runtime adapter concerns.",
   },
 ];
 
@@ -831,7 +843,15 @@ const savedPasswordModel = {
 
 function seedStore(store: WidgetStore) {
   for (const model of fixtureModels) {
-    store.createModel(model.id, model.state, model.bufferPaths);
+    const state =
+      model.id === "widget-anywidget-url"
+        ? {
+            ...model.state,
+            _esm: new URL("/fixtures/anywidget-url-fixture.js", window.location.origin).href,
+            _css: new URL("/fixtures/anywidget-url-fixture.css", window.location.origin).href,
+          }
+        : model.state;
+    store.createModel(model.id, state, model.bufferPaths);
   }
 }
 
@@ -934,6 +954,7 @@ function AnyWidgetFixture() {
   const sendCustomPayload = useCallback(() => {
     const buffer = new Uint8Array([4, 8, 15, 16]).buffer;
     store.emitCustomMessage("widget-anywidget", { kind: "docs-custom-payload" }, [buffer]);
+    store.emitCustomMessage("widget-anywidget-url", { kind: "docs-url-payload" }, [buffer]);
   }, [store]);
 
   useEffect(() => {
@@ -949,15 +970,23 @@ function AnyWidgetFixture() {
         <div>
           <h3 className="text-sm font-semibold">AnyWidget AFM fixture</h3>
           <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-            AnyModel renders through WidgetView and AnyWidgetView. The fixture uses inline ESM and
-            CSS to exercise model.get, model.set, save_changes, and msg:custom without a live comm.
+            AnyModel renders through WidgetView and AnyWidgetView. The fixtures exercise inline and
+            URL-backed ESM/CSS, model.get, model.set, save_changes, and msg:custom without a live
+            comm.
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={sendCustomPayload}>
           Send custom payload
         </Button>
       </div>
-      <WidgetView modelId="widget-anywidget" />
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div data-testid="widget-anywidget-inline-surface">
+          <WidgetView modelId="widget-anywidget" />
+        </div>
+        <div data-testid="widget-anywidget-url-surface">
+          <WidgetView modelId="widget-anywidget-url" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1227,8 +1256,8 @@ export function WidgetSurfacesExample() {
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: live blob URL hydration,
               ControllerModel Gamepad polling, live output-widget comm replay, richer ipycanvas
-              image buffers, and remote anywidget ESM/CSS URLs need explicit iframe/runtime adapters
-              before they can render here.
+              image buffers, and kernel-originated anywidget asset URLs need explicit iframe/runtime
+              adapters before they can render here.
             </p>
           </div>
         </div>
