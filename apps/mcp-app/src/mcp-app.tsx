@@ -1,7 +1,11 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
 import "./style.css";
-import { App, type McpUiHostContext } from "@modelcontextprotocol/ext-apps";
+import {
+  App,
+  type McpUiHostCapabilities,
+  type McpUiHostContext,
+} from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { NteractContent } from "./types";
 import { Cell } from "./components/cell";
@@ -64,6 +68,7 @@ function McpApp() {
   const [content, setContent] = useState<NteractContent | null>(null);
   const [allExpanded, setAllExpanded] = useState<boolean | null>(null);
   const [hostContext, setHostContext] = useState<McpUiHostContext | null>(null);
+  const [hostCapabilities, setHostCapabilities] = useState<McpUiHostCapabilities | null>(null);
 
   useEffect(() => {
     const app = new App(NTERACT_MCP_APP_INFO, NTERACT_MCP_APP_CAPABILITIES);
@@ -104,6 +109,7 @@ function McpApp() {
         });
         const ctx = app.getHostContext();
         const capabilities = app.getHostCapabilities();
+        setHostCapabilities(capabilities ?? null);
         hostLog("info", "app-connected", {
           host: app.getHostVersion(),
           loggingAdvertised: capabilities?.logging !== undefined,
@@ -161,6 +167,7 @@ function McpApp() {
           cell={cell}
           blobBaseUrl={blobBaseUrl}
           hostContext={hostContext}
+          hostCapabilities={hostCapabilities}
           defaultExpanded={!isMultiCell || hasRichOutput(cell)}
           forceExpanded={isMultiCell ? allExpanded : null}
           hideSource={!isMultiCell}

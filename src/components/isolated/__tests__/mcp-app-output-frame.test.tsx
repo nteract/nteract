@@ -54,6 +54,7 @@ describe("McpAppOutputFrame", () => {
         rendererBundle={rendererBundle}
         rendererPluginLoader={rendererPluginLoader}
         rendererAssetsBaseUrl="http://localhost:47830/plugins/"
+        outputDocumentUrl="http://localhost:47830/output-frame"
       />,
     );
 
@@ -63,11 +64,13 @@ describe("McpAppOutputFrame", () => {
       expect.objectContaining({
         rendererBundle,
         rendererPluginLoader,
+        outputDocumentUrl: "http://localhost:47830/output-frame",
         hostContext: expect.objectContaining({
           theme: "dark",
           containerDimensions: undefined,
           nteract: {
             rendererAssetsBaseUrl: "http://localhost:47830/plugins/",
+            outputDocumentUrl: "http://localhost:47830/output-frame",
           },
         }),
       }),
@@ -76,10 +79,6 @@ describe("McpAppOutputFrame", () => {
       string,
       unknown
     >;
-    expect(options).not.toHaveProperty("outputDocumentUrl");
-    expect((options.hostContext as Record<string, unknown>)?.nteract).not.toHaveProperty(
-      "outputDocumentUrl",
-    );
     expect(options).not.toHaveProperty("autoHeight");
     expect(options).not.toHaveProperty("maxHeight");
     expect(mockHandle.renderBatch).toHaveBeenCalledWith([
