@@ -1,6 +1,16 @@
 "use client";
 
-import { AlertTriangle, Braces, FileImage, FileWarning, ListFilter, Terminal } from "lucide-react";
+import { SiftTable, type TableData, type TableEngineState } from "@nteract/sift";
+import {
+  AlertTriangle,
+  Braces,
+  FileImage,
+  FileWarning,
+  ListFilter,
+  Table2,
+  Terminal,
+} from "lucide-react";
+import { useState } from "react";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { ImageOutput } from "@/components/outputs/image-output";
 import { JsonOutput } from "@/components/outputs/json-output";
@@ -32,6 +42,195 @@ const jsonFixture = {
     },
   },
   artifacts: ["forecast.parquet", "diagnostics.json"],
+};
+
+const siftRows: unknown[][] = [
+  [
+    "08m4",
+    335,
+    true,
+    "JBMO",
+    "Geometry > Plane Geometry > Quadrilaterals",
+    "Let ABCD be a parallelogram with AC > BD...",
+  ],
+  [
+    "0e2o",
+    452,
+    true,
+    "National Math Olympiad",
+    "Geometry > Triangle centers",
+    "Let H be the orthocentre of the acute triangle ABC...",
+  ],
+  [
+    "1d7p",
+    188,
+    false,
+    "IMO Shortlist",
+    "Algebra > Inequalities",
+    "Find all positive real triples satisfying the system...",
+  ],
+  [
+    "2k9a",
+    276,
+    false,
+    "USAMO",
+    "Number Theory > Modular arithmetic",
+    "Prove there are infinitely many integers n such that...",
+  ],
+  [
+    "39rf",
+    514,
+    true,
+    "Balkan MO",
+    "Combinatorics > Graphs",
+    "A tournament on 2026 vertices has the following property...",
+  ],
+  [
+    "5zqx",
+    241,
+    false,
+    "China TST",
+    "Algebra > Polynomials",
+    "Let P be a polynomial with integer coefficients...",
+  ],
+  [
+    "7c1n",
+    397,
+    true,
+    "Romania",
+    "Geometry > Circles",
+    "Two circles meet at A and B. A line through A...",
+  ],
+  [
+    "9p0s",
+    318,
+    false,
+    "Putnam",
+    "Combinatorics > Counting",
+    "How many subsets satisfy the parity condition...",
+  ],
+];
+
+const siftData: TableData = {
+  columns: [
+    {
+      key: "id",
+      label: "ID",
+      width: 92,
+      sortable: true,
+      numeric: false,
+      columnType: "categorical",
+    },
+    {
+      key: "problem_length",
+      label: "Problem length",
+      width: 180,
+      sortable: true,
+      numeric: true,
+      columnType: "numeric",
+    },
+    {
+      key: "has_images",
+      label: "Has images",
+      width: 130,
+      sortable: true,
+      numeric: false,
+      columnType: "boolean",
+    },
+    {
+      key: "competition",
+      label: "Competition",
+      width: 220,
+      sortable: true,
+      numeric: false,
+      columnType: "categorical",
+    },
+    {
+      key: "topic",
+      label: "Topic",
+      width: 300,
+      sortable: true,
+      numeric: false,
+      columnType: "categorical",
+    },
+    {
+      key: "problem_markdown",
+      label: "Problem markdown",
+      width: 360,
+      sortable: false,
+      numeric: false,
+      columnType: "categorical",
+    },
+  ],
+  rowCount: siftRows.length,
+  getCell: (row, col) => {
+    const value = siftRows[row]?.[col];
+    if (typeof value === "boolean") return value ? "Yes" : "No";
+    return String(value ?? "");
+  },
+  getCellRaw: (row, col) => siftRows[row]?.[col],
+  columnSummaries: [
+    {
+      kind: "categorical",
+      uniqueCount: 8,
+      topCategories: [
+        { label: "08m4", count: 1, pct: 12.5 },
+        { label: "0e2o", count: 1, pct: 12.5 },
+        { label: "1d7p", count: 1, pct: 12.5 },
+      ],
+      othersCount: 5,
+      othersPct: 62.5,
+      allCategories: siftRows.map((row) => ({ label: String(row[0]), count: 1, pct: 12.5 })),
+      medianTextLength: 4,
+    },
+    {
+      kind: "numeric",
+      min: 188,
+      max: 514,
+      bins: [
+        { x0: 180, x1: 260, count: 2 },
+        { x0: 260, x1: 340, count: 3 },
+        { x0: 340, x1: 420, count: 1 },
+        { x0: 420, x1: 500, count: 1 },
+        { x0: 500, x1: 580, count: 1 },
+      ],
+      uniqueCount: 8,
+    },
+    {
+      kind: "boolean",
+      trueCount: 4,
+      falseCount: 4,
+      nullCount: 0,
+      total: 8,
+    },
+    {
+      kind: "categorical",
+      uniqueCount: 8,
+      topCategories: [
+        { label: "JBMO", count: 1, pct: 12.5 },
+        { label: "IMO Shortlist", count: 1, pct: 12.5 },
+        { label: "USAMO", count: 1, pct: 12.5 },
+      ],
+      othersCount: 5,
+      othersPct: 62.5,
+      allCategories: siftRows.map((row) => ({ label: String(row[3]), count: 1, pct: 12.5 })),
+      medianTextLength: 10,
+    },
+    {
+      kind: "categorical",
+      uniqueCount: 8,
+      topCategories: [
+        { label: "Geometry", count: 3, pct: 37.5 },
+        { label: "Algebra", count: 2, pct: 25 },
+        { label: "Combinatorics", count: 2, pct: 25 },
+      ],
+      othersCount: 1,
+      othersPct: 12.5,
+      allCategories: siftRows.map((row) => ({ label: String(row[4]), count: 1, pct: 12.5 })),
+      medianTextLength: 30,
+    },
+    null,
+  ],
 };
 
 const tracebackFixture = {
@@ -134,6 +333,11 @@ const renderedPieces = [
     source: "src/components/outputs/traceback-output.tsx",
     note: "nteract-owned structured traceback renderer with source context and copy affordance.",
   },
+  {
+    name: "SiftTable",
+    source: "packages/sift/src/react.tsx",
+    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData.",
+  },
 ];
 
 const adapterBoundaries = [
@@ -151,6 +355,11 @@ const adapterBoundaries = [
     name: "Widget output",
     reason:
       "Needs fixture-backed WidgetStore and saved widget state before controls can be shown without kernel comm state.",
+  },
+  {
+    name: "Sift URL loader",
+    reason:
+      "Parquet and Arrow URL sources need generated sift-wasm glue and a served WASM asset; this catalog uses TableData until the docs app owns that asset path.",
   },
 ];
 
@@ -187,6 +396,8 @@ function RendererCard({
 }
 
 export function OutputRenderersExample() {
+  const [siftState, setSiftState] = useState<TableEngineState | null>(null);
+
   return (
     <div className="not-prose space-y-6" data-testid="output-renderers-example">
       <section className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-sky-900 dark:text-sky-100">
@@ -258,6 +469,25 @@ export function OutputRenderersExample() {
         icon={FileWarning}
       >
         <TracebackOutput data={tracebackFixture} />
+      </RendererCard>
+
+      <RendererCard title="Sift table renderer" source="packages/sift/src/react.tsx" icon={Table2}>
+        <div className="space-y-3">
+          <div className="h-[380px] min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background">
+            <SiftTable data={siftData} onChange={setSiftState} />
+          </div>
+          <div className="grid gap-2 text-xs text-fd-muted-foreground md:grid-cols-[minmax(0,1fr)_auto]">
+            <div>
+              Static TableData mirrors the renderer handoff after parquet/Arrow bytes have been
+              decoded. The production URL path is still tracked as an adapter boundary.
+            </div>
+            <div className="font-mono">
+              {siftState
+                ? `${siftState.filteredCount}/${siftState.totalCount} rows`
+                : `${siftData.rowCount}/${siftData.rowCount} rows`}
+            </div>
+          </div>
+        </div>
       </RendererCard>
 
       <section className="rounded-lg border border-fd-border bg-fd-card">

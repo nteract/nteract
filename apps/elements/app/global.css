@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "../../../packages/sift/src/library.css";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 @import "../../../src/styles/ansi.css";
@@ -13,6 +14,7 @@
 @source "../../../src/components/ui/**/*.{ts,tsx}";
 @source "../../../src/components/widgets/**/*.{ts,tsx}";
 @source "../../../apps/notebook/src/components/**/*.{ts,tsx}";
+@source "../../../packages/sift/src/**/*.{ts,tsx}";
 
 :root {
   --fd-layout-width: 1320px;
