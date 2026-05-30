@@ -19,6 +19,7 @@ const mockFrameHandle = {
   clear: vi.fn(),
   search: vi.fn(),
   searchNavigate: vi.fn(),
+  measureElement: vi.fn(async () => null),
   isReady: true,
   isIframeReady: true,
 };
@@ -46,7 +47,13 @@ vi.mock("@/components/isolated", async () => {
       props.onReady?.();
     }, [props.onReady]);
 
-    return <div data-testid="markdown-frame" onMouseDown={props.onMouseDown} />;
+    return (
+      <iframe
+        data-testid="markdown-frame"
+        data-slot="isolated-frame"
+        onMouseDown={props.onMouseDown}
+      />
+    );
   });
 
   return {
@@ -178,6 +185,7 @@ describe("MarkdownCell theme sync", () => {
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
+    mockFrameHandle.measureElement.mockClear();
     vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
   });
 
@@ -217,6 +225,38 @@ describe("MarkdownCell theme sync", () => {
         mimeType: "text/plain",
         data: "Failed to load markdown renderer: chunk failed",
         outputId: "markdown-error:md-1",
+        cellId: "md-1",
+        replace: true,
+      });
+    });
+  });
+
+  it("passes heading anchors to the markdown renderer metadata", async () => {
+    const headingAnchors = [
+      {
+        itemId: "md-1:heading:0",
+        title: "Load data",
+        level: 1,
+        anchor: "load-data",
+        headingAnchorId: "notebook-cell-md-1-heading-load-data",
+      },
+    ];
+
+    render(
+      <MarkdownCell
+        cell={{ ...makeCell(), source: "# Load data" }}
+        headingAnchors={headingAnchors}
+        onFocus={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockFrameHandle.render).toHaveBeenCalledWith({
+        mimeType: "text/markdown",
+        data: "# Load data",
+        metadata: { nteractMarkdownHeadingAnchors: headingAnchors },
+        outputId: "markdown:md-1",
         cellId: "md-1",
         replace: true,
       });

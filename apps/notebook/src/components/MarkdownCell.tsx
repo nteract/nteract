@@ -17,6 +17,8 @@ import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
+import { findVerticalScrollAncestor } from "@/components/isolated/scroll-boundary";
+import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
@@ -33,6 +35,10 @@ import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { logger } from "../lib/logger";
+import {
+  isMeasuredElementFound,
+  registerMarkdownHeadingNavigator,
+} from "../lib/markdown-heading-navigation";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -41,6 +47,7 @@ import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
 const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
+const EMPTY_HEADING_ANCHORS: readonly MarkdownHeadingAnchor[] = [];
 
 function formatPluginLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -60,6 +67,7 @@ interface MarkdownCellProps {
   isDragging?: boolean;
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
+  headingAnchors?: readonly MarkdownHeadingAnchor[];
 }
 
 export const MarkdownCell = memo(function MarkdownCell({
@@ -73,6 +81,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   dragHandleProps,
   isDragging,
   rightGutterContent,
+  headingAnchors = EMPTY_HEADING_ANCHORS,
 }: MarkdownCellProps) {
   const isFocused = useIsCellFocused(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
@@ -213,6 +222,15 @@ export const MarkdownCell = memo(function MarkdownCell({
   colorThemeRef.current = colorTheme;
 
   const blobResolver = useBlobResolver();
+  const markdownMetadata = useMemo(
+    () =>
+      headingAnchors.length > 0
+        ? {
+            nteractMarkdownHeadingAnchors: headingAnchors,
+          }
+        : undefined,
+    [headingAnchors],
+  );
 
   const handleDoubleClick = useCallback(() => {
     setEditing(true);
@@ -279,11 +297,12 @@ export const MarkdownCell = memo(function MarkdownCell({
     frameRef.current.render({
       mimeType: "text/markdown",
       data: processedSource,
+      metadata: markdownMetadata,
       outputId: `markdown:${cell.id}`,
       cellId: cell.id,
       replace: true,
     });
-  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver]);
+  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver, markdownMetadata]);
 
   // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
@@ -300,6 +319,7 @@ export const MarkdownCell = memo(function MarkdownCell({
           frame.render({
             mimeType: "text/markdown",
             data: processedSource,
+            metadata: markdownMetadata,
             outputId: `markdown:${cell.id}`,
             cellId: cell.id,
             replace: true,
@@ -316,7 +336,53 @@ export const MarkdownCell = memo(function MarkdownCell({
           });
         });
     }
-  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver]);
+  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver, markdownMetadata]);
+
+  const scrollToHeading = useCallback(
+    async (headingAnchorId: string, options?: { behavior?: ScrollBehavior }) => {
+      if (editing || !headingAnchorId || !frameRef.current?.isReady) return false;
+
+      const measurement = await frameRef.current.measureElement(headingAnchorId);
+      if (!isMeasuredElementFound(measurement)) return false;
+
+      const iframe = viewRef.current?.querySelector<HTMLIFrameElement>(
+        'iframe[data-slot="isolated-frame"]',
+      );
+      if (!iframe) return false;
+
+      const behavior = options?.behavior ?? "smooth";
+      const topPadding = 16;
+      const iframeRect = iframe.getBoundingClientRect();
+      const scrollContainer = findVerticalScrollAncestor(iframe.parentElement ?? iframe);
+
+      if (scrollContainer) {
+        const containerRect = scrollContainer.getBoundingClientRect();
+        scrollContainer.scrollTo({
+          top: Math.max(
+            0,
+            scrollContainer.scrollTop +
+              iframeRect.top -
+              containerRect.top +
+              measurement.top -
+              topPadding,
+          ),
+          behavior,
+        });
+        return true;
+      }
+
+      window.scrollTo({
+        top: Math.max(0, window.scrollY + iframeRect.top + measurement.top - topPadding),
+        behavior,
+      });
+      return true;
+    },
+    [editing],
+  );
+
+  useEffect(() => {
+    return registerMarkdownHeadingNavigator(cell.id, scrollToHeading);
+  }, [cell.id, scrollToHeading]);
 
   // Handle link clicks from iframe - open in system browser
   const handleLinkClick = useCallback((url: string) => {

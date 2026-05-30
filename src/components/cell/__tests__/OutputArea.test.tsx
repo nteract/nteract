@@ -19,6 +19,7 @@ const mockFrameHandle = {
   clear: vi.fn(),
   search: vi.fn(),
   searchNavigate: vi.fn(),
+  measureElement: vi.fn(async () => null),
   isReady: false,
   isIframeReady: true,
 };
@@ -207,6 +208,7 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
+    mockFrameHandle.measureElement.mockClear();
     lastFrameMessageHandler = undefined;
     isolatedFrameMountCount = 0;
     vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);

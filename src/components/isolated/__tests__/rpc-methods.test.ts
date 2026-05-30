@@ -24,6 +24,7 @@ import {
   NTERACT_EVAL,
   NTERACT_EVAL_RESULT,
   NTERACT_LINK_CLICK,
+  NTERACT_MEASURE_ELEMENT,
   NTERACT_MOUSE_DOWN,
   NTERACT_PING,
   NTERACT_PONG,
@@ -48,6 +49,7 @@ describe("nteract JSON-RPC method constants", () => {
   const ALL_METHODS = [
     NTERACT_EVAL,
     NTERACT_SEARCH,
+    NTERACT_MEASURE_ELEMENT,
     NTERACT_RENDER_OUTPUT,
     NTERACT_CLEAR_OUTPUTS,
     NTERACT_SEARCH_NAVIGATE,
@@ -107,6 +109,7 @@ describe("nteract JSON-RPC method constants", () => {
   it("request methods return expected names", () => {
     expect(NTERACT_EVAL).toBe("nteract/eval");
     expect(NTERACT_SEARCH).toBe("nteract/search");
+    expect(NTERACT_MEASURE_ELEMENT).toBe("nteract/measureElement");
   });
 
   it("notification methods return expected names", () => {

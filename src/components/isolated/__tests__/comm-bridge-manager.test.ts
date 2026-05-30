@@ -67,11 +67,15 @@ function createMockFrame(): {
   const frame: IsolatedFrameHandle = {
     send: vi.fn((msg) => sendCalls.push(msg)),
     render: vi.fn(),
+    renderBatch: vi.fn(),
     eval: vi.fn(),
+    installRenderer: vi.fn(),
     setTheme: vi.fn(),
+    setHostContext: vi.fn(),
     clear: vi.fn(),
     search: vi.fn(),
     searchNavigate: vi.fn(),
+    measureElement: vi.fn(async () => null),
     isReady: true,
     isIframeReady: true,
   };

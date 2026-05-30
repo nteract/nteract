@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
+import type { NteractMeasureElementResult } from "./rpc-methods";
 import { logIsolatedDiagnostic, type IsolatedDiagnosticHandler } from "./diagnostics";
 import {
   createIsolatedFrameDocument,
@@ -225,6 +226,11 @@ export interface IsolatedFrameHandle {
    * Navigate to a specific search match by index.
    */
   searchNavigate: (matchIndex: number) => void;
+
+  /**
+   * Measure a renderer-owned element by deterministic anchor ID.
+   */
+  measureElement: (anchorId: string) => Promise<NteractMeasureElementResult | null>;
 
   /**
    * Whether the iframe is ready to receive messages.
@@ -634,6 +640,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         search: (query: string, caseSensitive?: boolean) =>
           runtimeRef.current?.search(query, caseSensitive),
         searchNavigate: (matchIndex: number) => runtimeRef.current?.searchNavigate(matchIndex),
+        measureElement: (anchorId: string) =>
+          runtimeRef.current?.measureElement(anchorId) ?? Promise.resolve(null),
         isReady,
         isIframeReady,
       }),

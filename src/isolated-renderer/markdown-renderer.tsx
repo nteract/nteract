@@ -10,6 +10,7 @@
 
 import { MarkdownOutput } from "@/components/outputs/markdown-output";
 import { MathOutput } from "@/components/outputs/math-output";
+import { markdownHeadingAnchorsFromMetadata } from "@/components/outputs/markdown-heading-anchors";
 
 interface RendererProps {
   data: unknown;
@@ -17,8 +18,13 @@ interface RendererProps {
   mimeType: string;
 }
 
-function MarkdownRenderer({ data }: RendererProps) {
-  return <MarkdownOutput content={String(data)} />;
+function MarkdownRenderer({ data, metadata }: RendererProps) {
+  return (
+    <MarkdownOutput
+      content={String(data)}
+      headingAnchors={markdownHeadingAnchorsFromMetadata(metadata)}
+    />
+  );
 }
 
 function LatexRenderer({ data }: RendererProps) {

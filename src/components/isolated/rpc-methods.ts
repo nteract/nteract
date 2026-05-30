@@ -21,6 +21,7 @@
 export const NTERACT_EVAL = "nteract/eval" as const;
 export const NTERACT_INSTALL_RENDERER = "nteract/installRenderer" as const;
 export const NTERACT_SEARCH = "nteract/search" as const;
+export const NTERACT_MEASURE_ELEMENT = "nteract/measureElement" as const;
 
 // Host → Iframe (Notifications — fire-and-forget)
 export const NTERACT_RENDER_OUTPUT = "nteract/renderOutput" as const;
@@ -90,6 +91,16 @@ export interface NteractSearchParams {
 
 export interface NteractSearchResult {
   count: number;
+}
+
+export interface NteractMeasureElementParams {
+  anchorId: string;
+}
+
+export interface NteractMeasureElementResult {
+  found: boolean;
+  top?: number;
+  height?: number;
 }
 
 // ── Host → Iframe: Notification Params ──────────────────────────────

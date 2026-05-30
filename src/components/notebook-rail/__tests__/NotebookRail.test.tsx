@@ -155,6 +155,122 @@ describe("NotebookRail", () => {
     expect(screen.getByRole("link", { name: "Load details" })).not.toHaveAttribute("aria-current");
   });
 
+  it("prefers an explicitly selected outline item over scroll-spy context", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        activeOutlineItemId="cell-a:heading:0"
+        selectedOutlineItemId="cell-b:heading:0"
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Clean columns" })).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    expect(screen.getByRole("link", { name: "Load data" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("uses notebook cell order to keep code cells in their markdown section context", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        activeOutlineItemId="cell-a:heading:0"
+        outlineCellIds={["cell-a", "cell-b", "cell-c", "cell-d"]}
+        outlineItems={[
+          outlineItems[0],
+          {
+            id: "cell-c:heading:0",
+            cellId: "cell-c",
+            title: "Clean columns",
+            level: 2,
+            kind: "heading" as const,
+            cellAnchorId: "notebook-cell-cell-c",
+            headingAnchorId: "notebook-cell-cell-c-heading-clean-columns",
+            href: "#notebook-cell-cell-c",
+            anchor: "clean-columns",
+          },
+        ]}
+        selectedOutlineCellId="cell-d"
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Clean columns" })).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+  });
+
+  it("renders nested outline levels instead of a flat indented list", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          outlineItems[0],
+          {
+            id: "cell-a:heading:1",
+            cellId: "cell-a",
+            title: "Load details",
+            level: 2,
+            kind: "heading" as const,
+            cellAnchorId: "notebook-cell-cell-a",
+            headingAnchorId: "notebook-cell-cell-a-heading-load-details",
+            href: "#notebook-cell-cell-a",
+            anchor: "load-details",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      container.querySelector('li[data-outline-level="1"] ol li[data-outline-level="2"]'),
+    ).not.toBeNull();
+  });
+
+  it("keeps nested same-cell markdown headings on the cell href by default", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          outlineItems[0],
+          {
+            id: "cell-a:heading:1",
+            cellId: "cell-a",
+            title: "Load details",
+            level: 2,
+            kind: "heading" as const,
+            cellAnchorId: "notebook-cell-cell-a",
+            headingAnchorId: "notebook-cell-cell-a-heading-load-details",
+            href: "#notebook-cell-cell-a",
+            anchor: "load-details",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Load details" })).toHaveAttribute(
+      "href",
+      "#notebook-cell-cell-a",
+    );
+  });
+
   it("renders the adapter-provided package panel when packages is active", () => {
     render(
       <NotebookRail

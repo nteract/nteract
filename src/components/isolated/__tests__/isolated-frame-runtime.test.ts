@@ -6,6 +6,7 @@ import {
   MCP_UI_HOST_CONTEXT_CHANGED,
   MCP_UI_RESOURCE_TEARDOWN,
   MCP_UI_SIZE_CHANGED,
+  NTERACT_MEASURE_ELEMENT,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
   NTERACT_THEME,
@@ -201,6 +202,26 @@ describe("IsolatedFrameRuntime", () => {
       { type: "theme", payload: { isDark: true, colorTheme: "dark-theme" } },
       "*",
     );
+  });
+
+  it("requests renderer element measurements only after renderer ready", async () => {
+    const { frameWindow, runtime } = createRuntime();
+
+    await expect(runtime.measureElement("heading-a")).resolves.toBeNull();
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+    transport.request.mockResolvedValueOnce({ found: true, top: 120, height: 32 });
+    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+
+    await expect(runtime.measureElement("heading-a")).resolves.toEqual({
+      found: true,
+      top: 120,
+      height: 32,
+    });
+    expect(transport.request).toHaveBeenCalledWith(NTERACT_MEASURE_ELEMENT, {
+      anchorId: "heading-a",
+    });
   });
 
   it("recreates transport and reports reloads on a second bootstrap ready", () => {

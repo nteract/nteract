@@ -1,6 +1,11 @@
 import { ChevronLeft, ChevronRight, ListTree, Package, type LucideIcon } from "lucide-react";
-import type { MouseEvent, ReactNode } from "react";
-import { resolveNotebookOutlineSelection, type NotebookOutlineItem } from "runtimed";
+import { useMemo, type MouseEvent, type ReactNode } from "react";
+import {
+  buildNotebookOutlineTree,
+  resolveNotebookOutlineSelection,
+  type NotebookOutlineItem,
+  type NotebookOutlineTreeNode,
+} from "runtimed";
 import { cn } from "@/lib/utils";
 
 export type NotebookRailPanelId = "outline" | "packages";
@@ -9,6 +14,8 @@ export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
   collapsed: boolean;
   outlineItems: readonly NotebookOutlineItem[];
+  outlineCellIds?: readonly string[];
+  activeOutlineItemId?: string | null;
   selectedOutlineItemId?: string | null;
   selectedOutlineCellId?: string | null;
   packagesSummary?: string | null;
@@ -34,6 +41,8 @@ export function NotebookRail({
   activePanelId,
   collapsed,
   outlineItems,
+  outlineCellIds,
+  activeOutlineItemId = null,
   selectedOutlineItemId = null,
   selectedOutlineCellId = null,
   packagesSummary = null,
@@ -104,6 +113,8 @@ export function NotebookRail({
             {activePanelId === "outline" ? (
               <NotebookOutlinePanel
                 items={outlineItems}
+                cellIds={outlineCellIds}
+                activeItemId={activeOutlineItemId}
                 selectedItemId={selectedOutlineItemId}
                 selectedCellId={selectedOutlineCellId}
                 onSelectItem={onSelectOutlineItem}
@@ -159,6 +170,8 @@ export function NotebookRailButton({
 
 export interface NotebookOutlinePanelProps {
   items: readonly NotebookOutlineItem[];
+  cellIds?: readonly string[];
+  activeItemId?: string | null;
   selectedItemId?: string | null;
   selectedCellId?: string | null;
   onSelectItem?: (item: NotebookOutlineItem) => void;
@@ -168,12 +181,16 @@ export interface NotebookOutlinePanelProps {
 
 export function NotebookOutlinePanel({
   items,
+  cellIds,
+  activeItemId = null,
   selectedItemId = null,
   selectedCellId = null,
   onSelectItem,
   onNavigateItem,
   getItemHref,
 }: NotebookOutlinePanelProps) {
+  const tree = useMemo(() => buildNotebookOutlineTree(items), [items]);
+
   if (items.length === 0) {
     return (
       <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
@@ -185,84 +202,128 @@ export function NotebookOutlinePanel({
   const resolvedSelectedItemId = resolveNotebookOutlineSelection(items, {
     selectedItemId,
     selectedCellId,
+    cellIds,
   });
+  const activeSelectedItemId =
+    activeItemId && items.some((item) => item.id === activeItemId) ? activeItemId : null;
+  const currentItemId = resolvedSelectedItemId ?? activeSelectedItemId;
 
   return (
-    <nav className="space-y-1" aria-label="Notebook outline" data-testid="notebook-outline-panel">
-      {items.map((item) => {
-        const selected = resolvedSelectedItemId === item.id;
-        const itemHref = getItemHref?.(item) ?? item.href ?? null;
-        const className = cn(
-          "flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-sm transition-colors",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-          selected
-            ? "bg-primary text-primary-foreground"
-            : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        );
-        const style = {
-          paddingLeft: `${8 + Math.min(Math.max(item.level - 1, 0), 4) * 14}px`,
-        };
-        const content = (
-          <>
-            <span className="min-w-0 flex-1 truncate">{item.title}</span>
-            {item.statusLabel ? (
-              <span
-                className={cn(
-                  "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
-                  selected ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground",
-                )}
-              >
-                {item.statusLabel}
-              </span>
-            ) : item.detail ? (
-              <span
-                className={cn(
-                  "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
-                  selected ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground",
-                )}
-              >
-                {item.detail}
-              </span>
-            ) : null}
-          </>
-        );
-
-        if (itemHref) {
-          const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-            onSelectItem?.(item);
-            if (onNavigateItem?.(item, itemHref) === true) {
-              event.preventDefault();
-            }
-          };
-
-          return (
-            <a
-              key={item.id}
-              href={itemHref}
-              aria-current={selected ? "location" : undefined}
-              onClick={handleClick}
-              className={className}
-              style={style}
-            >
-              {content}
-            </a>
-          );
-        }
-
-        return (
-          <button
-            key={item.id}
-            type="button"
-            aria-current={selected ? "location" : undefined}
-            onClick={() => onSelectItem?.(item)}
-            className={className}
-            style={style}
-          >
-            {content}
-          </button>
-        );
-      })}
+    <nav aria-label="Notebook outline" data-testid="notebook-outline-panel">
+      <ol className="space-y-0.5">
+        {tree.map((node) => (
+          <NotebookOutlineNode
+            key={node.item.id}
+            node={node}
+            selectedItemId={currentItemId}
+            onSelectItem={onSelectItem}
+            onNavigateItem={onNavigateItem}
+            getItemHref={getItemHref}
+          />
+        ))}
+      </ol>
     </nav>
+  );
+}
+
+function NotebookOutlineNode({
+  node,
+  selectedItemId,
+  onSelectItem,
+  onNavigateItem,
+  getItemHref,
+}: {
+  node: NotebookOutlineTreeNode;
+  selectedItemId: string | null;
+  onSelectItem?: (item: NotebookOutlineItem) => void;
+  onNavigateItem?: (item: NotebookOutlineItem, href: string) => boolean | void;
+  getItemHref?: (item: NotebookOutlineItem) => string | null | undefined;
+}) {
+  const item = node.item;
+  const selected = selectedItemId === item.id;
+  const itemHref = getItemHref?.(item) ?? item.href ?? null;
+  const className = cn(
+    "flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+    selected
+      ? "bg-primary text-primary-foreground"
+      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+  );
+  const content = (
+    <>
+      <span className="min-w-0 flex-1 truncate">{item.title}</span>
+      {item.statusLabel ? (
+        <span
+          className={cn(
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
+            selected ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground",
+          )}
+        >
+          {item.statusLabel}
+        </span>
+      ) : item.detail ? (
+        <span
+          className={cn(
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
+            selected ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground",
+          )}
+        >
+          {item.detail}
+        </span>
+      ) : null}
+    </>
+  );
+  const children =
+    node.children.length > 0 ? (
+      <ol className="ml-3 border-l border-border/70 pl-2">
+        {node.children.map((child) => (
+          <NotebookOutlineNode
+            key={child.item.id}
+            node={child}
+            selectedItemId={selectedItemId}
+            onSelectItem={onSelectItem}
+            onNavigateItem={onNavigateItem}
+            getItemHref={getItemHref}
+          />
+        ))}
+      </ol>
+    ) : null;
+
+  if (itemHref) {
+    const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+      onSelectItem?.(item);
+      if (onNavigateItem?.(item, itemHref) === true) {
+        event.preventDefault();
+      }
+    };
+
+    return (
+      <li data-outline-level={item.level}>
+        <a
+          href={itemHref}
+          aria-current={selected ? "location" : undefined}
+          onClick={handleClick}
+          className={className}
+        >
+          {content}
+        </a>
+        {children}
+      </li>
+    );
+  }
+
+  return (
+    <li data-outline-level={item.level}>
+      <button
+        type="button"
+        aria-current={selected ? "location" : undefined}
+        onClick={() => onSelectItem?.(item)}
+        className={className}
+      >
+        {content}
+      </button>
+      {children}
+    </li>
   );
 }
 
