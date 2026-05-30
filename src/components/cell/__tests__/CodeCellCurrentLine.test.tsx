@@ -21,7 +21,28 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveTextContent("Python·Ready");
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
-    expect(rule).toHaveClass("bg-transparent");
+    expect(rule).toHaveClass("bg-border/25");
+  });
+
+  it("keeps blank idle cells slim without separator chrome", () => {
+    const { container } = render(
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={null}
+        compactIdle
+        isFocused
+        onExecute={() => undefined}
+        onInterrupt={() => undefined}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(footer).toHaveClass("min-h-5");
+    expect(detail).toHaveClass("sr-only");
+    expect(rule).toBeNull();
   });
 
   it("shows idle language when the cell is focused", () => {
@@ -64,7 +85,9 @@ describe("CodeCellCurrentLine", () => {
     });
 
     expect(footer).toHaveAttribute("data-execution-state", "running");
-    expect(status).toHaveTextContent("Python·Run 12, running");
+    expect(status).toHaveTextContent("Python·Running");
+    expect(status).toHaveAttribute("aria-label", "Python: Running");
+    expect(status).toHaveAttribute("aria-live", "polite");
     expect(status).toHaveClass("text-primary");
     expect(rule).toHaveClass("bg-primary/45");
     expect(stopButton).toHaveClass("text-destructive");

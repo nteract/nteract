@@ -712,10 +712,11 @@ function NotebookViewContent({
         const isOutputsHidden =
           (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden === true;
         const bothHidden = isSourceHidden && isOutputsHidden;
+        const hasSourceText = cell.source.trim().length > 0;
 
         rightGutterContent = (
           <div className="flex flex-col gap-0.5">
-            {onSetCellSourceHidden && !bothHidden && (
+            {onSetCellSourceHidden && !bothHidden && hasSourceText && (
               <button
                 type="button"
                 tabIndex={-1}

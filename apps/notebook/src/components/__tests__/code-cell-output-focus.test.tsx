@@ -294,7 +294,31 @@ describe("CodeCell output focus", () => {
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
     expect(status).toHaveClass("group-hover:max-w-64");
-    expect(rule).toHaveClass("bg-transparent");
+    expect(rule).toHaveClass("bg-border/25");
+  });
+
+  it("uses compact current-line chrome for empty idle code cells", () => {
+    mockOutputs = [];
+    mockExecution = null;
+    mockIsFocused = true;
+
+    const { container } = render(
+      <CodeCell
+        cell={makeCell({ source: "" })}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(footer).toHaveClass("min-h-5");
+    expect(detail).toHaveClass("sr-only");
+    expect(rule).toBeNull();
   });
 
   it("shows idle footer language when the cell is focused", () => {

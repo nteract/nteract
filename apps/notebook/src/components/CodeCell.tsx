@@ -190,6 +190,7 @@ export const CodeCell = memo(function CodeCell({
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
   const languageLabel =
     language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
+  const isSourceEmpty = cell.source.trim().length === 0;
   const showOutputChrome = useMemo(() => needsOutputChrome(outputs), [outputs]);
 
   // Check cell metadata for visibility (JupyterLab convention)
@@ -376,6 +377,7 @@ export const CodeCell = memo(function CodeCell({
       isExecuting={isExecuting}
       isQueued={isQueued}
       isFocused={isFocused}
+      compactIdle={isSourceEmpty}
       submittedByActorLabel={submittedByActorLabel}
       onExecute={onExecute}
       onInterrupt={onInterrupt}
