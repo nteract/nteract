@@ -7,6 +7,7 @@ export {
   type NotebookShellCapabilities,
 } from "./capabilities";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
+export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
   createNotebookViewModel,
   notebookViewCellsToOutlineItems,

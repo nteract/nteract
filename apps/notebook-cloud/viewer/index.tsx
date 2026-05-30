@@ -32,7 +32,11 @@ import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
-import { createNotebookViewModel, NotebookDocumentShell } from "@/components/notebook-shell";
+import {
+  createNotebookViewModel,
+  NotebookCellList,
+  NotebookDocumentShell,
+} from "@/components/notebook-shell";
 import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -2012,69 +2016,55 @@ function CloudLiveNotebook({
   onNavigateToTracebackCell: (target: TracebackCellTarget) => void;
 }) {
   return (
-    <section
-      aria-label="Notebook cells"
-      className="cloud-report-notebook flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain"
-      data-cell-count={cells.length}
-      data-slot="cloud-live-notebook"
-    >
-      {cells.map((cell, index) => (
-        <ErrorBoundary
-          key={cell.id}
-          resetKeys={[
-            cell.id,
-            cell.cellType,
-            cell.source,
-            cell.language,
-            cell.executionCount,
-            cell.outputs.length,
-          ]}
-          fallback={(error) => (
-            <div className="cloud-state" data-kind="error">
-              Unable to render cell {index + 1}: {error.message}
-            </div>
-          )}
-        >
-          {cell.cellType === "markdown" ? (
-            <EditableMarkdownCell
-              cell={cell}
-              className="cloud-cell cloud-editable-markdown-cell"
-              sourceClassName="cloud-source-block"
-              priority={priority}
-              hostContext={hostContext}
-              onSourceChange={onMarkdownSourceChange}
-              onSyncNeeded={onMarkdownSyncNeeded}
-              getHandle={getHandle}
-              localActorLabel={localActorLabel}
-              textAttributionQueue={textAttributionQueue}
-              remotePresence={presenceForCell(livePresence, cell.id)}
-              onPresenceCursor={onPresenceCursor}
-              onPresenceSelection={onPresenceSelection}
-            />
-          ) : (
-            <ReadOnlyNotebookCell
-              id={cell.id}
-              cellType={cell.cellType}
-              source={cell.source}
-              language={cloudSourceLanguage(cell.language)}
-              outputs={cell.outputs}
-              executionCount={cell.executionCount}
-              priority={priority}
-              hostContext={hostContext}
-              displayMode="report"
-              showSource={cell.cellType !== "code" || showCode}
-              className="cloud-cell"
-              sourceClassName="cloud-source-block"
-              outputClassName="cloud-output-block"
-              deferIsolatedFrameUntilVisible
-              deferredIsolatedFrameRootMargin="600px 0px"
-              resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-              onNavigateToTracebackCell={onNavigateToTracebackCell}
-            />
-          )}
-        </ErrorBoundary>
-      ))}
-    </section>
+    <NotebookCellList
+      cells={cells}
+      className="cloud-report-notebook"
+      slot="cloud-live-notebook"
+      renderCellError={(error, _cell, index) => (
+        <div className="cloud-state" data-kind="error">
+          Unable to render cell {index + 1}: {error.message}
+        </div>
+      )}
+      renderCell={(cell) =>
+        cell.cellType === "markdown" ? (
+          <EditableMarkdownCell
+            cell={cell}
+            className="cloud-cell cloud-editable-markdown-cell"
+            sourceClassName="cloud-source-block"
+            priority={priority}
+            hostContext={hostContext}
+            onSourceChange={onMarkdownSourceChange}
+            onSyncNeeded={onMarkdownSyncNeeded}
+            getHandle={getHandle}
+            localActorLabel={localActorLabel}
+            textAttributionQueue={textAttributionQueue}
+            remotePresence={presenceForCell(livePresence, cell.id)}
+            onPresenceCursor={onPresenceCursor}
+            onPresenceSelection={onPresenceSelection}
+          />
+        ) : (
+          <ReadOnlyNotebookCell
+            id={cell.id}
+            cellType={cell.cellType}
+            source={cell.source}
+            language={cloudSourceLanguage(cell.language)}
+            outputs={cell.outputs}
+            executionCount={cell.executionCount}
+            priority={priority}
+            hostContext={hostContext}
+            displayMode="report"
+            showSource={cell.cellType !== "code" || showCode}
+            className="cloud-cell"
+            sourceClassName="cloud-source-block"
+            outputClassName="cloud-output-block"
+            deferIsolatedFrameUntilVisible
+            deferredIsolatedFrameRootMargin="600px 0px"
+            resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+            onNavigateToTracebackCell={onNavigateToTracebackCell}
+          />
+        )
+      }
+    />
   );
 }
 

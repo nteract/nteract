@@ -44,6 +44,8 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
+  assert.match(sourceText, /NotebookCellList/);
+  assert.match(sourceText, /slot="cloud-live-notebook"/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
 });
