@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createNotebookViewModel,
+  notebookMetadataToPackageViewModel,
   notebookOutlineItemsToMarkdownHeadingAnchors,
   notebookViewCellsToOutlineItems,
   notebookViewCellsToReadOnlyCells,
@@ -147,6 +148,42 @@ describe("notebook shell view model", () => {
       label: "In [7]",
     });
     expect(viewModel.markdownHeadingAnchorsByCellId.get("code-1")).toBeUndefined();
+    expect(viewModel.packages.sections).toEqual([]);
+  });
+
+  it("projects notebook dependency metadata for shared package panels", () => {
+    const packageView = notebookMetadataToPackageViewModel({
+      runt: {
+        uv: {
+          dependencies: ["pandas>=2", "polars"],
+          "requires-python": ">=3.12",
+        },
+        pixi: {
+          dependencies: ["numpy"],
+          pypi_dependencies: ["altair"],
+          channels: ["conda-forge"],
+        },
+      },
+    });
+
+    expect(packageView.summary).toBe("uv + pixi · 4 packages");
+    expect(packageView.sections).toMatchObject([
+      {
+        manager: "uv",
+        label: "uv",
+        dependencies: ["pandas>=2", "polars"],
+        details: [{ label: "Python", values: [">=3.12"] }],
+      },
+      {
+        manager: "pixi",
+        label: "pixi",
+        dependencies: ["numpy"],
+        details: [
+          { label: "PyPI", values: ["altair"] },
+          { label: "Channels", values: ["conda-forge"] },
+        ],
+      },
+    ]);
   });
 
   it("can build outline-only projections without a read-only language resolver", () => {

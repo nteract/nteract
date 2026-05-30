@@ -62,6 +62,16 @@ test("cloud read-only notebook renders from the shared notebook view model", () 
   assert.doesNotMatch(sourceText, /cells=\{readOnlyCells\}/);
 });
 
+test("cloud package rail renders package metadata through the shared shell panel", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookPackageSummaryPanel/);
+  assert.match(sourceText, /packagesSummary=\{notebookViewModel\.packages\.summary\}/);
+  assert.match(sourceText, /packages=\{notebookViewModel\.packages\}/);
+  assert.doesNotMatch(sourceText, /Package details are not surfaced/);
+});
+
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

@@ -34,6 +34,7 @@ import {
   createNotebookViewModel,
   navigateNotebookOutlineItem,
   NotebookDocumentShell,
+  NotebookPackageSummaryPanel,
   NotebookReadOnlyView,
 } from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -593,6 +594,7 @@ function NotebookViewer({
     message: loadingPolicy.initialStatusMessage,
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
+  const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
   const [showCode, setShowCode] = useState(true);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(false);
@@ -774,6 +776,7 @@ function NotebookViewer({
         });
         if (cancelled || liveMaterializedRef.current) return;
         notebookLanguageRef.current = materialized.notebookLanguage;
+        setNotebookMetadata(materialized.metadata);
 
         snapshotResolvedRef.current = true;
         await projectCloudWidgetComms(
@@ -905,6 +908,7 @@ function NotebookViewer({
       }
       if (disposed || sequence !== materializeSequence) return;
       notebookLanguageRef.current = materialized.notebookLanguage;
+      setNotebookMetadata(materialized.metadata);
 
       await projectCloudWidgetComms(
         widgetStore,
@@ -1053,8 +1057,12 @@ function NotebookViewer({
   ]);
 
   const notebookViewModel = useMemo(
-    () => createNotebookViewModel(cells, { resolveLanguage: cloudSourceLanguage }),
-    [cells],
+    () =>
+      createNotebookViewModel(cells, {
+        metadata: notebookMetadata,
+        resolveLanguage: cloudSourceLanguage,
+      }),
+    [cells, notebookMetadata],
   );
   const { codeCellCount, outlineItems, tracebackTargetsByExecutionId } = notebookViewModel;
   useEffect(() => {
@@ -1134,7 +1142,13 @@ function NotebookViewer({
       collapsed={railCollapsed}
       outlineItems={outlineItems}
       selectedOutlineItemId={selectedOutlineItemId}
-      packagesPanel={<CloudRailPackagesPanel />}
+      packagesSummary={notebookViewModel.packages.summary}
+      packagesPanel={
+        <NotebookPackageSummaryPanel
+          packages={notebookViewModel.packages}
+          readOnly={!shellCapabilities.canManagePackages}
+        />
+      }
       onActivePanelChange={setActiveRailPanel}
       onCollapsedChange={setRailCollapsed}
       onSelectOutlineItem={handleSelectOutlineItem}
@@ -1287,14 +1301,6 @@ function NotebookViewer({
         />
       )}
     </NotebookDocumentShell>
-  );
-}
-
-function CloudRailPackagesPanel() {
-  return (
-    <div className="cloud-rail-panel-note">
-      <p>Package details are not surfaced in the hosted viewer yet.</p>
-    </div>
   );
 }
 
