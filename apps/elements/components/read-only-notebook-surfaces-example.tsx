@@ -2,96 +2,18 @@
 
 import { Cloud, Eye, FileCode2, Loader2, Rows3 } from "lucide-react";
 import { CellSkeleton } from "@/notebook-components/CellSkeleton";
-import {
-  ReadOnlyNotebook,
-  type ReadOnlyNotebookCellData,
-} from "@/components/cell/ReadOnlyNotebook";
+import { ReadOnlyNotebook } from "@/components/cell/ReadOnlyNotebook";
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
-
-const notebookCells: ReadOnlyNotebookCellData[] = [
-  {
-    id: "hosted-intro",
-    cellType: "markdown",
-    source: [
-      "## Hosted forecast report",
-      "",
-      "Read-only notebook surfaces keep notebook structure and output rendering without a live kernel.",
-    ].join("\n"),
-  },
-  {
-    id: "hosted-model",
-    cellType: "code",
-    language: "python",
-    source: [
-      "features = orders.assign(month=orders.date.dt.month)",
-      "predictions = model.predict(features[columns])",
-      "display(metrics)",
-    ].join("\n"),
-    executionCount: 12,
-    outputs: [
-      {
-        output_id: "hosted-model-stream",
-        output_type: "stream",
-        name: "stdout",
-        text: "validated 16 week backtest window\n",
-      },
-      {
-        output_id: "hosted-model-json",
-        output_type: "execute_result",
-        execution_count: 12,
-        data: {
-          "application/json": {
-            mae: 8.42,
-            mape: "6.8%",
-            holdout_weeks: 16,
-          },
-          "text/plain": "MAE 8.42, MAPE 6.8%, holdout 16 weeks",
-        },
-        metadata: {},
-      },
-    ],
-  },
-  {
-    id: "hosted-summary",
-    cellType: "code",
-    language: "python",
-    source: "display(summary_markdown)",
-    executionCount: 13,
-    outputs: [
-      {
-        output_id: "hosted-summary-markdown",
-        output_type: "display_data",
-        data: {
-          "text/markdown": [
-            "### Summary",
-            "",
-            "- Forecast error stayed within the review threshold.",
-            "- The hosted renderer uses the docs isolated-frame adapter.",
-          ].join("\n"),
-        },
-        metadata: {},
-      },
-    ],
-  },
-];
-
-const singleCellOutputs = [
-  {
-    output_id: "single-cell-json",
-    output_type: "display_data" as const,
-    data: {
-      "application/json": {
-        renderer: "cell",
-        displayMode: "report",
-        outputs: 1,
-      },
-      "text/plain": "ReadOnlyNotebookCell report mode",
-    },
-    metadata: {},
-  },
-];
+import {
+  getElementsNotebookScenario,
+  resolveElementsNotebookLanguage,
+} from "@/components/notebook-scenarios";
 
 export function ReadOnlyNotebookSurfacesExample() {
+  const scenario = getElementsNotebookScenario("cloud-public-viewer");
+  const reportCell =
+    scenario.cells.find((cell) => cell.id === "cell-shape-output") ?? scenario.cells[0];
+
   return (
     <div className="not-prose space-y-6" data-testid="read-only-notebook-surfaces-example">
       <section className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-sky-900 dark:text-sky-100">
@@ -101,8 +23,9 @@ export function ReadOnlyNotebookSurfacesExample() {
             <h2 className="text-sm font-semibold">Hosted notebook fixture</h2>
             <p className="mt-1 text-xs leading-5">
               These examples render the shared read-only notebook components used by cloud and
-              published artifact paths. Outputs are static nbformat fixtures, and markdown uses the
-              docs app isolated-frame adapter instead of a runtime iframe bundle.
+              published artifact paths. Cells come from the Elements notebook scenario projection,
+              outputs are static nbformat fixtures, and markdown uses the docs app isolated-frame
+              adapter instead of a runtime iframe bundle.
             </p>
           </div>
         </div>
@@ -125,11 +48,11 @@ export function ReadOnlyNotebookSurfacesExample() {
         </div>
         <div className="bg-background p-4">
           <ReadOnlyNotebook
-            cells={notebookCells}
+            cells={scenario.viewModel.readOnlyCells}
             displayMode="notebook"
             className="gap-3"
             cellClassName="rounded-lg border border-fd-border bg-fd-background pl-1"
-            label="Hosted notebook fixture"
+            label={`${scenario.title} notebook fixture`}
           />
         </div>
       </section>
@@ -152,12 +75,12 @@ export function ReadOnlyNotebookSurfacesExample() {
           </div>
           <div className="bg-background p-4">
             <ReadOnlyNotebookCell
-              id="single-read-only-cell"
-              cellType="code"
-              source="summary = {'renderer': 'cell'}"
-              language="python"
-              executionCount={7}
-              outputs={singleCellOutputs}
+              id={reportCell.id}
+              cellType={reportCell.cellType}
+              source={reportCell.source}
+              language={resolveElementsNotebookLanguage(reportCell.language)}
+              executionCount={reportCell.executionCount}
+              outputs={reportCell.outputs}
               displayMode="report"
               className="rounded-lg border border-fd-border bg-fd-background p-3"
             />
@@ -193,9 +116,9 @@ export function ReadOnlyNotebookSurfacesExample() {
           <div>
             <h2 className="text-sm font-semibold">Adapter boundary</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              The production components still route through `OutputArea`. The catalog uses the local
-              isolated-frame adapter for markdown output, so this page stays runtime-free while
-              exercising the same read-only cell composition path.
+              The production components still route through `OutputArea`. The catalog receives the
+              same read-only cells the shared shell view model produces, then uses the local
+              isolated-frame adapter for markdown output so this page stays runtime-free.
             </p>
           </div>
         </div>
