@@ -47,6 +47,8 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
 
   assert.match(sourceText, /NotebookCellList/);
   assert.match(sourceText, /slot="cloud-live-notebook"/);
+  assert.match(sourceText, /viewModel: NotebookViewModel<ResolvedCell>/);
+  assert.match(sourceText, /const cells = viewModel\.cells;/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
 });

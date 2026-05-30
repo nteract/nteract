@@ -26,8 +26,8 @@ export type NotebookViewLanguageResolver = (
   language: string | null | undefined,
 ) => SupportedLanguage | null;
 
-export interface NotebookViewModel {
-  cells: readonly NotebookViewCell[];
+export interface NotebookViewModel<TCell extends NotebookViewCell = NotebookViewCell> {
+  cells: readonly TCell[];
   cellIds: string[];
   readOnlyCells: ReadOnlyNotebookCellData[];
   outlineItems: NotebookOutlineItem[];
@@ -49,10 +49,10 @@ export interface CreateNotebookViewModelOptions {
  * live/snapshot Automerge handle adapter. This function should remain free of
  * transport, WASM, blob-fetch, and host side effects.
  */
-export function createNotebookViewModel(
-  cells: readonly NotebookViewCell[],
+export function createNotebookViewModel<TCell extends NotebookViewCell = NotebookViewCell>(
+  cells: readonly TCell[],
   options: CreateNotebookViewModelOptions = {},
-): NotebookViewModel {
+): NotebookViewModel<TCell> {
   const resolveLanguage = options.resolveLanguage ?? (() => null);
   const outlineItems = notebookViewCellsToOutlineItems(cells, {
     getStatusLabel: options.getOutlineStatusLabel,

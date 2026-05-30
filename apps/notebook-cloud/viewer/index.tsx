@@ -1250,7 +1250,7 @@ function NotebookViewer({
 
       {canEditMarkdown ? (
         <CloudLiveNotebook
-          cells={cells}
+          viewModel={notebookViewModel}
           priority={CLOUD_VIEWER_PRIORITY}
           hostContext={outputHostContext}
           showCode={showCode}

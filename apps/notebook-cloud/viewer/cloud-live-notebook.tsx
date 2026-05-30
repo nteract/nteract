@@ -1,7 +1,7 @@
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
-import { NotebookCellList } from "@/components/notebook-shell";
+import { NotebookCellList, type NotebookViewModel } from "@/components/notebook-shell";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { EditableMarkdownCell, type CloudTextAttributionQueue } from "./editable-markdown-cell";
 import type { CloudLivePresenceSnapshot } from "./live-presence";
@@ -10,7 +10,7 @@ import type { ResolvedCell } from "./render-resolution";
 import { cloudSourceLanguage } from "./source-language";
 
 export interface CloudLiveNotebookProps {
-  cells: ResolvedCell[];
+  viewModel: NotebookViewModel<ResolvedCell>;
   priority: readonly string[];
   hostContext: NteractEmbedHostContextPatch;
   showCode: boolean;
@@ -33,7 +33,7 @@ export interface CloudLiveNotebookProps {
 }
 
 export function CloudLiveNotebook({
-  cells,
+  viewModel,
   priority,
   hostContext,
   showCode,
@@ -48,6 +48,8 @@ export function CloudLiveNotebook({
   resolveTracebackExecutionTarget,
   onNavigateToTracebackCell,
 }: CloudLiveNotebookProps) {
+  const cells = viewModel.cells;
+
   return (
     <NotebookCellList
       cells={cells}
