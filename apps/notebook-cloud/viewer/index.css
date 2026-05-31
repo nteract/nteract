@@ -276,6 +276,22 @@ body {
   display: none;
 }
 
+.cloud-auth-menu summary.cloud-auth-identity-summary {
+  height: auto;
+  max-width: min(14rem, 42vw);
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.cloud-auth-identity-summary [data-slot="notebook-identity-badge"] {
+  height: 2rem;
+  max-width: 100%;
+}
+
 .cloud-share-menu summary::-webkit-details-marker {
   display: none;
 }
