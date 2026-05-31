@@ -21,6 +21,8 @@ export type ElementsNotebookScenarioId =
   | "cloud-editor"
   | "cloud-owner"
   | "agent-on-behalf"
+  | "runtime-peer"
+  | "system-schema"
   | "runtime-unavailable";
 
 export interface ElementsNotebookScenario {
@@ -714,6 +716,72 @@ export const elementsNotebookScenarios: Record<
       auth: {
         canSignIn: false,
         canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+    },
+  }),
+  "runtime-peer": createScenario({
+    id: "runtime-peer",
+    title: "Runtime peer",
+    eyebrow: "runtime fixture",
+    summary:
+      "A runtime operator authors execution and output state without becoming a notebook editor.",
+    runtimeLabel: "JupyterHub runtime · connected",
+    packageSummary: "visible · 4 packages",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: false,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "viewer",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: "user:anaconda:alice/runtime:jupyterhub",
+        identityLabel: "Alice",
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+    },
+  }),
+  "system-schema": createScenario({
+    id: "system-schema",
+    title: "System schema actor",
+    eyebrow: "system fixture",
+    summary:
+      "Schema and system-authored changes remain attributable without appearing as human collaborators.",
+    runtimeLabel: "System · schema seed",
+    packageSummary: "not applicable",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: false,
+      canExecute: false,
+      canToggleCode: false,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "viewer",
+        source: "fixture",
+        isPublic: false,
+        actorLabel: "system/schema:notebook:v5",
+        identityLabel: null,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: false,
         needsAttention: false,
       },
     },
