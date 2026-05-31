@@ -12,7 +12,10 @@ const outputAreaCalls = vi.hoisted(() => ({
     className?: string;
     executionCount?: number | null;
     hostContext?: unknown;
+    preloadIframe?: boolean;
     priority?: readonly string[];
+    searchQuery?: string;
+    useOutputWell?: boolean;
     outputs: JupyterOutput[];
   }>,
 }));
@@ -23,7 +26,10 @@ vi.mock("@/components/cell/OutputArea", () => ({
     className?: string;
     executionCount?: number | null;
     hostContext?: unknown;
+    preloadIframe?: boolean;
     priority?: readonly string[];
+    searchQuery?: string;
+    useOutputWell?: boolean;
     outputs: JupyterOutput[];
   }) => {
     outputAreaCalls.props.push(props);
@@ -34,8 +40,11 @@ vi.mock("@/components/cell/OutputArea", () => ({
         data-execution-count={props.executionCount ?? ""}
         data-host-context={JSON.stringify(props.hostContext ?? null)}
         data-output-count={props.outputs.length}
+        data-preload-iframe={props.preloadIframe ? "true" : "false"}
         data-priority={props.priority?.join(",") ?? ""}
+        data-search-query={props.searchQuery ?? ""}
         data-testid="output-area"
+        data-use-output-well={props.useOutputWell ? "true" : "false"}
       />
     );
   },
@@ -128,6 +137,37 @@ describe("EditableCodeCell", () => {
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-cell-id", "code-2");
     expect(document.querySelector('[data-slot="cell-output-content"]')).not.toBeNull();
   });
+
+  it("forwards desktop cell state and output controls through the shared primitive", () => {
+    const output: JupyterOutput = {
+      output_id: "output-3",
+      output_type: "stream",
+      name: "stdout",
+      text: "shared",
+    };
+
+    render(
+      <Harness
+        id="code-3"
+        source="value"
+        outputs={[output]}
+        executionCount={3}
+        focusOutputs
+        isFocused
+        isPreviousCellFromFocused
+        outputFocused
+        preloadIframe
+        searchQuery="needle"
+        useOutputWell
+      />,
+    );
+
+    const cell = document.querySelector('[data-slot="cell-container"]');
+    expect(cell).toHaveAttribute("data-focus-state", "focused");
+    expect(screen.getByTestId("output-area")).toHaveAttribute("data-preload-iframe", "true");
+    expect(screen.getByTestId("output-area")).toHaveAttribute("data-search-query", "needle");
+    expect(screen.getByTestId("output-area")).toHaveAttribute("data-use-output-well", "true");
+  });
 });
 
 function Harness({
@@ -142,6 +182,13 @@ function Harness({
   sourceClassName,
   outputClassName,
   showSource,
+  focusOutputs,
+  isFocused,
+  isPreviousCellFromFocused,
+  outputFocused,
+  preloadIframe,
+  searchQuery,
+  useOutputWell,
 }: {
   id: string;
   elementId?: string;
@@ -154,6 +201,13 @@ function Harness({
   sourceClassName?: string;
   outputClassName?: string;
   showSource?: boolean;
+  focusOutputs?: boolean;
+  isFocused?: boolean;
+  isPreviousCellFromFocused?: boolean;
+  outputFocused?: boolean;
+  preloadIframe?: boolean;
+  searchQuery?: string;
+  useOutputWell?: boolean;
 }) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
 
@@ -171,6 +225,13 @@ function Harness({
       sourceClassName={sourceClassName}
       outputClassName={outputClassName}
       showSource={showSource}
+      focusOutputs={focusOutputs}
+      isFocused={isFocused}
+      isPreviousCellFromFocused={isPreviousCellFromFocused}
+      outputFocused={outputFocused}
+      preloadIframe={preloadIframe}
+      searchQuery={searchQuery}
+      useOutputWell={useOutputWell}
     />
   );
 }

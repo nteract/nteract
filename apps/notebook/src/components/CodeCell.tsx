@@ -1,11 +1,10 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { ChevronRight, Code2, EyeOff } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
-import { OutputArea } from "@/components/cell/OutputArea";
-import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
+import { EditableCodeCell } from "@/components/cell/EditableCodeCell";
+import type { CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { languageDisplayNames, type SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
@@ -385,11 +384,88 @@ export const CodeCell = memo(function CodeCell({
     />
   );
 
+  const collapsedSourceContent = bothHidden ? (
+    <div className="flex items-center justify-start mt-0.5">
+      <button
+        type="button"
+        onClick={() => {
+          if (onExpandHiddenGroup) {
+            onExpandHiddenGroup();
+          } else {
+            onToggleSourceHidden?.(false);
+            onToggleOutputsHidden?.(false);
+          }
+        }}
+        className={cn(
+          "inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
+          (isExecuting || isGroupExecuting) && "animate-pulse",
+        )}
+        title={
+          hiddenGroupCount && hiddenGroupCount > 1 ? `Show ${hiddenGroupCount} cells` : "Show cell"
+        }
+      >
+        <span>
+          {hiddenGroupCount && hiddenGroupCount > 1
+            ? `${hiddenGroupCount} cells hidden`
+            : "Cell hidden"}
+        </span>
+        {hiddenGroupErrorCount ? (
+          <span className="text-destructive font-medium">
+            {hiddenGroupErrorCount === 1 ? "1 error" : `${hiddenGroupErrorCount} errors`}
+          </span>
+        ) : null}
+        <ChevronRight className="h-3 w-3" />
+      </button>
+    </div>
+  ) : isSourceHidden ? (
+    <>
+      <div className="flex items-center justify-start mt-0.5">
+        <button
+          type="button"
+          onClick={() => onToggleSourceHidden?.(false)}
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+          title="Show source"
+        >
+          <Code2 className="h-3 w-3" />
+          <span className="font-mono truncate max-w-48">
+            {cell.source.split("\n")[0] || "source"}
+          </span>
+          <ChevronRight className="h-3 w-3" />
+        </button>
+      </div>
+      {currentLine}
+    </>
+  ) : undefined;
+
+  const collapsedOutputContent =
+    isOutputsHidden && outputs.length > 0 ? (
+      <div className={cn("flex items-center justify-start mt-0.5", cellOutputInnerInset)}>
+        <button
+          type="button"
+          onClick={() => onToggleOutputsHidden?.(false)}
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+          title="Show outputs"
+        >
+          <span>
+            {outputs.length} output
+            {outputs.length !== 1 ? "s" : ""}
+          </span>
+          <ChevronRight className="h-3 w-3" />
+        </button>
+      </div>
+    ) : undefined;
+
   return (
     <>
-      <CellContainer
+      <EditableCodeCell
         id={cell.id}
-        cellType="code"
+        source={cell.source}
+        language={language}
+        outputs={outputs}
+        executionCount={executionCount}
+        editorRef={editorRef}
+        editorKeyMap={keyMap}
+        editorExtensions={editorExtensions}
         isFocused={isFocused}
         isPreviousCellFromFocused={isPreviousCellFromFocused}
         isNextCellFromFocused={isNextCellFromFocused}
@@ -399,113 +475,10 @@ export const CodeCell = memo(function CodeCell({
         rightGutterContent={rightGutterContent}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}
-        codeContent={
-          <>
-            {/* Source visibility toggle + Editor */}
-            {bothHidden ? (
-              <div className="flex items-center justify-start mt-0.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (onExpandHiddenGroup) {
-                      onExpandHiddenGroup();
-                    } else {
-                      onToggleSourceHidden?.(false);
-                      onToggleOutputsHidden?.(false);
-                    }
-                  }}
-                  className={cn(
-                    "inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
-                    (isExecuting || isGroupExecuting) && "animate-pulse",
-                  )}
-                  title={
-                    hiddenGroupCount && hiddenGroupCount > 1
-                      ? `Show ${hiddenGroupCount} cells`
-                      : "Show cell"
-                  }
-                >
-                  <span>
-                    {hiddenGroupCount && hiddenGroupCount > 1
-                      ? `${hiddenGroupCount} cells hidden`
-                      : "Cell hidden"}
-                  </span>
-                  {hiddenGroupErrorCount ? (
-                    <span className="text-destructive font-medium">
-                      {hiddenGroupErrorCount === 1 ? "1 error" : `${hiddenGroupErrorCount} errors`}
-                    </span>
-                  ) : null}
-                  <ChevronRight className="h-3 w-3" />
-                </button>
-              </div>
-            ) : isSourceHidden ? (
-              <>
-                <div className="flex items-center justify-start mt-0.5">
-                  <button
-                    type="button"
-                    onClick={() => onToggleSourceHidden?.(false)}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
-                    title="Show source"
-                  >
-                    <Code2 className="h-3 w-3" />
-                    <span className="font-mono truncate max-w-48">
-                      {cell.source.split("\n")[0] || "source"}
-                    </span>
-                    <ChevronRight className="h-3 w-3" />
-                  </button>
-                </div>
-                {currentLine}
-              </>
-            ) : (
-              <>
-                <CodeMirrorEditor
-                  ref={editorRef}
-                  initialValue={cell.source}
-                  language={language}
-                  keyMap={keyMap}
-                  extensions={editorExtensions}
-                  placeholder="Enter code..."
-                  autoFocus={isFocused}
-                />
-                {currentLine}
-              </>
-            )}
-          </>
-        }
-        outputContent={
-          isOutputsHidden && outputs.length > 0 ? (
-            <div className={cn("flex items-center justify-start mt-0.5", cellOutputInnerInset)}>
-              <button
-                type="button"
-                onClick={() => onToggleOutputsHidden?.(false)}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
-                title="Show outputs"
-              >
-                <span>
-                  {outputs.length} output
-                  {outputs.length !== 1 ? "s" : ""}
-                </span>
-                <ChevronRight className="h-3 w-3" />
-              </button>
-            </div>
-          ) : (
-            <OutputArea
-              outputs={outputs}
-              cellId={cell.id}
-              executionCount={executionCount}
-              preloadIframe
-              searchQuery={searchQuery}
-              onSearchMatchCount={onSearchMatchCount}
-              onLinkClick={handleLinkClick}
-              onIframeMouseDown={handleOutputMouseDown}
-              onDiagnostic={logNotebookIsolatedDiagnostic}
-              layoutInset="cell-output"
-              resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-              onNavigateToTracebackCell={handleTracebackCellNavigate}
-              focused={outputFocused}
-              useOutputWell={showOutputChrome}
-            />
-          )
-        }
+        gutterContent={null}
+        codeContentOverride={collapsedSourceContent}
+        editorFooterContent={currentLine}
+        outputContentOverride={collapsedOutputContent}
         outputRightGutterContent={
           outputs.length > 0 && !isOutputsHidden && onToggleOutputsHidden ? (
             <button
@@ -520,6 +493,16 @@ export const CodeCell = memo(function CodeCell({
           ) : undefined
         }
         hideOutput={outputs.length === 0 || bothHidden}
+        preloadIframe
+        searchQuery={searchQuery}
+        onSearchMatchCount={onSearchMatchCount}
+        onOutputLinkClick={handleLinkClick}
+        onOutputIframeMouseDown={handleOutputMouseDown}
+        onOutputDiagnostic={logNotebookIsolatedDiagnostic}
+        resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+        onNavigateToTracebackCell={handleTracebackCellNavigate}
+        focusOutputs={outputFocused}
+        useOutputWell={showOutputChrome}
       />
 
       {/* History Search Dialog (Ctrl+R) */}

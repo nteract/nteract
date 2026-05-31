@@ -3,6 +3,7 @@ import { type KeyBinding } from "@codemirror/view";
 import { type ReactNode, type RefObject, useMemo } from "react";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { type SupportedLanguage } from "@/components/editor/languages";
+import type { IsolatedDiagnosticHandler } from "@/components/isolated";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type {
   TracebackCellNavigator,
@@ -38,10 +39,25 @@ export interface EditableCodeCellProps {
   rightGutterContent?: ReactNode;
   outputRightGutterContent?: ReactNode;
   editorFooterContent?: ReactNode;
+  codeContentOverride?: ReactNode;
+  outputContentOverride?: ReactNode;
+  gutterContent?: ReactNode;
+  hideOutput?: boolean;
+  isPreviousCellFromFocused?: boolean;
+  isNextCellFromFocused?: boolean;
+  outputFocused?: boolean;
+  outputDimmed?: boolean;
+  dragHandleProps?: Record<string, unknown>;
+  isDragging?: boolean;
   deferIsolatedFrameUntilVisible?: boolean;
   deferredIsolatedFrameRootMargin?: string;
+  preloadIframe?: boolean;
+  searchQuery?: string;
+  onSearchMatchCount?: (count: number) => void;
   onOutputLinkClick?: (url: string, newTab: boolean) => void;
   onOutputIframeMouseDown?: () => void;
+  onOutputDiagnostic?: IsolatedDiagnosticHandler;
+  useOutputWell?: boolean;
   resolveTracebackExecutionTarget?: TracebackExecutionResolver;
   onNavigateToTracebackCell?: TracebackCellNavigator;
 }
@@ -71,10 +87,25 @@ export function EditableCodeCell({
   rightGutterContent,
   outputRightGutterContent,
   editorFooterContent,
+  codeContentOverride,
+  outputContentOverride,
+  gutterContent = <ExecutionCount count={executionCount} />,
+  hideOutput,
+  isPreviousCellFromFocused = false,
+  isNextCellFromFocused = false,
+  outputFocused = false,
+  outputDimmed = false,
+  dragHandleProps,
+  isDragging = false,
   deferIsolatedFrameUntilVisible,
   deferredIsolatedFrameRootMargin,
+  preloadIframe,
+  searchQuery,
+  onSearchMatchCount,
   onOutputLinkClick,
   onOutputIframeMouseDown,
+  onOutputDiagnostic,
+  useOutputWell,
   resolveTracebackExecutionTarget,
   onNavigateToTracebackCell,
 }: EditableCodeCellProps) {
@@ -89,24 +120,27 @@ export function EditableCodeCell({
   );
   const resolvedLanguage = language ?? "plain";
 
-  const codeContent = showSource ? (
-    <div className={sourceClassName}>
-      <CodeMirrorEditor
-        ref={editorRef}
-        initialValue={source}
-        language={resolvedLanguage}
-        keyMap={editorKeyMapArray}
-        extensions={editorExtensionArray}
-        placeholder={placeholder}
-        autoFocus={isFocused}
-        className={editorClassName}
-      />
-      {editorFooterContent}
-    </div>
-  ) : null;
+  const codeContent =
+    codeContentOverride ??
+    (showSource ? (
+      <div className={sourceClassName}>
+        <CodeMirrorEditor
+          ref={editorRef}
+          initialValue={source}
+          language={resolvedLanguage}
+          keyMap={editorKeyMapArray}
+          extensions={editorExtensionArray}
+          placeholder={placeholder}
+          autoFocus={isFocused}
+          className={editorClassName}
+        />
+        {editorFooterContent}
+      </div>
+    ) : null);
 
   const outputContent =
-    outputArray.length > 0 ? (
+    outputContentOverride ??
+    (outputArray.length > 0 ? (
       <OutputArea
         cellId={id}
         executionCount={executionCount}
@@ -117,14 +151,19 @@ export function EditableCodeCell({
         hostContext={hostContext}
         className={outputClassName}
         layoutInset="cell-output"
+        preloadIframe={preloadIframe}
+        searchQuery={searchQuery}
+        onSearchMatchCount={onSearchMatchCount}
         deferIsolatedFrameUntilVisible={deferIsolatedFrameUntilVisible}
         deferredIsolatedFrameRootMargin={deferredIsolatedFrameRootMargin}
         onLinkClick={onOutputLinkClick}
         onIframeMouseDown={onOutputIframeMouseDown}
+        onDiagnostic={onOutputDiagnostic}
+        useOutputWell={useOutputWell}
         resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
         onNavigateToTracebackCell={onNavigateToTracebackCell}
       />
-    ) : null;
+    ) : null);
 
   return (
     <CellContainer
@@ -132,14 +171,20 @@ export function EditableCodeCell({
       elementId={elementId}
       cellType="code"
       isFocused={isFocused}
+      isPreviousCellFromFocused={isPreviousCellFromFocused}
+      isNextCellFromFocused={isNextCellFromFocused}
+      outputFocused={outputFocused}
+      outputDimmed={outputDimmed}
       onFocus={onFocus}
       codeContent={codeContent}
       outputContent={outputContent}
-      hideOutput={outputArray.length === 0}
-      gutterContent={<ExecutionCount count={executionCount} />}
+      hideOutput={hideOutput ?? outputContent == null}
+      gutterContent={gutterContent}
       rightGutterContent={rightGutterContent}
       outputRightGutterContent={outputRightGutterContent}
       presenceIndicators={presenceIndicators}
+      dragHandleProps={dragHandleProps}
+      isDragging={isDragging}
       className={className}
     />
   );
