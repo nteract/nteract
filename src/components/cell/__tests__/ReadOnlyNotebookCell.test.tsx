@@ -28,6 +28,7 @@ vi.mock("../OutputArea", () => ({
     executionCount,
     focused,
     hostContext,
+    isolatedFrameName,
     onIsolatedFrameHandleChange,
     onNavigateToTracebackCell,
     outputs,
@@ -39,6 +40,7 @@ vi.mock("../OutputArea", () => ({
     executionCount?: number | null;
     focused?: boolean;
     hostContext?: unknown;
+    isolatedFrameName?: string;
     onIsolatedFrameHandleChange?: (
       handle: {
         isReady: boolean;
@@ -63,6 +65,7 @@ vi.mock("../OutputArea", () => ({
         data-execution-count={executionCount ?? ""}
         data-focused={String(focused)}
         data-host-context={JSON.stringify(hostContext ?? null)}
+        data-isolated-frame-name={isolatedFrameName ?? ""}
         data-has-traceback-navigator={String(Boolean(onNavigateToTracebackCell))}
         data-has-traceback-resolver={String(Boolean(resolveTracebackExecutionTarget))}
         data-mimes={outputs
@@ -209,6 +212,7 @@ describe("ReadOnlyNotebookCell", () => {
 
     const outputArea = screen.getByTestId("output-area");
     expect(outputArea).toHaveAttribute("data-cell-id", "cell-markdown");
+    expect(outputArea).toHaveAttribute("data-isolated-frame-name", "md-cell-markdown");
     expect(outputArea).toHaveAttribute("data-mimes", "text/markdown");
     expect(outputArea).toHaveAttribute("data-priority", "text/markdown,text/plain");
     expect(outputArea).toHaveAttribute("data-class-name", "pl-0 pr-0 markdown-source");

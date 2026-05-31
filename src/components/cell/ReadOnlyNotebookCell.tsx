@@ -214,6 +214,7 @@ function ReadOnlyMarkdownSource({
     <div ref={viewRef} data-slot="read-only-markdown-source">
       <OutputArea
         cellId={cellId}
+        isolatedFrameName={`md-${cellId}`}
         outputs={[output]}
         isolated="auto"
         priority={priority}
