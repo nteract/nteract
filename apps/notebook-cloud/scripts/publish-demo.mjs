@@ -2,13 +2,18 @@ import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
+import {
+  canonicalViewerUrl,
+  notebookIdFromEnvOrGenerated,
+  runtimeStateDocIdFromEnvOrDefault,
+  vanityNameFromEnvOrNotebookName,
+} from "./publish-notebook-id.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
-const notebookId = process.env.NOTEBOOK_CLOUD_NOTEBOOK_ID ?? "nteract-cloud-demo";
-const vanityName = process.env.NOTEBOOK_CLOUD_VANITY_NAME ?? "demo";
-const runtimeStateDocIdOverride =
-  process.env.NOTEBOOK_CLOUD_RUNTIME_STATE_DOC_ID ?? `${notebookId}:runtime-state`;
+const notebookId = notebookIdFromEnvOrGenerated();
+const vanityName = vanityNameFromEnvOrNotebookName("demo.ipynb");
+const runtimeStateDocIdOverride = runtimeStateDocIdFromEnvOrDefault(notebookId);
 const actorLabel = "user:dev:demo/agent:publish-demo";
 const wasmJsUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
@@ -112,11 +117,6 @@ console.log(
 function headsDigest(heads) {
   const input = heads.length > 0 ? heads.slice().sort().join("\n") : "empty";
   return `heads-${createHash("sha256").update(input).digest("hex").slice(0, 24)}`;
-}
-
-function canonicalViewerUrl(baseUrl, notebookId, vanityName) {
-  return new URL(`/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanityName)}`, baseUrl)
-    .href;
 }
 
 function requiredRuntimeStateDocId(handle) {

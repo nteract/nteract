@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 
 import { collectBlobRefs } from "../src/blob-refs.ts";
 import { createLiveNotebookFixture } from "./live-notebook-fixture.mjs";
+import {
+  canonicalViewerUrl,
+  notebookIdFromEnvOrGenerated,
+  vanityNameFromEnvOrNotebookName,
+} from "./publish-notebook-id.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 import { loadRuntimedNode } from "./runtimed-node-loader.mjs";
 
@@ -13,11 +18,10 @@ const rt = loadRuntimedNode();
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const sourceNotebookId = process.env.NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID;
 const preset = process.env.NOTEBOOK_CLOUD_LIVE_PRESET ?? "mathnet";
-const notebookId =
-  process.env.NOTEBOOK_CLOUD_NOTEBOOK_ID ??
-  (sourceNotebookId ? `live-${sourceNotebookId}` : `nteract-cloud-live-${preset}`);
-const vanityName =
-  process.env.NOTEBOOK_CLOUD_VANITY_NAME ?? defaultLiveVanityName({ preset, sourceNotebookId });
+const notebookId = notebookIdFromEnvOrGenerated();
+const vanityName = vanityNameFromEnvOrNotebookName(
+  defaultLiveNotebookName({ preset, sourceNotebookId }),
+);
 const wasmJsUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
   import.meta.url,
@@ -135,19 +139,14 @@ function requiredRuntimeStateDocId(handle) {
   return runtimeStateDocId;
 }
 
-function defaultLiveVanityName({ preset, sourceNotebookId }) {
+function defaultLiveNotebookName({ preset, sourceNotebookId }) {
   if (sourceNotebookId) {
-    return "source";
+    return "notebook";
   }
   if (preset === "mathnet") {
-    return "topic-viz";
+    return "topic-viz.ipynb";
   }
   return preset;
-}
-
-function canonicalViewerUrl(baseUrl, notebookId, vanityName) {
-  return new URL(`/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanityName)}`, baseUrl)
-    .href;
 }
 
 async function uploadLiveBlob(ref, snapshot) {
