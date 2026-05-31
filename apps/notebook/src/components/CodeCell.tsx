@@ -10,6 +10,7 @@ import { languageDisplayNames, type SupportedLanguage } from "@/components/edito
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
+import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
@@ -79,6 +80,8 @@ interface CodeCellProps {
   hiddenGroupErrorCount?: number;
   /** Content for the right gutter (e.g., delete button, source toggle) */
   rightGutterContent?: ReactNode;
+  readOnly?: boolean;
+  outputHostContext?: NteractEmbedHostContextPatch;
 }
 
 function historyQueryFromEditor(view: EditorView | null, fallbackSource: string): string {
@@ -165,6 +168,8 @@ export const CodeCell = memo(function CodeCell({
   hiddenGroupCellIds,
   hiddenGroupErrorCount,
   rightGutterContent,
+  readOnly = false,
+  outputHostContext,
 }: CodeCellProps) {
   // Read transient UI state from the store
   const isFocused = useIsCellFocused(cell.id);
@@ -263,13 +268,16 @@ export const CodeCell = memo(function CodeCell({
   // Handle focus next, creating a new cell if at the end
   const handleFocusNextOrCreate = useCallback(
     (cursorPosition: "start" | "end") => {
+      if (readOnly) {
+        return;
+      }
       if (isLastCell && onInsertCellAfter) {
         onInsertCellAfter();
       } else if (onFocusNext) {
         onFocusNext(cursorPosition);
       }
     },
-    [isLastCell, onFocusNext, onInsertCellAfter],
+    [isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
   // Get keyboard navigation bindings
@@ -292,6 +300,9 @@ export const CodeCell = memo(function CodeCell({
     () => ({
       key: "Ctrl-r",
       run: () => {
+        if (readOnly) {
+          return false;
+        }
         setHistoryInitialQuery(
           historyQueryFromEditor(editorRef.current?.getEditor() ?? null, cell.source),
         );
@@ -299,15 +310,18 @@ export const CodeCell = memo(function CodeCell({
         return true;
       },
     }),
-    [cell.source],
+    [cell.source, readOnly],
   );
 
   // Handle history selection - replace cell content via CRDT bridge
   const handleHistorySelect = useCallback(
     (source: string) => {
+      if (readOnly) {
+        return;
+      }
       bridge.replaceSource(source);
     },
-    [bridge],
+    [bridge, readOnly],
   );
 
   // Merge navigation keybindings (navigation bindings take precedence for Shift-Enter)
@@ -380,6 +394,7 @@ export const CodeCell = memo(function CodeCell({
       compactIdle={isSourceEmpty}
       submittedByActorLabel={submittedByActorLabel}
       activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
+      canExecute={!readOnly}
       onExecute={onExecute}
       onInterrupt={onInterrupt}
     />
@@ -406,7 +421,9 @@ export const CodeCell = memo(function CodeCell({
               <div className="flex items-center justify-start mt-0.5">
                 <button
                   type="button"
+                  disabled={readOnly}
                   onClick={() => {
+                    if (readOnly) return;
                     if (onExpandHiddenGroup) {
                       onExpandHiddenGroup();
                     } else {
@@ -417,6 +434,8 @@ export const CodeCell = memo(function CodeCell({
                   className={cn(
                     "inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
                     (isExecuting || isGroupExecuting) && "animate-pulse",
+                    readOnly &&
+                      "cursor-default opacity-70 hover:bg-muted/50 hover:text-muted-foreground",
                   )}
                   title={
                     hiddenGroupCount && hiddenGroupCount > 1
@@ -442,8 +461,13 @@ export const CodeCell = memo(function CodeCell({
                 <div className="flex items-center justify-start mt-0.5">
                   <button
                     type="button"
+                    disabled={readOnly}
                     onClick={() => onToggleSourceHidden?.(false)}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                    className={cn(
+                      "inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
+                      readOnly &&
+                        "cursor-default opacity-70 hover:bg-muted/50 hover:text-muted-foreground",
+                    )}
                     title="Show source"
                   >
                     <Code2 className="h-3 w-3" />
@@ -465,6 +489,7 @@ export const CodeCell = memo(function CodeCell({
                   extensions={editorExtensions}
                   placeholder="Enter code..."
                   autoFocus={isFocused}
+                  readOnly={readOnly}
                 />
                 {currentLine}
               </>
@@ -476,8 +501,13 @@ export const CodeCell = memo(function CodeCell({
             <div className={cn("flex items-center justify-start mt-0.5", cellOutputInnerInset)}>
               <button
                 type="button"
+                disabled={readOnly}
                 onClick={() => onToggleOutputsHidden?.(false)}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                className={cn(
+                  "inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
+                  readOnly &&
+                    "cursor-default opacity-70 hover:bg-muted/50 hover:text-muted-foreground",
+                )}
                 title="Show outputs"
               >
                 <span>
@@ -499,6 +529,7 @@ export const CodeCell = memo(function CodeCell({
               onIframeMouseDown={handleOutputMouseDown}
               onDiagnostic={logNotebookIsolatedDiagnostic}
               layoutInset="cell-output"
+              hostContext={outputHostContext}
               resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
               onNavigateToTracebackCell={handleTracebackCellNavigate}
               focused={outputFocused}
@@ -507,7 +538,7 @@ export const CodeCell = memo(function CodeCell({
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 && !isOutputsHidden && onToggleOutputsHidden ? (
+          outputs.length > 0 && !isOutputsHidden && onToggleOutputsHidden && !readOnly ? (
             <button
               type="button"
               tabIndex={-1}

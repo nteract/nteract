@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,10 +11,7 @@ import {
 import { createRoot } from "react-dom/client";
 import {
   BookOpen,
-  Code2,
   Copy,
-  Eye,
-  EyeOff,
   Globe2,
   KeyRound,
   Link2,
@@ -37,16 +35,14 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
-  NotebookReadOnlyView,
 } from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
-import { isTextAttributionEvent, notebookCellAnchorId, type NotebookOutlineItem } from "runtimed";
+import type { NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
-import type { CloudTextAttributionQueue } from "./editable-markdown-cell";
 import {
   clearCloudPrototypeDevAuth,
   cloudNotebookSignInCopy,
@@ -66,8 +62,20 @@ import {
 } from "./collaborator-auth";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
-import { CloudLiveNotebook } from "./cloud-live-notebook";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
+import { NotebookView } from "../../notebook/src/components/NotebookView";
+import {
+  PresenceValueProvider,
+  type PresenceContextValue,
+} from "../../notebook/src/contexts/PresenceContext";
+import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
+import { flushCellUIState, setFocusedCellId } from "../../notebook/src/lib/cell-ui-state";
+import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
+import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
+import {
+  projectCloudCellsIntoNotebookViewStores,
+  resetCloudViewStoreProjection,
+} from "./notebook-view-store-bridge";
 import {
   beginOidcLogin,
   completeOidcRedirect,
@@ -77,7 +85,7 @@ import {
   type CloudOidcAuthConfig,
 } from "./oidc-auth";
 import type { ConnectionScope } from "../src/auth-shared";
-import { CloudLivePresenceStore, emptyCloudLivePresenceSnapshot } from "./live-presence";
+import { CloudLivePresenceStore } from "./live-presence";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
@@ -597,7 +605,6 @@ function NotebookViewer({
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
-  const [showCode, setShowCode] = useState(true);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
@@ -609,16 +616,12 @@ function NotebookViewer({
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const outputResolutionCacheRef = useRef(createOutputResolutionCache());
   const [presence, setPresence] = useState(initialCloudViewerPresence);
-  const [livePresence, setLivePresence] = useState(emptyCloudLivePresenceSnapshot);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
+  const [connectionPeerId, setConnectionPeerId] = useState<string | null>(null);
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [textAttributionQueue, setTextAttributionQueue] = useState<CloudTextAttributionQueue>(
-    () => ({ batches: [] }),
-  );
   const [connectAttempt, setConnectAttempt] = useState(0);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
-  const textAttributionSequenceRef = useRef(0);
   const blobResolver = useMemo(
     () =>
       createNotebookCloudBlobResolver({
@@ -658,8 +661,15 @@ function NotebookViewer({
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     cellsRef.current = cells;
+    projectCloudCellsIntoNotebookViewStores(cells);
+  }, [cells]);
+
+  useEffect(() => resetCloudViewStoreProjection, []);
+
+  useLayoutEffect(() => {
+    flushCellUIState();
   }, [cells]);
 
   useEffect(() => {
@@ -947,10 +957,9 @@ function NotebookViewer({
     };
 
     setPresence(initialCloudViewerPresence());
-    setLivePresence(emptyCloudLivePresenceSnapshot());
     setConnectionError(null);
     setConnectionActorLabel(null);
-    setTextAttributionQueue({ batches: [] });
+    setConnectionPeerId(null);
     void connectCloudSyncRuntime({
       syncEndpoint: config.syncEndpoint,
       runtimedWasmModulePath: config.runtimedWasmModulePath,
@@ -986,24 +995,16 @@ function NotebookViewer({
         liveRuntimeRef.current = liveRuntime;
         setConnectionScope(liveRuntime.connectionScope);
         setConnectionActorLabel(liveRuntime.actorLabel);
+        setConnectionPeerId(liveRuntime.peerId);
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
-        setLivePresence(livePresenceStore.snapshot());
+        const stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
         subscriptions = [
           liveRuntime.engine.broadcasts$.subscribe((payload) => {
-            if (!isTextAttributionEvent(payload)) return;
-            const sequence = ++textAttributionSequenceRef.current;
-            setTextAttributionQueue((queue) => {
-              const nextBatch = { sequence, attributions: payload.attributions };
-              return {
-                batches: [...queue.batches.slice(-63), nextBatch],
-              };
-            });
+            emitBroadcast(payload);
           }),
           liveRuntime.engine.presence$.subscribe((payload) => {
-            const snapshot = livePresenceStore?.handlePresence(payload);
-            if (snapshot) {
-              setLivePresence(snapshot);
-            }
+            emitPresence(payload);
+            livePresenceStore?.handlePresence(payload);
           }),
           liveRuntime.engine.cellChanges$.subscribe(() => {
             materializeLiveCellsSafely(liveRuntime);
@@ -1011,6 +1012,7 @@ function NotebookViewer({
           liveRuntime.engine.runtimeState$.subscribe(() => {
             materializeLiveCellsSafely(liveRuntime);
           }),
+          { unsubscribe: stopCursorDispatch },
         ];
         materializeLiveCellsSafely(liveRuntime);
       })
@@ -1027,6 +1029,7 @@ function NotebookViewer({
         setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
         setConnectionScope(null);
         setConnectionActorLabel(null);
+        setConnectionPeerId(null);
         setConnectionError(error instanceof Error ? error.message : String(error));
         console.warn("[notebook-cloud] live room connection failed", error);
       });
@@ -1040,9 +1043,10 @@ function NotebookViewer({
         clearTimeout(reconnectTimer);
       }
       disposeCurrentRuntime();
+      resetCloudViewStoreProjection();
       livePresenceStore = null;
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
-      setLivePresence(emptyCloudLivePresenceSnapshot());
+      setConnectionPeerId(null);
     };
   }, [
     authRenewal.kind,
@@ -1066,23 +1070,13 @@ function NotebookViewer({
       }),
     [cells, notebookMetadata],
   );
-  const { codeCellCount, outlineItems, tracebackTargetsByExecutionId } = notebookViewModel;
+  const { codeCellCount, outlineItems } = notebookViewModel;
   useEffect(() => {
     if (!selectedOutlineItemId) return;
     if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {
       setSelectedOutlineItemId(null);
     }
   }, [outlineItems, selectedOutlineItemId]);
-  const resolveTracebackExecutionTarget = useCallback(
-    (executionId: string) => tracebackTargetsByExecutionId.get(executionId) ?? null,
-    [tracebackTargetsByExecutionId],
-  );
-  const handleTracebackCellNavigate = useCallback((target: { cellId: string }) => {
-    findCellElement(target.cellId)?.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
-  }, []);
   const handleSelectOutlineItem = useCallback((item: NotebookOutlineItem) => {
     setSelectedOutlineItemId(item.id);
   }, []);
@@ -1101,38 +1095,34 @@ function NotebookViewer({
     [authState, codeCellCount, connectionActorLabel, connectionScope],
   );
   const canEditMarkdown = shellCapabilities.canEditMarkdown;
+  const notebookCellIds = useMemo(() => cells.map((cell) => cell.id), [cells]);
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
-  const handleMarkdownSourceChange = useCallback(
-    (cellId: string, source: string) => {
-      if (!canEditMarkdown) return;
-      const currentCell = cellsRef.current.find((cell) => cell.id === cellId);
-      if (currentCell?.cellType !== "markdown") return;
-
-      setCells((current) =>
-        current.map((cell) => (cell.id === cellId ? { ...cell, source } : cell)),
-      );
-    },
-    [canEditMarkdown],
+  const cloudPresenceContext = useMemo<PresenceContextValue | null>(
+    () =>
+      connectionPeerId
+        ? {
+            peerId: connectionPeerId,
+            setCursor: (cellId, line, column) => {
+              liveRuntimeRef.current?.sendCursorPresence(cellId, line, column);
+            },
+            setSelection: (cellId, anchorLine, anchorCol, headLine, headCol) => {
+              liveRuntimeRef.current?.sendSelectionPresence(
+                cellId,
+                anchorLine,
+                anchorCol,
+                headLine,
+                headCol,
+              );
+            },
+            setFocus: () => {},
+          }
+        : null,
+    [connectionPeerId],
   );
   const handleMarkdownSyncNeeded = useCallback(() => {
     if (!canEditMarkdown) return;
     liveRuntimeRef.current?.engine.scheduleFlush();
   }, [canEditMarkdown]);
-  const handlePresenceCursor = useCallback((cellId: string, line: number, column: number) => {
-    liveRuntimeRef.current?.sendCursorPresence(cellId, line, column);
-  }, []);
-  const handlePresenceSelection = useCallback(
-    (cellId: string, anchorLine: number, anchorCol: number, headLine: number, headCol: number) => {
-      liveRuntimeRef.current?.sendSelectionPresence(
-        cellId,
-        anchorLine,
-        anchorCol,
-        headLine,
-        headCol,
-      );
-    },
-    [],
-  );
   const resetPrototypeAuth = useCallback(() => {
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
@@ -1192,21 +1182,7 @@ function NotebookViewer({
           onAuthStateChange={refreshAuthState}
         />
       }
-      codeControls={
-        status.kind === "ready" ? (
-          <button
-            type="button"
-            className="cloud-code-toggle"
-            aria-pressed={showCode}
-            aria-label={showCode ? "Hide code cells" : "Show code cells"}
-            title={showCode ? "Hide code cells" : "Show code cells"}
-            onClick={() => setShowCode((current) => !current)}
-          >
-            {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-            <Code2 aria-hidden="true" />
-          </button>
-        ) : null
-      }
+      codeControls={null}
     />
   );
 
@@ -1265,44 +1241,30 @@ function NotebookViewer({
         </div>
       )}
 
-      {canEditMarkdown ? (
-        <CloudLiveNotebook
-          viewModel={notebookViewModel}
-          priority={CLOUD_VIEWER_PRIORITY}
-          hostContext={outputHostContext}
-          showCode={showCode}
-          livePresence={livePresence}
+      <PresenceValueProvider value={cloudPresenceContext}>
+        <CrdtBridgeProvider
           getHandle={getLiveNotebookHandle}
-          localActorLabel={connectionActorLabel}
-          textAttributionQueue={textAttributionQueue}
-          onMarkdownSourceChange={handleMarkdownSourceChange}
-          onMarkdownSyncNeeded={handleMarkdownSyncNeeded}
-          onPresenceCursor={handlePresenceCursor}
-          onPresenceSelection={handlePresenceSelection}
-          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-          onNavigateToTracebackCell={handleTracebackCellNavigate}
-        />
-      ) : (
-        <NotebookReadOnlyView
-          viewModel={notebookViewModel}
-          priority={CLOUD_VIEWER_PRIORITY}
-          hostContext={outputHostContext}
-          showCode={showCode}
-          className="cloud-report-notebook"
-          cellClassName="cloud-cell"
-          sourceClassName="cloud-source-block"
-          outputClassName="cloud-output-block"
-          deferIsolatedFrameUntilVisible
-          deferredIsolatedFrameRootMargin="600px 0px"
-          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-          onNavigateToTracebackCell={handleTracebackCellNavigate}
-          renderCellError={(error, _cell, index) => (
-            <div className="cloud-state" data-kind="error">
-              Unable to render cell {index + 1}: {error.message}
-            </div>
-          )}
-        />
-      )}
+          onSyncNeeded={handleMarkdownSyncNeeded}
+          localActor={connectionActorLabel ?? ""}
+        >
+          <NotebookView
+            cellIds={notebookCellIds}
+            isLoading={status.kind === "loading"}
+            canAcceptCellMutations={false}
+            readOnly={!canEditMarkdown}
+            runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+            sessionRuntimeState={connectionError ? "error" : "ready"}
+            onFocusCell={setFocusedCellId}
+            onExecuteCell={() => {}}
+            onInterruptKernel={() => {}}
+            onDeleteCell={() => {}}
+            onAddCell={() => null}
+            onMoveCell={() => {}}
+            markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
+            outputHostContext={outputHostContext}
+          />
+        </CrdtBridgeProvider>
+      </PresenceValueProvider>
     </NotebookDocumentShell>
   );
 }
@@ -1938,15 +1900,6 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.engine.stop();
   liveRuntime.transport.disconnect();
   liveRuntime.handle.free();
-}
-
-function findCellElement(cellId: string): HTMLElement | null {
-  const anchored = document.getElementById(notebookCellAnchorId(cellId));
-  if (anchored) return anchored;
-  for (const element of document.querySelectorAll<HTMLElement>("[data-cell-id]")) {
-    if (element.dataset.cellId === cellId) return element;
-  }
-  return null;
 }
 
 function CloudPresenceStatus({

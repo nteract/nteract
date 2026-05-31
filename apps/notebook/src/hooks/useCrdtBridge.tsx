@@ -10,9 +10,9 @@
  * broadcasts and routes them to the bridge's `applyRemoteChanges()`.
  *
  * Outbound flow: the bridge's ViewPlugin calls `splice_source` on the WASM
- * handle directly (character-level, no Myers diff). The `onSourceChanged`
- * callback updates the cell store, and `onSyncNeeded` triggers the debounced
- * sync to the daemon.
+ * handle directly (character-level, no Myers diff). The bridge updates the
+ * shared cell store after local edits, and `onSyncNeeded` triggers the
+ * debounced sync to the daemon.
  */
 
 import type { Extension } from "@codemirror/state";

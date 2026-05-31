@@ -21,6 +21,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId } from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
 import { Button } from "@/components/ui/button";
+import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -48,6 +49,7 @@ export interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
   canAcceptCellMutations?: boolean;
+  readOnly?: boolean;
   loadError?: string | null;
   runtime?: Runtime | null;
   sessionRuntimeState?: string | null;
@@ -61,6 +63,7 @@ export interface NotebookViewProps {
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
+  outputHostContext?: NteractEmbedHostContextPatch;
 }
 
 const NOTEBOOK_TAIL_SPACE = "clamp(4rem, 10vh, 6rem)";
@@ -85,7 +88,7 @@ function CellErrorFallback({
 }: {
   error: Error;
   onRetry: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
 }) {
   return (
     <div className="mx-4 my-2 rounded-md border border-destructive/50 bg-destructive/5 p-3">
@@ -105,16 +108,18 @@ function CellErrorFallback({
             <RotateCcw className="h-3 w-3" />
             Retry
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onDelete}
-            className="h-7 gap-1 px-2 text-xs text-destructive hover:text-destructive"
-            title="Delete cell"
-          >
-            <X className="h-3 w-3" />
-            Delete
-          </Button>
+          {onDelete ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onDelete}
+              className="h-7 gap-1 px-2 text-xs text-destructive hover:text-destructive"
+              title="Delete cell"
+            >
+              <X className="h-3 w-3" />
+              Delete
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>
@@ -287,10 +292,42 @@ function SortableCell({
   );
 }
 
+function StaticCell({
+  cellId,
+  index,
+  renderCell,
+  isHiddenInGroup,
+}: {
+  cellId: string;
+  index: number;
+  renderCell: (cell: NotebookCell, index: number) => React.ReactNode;
+  isHiddenInGroup?: boolean;
+}) {
+  const style: React.CSSProperties = { order: index };
+  const anchorId = notebookCellAnchorId(cellId);
+
+  if (isHiddenInGroup) {
+    return <div id={anchorId} style={style} />;
+  }
+
+  return (
+    <div id={anchorId} style={style}>
+      <ErrorBoundary
+        fallback={(error, resetErrorBoundary) => (
+          <CellErrorFallback error={error} onRetry={resetErrorBoundary} />
+        )}
+      >
+        <CellRenderer cellId={cellId} index={index} renderCell={renderCell} />
+      </ErrorBoundary>
+    </div>
+  );
+}
+
 function NotebookViewContent({
   cellIds,
   isLoading = false,
   canAcceptCellMutations = false,
+  readOnly = false,
   loadError = null,
   runtime = "python",
   sessionRuntimeState = null,
@@ -304,11 +341,14 @@ function NotebookViewContent({
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
   markdownHeadingAnchorsByCellId,
+  outputHostContext,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
   const tailPinnedRef = useRef(false);
   const tailScrollFrameRef = useRef<number | null>(null);
+  const canEditCellSources = !readOnly;
+  const canMutateCells = canAcceptCellMutations && canEditCellSources;
 
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
@@ -617,7 +657,7 @@ function NotebookViewContent({
   // processes the focusedCellId update from onAddCell.
   const didAutoSeed = useRef(false);
   useEffect(() => {
-    if (isLoading || focusedCellId !== null || !canAcceptCellMutations) return;
+    if (isLoading || focusedCellId !== null || !canMutateCells) return;
     if (cellIds.length === 0) {
       if (!didAutoSeed.current) {
         const seeded = onAddCell("code");
@@ -628,7 +668,7 @@ function NotebookViewContent({
     } else {
       onFocusCell(cellIds[0]);
     }
-  }, [isLoading, canAcceptCellMutations, cellIds, focusedCellId, onFocusCell, onAddCell]);
+  }, [isLoading, canMutateCells, cellIds, focusedCellId, onFocusCell, onAddCell]);
 
   const renderCell = useCallback(
     (
@@ -693,7 +733,7 @@ function NotebookViewContent({
 
       // Build right gutter content — delete button for all cells,
       // plus source toggle for code cells
-      const deleteButton = (
+      const deleteButton = canMutateCells ? (
         <button
           type="button"
           tabIndex={-1}
@@ -703,7 +743,7 @@ function NotebookViewContent({
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
-      );
+      ) : null;
 
       let rightGutterContent: React.ReactNode;
       if (cell.cell_type === "code") {
@@ -716,20 +756,23 @@ function NotebookViewContent({
 
         rightGutterContent = (
           <div className="flex flex-col gap-0.5">
-            {onSetCellSourceHidden && !bothHidden && (hasSourceText || isSourceHidden) && (
-              <button
-                type="button"
-                tabIndex={-1}
-                onClick={() => onSetCellSourceHidden(cell.id, !isSourceHidden)}
-                className={cn(
-                  "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
-                  isSourceHidden ? "text-muted-foreground/70" : "text-muted-foreground/40",
-                )}
-                title={isSourceHidden ? "Show source" : "Hide source"}
-              >
-                <Code2 className="h-3.5 w-3.5" />
-              </button>
-            )}
+            {canMutateCells &&
+              onSetCellSourceHidden &&
+              !bothHidden &&
+              (hasSourceText || isSourceHidden) && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => onSetCellSourceHidden(cell.id, !isSourceHidden)}
+                  className={cn(
+                    "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
+                    isSourceHidden ? "text-muted-foreground/70" : "text-muted-foreground/40",
+                  )}
+                  title={isSourceHidden ? "Show source" : "Hide source"}
+                >
+                  <Code2 className="h-3.5 w-3.5" />
+                </button>
+              )}
             {!isSourceHidden && deleteButton}
           </div>
         );
@@ -768,6 +811,8 @@ function NotebookViewContent({
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
+            readOnly={!canEditCellSources}
+            outputHostContext={outputHostContext}
             onToggleSourceHidden={
               onSetCellSourceHidden
                 ? (hidden: boolean) => onSetCellSourceHidden(cell.id, hidden)
@@ -818,6 +863,8 @@ function NotebookViewContent({
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
+            readOnly={!canEditCellSources}
+            outputHostContext={outputHostContext}
           />
         );
       }
@@ -839,6 +886,7 @@ function NotebookViewContent({
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
           rightGutterContent={rightGutterContent}
+          readOnly={!canEditCellSources}
         />
       );
     },
@@ -853,6 +901,9 @@ function NotebookViewContent({
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
       markdownHeadingAnchorsByCellId,
+      canEditCellSources,
+      canMutateCells,
+      outputHostContext,
       outputFocusedCellId,
       focusCell,
       handleOutputFocusChange,
@@ -891,30 +942,34 @@ function NotebookViewContent({
         ) : (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
             <p className="text-sm">Empty notebook</p>
-            <p className="text-xs mt-1">Add a cell to get started</p>
-            <div className="mt-4 flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onAddCell("code")}
-                className="gap-1"
-              >
-                <Plus className="h-3 w-3" />
-                Code Cell
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onAddCell("markdown")}
-                className="gap-1"
-              >
-                <Plus className="h-3 w-3" />
-                Markdown Cell
-              </Button>
-            </div>
+            {canMutateCells ? (
+              <>
+                <p className="text-xs mt-1">Add a cell to get started</p>
+                <div className="mt-4 flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onAddCell("code")}
+                    className="gap-1"
+                  >
+                    <Plus className="h-3 w-3" />
+                    Code Cell
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onAddCell("markdown")}
+                    className="gap-1"
+                  >
+                    <Plus className="h-3 w-3" />
+                    Markdown Cell
+                  </Button>
+                </div>
+              </>
+            ) : null}
           </div>
         )
-      ) : (
+      ) : canMutateCells ? (
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -944,6 +999,22 @@ function NotebookViewContent({
           </SortableContext>
           <DragOverlay>{activeId && <CellDragPreview cellId={activeId} />}</DragOverlay>
         </DndContext>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {stableDomOrder.map((cellId) => {
+            const index = cellIdToIndex.get(cellId) ?? 0;
+            const group = hiddenGroups.get(cellId);
+            return (
+              <StaticCell
+                key={cellId}
+                cellId={cellId}
+                index={index}
+                renderCell={renderCell}
+                isHiddenInGroup={group != null && !group.isFirst}
+              />
+            );
+          })}
+        </div>
       )}
     </div>
   );

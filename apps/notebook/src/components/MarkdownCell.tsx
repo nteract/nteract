@@ -16,6 +16,7 @@ import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
+import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
 import { findVerticalScrollAncestor } from "@/components/isolated/scroll-boundary";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
@@ -68,6 +69,8 @@ interface MarkdownCellProps {
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
   headingAnchors?: readonly MarkdownHeadingAnchor[];
+  readOnly?: boolean;
+  outputHostContext?: NteractEmbedHostContextPatch;
 }
 
 export const MarkdownCell = memo(function MarkdownCell({
@@ -82,6 +85,8 @@ export const MarkdownCell = memo(function MarkdownCell({
   isDragging,
   rightGutterContent,
   headingAnchors = EMPTY_HEADING_ANCHORS,
+  readOnly = false,
+  outputHostContext,
 }: MarkdownCellProps) {
   const isFocused = useIsCellFocused(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
@@ -154,7 +159,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     return true;
   }, []);
 
-  const [editing, setEditing] = useState(cell.source === "");
+  const [editing, setEditing] = useState(!readOnly && cell.source === "");
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
@@ -233,8 +238,9 @@ export const MarkdownCell = memo(function MarkdownCell({
   );
 
   const handleDoubleClick = useCallback(() => {
+    if (readOnly) return;
     setEditing(true);
-  }, []);
+  }, [readOnly]);
 
   const activatePreviewFrameInteraction = useCallback(() => {
     setPreviewFrameInteractionActive(true);
@@ -257,10 +263,14 @@ export const MarkdownCell = memo(function MarkdownCell({
   );
 
   useEffect(() => {
+    if (readOnly) {
+      setEditing(false);
+      return;
+    }
     if (!isFocused || editing) {
       setPreviewFrameInteractionActive(false);
     }
-  }, [isFocused, editing]);
+  }, [isFocused, editing, readOnly]);
 
   const handleBlur = useCallback(() => {
     if (cell.source.trim()) {
@@ -392,6 +402,9 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Handle keyboard navigation in view mode (when not editing)
   const handleViewKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (readOnly) {
+        return;
+      }
       if (e.key === "ArrowDown") {
         onFocusNext?.("start");
         e.preventDefault();
@@ -411,12 +424,15 @@ export const MarkdownCell = memo(function MarkdownCell({
         e.preventDefault();
       }
     },
-    [onFocusNext, onFocusPrevious],
+    [onFocusNext, onFocusPrevious, readOnly],
   );
 
   // Handle focus next, creating a new cell if at the end
   const handleFocusNextOrCreate = useCallback(
     (cursorPosition: "start" | "end") => {
+      if (readOnly) {
+        return;
+      }
       // For markdown, close edit mode first
       if (cell.source.trim()) {
         setEditing(false);
@@ -427,7 +443,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         onFocusNext(cursorPosition);
       }
     },
-    [cell.source, isLastCell, onFocusNext, onInsertCellAfter],
+    [cell.source, isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
   // Remote cursors extension (stable — no deps that change)
@@ -563,7 +579,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
       rightGutterContent={
-        editing ? (
+        readOnly ? null : editing ? (
           rightGutterContent
         ) : (
           <div className="flex flex-col gap-0.5">
@@ -599,6 +615,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 placeholder="Enter markdown..."
                 className="min-h-[2rem]"
                 autoFocus={editing}
+                readOnly={readOnly}
               />
             </div>
           </div>
@@ -625,6 +642,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 name={`md-${cell.id}`}
                 darkMode={darkMode}
                 colorTheme={colorTheme}
+                hostContext={outputHostContext}
                 minHeight={24}
                 autoHeight
                 scrollPassthrough={!previewFrameInteractionActive}

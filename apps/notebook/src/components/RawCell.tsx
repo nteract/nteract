@@ -35,6 +35,7 @@ interface RawCellProps {
   isDragging?: boolean;
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
+  readOnly?: boolean;
 }
 
 export const RawCell = memo(function RawCell({
@@ -48,6 +49,7 @@ export const RawCell = memo(function RawCell({
   dragHandleProps,
   isDragging,
   rightGutterContent,
+  readOnly = false,
 }: RawCellProps) {
   const isFocused = useIsCellFocused(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
@@ -122,13 +124,16 @@ export const RawCell = memo(function RawCell({
   // Handle focus next, creating a new cell if at the end
   const handleFocusNextOrCreate = useCallback(
     (cursorPosition: "start" | "end") => {
+      if (readOnly) {
+        return;
+      }
       if (isLastCell && onInsertCellAfter) {
         onInsertCellAfter();
       } else if (onFocusNext) {
         onFocusNext(cursorPosition);
       }
     },
-    [isLastCell, onFocusNext, onInsertCellAfter],
+    [isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
   // Remote cursors extension (stable — no deps that change)
@@ -210,6 +215,7 @@ export const RawCell = memo(function RawCell({
               placeholder="Enter raw content..."
               className="min-h-[2rem]"
               autoFocus={isFocused}
+              readOnly={readOnly}
             />
           </div>
         </>
