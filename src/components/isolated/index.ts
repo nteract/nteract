@@ -110,6 +110,8 @@ export {
   outputNeedsIsolation,
   outputSegmentLane,
   outputUsesSift,
+  outputUsesVega,
+  outputUsesWheelOwningFrame,
   outputUsesWidget,
   segmentedOutputLanes,
   selectedOutputMimeType,

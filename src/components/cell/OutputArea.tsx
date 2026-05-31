@@ -22,6 +22,7 @@ import {
   outputAllowsScrollPassthrough,
   type OutputSegment,
   outputUsesSift,
+  outputUsesWheelOwningFrame,
   type RenderPayload,
   segmentedOutputLanes,
 } from "@/components/isolated";
@@ -696,6 +697,12 @@ function OutputAreaSingle({
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
   const hasSiftOutputs = outputs.some((output) => outputUsesSift(output, priority));
+  // Sift tables and Vega/Altair charts must own the wheel once engaged so the
+  // page does not steal pan/zoom (the source of unintended Altair zoom while
+  // scrolling). Both render through the same click-to-engage frame.
+  const hasWheelOwningOutputs = outputs.some((output) =>
+    outputUsesWheelOwningFrame(output, priority),
+  );
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
   const shouldUseScrollPassthroughFrame =
     shouldIsolate &&
@@ -704,21 +711,21 @@ function OutputAreaSingle({
     outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
   const shouldScrollPassthroughFrame =
     shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
-  const shouldLockSiftWheelBoundary = hasSiftOutputs && staticFrameInteractionActive;
+  const shouldLockWheelBoundary = hasWheelOwningOutputs && staticFrameInteractionActive;
   const allowWheelBoundaryScroll =
-    !focused && !shouldScrollPassthroughFrame && !shouldLockSiftWheelBoundary;
+    !focused && !shouldScrollPassthroughFrame && !shouldLockWheelBoundary;
   const showSiftInteractionCue =
     shouldMountIsolatedFrame &&
     hasSiftOutputs &&
     shouldUseScrollPassthroughFrame &&
     !staticFrameInteractionActive;
-  const siftFrameAccent = siftFocusAccent(darkMode, colorTheme);
-  const siftFrameStyle = hasSiftOutputs
+  const frameFocusAccent = siftFocusAccent(darkMode, colorTheme);
+  const interactionFrameStyle = hasWheelOwningOutputs
     ? ({
-        "--notebook-sift-focus": siftFrameAccent,
-        "--notebook-sift-focus-hover": `${siftFrameAccent}66`,
+        "--notebook-sift-focus": frameFocusAccent,
+        "--notebook-sift-focus-hover": `${frameFocusAccent}66`,
         boxShadow: staticFrameInteractionActive
-          ? `0 0 0 2px ${siftFrameAccent}cc, 0 12px 30px ${siftFrameAccent}24`
+          ? `0 0 0 2px ${frameFocusAccent}cc, 0 12px 30px ${frameFocusAccent}24`
           : undefined,
       } as React.CSSProperties)
     : undefined;
@@ -744,12 +751,12 @@ function OutputAreaSingle({
   }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
 
   useEffect(() => {
-    if (!hasSiftOutputs) return;
+    if (!hasWheelOwningOutputs) return;
     frameRef.current?.send({
       type: "interaction_state",
       payload: { active: staticFrameInteractionActive },
     });
-  }, [hasSiftOutputs, staticFrameInteractionActive]);
+  }, [hasWheelOwningOutputs, staticFrameInteractionActive]);
 
   useEffect(() => {
     if (!staticFrameInteractionActive) return;
@@ -1064,14 +1071,14 @@ function OutputAreaSingle({
               ref={setStaticFrameInteractionNode}
               className={cn(
                 shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
-                hasSiftOutputs && "group/sift rounded-md overflow-hidden",
-                hasSiftOutputs &&
+                hasWheelOwningOutputs && "group/sift rounded-md overflow-hidden",
+                hasWheelOwningOutputs &&
                   shouldUseScrollPassthroughFrame &&
                   !staticFrameInteractionActive &&
                   "hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
-                hasSiftOutputs && staticFrameInteractionActive && "bg-background",
+                hasWheelOwningOutputs && staticFrameInteractionActive && "bg-background",
               )}
-              style={siftFrameStyle}
+              style={interactionFrameStyle}
               data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
               data-sift-output={hasSiftOutputs ? "true" : undefined}
               tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}

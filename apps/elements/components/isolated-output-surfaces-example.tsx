@@ -358,6 +358,7 @@ function outputIsolationLabel(output: JupyterOutput) {
   const lane = outputSegmentLane(output);
   if (lane === "dom") return "main DOM";
   if (lane === "sift-frame") return "sift frame";
+  if (lane === "vega-frame") return "vega frame";
   if (lane === "static-frame") return "static frame";
   return "interactive frame";
 }

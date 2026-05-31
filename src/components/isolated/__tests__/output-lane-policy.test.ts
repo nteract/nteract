@@ -6,6 +6,8 @@ import {
   outputAllowsScrollPassthrough,
   outputSegmentLane,
   outputUsesSift,
+  outputUsesVega,
+  outputUsesWheelOwningFrame,
   segmentedOutputLanes,
   selectedOutputMimeType,
   splitOutputSegments,
@@ -50,6 +52,41 @@ describe("output lane policy", () => {
     expect(
       outputSegmentLane(displayOutput("plotly-output", { "application/vnd.plotly.v1+json": {} })),
     ).toBe("interactive-frame");
+  });
+
+  it("routes Vega/Altair charts onto the click-to-engage static frame", () => {
+    const output = displayOutput("vega-output", {
+      "application/vnd.vegalite.v5+json": { mark: "circle" },
+    });
+
+    expect(outputUsesVega(output)).toBe(true);
+    expect(outputUsesSift(output)).toBe(false);
+    expect(outputUsesWheelOwningFrame(output)).toBe(true);
+    expect(outputAllowsScrollPassthrough(output)).toBe(true);
+    expect(outputSegmentLane(output)).toBe("vega-frame");
+  });
+
+  it("keeps Vega/Altair charts standalone instead of coalescing with sibling document outputs", () => {
+    const markdown = displayOutput("markdown-1", { "text/markdown": "# heading" });
+    const vegaOne = displayOutput("vega-1", {
+      "application/vnd.vegalite.v5+json": { mark: "circle" },
+    });
+    const vegaTwo = displayOutput("vega-2", {
+      "application/vnd.vega.v5+json": { mark: "bar" },
+    });
+
+    const segments = splitOutputSegments([markdown, vegaOne, vegaTwo]);
+
+    expect(segments.map((segment) => segment.lane)).toEqual([
+      "static-frame",
+      "vega-frame",
+      "vega-frame",
+    ]);
+    expect(segments.map((segment) => segment.outputs.map((output) => output.output_id))).toEqual([
+      ["markdown-1"],
+      ["vega-1"],
+      ["vega-2"],
+    ]);
   });
 
   it("keeps DOM-safe outputs out of isolated lanes", () => {
