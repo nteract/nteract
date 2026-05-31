@@ -1,32 +1,47 @@
 import type { JupyterOutput as SharedJupyterOutput } from "@/components/cell/jupyter-output";
-import { replaceNotebookCells, updateCellById } from "../../notebook/src/lib/notebook-cells";
+import { replaceNotebookCells } from "../../notebook/src/lib/notebook-cells";
 import {
+  deleteExecutions,
   setCellExecutionPointer,
   setExecution,
   setNotebookQueueProjection,
 } from "../../notebook/src/lib/notebook-executions";
-import { setOutput } from "../../notebook/src/lib/notebook-outputs";
+import { deleteOutputs, setOutput } from "../../notebook/src/lib/notebook-outputs";
 import type { JupyterOutput, NotebookCell } from "../../notebook/src/types";
 import type { ResolvedCell } from "./render-resolution";
 
+let cloudOwnedExecutionIds = new Set<string>();
+let cloudOwnedOutputIds = new Set<string>();
+
 export function projectCloudCellsIntoNotebookViewStores(cells: readonly ResolvedCell[]): void {
-  replaceNotebookCells(cells.map(resolvedCellToNotebookCell));
+  const projectedCells = cells.map((cell) => {
+    const outputs =
+      cell.cellType === "code"
+        ? cell.outputs.map((output, index) =>
+            normalizeOutputForNotebookView(output, cell.id, index),
+          )
+        : [];
+    return { cell, notebookCell: resolvedCellToNotebookCell(cell, outputs), outputs };
+  });
+
+  replaceNotebookCells(projectedCells.map(({ notebookCell }) => notebookCell));
   setNotebookQueueProjection({
     executing_cell_id: null,
     queued_cell_ids: [],
   });
 
-  for (const cell of cells) {
+  const nextCloudOwnedExecutionIds = new Set<string>();
+  const nextCloudOwnedOutputIds = new Set<string>();
+
+  for (const { cell, outputs } of projectedCells) {
     if (cell.cellType !== "code") {
       setCellExecutionPointer(cell.id, null);
       continue;
     }
 
-    const outputs = cell.outputs.map((output, index) =>
-      normalizeOutputForNotebookView(output, cell.id, index),
-    );
     for (const output of outputs) {
       if (output.output_id) {
+        nextCloudOwnedOutputIds.add(output.output_id);
         setOutput(output.output_id, output);
       }
     }
@@ -38,6 +53,7 @@ export function projectCloudCellsIntoNotebookViewStores(cells: readonly Resolved
       cell.executionId ?? (outputIds.length > 0 ? `cloud-execution:${cell.id}` : null);
     setCellExecutionPointer(cell.id, executionId);
     if (executionId) {
+      nextCloudOwnedExecutionIds.add(executionId);
       setExecution(executionId, {
         execution_count: cell.executionCount,
         status: "done",
@@ -46,13 +62,29 @@ export function projectCloudCellsIntoNotebookViewStores(cells: readonly Resolved
       });
     }
   }
+
+  deleteOutputs(difference(cloudOwnedOutputIds, nextCloudOwnedOutputIds));
+  deleteExecutions(difference(cloudOwnedExecutionIds, nextCloudOwnedExecutionIds));
+  cloudOwnedOutputIds = nextCloudOwnedOutputIds;
+  cloudOwnedExecutionIds = nextCloudOwnedExecutionIds;
 }
 
-export function updateCloudCellSourceInNotebookViewStore(cellId: string, source: string): void {
-  updateCellById(cellId, (cell) => ({ ...cell, source }));
+export function resetCloudViewStoreProjection(): void {
+  replaceNotebookCells([]);
+  setNotebookQueueProjection({
+    executing_cell_id: null,
+    queued_cell_ids: [],
+  });
+  deleteOutputs([...cloudOwnedOutputIds]);
+  deleteExecutions([...cloudOwnedExecutionIds]);
+  cloudOwnedOutputIds = new Set<string>();
+  cloudOwnedExecutionIds = new Set<string>();
 }
 
-function resolvedCellToNotebookCell(cell: ResolvedCell): NotebookCell {
+function resolvedCellToNotebookCell(
+  cell: ResolvedCell,
+  outputs: readonly JupyterOutput[],
+): NotebookCell {
   const metadata = cell.metadata ?? {};
   if (cell.cellType === "code") {
     return {
@@ -60,9 +92,7 @@ function resolvedCellToNotebookCell(cell: ResolvedCell): NotebookCell {
       id: cell.id,
       source: cell.source,
       execution_count: cell.executionCount,
-      outputs: cell.outputs.map((output, index) =>
-        normalizeOutputForNotebookView(output, cell.id, index),
-      ),
+      outputs: [...outputs],
       metadata,
     };
   }
@@ -101,4 +131,14 @@ function normalizeOutputForNotebookView(
     ...output,
     output_id,
   } as JupyterOutput;
+}
+
+function difference(previous: ReadonlySet<string>, next: ReadonlySet<string>): string[] {
+  const removed: string[] = [];
+  for (const id of previous) {
+    if (!next.has(id)) {
+      removed.push(id);
+    }
+  }
+  return removed;
 }

@@ -34,6 +34,16 @@ interface PresenceProviderProps {
   children: ReactNode;
 }
 
+export function PresenceValueProvider({
+  value,
+  children,
+}: {
+  value: PresenceContextValue | null;
+  children: ReactNode;
+}) {
+  return <PresenceContext.Provider value={value}>{children}</PresenceContext.Provider>;
+}
+
 export function PresenceProvider({
   peerId,
   peerLabel = "",

@@ -10,9 +10,9 @@
  * broadcasts and routes them to the bridge's `applyRemoteChanges()`.
  *
  * Outbound flow: the bridge's ViewPlugin calls `splice_source` on the WASM
- * handle directly (character-level, no Myers diff). The `onSourceChanged`
- * callback updates the cell store, and `onSyncNeeded` triggers the debounced
- * sync to the daemon.
+ * handle directly (character-level, no Myers diff). The bridge updates the
+ * shared cell store after local edits, and `onSyncNeeded` triggers the
+ * debounced sync to the daemon.
  */
 
 import type { Extension } from "@codemirror/state";
@@ -35,8 +35,6 @@ interface CrdtBridgeContextValue {
   getHandle: () => NotebookHandle | null;
   /** Signal that the CRDT was mutated and needs syncing to daemon. */
   onSyncNeeded: () => void;
-  /** Optional host projection hook for source edits outside the desktop cell store. */
-  onSourceChanged?: (cellId: string, source: string) => void;
   /** Local actor label (e.g. "local:kyle/desktop:abcd1234") for filtering self-echo attributions. */
   localActor: string;
 }
@@ -48,7 +46,6 @@ const CrdtBridgeContext = createContext<CrdtBridgeContextValue | null>(null);
 interface CrdtBridgeProviderProps {
   getHandle: () => NotebookHandle | null;
   onSyncNeeded: () => void;
-  onSourceChanged?: (cellId: string, source: string) => void;
   localActor: string;
   children: ReactNode;
 }
@@ -56,7 +53,6 @@ interface CrdtBridgeProviderProps {
 export function CrdtBridgeProvider({
   getHandle,
   onSyncNeeded,
-  onSourceChanged,
   localActor,
   children,
 }: CrdtBridgeProviderProps) {
@@ -64,12 +60,10 @@ export function CrdtBridgeProvider({
   const valueRef = useRef<CrdtBridgeContextValue>({
     getHandle,
     onSyncNeeded,
-    onSourceChanged,
     localActor,
   });
   valueRef.current.getHandle = getHandle;
   valueRef.current.onSyncNeeded = onSyncNeeded;
-  valueRef.current.onSourceChanged = onSourceChanged;
   valueRef.current.localActor = localActor;
 
   // The context value object itself is stable (same ref every render).
@@ -109,7 +103,6 @@ export function useCrdtBridge(cellId: string): {
       cellId,
       onSourceChanged: (source: string) => {
         updateCellById(cellId, (c) => ({ ...c, source }));
-        ctxRef.current.onSourceChanged?.(cellId, source);
       },
       onSyncNeeded: () => {
         ctxRef.current.onSyncNeeded();

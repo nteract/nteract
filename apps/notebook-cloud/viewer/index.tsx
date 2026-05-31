@@ -64,13 +64,17 @@ import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
 import { NotebookView } from "../../notebook/src/components/NotebookView";
+import {
+  PresenceValueProvider,
+  type PresenceContextValue,
+} from "../../notebook/src/contexts/PresenceContext";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import { flushCellUIState, setFocusedCellId } from "../../notebook/src/lib/cell-ui-state";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 import {
   projectCloudCellsIntoNotebookViewStores,
-  updateCloudCellSourceInNotebookViewStore,
+  resetCloudViewStoreProjection,
 } from "./notebook-view-store-bridge";
 import {
   beginOidcLogin,
@@ -613,6 +617,7 @@ function NotebookViewer({
   const outputResolutionCacheRef = useRef(createOutputResolutionCache());
   const [presence, setPresence] = useState(initialCloudViewerPresence);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
+  const [connectionPeerId, setConnectionPeerId] = useState<string | null>(null);
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
@@ -656,14 +661,16 @@ function NotebookViewer({
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     cellsRef.current = cells;
     projectCloudCellsIntoNotebookViewStores(cells);
   }, [cells]);
 
+  useEffect(() => resetCloudViewStoreProjection, []);
+
   useLayoutEffect(() => {
     flushCellUIState();
-  });
+  }, [cells]);
 
   useEffect(() => {
     if (authRenewal.kind === "refreshing") {
@@ -952,6 +959,7 @@ function NotebookViewer({
     setPresence(initialCloudViewerPresence());
     setConnectionError(null);
     setConnectionActorLabel(null);
+    setConnectionPeerId(null);
     void connectCloudSyncRuntime({
       syncEndpoint: config.syncEndpoint,
       runtimedWasmModulePath: config.runtimedWasmModulePath,
@@ -987,6 +995,7 @@ function NotebookViewer({
         liveRuntimeRef.current = liveRuntime;
         setConnectionScope(liveRuntime.connectionScope);
         setConnectionActorLabel(liveRuntime.actorLabel);
+        setConnectionPeerId(liveRuntime.peerId);
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
         const stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
         subscriptions = [
@@ -1020,6 +1029,7 @@ function NotebookViewer({
         setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
         setConnectionScope(null);
         setConnectionActorLabel(null);
+        setConnectionPeerId(null);
         setConnectionError(error instanceof Error ? error.message : String(error));
         console.warn("[notebook-cloud] live room connection failed", error);
       });
@@ -1033,8 +1043,10 @@ function NotebookViewer({
         clearTimeout(reconnectTimer);
       }
       disposeCurrentRuntime();
+      resetCloudViewStoreProjection();
       livePresenceStore = null;
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
+      setConnectionPeerId(null);
     };
   }, [
     authRenewal.kind,
@@ -1085,18 +1097,27 @@ function NotebookViewer({
   const canEditMarkdown = shellCapabilities.canEditMarkdown;
   const notebookCellIds = useMemo(() => cells.map((cell) => cell.id), [cells]);
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
-  const handleMarkdownSourceChange = useCallback(
-    (cellId: string, source: string) => {
-      if (!canEditMarkdown) return;
-      const currentCell = cellsRef.current.find((cell) => cell.id === cellId);
-      if (currentCell?.cellType !== "markdown") return;
-
-      setCells((current) =>
-        current.map((cell) => (cell.id === cellId ? { ...cell, source } : cell)),
-      );
-      updateCloudCellSourceInNotebookViewStore(cellId, source);
-    },
-    [canEditMarkdown],
+  const cloudPresenceContext = useMemo<PresenceContextValue | null>(
+    () =>
+      connectionPeerId
+        ? {
+            peerId: connectionPeerId,
+            setCursor: (cellId, line, column) => {
+              liveRuntimeRef.current?.sendCursorPresence(cellId, line, column);
+            },
+            setSelection: (cellId, anchorLine, anchorCol, headLine, headCol) => {
+              liveRuntimeRef.current?.sendSelectionPresence(
+                cellId,
+                anchorLine,
+                anchorCol,
+                headLine,
+                headCol,
+              );
+            },
+            setFocus: () => {},
+          }
+        : null,
+    [connectionPeerId],
   );
   const handleMarkdownSyncNeeded = useCallback(() => {
     if (!canEditMarkdown) return;
@@ -1220,29 +1241,30 @@ function NotebookViewer({
         </div>
       )}
 
-      <CrdtBridgeProvider
-        getHandle={getLiveNotebookHandle}
-        onSyncNeeded={handleMarkdownSyncNeeded}
-        onSourceChanged={handleMarkdownSourceChange}
-        localActor={connectionActorLabel ?? ""}
-      >
-        <NotebookView
-          cellIds={notebookCellIds}
-          isLoading={status.kind === "loading"}
-          canAcceptCellMutations={false}
-          readOnly={!canEditMarkdown}
-          runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-          sessionRuntimeState={connectionError ? "error" : "ready"}
-          onFocusCell={setFocusedCellId}
-          onExecuteCell={() => {}}
-          onInterruptKernel={() => {}}
-          onDeleteCell={() => {}}
-          onAddCell={() => null}
-          onMoveCell={() => {}}
-          markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
-          outputHostContext={outputHostContext}
-        />
-      </CrdtBridgeProvider>
+      <PresenceValueProvider value={cloudPresenceContext}>
+        <CrdtBridgeProvider
+          getHandle={getLiveNotebookHandle}
+          onSyncNeeded={handleMarkdownSyncNeeded}
+          localActor={connectionActorLabel ?? ""}
+        >
+          <NotebookView
+            cellIds={notebookCellIds}
+            isLoading={status.kind === "loading"}
+            canAcceptCellMutations={false}
+            readOnly={!canEditMarkdown}
+            runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+            sessionRuntimeState={connectionError ? "error" : "ready"}
+            onFocusCell={setFocusedCellId}
+            onExecuteCell={() => {}}
+            onInterruptKernel={() => {}}
+            onDeleteCell={() => {}}
+            onAddCell={() => null}
+            onMoveCell={() => {}}
+            markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
+            outputHostContext={outputHostContext}
+          />
+        </CrdtBridgeProvider>
+      </PresenceValueProvider>
     </NotebookDocumentShell>
   );
 }

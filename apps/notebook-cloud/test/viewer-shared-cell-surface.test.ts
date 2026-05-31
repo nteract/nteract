@@ -19,9 +19,29 @@ test("cloud projects live cells into the NotebookView stores", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /projectCloudCellsIntoNotebookViewStores\(cells\)/);
+  assert.match(
+    sourceText,
+    /useLayoutEffect\(\(\) => \{\s+cellsRef\.current = cells;\s+projectCloudCellsIntoNotebookViewStores\(cells\);/,
+  );
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
-  assert.match(sourceText, /onSourceChanged=\{handleMarkdownSourceChange\}/);
+  assert.doesNotMatch(sourceText, /onSourceChanged=/);
+});
+
+test("cloud wires shared presence and cleans projected store entries", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
+  const bridgeSourceText = readFileSync(bridgeSourcePath, "utf8");
+
+  assert.match(sourceText, /PresenceValueProvider/);
+  assert.match(sourceText, /sendCursorPresence\(cellId, line, column\)/);
+  assert.match(
+    sourceText,
+    /sendSelectionPresence\(\s+cellId,\s+anchorLine,\s+anchorCol,\s+headLine,\s+headCol,/,
+  );
+  assert.match(sourceText, /resetCloudViewStoreProjection\(\)/);
+  assert.match(bridgeSourceText, /deleteOutputs\(difference\(cloudOwnedOutputIds/);
+  assert.match(bridgeSourceText, /deleteExecutions\(difference\(cloudOwnedExecutionIds/);
 });
 
 test("cloud package rail renders package metadata through the shared shell panel", () => {
