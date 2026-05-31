@@ -1,20 +1,27 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { EditableMarkdownCell as SharedEditableMarkdownCell } from "@/components/cell/EditableMarkdownCell";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import { EditableCodeCell as SharedEditableCodeCell } from "@/components/cell/EditableCodeCell";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import { setRemoteCursors, setRemoteSelections } from "@/components/editor/remote-cursors";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import type {
+  TracebackCellNavigator,
+  TracebackExecutionResolver,
+} from "@/components/outputs/traceback-output";
 import { notebookCellAnchorId } from "runtimed";
 import { type CloudTextAttributionQueue, useCloudEditableCellBridge } from "./cloud-cell-editing";
 import type { ResolvedCell } from "./render-resolution";
 import type { NotebookHandle } from "./runtimed-wasm-client";
+import { cloudSourceLanguage } from "./source-language";
 
-export interface EditableMarkdownCellProps {
+export interface EditableCodeCellProps {
   cell: ResolvedCell;
   className?: string;
   sourceClassName?: string;
+  outputClassName?: string;
   priority?: readonly string[];
   hostContext?: NteractEmbedHostContextPatch;
+  showSource?: boolean;
   onSourceChange: (cellId: string, source: string) => void;
   onSyncNeeded: () => void;
   getHandle: () => NotebookHandle | null;
@@ -29,14 +36,18 @@ export interface EditableMarkdownCellProps {
     headLine: number,
     headCol: number,
   ) => void;
+  resolveTracebackExecutionTarget?: TracebackExecutionResolver;
+  onNavigateToTracebackCell?: TracebackCellNavigator;
 }
 
-export function EditableMarkdownCell({
+export function EditableCodeCell({
   cell,
   className,
   sourceClassName,
+  outputClassName,
   priority,
   hostContext,
+  showSource = true,
   onSourceChange,
   onSyncNeeded,
   getHandle,
@@ -45,8 +56,9 @@ export function EditableMarkdownCell({
   remotePresence,
   onPresenceCursor,
   onPresenceSelection,
-}: EditableMarkdownCellProps) {
-  const [editing, setEditing] = useState(cell.source.trim().length === 0);
+  resolveTracebackExecutionTarget,
+  onNavigateToTracebackCell,
+}: EditableCodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const { applyFullSource, editorExtensions } = useCloudEditableCellBridge({
     cellId: cell.id,
@@ -60,62 +72,57 @@ export function EditableMarkdownCell({
   });
 
   useLayoutEffect(() => {
-    if (!editing) return;
     applyFullSource(cell.source);
-  }, [applyFullSource, cell.source, editing]);
-
-  useEffect(() => {
-    if (cell.source.trim().length === 0 && !editing) {
-      setEditing(true);
-    }
-  }, [cell.source, editing]);
+  }, [applyFullSource, cell.source]);
 
   useEffect(() => {
     const view = editorRef.current?.getEditor();
     if (!view) return;
     setRemoteCursors(view, remotePresence?.cursors ?? []);
     setRemoteSelections(view, remotePresence?.selections ?? []);
-  }, [editing, remotePresence]);
+  }, [remotePresence]);
 
   return (
-    <SharedEditableMarkdownCell
+    <SharedEditableCodeCell
       id={cell.id}
       elementId={notebookCellAnchorId(cell.id)}
       source={cell.source}
-      editing={editing}
-      onEditingChange={setEditing}
+      language={cloudSourceLanguage(cell.language)}
+      outputs={cell.outputs}
+      executionCount={cell.executionCount}
       editorRef={editorRef}
-      className={className}
-      sourceClassName={sourceClassName}
-      editorClassName="cloud-markdown-editor"
-      previewClassName="cloud-markdown-preview"
-      previewOutputClassName="cloud-markdown-preview-output"
-      actionClassName="cloud-markdown-cell-action"
+      editorExtensions={editorExtensions}
       priority={priority}
       hostContext={hostContext}
-      editorExtensions={editorExtensions}
-      presenceIndicators={<CloudMarkdownPresenceIndicators presence={remotePresence} />}
+      showSource={showSource}
+      className={className}
+      sourceClassName={sourceClassName}
+      outputClassName={outputClassName}
+      editorClassName="cloud-code-editor"
+      presenceIndicators={<CloudCodePresenceIndicators presence={remotePresence} />}
+      deferIsolatedFrameUntilVisible
+      deferredIsolatedFrameRootMargin="600px 0px"
+      resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+      onNavigateToTracebackCell={onNavigateToTracebackCell}
     />
   );
 }
 
-function CloudMarkdownPresenceIndicators({ presence }: { presence?: RemoteCellPresence }) {
-  const peers = useMemo(() => {
-    const byPeer = new Map<string, { label: string; color: string }>();
-    for (const cursor of presence?.cursors ?? []) {
-      byPeer.set(cursor.peerId, {
-        label: cursor.peerLabel,
-        color: cursor.color,
-      });
-    }
-    for (const selection of presence?.selections ?? []) {
-      byPeer.set(selection.peerId, {
-        label: selection.peerLabel,
-        color: selection.color,
-      });
-    }
-    return Array.from(byPeer.entries()).map(([peerId, peer]) => ({ peerId, ...peer }));
-  }, [presence]);
+function CloudCodePresenceIndicators({ presence }: { presence?: RemoteCellPresence }) {
+  const peersById = new Map<string, { label: string; color: string }>();
+  for (const cursor of presence?.cursors ?? []) {
+    peersById.set(cursor.peerId, {
+      label: cursor.peerLabel,
+      color: cursor.color,
+    });
+  }
+  for (const selection of presence?.selections ?? []) {
+    peersById.set(selection.peerId, {
+      label: selection.peerLabel,
+      color: selection.color,
+    });
+  }
+  const peers = Array.from(peersById.entries()).map(([peerId, peer]) => ({ peerId, ...peer }));
 
   if (peers.length === 0) {
     return null;

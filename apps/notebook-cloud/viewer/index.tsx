@@ -46,7 +46,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { isTextAttributionEvent, notebookCellAnchorId, type NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
-import type { CloudTextAttributionQueue } from "./editable-markdown-cell";
+import type { CloudTextAttributionQueue } from "./cloud-cell-editing";
 import {
   clearCloudPrototypeDevAuth,
   cloudNotebookSignInCopy,
@@ -1100,24 +1100,24 @@ function NotebookViewer({
       }),
     [authState, codeCellCount, connectionActorLabel, connectionScope],
   );
-  const canEditMarkdown = shellCapabilities.canEditMarkdown;
+  const canEditCells = shellCapabilities.canEditCells;
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
-  const handleMarkdownSourceChange = useCallback(
+  const handleCellSourceChange = useCallback(
     (cellId: string, source: string) => {
-      if (!canEditMarkdown) return;
+      if (!canEditCells) return;
       const currentCell = cellsRef.current.find((cell) => cell.id === cellId);
-      if (currentCell?.cellType !== "markdown") return;
+      if (currentCell?.cellType !== "markdown" && currentCell?.cellType !== "code") return;
 
       setCells((current) =>
         current.map((cell) => (cell.id === cellId ? { ...cell, source } : cell)),
       );
     },
-    [canEditMarkdown],
+    [canEditCells],
   );
-  const handleMarkdownSyncNeeded = useCallback(() => {
-    if (!canEditMarkdown) return;
+  const handleCellSyncNeeded = useCallback(() => {
+    if (!canEditCells) return;
     liveRuntimeRef.current?.engine.scheduleFlush();
-  }, [canEditMarkdown]);
+  }, [canEditCells]);
   const handlePresenceCursor = useCallback((cellId: string, line: number, column: number) => {
     liveRuntimeRef.current?.sendCursorPresence(cellId, line, column);
   }, []);
@@ -1265,7 +1265,7 @@ function NotebookViewer({
         </div>
       )}
 
-      {canEditMarkdown ? (
+      {canEditCells ? (
         <CloudLiveNotebook
           viewModel={notebookViewModel}
           priority={CLOUD_VIEWER_PRIORITY}
@@ -1275,8 +1275,8 @@ function NotebookViewer({
           getHandle={getLiveNotebookHandle}
           localActorLabel={connectionActorLabel}
           textAttributionQueue={textAttributionQueue}
-          onMarkdownSourceChange={handleMarkdownSourceChange}
-          onMarkdownSyncNeeded={handleMarkdownSyncNeeded}
+          onCellSourceChange={handleCellSourceChange}
+          onCellSyncNeeded={handleCellSyncNeeded}
           onPresenceCursor={handlePresenceCursor}
           onPresenceSelection={handlePresenceSelection}
           resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}

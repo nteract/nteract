@@ -14,7 +14,26 @@ test("cloud editable markdown cells use shared cell and output rendering surface
   assert.match(sourceText, /elementId=\{notebookCellAnchorId\(cell\.id\)\}/);
   assert.match(sourceText, /priority=\{priority\}/);
   assert.match(sourceText, /hostContext=\{hostContext\}/);
-  assert.match(sourceText, /editorExtensions=\{extensions\}/);
+  assert.match(sourceText, /editorExtensions=\{editorExtensions\}/);
+  assert.doesNotMatch(sourceText, /from "@\/components\/cell\/CellContainer"/);
+  assert.doesNotMatch(sourceText, /from "@\/components\/cell\/OutputArea"/);
+  assert.doesNotMatch(sourceText, /from "@\/components\/editor\/codemirror-editor"/);
+});
+
+test("cloud editable code cells use shared cell and output rendering surfaces", () => {
+  const sourcePath = new URL("../viewer/editable-code-cell.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /import \{ EditableCodeCell as SharedEditableCodeCell \} from "@\/components\/cell\/EditableCodeCell";/,
+  );
+  assert.match(sourceText, /<SharedEditableCodeCell/);
+  assert.match(sourceText, /elementId=\{notebookCellAnchorId\(cell\.id\)\}/);
+  assert.match(sourceText, /priority=\{priority\}/);
+  assert.match(sourceText, /hostContext=\{hostContext\}/);
+  assert.match(sourceText, /editorExtensions=\{editorExtensions\}/);
+  assert.match(sourceText, /outputs=\{cell\.outputs\}/);
   assert.doesNotMatch(sourceText, /from "@\/components\/cell\/CellContainer"/);
   assert.doesNotMatch(sourceText, /from "@\/components\/cell\/OutputArea"/);
   assert.doesNotMatch(sourceText, /from "@\/components\/editor\/codemirror-editor"/);
@@ -37,8 +56,22 @@ test("cloud markdown editor remounts with latest source state", () => {
   const sourcePath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /if \(!editing\) return;\s+bridge\.applyFullSource\(cell\.source\);/);
+  assert.match(sourceText, /if \(!editing\) return;\s+applyFullSource\(cell\.source\);/);
   assert.match(sourceText, /cell\.source\.trim\(\)\.length === 0 && !editing/);
+});
+
+test("cloud editable cells share hosted CRDT and presence bridge plumbing", () => {
+  const sourcePath = new URL("../viewer/cloud-cell-editing.ts", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /createCrdtBridge/);
+  assert.match(sourceText, /remoteChangesFromTextAttributions/);
+  assert.match(sourceText, /remoteCursorsExtension/);
+  assert.match(sourceText, /presenceSenderExtension/);
+  assert.match(
+    sourceText,
+    /onSourceChanged: \(source\) => onSourceChangeRef\.current\(cellId, source\)/,
+  );
 });
 
 test("cloud live notebook passes renderer policy into editable markdown cells", () => {
@@ -51,6 +84,31 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
   assert.match(sourceText, /const cells = viewModel\.cells;/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
+});
+
+test("cloud live notebook routes editor code cells through the shared editable code adapter", () => {
+  const sourcePath = new URL("../viewer/cloud-live-notebook.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /import \{ EditableCodeCell \} from "\.\/editable-code-cell";/);
+  assert.match(sourceText, /cell\.cellType === "code" \? \(/);
+  assert.match(sourceText, /<EditableCodeCell[\s\S]*showSource=\{showCode\}/);
+  assert.match(sourceText, /<EditableCodeCell[\s\S]*onSourceChange=\{onCellSourceChange\}/);
+  assert.match(sourceText, /<EditableCodeCell[\s\S]*onSyncNeeded=\{onCellSyncNeeded\}/);
+});
+
+test("cloud editor capability gates all editable cell source writes", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /const canEditCells = shellCapabilities\.canEditCells;/);
+  assert.match(sourceText, /if \(!canEditCells\) return;/);
+  assert.match(
+    sourceText,
+    /currentCell\?\.cellType !== "markdown" && currentCell\?\.cellType !== "code"/,
+  );
+  assert.match(sourceText, /canEditCells \? \(/);
+  assert.doesNotMatch(sourceText, /canEditMarkdown \? \(/);
 });
 
 test("cloud read-only notebook renders from the shared notebook view model", () => {

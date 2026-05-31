@@ -3,7 +3,9 @@ import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import { NotebookCellList, type NotebookViewModel } from "@/components/notebook-shell";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
-import { EditableMarkdownCell, type CloudTextAttributionQueue } from "./editable-markdown-cell";
+import type { CloudTextAttributionQueue } from "./cloud-cell-editing";
+import { EditableCodeCell } from "./editable-code-cell";
+import { EditableMarkdownCell } from "./editable-markdown-cell";
 import type { CloudLivePresenceSnapshot } from "./live-presence";
 import type { CloudSyncRuntime } from "./live-sync";
 import type { ResolvedCell } from "./render-resolution";
@@ -18,8 +20,8 @@ export interface CloudLiveNotebookProps {
   localActorLabel: string | null;
   textAttributionQueue: CloudTextAttributionQueue;
   livePresence: CloudLivePresenceSnapshot;
-  onMarkdownSourceChange: (cellId: string, source: string) => void;
-  onMarkdownSyncNeeded: () => void;
+  onCellSourceChange: (cellId: string, source: string) => void;
+  onCellSyncNeeded: () => void;
   onPresenceCursor: (cellId: string, line: number, column: number) => void;
   onPresenceSelection: (
     cellId: string,
@@ -40,8 +42,8 @@ export function CloudLiveNotebook({
   getHandle,
   localActorLabel,
   textAttributionQueue,
-  onMarkdownSourceChange,
-  onMarkdownSyncNeeded,
+  onCellSourceChange,
+  onCellSyncNeeded,
   livePresence,
   onPresenceCursor,
   onPresenceSelection,
@@ -68,14 +70,34 @@ export function CloudLiveNotebook({
             sourceClassName="cloud-source-block"
             priority={priority}
             hostContext={hostContext}
-            onSourceChange={onMarkdownSourceChange}
-            onSyncNeeded={onMarkdownSyncNeeded}
+            onSourceChange={onCellSourceChange}
+            onSyncNeeded={onCellSyncNeeded}
             getHandle={getHandle}
             localActorLabel={localActorLabel}
             textAttributionQueue={textAttributionQueue}
             remotePresence={presenceForCell(livePresence, cell.id)}
             onPresenceCursor={onPresenceCursor}
             onPresenceSelection={onPresenceSelection}
+          />
+        ) : cell.cellType === "code" ? (
+          <EditableCodeCell
+            cell={cell}
+            className="cloud-cell cloud-editable-code-cell"
+            sourceClassName="cloud-source-block"
+            outputClassName="cloud-output-block"
+            priority={priority}
+            hostContext={hostContext}
+            showSource={showCode}
+            onSourceChange={onCellSourceChange}
+            onSyncNeeded={onCellSyncNeeded}
+            getHandle={getHandle}
+            localActorLabel={localActorLabel}
+            textAttributionQueue={textAttributionQueue}
+            remotePresence={presenceForCell(livePresence, cell.id)}
+            onPresenceCursor={onPresenceCursor}
+            onPresenceSelection={onPresenceSelection}
+            resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+            onNavigateToTracebackCell={onNavigateToTracebackCell}
           />
         ) : (
           <ReadOnlyNotebookCell
@@ -87,7 +109,7 @@ export function CloudLiveNotebook({
             executionCount={cell.executionCount}
             priority={priority}
             hostContext={hostContext}
-            showSource={cell.cellType !== "code" || showCode}
+            showSource
             className="cloud-cell"
             sourceClassName="cloud-source-block"
             outputClassName="cloud-output-block"
