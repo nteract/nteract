@@ -8,9 +8,10 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
-    const detailGroup = container.querySelector(
-      '[data-slot="code-cell-current-line-detail-group"]',
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
     );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "idle");
@@ -18,9 +19,12 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveTextContent("Python/ready");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
-    expect(detailGroup).toHaveClass("max-w-0");
-    expect(detailGroup).toHaveClass("opacity-0");
-    expect(detailGroup).toHaveClass("group-hover:max-w-16");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(languageContext).toHaveClass("opacity-0");
+    expect(languageContext).toHaveClass("group-hover:max-w-20");
+    expect(detail).toHaveClass("max-w-0");
+    expect(detail).toHaveClass("opacity-0");
+    expect(detail).toHaveClass("group-hover:max-w-16");
     expect(rule).toHaveClass("bg-border/15");
     expect(rule).toHaveClass("flex-1");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -46,16 +50,20 @@ describe("CodeCellCurrentLine", () => {
     );
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
-    const detailGroup = container.querySelector(
-      '[data-slot="code-cell-current-line-detail-group"]',
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
     );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
 
     expect(status).toHaveTextContent("Python/ready");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
-    expect(detailGroup).toHaveClass("max-w-0");
-    expect(detailGroup).toHaveClass("opacity-0");
-    expect(detailGroup).toHaveClass("group-focus-within:max-w-16");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(languageContext).toHaveClass("opacity-0");
+    expect(languageContext).toHaveClass("group-focus-within:max-w-20");
+    expect(detail).toHaveClass("max-w-0");
+    expect(detail).toHaveClass("opacity-0");
+    expect(detail).toHaveClass("group-focus-within:max-w-16");
   });
 
   it("keeps initial running state visually quiet while execution settles", () => {
@@ -246,23 +254,37 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
+    );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
 
     expect(footer).toHaveAttribute("data-execution-label", "Execution 12");
     expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python/run12·1.5s");
     expect(footer).not.toHaveTextContent("In [12]");
     expect(status).toHaveClass("max-w-64");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(detail).toHaveClass("max-w-64");
   });
 
   it("keeps completed metadata in the same right readout slot", () => {
     const { container } = render(<CodeCellCurrentLine languageLabel="Python" count={12} />);
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
+    );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(status).toHaveTextContent("Python/run 12");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(languageContext).toHaveClass("group-hover:max-w-20");
+    expect(detail).toHaveClass("max-w-64");
+    expect(detail).toHaveClass("opacity-100");
     expect(rule).toHaveClass("flex-1");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });

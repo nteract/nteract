@@ -300,6 +300,7 @@ export function CodeCellCurrentLine({
     isErrored,
   });
   const isIdleReadyDetail = boundaryState === "idle" && detailLabel === "ready";
+  const isQuietContextualState = boundaryState === "idle" || boundaryState === "ran";
   const accessibleDetailLabel = accessibleExecutionDetail({
     count,
     elapsedMs,
@@ -349,47 +350,52 @@ export function CodeCellCurrentLine({
         className={cn(
           "flex min-w-0 shrink-0 items-center whitespace-nowrap font-medium transition-[color,opacity,max-width,gap] duration-150",
           isCompactIdle ? "max-w-0 overflow-hidden opacity-0" : "max-w-64 opacity-100",
-          isIdleReadyDetail ? "gap-0 group-hover:gap-1.5 group-focus-within:gap-1.5" : "gap-1.5",
+          isQuietContextualState
+            ? "gap-0 group-hover:gap-1.5 group-focus-within:gap-1.5"
+            : "gap-1.5",
           isFocused && "text-foreground/70",
         )}
       >
         <span
-          data-slot="code-cell-current-line-language"
+          data-slot="code-cell-current-line-language-context"
           className={cn(
-            "text-foreground/60 transition-colors duration-150",
-            isFocused && "text-foreground/70",
+            "flex shrink-0 items-center gap-1.5 overflow-hidden transition-[color,opacity,max-width] duration-150",
+            isQuietContextualState
+              ? "max-w-0 opacity-0 group-hover:max-w-20 group-hover:opacity-100 group-focus-within:max-w-20 group-focus-within:opacity-100"
+              : "max-w-20 opacity-100",
           )}
         >
-          {languageLabel}
-        </span>
-        <span
-          data-slot="code-cell-current-line-detail-group"
-          className={cn(
-            "flex shrink-0 items-center gap-1.5 transition-[max-width,opacity] duration-150",
-            isIdleReadyDetail
-              ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-16 group-hover:opacity-100 group-focus-within:max-w-16 group-focus-within:opacity-100"
-              : "max-w-64 opacity-100",
-          )}
-        >
+          <span
+            data-slot="code-cell-current-line-language"
+            className={cn(
+              "text-foreground/60 transition-colors duration-150",
+              isFocused && "text-foreground/70",
+            )}
+          >
+            {languageLabel}
+          </span>
           <span
             className={cn("text-muted-foreground/35", isCompactIdle && "sr-only")}
             aria-hidden="true"
           >
             /
           </span>
-          <span
-            data-slot="code-cell-current-line-detail"
-            className={cn(
-              "tabular-nums",
-              isCompactIdle && "sr-only",
-              visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
-              isQueued && "font-semibold text-sky-700 dark:text-sky-300",
-              isErrored && "font-semibold text-destructive/80",
-              !visualIsExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
-            )}
-          >
-            {detailLabel}
-          </span>
+        </span>
+        <span
+          data-slot="code-cell-current-line-detail"
+          className={cn(
+            "shrink-0 tabular-nums transition-[max-width,opacity] duration-150",
+            isCompactIdle && "sr-only",
+            isIdleReadyDetail
+              ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-16 group-hover:opacity-100 group-focus-within:max-w-16 group-focus-within:opacity-100"
+              : "max-w-64 opacity-100",
+            visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
+            isQueued && "font-semibold text-sky-700 dark:text-sky-300",
+            isErrored && "font-semibold text-destructive/80",
+            !visualIsExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
+          )}
+        >
+          {detailLabel}
         </span>
       </span>
     </div>
