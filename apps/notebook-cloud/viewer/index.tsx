@@ -33,6 +33,8 @@ import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   createNotebookViewModel,
   NotebookDocumentHeader,
+  NotebookDocumentHeaderButton,
+  NotebookDocumentHeaderMenu,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -1194,17 +1196,19 @@ function NotebookViewer({
       }
       codeControls={
         status.kind === "ready" ? (
-          <button
-            type="button"
-            className="cloud-code-toggle"
+          <NotebookDocumentHeaderButton
             aria-pressed={showCode}
             aria-label={showCode ? "Hide code cells" : "Show code cells"}
             title={showCode ? "Hide code cells" : "Show code cells"}
+            active={showCode}
+            icon={
+              <>
+                {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                <Code2 aria-hidden="true" />
+              </>
+            }
             onClick={() => setShowCode((current) => !current)}
-          >
-            {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-            <Code2 aria-hidden="true" />
-          </button>
+          />
         ) : null
       }
     />
@@ -1527,119 +1531,121 @@ function CloudSharingControls({
   };
 
   return (
-    <details
+    <NotebookDocumentHeaderMenu
       className="cloud-share-menu"
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
+      trigger={
+        <>
+          <Share2 aria-hidden="true" />
+          <span>Share</span>
+        </>
+      }
+      triggerTitle="Share notebook"
+      panelClassName="cloud-share-panel"
     >
-      <summary title="Share notebook">
-        <Share2 aria-hidden="true" />
-        <span>Share</span>
-      </summary>
-      <div className="cloud-share-panel">
-        <header>
-          <div>
-            <h2>Share notebook</h2>
-            <p>Manage public read access and collaborator invites for this cloud notebook.</p>
-          </div>
-          <button type="button" onClick={() => void copyPublicLink()}>
-            <Link2 aria-hidden="true" />
-            {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
-          </button>
-        </header>
+      <header>
+        <div>
+          <h2>Share notebook</h2>
+          <p>Manage public read access and collaborator invites for this cloud notebook.</p>
+        </div>
+        <button type="button" onClick={() => void copyPublicLink()}>
+          <Link2 aria-hidden="true" />
+          {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
+        </button>
+      </header>
 
-        <section className="cloud-share-public" aria-label="Public link access">
+      <section className="cloud-share-public" aria-label="Public link access">
+        <div>
+          <Globe2 aria-hidden="true" />
           <div>
-            <Globe2 aria-hidden="true" />
-            <div>
-              <strong>Anyone with the link</strong>
-              <span>{publicEnabled ? "Can view this notebook" : "No anonymous access"}</span>
-            </div>
+            <strong>Anyone with the link</strong>
+            <span>{publicEnabled ? "Can view this notebook" : "No anonymous access"}</span>
           </div>
-          <button
-            type="button"
-            disabled={busyAction === "public" || loadState === "loading"}
-            onClick={() => void togglePublicAccess()}
+        </div>
+        <button
+          type="button"
+          disabled={busyAction === "public" || loadState === "loading"}
+          onClick={() => void togglePublicAccess()}
+        >
+          {publicEnabled ? "Disable" : "Enable"}
+        </button>
+      </section>
+
+      <form className="cloud-share-invite" onSubmit={submitInvite}>
+        <label>
+          <span>Invite by email</span>
+          <input
+            type="email"
+            value={inviteEmail}
+            placeholder="name@example.com"
+            autoComplete="email"
+            onChange={(event) => {
+              setInviteEmail(event.target.value);
+              setFormError(null);
+            }}
+          />
+        </label>
+        <label>
+          <span>Access</span>
+          <select
+            value={inviteScope}
+            onChange={(event) => setInviteScope(event.target.value as CloudShareInviteScope)}
           >
-            {publicEnabled ? "Disable" : "Enable"}
-          </button>
-        </section>
-
-        <form className="cloud-share-invite" onSubmit={submitInvite}>
-          <label>
-            <span>Invite by email</span>
-            <input
-              type="email"
-              value={inviteEmail}
-              placeholder="name@example.com"
-              autoComplete="email"
-              onChange={(event) => {
-                setInviteEmail(event.target.value);
-                setFormError(null);
-              }}
-            />
-          </label>
-          <label>
-            <span>Access</span>
-            <select
-              value={inviteScope}
-              onChange={(event) => setInviteScope(event.target.value as CloudShareInviteScope)}
-            >
-              <option value="viewer">Can view</option>
-              <option value="editor">Can edit</option>
-            </select>
-          </label>
-          <button type="submit" disabled={!inviteReady || busyAction === "invite"}>
-            <Mail aria-hidden="true" />
-            Invite
-          </button>
-          {formError ? (
-            <div className="cloud-auth-form-error" role="alert">
-              {formError}
-            </div>
-          ) : null}
-        </form>
-
-        <section className="cloud-share-current" aria-label="Current notebook access">
-          <h3>Current access</h3>
-          {loadState === "loading" && accessRows.length === 0 ? (
-            <div className="cloud-share-empty">Loading access...</div>
-          ) : accessRows.length === 0 ? (
-            <div className="cloud-share-empty">Only the owner can access this notebook.</div>
-          ) : (
-            <ul>
-              {accessRows.map((row) => (
-                <li key={row.id}>
-                  <CloudShareRowIcon row={row} />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span>{row.detail}</span>
-                  </div>
-                  <span className="cloud-share-badge">{row.badge}</span>
-                  {row.removable ? (
-                    <button
-                      type="button"
-                      aria-label={`Remove ${row.label}`}
-                      title={`Remove ${row.label}`}
-                      disabled={busyAction === row.id}
-                      onClick={() => void removeAccessRow(row)}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        {message ? (
-          <div className="cloud-share-message" data-kind={messageKind}>
-            {message}
+            <option value="viewer">Can view</option>
+            <option value="editor">Can edit</option>
+          </select>
+        </label>
+        <button type="submit" disabled={!inviteReady || busyAction === "invite"}>
+          <Mail aria-hidden="true" />
+          Invite
+        </button>
+        {formError ? (
+          <div className="cloud-auth-form-error" role="alert">
+            {formError}
           </div>
         ) : null}
-      </div>
-    </details>
+      </form>
+
+      <section className="cloud-share-current" aria-label="Current notebook access">
+        <h3>Current access</h3>
+        {loadState === "loading" && accessRows.length === 0 ? (
+          <div className="cloud-share-empty">Loading access...</div>
+        ) : accessRows.length === 0 ? (
+          <div className="cloud-share-empty">Only the owner can access this notebook.</div>
+        ) : (
+          <ul>
+            {accessRows.map((row) => (
+              <li key={row.id}>
+                <CloudShareRowIcon row={row} />
+                <div>
+                  <strong>{row.label}</strong>
+                  <span>{row.detail}</span>
+                </div>
+                <span className="cloud-share-badge">{row.badge}</span>
+                {row.removable ? (
+                  <button
+                    type="button"
+                    aria-label={`Remove ${row.label}`}
+                    title={`Remove ${row.label}`}
+                    disabled={busyAction === row.id}
+                    onClick={() => void removeAccessRow(row)}
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {message ? (
+        <div className="cloud-share-message" data-kind={messageKind}>
+          {message}
+        </div>
+      ) : null}
+    </NotebookDocumentHeaderMenu>
   );
 }
 
@@ -1667,12 +1673,13 @@ function CloudNotebookEditModeButton({
     : "Request edit access";
 
   return (
-    <button
-      type="button"
-      className="cloud-scope-toggle-button"
+    <NotebookDocumentHeaderButton
       aria-pressed={requestingEdit}
       data-state={editing ? "editing" : requestingEdit ? "requested" : "viewing"}
       title={title}
+      active={requestingEdit}
+      tone={editing ? "positive" : requestingEdit ? "attention" : "default"}
+      icon={requestingEdit ? <BookOpen aria-hidden="true" /> : <Pencil aria-hidden="true" />}
       onClick={() => {
         storeCloudRequestedScope(
           window.localStorage,
@@ -1681,9 +1688,8 @@ function CloudNotebookEditModeButton({
         onAuthStateChange();
       }}
     >
-      {requestingEdit ? <BookOpen aria-hidden="true" /> : <Pencil aria-hidden="true" />}
-      <span>{label}</span>
-    </button>
+      {label}
+    </NotebookDocumentHeaderButton>
   );
 }
 
@@ -1720,17 +1726,16 @@ function CloudNotebookSignInButton({
   };
 
   return (
-    <button
-      type="button"
-      className="cloud-sign-in-button"
+    <NotebookDocumentHeaderButton
       data-state={error ? "error" : authAction}
       disabled={authAction === "starting"}
       title={copy.title}
+      tone={error ? "danger" : "default"}
+      icon={<LogIn aria-hidden="true" />}
       onClick={beginOidcAuth}
     >
-      <LogIn aria-hidden="true" />
-      <span>{copy.label}</span>
-    </button>
+      {copy.label}
+    </NotebookDocumentHeaderButton>
   );
 }
 
@@ -1839,12 +1844,18 @@ function CloudAuthControls({
   };
 
   return (
-    <details className="cloud-auth-menu">
-      <summary title="Prototype collaborator identity">
-        <KeyRound aria-hidden="true" />
-        <span>{summary}</span>
-      </summary>
-      <form onSubmit={applyDevAuth}>
+    <NotebookDocumentHeaderMenu
+      className="cloud-auth-menu"
+      trigger={
+        <>
+          <KeyRound aria-hidden="true" />
+          <span>{summary}</span>
+        </>
+      }
+      triggerTitle="Prototype collaborator identity"
+      panelClassName="cloud-auth-panel"
+    >
+      <form className="cloud-auth-form" onSubmit={applyDevAuth}>
         <p>{prototypeAuthSummary(authState)}</p>
         <dl className="cloud-auth-diagnostics" aria-label="Prototype auth diagnostics">
           {diagnostics.rows.map((row) => (
@@ -1932,7 +1943,7 @@ function CloudAuthControls({
           </button>
         </div>
       </form>
-    </details>
+    </NotebookDocumentHeaderMenu>
   );
 }
 

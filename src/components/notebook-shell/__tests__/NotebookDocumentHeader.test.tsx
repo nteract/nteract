@@ -1,6 +1,11 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vite-plus/test";
 import { NotebookDocumentHeader } from "../NotebookDocumentHeader";
+import {
+  NotebookDocumentHeaderButton,
+  NotebookDocumentHeaderMenu,
+} from "../NotebookDocumentHeaderControl";
 import type { NotebookShellCapabilities } from "../capabilities";
 
 function capabilities(
@@ -104,5 +109,35 @@ describe("NotebookDocumentHeader", () => {
       "data-can-request-edit",
       "true",
     );
+  });
+
+  it("provides shared header button chrome for host controls", () => {
+    render(
+      <NotebookDocumentHeaderButton active tone="positive" icon={<span aria-hidden="true">i</span>}>
+        Edit
+      </NotebookDocumentHeaderButton>,
+    );
+
+    const button = screen.getByRole("button", { name: "Edit" });
+    expect(button).toHaveAttribute("data-active", "true");
+    expect(button).toHaveAttribute("data-tone", "positive");
+    expect(button.className).toContain("rounded-full");
+  });
+
+  it("provides a shared header menu panel for host-specific forms", async () => {
+    render(
+      <NotebookDocumentHeaderMenu trigger={<span>Identity</span>} triggerTitle="Identity menu">
+        <button type="button">Sign out</button>
+      </NotebookDocumentHeaderMenu>,
+    );
+
+    const user = userEvent.setup();
+    const summary = screen.getByTitle("Identity menu");
+    await user.click(summary);
+
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeVisible();
+    expect(
+      document.querySelector("[data-slot='notebook-document-header-menu-panel']"),
+    ).not.toBeNull();
   });
 });

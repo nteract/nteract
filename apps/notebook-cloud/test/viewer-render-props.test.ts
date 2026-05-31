@@ -67,12 +67,19 @@ test("cloud viewer routes notebook header controls through the shared shell head
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NotebookDocumentHeader,/);
+  assert.match(sourceText, /NotebookDocumentHeaderButton,/);
+  assert.match(sourceText, /NotebookDocumentHeaderMenu,/);
   assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
-  assert.match(sourceText, /codeControls=\{[\s\S]*className="cloud-code-toggle"/);
+  assert.match(sourceText, /codeControls=\{[\s\S]*<NotebookDocumentHeaderButton/);
+  assert.match(sourceText, /<CloudSharingControls[\s\S]*<NotebookDocumentHeaderMenu/);
+  assert.match(sourceText, /<CloudNotebookEditModeButton[\s\S]*<NotebookDocumentHeaderButton/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canManageSharing \? \(/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canToggleCode \? \(/);
+  assert.doesNotMatch(sourceText, /className="cloud-code-toggle"/);
+  assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
+  assert.doesNotMatch(sourceText, /className="cloud-sign-in-button"/);
 });
 
 test("cloud viewer defers supplemental CSS loading until the notebook surface mounts", () => {
@@ -113,7 +120,7 @@ test("cloud notebook shell keeps the rail and toolbar outside the cell scroller"
   );
   assert.match(sourceText, /\.cloud-notebook-rail\s*\{[\s\S]*height: 100%;/);
   assert.match(sourceText, /\.cloud-report-toolbar\s*\{[\s\S]*top: 0;[\s\S]*border-bottom:/);
-  assert.match(sourceText, /\.cloud-report-notebook\s*\{[\s\S]*overflow-y: auto;/);
+  assert.doesNotMatch(sourceText, /\.cloud-report-notebook\s*\{[\s\S]*overflow-y: auto;/);
   assert.doesNotMatch(
     sourceText.match(/\.cloud-notebook-shell\s*\{[^}]*\}/)?.[0] ?? "",
     /flex-direction: column;/,

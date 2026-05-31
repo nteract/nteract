@@ -9,6 +9,14 @@ export {
 export type { NotebookCellListItem, ReadOnlyNotebookCellData } from "./cell-data";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
+export {
+  NotebookDocumentHeaderButton,
+  NotebookDocumentHeaderMenu,
+  notebookDocumentHeaderControlClassName,
+  type NotebookDocumentHeaderButtonProps,
+  type NotebookDocumentHeaderControlTone,
+  type NotebookDocumentHeaderMenuProps,
+} from "./NotebookDocumentHeaderControl";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export { NotebookEditableView, type NotebookEditableViewProps } from "./NotebookEditableView";
 export {
