@@ -49,6 +49,10 @@ const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
 
+function scopeAllowsNotebookWrite(scope: string | null): boolean {
+  return scope === null || scope === "editor" || scope === "owner";
+}
+
 let warnedMissingExecutionViewProjector = false;
 
 function projectExecutionViewChangeset(handle: NotebookHandle) {
@@ -91,6 +95,7 @@ export function useAutomergeNotebook() {
   const actorLabelRef = useRef(`desktop:${sessionIdRef.current}`);
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
+  const canWriteNotebookRef = useRef(true);
 
   const [handleHost] = useState(
     () =>
@@ -185,7 +190,7 @@ export function useAutomergeNotebook() {
 
   const refreshCanAcceptCellMutations = useCallback(
     (handle = handleHost.current) => {
-      const canAccept = handle?.has_cells_map() ?? false;
+      const canAccept = canWriteNotebookRef.current && (handle?.has_cells_map() ?? false);
       setCanAcceptCellMutations(canAccept);
       return canAccept;
     },
@@ -202,6 +207,10 @@ export function useAutomergeNotebook() {
       const engine = engineRef.current;
       if (!handle || !engine) {
         logger.debug("[automerge-notebook] commitMutation skipped: no handle/engine");
+        return false;
+      }
+      if (!canWriteNotebookRef.current) {
+        logger.debug("[automerge-notebook] commitMutation skipped: connection is read-only");
         return false;
       }
       if (!mutate(handle)) return false;
@@ -292,7 +301,9 @@ export function useAutomergeNotebook() {
           actorLabelRef.current = trigger.payload.actor_label;
           setLocalActor(trigger.payload.actor_label);
         }
-        setConnectionScope(trigger.payload.connection_scope ?? null);
+        const connectionScope = trigger.payload.connection_scope ?? null;
+        setConnectionScope(connectionScope);
+        canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);
         storeBridge.resetReadiness();
         refreshBlobPort();
         resetNotebookCells();
@@ -346,6 +357,7 @@ export function useAutomergeNotebook() {
       resetRuntimeState();
       resetRuntimeStoresProjection();
       resetPoolState();
+      canWriteNotebookRef.current = false;
       setCanAcceptCellMutations(false);
       handleHost.clear();
     };
@@ -364,6 +376,10 @@ export function useAutomergeNotebook() {
     const handle = handleHost.current;
     const engine = engineRef.current;
     if (!handle || !engine) return;
+    if (!canWriteNotebookRef.current) {
+      logger.debug("[automerge-notebook] updateCellSource skipped: connection is read-only");
+      return;
+    }
 
     const updated = handle.update_source(cellId, source);
     if (!updated) return;
@@ -379,6 +395,10 @@ export function useAutomergeNotebook() {
 
       if (!handle || !engine) {
         logger.debug("[automerge-notebook] addCell skipped: no handle/engine");
+        return null;
+      }
+      if (!canWriteNotebookRef.current) {
+        logger.debug("[automerge-notebook] addCell skipped: connection is read-only");
         return null;
       }
 
@@ -450,6 +470,10 @@ export function useAutomergeNotebook() {
       const engine = engineRef.current;
       if (!handle || !engine) {
         logger.debug("[automerge-notebook] clearOutputs skipped: no handle/engine");
+        return false;
+      }
+      if (!canWriteNotebookRef.current) {
+        logger.debug("[automerge-notebook] clearOutputs skipped: connection is read-only");
         return false;
       }
 

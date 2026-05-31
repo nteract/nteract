@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use notebook_protocol::connection::{self, NotebookFrameType};
+use nteract_identity::ConnectionScope;
 
 use super::blob_upload::{maybe_handle_blob_upload_request, MultipartUploadState};
 use super::NotebookRoom;
@@ -384,9 +385,30 @@ pub(super) fn enqueue_notebook_request(
     payload: &[u8],
     notebook_id: &str,
     peer_id: &str,
+    connection_scope: ConnectionScope,
 ) -> anyhow::Result<()> {
     let envelope: notebook_protocol::protocol::NotebookRequestEnvelope =
         serde_json::from_slice(payload)?;
+    if !request_allowed_for_scope(&envelope.request, connection_scope) {
+        warn!(
+            "[notebook-sync] Rejecting {} request for {} from peer {} with scope {}",
+            request_label(&envelope.request),
+            notebook_id,
+            peer_id,
+            connection_scope.as_str()
+        );
+        queue_request_error(
+            writer,
+            envelope.id.clone(),
+            format!(
+                "{} is not allowed for {} connections",
+                request_label(&envelope.request),
+                connection_scope.as_str()
+            ),
+        )?;
+        return Ok(());
+    }
+
     debug!(
         "[notebook-sync] Enqueuing {} id={} peer={} notebook={}",
         request_label(&envelope.request),
@@ -415,6 +437,17 @@ pub(super) fn enqueue_notebook_request(
         }
     }
     Ok(())
+}
+
+fn request_allowed_for_scope(
+    request: &notebook_protocol::protocol::NotebookRequest,
+    connection_scope: ConnectionScope,
+) -> bool {
+    connection_scope.allows_notebook_write()
+        || matches!(
+            request,
+            notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
+        )
 }
 
 pub(super) fn queue_request_error(
@@ -868,9 +901,15 @@ mod tests {
         };
         let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
 
-        let err =
-            enqueue_notebook_request(&request_worker, &writer, b"not json", "notebook", "peer")
-                .expect_err("malformed request payload should fail");
+        let err = enqueue_notebook_request(
+            &request_worker,
+            &writer,
+            b"not json",
+            "notebook",
+            "peer",
+            ConnectionScope::Owner,
+        )
+        .expect_err("malformed request payload should fail");
         assert!(err.to_string().contains("expected ident"));
         assert!(
             reliable_rx.try_recv().is_err(),
@@ -901,8 +940,15 @@ mod tests {
             request: NotebookRequest::GetDocBytes {},
         })
         .unwrap();
-        enqueue_notebook_request(&request_worker, &writer, &payload, "notebook", "peer")
-            .expect("full queue should be reported to the peer without failing the loop");
+        enqueue_notebook_request(
+            &request_worker,
+            &writer,
+            &payload,
+            "notebook",
+            "peer",
+            ConnectionScope::Owner,
+        )
+        .expect("full queue should be reported to the peer without failing the loop");
 
         let frame = reliable_rx
             .try_recv()
@@ -935,8 +981,15 @@ mod tests {
             request: NotebookRequest::GetDocBytes {},
         })
         .unwrap();
-        let err = enqueue_notebook_request(&request_worker, &writer, &payload, "notebook", "peer")
-            .expect_err("closed worker should stop the peer loop");
+        let err = enqueue_notebook_request(
+            &request_worker,
+            &writer,
+            &payload,
+            "notebook",
+            "peer",
+            ConnectionScope::Owner,
+        )
+        .expect_err("closed worker should stop the peer loop");
         assert_eq!(err.to_string(), "peer request worker stopped for notebook");
 
         let frame = reliable_rx
@@ -950,6 +1003,53 @@ mod tests {
             reply.response,
             notebook_protocol::protocol::NotebookResponse::Error { ref error }
                 if error == "Peer request worker stopped"
+        ));
+    }
+
+    #[tokio::test]
+    async fn enqueue_notebook_request_rejects_viewer_mutations_without_failing_loop() {
+        let (request_tx, mut request_rx) =
+            mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
+        let request_worker = PeerRequestWorker {
+            tx: request_tx,
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
+
+        let payload = serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
+            id: Some("execute".to_string()),
+            required_heads: Vec::new(),
+            request: NotebookRequest::ExecuteCell {
+                cell_id: "cell-1".to_string(),
+                execution_id: None,
+            },
+        })
+        .unwrap();
+        enqueue_notebook_request(
+            &request_worker,
+            &writer,
+            &payload,
+            "notebook",
+            "peer",
+            ConnectionScope::Viewer,
+        )
+        .expect("unauthorized requests should be reported without failing the peer loop");
+
+        assert!(
+            request_rx.try_recv().is_err(),
+            "viewer mutation should not reach the request worker"
+        );
+        let frame = reliable_rx
+            .try_recv()
+            .expect("unauthorized request should enqueue an error response");
+        assert_eq!(frame.frame_type, NotebookFrameType::Response);
+        let reply: notebook_protocol::protocol::NotebookResponseEnvelope =
+            serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(reply.id.as_deref(), Some("execute"));
+        assert!(matches!(
+            reply.response,
+            notebook_protocol::protocol::NotebookResponse::Error { ref error }
+                if error.contains("ExecuteCell is not allowed")
         ));
     }
 }

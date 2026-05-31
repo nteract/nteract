@@ -93,6 +93,33 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(capabilities.runtime.canWriteRuntimeState).toBe(false);
   });
 
+  it("maps local read-only files to viewer access without cloud source", () => {
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: false,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: "viewer",
+    });
+
+    expect(capabilities.access).toMatchObject({
+      level: "viewer",
+      source: "local",
+      actorLabel: "local:kyle/desktop:window",
+    });
+    expect(capabilities.canRead).toBe(true);
+    expect(capabilities.canEditMarkdown).toBe(false);
+    expect(capabilities.canEditCells).toBe(false);
+    expect(capabilities.canEditStructure).toBe(false);
+    expect(capabilities.canExecute).toBe(false);
+    expect(capabilities.canManagePackages).toBe(false);
+    expect(capabilities.runtime).toMatchObject({
+      canWriteRuntimeState: false,
+      connected: true,
+      source: "local",
+      actorLabel: null,
+    });
+  });
+
   it("keeps runtime peer authority separate from document editing access", () => {
     const capabilities = desktopNotebookShellCapabilities({
       canAcceptCellMutations: false,

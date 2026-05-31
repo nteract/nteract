@@ -52,6 +52,9 @@ interface NotebookToolbarProps {
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onToggleDependencies: () => void;
   isDepsOpen?: boolean;
+  canEditStructure?: boolean;
+  canExecute?: boolean;
+  canViewPackages?: boolean;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
   depsOutOfSync?: boolean;
   updateStatus?: UpdateStatus;
@@ -82,6 +85,9 @@ export function NotebookToolbar({
   onAddCell,
   onToggleDependencies,
   isDepsOpen = false,
+  canEditStructure = true,
+  canExecute = true,
+  canViewPackages = true,
   depsOutOfSync = false,
   listKernelspecs,
   updateStatus,
@@ -174,33 +180,37 @@ export function NotebookToolbar({
     >
       <div className="flex h-10 items-center gap-2 px-3">
         {/* Add cells */}
-        <button
-          type="button"
-          onClick={() => onAddCell("code", focusedCellId ?? lastCellId)}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="Add code cell"
-          aria-label="Add code cell"
-          data-testid="add-code-cell-button"
-        >
-          <Code className="h-3 w-3" />
-          <span className="hidden @[40rem]:inline">Code</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => onAddCell("markdown", focusedCellId ?? lastCellId)}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="Add markdown cell"
-          aria-label="Add markdown cell"
-          data-testid="add-markdown-cell-button"
-        >
-          <LetterText className="h-3 w-3" />
-          <span className="hidden @[40rem]:inline">Markdown</span>
-        </button>
+        {canEditStructure && (
+          <>
+            <button
+              type="button"
+              onClick={() => onAddCell("code", focusedCellId ?? lastCellId)}
+              className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              title="Add code cell"
+              aria-label="Add code cell"
+              data-testid="add-code-cell-button"
+            >
+              <Code className="h-3 w-3" />
+              <span className="hidden @[40rem]:inline">Code</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onAddCell("markdown", focusedCellId ?? lastCellId)}
+              className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              title="Add markdown cell"
+              aria-label="Add markdown cell"
+              data-testid="add-markdown-cell-button"
+            >
+              <LetterText className="h-3 w-3" />
+              <span className="hidden @[40rem]:inline">Markdown</span>
+            </button>
+          </>
+        )}
 
-        <div className="h-4 w-px bg-border" />
+        {canEditStructure && canExecute ? <div className="h-4 w-px bg-border" /> : null}
 
         {/* Kernel controls */}
-        {!isKernelRunning && (
+        {canExecute && !isKernelRunning && (
           <button
             type="button"
             onClick={handleStartKernel}
@@ -214,48 +224,52 @@ export function NotebookToolbar({
             <span className="hidden @[40rem]:inline">Start Kernel</span>
           </button>
         )}
-        <button
-          type="button"
-          onClick={onRunAllCells}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-          title="Run all cells"
-          aria-label="Run all cells"
-          data-testid="run-all-button"
-        >
-          <ChevronsRight className="h-3.5 w-3.5" />
-          <span className="hidden @[40rem]:inline">Run All</span>
-        </button>
-        <button
-          type="button"
-          onClick={onRestartKernel}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-          title="Restart kernel"
-          aria-label="Restart kernel"
-          data-testid="restart-kernel-button"
-        >
-          <RotateCcw className="h-3 w-3" />
-          <span className="hidden @[40rem]:inline">Restart</span>
-        </button>
-        <button
-          type="button"
-          onClick={onRestartAndRunAll}
-          className={cn(
-            "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-            depsOutOfSync
-              ? "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/20 dark:text-amber-400"
-              : "text-foreground hover:bg-muted",
-          )}
-          title={
-            depsOutOfSync
-              ? "Dependencies changed — restart kernel and run all cells"
-              : "Restart kernel and run all cells"
-          }
-          data-testid="restart-run-all-button"
-        >
-          <RotateCcw className="h-3 w-3" />
-          <ChevronsRight className="h-3 w-3 -ml-1" />
-        </button>
-        {isKernelRunning && (
+        {canExecute && (
+          <>
+            <button
+              type="button"
+              onClick={onRunAllCells}
+              className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+              title="Run all cells"
+              aria-label="Run all cells"
+              data-testid="run-all-button"
+            >
+              <ChevronsRight className="h-3.5 w-3.5" />
+              <span className="hidden @[40rem]:inline">Run All</span>
+            </button>
+            <button
+              type="button"
+              onClick={onRestartKernel}
+              className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+              title="Restart kernel"
+              aria-label="Restart kernel"
+              data-testid="restart-kernel-button"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span className="hidden @[40rem]:inline">Restart</span>
+            </button>
+            <button
+              type="button"
+              onClick={onRestartAndRunAll}
+              className={cn(
+                "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+                depsOutOfSync
+                  ? "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/20 dark:text-amber-400"
+                  : "text-foreground hover:bg-muted",
+              )}
+              title={
+                depsOutOfSync
+                  ? "Dependencies changed — restart kernel and run all cells"
+                  : "Restart kernel and run all cells"
+              }
+              data-testid="restart-run-all-button"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <ChevronsRight className="h-3 w-3 -ml-1" />
+            </button>
+          </>
+        )}
+        {canExecute && isKernelRunning && (
           <button
             type="button"
             onClick={onInterruptKernel}
@@ -294,7 +308,7 @@ export function NotebookToolbar({
         )}
 
         {/* Runtime / deps toggle — hidden until runtime is known to avoid flicker */}
-        {runtime && (
+        {runtime && canViewPackages && (
           <button
             type="button"
             onClick={onToggleDependencies}

@@ -22,7 +22,7 @@ export function desktopNotebookShellCapabilities({
   connectionScope,
 }: DesktopNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
-  const source = desktopAccessSourceFromConnectionScope(connectionScope);
+  const source = desktopAccessSourceFromActor(connectionScope, localActor);
   const isRuntimePeer = connectionScope === "runtime_peer";
   const canWriteDocument =
     canAcceptCellMutations && (accessLevel === "editor" || accessLevel === "owner");
@@ -82,8 +82,10 @@ function desktopAccessLevelFromConnectionScope(
   return "owner";
 }
 
-function desktopAccessSourceFromConnectionScope(
+function desktopAccessSourceFromActor(
   connectionScope: string | null,
+  localActor: string | null,
 ): NotebookShellAccessSource {
+  if (localActor?.startsWith("local:")) return "local";
   return connectionScope ? "cloud" : "local";
 }

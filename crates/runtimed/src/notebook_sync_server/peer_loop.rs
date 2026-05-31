@@ -1,7 +1,7 @@
 use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker, MultipartUploadState};
 use super::peer_notebook_sync::{
     finish_notebook_doc_frame, forward_notebook_doc_broadcast, handle_notebook_doc_frame,
-    queue_doc_sync, NotebookDocFrameOutcome,
+    queue_doc_sync,
 };
 use super::peer_pool_sync::{
     forward_pool_state_broadcast, handle_pool_state_frame, send_initial_pool_sync,
@@ -243,17 +243,7 @@ where
                 }
                 match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
-                                if !connection_identity.allows_notebook_write() {
-                                    warn!(
-                                        "[notebook-sync] Rejecting NotebookDoc frame for {} from peer {} with scope {}",
-                                        notebook_id,
-                                        peer_id,
-                                        connection_identity.scope()
-                                    );
-                                    continue;
-                                }
-                                let NotebookDocFrameOutcome::Applied(notebook_doc_effects) =
-                                    handle_notebook_doc_frame(
+                                let notebook_doc_effects = handle_notebook_doc_frame(
                                     room,
                                     &mut peer_state,
                                     connection_identity,
@@ -289,6 +279,7 @@ where
                                     &frame.payload,
                                     &notebook_id,
                                     peer_id,
+                                    connection_identity.scope(),
                                 )?;
                             }
 
@@ -304,15 +295,6 @@ where
                             }
 
                             NotebookFrameType::RuntimeStateSync => {
-                                if !connection_identity.allows_runtime_state_write() {
-                                    warn!(
-                                        "[notebook-sync] Rejecting RuntimeStateDoc frame for {} from peer {} with scope {}",
-                                        notebook_id,
-                                        peer_id,
-                                        connection_identity.scope()
-                                    );
-                                    continue;
-                                }
                                 if !handle_runtime_state_frame(
                                     room,
                                     &mut state_peer_state,
