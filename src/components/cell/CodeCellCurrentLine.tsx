@@ -50,16 +50,15 @@ function visualExecutionDetail({
   isQueued: boolean;
   isErrored: boolean;
 }): string {
-  const runPrefix = count === null ? null : `Run ${formatExecutionCount(count)}`;
-
-  if (isExecuting) return "Running";
-  if (isQueued) return "Queued";
-  if (isErrored) return runPrefix === null ? "Error" : `${runPrefix} failed`;
+  if (isExecuting) return "running";
+  if (isQueued) return "queued";
+  if (isErrored) return count === null ? "error" : `run ${formatExecutionCount(count)} failed`;
   if (count !== null) {
-    return elapsedMs === null ? `${runPrefix}` : `${runPrefix} · ${formatElapsedMs(elapsedMs)}`;
+    const runPrefix = `run ${formatExecutionCount(count)}`;
+    return elapsedMs === null ? runPrefix : `${runPrefix} · ${formatElapsedMs(elapsedMs)}`;
   }
 
-  return "Ready";
+  return "ready";
 }
 
 function accessibleExecutionDetail({
@@ -281,6 +280,7 @@ export function CodeCellCurrentLine({
           : "idle";
   const isCompactIdle = compactIdle && state === "idle";
   const isQuietResting = state === "idle" || state === "ran";
+  const isSignalLed = state === "running" || state === "queued" || state === "error";
   const detailLabel = visualExecutionDetail({
     count,
     elapsedMs,
@@ -308,6 +308,15 @@ export function CodeCellCurrentLine({
         className,
       )}
     >
+      {!isCompactIdle && isSignalLed ? (
+        <ExecutionBoundaryRule
+          state={state}
+          runningSignalPhase={runningSignalPhase}
+          isQuietResting={isQuietResting}
+          queuePriority={queuePriority}
+          isFocused={isFocused}
+        />
+      ) : null}
       <span
         data-slot="code-cell-current-line-status"
         aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
@@ -318,7 +327,7 @@ export function CodeCellCurrentLine({
             ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-64 group-hover:opacity-100 group-focus-within:max-w-64 group-focus-within:opacity-100"
             : "max-w-64 opacity-100",
           isFocused && "text-foreground/70",
-          isExecuting && "text-primary",
+          isExecuting && "text-emerald-700 dark:text-emerald-300",
           isQueued && "text-sky-700 dark:text-sky-300",
           isErrored && "text-destructive/80",
         )}
@@ -326,12 +335,16 @@ export function CodeCellCurrentLine({
         <span
           data-slot="code-cell-current-line-language"
           className={cn(
-            "rounded-sm px-0.5 py-0.5 text-foreground/60 transition-colors duration-150",
-            "group-hover:bg-muted/50 group-hover:text-foreground/70 group-focus-within:bg-muted/50 group-focus-within:text-foreground/70",
-            isFocused && "bg-muted/45 text-foreground/70",
-            isExecuting && "bg-primary/10 text-primary",
-            isQueued && "bg-sky-500/10 text-sky-700 dark:text-sky-300",
-            isErrored && "bg-destructive/10 text-destructive/90",
+            "text-foreground/60 transition-colors duration-150",
+            isSignalLed
+              ? "px-0 py-0"
+              : "rounded-sm px-0.5 py-0.5 group-hover:bg-muted/50 group-hover:text-foreground/70 group-focus-within:bg-muted/50 group-focus-within:text-foreground/70",
+            !isSignalLed && isFocused && "bg-muted/45 text-foreground/70",
+            !isSignalLed &&
+              isExecuting &&
+              "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+            !isSignalLed && isQueued && "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+            !isSignalLed && isErrored && "bg-destructive/10 text-destructive/90",
           )}
         >
           {languageLabel}
@@ -340,11 +353,11 @@ export function CodeCellCurrentLine({
           className={cn("text-muted-foreground/35", isCompactIdle && "sr-only")}
           aria-hidden="true"
         >
-          ·
+          /
         </span>
         <span
           data-slot="code-cell-current-line-detail"
-          className={cn("tabular-nums", isCompactIdle && "sr-only")}
+          className={cn("tabular-nums", isCompactIdle && "sr-only", isSignalLed && "font-semibold")}
         >
           {detailLabel}
         </span>
@@ -364,13 +377,15 @@ export function CodeCellCurrentLine({
               {activityContent}
             </div>
           ) : null}
-          <ExecutionBoundaryRule
-            state={state}
-            runningSignalPhase={runningSignalPhase}
-            isQuietResting={isQuietResting}
-            queuePriority={queuePriority}
-            isFocused={isFocused}
-          />
+          {!isSignalLed ? (
+            <ExecutionBoundaryRule
+              state={state}
+              runningSignalPhase={runningSignalPhase}
+              isQuietResting={isQuietResting}
+              queuePriority={queuePriority}
+              isFocused={isFocused}
+            />
+          ) : null}
         </>
       )}
     </div>

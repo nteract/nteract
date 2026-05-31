@@ -32,7 +32,7 @@ const variants: Array<{
   {
     variant: "production",
     label: "Production line",
-    body: "The current shape uses an explicit sentence plus a rule. It is clear, but the sentence can become louder than the source.",
+    body: "The current shape lets active states lead with the signal, while completed metadata stays available but visually quiet.",
   },
   {
     variant: "quiet",

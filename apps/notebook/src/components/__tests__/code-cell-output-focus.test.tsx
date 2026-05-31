@@ -248,7 +248,7 @@ describe("CodeCell output focus", () => {
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(footer?.getAttribute("data-execution-label")).toBe("Execution 12");
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python/run12");
     expect(footer?.textContent).not.toContain("In [12]");
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
@@ -276,10 +276,11 @@ describe("CodeCell output focus", () => {
     const stopButton = getByTestId("execute-button");
 
     expect(footer?.getAttribute("data-execution-state")).toBe("running");
-    expect(status?.textContent).toBe("Python·Running");
-    expect(status).toHaveClass("text-primary");
+    expect(status?.textContent).toBe("Python/running");
+    expect(status).toHaveClass("text-emerald-700");
     expect(status).not.toHaveClass("text-destructive/80");
     expect(rule).toHaveClass("text-emerald-500/65");
+    expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(rule).toHaveAttribute("data-execution-signal", "building");
     expect(rule?.querySelector("svg")).toBeNull();
     expect(stopButton).toHaveClass("text-destructive");
@@ -305,7 +306,7 @@ describe("CodeCell output focus", () => {
     const runButton = getByTestId("execute-button");
 
     expect(footer?.getAttribute("data-execution-state")).toBe("error");
-    expect(status?.textContent).toBe("Python·Run 14 failed");
+    expect(status?.textContent).toBe("Python/run 14 failed");
     expect(rule).toHaveClass("text-destructive/60");
     expect(runButton).toHaveAttribute("data-execution-state", "error");
     expect(runButton).toHaveAttribute("aria-label", "Run cell again; last execution 14 failed");
@@ -330,7 +331,7 @@ describe("CodeCell output focus", () => {
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer?.getAttribute("data-execution-state")).toBe("error");
-    expect(status?.textContent).toBe("Python·Error");
+    expect(status?.textContent).toBe("Python/error");
     expect(rule).toHaveClass("text-destructive/60");
   });
 
@@ -353,7 +354,7 @@ describe("CodeCell output focus", () => {
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer?.getAttribute("data-execution-state")).toBe("idle");
-    expect(status?.textContent).toBe("Python·Ready");
+    expect(status?.textContent).toBe("Python/ready");
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
     expect(status).toHaveClass("group-hover:max-w-64");
@@ -422,7 +423,7 @@ describe("CodeCell output focus", () => {
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
-    expect(status?.textContent).toBe("Python·Ready");
+    expect(status?.textContent).toBe("Python/ready");
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
     expect(status).toHaveClass("group-focus-within:max-w-64");
@@ -452,7 +453,7 @@ describe("CodeCell output focus", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     expect(queryByTestId("editor")).toBeNull();
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run4");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python/run4");
   });
 
   it("omits output chrome for short stream output", () => {
