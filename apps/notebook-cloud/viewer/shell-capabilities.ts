@@ -23,6 +23,7 @@ export function cloudNotebookShellCapabilities({
     canRead: true,
     canEditMarkdown: canEdit,
     canEditCells: canEdit,
+    canRequestEdit: authState.mode === "oidc",
     canExecute: false,
     canToggleCode: hasCodeCells,
     canViewPackages: true,

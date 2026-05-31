@@ -33,19 +33,22 @@ view-model and capability inputs.
 NotebookDocumentShell
   rail
   document stage
-  toolbar slots
+  NotebookDocumentHeader control slots
   notice slots
   package/runtime/presence slots
 
 NotebookShellCapabilities
   canRead
   canEditMarkdown
+  canEditCells
+  canRequestEdit
   canExecute
+  canToggleCode
+  canViewPackages
   canManagePackages
-  canShare
-  authState
-  packageState
-  runtimeState
+  canManageSharing
+  access
+  auth
 ```
 
 Desktop, cloud, and elements are hosts around that shell:
@@ -70,6 +73,7 @@ The shared view model owns host-neutral projections:
 The shared component surface should be the preferred place for:
 
 - notebook rail and outline behavior;
+- document header layout and capability-scoped control slots;
 - markdown editing and preview rendering;
 - read-only and editable cell chrome;
 - output frame policy and widget-state rendering;
@@ -95,6 +99,24 @@ Examples:
 
 The room or document authority should provide the source facts. Host adapters
 translate those facts into `NotebookShellCapabilities`.
+
+`canRequestEdit` is distinct from `canEditCells`. A host can show an edit
+request/sign-in affordance before the room grants editor access. The write path
+must still check `canEditMarkdown`/`canEditCells` and the room's authorization
+policy before mutating Automerge.
+
+`NotebookDocumentHeader` owns shared slot visibility for document-level
+controls:
+
+- runtime controls render when execution or package viewing is available;
+- code controls render when the host can toggle source visibility;
+- sharing controls render only when the host can manage sharing;
+- edit controls render only when the host can request edit access;
+- auth controls render when sign-in, signed-in identity, or auth attention is
+  relevant.
+
+The controls themselves can stay host-specific while the visibility policy stays
+in the shared shell contract.
 
 ## Anchor And Navigation Contract
 
@@ -131,6 +153,11 @@ Recommended fixture scenarios:
 Catalog pages should render `NotebookDocumentShell` through those fixtures when
 they need notebook-level context. Lower-level fixtures remain useful for isolated
 component tests, but they should not become a second app model.
+
+When a catalog page needs toolbar or header context, it should use
+`NotebookDocumentHeader` with fixture capabilities rather than inventing
+page-local visibility rules. This keeps the catalog useful as an early warning
+when shared shell controls are still coupled to desktop or cloud specifics.
 
 ## Consequences
 

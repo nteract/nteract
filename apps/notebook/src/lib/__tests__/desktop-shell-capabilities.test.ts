@@ -16,6 +16,7 @@ describe("desktopNotebookShellCapabilities", () => {
       actorLabel: "local:kyle/desktop:window",
     });
     expect(capabilities.canEditCells).toBe(true);
+    expect(capabilities.canRequestEdit).toBe(false);
     expect(capabilities.canExecute).toBe(true);
     expect(capabilities.canManagePackages).toBe(true);
     expect(capabilities.canManageSharing).toBe(false);
@@ -36,6 +37,7 @@ describe("desktopNotebookShellCapabilities", () => {
     });
     expect(capabilities.canRead).toBe(true);
     expect(capabilities.canEditCells).toBe(false);
+    expect(capabilities.canRequestEdit).toBe(false);
     expect(capabilities.canExecute).toBe(false);
     expect(capabilities.canManagePackages).toBe(false);
   });

@@ -32,6 +32,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   createNotebookViewModel,
+  NotebookDocumentHeader,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -1158,38 +1159,41 @@ function NotebookViewer({
   );
 
   const toolbar = (
-    <>
-      <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
-
-      <div className="cloud-toolbar-actions">
+    <NotebookDocumentHeader
+      capabilities={shellCapabilities}
+      presence={<CloudPresenceStatus presence={presence} connectionScope={connectionScope} />}
+      utilityControls={
         <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
-
-        {shellCapabilities.canManageSharing ? (
-          <CloudSharingControls
-            aclEndpoint={config.aclEndpoint}
-            invitesEndpoint={config.invitesEndpoint}
+      }
+      sharingControls={
+        <CloudSharingControls
+          aclEndpoint={config.aclEndpoint}
+          invitesEndpoint={config.invitesEndpoint}
+          authState={authState}
+        />
+      }
+      authControls={
+        <>
+          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+          <CloudAuthControls
+            authConfig={authConfig}
             authState={authState}
+            connectionActorLabel={connectionActorLabel}
+            connectionError={connectionError}
+            connectionScope={connectionScope}
+            onAuthStateChange={refreshAuthState}
           />
-        ) : null}
-
-        <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-
+        </>
+      }
+      editControls={
         <CloudNotebookEditModeButton
           authState={authState}
           connectionScope={connectionScope}
           onAuthStateChange={refreshAuthState}
         />
-
-        <CloudAuthControls
-          authConfig={authConfig}
-          authState={authState}
-          connectionActorLabel={connectionActorLabel}
-          connectionError={connectionError}
-          connectionScope={connectionScope}
-          onAuthStateChange={refreshAuthState}
-        />
-
-        {status.kind === "ready" && shellCapabilities.canToggleCode ? (
+      }
+      codeControls={
+        status.kind === "ready" ? (
           <button
             type="button"
             className="cloud-code-toggle"
@@ -1201,9 +1205,9 @@ function NotebookViewer({
             {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
             <Code2 aria-hidden="true" />
           </button>
-        ) : null}
-      </div>
-    </>
+        ) : null
+      }
+    />
   );
 
   return (

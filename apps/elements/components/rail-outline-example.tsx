@@ -11,6 +11,7 @@ import {
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import {
   NotebookCellList,
+  NotebookDocumentHeader,
   NotebookDocumentShell,
   type NotebookViewCell,
 } from "@/components/notebook-shell";
@@ -109,27 +110,32 @@ export function RailOutlineExample() {
       stageLabel="Elements notebook scenario"
       capabilities={scenario.capabilities}
       toolbar={
-        <NotebookToolbar
-          kernelStatus={KERNEL_STATUS.IDLE}
-          statusKey={RUNTIME_STATUS.RUNNING_IDLE}
-          lifecycle={runningIdleLifecycle}
-          errorReason={scenario.capabilities.canExecute ? null : scenario.runtimeLabel}
-          kernelErrorMessage={null}
-          envSource="uv:inline"
-          envTypeHint="uv"
-          envProgress={null}
-          runtime="python"
-          focusedCellId={focusedCellId}
-          lastCellId="cell-findings"
-          onStartKernel={noop}
-          onInterruptKernel={noop}
-          onRestartKernel={noop}
-          onRunAllCells={noop}
-          onRestartAndRunAll={noop}
-          onAddCell={noop}
-          onToggleDependencies={() => setActivePanel("packages")}
-          isDepsOpen={activePanel === "packages"}
-          depsOutOfSync={!scenario.capabilities.canManagePackages}
+        <NotebookDocumentHeader
+          capabilities={scenario.capabilities}
+          runtimeControls={
+            <NotebookToolbar
+              kernelStatus={KERNEL_STATUS.IDLE}
+              statusKey={RUNTIME_STATUS.RUNNING_IDLE}
+              lifecycle={runningIdleLifecycle}
+              errorReason={scenario.capabilities.canExecute ? null : scenario.runtimeLabel}
+              kernelErrorMessage={null}
+              envSource="uv:inline"
+              envTypeHint="uv"
+              envProgress={null}
+              runtime="python"
+              focusedCellId={focusedCellId}
+              lastCellId="cell-findings"
+              onStartKernel={noop}
+              onInterruptKernel={noop}
+              onRestartKernel={noop}
+              onRunAllCells={noop}
+              onRestartAndRunAll={noop}
+              onAddCell={noop}
+              onToggleDependencies={() => setActivePanel("packages")}
+              isDepsOpen={activePanel === "packages"}
+              depsOutOfSync={!scenario.capabilities.canManagePackages}
+            />
+          }
         />
       }
       rail={
