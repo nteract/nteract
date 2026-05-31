@@ -1,23 +1,12 @@
 import type { ReactNode } from "react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import type { ReadOnlyNotebookCellData } from "@/components/notebook-shell/cell-data";
 import { NotebookCellList } from "@/components/notebook-shell/NotebookCellList";
 import type {
   TracebackCellNavigator,
   TracebackExecutionResolver,
 } from "@/components/outputs/traceback-output";
-import type { SupportedLanguage } from "../editor/languages";
-import type { JupyterOutput } from "./jupyter-output";
 import { ReadOnlyNotebookCell } from "./ReadOnlyNotebookCell";
-
-export interface ReadOnlyNotebookCellData {
-  id: string;
-  cellType: string;
-  source: string;
-  language?: SupportedLanguage | null;
-  outputs?: readonly JupyterOutput[];
-  executionId?: string | null;
-  executionCount?: number | null;
-}
 
 export interface ReadOnlyNotebookProps {
   cells: readonly ReadOnlyNotebookCellData[];

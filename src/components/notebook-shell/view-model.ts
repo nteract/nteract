@@ -1,8 +1,8 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
-import type { ReadOnlyNotebookCellData } from "@/components/cell/ReadOnlyNotebook";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { projectNotebookOutline, type NotebookOutlineItem } from "runtimed";
+import type { ReadOnlyNotebookCellData } from "./cell-data";
 
 export type NotebookViewCellType = "code" | "markdown" | "raw";
 

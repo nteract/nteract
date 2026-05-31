@@ -1,15 +1,7 @@
 import type { ReactNode } from "react";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
-
-export interface NotebookCellListItem {
-  id: string;
-  cellType: string;
-  source: string;
-  language?: string | null;
-  executionCount?: number | null;
-  outputs?: readonly unknown[];
-}
+import type { NotebookCellListItem } from "./cell-data";
 
 export interface NotebookCellListProps<TCell extends NotebookCellListItem = NotebookCellListItem> {
   cells: readonly TCell[];

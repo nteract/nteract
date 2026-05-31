@@ -6,6 +6,7 @@ export {
   type NotebookShellAuthCapabilities,
   type NotebookShellCapabilities,
 } from "./capabilities";
+export type { NotebookCellListItem, ReadOnlyNotebookCellData } from "./cell-data";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";

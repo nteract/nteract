@@ -1,5 +1,5 @@
 import type { BlobResolver } from "runtimed";
-import type { ReadOnlyNotebookCellData } from "../../../../src/components/cell/ReadOnlyNotebook";
+import type { ReadOnlyNotebookCellData } from "../../../../src/components/notebook-shell";
 import type { SupportedLanguage } from "../../../../src/components/editor/languages";
 import type { NteractEmbedHostContextPatch } from "../../../../src/components/isolated/host-context";
 import { resolveCell, type RenderCell, type ResolvedCell } from "../../viewer/render-resolution.ts";
