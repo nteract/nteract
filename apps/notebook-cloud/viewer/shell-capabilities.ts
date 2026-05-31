@@ -1,4 +1,7 @@
-import type { NotebookShellCapabilities } from "@/components/notebook-shell";
+import {
+  createNotebookShellCapabilities,
+  type NotebookShellCapabilities,
+} from "@/components/notebook-shell/capabilities";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 
 export interface CloudNotebookShellCapabilityInput {
@@ -14,21 +17,18 @@ export function cloudNotebookShellCapabilities({
   connectionActorLabel = null,
   hasCodeCells,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
-  const canEdit = connectionScope === "editor" || connectionScope === "owner";
   const authenticated = authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
   const accessLevel = cloudConnectionAccessLevel(connectionScope);
 
-  return {
-    canRead: true,
-    canEditMarkdown: canEdit,
-    canEditCells: canEdit,
+  return createNotebookShellCapabilities({
+    canMutateDocument: true,
     canRequestEdit: authState.mode === "oidc",
     canExecute: false,
     canToggleCode: hasCodeCells,
     canViewPackages: true,
     canManagePackages: false,
-    canManageSharing: connectionScope === "owner",
+    canManageSharing: true,
     access: {
       level: accessLevel,
       source: "cloud",
@@ -41,7 +41,7 @@ export function cloudNotebookShellCapabilities({
       canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
       needsAttention: authNeedsAttention,
     },
-  };
+  });
 }
 
 function cloudConnectionAccessLevel(

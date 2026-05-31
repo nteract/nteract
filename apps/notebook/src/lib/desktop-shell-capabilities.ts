@@ -2,7 +2,8 @@ import type {
   NotebookShellAccessLevel,
   NotebookShellAccessSource,
   NotebookShellCapabilities,
-} from "@/components/notebook-shell";
+} from "@/components/notebook-shell/capabilities";
+import { createNotebookShellCapabilities } from "@/components/notebook-shell/capabilities";
 
 export interface DesktopNotebookShellCapabilityInput {
   canAcceptCellMutations: boolean;
@@ -19,19 +20,15 @@ export function desktopNotebookShellCapabilities({
 }: DesktopNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
   const source = desktopAccessSourceFromConnectionScope(connectionScope);
-  const canWriteDocument =
-    canAcceptCellMutations && (accessLevel === "editor" || accessLevel === "owner");
 
-  return {
-    canRead: accessLevel !== "none",
-    canEditMarkdown: canWriteDocument,
-    canEditCells: canWriteDocument,
+  return createNotebookShellCapabilities({
+    canMutateDocument: canAcceptCellMutations,
     canRequestEdit: false,
-    canExecute: sessionReady && canWriteDocument,
+    canExecute: sessionReady,
     canToggleCode: true,
     canViewPackages: true,
-    canManagePackages: canWriteDocument,
-    canManageSharing: accessLevel === "owner" && source === "cloud",
+    canManagePackages: true,
+    canManageSharing: source === "cloud",
     access: {
       level: accessLevel,
       source,
@@ -44,7 +41,7 @@ export function desktopNotebookShellCapabilities({
       canUseAuthenticatedIdentity: Boolean(localActor),
       needsAttention: false,
     },
-  };
+  });
 }
 
 function desktopAccessLevelFromConnectionScope(

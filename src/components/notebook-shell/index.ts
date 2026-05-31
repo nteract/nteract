@@ -1,5 +1,7 @@
 export {
+  createNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
+  type CreateNotebookShellCapabilitiesOptions,
   type NotebookShellAccessCapabilities,
   type NotebookShellAccessLevel,
   type NotebookShellAccessSource,
