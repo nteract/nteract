@@ -3,13 +3,16 @@ import { test } from "node:test";
 import { cloudNotebookShellCapabilities } from "../viewer/shell-capabilities";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 
-function authState(mode: CloudPrototypeAuthState["mode"]): CloudPrototypeAuthState {
+function authState(
+  mode: CloudPrototypeAuthState["mode"],
+  requestedScope: CloudPrototypeAuthState["requestedScope"] = null,
+): CloudPrototypeAuthState {
   return {
     mode,
     token: mode === "anonymous" ? null : "token",
     user: mode === "anonymous" ? null : "user@example.test",
     oidcClaims: null,
-    requestedScope: null,
+    requestedScope,
     problem: mode === "invalid" || mode === "oidc_expired" ? "auth problem" : null,
   };
 }
@@ -34,15 +37,15 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.access.isPublic, true);
 });
 
-test("cloud shell capabilities grant editor writes without execute/package management", () => {
+test("cloud shell capabilities grant editor markdown writes without code, structure, execute, or package management", () => {
   const capabilities = cloudNotebookShellCapabilities({
-    authState: authState("oidc"),
+    authState: authState("oidc", "editor"),
     connectionScope: "editor",
     hasCodeCells: false,
   });
 
   assert.equal(capabilities.canEditMarkdown, true);
-  assert.equal(capabilities.canEditCells, true);
+  assert.equal(capabilities.canEditCells, false);
   assert.equal(capabilities.canEditStructure, false);
   assert.equal(capabilities.canRequestEdit, true);
   assert.equal(capabilities.canExecute, false);
@@ -51,6 +54,36 @@ test("cloud shell capabilities grant editor writes without execute/package manag
   assert.equal(capabilities.access.level, "editor");
   assert.equal(capabilities.access.identityLabel, "user@example.test");
   assert.equal(capabilities.auth.canUseAuthenticatedIdentity, true);
+});
+
+test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "viewer"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+  });
+
+  assert.equal(capabilities.canEditMarkdown, false);
+  assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.access.level, "editor");
+  assert.equal(capabilities.canToggleCode, true);
+});
+
+test("cloud shell capabilities reserve code-cell source edits for owners", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+  });
+
+  assert.equal(capabilities.canEditMarkdown, true);
+  assert.equal(capabilities.canEditCells, true);
+  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.canExecute, false);
+  assert.equal(capabilities.canManagePackages, false);
+  assert.equal(capabilities.canManageSharing, true);
+  assert.equal(capabilities.access.level, "owner");
 });
 
 test("cloud shell capabilities reserve sharing for owners", () => {

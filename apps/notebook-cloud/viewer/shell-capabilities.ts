@@ -14,15 +14,18 @@ export function cloudNotebookShellCapabilities({
   connectionActorLabel = null,
   hasCodeCells,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
-  const canEdit = connectionScope === "editor" || connectionScope === "owner";
+  const accessLevel = cloudConnectionAccessLevel(connectionScope);
+  const userSelectedViewMode = authState.requestedScope === "viewer";
+  const activeEditLevel = userSelectedViewMode ? "viewer" : accessLevel;
+  const canEditMarkdown = activeEditLevel === "editor" || activeEditLevel === "owner";
+  const canEditCells = activeEditLevel === "owner";
   const authenticated = authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
-  const accessLevel = cloudConnectionAccessLevel(connectionScope);
 
   return {
     canRead: true,
-    canEditMarkdown: canEdit,
-    canEditCells: canEdit,
+    canEditMarkdown,
+    canEditCells,
     canEditStructure: false,
     canRequestEdit: authState.mode === "oidc",
     canExecute: false,
