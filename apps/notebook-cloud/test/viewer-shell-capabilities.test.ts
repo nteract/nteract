@@ -24,6 +24,7 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.canRead, true);
   assert.equal(capabilities.canEditMarkdown, false);
   assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canEditStructure, false);
   assert.equal(capabilities.canRequestEdit, false);
   assert.equal(capabilities.canExecute, false);
   assert.equal(capabilities.canToggleCode, true);
@@ -42,6 +43,7 @@ test("cloud shell capabilities grant editor writes without execute/package manag
 
   assert.equal(capabilities.canEditMarkdown, true);
   assert.equal(capabilities.canEditCells, true);
+  assert.equal(capabilities.canEditStructure, false);
   assert.equal(capabilities.canRequestEdit, true);
   assert.equal(capabilities.canExecute, false);
   assert.equal(capabilities.canToggleCode, false);

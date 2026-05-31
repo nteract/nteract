@@ -81,6 +81,7 @@ interface CodeCellProps {
   /** Content for the right gutter (e.g., delete button, source toggle) */
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
+  canExecute?: boolean;
   outputHostContext?: NteractEmbedHostContextPatch;
 }
 
@@ -169,6 +170,7 @@ export const CodeCell = memo(function CodeCell({
   hiddenGroupErrorCount,
   rightGutterContent,
   readOnly = false,
+  canExecute = !readOnly,
   outputHostContext,
 }: CodeCellProps) {
   // Read transient UI state from the store
@@ -280,17 +282,25 @@ export const CodeCell = memo(function CodeCell({
     [isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
+  const handleExecute = useCallback(() => {
+    if (!canExecute) {
+      return;
+    }
+    onExecute();
+  }, [canExecute, onExecute]);
+
   // Get keyboard navigation bindings
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
     onFocusNext: handleFocusNextOrCreate,
-    onExecute: onExecute,
-    onExecuteAndInsert: onInsertCellAfter
-      ? () => {
-          onExecute();
-          onInsertCellAfter();
-        }
-      : undefined,
+    onExecute: canExecute ? handleExecute : undefined,
+    onExecuteAndInsert:
+      canExecute && onInsertCellAfter
+        ? () => {
+            handleExecute();
+            onInsertCellAfter();
+          }
+        : undefined,
     onDelete,
     cellId: cell.id,
   });
@@ -394,8 +404,8 @@ export const CodeCell = memo(function CodeCell({
       compactIdle={isSourceEmpty}
       submittedByActorLabel={submittedByActorLabel}
       activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
-      canExecute={!readOnly}
-      onExecute={onExecute}
+      canExecute={canExecute}
+      onExecute={handleExecute}
       onInterrupt={onInterrupt}
     />
   );

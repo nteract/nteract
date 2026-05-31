@@ -24,6 +24,7 @@ export interface NotebookShellCapabilities {
   canRead: boolean;
   canEditMarkdown: boolean;
   canEditCells: boolean;
+  canEditStructure: boolean;
   canRequestEdit: boolean;
   canExecute: boolean;
   canToggleCode: boolean;
@@ -38,6 +39,7 @@ export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = {
   canRead: true,
   canEditMarkdown: false,
   canEditCells: false,
+  canEditStructure: false,
   canRequestEdit: false,
   canExecute: false,
   canToggleCode: false,

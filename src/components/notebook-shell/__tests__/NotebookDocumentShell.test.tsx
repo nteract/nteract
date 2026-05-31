@@ -42,6 +42,7 @@ describe("NotebookDocumentShell", () => {
       canRead: true,
       canEditMarkdown: true,
       canEditCells: true,
+      canEditStructure: true,
       canRequestEdit: true,
       canExecute: false,
       canToggleCode: true,
@@ -73,6 +74,7 @@ describe("NotebookDocumentShell", () => {
     expect(shell).toHaveAttribute("data-access-level", "owner");
     expect(shell).toHaveAttribute("data-access-source", "cloud");
     expect(shell).toHaveAttribute("data-can-edit", "true");
+    expect(shell).toHaveAttribute("data-can-edit-structure", "true");
     expect(shell).toHaveAttribute("data-can-execute", "false");
     expect(shell).toHaveAttribute("data-can-share", "true");
   });

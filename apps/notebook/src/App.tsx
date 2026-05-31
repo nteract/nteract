@@ -2088,6 +2088,7 @@ function AppContent() {
               <NotebookView
                 cellIds={cellIds}
                 isLoading={isLoading}
+                capabilities={shellCapabilities}
                 canAcceptCellMutations={canAcceptCellMutations}
                 loadError={loadError}
                 runtime={runtime}

@@ -10,6 +10,7 @@ function capabilities(
     canRead: true,
     canEditMarkdown: false,
     canEditCells: false,
+    canEditStructure: false,
     canRequestEdit: false,
     canExecute: false,
     canToggleCode: false,
@@ -71,6 +72,7 @@ describe("NotebookDocumentHeader", () => {
         capabilities={capabilities({
           canEditMarkdown: true,
           canEditCells: true,
+          canEditStructure: true,
           canRequestEdit: true,
           canToggleCode: true,
           canManageSharing: true,
@@ -102,6 +104,10 @@ describe("NotebookDocumentHeader", () => {
     expect(screen.getByRole("button", { name: "Identity" })).toBeVisible();
     expect(container.querySelector("[data-slot='notebook-document-header']")).toHaveAttribute(
       "data-can-request-edit",
+      "true",
+    );
+    expect(container.querySelector("[data-slot='notebook-document-header']")).toHaveAttribute(
+      "data-can-edit-structure",
       "true",
     );
   });

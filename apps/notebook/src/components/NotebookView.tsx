@@ -22,6 +22,7 @@ import { notebookCellAnchorId } from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
 import { Button } from "@/components/ui/button";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import type { NotebookShellCapabilities } from "@/components/notebook-shell";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -48,6 +49,7 @@ type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => 
 export interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
+  capabilities?: NotebookShellCapabilities;
   canAcceptCellMutations?: boolean;
   readOnly?: boolean;
   loadError?: string | null;
@@ -326,6 +328,7 @@ function StaticCell({
 function NotebookViewContent({
   cellIds,
   isLoading = false,
+  capabilities,
   canAcceptCellMutations = false,
   readOnly = false,
   loadError = null,
@@ -347,8 +350,10 @@ function NotebookViewContent({
   const containerRef = useRef<HTMLDivElement>(null);
   const tailPinnedRef = useRef(false);
   const tailScrollFrameRef = useRef<number | null>(null);
-  const canEditCellSources = !readOnly;
-  const canMutateCells = canAcceptCellMutations && canEditCellSources;
+  const canEditCodeCellSources = capabilities?.canEditCells ?? !readOnly;
+  const canEditMarkdownSources = capabilities?.canEditMarkdown ?? !readOnly;
+  const canMutateCells = capabilities?.canEditStructure ?? (canAcceptCellMutations && !readOnly);
+  const canExecuteCells = capabilities?.canExecute ?? !readOnly;
 
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
@@ -811,7 +816,8 @@ function NotebookViewContent({
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
-            readOnly={!canEditCellSources}
+            readOnly={!canEditCodeCellSources}
+            canExecute={canExecuteCells}
             outputHostContext={outputHostContext}
             onToggleSourceHidden={
               onSetCellSourceHidden
@@ -863,7 +869,7 @@ function NotebookViewContent({
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
-            readOnly={!canEditCellSources}
+            readOnly={!canEditMarkdownSources}
             outputHostContext={outputHostContext}
           />
         );
@@ -886,7 +892,7 @@ function NotebookViewContent({
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
           rightGutterContent={rightGutterContent}
-          readOnly={!canEditCellSources}
+          readOnly={!canEditCodeCellSources}
         />
       );
     },
@@ -901,8 +907,10 @@ function NotebookViewContent({
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
       markdownHeadingAnchorsByCellId,
-      canEditCellSources,
+      canEditCodeCellSources,
+      canEditMarkdownSources,
       canMutateCells,
+      canExecuteCells,
       outputHostContext,
       outputFocusedCellId,
       focusCell,

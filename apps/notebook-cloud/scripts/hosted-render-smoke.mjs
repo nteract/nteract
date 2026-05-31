@@ -323,8 +323,8 @@ async function main() {
     if (requireRenderedCellMarker || expectedExecutionCount) {
       await page.waitForFunction(
         (expected) => {
-          const reportCellCount = document.querySelectorAll(
-            "[data-slot='read-only-report-cell']",
+          const sharedCellCount = document.querySelectorAll(
+            "[data-slot='cell-container'], [data-cell-id]",
           ).length;
           const counts = Array.from(document.querySelectorAll("[data-slot='execution-count']")).map(
             (node) => node.getAttribute("data-execution-count") ?? node.textContent?.trim() ?? "",
@@ -332,7 +332,7 @@ async function main() {
           if (expected) {
             return counts.includes(expected);
           }
-          return reportCellCount > 0 || counts.some((count) => /^\d+$/.test(count));
+          return sharedCellCount > 0 || counts.some((count) => /^\d+$/.test(count));
         },
         expectedExecutionCount,
         { timeout: timeoutMs },
@@ -413,7 +413,9 @@ async function main() {
           : null,
       })),
     );
-    const reportCellCount = await page.locator("[data-slot='read-only-report-cell']").count();
+    const renderedCellCount = await page
+      .locator("[data-slot='cell-container'], [data-cell-id]")
+      .count();
     const presenceText = await page
       .locator(".cloud-presence")
       .textContent({ timeout: 1_000 })
@@ -563,7 +565,7 @@ async function main() {
           forbidRenderCacheRequests,
           renderCacheRequests,
           executionCounts,
-          reportCellCount,
+          renderedCellCount,
           presenceText,
           siftLoadMilestoneMatches,
           frameTextMatches,

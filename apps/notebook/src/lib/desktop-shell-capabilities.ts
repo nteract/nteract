@@ -26,6 +26,7 @@ export function desktopNotebookShellCapabilities({
     canRead: accessLevel !== "none",
     canEditMarkdown: canWriteDocument,
     canEditCells: canWriteDocument,
+    canEditStructure: canWriteDocument,
     canRequestEdit: false,
     canExecute: sessionReady && canWriteDocument,
     canToggleCode: true,
