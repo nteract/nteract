@@ -1,3 +1,4 @@
+import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import {
   createNotebookViewModel,
@@ -12,6 +13,7 @@ import type {
   TrustInfo,
   TyposquatWarning,
 } from "@/notebook-components/runtime-surface-types";
+import { WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 export type ElementsNotebookScenarioId =
   | "desktop-local-owner"
@@ -31,6 +33,7 @@ export interface ElementsNotebookScenario {
   packageSummary: string;
   packageState: ElementsNotebookPackageState;
   trustState: ElementsNotebookTrustState;
+  outputState: ElementsNotebookOutputState;
   variables: readonly ElementsNotebookVariable[];
   renderers: readonly ElementsNotebookRenderer[];
 }
@@ -47,6 +50,32 @@ export interface ElementsNotebookTrustState {
   trustInfo: TrustInfo;
   typosquatWarnings: readonly TyposquatWarning[];
   approvalError: string | null;
+}
+
+export interface ElementsNotebookOutputState {
+  json: Record<string, unknown>;
+  traceback: unknown;
+  outputAreaOutputs: readonly JupyterOutput[];
+  widgetModels: readonly ElementsNotebookWidgetModel[];
+  widgetOutputs: readonly JupyterOutput[];
+  mimeFixtures: readonly ElementsNotebookMimeFixture[];
+  siftParquetUrl: string;
+  siftParquetRows: number;
+  siftArrowStreamChunkUrl: string;
+  siftArrowStreamManifest: {
+    chunks: { url: string }[];
+    complete: boolean;
+  };
+}
+
+export interface ElementsNotebookWidgetModel {
+  id: string;
+  state: Record<string, unknown>;
+}
+
+export interface ElementsNotebookMimeFixture {
+  label: string;
+  data: Record<string, unknown>;
 }
 
 export interface ElementsNotebookVariable {
@@ -269,6 +298,232 @@ const renderers: readonly ElementsNotebookRenderer[] = [
   { name: "image/png", state: "inline" },
 ];
 
+const jsonOutputFixture = {
+  run: {
+    id: "forecast-042",
+    status: "complete",
+    metrics: {
+      mae: 8.42,
+      mape: 0.068,
+      backtestWeeks: 16,
+    },
+  },
+  artifacts: ["forecast.parquet", "diagnostics.json"],
+};
+
+const modelCodeCell = getElementsNotebookPrimaryCodeCell();
+const [modelFeatureLine, modelFitLine, modelPredictLine] = modelCodeCell.source.split("\n");
+const tracebackOutputFixture = {
+  ename: "ValueError",
+  evalue: "feature matrix contains null values",
+  language: modelCodeCell.language ?? "python",
+  text: `ValueError: feature matrix contains null values
+  at cell ${modelCodeCell.id} line 3`,
+  execution: {
+    execution_id: modelCodeCell.executionId ?? "execution-model-run",
+    cell_id: modelCodeCell.id,
+    execution_count: modelCodeCell.executionCount,
+  },
+  frames: [
+    {
+      filename: `cell://${modelCodeCell.id}`,
+      lineno: 3,
+      name: "<module>",
+      execution_id: modelCodeCell.executionId ?? "execution-model-run",
+      cell_id: modelCodeCell.id,
+      execution_count: modelCodeCell.executionCount,
+      lines: [
+        { lineno: 1, source: modelFeatureLine ?? "" },
+        { lineno: 2, source: modelFitLine ?? "" },
+        { lineno: 3, source: modelPredictLine ?? "", highlight: true },
+      ],
+    },
+    {
+      filename: "/workspace/forecasting/model.py",
+      lineno: 88,
+      name: "predict",
+      library: true,
+      lines: [
+        { lineno: 86, source: "def predict(self, frame):" },
+        { lineno: 87, source: "    if frame.isna().any().any():" },
+        {
+          lineno: 88,
+          source: "        raise ValueError('feature matrix contains null values')",
+          highlight: true,
+        },
+      ],
+    },
+  ],
+};
+
+const outputWidgetModels: readonly ElementsNotebookWidgetModel[] = [
+  {
+    id: "output-widget-summary",
+    state: {
+      _model_name: "HTMLModel",
+      _model_module: "@jupyter-widgets/controls",
+      value: "<strong>Widget output</strong> <span>rendered through OutputArea</span>",
+    },
+  },
+  {
+    id: "output-widget-threshold",
+    state: {
+      _model_name: "IntSliderModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "threshold",
+      value: 42,
+      min: 0,
+      max: 100,
+      step: 1,
+      readout: true,
+      orientation: "horizontal",
+      disabled: false,
+    },
+  },
+  {
+    id: "output-widget-progress-style",
+    state: {
+      _model_name: "ProgressStyleModel",
+      _model_module: "@jupyter-widgets/controls",
+      bar_color: "#10b981",
+    },
+  },
+  {
+    id: "output-widget-progress",
+    state: {
+      _model_name: "IntProgressModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "complete",
+      value: 68,
+      min: 0,
+      max: 100,
+      bar_style: "success",
+      orientation: "horizontal",
+      style: "IPY_MODEL_output-widget-progress-style",
+    },
+  },
+  {
+    id: "output-widget-panel",
+    state: {
+      _model_name: "VBoxModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: [
+        "IPY_MODEL_output-widget-summary",
+        "IPY_MODEL_output-widget-threshold",
+        "IPY_MODEL_output-widget-progress",
+      ],
+      box_style: "success",
+    },
+  },
+];
+
+const siftParquetUrl =
+  "https://huggingface.co/datasets/mstz/heart_failure/resolve/refs%2Fconvert%2Fparquet/death/train/0000.parquet";
+const siftParquetRows = 8;
+const siftArrowStreamChunkUrl = "/fixtures/sift-polars-utf8view.arrow";
+const siftArrowStreamManifest = {
+  chunks: [{ url: siftArrowStreamChunkUrl }],
+  complete: true,
+};
+
+const outputState: ElementsNotebookOutputState = {
+  json: jsonOutputFixture,
+  traceback: tracebackOutputFixture,
+  outputAreaOutputs: [
+    ...(modelCodeCell.outputs.length > 0
+      ? modelCodeCell.outputs
+      : [
+          {
+            output_id: "output-area-stream",
+            output_type: "stream",
+            name: "stdout",
+            text: "training fold=01 mae=8.91\nvalidating fold=02 mae=8.42\n",
+          } satisfies JupyterOutput,
+        ]),
+    {
+      output_id: "output-area-html",
+      output_type: "display_data",
+      data: {
+        "text/html": "<strong>unsafe HTML fixture</strong>",
+        "text/plain": "unsafe HTML fixture",
+      },
+      metadata: {},
+    },
+    {
+      output_id: "output-area-parquet",
+      output_type: "display_data",
+      data: {
+        "application/vnd.apache.parquet": {
+          url: siftParquetUrl,
+          rows: siftParquetRows,
+        },
+        "text/plain": "heart_failure parquet fixture",
+      },
+      metadata: {},
+    },
+  ],
+  widgetModels: outputWidgetModels,
+  widgetOutputs: [
+    {
+      output_id: "output-area-widget-view",
+      output_type: "display_data",
+      data: {
+        [WIDGET_VIEW_MIME]: { model_id: "output-widget-panel" },
+        "text/plain": "VBox(children=(HTML(), IntSlider(), IntProgress()))",
+      },
+      metadata: {},
+    },
+  ],
+  mimeFixtures: [
+    {
+      label: "Rich traceback beats text",
+      data: {
+        "text/plain": "ValueError: feature matrix contains null values",
+        "application/vnd.nteract.traceback+json": tracebackOutputFixture,
+      },
+    },
+    {
+      label: "HTML requires isolation",
+      data: {
+        "text/html": "<table><tr><td>8.42</td></tr></table>",
+        "text/plain": "MAE 8.42",
+      },
+    },
+    {
+      label: "Preview-only text is skipped",
+      data: {
+        "text/llm+plain": "internal model preview",
+        "text/plain": "visible fallback",
+      },
+    },
+    {
+      label: "Widget view selects widget MIME",
+      data: {
+        [WIDGET_VIEW_MIME]: { model_id: "output-widget-panel" },
+        "text/plain": "VBox(children=...)",
+      },
+    },
+    {
+      label: "Arrow stream manifest selects Sift",
+      data: {
+        "application/vnd.nteract.arrow-stream-manifest+json": siftArrowStreamManifest,
+        "text/plain": "Arrow stream manifest",
+      },
+    },
+    {
+      label: "Structured JSON stays inspectable",
+      data: {
+        "application/json": jsonOutputFixture,
+        "text/plain": JSON.stringify(jsonOutputFixture),
+      },
+    },
+  ],
+  siftParquetUrl,
+  siftParquetRows,
+  siftArrowStreamChunkUrl,
+  siftArrowStreamManifest,
+};
+
 export const elementsNotebookScenarios: Record<
   ElementsNotebookScenarioId,
   ElementsNotebookScenario
@@ -453,6 +708,7 @@ function createScenario({
     packageSummary,
     packageState,
     trustState,
+    outputState,
     variables,
     renderers,
   };
