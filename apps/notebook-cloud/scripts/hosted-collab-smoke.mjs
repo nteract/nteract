@@ -24,7 +24,7 @@ const convergenceRounds = Number(process.env.NOTEBOOK_CLOUD_COLLAB_ROUNDS ?? 4);
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const forbidRenderCacheRequests = process.env.NOTEBOOK_CLOUD_FORBID_RENDER_CACHE_REQUESTS !== "0";
 const timingsMs = {};
-const editableMarkdownCellSelector = ".cloud-editable-markdown-cell";
+const editableMarkdownCellSelector = '[data-slot="cell-container"][data-cell-type="markdown"]';
 const editableMarkdownEditorSelector = `${editableMarkdownCellSelector} .cm-content[contenteditable='true']`;
 const performanceBudgets = {
   collab_connected_ms: parseOptionalBudget(process.env.NOTEBOOK_CLOUD_MAX_COLLAB_CONNECTED_MS),
@@ -461,7 +461,7 @@ async function ensureEditableMarkdown(page) {
     return editor;
   }
 
-  await cell.locator(".cloud-markdown-cell-action").first().click({ timeout: timeoutMs });
+  await cell.locator('button[aria-label="Edit markdown"]').first().click({ timeout: timeoutMs });
   await editor.waitFor({ state: "visible", timeout: timeoutMs });
   return editor;
 }

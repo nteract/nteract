@@ -1295,9 +1295,6 @@ function NotebookViewer({
           showCode={showCode}
           className="cloud-report-notebook"
           scrollable
-          cellClassName="cloud-cell"
-          sourceClassName="cloud-source-block"
-          outputClassName="cloud-output-block"
           deferIsolatedFrameUntilVisible
           deferredIsolatedFrameRootMargin="600px 0px"
           resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}

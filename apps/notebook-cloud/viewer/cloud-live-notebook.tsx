@@ -64,8 +64,6 @@ export function CloudLiveNotebook({
       renderMarkdownCell={(cell) => (
         <EditableMarkdownCell
           cell={cell}
-          className="cloud-cell cloud-editable-markdown-cell"
-          sourceClassName="cloud-source-block"
           priority={priority}
           hostContext={hostContext}
           onSourceChange={onCellSourceChange}
@@ -81,9 +79,6 @@ export function CloudLiveNotebook({
       renderCodeCell={(cell) => (
         <EditableCodeCell
           cell={cell}
-          className="cloud-cell cloud-editable-code-cell"
-          sourceClassName="cloud-source-block"
-          outputClassName="cloud-output-block"
           priority={priority}
           hostContext={hostContext}
           showSource={showCode}
@@ -110,9 +105,6 @@ export function CloudLiveNotebook({
           priority={priority}
           hostContext={hostContext}
           showSource
-          className="cloud-cell"
-          sourceClassName="cloud-source-block"
-          outputClassName="cloud-output-block"
           deferIsolatedFrameUntilVisible
           deferredIsolatedFrameRootMargin="600px 0px"
           resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}

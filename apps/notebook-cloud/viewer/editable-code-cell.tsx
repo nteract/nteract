@@ -17,9 +17,6 @@ import { CloudCellPresenceIndicators } from "./cell-presence";
 
 export interface EditableCodeCellProps {
   cell: ResolvedCell;
-  className?: string;
-  sourceClassName?: string;
-  outputClassName?: string;
   priority?: readonly string[];
   hostContext?: NteractEmbedHostContextPatch;
   showSource?: boolean;
@@ -43,9 +40,6 @@ export interface EditableCodeCellProps {
 
 export function EditableCodeCell({
   cell,
-  className,
-  sourceClassName,
-  outputClassName,
   priority,
   hostContext,
   showSource = true,
@@ -96,10 +90,6 @@ export function EditableCodeCell({
       priority={priority}
       hostContext={hostContext}
       showSource={showSource}
-      className={className}
-      sourceClassName={sourceClassName}
-      outputClassName={outputClassName}
-      editorClassName="cloud-code-editor"
       presenceIndicators={<CloudCellPresenceIndicators presence={remotePresence} />}
       deferIsolatedFrameUntilVisible
       deferredIsolatedFrameRootMargin="600px 0px"

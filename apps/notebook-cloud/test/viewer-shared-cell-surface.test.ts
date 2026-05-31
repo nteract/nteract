@@ -102,6 +102,9 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
   assert.match(sourceText, /<NotebookEditableView[\s\S]*viewModel=\{viewModel\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
+  assert.doesNotMatch(sourceText, /className="cloud-cell/);
+  assert.doesNotMatch(sourceText, /sourceClassName="cloud-source-block"/);
+  assert.doesNotMatch(sourceText, /outputClassName="cloud-output-block"/);
 });
 
 test("cloud live notebook routes editor code cells through the shared editable code adapter", () => {
@@ -137,6 +140,37 @@ test("cloud read-only notebook renders from the shared notebook view model", () 
   assert.match(sourceText, /<NotebookReadOnlyView[\s\S]*viewModel=\{notebookViewModel\}/);
   assert.match(sourceText, /<NotebookReadOnlyView[\s\S]*scrollable/);
   assert.doesNotMatch(sourceText, /cells=\{readOnlyCells\}/);
+  assert.doesNotMatch(sourceText, /cellClassName="cloud-cell"/);
+  assert.doesNotMatch(sourceText, /sourceClassName="cloud-source-block"/);
+  assert.doesNotMatch(sourceText, /outputClassName="cloud-output-block"/);
+});
+
+test("cloud editable adapters leave shared cell chrome styling to shared components", () => {
+  const markdownPath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
+  const markdownSource = readFileSync(markdownPath, "utf8");
+  const codePath = new URL("../viewer/editable-code-cell.tsx", import.meta.url);
+  const codeSource = readFileSync(codePath, "utf8");
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssSource = readFileSync(cssPath, "utf8");
+
+  assert.doesNotMatch(markdownSource, /cloud-markdown-/);
+  assert.doesNotMatch(markdownSource, /cloud-source-block/);
+  assert.doesNotMatch(codeSource, /cloud-code-editor/);
+  assert.doesNotMatch(codeSource, /cloud-source-block/);
+  assert.doesNotMatch(codeSource, /cloud-output-block/);
+  assert.doesNotMatch(cssSource, /\.cloud-cell\b/);
+  assert.doesNotMatch(cssSource, /\.cloud-source-block\b/);
+  assert.doesNotMatch(cssSource, /\.cloud-output-block\b/);
+});
+
+test("hosted collab smoke uses shared cell selectors instead of cloud cell classes", () => {
+  const smokePath = new URL("../scripts/hosted-collab-smoke.mjs", import.meta.url);
+  const smokeSource = readFileSync(smokePath, "utf8");
+
+  assert.match(smokeSource, /\[data-slot="cell-container"\]\[data-cell-type="markdown"\]/);
+  assert.match(smokeSource, /button\[aria-label="Edit markdown"\]/);
+  assert.doesNotMatch(smokeSource, /cloud-editable-markdown-cell/);
+  assert.doesNotMatch(smokeSource, /cloud-markdown-cell-action/);
 });
 
 test("cloud package rail renders package metadata through the shared shell panel", () => {

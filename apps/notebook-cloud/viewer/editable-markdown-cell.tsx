@@ -12,8 +12,6 @@ import type { NotebookHandle } from "./runtimed-wasm-client";
 
 export interface EditableMarkdownCellProps {
   cell: ResolvedCell;
-  className?: string;
-  sourceClassName?: string;
   priority?: readonly string[];
   hostContext?: NteractEmbedHostContextPatch;
   onSourceChange: (cellId: string, source: string) => void;
@@ -34,8 +32,6 @@ export interface EditableMarkdownCellProps {
 
 export function EditableMarkdownCell({
   cell,
-  className,
-  sourceClassName,
   priority,
   hostContext,
   onSourceChange,
@@ -86,12 +82,10 @@ export function EditableMarkdownCell({
       editing={editing}
       onEditingChange={setEditing}
       editorRef={editorRef}
-      className={className}
-      sourceClassName={sourceClassName}
-      editorClassName="cloud-markdown-editor"
-      previewClassName="cloud-markdown-preview"
-      previewOutputClassName="cloud-markdown-preview-output"
-      actionClassName="cloud-markdown-cell-action"
+      editorClassName="min-h-[2rem]"
+      previewClassName="cursor-text outline-none"
+      previewOutputClassName="py-2"
+      placeholder="Enter markdown..."
       priority={priority}
       hostContext={hostContext}
       editorExtensions={editorExtensions}
