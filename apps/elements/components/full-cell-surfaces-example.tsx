@@ -6,6 +6,12 @@ import { CodeCell } from "@/notebook-components/CodeCell";
 import { MarkdownCell } from "@/notebook-components/MarkdownCell";
 import { NotebookView } from "@/notebook-components/NotebookView";
 import { RawCell } from "@/notebook-components/RawCell";
+import {
+  getElementsNotebookPrimaryCodeCell,
+  getElementsNotebookScenario,
+  resolveElementsNotebookLanguage,
+} from "@/components/notebook-scenarios";
+import type { NotebookViewCell } from "@/components/notebook-shell";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import {
   flushCellUIState,
@@ -24,22 +30,28 @@ import {
 import { resetNotebookOutputs, setOutput } from "../../notebook/src/lib/notebook-outputs";
 import type {
   CodeCell as CodeCellType,
+  JupyterOutput,
   MarkdownCell as MarkdownCellType,
+  NotebookCell,
   RawCell as RawCellType,
 } from "../../notebook/src/types";
 
-const codeCell: CodeCellType = {
-  cell_type: "code",
-  id: "elements-full-code-cell",
-  source: [
-    "features = orders.assign(month=orders.date.dt.month)",
-    "model.fit(features[columns], target)",
-    "predictions = model.predict(features_holdout)",
-  ].join("\n"),
-  execution_count: 12,
-  outputs: [],
-  metadata: {},
-};
+const fullCellScenario = getElementsNotebookScenario("desktop-local-owner");
+const primaryScenarioCodeCell = getElementsNotebookPrimaryCodeCell(fullCellScenario.cells);
+const standaloneCodeCellId = "elements-full-code-cell";
+const standaloneCodeCellExecutionId = "elements-full-code-execution";
+const standaloneCodeCellOutputs = primaryScenarioCodeCell.outputs.map((output, index) => ({
+  ...output,
+  output_id: standaloneCodeCellOutputId(output, index),
+})) as JupyterOutput[];
+const codeCellLanguage =
+  resolveElementsNotebookLanguage(primaryScenarioCodeCell.language) ?? "plain";
+
+const codeCell: CodeCellType = scenarioCodeCellToStandaloneCodeCell(
+  primaryScenarioCodeCell,
+  standaloneCodeCellId,
+  standaloneCodeCellOutputs,
+);
 
 const markdownFixtureSource = [
   "## Forecast review",
@@ -66,59 +78,8 @@ const rawCell: RawCellType = {
   },
 };
 
-const viewCodeCell: CodeCellType = {
-  cell_type: "code",
-  id: "elements-view-code-cell",
-  source: [
-    "features = orders.assign(month=orders.date.dt.month)",
-    "predictions = model.predict(features_holdout)",
-    "display(predictions.head())",
-  ].join("\n"),
-  execution_count: 18,
-  outputs: [],
-  metadata: {},
-};
-
-const viewMarkdownCell: MarkdownCellType = {
-  cell_type: "markdown",
-  id: "elements-view-markdown-cell",
-  source: [
-    "## Model notes",
-    "",
-    "The workspace fixture renders through the production `NotebookView` shell.",
-  ].join("\n"),
-  metadata: {},
-};
-
-const viewHiddenCodeCell: CodeCellType = {
-  cell_type: "code",
-  id: "elements-view-hidden-code-cell",
-  source: "cached = features.sample(2000, random_state=42)",
-  execution_count: 17,
-  outputs: [],
-  metadata: {
-    jupyter: {
-      source_hidden: true,
-      outputs_hidden: true,
-    },
-  },
-};
-
-const viewRawCell: RawCellType = {
-  cell_type: "raw",
-  id: "elements-view-raw-cell",
-  source: "runtime: python\nowner: forecasting",
-  metadata: {
-    format: "yaml",
-  },
-};
-
-const initialNotebookViewCellIds = [
-  viewMarkdownCell.id,
-  viewCodeCell.id,
-  viewHiddenCodeCell.id,
-  viewRawCell.id,
-];
+const notebookViewCells = fullCellScenario.cells.map(scenarioCellToNotebookCell);
+const initialNotebookViewCellIds = fullCellScenario.viewModel.cellIds;
 
 const fullCellRows = [
   {
@@ -144,17 +105,17 @@ const fullCellRows = [
 const fullCellBoundaryRows = [
   {
     surface: "Cell document state",
-    catalogPath: "replaceNotebookCells fixture seed",
+    catalogPath: "ElementsNotebookScenario -> replaceNotebookCells",
     productionBoundary: "NotebookView document projection",
     detail:
-      "The catalog writes direct-cell and workspace-shell fixtures into the notebook cell store so the production cells can subscribe normally without opening a notebook document.",
+      "The catalog writes shared scenario cells into the notebook cell store so the production cells can subscribe normally without opening a notebook document.",
   },
   {
     surface: "Execution and output state",
-    catalogPath: "setExecution and setOutput fixtures",
+    catalogPath: "scenario outputs -> setExecution/setOutput",
     productionBoundary: "runtimed execution pipeline",
     detail:
-      "The code cell sees the same execution pointer and output IDs as production, but queueing, kernel lifecycle, and output mutation still stay outside the docs runtime.",
+      "Scenario code cells seed the same execution pointer and output ID stores as production, but queueing, kernel lifecycle, and output mutation still stay outside the docs runtime.",
   },
   {
     surface: "Transient cell UI state",
@@ -188,66 +149,93 @@ const fullCellBoundaryRows = [
 
 const noop = () => {};
 
+function standaloneCodeCellOutputId(output: { output_id?: string }, index: number) {
+  return `elements-full-code:${output.output_id ?? `output-${index}`}`;
+}
+
+function scenarioCodeCellToStandaloneCodeCell(
+  cell: NotebookViewCell,
+  id: string,
+  outputs: JupyterOutput[],
+): CodeCellType {
+  return {
+    cell_type: "code",
+    id,
+    source: cell.source,
+    execution_count: cell.executionCount,
+    outputs,
+    metadata: cell.metadata,
+  };
+}
+
+function scenarioCellToNotebookCell(cell: NotebookViewCell): NotebookCell {
+  if (cell.cellType === "code") {
+    return {
+      cell_type: "code",
+      id: cell.id,
+      source: cell.source,
+      execution_count: cell.executionCount,
+      outputs: cell.outputs as JupyterOutput[],
+      metadata: cell.metadata,
+    };
+  }
+
+  if (cell.cellType === "markdown") {
+    return {
+      cell_type: "markdown",
+      id: cell.id,
+      source: cell.source,
+      metadata: cell.metadata,
+    };
+  }
+
+  return {
+    cell_type: "raw",
+    id: cell.id,
+    source: cell.source,
+    metadata: cell.metadata,
+  };
+}
+
 function seedFullCellFixtures() {
-  replaceNotebookCells([
-    codeCell,
-    markdownCell,
-    rawCell,
-    viewMarkdownCell,
-    viewCodeCell,
-    viewHiddenCodeCell,
-    viewRawCell,
-  ]);
+  replaceNotebookCells([codeCell, markdownCell, rawCell, ...notebookViewCells]);
   resetNotebookOutputs();
   resetNotebookExecutions();
 
-  setOutput("elements-output-stream", {
-    output_id: "elements-output-stream",
-    output_type: "stream",
-    name: "stdout",
-    text: "loaded 22,767 rows\nvalidated 16 week backtest window\n",
-  });
-  setOutput("elements-output-result", {
-    output_id: "elements-output-result",
-    output_type: "execute_result",
-    execution_count: 12,
-    data: {
-      "text/plain": "MAE 8.42\nMAPE 6.8%\nBacktest 16 weeks",
-    },
-    metadata: {},
-  });
-  setExecution("elements-execution", {
-    execution_count: 12,
-    status: "done",
-    success: true,
-    output_ids: ["elements-output-stream", "elements-output-result"],
+  for (const output of standaloneCodeCellOutputs) {
+    if (!output.output_id) continue;
+    setOutput(output.output_id, output);
+  }
+  setExecution(standaloneCodeCellExecutionId, {
+    execution_count: primaryScenarioCodeCell.executionCount,
+    status: primaryScenarioCodeCell.executionCount === null ? "queued" : "done",
+    success: primaryScenarioCodeCell.executionCount === null ? null : true,
+    output_ids: standaloneCodeCellOutputs
+      .map((output) => output.output_id)
+      .filter((outputId): outputId is string => Boolean(outputId)),
     submitted_by_actor_label: "local:kyle",
   });
-  setCellExecutionPointer(codeCell.id, "elements-execution");
+  setCellExecutionPointer(codeCell.id, standaloneCodeCellExecutionId);
 
-  setOutput("elements-view-output-stream", {
-    output_id: "elements-view-output-stream",
-    output_type: "stream",
-    name: "stdout",
-    text: "workspace fixture rendered through NotebookView\n",
-  });
-  setOutput("elements-view-output-result", {
-    output_id: "elements-view-output-result",
-    output_type: "execute_result",
-    execution_count: 18,
-    data: {
-      "text/plain": "3 rows x 8 columns",
-    },
-    metadata: {},
-  });
-  setExecution("elements-view-execution", {
-    execution_count: 18,
-    status: "done",
-    success: true,
-    output_ids: ["elements-view-output-stream", "elements-view-output-result"],
-    submitted_by_actor_label: "local:kyle",
-  });
-  setCellExecutionPointer(viewCodeCell.id, "elements-view-execution");
+  for (const cell of fullCellScenario.cells) {
+    if (cell.cellType !== "code" || !cell.executionId) continue;
+    const outputIds = cell.outputs
+      .map((output, index) => output.output_id ?? `${cell.executionId}:output:${index}`)
+      .filter((outputId): outputId is string => outputId.length > 0);
+
+    cell.outputs.forEach((output, index) => {
+      const outputId = output.output_id ?? `${cell.executionId}:output:${index}`;
+      setOutput(outputId, { ...output, output_id: outputId } as JupyterOutput);
+    });
+    setExecution(cell.executionId, {
+      execution_count: cell.executionCount,
+      status: cell.executionCount === null ? "queued" : "done",
+      success: cell.executionCount === null ? null : true,
+      output_ids: outputIds,
+      submitted_by_actor_label: fullCellScenario.capabilities.access.actorLabel,
+    });
+    setCellExecutionPointer(cell.id, cell.executionId);
+  }
 
   setFocusedCellId(codeCell.id);
   setExecutingCellIds(new Set());
@@ -329,7 +317,7 @@ export function FullCellSurfacesExample() {
           <div className="bg-background py-4 pl-4 pr-2">
             <CodeCell
               cell={codeCell}
-              language="python"
+              language={codeCellLanguage}
               onFocus={() => focusFixtureCell(codeCell.id)}
               onExecute={noop}
               onInterrupt={noop}
@@ -422,10 +410,10 @@ export function FullCellSurfacesExample() {
               <h2 className="text-sm font-semibold">NotebookView workspace shell</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              This fixture imports the production workspace renderer, seeds the split cell and
-              output stores, then hands `NotebookView` a local visual order. Stable DOM ordering,
-              hidden-cell grouping, adders, and cell navigation remain visible without opening a
-              notebook document or WASM handle.
+              This fixture imports the production workspace renderer, seeds it from the shared
+              Elements notebook scenario, then hands `NotebookView` a local visual order. Stable DOM
+              ordering, adders, and cell navigation remain visible without opening a notebook
+              document or WASM handle.
             </p>
           </div>
           <div className="bg-background p-3">
@@ -456,41 +444,34 @@ export function FullCellSurfacesExample() {
           in production, then stops before notebook documents, kernel execution, iframe bootstrap,
           or Automerge sync can run.
         </p>
-        <div className="mt-4 overflow-hidden rounded-md border border-fd-border">
-          <div className="hidden grid-cols-[180px_220px_230px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
-            <span>Surface</span>
-            <span>Catalog path</span>
-            <span>Production boundary</span>
-            <span>Notes</span>
-          </div>
+        <div className="mt-4 grid gap-2">
           {fullCellBoundaryRows.map((row) => (
             <div
               key={row.surface}
-              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[180px_220px_230px_minmax(0,1fr)] xl:gap-3"
+              className="rounded-md border border-fd-border bg-fd-card p-3 text-xs"
             >
-              <div>
-                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                  Surface
-                </div>
+              <div className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)]">
                 <div className="font-semibold">{row.surface}</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                      Catalog path
+                    </div>
+                    <div className="mt-1 break-words font-mono text-[11px] leading-4 text-emerald-700 dark:text-emerald-300">
+                      {row.catalogPath}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                      Production boundary
+                    </div>
+                    <div className="mt-1 break-words font-mono text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                      {row.productionBoundary}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div>
-                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                  Catalog path
-                </div>
-                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
-                  {row.catalogPath}
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                  Production boundary
-                </div>
-                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
-                  {row.productionBoundary}
-                </div>
-              </div>
-              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+              <p className="mt-3 leading-5 text-fd-muted-foreground">{row.detail}</p>
             </div>
           ))}
         </div>

@@ -8,6 +8,11 @@ import {
   RUNTIME_STATUS,
   type EnvProgressState,
 } from "runtimed";
+import {
+  getElementsNotebookScenario,
+  type ElementsNotebookScenario,
+  type ElementsNotebookScenarioId,
+} from "@/components/notebook-scenarios";
 import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
 
 type ToolbarProps = ComponentProps<typeof NotebookToolbar>;
@@ -33,7 +38,21 @@ const condaProgress: EnvProgressState = {
 const condaEnvMissingDetails =
   "environment.yml declares conda env 'analysis', which is not built on this machine. Run: conda env create -f /work/notebooks/environment.yml";
 
-function toolbarProps(overrides: Partial<ToolbarProps> = {}): ToolbarProps {
+interface ToolbarSurface {
+  title: string;
+  source: string;
+  role: string;
+  scenario: ElementsNotebookScenario;
+  props: ToolbarProps;
+}
+
+function toolbarProps(
+  scenario: ElementsNotebookScenario,
+  overrides: Partial<ToolbarProps> = {},
+): ToolbarProps {
+  const firstRunnableCell = scenario.cells.find((cell) => cell.cellType === "code");
+  const cellIds = scenario.viewModel.cellIds;
+
   return {
     kernelStatus: KERNEL_STATUS.IDLE,
     statusKey: RUNTIME_STATUS.RUNNING_IDLE,
@@ -44,8 +63,8 @@ function toolbarProps(overrides: Partial<ToolbarProps> = {}): ToolbarProps {
     envTypeHint: "uv",
     envProgress: null,
     runtime: "python",
-    focusedCellId: "cell-clean-columns",
-    lastCellId: "cell-findings",
+    focusedCellId: firstRunnableCell?.id ?? cellIds[0] ?? null,
+    lastCellId: cellIds[cellIds.length - 1] ?? null,
     onStartKernel: noop,
     onInterruptKernel: noop,
     onRestartKernel: noop,
@@ -57,109 +76,142 @@ function toolbarProps(overrides: Partial<ToolbarProps> = {}): ToolbarProps {
   };
 }
 
-const statusSurfaces = [
-  {
-    title: "Idle Python notebook",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Normal editing state with uv inline dependency metadata and running kernel controls.",
-    props: toolbarProps(),
-  },
-  {
-    title: "Busy with dependency restart",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Execution state with the interrupt affordance highlighted and restart-and-run-all marked by dirty dependencies.",
-    props: toolbarProps({
-      kernelStatus: KERNEL_STATUS.BUSY,
-      statusKey: RUNTIME_STATUS.RUNNING_BUSY,
-      lifecycle: runningBusy,
-      envSource: "conda:inline",
-      depsOutOfSync: true,
-      isDepsOpen: true,
-    }),
-  },
-  {
-    title: "Environment preparation",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Conda solve/install progress shown through the toolbar status slot without live daemon state.",
-    props: toolbarProps({
-      kernelStatus: KERNEL_STATUS.STARTING,
-      statusKey: RUNTIME_STATUS.PREPARING_ENV,
-      lifecycle: { lifecycle: "PreparingEnv" },
-      envSource: null,
-      envTypeHint: "conda",
-      envProgress: condaProgress,
-    }),
-  },
-  {
-    title: "Awaiting trust approval",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Pre-launch approval state using the same runtime vocabulary as the notebook app.",
-    props: toolbarProps({
-      kernelStatus: KERNEL_STATUS.STARTING,
-      statusKey: RUNTIME_STATUS.AWAITING_TRUST,
-      lifecycle: { lifecycle: "AwaitingTrust" },
-      envSource: null,
-      envTypeHint: "uv",
-    }),
-  },
-  {
-    title: "Deno runtime unavailable",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Deno install remediation banner driven by fixture error text and inert callbacks.",
-    props: toolbarProps({
-      kernelStatus: KERNEL_STATUS.ERROR,
-      statusKey: RUNTIME_STATUS.ERROR,
-      lifecycle: errorLifecycle,
-      runtime: "deno",
-      envSource: "deno:imports",
-      envTypeHint: null,
-      kernelErrorMessage: "deno executable not found on PATH",
-    }),
-  },
-  {
-    title: "Pixi missing ipykernel",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Python runtime error branch for pixi.toml notebooks that need an explicit ipykernel dependency.",
-    props: toolbarProps({
-      kernelStatus: KERNEL_STATUS.ERROR,
-      statusKey: RUNTIME_STATUS.ERROR,
-      lifecycle: errorLifecycle,
-      errorReason: KERNEL_ERROR_REASON.MISSING_IPYKERNEL,
-      envSource: "pixi:toml",
-      envTypeHint: "pixi",
-    }),
-  },
-  {
-    title: "Conda environment.yml missing",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Copyable environment creation hint surfaced by the toolbar when the declared conda env is absent.",
-    props: toolbarProps({
-      kernelStatus: KERNEL_STATUS.ERROR,
-      statusKey: RUNTIME_STATUS.ERROR,
-      lifecycle: errorLifecycle,
-      errorReason: KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING,
-      envSource: "conda:env_yml",
-      envTypeHint: "conda",
-      kernelErrorMessage: condaEnvMissingDetails,
-    }),
-  },
-  {
-    title: "Update ready",
-    source: "apps/notebook/src/components/NotebookToolbar.tsx",
-    role: "Desktop update action rendered beside runtime status while the notebook remains idle.",
-    props: toolbarProps({
-      updateStatus: "available",
-      updateVersion: "2.5.3",
-      onRestartToUpdate: noop,
-    }),
-  },
-];
+function scenario(id: ElementsNotebookScenarioId) {
+  return getElementsNotebookScenario(id);
+}
+
+function createStatusSurfaces(): ToolbarSurface[] {
+  const desktopOwner = scenario("desktop-local-owner");
+  const cloudViewer = scenario("cloud-public-viewer");
+  const cloudEditor = scenario("cloud-editor");
+  const runtimeUnavailable = scenario("runtime-unavailable");
+
+  return [
+    {
+      title: "Idle Python notebook",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: desktopOwner,
+      role: `${desktopOwner.runtimeLabel}; normal editing state with uv inline dependency metadata and running kernel controls.`,
+      props: toolbarProps(desktopOwner),
+    },
+    {
+      title: "Busy with dependency restart",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: desktopOwner,
+      role: `Execution state from ${desktopOwner.title}; restart-and-run-all is marked by ${desktopOwner.packageState.syncState.status} dependency metadata.`,
+      props: toolbarProps(desktopOwner, {
+        kernelStatus: KERNEL_STATUS.BUSY,
+        statusKey: RUNTIME_STATUS.RUNNING_BUSY,
+        lifecycle: runningBusy,
+        envSource: "conda:inline",
+        depsOutOfSync: desktopOwner.packageState.syncState.status === "dirty",
+        isDepsOpen: desktopOwner.capabilities.canViewPackages,
+      }),
+    },
+    {
+      title: "Environment preparation",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: cloudEditor,
+      role: `${cloudEditor.title} can edit cells, but this fixture keeps execution detached while conda solve/install progress renders.`,
+      props: toolbarProps(cloudEditor, {
+        kernelStatus: KERNEL_STATUS.STARTING,
+        statusKey: RUNTIME_STATUS.PREPARING_ENV,
+        lifecycle: { lifecycle: "PreparingEnv" },
+        envSource: null,
+        envTypeHint: "conda",
+        envProgress: condaProgress,
+      }),
+    },
+    {
+      title: "Awaiting trust approval",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: runtimeUnavailable,
+      role: `${runtimeUnavailable.title} reuses the shared trust fixture before launch instead of opening a live runtime.`,
+      props: toolbarProps(runtimeUnavailable, {
+        kernelStatus: KERNEL_STATUS.STARTING,
+        statusKey: RUNTIME_STATUS.AWAITING_TRUST,
+        lifecycle: { lifecycle: "AwaitingTrust" },
+        envSource: null,
+        envTypeHint: "uv",
+      }),
+    },
+    {
+      title: "Published viewer with no kernel",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: cloudViewer,
+      role: `${cloudViewer.title} uses the same fixture notebook IDs while exposing read-only, published access context.`,
+      props: toolbarProps(cloudViewer, {
+        kernelStatus: KERNEL_STATUS.ERROR,
+        statusKey: RUNTIME_STATUS.ERROR,
+        lifecycle: errorLifecycle,
+        envSource: null,
+        envTypeHint: null,
+        kernelErrorMessage: cloudViewer.runtimeLabel,
+      }),
+    },
+    {
+      title: "Deno runtime unavailable",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: runtimeUnavailable,
+      role: "Deno install remediation banner driven by fixture error text and inert callbacks.",
+      props: toolbarProps(runtimeUnavailable, {
+        kernelStatus: KERNEL_STATUS.ERROR,
+        statusKey: RUNTIME_STATUS.ERROR,
+        lifecycle: errorLifecycle,
+        runtime: "deno",
+        envSource: "deno:imports",
+        envTypeHint: null,
+        kernelErrorMessage: "deno executable not found on PATH",
+      }),
+    },
+    {
+      title: "Pixi missing ipykernel",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: runtimeUnavailable,
+      role: "Python runtime error branch for pixi.toml notebooks that need an explicit ipykernel dependency.",
+      props: toolbarProps(runtimeUnavailable, {
+        kernelStatus: KERNEL_STATUS.ERROR,
+        statusKey: RUNTIME_STATUS.ERROR,
+        lifecycle: errorLifecycle,
+        errorReason: KERNEL_ERROR_REASON.MISSING_IPYKERNEL,
+        envSource: "pixi:toml",
+        envTypeHint: "pixi",
+      }),
+    },
+    {
+      title: "Conda environment.yml missing",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: runtimeUnavailable,
+      role: "Copyable environment creation hint surfaced by the toolbar when the declared conda env is absent.",
+      props: toolbarProps(runtimeUnavailable, {
+        kernelStatus: KERNEL_STATUS.ERROR,
+        statusKey: RUNTIME_STATUS.ERROR,
+        lifecycle: errorLifecycle,
+        errorReason: KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING,
+        envSource: "conda:env_yml",
+        envTypeHint: "conda",
+        kernelErrorMessage: condaEnvMissingDetails,
+      }),
+    },
+    {
+      title: "Update ready",
+      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      scenario: desktopOwner,
+      role: "Desktop update action rendered beside runtime status while the notebook remains idle.",
+      props: toolbarProps(desktopOwner, {
+        updateStatus: "available",
+        updateVersion: "2.5.3",
+        onRestartToUpdate: noop,
+      }),
+    },
+  ];
+}
 
 const contractItems = [
   {
     icon: BadgeCheck,
     title: "Current source",
-    body: "Every preview imports NotebookToolbar from the notebook app and feeds it fixture props only.",
+    body: "Every preview imports NotebookToolbar from the notebook app and starts from a shared Elements scenario.",
   },
   {
     icon: PlayCircle,
@@ -176,10 +228,10 @@ const contractItems = [
 const toolbarBoundaryRows = [
   {
     boundary: "Runtime status projection",
-    catalogPath: "toolbarProps(status fixtures)",
+    catalogPath: "ElementsNotebookScenario -> toolbarProps(status overrides)",
     productionBoundary: "RuntimeStateDoc + kernel lifecycle",
     detail:
-      "The catalog passes deterministic status props. Production derives them from runtime state, kernel lifecycle, environment progress, and launch errors.",
+      "The catalog starts with deterministic scenario facts, then applies runtime status overrides. Production derives those fields from runtime state, kernel lifecycle, environment progress, and launch errors.",
   },
   {
     boundary: "Kernel actions",
@@ -190,17 +242,17 @@ const toolbarBoundaryRows = [
   },
   {
     boundary: "Dependency drawer",
-    catalogPath: "isDepsOpen + depsOutOfSync props",
+    catalogPath: "scenario.packageState + inert toggle",
     productionBoundary: "Package rail and notebook metadata",
     detail:
-      "The fixture toggles visual dependency state only. Production opens package UI, writes notebook metadata, and coordinates environment rebuild decisions.",
+      "The fixture reads package sync state from the shared scenario and toggles visual dependency state only. Production opens package UI, writes notebook metadata, and coordinates environment rebuild decisions.",
   },
   {
     boundary: "Cell insertion",
-    catalogPath: "focusedCellId + lastCellId fixtures",
+    catalogPath: "scenario.viewModel.cellIds",
     productionBoundary: "NotebookView focus and CRDT mutation",
     detail:
-      "The add-cell affordance receives stable fixture IDs. Production inserts new cells through the notebook document and restores editor focus.",
+      "The add-cell affordance receives stable IDs from the shared scenario projection. Production inserts new cells through the notebook document and restores editor focus.",
   },
   {
     boundary: "Desktop update restart",
@@ -212,6 +264,8 @@ const toolbarBoundaryRows = [
 ];
 
 export function NotebookToolbarSurfacesExample() {
+  const statusSurfaces = createStatusSurfaces();
+
   return (
     <div className="not-prose space-y-6" data-elements-slot="notebook-toolbar-surfaces">
       <section className="grid gap-3 md:grid-cols-3">
@@ -242,6 +296,20 @@ export function NotebookToolbarSurfacesExample() {
                 <p className="max-w-3xl text-xs leading-5 text-fd-muted-foreground">
                   {surface.role}
                 </p>
+                <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-fd-muted-foreground">
+                  <ScenarioPill label={surface.scenario.title} />
+                  <ScenarioPill
+                    label={`${surface.scenario.capabilities.access.source}:${surface.scenario.capabilities.access.level}`}
+                  />
+                  <ScenarioPill
+                    label={
+                      surface.scenario.capabilities.canExecute
+                        ? "execution available"
+                        : "execution disabled"
+                    }
+                  />
+                  <ScenarioPill label={`${surface.scenario.viewModel.codeCellCount} code cells`} />
+                </div>
               </div>
               <div className="break-words font-mono text-[11px] leading-5 text-fd-muted-foreground [overflow-wrap:anywhere] md:max-w-72 md:text-right">
                 {surface.source}
@@ -266,45 +334,46 @@ export function NotebookToolbarSurfacesExample() {
           status props and inert callbacks. Runtime state, kernel controls, dependency writes, cell
           insertion, and desktop update restarts stay behind the notebook app adapters.
         </p>
-        <div className="mt-4 overflow-hidden rounded-md border border-fd-border bg-fd-card">
-          <div className="hidden grid-cols-[190px_220px_240px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
-            <span>Boundary</span>
-            <span>Catalog path</span>
-            <span>Production boundary</span>
-            <span>Notes</span>
-          </div>
+        <div className="mt-4 grid gap-2">
           {toolbarBoundaryRows.map((row) => (
             <div
               key={row.boundary}
-              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[190px_220px_240px_minmax(0,1fr)] xl:gap-3"
+              className="rounded-md border border-fd-border bg-fd-card p-3 text-xs"
             >
-              <div>
-                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                  Boundary
-                </div>
+              <div className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)]">
                 <div className="font-semibold">{row.boundary}</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                      Catalog path
+                    </div>
+                    <div className="mt-1 break-words font-mono text-[11px] leading-4 text-emerald-700 dark:text-emerald-300">
+                      {row.catalogPath}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                      Production boundary
+                    </div>
+                    <div className="mt-1 break-words font-mono text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                      {row.productionBoundary}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div>
-                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                  Catalog path
-                </div>
-                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
-                  {row.catalogPath}
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                  Production boundary
-                </div>
-                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
-                  {row.productionBoundary}
-                </div>
-              </div>
-              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+              <p className="mt-3 leading-5 text-fd-muted-foreground">{row.detail}</p>
             </div>
           ))}
         </div>
       </section>
     </div>
+  );
+}
+
+function ScenarioPill({ label }: { label: string }) {
+  return (
+    <span className="rounded-full border border-fd-border bg-fd-background px-2 py-0.5">
+      {label}
+    </span>
   );
 }

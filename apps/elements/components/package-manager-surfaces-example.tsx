@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import { CondaDependencyHeader } from "@/notebook-components/CondaDependencyHeader";
 import { DenoDependencyHeader } from "@/notebook-components/DenoDependencyHeader";
 import { DependencyHeader } from "@/notebook-components/DependencyHeader";
+import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
 
 const PixiDependencyHeader = dynamic(
   () =>
@@ -92,6 +93,8 @@ const packageBoundaryRows = [
 ];
 
 export function PackageManagerSurfacesExample() {
+  const scenario = getElementsNotebookScenario("desktop-local-owner");
+
   return (
     <div className="not-prose space-y-6" data-elements-slot="package-manager-surfaces">
       <section className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
@@ -120,36 +123,19 @@ export function PackageManagerSurfacesExample() {
         <SurfaceFrame
           icon={<PackageCheck className="size-4 text-fuchsia-500" aria-hidden="true" />}
           title="uv inline and project"
-          detail="Fixture notebook metadata plus detected pyproject.toml state."
+          detail="Elements scenario package metadata plus detected pyproject.toml state."
         >
           <DependencyHeader
-            dependencies={["pandas>=2", "polars", "matplotlib"]}
-            requiresPython=">=3.13"
+            dependencies={[...scenario.packageState.dependencies]}
+            requiresPython={scenario.packageState.requiresPython}
             loading={false}
             onAdd={asyncNoop}
             onRemove={asyncNoop}
             onSetRequiresPython={asyncNoop}
-            syncState={{ status: "dirty", added: ["scikit-learn"], removed: [] }}
+            syncState={scenario.packageState.syncState}
             onSyncNow={asyncTrue}
-            pyprojectInfo={{
-              path: "/Users/kyle/notebooks/pyproject.toml",
-              relative_path: "pyproject.toml",
-              project_name: "mathnet",
-              has_dependencies: true,
-              dependency_count: 3,
-              has_dev_dependencies: true,
-              requires_python: ">=3.13",
-              has_venv: true,
-            }}
-            pyprojectDeps={{
-              path: "/Users/kyle/notebooks/pyproject.toml",
-              relative_path: "pyproject.toml",
-              project_name: "mathnet",
-              dependencies: ["pandas>=2", "polars", "matplotlib"],
-              dev_dependencies: ["pytest", "ruff"],
-              requires_python: ">=3.13",
-              index_url: null,
-            }}
+            pyprojectInfo={scenario.packageState.pyprojectInfo}
+            pyprojectDeps={scenario.packageState.pyprojectDeps}
             onImportFromPyproject={asyncNoop}
             onUseProjectEnv={asyncNoop}
             isUsingProjectEnv={false}

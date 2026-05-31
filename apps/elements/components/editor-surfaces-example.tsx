@@ -30,8 +30,21 @@ import {
   textAttributionExtension,
 } from "@/components/editor/text-attribution";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
+import {
+  getElementsNotebookPrimaryCodeCell,
+  getElementsNotebookScenario,
+  resolveElementsNotebookLanguage,
+} from "@/components/notebook-scenarios";
 
 type SampleKey = "python" | "sql" | "markdown" | "json";
+
+const editorScenario = getElementsNotebookScenario("desktop-local-owner");
+const scenarioCodeCell = getElementsNotebookPrimaryCodeCell(editorScenario.cells);
+const scenarioCodeLanguage = resolveElementsNotebookLanguage(scenarioCodeCell.language) ?? "plain";
+const readOnlyScenarioCell =
+  editorScenario.cells.find((cell) => cell.id === "cell-findings") ?? scenarioCodeCell;
+const readOnlyScenarioLanguage =
+  resolveElementsNotebookLanguage(readOnlyScenarioCell.language) ?? "plain";
 
 const codeSamples: Record<
   SampleKey,
@@ -39,12 +52,9 @@ const codeSamples: Record<
 > = {
   python: {
     label: "Python",
-    language: "python",
+    language: scenarioCodeLanguage,
     search: "features",
-    source: `features = orders.assign(month=orders.date.dt.month)
-model.fit(features[columns], target)
-predictions = model.predict(features_holdout)
-display(predictions.head())`,
+    source: scenarioCodeCell.source,
   },
   sql: {
     label: "SQL",
@@ -139,6 +149,24 @@ const adapterBoundaries = [
   },
 ];
 
+const scenarioFacts = [
+  {
+    label: "scenario",
+    value: editorScenario.title,
+  },
+  {
+    label: "cell",
+    value: scenarioCodeCell.id,
+  },
+  {
+    label: "execution",
+    value:
+      scenarioCodeCell.executionCount === null
+        ? "not run"
+        : `In [${scenarioCodeCell.executionCount}]`,
+  },
+];
+
 const magicSource = `%%sql
 select country, count(*) as notebooks
 from public_sessions
@@ -146,6 +174,11 @@ group by country
 order by notebooks desc`;
 
 const languageMatrix: { filename: string; language: SupportedLanguage; note: string }[] = [
+  {
+    filename: `${scenarioCodeCell.id}.py`,
+    language: scenarioCodeLanguage,
+    note: "Shared Elements notebook scenario model cell",
+  },
   { filename: "analysis.py", language: "python", note: "PEP 8 indentation and Python parser" },
   { filename: "query.sql", language: "sql", note: "SQL parser for cell magics and database cells" },
   { filename: "notes.md", language: "markdown", note: "Markdown parser for source previews" },
@@ -279,9 +312,10 @@ export function EditorSurfacesExample() {
           <div>
             <h2 className="text-sm font-semibold">Editor fixture adapter</h2>
             <p className="mt-1 text-xs leading-5">
-              This page renders current editor components with static source fixtures. Runtime sync,
-              presence sending, kernel completion, and focus registry behavior stay documented as
-              adapter boundaries until they can be fed without notebook host state.
+              This page renders current editor components from the shared Elements notebook
+              scenario. Runtime sync, presence sending, kernel completion, and focus registry
+              behavior stay documented as adapter boundaries until they can be fed without notebook
+              host state.
             </p>
           </div>
         </div>
@@ -315,6 +349,19 @@ export function EditorSurfacesExample() {
             <span className="text-xs font-medium capitalize text-fd-muted-foreground">
               {mode} / {colorTheme}
             </span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {scenarioFacts.map((fact) => (
+              <div
+                key={fact.label}
+                className="rounded-md border border-fd-border bg-fd-background px-3 py-2"
+              >
+                <div className="text-[10px] font-medium uppercase text-fd-muted-foreground">
+                  {fact.label}
+                </div>
+                <div className="mt-1 break-words font-mono text-[11px] leading-4">{fact.value}</div>
+              </div>
+            ))}
           </div>
 
           <div className="overflow-hidden rounded-lg border border-border bg-background">
@@ -353,10 +400,8 @@ export function EditorSurfacesExample() {
           <div className="p-4">
             <div className="overflow-hidden rounded-lg border border-border bg-background">
               <ReadOnlyCodeMirror
-                value={`# Report cell
-print("source is visible but not editable")
-display(summary_table)`}
-                language="python"
+                value={readOnlyScenarioCell.source}
+                language={readOnlyScenarioLanguage}
                 lineWrapping
                 className="min-h-36"
               />
