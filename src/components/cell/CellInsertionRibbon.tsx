@@ -1,4 +1,4 @@
-import { Plus } from "lucide-react";
+import { Code, LetterText, Plus } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { notebookCellLayoutVars } from "./cell-layout";
@@ -50,6 +50,15 @@ export function CellInsertionRibbon({
     onActiveTypeChange?.(type);
   };
 
+  const actionButtonClass = (type: CellInsertionType) =>
+    cn(
+      "inline-flex h-6 items-center justify-center gap-1 rounded-sm px-2 text-xs text-muted-foreground/60 transition-colors",
+      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+      resolvedActiveType === type
+        ? "bg-muted text-foreground shadow-sm"
+        : "hover:bg-muted/60 hover:text-foreground",
+    );
+
   return (
     <div
       data-slot="cell-adder"
@@ -99,13 +108,13 @@ export function CellInsertionRibbon({
         data-slot="cell-adder-primary-hit-target"
         title="Add code cell from insertion margin"
         aria-label="Add code cell from insertion margin"
-        onPointerEnter={() => setActiveType("code")}
-        onFocus={() => setActiveType("code")}
+        onPointerEnter={() => setActiveType(null)}
+        onFocus={() => setActiveType(null)}
         onClick={() => onInsert("code")}
         className={cn(
           "h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
-          resolvedActiveType === "code" ? "bg-sky-400/5" : "hover:bg-muted/20",
+          resolvedActiveType ? "bg-transparent" : "hover:bg-muted/20",
           terminal && "h-7",
         )}
       >
@@ -114,50 +123,44 @@ export function CellInsertionRibbon({
       <div
         data-slot="cell-adder-actions"
         className={cn(
-          "flex items-center gap-1 transition-opacity duration-150",
+          "flex items-center transition-opacity duration-150",
           terminal && "pt-0.5",
           forceActionsVisible
             ? "opacity-100"
             : "opacity-0 group-hover/adder:opacity-100 group-hover/adder:delay-75 group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
         )}
       >
-        <button
-          type="button"
-          title="Add code cell"
-          onPointerEnter={() => setActiveType("code")}
-          onFocus={() => setActiveType("code")}
-          onClick={() => onInsert("code")}
-          className={cn(
-            "inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium transition-colors",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-            forceActionsVisible && resolvedActiveType === "code"
-              ? "text-foreground hover:text-foreground"
-              : "text-muted-foreground/55 hover:text-foreground",
-          )}
+        <div
+          data-slot="cell-adder-action-palette"
+          className="flex h-7 items-center gap-0.5 rounded-sm border border-border/45 bg-background/85 p-0.5 shadow-sm backdrop-blur-sm"
         >
-          <Plus className="h-3 w-3" aria-hidden="true" />
-          Add code
-        </button>
-        <span className="text-muted-foreground/30" aria-hidden="true">
-          ·
-        </span>
-        <button
-          type="button"
-          title="Add markdown cell"
-          onPointerEnter={() => setActiveType("markdown")}
-          onFocus={() => setActiveType("markdown")}
-          onClick={() => onInsert("markdown")}
-          className={cn(
-            "inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium transition-colors",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-            forceActionsVisible && resolvedActiveType === "markdown"
-              ? "text-foreground hover:text-foreground"
-              : "text-muted-foreground/55 hover:text-foreground",
-          )}
-        >
-          <Plus className="h-3 w-3" aria-hidden="true" />
-          Add markdown
-        </button>
+          <button
+            type="button"
+            title="Add code cell"
+            aria-label="Add code cell"
+            onPointerEnter={() => setActiveType("code")}
+            onFocus={() => setActiveType("code")}
+            onClick={() => onInsert("code")}
+            className={actionButtonClass("code")}
+          >
+            <Plus className="h-2.5 w-2.5" aria-hidden="true" />
+            <Code className="h-3 w-3" aria-hidden="true" />
+            <span>Code</span>
+          </button>
+          <button
+            type="button"
+            title="Add markdown cell"
+            aria-label="Add markdown cell"
+            onPointerEnter={() => setActiveType("markdown")}
+            onFocus={() => setActiveType("markdown")}
+            onClick={() => onInsert("markdown")}
+            className={actionButtonClass("markdown")}
+          >
+            <Plus className="h-2.5 w-2.5" aria-hidden="true" />
+            <LetterText className="h-3 w-3" aria-hidden="true" />
+            <span>Markdown</span>
+          </button>
+        </div>
       </div>
       <div className="flex-1" />
     </div>

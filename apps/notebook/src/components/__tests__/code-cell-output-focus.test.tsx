@@ -8,6 +8,8 @@ let mockOutputs: unknown[] = [];
 let mockExecution: {
   execution_count: number | null;
   submitted_by_actor_label?: string | null;
+  status?: string;
+  success?: boolean | null;
 } | null = null;
 let mockIsExecuting = false;
 let mockIsFocused = false;
@@ -17,18 +19,21 @@ const mockEditorBlur = vi.fn();
 vi.mock("@/components/cell/CellContainer", () => ({
   CellContainer: ({
     codeContent,
+    gutterContent,
     outputContent,
     outputRightGutterContent,
     outputFocused,
     outputDimmed,
   }: {
     codeContent?: React.ReactNode;
+    gutterContent?: React.ReactNode;
     outputContent?: React.ReactNode;
     outputRightGutterContent?: React.ReactNode;
     outputFocused?: boolean;
     outputDimmed?: boolean;
   }) => (
     <div data-output-dimmed={String(outputDimmed)} data-output-focused={String(outputFocused)}>
+      {gutterContent}
       {codeContent}
       {outputContent}
       {outputRightGutterContent}
@@ -271,8 +276,58 @@ describe("CodeCell output focus", () => {
     expect(status?.textContent).toBe("Python·Running");
     expect(status).toHaveClass("text-primary");
     expect(status).not.toHaveClass("text-destructive/80");
-    expect(rule).toHaveClass("bg-primary/45");
+    expect(rule).toHaveClass("text-emerald-500/65");
+    expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
     expect(stopButton).toHaveClass("text-destructive");
+  });
+
+  it("uses the error boundary when the latest execution failed", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: 14, submitted_by_actor_label: null, success: false };
+
+    const { container, getByTestId } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+    const runButton = getByTestId("execute-button");
+
+    expect(footer?.getAttribute("data-execution-state")).toBe("error");
+    expect(status?.textContent).toBe("Python·Run 14 failed");
+    expect(rule).toHaveClass("text-destructive/60");
+    expect(runButton).toHaveAttribute("data-execution-state", "error");
+    expect(runButton).toHaveAttribute("aria-label", "Run cell again; last execution 14 failed");
+  });
+
+  it("keeps the error boundary visible without an execution count", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: null, submitted_by_actor_label: null, success: false };
+
+    const { container } = render(
+      <CodeCell
+        cell={makeCell({ source: "" })}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(footer?.getAttribute("data-execution-state")).toBe("error");
+    expect(status?.textContent).toBe("Python·Error");
+    expect(rule).toHaveClass("text-destructive/60");
   });
 
   it("keeps idle footer language quiet until the cell is engaged", () => {
@@ -298,12 +353,33 @@ describe("CodeCell output focus", () => {
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
     expect(status).toHaveClass("group-hover:max-w-64");
-    expect(rule).toHaveClass("bg-border/25");
+    expect(rule).toHaveClass("bg-border/15");
   });
 
   it("uses compact current-line chrome for empty idle code cells", () => {
     mockOutputs = [];
     mockExecution = null;
+    mockIsFocused = true;
+
+    const { container, getByTestId } = render(
+      <CodeCell
+        cell={makeCell({ source: "" })}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+
+    expect(footer).toBeNull();
+    expect(getByTestId("execute-button")).toHaveAttribute("aria-label", "Run cell");
+  });
+
+  it("keeps current-line metadata for empty cells after execution state appears", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: 3, submitted_by_actor_label: null };
     mockIsFocused = true;
 
     const { container } = render(
@@ -320,12 +396,12 @@ describe("CodeCell output focus", () => {
     const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
-    expect(footer).toHaveClass("min-h-5");
-    expect(detail).toHaveClass("sr-only");
-    expect(rule).toBeNull();
+    expect(footer).toHaveClass("min-h-4");
+    expect(detail).not.toHaveClass("sr-only");
+    expect(rule).not.toBeNull();
   });
 
-  it("shows idle footer language when the cell is focused", () => {
+  it("keeps focused idle footer language collapsed into the boundary", () => {
     mockOutputs = [];
     mockExecution = null;
     mockIsFocused = true;
@@ -343,9 +419,9 @@ describe("CodeCell output focus", () => {
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(status?.textContent).toBe("Python·Ready");
-    expect(status).toHaveClass("max-w-64");
-    expect(status).toHaveClass("opacity-100");
-    expect(status).not.toHaveClass("max-w-0");
+    expect(status).toHaveClass("max-w-0");
+    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveClass("group-focus-within:max-w-64");
   });
 
   it("keeps the current line visible when source is hidden but output remains visible", () => {

@@ -3,6 +3,7 @@ import { ChevronRight, Code2, EyeOff } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
+import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
@@ -195,6 +196,7 @@ export const CodeCell = memo(function CodeCell({
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
+  const isExecutionErrored = execution?.success === false || execution?.status === "error";
   const languageLabel =
     language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
   const isSourceEmpty = cell.source.trim().length === 0;
@@ -394,21 +396,26 @@ export const CodeCell = memo(function CodeCell({
     [onNavigateToCell],
   );
 
-  const currentLine = (
+  const hasCurrentLine =
+    !isSourceEmpty ||
+    outputs.length > 0 ||
+    executionCount !== null ||
+    isExecuting ||
+    isQueued ||
+    isExecutionErrored ||
+    isSourceHidden;
+  const currentLine = hasCurrentLine ? (
     <CodeCellCurrentLine
       languageLabel={languageLabel}
       count={executionCount}
       isExecuting={isExecuting}
       isQueued={isQueued}
+      isErrored={isExecutionErrored}
       isFocused={isFocused}
       compactIdle={isSourceEmpty}
-      submittedByActorLabel={submittedByActorLabel}
       activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
-      canExecute={canExecute}
-      onExecute={handleExecute}
-      onInterrupt={onInterrupt}
     />
-  );
+  ) : null;
 
   return (
     <>
@@ -421,6 +428,21 @@ export const CodeCell = memo(function CodeCell({
         outputFocused={outputFocused}
         outputDimmed={outputDimmed}
         onFocus={onFocus}
+        gutterContent={
+          !bothHidden ? (
+            <CompactExecutionButton
+              count={executionCount}
+              isExecuting={isExecuting}
+              isQueued={isQueued}
+              isErrored={isExecutionErrored}
+              submittedByActorLabel={submittedByActorLabel}
+              isCellFocused={isFocused}
+              canExecute={canExecute}
+              onExecute={handleExecute}
+              onInterrupt={onInterrupt}
+            />
+          ) : undefined
+        }
         rightGutterContent={rightGutterContent}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}

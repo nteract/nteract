@@ -123,7 +123,6 @@ export function IdentityEnvironmentSurfacesExample() {
               count={16}
               isExecuting
               isFocused
-              submittedByActorLabel={agentScenario.capabilities.access.actorLabel}
               activityContent={
                 <NotebookIdentityBadge
                   actor={scenarioActor(agentScenario)}
@@ -132,8 +131,6 @@ export function IdentityEnvironmentSurfacesExample() {
                   className="max-w-28 border-transparent bg-transparent px-0 shadow-none"
                 />
               }
-              onExecute={() => {}}
-              onInterrupt={() => {}}
             />
             <div className="rounded-md border border-border bg-card p-3">
               <NotebookIdentityBadge actor={scenarioActor(agentScenario)} />
