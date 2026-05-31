@@ -207,6 +207,33 @@ describe("ReadOnlyNotebook", () => {
     expect(cells[1]).toHaveAttribute("data-show-source", "true");
   });
 
+  it("supports notebook display mode with local code visibility", () => {
+    render(
+      <ReadOnlyNotebook
+        cells={[
+          {
+            id: "code-cell",
+            cellType: "code",
+            source: "print('hidden')",
+            outputs: [{ output_type: "stream", name: "stdout", text: "visible\n" }],
+          },
+          {
+            id: "markdown-cell",
+            cellType: "markdown",
+            source: "# Still visible",
+          },
+        ]}
+        showCode={false}
+      />,
+    );
+
+    const cells = screen.getAllByTestId("read-only-cell");
+    expect(cells[0]).toHaveAttribute("data-display-mode", "notebook");
+    expect(cells[0]).toHaveAttribute("data-show-source", "false");
+    expect(cells[1]).toHaveAttribute("data-display-mode", "notebook");
+    expect(cells[1]).toHaveAttribute("data-show-source", "true");
+  });
+
   it("does not reset errored cells when unchanged cell data is remapped", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const output = { output_type: "stream", name: "stdout", text: "hi\n" } as const;

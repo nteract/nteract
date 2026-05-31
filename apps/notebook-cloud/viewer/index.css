@@ -784,6 +784,10 @@ body {
   padding-block: 0.25rem 1rem;
 }
 
+.cloud-cell[data-slot="cell-container"] {
+  padding-block: 0;
+}
+
 .cloud-editable-markdown-cell {
   padding-block: 0.25rem 1rem;
 }
