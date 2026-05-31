@@ -148,7 +148,11 @@ Elements and production host adapters should cover these states first:
 5. Runtime-peer authority should not be collapsed into editor or owner UI.
    Runtime-peer capability is about lifecycle/output authorship, not notebook
    structure edits or ACL management.
-6. Desktop remote rooms should use the same capability projection as cloud
+6. `NotebookShellCapabilities.runtime` carries runtime authorship separately
+   from `NotebookShellCapabilities.access`. A `runtime_peer` connection can
+   project `runtime.canWriteRuntimeState = true` while still projecting
+   `access.level = "viewer"` for document editing, package, and sharing UI.
+7. Desktop remote rooms should use the same capability projection as cloud
    rooms while preserving their separate identity path: desktop app, local
    daemon/socket identity, and remote service credential or API key.
 

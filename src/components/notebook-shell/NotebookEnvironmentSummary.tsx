@@ -1,6 +1,7 @@
 import { CheckCircle2, Lock, Package, RefreshCw, Server, ShieldAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { friendlyNotebookActorLabel, parseNotebookActorLabel } from "./actor-labels";
 import type { NotebookShellCapabilities } from "./capabilities";
 import type { NotebookPackageViewModel } from "./view-model";
 
@@ -30,6 +31,14 @@ export function NotebookEnvironmentSummary({
       : "Package metadata hidden";
   const runtimeStateLabel =
     runtimeLabel ?? (capabilities.canExecute ? "Runtime ready" : "No runtime");
+  const runtimeActorLabel =
+    parseNotebookActorLabel(capabilities.runtime.actorLabel)?.label ??
+    friendlyNotebookActorLabel(capabilities.runtime.actorLabel);
+  const runtimeDetail = capabilities.runtime.canWriteRuntimeState
+    ? `Runtime author: ${runtimeActorLabel ?? "connected runtime"}`
+    : capabilities.runtime.connected
+      ? `Runtime connected through ${accessSourceLabel(capabilities.runtime.source)}`
+      : null;
 
   return (
     <section
@@ -63,7 +72,8 @@ export function NotebookEnvironmentSummary({
           icon={<Server className="size-3.5" aria-hidden="true" />}
           label="Runtime"
           value={runtimeStateLabel}
-          muted={!capabilities.canExecute}
+          detail={runtimeDetail}
+          muted={!capabilities.canExecute && !capabilities.runtime.connected}
         />
         <SummaryFact
           icon={<Package className="size-3.5" aria-hidden="true" />}

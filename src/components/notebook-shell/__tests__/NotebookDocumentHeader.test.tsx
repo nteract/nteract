@@ -29,6 +29,13 @@ function capabilities(
       canUseAuthenticatedIdentity: false,
       needsAttention: false,
     },
+    runtime: {
+      canWriteRuntimeState: false,
+      connected: false,
+      source: "cloud",
+      actorLabel: null,
+      identityLabel: null,
+    },
     ...overrides,
   };
 }

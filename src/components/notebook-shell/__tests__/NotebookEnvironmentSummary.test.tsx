@@ -27,6 +27,13 @@ const capabilities: NotebookShellCapabilities = {
     canUseAuthenticatedIdentity: true,
     needsAttention: false,
   },
+  runtime: {
+    canWriteRuntimeState: true,
+    connected: true,
+    source: "local",
+    actorLabel: "local:kyle/runtime:python",
+    identityLabel: "Kyle",
+  },
 };
 
 const packages: NotebookPackageViewModel = {
@@ -56,6 +63,7 @@ describe("NotebookEnvironmentSummary", () => {
 
     expect(screen.getByRole("heading", { name: "Notebook environment" })).toBeVisible();
     expect(screen.getByText("Python - local runtime ready")).toBeVisible();
+    expect(screen.getByText("Runtime author: Python")).toBeVisible();
     expect(screen.getByText("uv + pixi - 3 packages")).toBeVisible();
     expect(screen.getByText("pyproject.toml")).toBeVisible();
     expect(screen.getByText("dirty - 1 pending change")).toBeVisible();

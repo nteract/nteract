@@ -19,8 +19,11 @@ export function desktopNotebookShellCapabilities({
 }: DesktopNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
   const source = desktopAccessSourceFromConnectionScope(connectionScope);
+  const isRuntimePeer = connectionScope === "runtime_peer";
   const canWriteDocument =
     canAcceptCellMutations && (accessLevel === "editor" || accessLevel === "owner");
+  const canWriteRuntimeState =
+    sessionReady && (isRuntimePeer || (source === "local" && canWriteDocument));
 
   return {
     canRead: accessLevel !== "none",
@@ -44,6 +47,13 @@ export function desktopNotebookShellCapabilities({
       canSignIn: false,
       canUseAuthenticatedIdentity: Boolean(localActor),
       needsAttention: false,
+    },
+    runtime: {
+      canWriteRuntimeState,
+      connected: sessionReady && (source === "local" || isRuntimePeer),
+      source,
+      actorLabel: canWriteRuntimeState ? localActor : null,
+      identityLabel: canWriteRuntimeState ? localActor : null,
     },
   };
 }
