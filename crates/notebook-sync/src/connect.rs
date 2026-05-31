@@ -156,7 +156,8 @@ macro_rules! connect_stream {
 ///
 /// `actor_label` sets the Automerge actor identity **before** initial sync
 /// so that even the bootstrap operations are attributed to the caller
-/// (e.g., `"agent:claude:abc123"`, `"human:kyle:session42"`).
+/// (e.g., `"local:kyle/desktop:window"`,
+/// `"user:anaconda:alice/agent:claude:s1"`).
 pub async fn connect(
     socket_path: PathBuf,
     notebook_id: String,

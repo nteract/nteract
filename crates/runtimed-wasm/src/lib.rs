@@ -1347,7 +1347,8 @@ impl NotebookHandle {
     /// contributed changes to this document's history.
     ///
     /// Useful for debugging provenance — call after sync to see which
-    /// peers (e.g., `"runtimed"`, `"human:abc123"`) have touched the notebook.
+    /// peers (e.g., `"local:kyle/desktop:window"`,
+    /// `"user:anaconda:alice/agent:codex:s1"`) have touched the notebook.
     pub fn contributing_actors(&mut self) -> Vec<String> {
         self.doc.contributing_actors()
     }

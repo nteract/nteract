@@ -173,6 +173,11 @@ Presence frames carry `peer_id`, `peer_label`, and `actor_label` (the last two o
 
 The principal prefix is always server-controlled; no presence ingress path lets a client choose what principal it appears as. Operator and display name are client-declared unless the host replaces them with connection-derived defaults.
 
+The current presence protocol carries only `peer_id`, optional `peer_label`,
+and optional `actor_label`. The room host still stamps or rewrites those fields
+on ingress, and shared UI can derive a temporary projection from the durable
+label while the wire shape catches up.
+
 The target presence protocol keeps `actor_label` as the stable attribution key
 and adds a compact, host-stamped actor projection to presence `Update` and
 `Snapshot` messages so shared UI does not parse raw labels as its primary
@@ -206,10 +211,17 @@ such as "Codex for Kyle Kelley" is derived from `operator` plus `principal`; it
 does not require a separate `on_behalf_of` field unless a future feature models
 delegation chains between multiple principals.
 
+Projection scope does not make a viewer less of a sync participant. A `viewer`
+or read-only peer still receives room changes, sends empty sync negotiation
+frames, publishes presence, and consumes the same structured actor projection as
+editors and owners. Scope only constrains writes and mutating requests at the
+server boundary.
+
 `principal.source.provider` names the principal authority used for federation
-and display. It is not the credential transport. For example, an API key that
-authenticates an Anaconda user still projects as provider `anaconda`; the API
-key detail belongs to the credential layer described below.
+and display. It is not the credential transport. For example, a browser OAuth
+session, OIDC bearer token, or API key that authenticates an Anaconda user all
+project as provider `anaconda`; the OAuth/API-key detail belongs to the
+credential layer described below.
 
 ## Decision 4: Credentials and identity providers are separate concerns
 
@@ -352,7 +364,14 @@ Every new request variant or frame type must specify its required scope at the d
 
 ### What does and does not appear on the wire
 
-Scope is **not** sent on the wire today. The server is the only authority. A future protocol extension may add a `connection_scope` field to the handshake response so UIs can render "read-only" badges without inferring scope from request failures. That field would be advisory; the server still enforces.
+The post-handshake capability payload includes `actor_label` and
+`connection_scope` so UIs can render current-actor and read-only/runtime-peer
+state without inferring scope from request failures. The client may consume this
+payload to choose UI capabilities, but it is informational from the server's
+trust perspective. The server remains the only authority and still enforces
+scope at frame ingress, request dispatch, and ACL mutation boundaries. A
+`viewer` connection remains a full sync, presence, and projection peer; only its
+changes and mutating requests are denied.
 
 ## Decision 6: Publish is a fresh document in the destination space
 
@@ -404,16 +423,15 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 
 1. **Room-host crate extraction.** Pulling `runtimed::notebook_sync_server::room` into `nteract-room-host` with pluggable `Listener` and `SnapshotStore` traits. Tracked in a separate ADR.
 2. **Identity provider selection for Anaconda hosted v1.** Direct OIDC against Anaconda's existing SSO is the first browser session layer for the hosted Worker. The staging target is the retired `preview.runt.run` lane from `runtimed/intheloop`, using Anaconda stage OIDC and a `/oidc` callback. `docs/architecture/hosted-credential-transport.md` tracks the exact credential transport and principal-namespace decision.
-3. **Anonymous viewer scope.** Whether read-only public publish URLs require a session or run un-authenticated under a synthetic `system:anonymous` principal.
+3. **Public viewer presence visibility.** Public-read URLs use explicit ACL-backed anonymous viewer access under an `anonymous:<session>/browser:<session>` actor. Still open: whether public viewers should see each other in presence, only see aggregate counts, or remain fully local-only.
 4. **Revocation signal and historical-change subduction.** Two parts. First, the wire signal: the exact `SESSION_CONTROL` close frame and the channel for admin revokes / plan downgrades. Second, what happens to changes a revoked principal already authored. The Automerge `filters` work (`origin/filters` branch, `rust/automerge/src/filter.rs`) is the natural primitive: install a `Filter::with_author(revoked, Rule::AllowUpTo { heads: validated })` to subduct edits authored after revocation while keeping causal integrity intact. Wait for `filters` to land in main before depending on it; until then, revocation is a hard connection close with no post-hoc audit hiding.
-5. **Connection-scope field on the wire.** Optional handshake response field so UIs can render "read-only" badges without inferring from request failures.
-6. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
-7. **`runtime_peer` connection topology.** The hosted prototype now supports direct `runtime_peer` `RuntimeStateDoc` ingress into the room. Still open: whether the production kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
-8. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/architecture/deployment-topology.md`.
-9. **ACL mechanics beyond the Cloudflare v1 shape.** The hosted prototype covers flat D1 rows, public-read rows, and owner-only row mutation. Still open: owner transfer UX, group/org expansion, inherited ACLs, audit event retention, Zanzibar/Authzed-style evaluation, and product policy for anonymous public presence.
-10. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
-11. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
-12. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/architecture/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
+5. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
+6. **`runtime_peer` connection topology.** The hosted prototype now supports direct `runtime_peer` `RuntimeStateDoc` ingress into the room. Still open: whether the production kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
+7. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/architecture/deployment-topology.md`.
+8. **ACL mechanics beyond the Cloudflare v1 shape.** The hosted prototype covers flat D1 rows, public-read rows, and owner-only row mutation. Still open: owner transfer UX, group/org expansion, inherited ACLs, audit event retention, Zanzibar/Authzed-style evaluation, and product policy for anonymous public presence.
+9. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
+10. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
+11. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/architecture/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
 
 ## Worked examples
 

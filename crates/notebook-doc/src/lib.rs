@@ -5540,8 +5540,8 @@ mod tests {
 
     #[test]
     fn test_new_with_actor() {
-        let doc = NotebookDoc::new_with_actor("test", "agent:claude:abc123");
-        assert_eq!(doc.get_actor_id(), "agent:claude:abc123");
+        let doc = NotebookDoc::new_with_actor("test", "user:anaconda:alice/agent:claude:s1");
+        assert_eq!(doc.get_actor_id(), "user:anaconda:alice/agent:claude:s1");
     }
 
     #[test]

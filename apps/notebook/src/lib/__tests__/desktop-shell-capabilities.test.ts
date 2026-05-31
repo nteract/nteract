@@ -70,7 +70,7 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(capabilities.access.actor).toMatchObject({
       principal: {
         label: "Alice",
-        source: { provider: "oidc", namespace: "anaconda" },
+        source: { provider: "anaconda", namespace: "anaconda" },
       },
       operator: { kind: "desktop" },
       scope: "viewer",
