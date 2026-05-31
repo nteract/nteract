@@ -47,7 +47,7 @@ const layers = [
   {
     name: "CodeCellCurrentLine",
     source: "src/components/cell/CodeCellCurrentLine.tsx",
-    role: "Natural-language run state, execution count, and bottom run/stop affordance.",
+    role: "Source/result boundary with a quiet run affordance and revealable execution metadata.",
     status: "rendered",
   },
   {
@@ -115,7 +115,7 @@ const currentLineStateFixtures = [
   },
   {
     label: "Focused idle",
-    detail: "Language becomes readable when the cell owns focus.",
+    detail: "Cell selection colors the rule; metadata waits for hover or keyboard focus.",
     line: (
       <CodeCellCurrentLine
         languageLabel="Python"
@@ -156,7 +156,7 @@ const currentLineStateFixtures = [
   },
   {
     label: "Completed",
-    detail: "Finished cells keep run metadata collapsed until hover or focus.",
+    detail: "Finished cells keep run metadata collapsed into the boundary until directly engaged.",
     line: (
       <CodeCellCurrentLine
         languageLabel="Python"
@@ -187,7 +187,7 @@ const currentLineConceptFixtures = [
   },
   {
     label: "Run state chip",
-    detail: "Makes completion feel like metadata instead of sentence copy.",
+    detail: "Keeps completion as compact metadata instead of sentence copy.",
     line: (
       <CurrentLineConcept>
         <span className="rounded-sm bg-muted/60 px-1.5 py-0.5 font-medium text-foreground/70">
@@ -203,7 +203,7 @@ const currentLineConceptFixtures = [
   },
   {
     label: "Activity edge",
-    detail: "Keeps the run text shorter and lets peer activity sit against the rule.",
+    detail: "Lets peer activity live at the edge of the rule instead of the left lane.",
     line: (
       <CurrentLineConcept>
         <span className="rounded-sm bg-muted/60 px-1.5 py-0.5 font-medium text-foreground/70">
@@ -231,7 +231,7 @@ const contracts = [
 const insertionRibbonRows = [
   {
     label: "Between cells",
-    detail: "The neutral spine stays continuous; the active add action supplies the color.",
+    detail: "The neutral spine stays continuous; the compact palette supplies insertion intent.",
     activeType: "markdown" as const,
     terminal: false,
   },
@@ -562,7 +562,7 @@ export function CellAnatomyExample() {
           <h2 className="text-sm font-semibold">Insertion Ribbon</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
             Add-cell rows are part of the same document spine. The quiet continuation stays neutral,
-            while the hovered or focused action paints the insertion intent.
+            while the hovered or focused icon palette paints the insertion intent.
           </p>
         </div>
         <div className="divide-y divide-fd-border bg-background py-2">
@@ -585,7 +585,7 @@ export function CellAnatomyExample() {
           <h2 className="text-sm font-semibold">Current Line States</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
             Execution state sits at the source/result boundary. The language leads as cell identity,
-            and the run state reads as compact metadata.
+            and resting run metadata stays collapsed until the boundary is engaged.
           </p>
         </div>
         <div className="grid gap-3 bg-background p-4 lg:grid-cols-2">
@@ -734,10 +734,10 @@ function StaticPresenceActivity() {
 
 function CurrentLineConcept({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-6 min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground/70">
+    <div className="flex min-h-[1.125rem] min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground/70">
       <button
         type="button"
-        className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground/55 transition-colors hover:bg-muted hover:text-foreground"
+        className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-full text-muted-foreground/55 transition-colors hover:bg-muted hover:text-foreground"
         aria-label="Run cell"
       >
         <Play className="size-2.5 fill-current" aria-hidden="true" />

@@ -320,12 +320,12 @@ describe("CodeCell output focus", () => {
     const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
-    expect(footer).toHaveClass("min-h-5");
+    expect(footer).toHaveClass("min-h-4");
     expect(detail).toHaveClass("sr-only");
     expect(rule).toBeNull();
   });
 
-  it("shows idle footer language when the cell is focused", () => {
+  it("keeps focused idle footer language collapsed into the boundary", () => {
     mockOutputs = [];
     mockExecution = null;
     mockIsFocused = true;
@@ -343,9 +343,9 @@ describe("CodeCell output focus", () => {
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(status?.textContent).toBe("Python·Ready");
-    expect(status).toHaveClass("max-w-64");
-    expect(status).toHaveClass("opacity-100");
-    expect(status).not.toHaveClass("max-w-0");
+    expect(status).toHaveClass("max-w-0");
+    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveClass("group-focus-within:max-w-64");
   });
 
   it("keeps the current line visible when source is hidden but output remains visible", () => {

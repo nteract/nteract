@@ -125,7 +125,7 @@ export function CodeCellCurrentLine({
 }: CodeCellCurrentLineProps) {
   const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
   const isCompactIdle = compactIdle && state === "idle";
-  const isQuietResting = (state === "idle" || state === "ran") && !isFocused;
+  const isQuietResting = state === "idle" || state === "ran";
   const detailLabel = visualExecutionDetail({ count, elapsedMs, isExecuting, isQueued });
   const accessibleDetailLabel = accessibleExecutionDetail({
     count,
@@ -164,8 +164,8 @@ export function CodeCellCurrentLine({
       data-execution-count={count ?? undefined}
       data-execution-label={countLabel ?? undefined}
       className={cn(
-        "mt-1.5 flex items-center gap-1.5 text-[11px] leading-none text-muted-foreground/60",
-        isCompactIdle ? "min-h-5" : "min-h-6",
+        "mt-1 flex items-center gap-1.5 text-[11px] leading-none text-muted-foreground/60",
+        isCompactIdle ? "min-h-4" : isQuietResting ? "min-h-[1.125rem]" : "min-h-6",
         className,
       )}
     >
@@ -183,9 +183,8 @@ export function CodeCellCurrentLine({
           "inline-flex size-4 shrink-0 items-center justify-center rounded-full",
           "transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-          !isFocused &&
-            (state === "idle" || state === "ran") &&
-            "opacity-45 group-hover:opacity-100",
+          isQuietResting &&
+            "size-3.5 opacity-35 group-hover:opacity-85 group-focus-within:opacity-85",
           !isExecuting && state !== "queued" && "text-muted-foreground/55",
           isCompactIdle && "opacity-45 hover:opacity-100",
           state === "idle" && "hover:bg-muted hover:text-foreground",
@@ -264,7 +263,7 @@ export function CodeCellCurrentLine({
           <div
             data-slot="code-cell-current-line-rule"
             className={cn(
-              "h-px min-w-6 flex-1 rounded-full transition-colors duration-150",
+              "h-px min-w-8 flex-1 rounded-full transition-colors duration-150",
               executionLineClass({ isExecuting, isQueued, isFocused }),
             )}
           />

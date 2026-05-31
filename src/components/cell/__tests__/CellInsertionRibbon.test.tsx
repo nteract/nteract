@@ -39,9 +39,11 @@ describe("CellInsertionRibbon", () => {
     );
 
     const actions = container.querySelector('[data-slot="cell-adder-actions"]');
+    const palette = container.querySelector('[data-slot="cell-adder-action-palette"]');
     const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
 
     expect(actions).toHaveClass("opacity-100");
+    expect(palette).toHaveClass("bg-background/85");
     expect(intent).toHaveClass("bg-emerald-400");
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("text-foreground");
   });
