@@ -33,6 +33,8 @@ import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 interface CrdtBridgeContextValue {
   /** Read the current WASM NotebookHandle (null during bootstrap). */
   getHandle: () => NotebookHandle | null;
+  /** Host capability gate for outbound source mutations for a specific cell. */
+  canWriteSource?: (cellId: string) => boolean;
   /** Signal that the CRDT was mutated and needs syncing to daemon. */
   onSyncNeeded: () => void;
   /** Local actor label (e.g. "local:kyle/desktop:abcd1234") for filtering self-echo attributions. */
@@ -45,6 +47,7 @@ const CrdtBridgeContext = createContext<CrdtBridgeContextValue | null>(null);
 
 interface CrdtBridgeProviderProps {
   getHandle: () => NotebookHandle | null;
+  canWriteSource?: (cellId: string) => boolean;
   onSyncNeeded: () => void;
   localActor: string;
   children: ReactNode;
@@ -52,6 +55,7 @@ interface CrdtBridgeProviderProps {
 
 export function CrdtBridgeProvider({
   getHandle,
+  canWriteSource,
   onSyncNeeded,
   localActor,
   children,
@@ -59,10 +63,12 @@ export function CrdtBridgeProvider({
   // Stable ref so the context value doesn't change on every render.
   const valueRef = useRef<CrdtBridgeContextValue>({
     getHandle,
+    canWriteSource,
     onSyncNeeded,
     localActor,
   });
   valueRef.current.getHandle = getHandle;
+  valueRef.current.canWriteSource = canWriteSource;
   valueRef.current.onSyncNeeded = onSyncNeeded;
   valueRef.current.localActor = localActor;
 
@@ -101,6 +107,7 @@ export function useCrdtBridge(cellId: string): {
     return createCrdtBridge({
       getHandle: () => ctxRef.current.getHandle(),
       cellId,
+      canWriteSource: () => ctxRef.current.canWriteSource?.(cellId) ?? true,
       onSourceChanged: (source: string) => {
         updateCellById(cellId, (c) => ({ ...c, source }));
       },

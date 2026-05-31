@@ -30,7 +30,7 @@ import {
 import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
 import { catalogApiUrlForViewer, isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
 
-const DEFAULT_URL = "https://preview.runt.run/n/topic-viz";
+const DEFAULT_URL = "https://preview.runt.run/n/topic-viz/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
 const DEFAULT_OUTPUT_DOCUMENT_ORIGIN = "https://preview.runtusercontent.com";
 const DEFAULT_CATALOG_OWNER_PRINCIPAL = "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375";

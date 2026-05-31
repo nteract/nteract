@@ -1,5 +1,17 @@
-import { describe, expect, it } from "vite-plus/test";
-import { remoteChangesFromTextAttributions } from "../crdt-editor-bridge";
+// @vitest-environment jsdom
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import { createCrdtBridge, remoteChangesFromTextAttributions } from "../crdt-editor-bridge";
+
+let views: EditorView[] = [];
+
+afterEach(() => {
+  for (const view of views) {
+    view.destroy();
+  }
+  views = [];
+});
 
 describe("remoteChangesFromTextAttributions", () => {
   it("filters attributions to the requested cell", () => {
@@ -68,5 +80,58 @@ describe("remoteChangesFromTextAttributions", () => {
     );
 
     expect(changes).toEqual([{ index: 1, text: "merged", deleted: 2 }]);
+  });
+});
+
+describe("createCrdtBridge capability gating", () => {
+  it("blocks outbound editor transactions when the host cannot write", () => {
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () =>
+        ({
+          splice_source: (_cellId: string, _index: number, _deleteCount: number, text: string) => {
+            calls.push(text);
+            return true;
+          },
+          get_cell_source: () => "unchanged",
+        }) as never,
+      cellId: "cell-a",
+      canWriteSource: () => false,
+      onSourceChanged: (source) => calls.push(`store:${source}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "hello",
+        extensions: [bridge.extension],
+      }),
+    });
+    views.push(view);
+
+    view.dispatch({ changes: { from: 5, insert: "!" } });
+
+    expect(view.state.doc.toString()).toBe("hello!");
+    expect(calls).toEqual([]);
+  });
+
+  it("blocks imperative source replacement when the host cannot write", () => {
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () =>
+        ({
+          update_source: (_cellId: string, source: string) => {
+            calls.push(source);
+            return true;
+          },
+          get_cell_source: () => "updated",
+        }) as never,
+      cellId: "cell-a",
+      canWriteSource: () => false,
+      onSourceChanged: (source) => calls.push(`store:${source}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+
+    expect(bridge.replaceSource("blocked")).toBe(false);
+    expect(calls).toEqual([]);
   });
 });

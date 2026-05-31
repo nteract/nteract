@@ -146,11 +146,6 @@ const worker: ExportedHandler<Env> = {
       );
     }
 
-    const viewerMatch = url.pathname.match(/^\/n\/([^/]+)\/?$/);
-    if (viewerMatch && request.method === "GET") {
-      return viewer(decodeURIComponent(viewerMatch[1]), request, env);
-    }
-
     const vanityViewerMatch = url.pathname.match(/^\/n\/([^/]+)\/([^/]+)\/?$/);
     if (vanityViewerMatch && request.method === "GET") {
       return viewer(decodeURIComponent(vanityViewerMatch[1]), request, env);

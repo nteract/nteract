@@ -7,6 +7,9 @@ import { publishIdentityHeaders } from "./publish-auth.mjs";
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const fixtureName = process.env.NOTEBOOK_CLOUD_FIXTURE ?? "output_streaming";
 const notebookId = process.env.NOTEBOOK_CLOUD_NOTEBOOK_ID ?? `nteract-cloud-fixture-${fixtureName}`;
+const vanityName = process.env.NOTEBOOK_CLOUD_VANITY_NAME ?? fixtureName;
+const runtimeStateDocIdOverride =
+  process.env.NOTEBOOK_CLOUD_RUNTIME_STATE_DOC_ID ?? `${notebookId}:runtime-state`;
 const fixtureRoot = new URL(
   `../../../packages/runtimed/tests/fixtures/${fixtureName}/`,
   import.meta.url,
@@ -37,7 +40,7 @@ const [snapshotBytes, runtimeSnapshotBytes] = await Promise.all([
 const fixtureManifest = JSON.parse(await readFile(new URL("manifest.json", fixtureRoot), "utf8"));
 const fixtureBlobs = Array.isArray(fixtureManifest.blobs) ? fixtureManifest.blobs : [];
 const handle = NotebookHandle.load_snapshot(snapshotBytes, runtimeSnapshotBytes);
-handle.set_runtime_state_doc_id(`runtime:${notebookId}`);
+handle.set_runtime_state_doc_id(runtimeStateDocIdOverride);
 const headsHash = headsDigest(handle.get_heads_hex());
 const runtimeHeadsHash = headsDigest(handle.get_runtime_state_heads_hex());
 const runtimeStateDocId = requiredRuntimeStateDocId(handle);
@@ -85,7 +88,8 @@ console.log(
       baseUrl,
       fixtureName,
       notebookId,
-      viewerUrl: new URL(`/n/${encodeURIComponent(notebookId)}`, baseUrl).href,
+      vanityName,
+      viewerUrl: canonicalViewerUrl(baseUrl, notebookId, vanityName),
       runtimeStateDocId,
       headsHash,
       runtimeHeadsHash,
@@ -131,6 +135,11 @@ async function uploadFixtureBlob(blob) {
     bytes,
     typeof blob.content_type === "string" ? blob.content_type : "application/octet-stream",
   );
+}
+
+function canonicalViewerUrl(baseUrl, notebookId, vanityName) {
+  return new URL(`/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanityName)}`, baseUrl)
+    .href;
 }
 
 function headsDigest(heads) {

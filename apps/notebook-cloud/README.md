@@ -4,7 +4,7 @@ This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It 
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
-`/n/:notebookId` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` Automerge snapshot pair directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, and catalog revision metadata. Snapshot-pair publishes validate that the pair can be loaded and that referenced output blobs exist before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
+`/n/:notebookId/:vanityName` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` Automerge snapshot pair directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, and catalog revision metadata. Snapshot-pair publishes validate that the pair can be loaded and that referenced output blobs exist before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
 ## Local dev
 
@@ -66,16 +66,16 @@ http://127.0.0.1:8787/n/demo/debug
 The notebook viewer is available at:
 
 ```text
-http://127.0.0.1:8787/n/nteract-cloud-demo
+http://127.0.0.1:8787/n/nteract-cloud-demo/demo
 ```
 
-`/` redirects to that demo notebook id.
+`/` serves the sign-in shell; open notebooks through `/n/{id}/{vanityName}`.
 
 `publish:fixture` defaults to `packages/runtimed/tests/fixtures/output_streaming`
 and publishes a notebook revision with real `RuntimeStateDoc` output manifests:
 
 ```text
-http://127.0.0.1:8787/n/nteract-cloud-fixture-output_streaming
+http://127.0.0.1:8787/n/nteract-cloud-fixture-output_streaming/output_streaming
 ```
 
 Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
@@ -85,7 +85,7 @@ Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
 `preview.runt.run` topic-viz notebook by default:
 
 ```text
-https://preview.runt.run/n/topic-viz
+https://preview.runt.run/n/topic-viz/topic-viz
 ```
 
 Install the Chromium browser once before running the hosted smoke from a fresh
@@ -157,7 +157,7 @@ sends the token as a subprotocol instead of a URL parameter. The smoke verifies
 that Alice edits reach Bob and anonymous without reload, Bob edits reach Alice
 and anonymous without reload, Charlie is denied editor access, and no request
 URL contains the dev token. Pass
-`NOTEBOOK_CLOUD_COLLAB_VIEWER_URL=https://.../n/<id>` to reuse an existing room
+`NOTEBOOK_CLOUD_COLLAB_VIEWER_URL=https://.../n/<id>/<vanity-name>` to reuse an existing room
 instead of seeding a new one.
 
 ## Dev auth

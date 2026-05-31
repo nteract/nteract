@@ -17,6 +17,12 @@ export function smokeEnvForPublishResult(env, publishResult) {
     publishResult.runtimeHeadsHash,
     "runtimeHeadsHash",
   );
+  setRequiredDefaultEnv(
+    smokeEnv,
+    "NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_STATE_DOC_ID",
+    publishResult.runtimeStateDocId,
+    "runtimeStateDocId",
+  );
 
   if (!hasOwn(smokeEnv, "NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN")) {
     const origin = new URL(publishResult.viewerUrl).origin;

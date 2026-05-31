@@ -515,7 +515,6 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
               {authAction === "starting" ? "Starting sign-in" : "Sign in with Anaconda"}
             </button>
           )}
-          <a href="/n/topic-viz">Open topic-viz</a>
           {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
             <button type="button" onClick={resetAuth}>
               <RotateCcw aria-hidden="true" />
@@ -609,6 +608,7 @@ function NotebookViewer({
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const cellsRef = useRef<ResolvedCell[]>([]);
+  const cellsByIdRef = useRef(new Map<string, ResolvedCell>());
   const notebookLanguageRef = useRef("python");
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const liveMaterializedRef = useRef(false);
@@ -663,6 +663,7 @@ function NotebookViewer({
 
   useLayoutEffect(() => {
     cellsRef.current = cells;
+    cellsByIdRef.current = new Map(cells.map((cell) => [cell.id, cell]));
     projectCloudCellsIntoNotebookViewStores(cells);
   }, [cells]);
 
@@ -1123,6 +1124,19 @@ function NotebookViewer({
     if (!canEditMarkdown) return;
     liveRuntimeRef.current?.engine.scheduleFlush();
   }, [canEditMarkdown]);
+  const canWriteCellSource = useCallback(
+    (cellId: string) => {
+      const cell = cellsByIdRef.current.get(cellId);
+      if (!cell) {
+        return false;
+      }
+      if (cell.cellType === "markdown") {
+        return shellCapabilities.canEditMarkdown;
+      }
+      return shellCapabilities.canEditCells;
+    },
+    [shellCapabilities],
+  );
   const resetPrototypeAuth = useCallback(() => {
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
@@ -1244,6 +1258,7 @@ function NotebookViewer({
       <PresenceValueProvider value={cloudPresenceContext}>
         <CrdtBridgeProvider
           getHandle={getLiveNotebookHandle}
+          canWriteSource={canWriteCellSource}
           onSyncNeeded={handleMarkdownSyncNeeded}
           localActor={connectionActorLabel ?? ""}
         >

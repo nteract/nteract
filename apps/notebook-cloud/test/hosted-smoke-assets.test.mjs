@@ -62,7 +62,7 @@ describe("hosted render smoke viewer CSS assets", () => {
       ],
     ]);
 
-    const check = await checkViewerCssSplit("https://preview.runt.run/n/topic-viz", {
+    const check = await checkViewerCssSplit("https://preview.runt.run/n/topic-viz/topic-viz", {
       fetchImpl: fakeFetch(responses),
       maxPrimaryBytes: 250_000,
     });
@@ -96,7 +96,7 @@ describe("hosted render smoke viewer CSS assets", () => {
       ],
     ]);
 
-    const check = await checkViewerCssSplit("https://preview.runt.run/n/topic-viz", {
+    const check = await checkViewerCssSplit("https://preview.runt.run/n/topic-viz/topic-viz", {
       fetchImpl: fakeFetch(responses),
       maxPrimaryBytes: 250_000,
     });

@@ -11,15 +11,16 @@ describe("hosted live smoke environment", () => {
     const smokeEnv = smokeEnvForPublishResult(
       {},
       {
-        viewerUrl: "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/live-source",
+        viewerUrl: "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/live-source/source",
         headsHash: "heads-notebook",
         runtimeHeadsHash: "heads-runtime",
+        runtimeStateDocId: "runtime-state-doc",
       },
     );
 
     assert.equal(
       smokeEnv.NOTEBOOK_CLOUD_HOSTED_URL,
-      "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/live-source",
+      "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/live-source/source",
     );
     assert.equal(
       smokeEnv.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH,
@@ -28,6 +29,10 @@ describe("hosted live smoke environment", () => {
     assert.equal(
       smokeEnv.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH,
       "heads-runtime",
+    );
+    assert.equal(
+      smokeEnv.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_STATE_DOC_ID,
+      "runtime-state-doc",
     );
     assert.equal(
       Object.hasOwn(smokeEnv, "NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE"),
@@ -44,9 +49,10 @@ describe("hosted live smoke environment", () => {
         NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN: "https://assets.example.test",
       },
       {
-        viewerUrl: "http://127.0.0.1:8787/n/live-source",
+        viewerUrl: "http://127.0.0.1:8787/n/live-source/source",
         headsHash: "heads-notebook",
         runtimeHeadsHash: "heads-runtime",
+        runtimeStateDocId: "runtime-state-doc",
       },
     );
 
@@ -65,9 +71,10 @@ describe("hosted live smoke environment", () => {
     const smokeEnv = smokeEnvForPublishResult(
       {},
       {
-        viewerUrl: "http://127.0.0.1:8787/n/live-source",
+        viewerUrl: "http://127.0.0.1:8787/n/live-source/source",
         headsHash: "heads-notebook",
         runtimeHeadsHash: "heads-runtime",
+        runtimeStateDocId: "runtime-state-doc",
       },
     );
 
@@ -80,7 +87,7 @@ describe("hosted live smoke environment", () => {
         smokeEnvForPublishResult(
           {},
           {
-            viewerUrl: "http://127.0.0.1:8787/n/live-source",
+            viewerUrl: "http://127.0.0.1:8787/n/live-source/source",
           },
         ),
       /did not provide headsHash/,
@@ -90,9 +97,10 @@ describe("hosted live smoke environment", () => {
         {
           NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH: "",
           NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH: "",
+          NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_STATE_DOC_ID: "",
         },
         {
-          viewerUrl: "http://127.0.0.1:8787/n/live-source",
+          viewerUrl: "http://127.0.0.1:8787/n/live-source/source",
         },
       ),
     );

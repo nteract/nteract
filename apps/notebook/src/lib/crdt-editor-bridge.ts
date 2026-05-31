@@ -66,6 +66,14 @@ export interface CrdtBridgeConfig {
   /** The cell ID this editor is bound to. */
   cellId: string;
   /**
+   * Host capability gate for outbound source mutations.
+   *
+   * Desktop normally allows source writes. Cloud can return false for viewer
+   * mode or ACL-denied cells so stale editors cannot mutate the CRDT even if
+   * CodeMirror produces a transaction.
+   */
+  canWriteSource?: () => boolean;
+  /**
    * Called after outbound splices are applied to the CRDT.
    * The bridge passes the full source string so the cell store can be updated.
    */
@@ -152,7 +160,7 @@ export function remoteChangesFromTextAttributions(
  * via the ViewPlugin.
  */
 export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
-  const { getHandle, cellId, onSourceChanged, onSyncNeeded } = config;
+  const { getHandle, cellId, canWriteSource = () => true, onSourceChanged, onSyncNeeded } = config;
 
   // Shared mutable state between the plugin instance and the bridge handle.
   // The plugin sets `currentView` on create; the bridge reads it for inbound.
@@ -174,6 +182,8 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
       );
 
       if (outboundTxs.length === 0) return;
+
+      if (!canWriteSource()) return;
 
       const handle = getHandle();
       if (!handle) return;
@@ -394,6 +404,8 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
   }
 
   function replaceSource(source: string): boolean {
+    if (!canWriteSource()) return false;
+
     const handle = getHandle();
     if (!handle) return false;
 

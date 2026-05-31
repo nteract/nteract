@@ -12,14 +12,11 @@ describe("hosted render smoke routes", () => {
   it("derives the catalog API URL from a hosted notebook viewer URL", () => {
     assert.equal(
       catalogApiUrlForViewer(
-        "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet",
+        "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet/topic-viz",
       ),
       "https://nteract-notebook-cloud.rgbkrk.workers.dev/api/n/nteract-cloud-live-mathnet",
     );
-    assert.equal(
-      catalogApiUrlForViewer("https://example.com/n/foo/"),
-      "https://example.com/api/n/foo",
-    );
+    assert.equal(catalogApiUrlForViewer("https://example.com/n/foo/"), null);
     assert.equal(
       catalogApiUrlForViewer("https://preview.runt.run/n/01KSQKEPFJVHV4T4ZDYS9V7T80/lets-edit"),
       "https://preview.runt.run/api/n/01KSQKEPFJVHV4T4ZDYS9V7T80",
@@ -31,11 +28,7 @@ describe("hosted render smoke routes", () => {
   });
 
   it("summarizes plain and vanity viewer URLs", () => {
-    assert.deepEqual(notebookViewerUrl("https://example.com/n/foo"), {
-      origin: "https://example.com",
-      notebookId: "foo",
-      vanityName: null,
-    });
+    assert.equal(notebookViewerUrl("https://example.com/n/foo"), null);
     assert.deepEqual(notebookViewerUrl("https://example.com/n/foo/lets-edit"), {
       origin: "https://example.com",
       notebookId: "foo",
@@ -54,6 +47,7 @@ describe("hosted render smoke routes", () => {
 
   it("returns null for non-viewer URLs", () => {
     assert.equal(catalogApiUrlForViewer("https://example.com/"), null);
+    assert.equal(catalogApiUrlForViewer("https://example.com/n/foo"), null);
     assert.equal(catalogApiUrlForViewer("https://example.com/n/foo/sync"), null);
   });
 
