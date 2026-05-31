@@ -37,7 +37,6 @@ import {
   NotebookPackageSummaryPanel,
 } from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
-import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -406,7 +405,7 @@ function CloudNotebookProviders({
 }
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
-  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
   const [scope, setScope] = useState<ConnectionScope>(
     authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
@@ -455,7 +454,6 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
     <main className="cloud-home">
       <div className="cloud-report-toolbar" aria-label="Notebook cloud entry controls">
         <h1>nteract cloud notebooks</h1>
-        <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
       </div>
 
       <section className="cloud-home-panel" aria-label="Notebook cloud sign-in">
@@ -528,7 +526,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
 }
 
 function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
-  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
     message: "Completing sign-in...",
@@ -578,7 +576,6 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
     <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
       <div className="cloud-report-toolbar" aria-label="Sign-in status and controls">
         <h1 className="text-xl font-semibold tracking-normal">nteract cloud notebook</h1>
-        <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
       </div>
       <div className="cloud-state" data-kind={status.kind}>
         {status.message}
@@ -596,7 +593,7 @@ function NotebookViewer({
 }) {
   const { config } = runtime;
   const loadingPolicy = cloudViewerLoadingPolicy(config);
-  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
@@ -1166,9 +1163,7 @@ function NotebookViewer({
     <NotebookDocumentHeader
       capabilities={shellCapabilities}
       presence={<CloudPresenceStatus presence={presence} connectionScope={connectionScope} />}
-      utilityControls={
-        <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
-      }
+      utilityControls={null}
       sharingControls={
         <CloudSharingControls
           aclEndpoint={config.aclEndpoint}

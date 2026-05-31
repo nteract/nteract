@@ -1,4 +1,5 @@
 import type { SessionControlMessage } from "../src/protocol";
+import { friendlyNotebookActorLabel } from "@/components/notebook-shell/actor-labels";
 
 export type CloudViewerPresenceConnection = "connecting" | "connected" | "disconnected";
 
@@ -130,56 +131,13 @@ export function cloudFriendlyPeerLabel({
     return trimmedEmail;
   }
 
-  return friendlyActorLabel(actorLabel) ?? "Peer";
+  return friendlyNotebookActorLabel(actorLabel) ?? "Peer";
 }
 
 function safeRoomPeerCount(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
 }
 
-function friendlyActorLabel(actorLabel: string | null | undefined): string | null {
-  const trimmedActorLabel = actorLabel?.trim();
-  if (!trimmedActorLabel) return null;
-
-  const principal = trimmedActorLabel.split("/", 1)[0];
-  if (principal.startsWith("anonymous:")) {
-    return "Anonymous";
-  }
-
-  if (!principal.startsWith("user:")) {
-    return null;
-  }
-
-  const parts = principal.split(":");
-  const namespace = parts.slice(0, 2).join(":");
-  const encodedSubject = parts.slice(2).join(":");
-  const subject = decodeActorLabelSubject(encodedSubject);
-  if (!subject) {
-    return namespace === "user:anaconda" ? "Anaconda user" : "User";
-  }
-  if (subject.includes("@")) {
-    return subject;
-  }
-  if (namespace === "user:anaconda" && looksOpaqueSubject(subject)) {
-    return "Anaconda user";
-  }
-
-  return subject;
-}
-
-function decodeActorLabelSubject(value: string): string {
-  if (!value) return "";
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
 function looksLikeRawIdentityLabel(value: string): boolean {
   return /^(anonymous|user):/.test(value);
-}
-
-function looksOpaqueSubject(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }

@@ -40,6 +40,57 @@ describe("NotebookIdentity", () => {
     expect(screen.getByText("on behalf of Kyle")).toBeVisible();
   });
 
+  it("projects durable principal/operator labels for delegated agents", () => {
+    const actor = notebookActorFromAccess({
+      level: "editor",
+      source: "cloud",
+      isPublic: false,
+      actorLabel: "user:dev:kyle%40example.com/agent:codex:s1",
+      identityLabel: null,
+    });
+
+    expect(actor.kind).toBe("agent");
+
+    render(<NotebookIdentityBadge actor={actor} />);
+
+    expect(screen.getByText("Codex")).toBeVisible();
+    expect(screen.getByText("on behalf of kyle@example.com")).toBeVisible();
+  });
+
+  it("projects durable runtime operators separately from document access", () => {
+    const actor = notebookActorFromAccess({
+      level: "viewer",
+      source: "cloud",
+      isPublic: false,
+      actorLabel: "user:anaconda:alice/runtime:jupyterhub",
+      identityLabel: "Alice",
+    });
+
+    expect(actor.kind).toBe("runtime");
+
+    render(<NotebookIdentityBadge actor={actor} />);
+
+    expect(screen.getByText("JupyterHub")).toBeVisible();
+    expect(screen.getByText("for Alice")).toBeVisible();
+  });
+
+  it("projects durable system operators separately from human identity", () => {
+    const actor = notebookActorFromAccess({
+      level: "viewer",
+      source: "fixture",
+      isPublic: false,
+      actorLabel: "system/schema:notebook:v5",
+      identityLabel: null,
+    });
+
+    expect(actor.kind).toBe("system");
+
+    render(<NotebookIdentityBadge actor={actor} />);
+
+    expect(screen.getByText("Schema")).toBeVisible();
+    expect(screen.getByText("Viewer")).toBeVisible();
+  });
+
   it("renders grouped notebook actors with overflow", () => {
     const actors = [
       notebookActorFromAccess(cloudOwnerAccess),

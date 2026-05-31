@@ -24,6 +24,8 @@ const identityScenarioIds: ElementsNotebookScenarioId[] = [
   "cloud-editor",
   "cloud-owner",
   "agent-on-behalf",
+  "runtime-peer",
+  "system-schema",
   "runtime-unavailable",
 ];
 
@@ -48,10 +50,12 @@ export function IdentityEnvironmentSurfacesExample() {
   const cloudOwner = getElementsNotebookScenario("cloud-owner");
   const cloudEditor = getElementsNotebookScenario("cloud-editor");
   const agentScenario = getElementsNotebookScenario("agent-on-behalf");
+  const runtimePeer = getElementsNotebookScenario("runtime-peer");
   const activeActors = [
     scenarioActor(cloudOwner),
     scenarioActor(cloudEditor),
     scenarioActor(agentScenario),
+    scenarioActor(runtimePeer),
   ];
 
   return (

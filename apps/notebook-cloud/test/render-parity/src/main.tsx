@@ -88,7 +88,7 @@ function CloudRendererParityHarness() {
           <h1>Renderer parity fixture</h1>
         </div>
         <div className="cloud-render-parity-actions" aria-label="Theme controls">
-          <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
+          <ThemeToggle theme={theme} onThemeChange={setTheme} />
         </div>
       </header>
       <div data-testid="fixture-markers" hidden>

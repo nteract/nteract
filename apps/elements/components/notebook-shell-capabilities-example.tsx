@@ -41,6 +41,8 @@ const scenarioIds: ElementsNotebookScenarioId[] = [
   "cloud-editor",
   "cloud-owner",
   "agent-on-behalf",
+  "runtime-peer",
+  "system-schema",
   "runtime-unavailable",
 ];
 

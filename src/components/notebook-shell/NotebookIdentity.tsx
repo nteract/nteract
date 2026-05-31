@@ -1,4 +1,13 @@
-import { Bot, Globe2, Laptop, UserRound, UsersRound, type LucideIcon } from "lucide-react";
+import {
+  Bot,
+  Cog,
+  Cpu,
+  Globe2,
+  Laptop,
+  UserRound,
+  UsersRound,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Avatar,
@@ -11,8 +20,20 @@ import type {
   NotebookShellAccessCapabilities,
   NotebookShellAuthCapabilities,
 } from "./capabilities";
+import {
+  friendlyNotebookActorLabel,
+  parseNotebookActorLabel,
+  type ParsedNotebookActorKind,
+} from "./actor-labels";
 
-export type NotebookActorKind = "agent" | "human" | "local" | "public" | "unknown";
+export type NotebookActorKind =
+  | "agent"
+  | "human"
+  | "local"
+  | "public"
+  | "runtime"
+  | "system"
+  | "unknown";
 
 export interface NotebookActorIdentity {
   id: string;
@@ -41,18 +62,38 @@ export function notebookActorFromAccess(
   access: NotebookShellAccessCapabilities,
   auth?: NotebookShellAuthCapabilities,
 ): NotebookActorIdentity {
-  const agent = parseAgentActorLabel(access.actorLabel);
-  const kind = actorKindFromAccess(access, agent !== null);
+  const parsedLabel = parseNotebookActorLabel(access.actorLabel);
+  const kind = actorKindFromAccess(access, parsedLabel?.kind ?? null);
   const accessLabel = accessLevelLabel(access.level);
   const sourceLabel = accessSourceLabel(access.source);
 
-  if (agent) {
-    const behalfLabel = access.identityLabel ?? agent.onBehalfOf;
+  if (parsedLabel?.kind === "agent") {
+    const behalfLabel = access.identityLabel ?? parsedLabel.onBehalfOf;
     return {
-      id: access.actorLabel ?? agent.agentLabel,
-      label: agent.agentLabel,
+      id: access.actorLabel ?? parsedLabel.label,
+      label: parsedLabel.label,
       detail: behalfLabel ? `on behalf of ${behalfLabel}` : accessLabel,
       kind: "agent",
+      status: auth?.needsAttention ? "attention" : "active",
+    };
+  }
+
+  if (parsedLabel?.kind === "runtime") {
+    return {
+      id: access.actorLabel ?? parsedLabel.label,
+      label: parsedLabel.label,
+      detail: access.identityLabel ? `for ${access.identityLabel}` : accessLabel,
+      kind: "runtime",
+      status: auth?.needsAttention ? "attention" : "active",
+    };
+  }
+
+  if (parsedLabel?.kind === "system") {
+    return {
+      id: access.actorLabel ?? parsedLabel.label,
+      label: parsedLabel.label,
+      detail: access.identityLabel ? `for ${access.identityLabel}` : accessLabel,
+      kind: "system",
       status: auth?.needsAttention ? "attention" : "active",
     };
   }
@@ -67,7 +108,8 @@ export function notebookActorFromAccess(
     };
   }
 
-  const label = access.identityLabel ?? friendlyActorLabel(access.actorLabel) ?? "Unknown viewer";
+  const label =
+    access.identityLabel ?? friendlyNotebookActorLabel(access.actorLabel) ?? "Unknown viewer";
   const detail =
     sourceLabel === null ? accessLabel : `${accessLabel.toLowerCase()} through ${sourceLabel}`;
 
@@ -190,9 +232,9 @@ function NotebookActorAvatar({
 
 function actorKindFromAccess(
   access: NotebookShellAccessCapabilities,
-  isAgent: boolean,
+  parsedKind: ParsedNotebookActorKind | null,
 ): NotebookActorKind {
-  if (isAgent) return "agent";
+  if (parsedKind) return parsedKind;
   if (access.isPublic) return "public";
   if (access.source === "local") return "local";
   if (access.identityLabel || access.actorLabel) return "human";
@@ -203,6 +245,10 @@ function actorIcon(kind: NotebookActorKind): LucideIcon {
   switch (kind) {
     case "agent":
       return Bot;
+    case "runtime":
+      return Cpu;
+    case "system":
+      return Cog;
     case "local":
       return Laptop;
     case "public":
@@ -218,6 +264,10 @@ function actorTone(kind: NotebookActorKind): string {
   switch (kind) {
     case "agent":
       return "bg-purple-500/10 text-purple-700 dark:text-purple-300";
+    case "runtime":
+      return "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300";
+    case "system":
+      return "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300";
     case "local":
       return "bg-sky-500/10 text-sky-700 dark:text-sky-300";
     case "public":
@@ -240,33 +290,6 @@ function statusTone(status: NonNullable<NotebookActorIdentity["status"]>): strin
     case "offline":
       return "bg-muted";
   }
-}
-
-function parseAgentActorLabel(actorLabel: string | null): {
-  agentLabel: string;
-  onBehalfOf: string | null;
-} | null {
-  if (!actorLabel?.startsWith("agent:")) return null;
-
-  const agentValue = actorLabel.slice("agent:".length);
-  const [rawAgent, rawBehalf] = agentValue.split("/on-behalf-of:");
-  const agentLabel = friendlyActorLabel(rawAgent) ?? "Agent";
-
-  return {
-    agentLabel,
-    onBehalfOf: friendlyActorLabel(rawBehalf ?? null),
-  };
-}
-
-function friendlyActorLabel(actorLabel: string | null | undefined): string | null {
-  const trimmed = actorLabel?.trim();
-  if (!trimmed) return null;
-
-  const lastSegment = trimmed.split(/[/:]/).filter(Boolean).at(-1) ?? trimmed;
-  return lastSegment
-    .replace(/[-_]+/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase())
-    .trim();
 }
 
 function accessLevelLabel(level: NotebookShellAccessCapabilities["level"]): string {

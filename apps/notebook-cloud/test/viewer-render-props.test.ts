@@ -49,14 +49,18 @@ test("cloud notebook rendering uses shared cell chrome instead of report-mode ce
   );
 });
 
-test("cloud viewer exposes the shared theme toggle and shared theme hook", () => {
+test("cloud viewer keeps theme resolution out of first-class notebook chrome", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /import \{ ThemeToggle \} from "@\/components\/ui\/theme-toggle";/);
   assert.match(sourceText, /useTheme\(CLOUD_VIEWER_THEME_STORAGE_KEY\)/);
-  assert.match(sourceText, /<ThemeToggle/);
-  assert.match(sourceText, /className="cloud-theme-toggle"/);
+  assert.match(sourceText, /applyDocumentTheme\(resolvedTheme\)/);
+  assert.doesNotMatch(
+    sourceText,
+    /import \{ ThemeToggle \} from "@\/components\/ui\/theme-toggle";/,
+  );
+  assert.doesNotMatch(sourceText, /<ThemeToggle/);
+  assert.doesNotMatch(sourceText, /className="cloud-theme-toggle"/);
 });
 
 test("cloud viewer routes notebook header controls through the shared shell header", () => {
