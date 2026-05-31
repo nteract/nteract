@@ -74,6 +74,7 @@ const expectedSiftLoadMilestones = parseExpectedTexts(
 );
 const requireRuntimedWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_RUNTIMED_WASM !== "0";
 const requireViewerCssSplit = process.env.NOTEBOOK_CLOUD_REQUIRE_VIEWER_CSS_SPLIT !== "0";
+const requireSharedFrameLayout = process.env.NOTEBOOK_CLOUD_REQUIRE_SHARED_FRAME_LAYOUT !== "0";
 const forbidRenderCacheRequests = process.env.NOTEBOOK_CLOUD_FORBID_RENDER_CACHE_REQUESTS !== "0";
 const maxPrimaryViewerCssBytes = parsePositiveInteger(
   process.env.NOTEBOOK_CLOUD_MAX_PRIMARY_VIEWER_CSS_BYTES,
@@ -141,6 +142,7 @@ let viewerCssCheck = null;
 let runtimeWasmHintCheck = null;
 let screenshotSaved = false;
 let pageTextMatches = {};
+let frameLayoutCheck = null;
 let viewerMilestones = {};
 let themeModeChecks = [];
 const siftLoadMilestoneMatches = {};
@@ -418,6 +420,10 @@ async function main() {
       .locator(".cloud-presence")
       .textContent({ timeout: 1_000 })
       .catch(() => null);
+    if (requireSharedFrameLayout) {
+      frameLayoutCheck = await checkSharedFrameLayout(page);
+      failures.push(...frameLayoutCheck.failures);
+    }
     viewerMilestones = summarizeViewerMilestones(await collectViewerLoadMarks(page));
 
     if (requireSiftWasm && siftWasmRequests.length === 0) {
@@ -568,6 +574,7 @@ async function main() {
           siftLoadMilestoneMatches,
           frameTextMatches,
           pageTextMatches,
+          frameLayoutCheck,
           themeModeChecks,
           iframeMetrics,
           siftWasmRequests,
@@ -1042,6 +1049,120 @@ async function flushDiagnosticTasks() {
 
 function isPlainRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function checkSharedFrameLayout(page) {
+  const metrics = await page.evaluate(async () => {
+    const header = document.querySelector("[data-slot='notebook-document-header-frame']");
+    const body = document.querySelector("[data-slot='notebook-document-body']");
+    const rail = document.querySelector("[data-testid='notebook-rail']");
+    const stage = document.querySelector("[data-slot='notebook-document-stage']");
+    const scrollContainer = document.querySelector(
+      "[data-slot='cloud-live-notebook'], [data-slot='read-only-notebook']",
+    );
+    const beforeHeaderRect = header?.getBoundingClientRect() ?? null;
+    const beforeRailRect = rail?.getBoundingClientRect() ?? null;
+    const beforeBodyRect = body?.getBoundingClientRect() ?? null;
+    const beforeScrollTop =
+      scrollContainer instanceof HTMLElement ? scrollContainer.scrollTop : null;
+
+    if (scrollContainer instanceof HTMLElement) {
+      const previousScrollBehavior = scrollContainer.style.scrollBehavior;
+      scrollContainer.style.scrollBehavior = "auto";
+      scrollContainer.scrollTo({
+        top: Math.min(
+          640,
+          Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight),
+        ),
+        behavior: "auto",
+      });
+      scrollContainer.scrollTop = Math.min(
+        640,
+        Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight),
+      );
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      scrollContainer.style.scrollBehavior = previousScrollBehavior;
+    }
+
+    const afterHeaderRect = header?.getBoundingClientRect() ?? null;
+    const afterRailRect = rail?.getBoundingClientRect() ?? null;
+    const afterScrollTop =
+      scrollContainer instanceof HTMLElement ? scrollContainer.scrollTop : null;
+
+    return {
+      headerExists: Boolean(header),
+      bodyExists: Boolean(body),
+      railExists: Boolean(rail),
+      stageExists: Boolean(stage),
+      scrollContainerExists: Boolean(scrollContainer),
+      bodyTop: beforeBodyRect?.top ?? null,
+      headerHeight: beforeHeaderRect?.height ?? null,
+      railHeight: beforeRailRect?.height ?? null,
+      scrollContainerClientHeight:
+        scrollContainer instanceof HTMLElement ? scrollContainer.clientHeight : null,
+      scrollContainerScrollHeight:
+        scrollContainer instanceof HTMLElement ? scrollContainer.scrollHeight : null,
+      beforeScrollTop,
+      afterScrollTop,
+      headerTopDelta:
+        beforeHeaderRect && afterHeaderRect
+          ? Math.abs(afterHeaderRect.top - beforeHeaderRect.top)
+          : null,
+      railTopDelta:
+        beforeRailRect && afterRailRect ? Math.abs(afterRailRect.top - beforeRailRect.top) : null,
+    };
+  });
+
+  const localFailures = [];
+  for (const [key, label] of [
+    ["headerExists", "shared document header frame"],
+    ["bodyExists", "shared document body frame"],
+    ["railExists", "shared notebook rail"],
+    ["stageExists", "shared document stage"],
+    ["scrollContainerExists", "notebook scroll container"],
+  ]) {
+    if (!metrics[key]) {
+      localFailures.push({
+        kind: "shared-frame-layout",
+        text: `Missing ${label}`,
+        metrics,
+      });
+    }
+  }
+  if (metrics.headerTopDelta !== null && metrics.headerTopDelta > 1) {
+    localFailures.push({
+      kind: "shared-frame-layout",
+      text: `Notebook header moved ${metrics.headerTopDelta}px while cell content scrolled`,
+      metrics,
+    });
+  }
+  if (metrics.railTopDelta !== null && metrics.railTopDelta > 1) {
+    localFailures.push({
+      kind: "shared-frame-layout",
+      text: `Notebook rail moved ${metrics.railTopDelta}px while cell content scrolled`,
+      metrics,
+    });
+  }
+  if (
+    metrics.afterScrollTop !== null &&
+    metrics.scrollContainerScrollHeight !== null &&
+    metrics.scrollContainerClientHeight !== null &&
+    metrics.scrollContainerScrollHeight > metrics.scrollContainerClientHeight &&
+    metrics.afterScrollTop <= (metrics.beforeScrollTop ?? 0)
+  ) {
+    localFailures.push({
+      kind: "shared-frame-layout",
+      text: "Notebook scroll container did not scroll during frame layout check",
+      metrics,
+    });
+  }
+
+  return {
+    ok: localFailures.length === 0,
+    ...metrics,
+    failures: localFailures,
+  };
 }
 
 async function waitForFrameText(page, expectedTexts) {
