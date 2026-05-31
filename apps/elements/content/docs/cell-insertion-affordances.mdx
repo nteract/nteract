@@ -5,13 +5,13 @@ description: Fixture-backed sketches for making add-cell rows feel connected to 
 
 import { CellInsertionAffordancesExample } from "@/components/cell-insertion-affordances-example";
 
-The current add-cell row has the right structural idea: the ribbon remains part
-of the document spine, while the actions appear only when the reader is near an
-insertion point. This studio keeps the production row visible and compares it
-against lighter, more line-driven directions.
+The add-cell row now follows the same line language as the current execution
+line: the ribbon remains part of the document spine, the choices attach to a
+quiet rule, and color appears only once the reader targets a concrete cell
+type.
 
 The production row now treats proximity as neutral document intent. Code and
-markdown color arrive only when a concrete target is hovered or focused, which
-keeps the spine from declaring a cell type before the reader does.
+markdown color arrive only when a concrete target is hovered or focused, then
+fade back into the document rule instead of becoming a floating control surface.
 
 <CellInsertionAffordancesExample />
