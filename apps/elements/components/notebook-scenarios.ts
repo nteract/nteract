@@ -19,6 +19,7 @@ export type ElementsNotebookScenarioId =
   | "desktop-local-owner"
   | "cloud-public-viewer"
   | "cloud-editor"
+  | "cloud-owner"
   | "runtime-unavailable";
 
 export interface ElementsNotebookScenario {
@@ -574,9 +575,9 @@ export const elementsNotebookScenarios: Record<
       canEditMarkdown: false,
       canEditCells: false,
       canEditStructure: false,
-      canRequestEdit: true,
+      canRequestEdit: false,
       canExecute: false,
-      canToggleCode: false,
+      canToggleCode: true,
       canViewPackages: true,
       canManagePackages: false,
       canManageSharing: false,
@@ -599,9 +600,42 @@ export const elementsNotebookScenarios: Record<
     title: "Cloud editor",
     eyebrow: "hosted fixture",
     summary:
-      "Authenticated cloud editing where the shell can edit cells and share, while execution still waits for a runtime.",
+      "Authenticated cloud editor access where markdown can change but code cells, structure, packages, sharing, and execution stay gated.",
     runtimeLabel: "Cloud notebook · runtime detached",
-    packageSummary: "managed · 4 packages",
+    packageSummary: "visible · 4 packages",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: true,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: true,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "editor",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: "cloud:morgan",
+        identityLabel: "Morgan",
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+    },
+  }),
+  "cloud-owner": createScenario({
+    id: "cloud-owner",
+    title: "Cloud owner",
+    eyebrow: "hosted fixture",
+    summary:
+      "Authenticated cloud owner access with markdown and code-cell source edits plus sharing, while structure, packages, and execution remain host-gated.",
+    runtimeLabel: "Cloud notebook · runtime detached",
+    packageSummary: "visible · 4 packages",
     capabilities: {
       canRead: true,
       canEditMarkdown: true,
@@ -611,7 +645,7 @@ export const elementsNotebookScenarios: Record<
       canExecute: false,
       canToggleCode: true,
       canViewPackages: true,
-      canManagePackages: true,
+      canManagePackages: false,
       canManageSharing: true,
       access: {
         level: "owner",

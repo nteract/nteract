@@ -1,0 +1,29 @@
+---
+title: Notebook shell capabilities
+description: Desktop, cloud, and Elements host facts mapped into the shared notebook shell.
+---
+
+import { NotebookShellCapabilitiesExample } from "@/components/notebook-shell-capabilities-example";
+
+The notebook shell is the shared boundary between host state and notebook UI.
+Desktop, cloud, and Elements should all answer the same capability questions
+before rendering document chrome, rails, package surfaces, editable cells, or
+read-only cells.
+
+This page tracks the current host contract after the cloud and desktop
+convergence work. Elements uses deterministic fixture scenarios here, not a
+runtime, room host, daemon, CRDT bridge, or generated WASM binding.
+
+<NotebookShellCapabilitiesExample />
+
+## Implementation intent
+
+- Hosts derive `NotebookShellCapabilities` from local state, cloud ACL/auth
+  state, or Elements fixtures.
+- Shared surfaces consume the capability object and view model instead of
+  importing desktop or cloud state directly.
+- Cloud editor access can edit markdown, but code-cell source edits and sharing
+  are owner-only; execution and package management remain disabled in hosted
+  previews for now.
+- The catalog should reuse these scenarios whenever a page needs notebook-level
+  context so component examples do not drift from the desktop/cloud shells.

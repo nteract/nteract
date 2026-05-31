@@ -8,6 +8,10 @@ import { ReadOnlyNotebookSurfacesExample } from "@/components/read-only-notebook
 Hosted notebooks and cloud previews should not fork the notebook cell stack.
 This page renders the shared read-only path from current nteract components
 with static nbformat-style fixtures.
+The cloud viewer fixture follows the shared
+[notebook shell capabilities](/docs/notebook-shell-capabilities) contract:
+public readers can inspect notebook and package state but cannot request edit
+until a host-authenticated flow is active.
 
 <ReadOnlyNotebookSurfacesExample />
 

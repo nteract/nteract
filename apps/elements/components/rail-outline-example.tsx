@@ -43,6 +43,7 @@ const scenarioIds: ElementsNotebookScenarioId[] = [
   "desktop-local-owner",
   "cloud-public-viewer",
   "cloud-editor",
+  "cloud-owner",
   "runtime-unavailable",
 ];
 
