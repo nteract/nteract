@@ -60,6 +60,20 @@ test("cloud package rail renders package metadata through the shared shell panel
   assert.doesNotMatch(sourceText, /Package details are not surfaced/);
 });
 
+test("cloud identity chrome renders through the shared actor projection surface", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookIdentityBadge/);
+  assert.match(sourceText, /notebookActorIdentityFromAccess/);
+  assert.match(sourceText, /capabilities=\{shellCapabilities\}/);
+  assert.match(
+    sourceText,
+    /const actor = notebookActorIdentityFromAccess\(capabilities\.access, capabilities\.auth\)/,
+  );
+  assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*actor=\{actor\}/);
+});
+
 test("cloud rail binds through the shared document rail adapter", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

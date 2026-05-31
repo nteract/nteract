@@ -33,7 +33,10 @@ import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookIdentityBadge,
   NotebookPackageSummaryPanel,
+  notebookActorIdentityFromAccess,
+  type NotebookShellCapabilities,
 } from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
@@ -1173,6 +1176,7 @@ function NotebookViewer({
           <CloudAuthControls
             authConfig={authConfig}
             authState={authState}
+            capabilities={shellCapabilities}
             connectionActorLabel={connectionActorLabel}
             connectionError={connectionError}
             connectionScope={connectionScope}
@@ -1712,6 +1716,7 @@ function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
 function CloudAuthControls({
   authConfig,
   authState,
+  capabilities,
   connectionActorLabel,
   connectionError,
   connectionScope,
@@ -1719,6 +1724,7 @@ function CloudAuthControls({
 }: {
   authConfig: CloudViewerAuthConfig;
   authState: CloudPrototypeAuthState;
+  capabilities: NotebookShellCapabilities;
   connectionActorLabel: string | null;
   connectionError: string | null;
   connectionScope: string | null;
@@ -1750,6 +1756,7 @@ function CloudAuthControls({
     connectionError,
     connectionScope,
   });
+  const actor = notebookActorIdentityFromAccess(capabilities.access, capabilities.auth);
   useEffect(() => {
     setCopyState("idle");
   }, [authState, connectionActorLabel, connectionError, connectionScope]);
@@ -1805,9 +1812,17 @@ function CloudAuthControls({
 
   return (
     <details className="cloud-auth-menu">
-      <summary title="Prototype collaborator identity">
-        <KeyRound aria-hidden="true" />
-        <span>{summary}</span>
+      <summary
+        className="cloud-auth-identity-summary"
+        title={`${summary}: ${prototypeAuthSummary(authState)}`}
+        aria-label={`Identity: ${actor.label}`}
+      >
+        <NotebookIdentityBadge
+          actor={actor}
+          size="sm"
+          showDetail={false}
+          className="cloud-auth-identity-badge"
+        />
       </summary>
       <form onSubmit={applyDevAuth}>
         <p>{prototypeAuthSummary(authState)}</p>
