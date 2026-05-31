@@ -3,8 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev --port 5176",
+    "dev": "portless run",
+    "dev:local": "next dev --port 5176",
+    "dev:next": "next dev",
+    "url": "portless get nteract-elements",
     "build": "next build"
+  },
+  "portless": {
+    "name": "nteract-elements",
+    "script": "dev:next"
   },
   "dependencies": {
     "@nteract/sift": "workspace:*",
@@ -34,6 +41,7 @@
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",
     "@nteract/notebook-host": "workspace:*",
+    "portless": "^0.13.0",
     "runtimed": "workspace:*",
     "tailwindcss": "^4.3.0",
     "typescript": "~5.8.3"

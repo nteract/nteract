@@ -12,7 +12,7 @@ const frameConfigAdapterImport = "./components/isolated/frame-config-adapter.ts"
 /** @type {import("next").NextConfig} */
 const config = {
   reactStrictMode: true,
-  allowedDevOrigins: ["127.0.0.1"],
+  allowedDevOrigins: ["127.0.0.1", "**.nteract-elements.localhost"],
   output: "export",
   images: {
     unoptimized: true,

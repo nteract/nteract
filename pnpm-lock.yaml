@@ -362,6 +362,9 @@ importers:
       '@types/react-dom':
         specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.15)
+      portless:
+        specifier: ^0.13.0
+        version: 0.13.0
       runtimed:
         specifier: workspace:*
         version: link:../../packages/runtimed
