@@ -47,6 +47,8 @@ export function NotebookDocumentShell({
       data-can-edit-structure={capabilities?.canEditStructure}
       data-can-execute={capabilities?.canExecute}
       data-can-share={capabilities?.canManageSharing}
+      data-can-write-runtime-state={capabilities?.runtime.canWriteRuntimeState}
+      data-runtime-connected={capabilities?.runtime.connected}
       data-slot="notebook-document-shell"
     >
       {rail}

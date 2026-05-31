@@ -15,6 +15,7 @@ export function cloudNotebookShellCapabilities({
   hasCodeCells,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = cloudConnectionAccessLevel(connectionScope);
+  const isRuntimePeer = connectionScope === "runtime_peer";
   const userSelectedViewMode = authState.requestedScope === "viewer";
   const activeEditLevel = userSelectedViewMode ? "viewer" : accessLevel;
   const canEditMarkdown = activeEditLevel === "editor" || activeEditLevel === "owner";
@@ -44,6 +45,13 @@ export function cloudNotebookShellCapabilities({
       canSignIn: authState.mode !== "oidc",
       canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
       needsAttention: authNeedsAttention,
+    },
+    runtime: {
+      canWriteRuntimeState: isRuntimePeer,
+      connected: isRuntimePeer,
+      source: "cloud",
+      actorLabel: isRuntimePeer ? connectionActorLabel : null,
+      identityLabel: isRuntimePeer ? authState.user : null,
     },
   };
 }

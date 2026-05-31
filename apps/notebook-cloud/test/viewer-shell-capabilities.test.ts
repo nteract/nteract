@@ -35,6 +35,7 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.access.level, "viewer");
   assert.equal(capabilities.access.source, "cloud");
   assert.equal(capabilities.access.isPublic, true);
+  assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
 test("cloud shell capabilities grant editor markdown writes without code, structure, execute, or package management", () => {
@@ -54,6 +55,7 @@ test("cloud shell capabilities grant editor markdown writes without code, struct
   assert.equal(capabilities.access.level, "editor");
   assert.equal(capabilities.access.identityLabel, "user@example.test");
   assert.equal(capabilities.auth.canUseAuthenticatedIdentity, true);
+  assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {
@@ -68,6 +70,7 @@ test("cloud shell capabilities keep user-selected view mode read-only even with 
   assert.equal(capabilities.canEditStructure, false);
   assert.equal(capabilities.access.level, "editor");
   assert.equal(capabilities.canToggleCode, true);
+  assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
 test("cloud shell capabilities reserve code-cell source edits for owners", () => {
@@ -84,6 +87,7 @@ test("cloud shell capabilities reserve code-cell source edits for owners", () =>
   assert.equal(capabilities.canManagePackages, false);
   assert.equal(capabilities.canManageSharing, true);
   assert.equal(capabilities.access.level, "owner");
+  assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
 test("cloud shell capabilities reserve sharing for owners", () => {
@@ -116,6 +120,7 @@ test("cloud shell capabilities expose expired auth attention", () => {
   assert.equal(capabilities.auth.needsAttention, true);
   assert.equal(capabilities.auth.canUseAuthenticatedIdentity, false);
   assert.equal(capabilities.auth.canSignIn, true);
+  assert.equal(capabilities.runtime.connected, false);
 });
 
 test("cloud shell capabilities preserve room actor labels for shared access UI", () => {
@@ -129,4 +134,24 @@ test("cloud shell capabilities preserve room actor labels for shared access UI",
   assert.equal(capabilities.access.level, "owner");
   assert.equal(capabilities.access.actorLabel, "user:anaconda:alice/browser:tab");
   assert.equal(capabilities.access.identityLabel, "user@example.test");
+});
+
+test("cloud shell capabilities keep runtime peer authority separate from document access", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc"),
+    connectionScope: "runtime_peer",
+    connectionActorLabel: "user:anaconda:alice/runtime:jupyterhub",
+    hasCodeCells: true,
+  });
+
+  assert.equal(capabilities.access.level, "viewer");
+  assert.equal(capabilities.canEditMarkdown, false);
+  assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.canManageSharing, false);
+  assert.equal(capabilities.runtime.canWriteRuntimeState, true);
+  assert.equal(capabilities.runtime.connected, true);
+  assert.equal(capabilities.runtime.source, "cloud");
+  assert.equal(capabilities.runtime.actorLabel, "user:anaconda:alice/runtime:jupyterhub");
+  assert.equal(capabilities.runtime.identityLabel, "user@example.test");
 });

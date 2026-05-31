@@ -20,6 +20,19 @@ export interface NotebookShellAuthCapabilities {
   needsAttention: boolean;
 }
 
+export interface NotebookShellRuntimeCapabilities {
+  /**
+   * Runtime peers author execution lifecycle, output, and comm state. This is
+   * intentionally separate from document access: runtime authorship does not
+   * grant notebook editing, package management, or sharing controls.
+   */
+  canWriteRuntimeState: boolean;
+  connected: boolean;
+  source: NotebookShellAccessSource;
+  actorLabel: string | null;
+  identityLabel: string | null;
+}
+
 export interface NotebookShellCapabilities {
   canRead: boolean;
   canEditMarkdown: boolean;
@@ -33,6 +46,7 @@ export interface NotebookShellCapabilities {
   canManageSharing: boolean;
   access: NotebookShellAccessCapabilities;
   auth: NotebookShellAuthCapabilities;
+  runtime: NotebookShellRuntimeCapabilities;
 }
 
 export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = {
@@ -57,5 +71,12 @@ export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = {
     canSignIn: false,
     canUseAuthenticatedIdentity: false,
     needsAttention: false,
+  },
+  runtime: {
+    canWriteRuntimeState: false,
+    connected: false,
+    source: "unknown",
+    actorLabel: null,
+    identityLabel: null,
   },
 };

@@ -61,6 +61,13 @@ describe("NotebookDocumentShell", () => {
         canUseAuthenticatedIdentity: true,
         needsAttention: false,
       },
+      runtime: {
+        canWriteRuntimeState: false,
+        connected: false,
+        source: "cloud",
+        actorLabel: null,
+        identityLabel: null,
+      },
     };
 
     const { container } = render(
@@ -77,5 +84,7 @@ describe("NotebookDocumentShell", () => {
     expect(shell).toHaveAttribute("data-can-edit-structure", "true");
     expect(shell).toHaveAttribute("data-can-execute", "false");
     expect(shell).toHaveAttribute("data-can-share", "true");
+    expect(shell).toHaveAttribute("data-runtime-connected", "false");
+    expect(shell).toHaveAttribute("data-can-write-runtime-state", "false");
   });
 });

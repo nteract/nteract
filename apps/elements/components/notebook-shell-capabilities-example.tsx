@@ -374,6 +374,7 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
     scenario.capabilities.canEditMarkdown ? "markdown" : null,
     scenario.capabilities.canEditCells ? "code source" : null,
     scenario.capabilities.canExecute ? "execute" : null,
+    scenario.capabilities.runtime.canWriteRuntimeState ? "runtime state" : null,
     scenario.capabilities.canManagePackages ? "packages" : null,
     scenario.capabilities.canManageSharing ? "sharing" : null,
   ].filter(Boolean);

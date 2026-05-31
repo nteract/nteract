@@ -14,6 +14,7 @@ export {
   type NotebookShellAccessSource,
   type NotebookShellAuthCapabilities,
   type NotebookShellCapabilities,
+  type NotebookShellRuntimeCapabilities,
 } from "./capabilities";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
