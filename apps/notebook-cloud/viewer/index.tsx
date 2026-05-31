@@ -1123,6 +1123,19 @@ function NotebookViewer({
     if (!canEditMarkdown) return;
     liveRuntimeRef.current?.engine.scheduleFlush();
   }, [canEditMarkdown]);
+  const canWriteCellSource = useCallback(
+    (cellId: string) => {
+      const cell = cellsRef.current.find((candidate) => candidate.id === cellId);
+      if (!cell) {
+        return false;
+      }
+      if (cell.cellType === "markdown") {
+        return shellCapabilities.canEditMarkdown;
+      }
+      return shellCapabilities.canEditCells;
+    },
+    [shellCapabilities],
+  );
   const resetPrototypeAuth = useCallback(() => {
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
@@ -1244,6 +1257,7 @@ function NotebookViewer({
       <PresenceValueProvider value={cloudPresenceContext}>
         <CrdtBridgeProvider
           getHandle={getLiveNotebookHandle}
+          canWriteSource={canWriteCellSource}
           onSyncNeeded={handleMarkdownSyncNeeded}
           localActor={connectionActorLabel ?? ""}
         >

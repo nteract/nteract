@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { remoteChangesFromTextAttributions } from "../crdt-editor-bridge";
+import { createCrdtBridge, remoteChangesFromTextAttributions } from "../crdt-editor-bridge";
 
 describe("remoteChangesFromTextAttributions", () => {
   it("filters attributions to the requested cell", () => {
@@ -68,5 +68,28 @@ describe("remoteChangesFromTextAttributions", () => {
     );
 
     expect(changes).toEqual([{ index: 1, text: "merged", deleted: 2 }]);
+  });
+});
+
+describe("createCrdtBridge capability gating", () => {
+  it("blocks imperative source replacement when the host cannot write", () => {
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () =>
+        ({
+          update_source: (_cellId: string, source: string) => {
+            calls.push(source);
+            return true;
+          },
+          get_cell_source: () => "updated",
+        }) as never,
+      cellId: "cell-a",
+      canWriteSource: () => false,
+      onSourceChanged: (source) => calls.push(`store:${source}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+
+    expect(bridge.replaceSource("blocked")).toBe(false);
+    expect(calls).toEqual([]);
   });
 });

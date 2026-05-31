@@ -26,6 +26,10 @@ test("cloud projects live cells into the NotebookView stores", () => {
     /useLayoutEffect\(\(\) => \{\s+cellsRef\.current = cells;\s+projectCloudCellsIntoNotebookViewStores\(cells\);/,
   );
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
+  assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*canWriteSource=\{canWriteCellSource\}/);
+  assert.match(sourceText, /cell\.cellType === "markdown"/);
+  assert.match(sourceText, /return shellCapabilities\.canEditMarkdown/);
+  assert.match(sourceText, /return shellCapabilities\.canEditCells/);
   assert.doesNotMatch(sourceText, /onSourceChanged=/);
 });
 
