@@ -16,6 +16,12 @@ describe("PackageSpecList", () => {
     expect(screen.getByText("polars")).toBeVisible();
   });
 
+  it("preserves duplicate package rows from separate dependency sections", () => {
+    render(<PackageSpecList values={["numpy", "numpy"]} tone="uv" emptyLabel="No dependencies" />);
+
+    expect(screen.getAllByText("numpy")).toHaveLength(2);
+  });
+
   it("exposes row remove actions when mutation is available", () => {
     const onRemove = vi.fn();
 

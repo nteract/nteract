@@ -42,11 +42,11 @@ export function PackageSpecList({
         className,
       )}
     >
-      {values.map((value) => {
+      {values.map((value, index) => {
         const parsed = parsePackageSpec(value);
         return (
           <div
-            key={value}
+            key={`${index}-${value}`}
             className={cn(
               "flex min-h-9 items-center gap-2 border-b px-2.5 py-1.5 text-xs last:border-b-0",
               !framed && "px-0",

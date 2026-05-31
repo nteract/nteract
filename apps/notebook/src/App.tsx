@@ -91,7 +91,7 @@ import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot, useSourceVersion } from "./lib/notebook-cells";
 import { useNotebookQueueProjection } from "./lib/notebook-executions";
-import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
+import { useDetectRuntime, useNotebookMetadata, usePixiDeps } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput, NotebookCell } from "./types";
@@ -494,6 +494,7 @@ function AppContent() {
 
   // Pixi project detection
   const { pixiInfo } = usePixiDetection();
+  const pixiDeps = usePixiDeps();
 
   // Deno config detection and settings
   const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } = useDenoConfig();
@@ -910,8 +911,7 @@ function AppContent() {
         const pixiCount = pixiPackageCount(pixiInfo);
         return `${pixiInfo.relative_path} · ${packageCountLabel(pixiCount)}`;
       }
-      const pixiCount =
-        (pixiInfo?.dependencies.length ?? 0) + (pixiInfo?.pypi_dependencies.length ?? 0);
+      const pixiCount = pixiInlinePackageCount(pixiDeps);
       return `pixi · ${packageCountLabel(pixiCount)}`;
     }
     if (envSource === "uv:pyproject" || pyprojectInfo?.has_dependencies) {
@@ -932,6 +932,7 @@ function AppContent() {
     pyprojectInfo?.dependency_count,
     pyprojectInfo?.has_dependencies,
     pyprojectInfo?.relative_path,
+    pixiDeps,
     pixiInfo,
     runtime,
   ]);
@@ -2201,6 +2202,18 @@ function pixiPackageCount(pixiInfo: {
 }): number {
   const listedCount = pixiInfo.dependencies.length + pixiInfo.pypi_dependencies.length;
   return listedCount || pixiInfo.dependency_count + pixiInfo.pypi_dependency_count;
+}
+
+function pixiInlinePackageCount(
+  pixiDeps:
+    | {
+        dependencies: readonly string[];
+        pypiDependencies: readonly string[];
+      }
+    | null
+    | undefined,
+): number {
+  return (pixiDeps?.dependencies.length ?? 0) + (pixiDeps?.pypiDependencies.length ?? 0);
 }
 
 function AppErrorFallback(_error: Error, resetErrorBoundary: () => void) {
