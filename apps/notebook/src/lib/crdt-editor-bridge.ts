@@ -27,7 +27,7 @@
  *   // call bridge.destroy() on unmount
  */
 
-import type { ChangeSpec, Extension, Transaction } from "@codemirror/state";
+import { EditorState, type ChangeSpec, type Extension, type Transaction } from "@codemirror/state";
 import {
   type EditorView,
   type PluginValue,
@@ -284,6 +284,14 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
           }
         }
 
+        if (aborted) {
+          const source = handle.get_cell_source(cellId) ?? "";
+          scheduleEditorReconcile(vu.view, source);
+          onSourceChanged(source);
+          onSyncNeeded();
+          return;
+        }
+
         // Read the full source back from WASM for the cell store.
         // This is cheap — single O(n) text read — and keeps the store
         // in sync for non-CM consumers (cell list, find, etc.).
@@ -300,7 +308,31 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
     }
   }
 
-  const plugin = ViewPlugin.fromClass(CrdtBridgePlugin);
+  const outboundGuard = EditorState.transactionFilter.of((tr) => {
+    if (!tr.docChanged || isReconcileTx(tr)) return tr;
+    if (!canWriteSource()) return [];
+    if (!getHandle()) return [];
+    return tr;
+  });
+
+  const plugin = [outboundGuard, ViewPlugin.fromClass(CrdtBridgePlugin)];
+
+  function scheduleEditorReconcile(view: EditorView, source: string): void {
+    queueMicrotask(() => reconcileEditorToSource(view, source));
+  }
+
+  function reconcileEditorToSource(view: EditorView, source: string): void {
+    const currentSource = view.state.doc.toString();
+    if (currentSource === source) return;
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: view.state.doc.length,
+        insert: source,
+      },
+      annotations: externalChangeAnnotation.of(true),
+    });
+  }
 
   // ── Inbound methods ──────────────────────────────────────────────
 
