@@ -83,7 +83,7 @@ Severity legend:
 
 | ID | Smell | Severity | Where |
 |----|-------|----------|-------|
-| SE-1 | `schema_version` is a single LWW scalar, single-writer only by convention (the migrate-on-load path is the lone writer, and desktop rooms are single-version). In a mixed-version cloud room two peers can write it concurrently and the CRDT picks an LWW winner by `(lamport, actor)`, unrelated to which schema is newer, so a stale peer can stamp the shared doc backward. Reproduced by `test_cross_version_schema_version_is_lww_not_monotonic`. Needs host-enforced single-writer auth or monotonic-max merge semantics before cloud ships mixed versions in one room. | Design | `crates/notebook-doc/src/lib.rs`, `docs/architecture/schema-evolution-and-genesis.md`, `docs/architecture/hosted-room-authorization.md` |
+| ~~SE-1~~ | **Done** in fix/se1-schema-version-monotonic-read. `schema_version` is now resolved read-side over its full Automerge conflict set (max of `get_all`) at both read sites: the `schema_version()` accessor and the `load_or_create_inner` classifier. A stale peer's concurrent write still lands in the CRDT, but every reader sees the newest version, so a backward stamp is never observed or persisted to `.ipynb`. The classifier keeps its tri-state (empty = absent, non-empty-no-integer = malformed, else max = valid). Chosen over write-back reconciliation (op-history growth on every restart, daemon-authored merge change desyncs peer sync state) and host-only write auth (no room-host concept exists; nothing for desktop or already-diverged docs). Guarded by `test_cross_version_schema_version_resolves_to_max_not_lww`, `test_load_resolves_schema_version_conflict_to_max`, `test_load_malformed_in_conflict_set_uses_valid_max`. | Done | `crates/notebook-doc/src/lib.rs`, `docs/architecture/schema-evolution-and-genesis.md` |
 
 ## Environment lifecycle
 
@@ -114,10 +114,10 @@ Severity legend:
 
 **Status legend:** Done = landed; Refuted = examined and rejected with rationale; Inline / Targeted / Design = open.
 
-- **Done:** WP-1, WP-2, WP-3, WP-5, WP-9, EP-2, EP-7, EP-12, BS-1, BS-8, BS-11. Eleven landed across #2813, cleanup/inline-pass, and targeted cleanup stacks.
+- **Done:** WP-1, WP-2, WP-3, WP-5, WP-9, EP-2, EP-7, EP-12, BS-1, BS-8, BS-11, SE-1. Twelve landed across #2813, cleanup/inline-pass, targeted cleanup stacks, and the SE-1 read-side fix.
 - **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
 - **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, WP-12, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2, HCA-1. Nineteen open.
-- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-5, 3D-6, 3D-7, 3D-8, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-4, HCA-5, HCA-6, KE-1, CEL-1, SE-1. Thirty open.
+- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-5, 3D-6, 3D-7, 3D-8, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-4, HCA-5, HCA-6, KE-1, CEL-1. Twenty-nine open.
 
 ## Next steps
 

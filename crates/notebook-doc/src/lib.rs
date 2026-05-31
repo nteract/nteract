@@ -119,6 +119,23 @@ pub fn default_runtime_state_doc_id(notebook_id: &str) -> RuntimeStateDocId {
     format!("runtime:{notebook_id}")
 }
 
+/// Extract a non-negative schema version from an Automerge scalar value.
+///
+/// Returns `None` for non-integer scalars and negative `Int`s, so a malformed
+/// `schema_version` value is ignored rather than misread. Shared by the
+/// `schema_version()` accessor and the load-time classifier, which both resolve
+/// `schema_version` over its full conflict set (see SE-1).
+fn schema_version_scalar(value: &automerge::Value<'_>) -> Option<u64> {
+    match value {
+        automerge::Value::Scalar(s) => match s.as_ref() {
+            automerge::ScalarValue::Uint(v) => Some(*v),
+            automerge::ScalarValue::Int(v) if *v >= 0 => Some(*v as u64),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Snapshot of a single cell's state, suitable for serialization.
 ///
 /// `CellSnapshot` represents only the fields that live in the notebook
@@ -1026,15 +1043,20 @@ impl NotebookDoc {
     ///
     /// Returns `None` for documents created before schema versioning was added.
     /// Callers can treat `None` as schema version 1 (the original format).
+    ///
+    /// Resolves over the full Automerge conflict set, not the LWW winner: two
+    /// peers in a mixed-version room can write `schema_version` concurrently
+    /// (SE-1), and the `(lamport, actor)` winner can be the *older* value, which
+    /// would make a reader see the doc as stamped backward. Taking the max keeps
+    /// the observed version monotonic. The fix is read-side: the CRDT still
+    /// records the LWW pick, so there is no write-back and no op-history growth.
     pub fn schema_version(&self) -> Option<u64> {
-        match self.doc.get(automerge::ROOT, "schema_version").ok()?? {
-            (automerge::Value::Scalar(s), _) => match s.as_ref() {
-                automerge::ScalarValue::Uint(v) => Some(*v),
-                automerge::ScalarValue::Int(v) => Some(*v as u64),
-                _ => None,
-            },
-            _ => None,
-        }
+        self.doc
+            .get_all(automerge::ROOT, "schema_version")
+            .ok()?
+            .into_iter()
+            .filter_map(|(value, _)| schema_version_scalar(&value))
+            .max()
     }
 
     /// Create a client-side bootstrap document for sync.
@@ -1132,28 +1154,37 @@ impl NotebookDoc {
                 Ok(data) => match AutoCommit::load(&data) {
                     Ok(doc) => {
                         let mut loaded = Self { doc };
-                        // Classify the persisted `schema_version`. `schema_version()`
-                        // collapses both "key absent" and "key present but not a
-                        // non-negative integer" to None, and casts a negative Int
-                        // to a huge u64 — so read the raw value here to tell a
-                        // version-less doc (treat as current) apart from a
-                        // malformed one (quarantine).
+                        // Classify the persisted `schema_version` over its full
+                        // Automerge conflict set, not just the LWW winner: two
+                        // peers in a mixed-version room can write it concurrently
+                        // (SE-1), and the `(lamport, actor)` winner can be the
+                        // older value, which would misclassify the doc and stamp
+                        // it backward. Resolve to the max instead. Keep the
+                        // absent-vs-malformed distinction the classifier draws:
+                        // an empty conflict set is a missing key (a v5-skeleton
+                        // doc is then current); a non-empty set with no
+                        // non-negative integer is malformed (quarantine).
                         #[derive(Clone, Copy)]
                         enum SchemaState {
                             Absent,
                             Valid(u64),
                             Invalid,
                         }
-                        let state = match loaded.doc.get(automerge::ROOT, "schema_version") {
-                            Ok(None) => SchemaState::Absent,
-                            Ok(Some((automerge::Value::Scalar(s), _))) => match s.as_ref() {
-                                automerge::ScalarValue::Uint(v) => SchemaState::Valid(*v),
-                                automerge::ScalarValue::Int(v) if *v >= 0 => {
-                                    SchemaState::Valid(*v as u64)
-                                }
-                                _ => SchemaState::Invalid,
-                            },
-                            _ => SchemaState::Invalid,
+                        let conflicts = loaded
+                            .doc
+                            .get_all(automerge::ROOT, "schema_version")
+                            .unwrap_or_default();
+                        let state = if conflicts.is_empty() {
+                            SchemaState::Absent
+                        } else {
+                            match conflicts
+                                .iter()
+                                .filter_map(|(value, _)| schema_version_scalar(value))
+                                .max()
+                            {
+                                Some(v) => SchemaState::Valid(v),
+                                None => SchemaState::Invalid,
+                            }
                         };
 
                         // An absent version is only "current" if the doc actually
@@ -4373,23 +4404,22 @@ mod tests {
         assert_eq!(meta["vx_pin"], "abc123");
     }
 
-    /// Reproduction of the multi-writer `schema_version` hazard for cloud.
+    /// SE-1 guarantee: a concurrent multi-writer `schema_version` resolves to
+    /// the newest version on read, not to the raw LWW pick.
     ///
-    /// `schema_version` is a single LWW scalar, single-writer only by
-    /// *convention* (the migrate-on-load path is the lone writer, and desktop
-    /// rooms are single-version). In a mixed-version cloud room two peers can
-    /// write it concurrently: two upgraded peers migrating a stale room doc,
-    /// or a stale peer re-stamping its old version. There is no monotonic/max
-    /// merge: the CRDT picks an LWW winner by (lamport, actor), unrelated to
-    /// which schema is newer, so a stale peer's lower version can win and stamp
-    /// the shared doc backward.
+    /// `schema_version` is an Automerge LWW scalar. In a mixed-version cloud
+    /// room two peers can write it concurrently: two upgraded peers migrating a
+    /// stale room doc, or a stale peer re-stamping its old version. The CRDT
+    /// picks an LWW winner by (lamport, actor), unrelated to which schema is
+    /// newer, so a stale peer's lower version can win the raw tie-break. The
+    /// `schema_version()` accessor resolves over the full conflict set and
+    /// returns the max, so the observed version is monotonic. The fix is
+    /// read-side: the CRDT still records the LWW pick (no write-back, no op
+    /// growth), but every reader sees the newest version.
     ///
-    /// Characterization test: it pins today's (undesirable) behavior so it is
-    /// reproducible. When the fix lands (host-enforced single-writer auth, or
-    /// monotonic-max merge semantics) this test should be updated to assert the
-    /// new guarantee.
+    /// See SE-1 in `docs/architecture/cleanup-punchlist.md`.
     #[test]
-    fn test_cross_version_schema_version_is_lww_not_monotonic() {
+    fn test_cross_version_schema_version_resolves_to_max_not_lww() {
         let mut old = NotebookDoc::new_with_actor("room-nb", "peer-old");
         let mut new = NotebookDoc::new_with_actor("room-nb", "peer-new");
 
@@ -4405,25 +4435,140 @@ mod tests {
         let mut s_new = sync::State::new();
         sync_docs(&mut old, &mut s_old, &mut new, &mut s_new, 20);
 
-        // CRDT determinism holds: both peers converge to the SAME value...
+        // The raw CRDT still records the LWW winner, and it is the *stale*
+        // value: actor ordering is by raw bytes, "peer-old" sorts above
+        // "peer-new", so the older write (4) wins the tie. The fix does not
+        // change this — it resolves the conflict on read, not by writing back.
+        let raw_lww = |doc: &NotebookDoc| {
+            doc.doc
+                .get(automerge::ROOT, "schema_version")
+                .expect("get")
+                .and_then(|(value, _)| match value {
+                    automerge::Value::Scalar(s) => match s.as_ref() {
+                        automerge::ScalarValue::Uint(n) => Some(*n),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+        };
+        assert_eq!(
+            raw_lww(&old),
+            Some(4),
+            "raw LWW still picks the stale peer's version; the fix is read-side"
+        );
+
+        // But the accessor resolves the conflict set to the max on both peers,
+        // so the observed version is monotonic: the newer schema (6) wins.
         assert_eq!(
             old.schema_version(),
             new.schema_version(),
-            "peers converge to a single value"
+            "peers converge to a single resolved value"
         );
-        // ...but it is an LWW pick of one of the two written values, never
-        // their max. There is no merge rule that says "higher schema wins."
-        //
-        // Here the *older* peer wins: the converged value is 4, not 6. The tie
-        // is broken by actor id (concurrent writes have equal lamport counter),
-        // and "peer-old" sorts above "peer-new" by bytes, so the stale peer
-        // stamps the shared doc backward; v6 is silently downgraded to v4.
-        // The winner is decided by actor bytes, not by which schema is newer;
-        // swapping the labels flips it. That arbitrariness is the hazard.
-        let converged = old.schema_version().unwrap();
         assert_eq!(
-            converged, 4,
-            "stale peer's lower version wins the LWW tie, stamping the doc backward"
+            old.schema_version(),
+            Some(6),
+            "schema_version() must resolve the conflict set to the newest version"
+        );
+    }
+
+    /// SE-1 at the load site: a persisted doc whose `schema_version` conflict
+    /// set was backward-stamped by LWW must classify by the conflict-set max,
+    /// not the LWW winner. The forward-tolerant path then keeps it without a
+    /// downgrade, migration, or quarantine.
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_resolves_schema_version_conflict_to_max() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        // The stale writer (value 4) takes the lexically-higher actor so it
+        // wins the raw LWW tie-break: under the old behavior the persisted doc
+        // classifies as v4 and is migrated/downgraded. The fix classifies by
+        // the conflict-set max (6).
+        let mut stale = NotebookDoc::new_with_actor("room-nb", "z-stale");
+        let mut fresh = NotebookDoc::new_with_actor("room-nb", "a-fresh");
+        stale.add_cell(0, "c1", "code").unwrap();
+        stale.update_source("c1", "print('hi')").unwrap();
+
+        let mut s_stale = sync::State::new();
+        let mut s_fresh = sync::State::new();
+        // Share the cell first, then bump schema_version concurrently.
+        sync_docs(&mut stale, &mut s_stale, &mut fresh, &mut s_fresh, 20);
+        stale
+            .doc
+            .put(automerge::ROOT, "schema_version", 4u64)
+            .unwrap();
+        fresh
+            .doc
+            .put(automerge::ROOT, "schema_version", 6u64)
+            .unwrap();
+        sync_docs(&mut stale, &mut s_stale, &mut fresh, &mut s_fresh, 20);
+
+        stale.save_to_file(&path).unwrap();
+
+        let loaded = NotebookDoc::load_or_create(&path, "room-nb");
+        assert_eq!(
+            loaded.schema_version(),
+            Some(6),
+            "load must classify by the conflict-set max (6), not the LWW winner (4)"
+        );
+        assert_eq!(
+            loaded.cell_count(),
+            1,
+            "the document must be preserved, not migrated-over or reset"
+        );
+        assert!(
+            !path.with_extension("automerge.corrupt").exists(),
+            "a forward-resolved doc must not be quarantined"
+        );
+    }
+
+    /// A `schema_version` conflict set with one malformed (non-`u64`) value and
+    /// one valid version classifies as the valid max, not as corrupt. A doc that
+    /// still holds a usable version must not be quarantined.
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_malformed_in_conflict_set_uses_valid_max() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        // The malformed writer takes the lexically-higher actor so it wins the
+        // raw LWW tie-break: under the old behavior the doc is rejected as
+        // corrupt. The fix ignores the malformed value and keeps the valid one.
+        // The valid writer uses 6 (not the genesis 5) so its write is a real
+        // concurrent op, not a no-op that collapses into the genesis ancestor.
+        let mut bad = NotebookDoc::new_with_actor("room-nb", "z-bad");
+        let mut good = NotebookDoc::new_with_actor("room-nb", "a-good");
+        bad.add_cell(0, "c1", "code").unwrap();
+        bad.update_source("c1", "print('hi')").unwrap();
+
+        let mut s_bad = sync::State::new();
+        let mut s_good = sync::State::new();
+        sync_docs(&mut bad, &mut s_bad, &mut good, &mut s_good, 20);
+        bad.doc
+            .put(automerge::ROOT, "schema_version", "not-a-number")
+            .unwrap();
+        good.doc
+            .put(automerge::ROOT, "schema_version", 6u64)
+            .unwrap();
+        sync_docs(&mut bad, &mut s_bad, &mut good, &mut s_good, 20);
+
+        bad.save_to_file(&path).unwrap();
+
+        let loaded = NotebookDoc::load_or_create(&path, "room-nb");
+        assert_eq!(
+            loaded.schema_version(),
+            Some(6),
+            "the valid version wins over the malformed one in the conflict set"
+        );
+        assert_eq!(
+            loaded.cell_count(),
+            1,
+            "a doc with one usable version must not be discarded as corrupt"
+        );
+        assert!(
+            !path.with_extension("automerge.corrupt").exists(),
+            "a doc with a usable version must not be quarantined"
         );
     }
 
