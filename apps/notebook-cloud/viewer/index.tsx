@@ -515,7 +515,6 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
               {authAction === "starting" ? "Starting sign-in" : "Sign in with Anaconda"}
             </button>
           )}
-          <a href="/n/topic-viz">Open topic-viz</a>
           {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
             <button type="button" onClick={resetAuth}>
               <RotateCcw aria-hidden="true" />
@@ -609,6 +608,7 @@ function NotebookViewer({
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const cellsRef = useRef<ResolvedCell[]>([]);
+  const cellsByIdRef = useRef(new Map<string, ResolvedCell>());
   const notebookLanguageRef = useRef("python");
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const liveMaterializedRef = useRef(false);
@@ -663,6 +663,7 @@ function NotebookViewer({
 
   useLayoutEffect(() => {
     cellsRef.current = cells;
+    cellsByIdRef.current = new Map(cells.map((cell) => [cell.id, cell]));
     projectCloudCellsIntoNotebookViewStores(cells);
   }, [cells]);
 
@@ -1125,7 +1126,7 @@ function NotebookViewer({
   }, [canEditMarkdown]);
   const canWriteCellSource = useCallback(
     (cellId: string) => {
-      const cell = cellsRef.current.find((candidate) => candidate.id === cellId);
+      const cell = cellsByIdRef.current.get(cellId);
       if (!cell) {
         return false;
       }

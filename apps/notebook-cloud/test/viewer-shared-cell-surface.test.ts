@@ -23,7 +23,7 @@ test("cloud projects live cells into the NotebookView stores", () => {
 
   assert.match(
     sourceText,
-    /useLayoutEffect\(\(\) => \{\s+cellsRef\.current = cells;\s+projectCloudCellsIntoNotebookViewStores\(cells\);/,
+    /useLayoutEffect\(\(\) => \{[\s\S]*cellsRef\.current = cells;[\s\S]*projectCloudCellsIntoNotebookViewStores\(cells\);/,
   );
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*canWriteSource=\{canWriteCellSource\}/);
