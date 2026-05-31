@@ -37,15 +37,20 @@ import { SvgOutput } from "@/components/outputs/svg-output";
 import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { VegaOutput } from "@/components/outputs/vega-output";
 import { VideoOutput } from "@/components/outputs/video-output";
-import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
+import { OutputArea } from "@/components/cell/OutputArea";
+import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
 import "@/components/widgets/controls";
 import { WidgetStoreContext } from "@/components/widgets/widget-store-context";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
-import { WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 setWasmUrl("/wasm/sift_wasm_bg.wasm");
 
 type SiftLoadMilestone = Parameters<NonNullable<SiftTableProps["onLoadMilestone"]>>[0];
+
+const outputRendererScenario = getElementsNotebookScenario("desktop-local-owner");
+const outputFixtures = outputRendererScenario.outputState;
+const { siftParquetUrl, siftParquetRows, siftArrowStreamChunkUrl, siftArrowStreamManifest } =
+  outputFixtures;
 
 const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
   <rect width="420" height="180" rx="16" fill="#f8fafc"/>
@@ -71,19 +76,6 @@ const svgOutputFixture = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4
 
 const silentAudioDataUrl =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
-
-const jsonFixture = {
-  run: {
-    id: "forecast-042",
-    status: "complete",
-    metrics: {
-      mae: 8.42,
-      mape: 0.068,
-      backtestWeeks: 16,
-    },
-  },
-  artifacts: ["forecast.parquet", "diagnostics.json"],
-};
 
 const plotlyFixture = {
   data: [
@@ -329,16 +321,6 @@ const siftData: TableData = {
   ],
 };
 
-const siftParquetUrl =
-  "https://huggingface.co/datasets/mstz/heart_failure/resolve/refs%2Fconvert%2Fparquet/death/train/0000.parquet";
-
-const siftArrowStreamChunkUrl = "/fixtures/sift-polars-utf8view.arrow";
-
-const siftArrowStreamManifest = {
-  chunks: [{ url: siftArrowStreamChunkUrl }],
-  complete: true,
-};
-
 const expectedSiftUrlMilestones = [
   {
     phase: "URL",
@@ -365,7 +347,7 @@ const expectedSiftManifestMilestones = [
   },
   {
     phase: "Fetch",
-    value: "sift-polars-utf8view.arrow",
+    value: siftArrowStreamChunkUrl.replace("/fixtures/", ""),
   },
   {
     phase: "Append",
@@ -641,197 +623,6 @@ function RendererLibraryFixtureProvider({ children }: { children: React.ReactNod
   return <>{children}</>;
 }
 
-const tracebackFixture = {
-  ename: "ValueError",
-  evalue: "feature matrix contains null values",
-  language: "python",
-  text: `ValueError: feature matrix contains null values
-  at cell forecast-model line 3`,
-  execution: {
-    execution_id: "exec-042",
-    cell_id: "forecast-model",
-    execution_count: 12,
-  },
-  frames: [
-    {
-      filename: "cell://forecast-model",
-      lineno: 3,
-      name: "<module>",
-      execution_id: "exec-042",
-      cell_id: "forecast-model",
-      execution_count: 12,
-      lines: [
-        { lineno: 1, source: "features = orders.assign(month=orders.date.dt.month)" },
-        { lineno: 2, source: "model.fit(features[columns], target)" },
-        { lineno: 3, source: "predictions = model.predict(features_holdout)", highlight: true },
-      ],
-    },
-    {
-      filename: "/workspace/forecasting/model.py",
-      lineno: 88,
-      name: "predict",
-      library: true,
-      lines: [
-        { lineno: 86, source: "def predict(self, frame):" },
-        { lineno: 87, source: "    if frame.isna().any().any():" },
-        {
-          lineno: 88,
-          source: "        raise ValueError('feature matrix contains null values')",
-          highlight: true,
-        },
-      ],
-    },
-  ],
-};
-
-const outputAreaFixtures: JupyterOutput[] = [
-  {
-    output_id: "output-area-stream",
-    output_type: "stream",
-    name: "stdout",
-    text: "loaded 22,767 rows\nvalidated fold 02 with mae=8.42\n",
-  },
-  {
-    output_id: "output-area-html",
-    output_type: "display_data",
-    data: {
-      "text/html": "<strong>unsafe HTML fixture</strong>",
-      "text/plain": "unsafe HTML fixture",
-    },
-    metadata: {},
-  },
-  {
-    output_id: "output-area-parquet",
-    output_type: "display_data",
-    data: {
-      "application/vnd.apache.parquet": {
-        url: siftParquetUrl,
-        rows: siftData.rowCount,
-      },
-      "text/plain": "heart_failure parquet fixture",
-    },
-    metadata: {},
-  },
-];
-
-const widgetOutputModels = [
-  {
-    id: "output-widget-summary",
-    state: {
-      _model_name: "HTMLModel",
-      _model_module: "@jupyter-widgets/controls",
-      value: "<strong>Widget output</strong> <span>rendered through OutputArea</span>",
-    },
-  },
-  {
-    id: "output-widget-threshold",
-    state: {
-      _model_name: "IntSliderModel",
-      _model_module: "@jupyter-widgets/controls",
-      description: "threshold",
-      value: 42,
-      min: 0,
-      max: 100,
-      step: 1,
-      readout: true,
-      orientation: "horizontal",
-      disabled: false,
-    },
-  },
-  {
-    id: "output-widget-progress-style",
-    state: {
-      _model_name: "ProgressStyleModel",
-      _model_module: "@jupyter-widgets/controls",
-      bar_color: "#10b981",
-    },
-  },
-  {
-    id: "output-widget-progress",
-    state: {
-      _model_name: "IntProgressModel",
-      _model_module: "@jupyter-widgets/controls",
-      description: "complete",
-      value: 68,
-      min: 0,
-      max: 100,
-      bar_style: "success",
-      orientation: "horizontal",
-      style: "IPY_MODEL_output-widget-progress-style",
-    },
-  },
-  {
-    id: "output-widget-panel",
-    state: {
-      _model_name: "VBoxModel",
-      _model_module: "@jupyter-widgets/controls",
-      children: [
-        "IPY_MODEL_output-widget-summary",
-        "IPY_MODEL_output-widget-threshold",
-        "IPY_MODEL_output-widget-progress",
-      ],
-      box_style: "success",
-    },
-  },
-];
-
-const widgetOutputFixtures: JupyterOutput[] = [
-  {
-    output_id: "output-area-widget-view",
-    output_type: "display_data",
-    data: {
-      [WIDGET_VIEW_MIME]: { model_id: "output-widget-panel" },
-      "text/plain": "VBox(children=(HTML(), IntSlider(), IntProgress()))",
-    },
-    metadata: {},
-  },
-];
-
-const mimeFixtures = [
-  {
-    label: "Rich traceback beats text",
-    data: {
-      "text/plain": "ValueError: feature matrix contains null values",
-      "application/vnd.nteract.traceback+json": tracebackFixture,
-    },
-  },
-  {
-    label: "HTML requires isolation",
-    data: {
-      "text/html": "<table><tr><td>8.42</td></tr></table>",
-      "text/plain": "MAE 8.42",
-    },
-  },
-  {
-    label: "Preview-only text is skipped",
-    data: {
-      "text/llm+plain": "internal model preview",
-      "text/plain": "visible fallback",
-    },
-  },
-  {
-    label: "Widget view selects widget MIME",
-    data: {
-      [WIDGET_VIEW_MIME]: { model_id: "output-widget-panel" },
-      "text/plain": "VBox(children=...)",
-    },
-  },
-  {
-    label: "Arrow stream manifest selects Sift",
-    data: {
-      "application/vnd.nteract.arrow-stream-manifest+json": siftArrowStreamManifest,
-      "text/plain": "Arrow stream manifest",
-    },
-  },
-  {
-    label: "Structured JSON stays inspectable",
-    data: {
-      "application/json": jsonFixture,
-      "text/plain": JSON.stringify(jsonFixture),
-    },
-  },
-];
-
 const renderedPieces = [
   {
     name: "OutputArea",
@@ -1028,7 +819,7 @@ function RendererCard({
 }
 
 function seedOutputWidgetStore(store: WidgetStore) {
-  for (const model of widgetOutputModels) {
+  for (const model of outputFixtures.widgetModels) {
     store.createModel(model.id, model.state);
   }
 }
@@ -1135,7 +926,7 @@ export function OutputRenderersExample() {
           source="src/components/outputs/json-output.tsx"
           icon={Braces}
         >
-          <JsonOutput data={jsonFixture} collapsed={2} />
+          <JsonOutput data={outputFixtures.json} collapsed={2} />
         </RendererCard>
 
         <RendererCard
@@ -1267,7 +1058,7 @@ export function OutputRenderersExample() {
           </div>
           <div className="rounded-md border border-fd-border bg-background py-3">
             <OutputArea
-              outputs={outputAreaFixtures}
+              outputs={[...outputFixtures.outputAreaOutputs]}
               cellId="elements-output-area"
               executionCount={12}
               collapsed={outputAreaCollapsed}
@@ -1289,7 +1080,7 @@ export function OutputRenderersExample() {
         source="src/components/outputs/traceback-output.tsx"
         icon={FileWarning}
       >
-        <TracebackOutput data={tracebackFixture} />
+        <TracebackOutput data={outputFixtures.traceback} />
       </RendererCard>
 
       <RendererCard
@@ -1311,7 +1102,7 @@ export function OutputRenderersExample() {
             </div>
             <div className="rounded-md border border-fd-border bg-background py-3">
               <OutputArea
-                outputs={widgetOutputFixtures}
+                outputs={[...outputFixtures.widgetOutputs]}
                 cellId="elements-widget-output"
                 executionCount={18}
                 hostContext={{
@@ -1338,7 +1129,7 @@ export function OutputRenderersExample() {
             <div className="font-mono">
               {siftState
                 ? `${siftState.filteredCount}/${siftState.totalCount} rows`
-                : `${siftData.rowCount}/${siftData.rowCount} rows`}
+                : `${siftParquetRows}/${siftParquetRows} rows`}
             </div>
           </div>
         </div>
@@ -1399,7 +1190,7 @@ export function OutputRenderersExample() {
             <span className="font-mono">
               {siftUrlState
                 ? `${siftUrlState.filteredCount}/${siftUrlState.totalCount} rows`
-                : `${siftData.rowCount}/${siftData.rowCount} rows`}
+                : `${siftParquetRows}/${siftParquetRows} rows`}
             </span>
           </div>
         </div>
@@ -1476,7 +1267,7 @@ export function OutputRenderersExample() {
           </p>
         </div>
         <div className="divide-y divide-fd-border">
-          {mimeFixtures.map((fixture) => {
+          {outputFixtures.mimeFixtures.map((fixture) => {
             const selected = selectMimeType(fixture.data);
             const safe = selected ? isSafeForMainDom(selected) : false;
             return (

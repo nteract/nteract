@@ -12,6 +12,9 @@ using fixture data that does not require runtimed, sync state, iframe
 bootstrapping, or plugin injection. The Sift URL surface is the exception: it
 uses a docs-served static `sift-wasm` asset so the catalog can exercise the real
 Parquet and Arrow stream manifest loaders without a daemon.
+The notebook-shaped output lane, MIME selection, widget-view output, traceback,
+and Sift source facts come from the shared Elements scenario layer instead of
+page-local mock state.
 
 <OutputRenderersExample />
 
