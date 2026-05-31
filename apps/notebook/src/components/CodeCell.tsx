@@ -57,7 +57,7 @@ interface CodeCellProps {
   onOutputFocusChange?: (focused: boolean) => void;
   onExecute: () => void;
   onInterrupt: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onNavigateToCell?: (cellId: string) => void;

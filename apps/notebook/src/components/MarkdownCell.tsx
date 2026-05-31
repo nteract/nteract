@@ -57,7 +57,7 @@ function formatPluginLoadError(error: unknown): string {
 interface MarkdownCellProps {
   cell: MarkdownCellType;
   onFocus: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;

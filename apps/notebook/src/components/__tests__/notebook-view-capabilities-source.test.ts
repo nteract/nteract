@@ -18,6 +18,14 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/capabilities\?\.canExecute \?\? !readOnly/);
     expect(sourceText).toMatch(/<CodeCell[\s\S]*canExecute=\{canExecuteCells\}/);
     expect(sourceText).toMatch(/<MarkdownCell[\s\S]*readOnly=\{!canEditMarkdownSources\}/);
+    expect(sourceText).toMatch(
+      /onDelete=\{canMutateCells \? \(\) => onDeleteCell\(cell\.id\) : undefined\}/,
+    );
+    expect(sourceText).toMatch(
+      /onInsertCellAfter=\{canMutateCells \? \(\) => onAddCell\("markdown", cell\.id\) : undefined\}/,
+    );
+    expect(sourceText).toMatch(/canMutateCells && onSetCellSourceHidden/);
+    expect(sourceText).toMatch(/canMutateCells && onSetCellOutputsHidden/);
   });
 
   it("does not install code execution keybindings when execution is unavailable", () => {
