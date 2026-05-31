@@ -425,7 +425,7 @@ impl RuntimeStateDoc {
                 return Ok(());
             }
             calls.set(count - 1);
-            Err(AutomergeError::PatchLogMismatch)
+            Err(automerge::PatchLogMismatch.into())
         })
     }
 

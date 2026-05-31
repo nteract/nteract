@@ -157,7 +157,7 @@ pub fn catch_automerge_result<T, E>(
 /// Returns true when a sync-path Automerge error is safe to contain by
 /// rebuilding the local document and resetting the peer's `sync::State`.
 pub fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
-    matches!(source, automerge::AutomergeError::PatchLogMismatch)
+    matches!(source, automerge::AutomergeError::PatchLogMismatch(_))
 }
 
 /// Run an Automerge operation and, when it returns a caller-marked recoverable
@@ -313,7 +313,7 @@ mod tests {
             |calls| {
                 *calls += 1;
                 if *calls == 1 {
-                    Err(automerge::AutomergeError::PatchLogMismatch)
+                    Err(automerge::PatchLogMismatch.into())
                 } else {
                     Ok("retried")
                 }
@@ -332,9 +332,8 @@ mod tests {
 
     #[test]
     fn only_patch_log_mismatch_is_recoverable_sync_error() {
-        assert!(is_recoverable_sync_error(
-            &automerge::AutomergeError::PatchLogMismatch
-        ));
+        let mismatch: automerge::AutomergeError = automerge::PatchLogMismatch.into();
+        assert!(is_recoverable_sync_error(&mismatch));
 
         let actor = ActorId::from(b"policy-actor" as &[u8]);
         let sources = [
