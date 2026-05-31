@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import type { NotebookCellListItem } from "./cell-data";
@@ -10,6 +10,7 @@ export interface NotebookCellListProps<TCell extends NotebookCellListItem = Note
   slot?: string;
   scrollable?: boolean;
   emptyContent?: ReactNode;
+  stableDomOrder?: boolean;
   keyForCell?: (cell: TCell, index: number) => string;
   resetKeysForCell?: (cell: TCell, index: number) => readonly unknown[];
   renderCell: (cell: TCell, index: number) => ReactNode;
@@ -23,6 +24,7 @@ export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCe
   slot = "notebook-cell-list",
   scrollable = false,
   emptyContent = null,
+  stableDomOrder = false,
   keyForCell = defaultKeyForCell,
   resetKeysForCell = defaultResetKeysForCell,
   renderCell,
@@ -41,21 +43,66 @@ export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCe
     >
       {cells.length === 0
         ? emptyContent
-        : cells.map((cell, index) => (
-            <ErrorBoundary
-              key={keyForCell(cell, index)}
-              resetKeys={resetKeysForCell(cell, index)}
-              fallback={(error) =>
-                renderCellError
-                  ? renderCellError(error, cell, index)
-                  : defaultCellError(error, index)
-              }
-            >
-              {renderCell(cell, index)}
-            </ErrorBoundary>
-          ))}
+        : notebookCellListEntries(cells, keyForCell, stableDomOrder).map(({ cell, index, key }) =>
+            stableDomOrder ? (
+              <div
+                key={key}
+                data-slot="notebook-cell-list-item"
+                style={cellListItemOrderStyle(index)}
+              >
+                <ErrorBoundary
+                  resetKeys={resetKeysForCell(cell, index)}
+                  fallback={(error) =>
+                    renderCellError
+                      ? renderCellError(error, cell, index)
+                      : defaultCellError(error, index)
+                  }
+                >
+                  {renderCell(cell, index)}
+                </ErrorBoundary>
+              </div>
+            ) : (
+              <ErrorBoundary
+                key={key}
+                resetKeys={resetKeysForCell(cell, index)}
+                fallback={(error) =>
+                  renderCellError
+                    ? renderCellError(error, cell, index)
+                    : defaultCellError(error, index)
+                }
+              >
+                {renderCell(cell, index)}
+              </ErrorBoundary>
+            ),
+          )}
     </section>
   );
+}
+
+interface NotebookCellListEntry<TCell extends NotebookCellListItem> {
+  cell: TCell;
+  index: number;
+  key: string;
+}
+
+function notebookCellListEntries<TCell extends NotebookCellListItem>(
+  cells: readonly TCell[],
+  keyForCell: (cell: TCell, index: number) => string,
+  stableDomOrder: boolean,
+): Array<NotebookCellListEntry<TCell>> {
+  const entries = cells.map((cell, index) => ({
+    cell,
+    index,
+    key: keyForCell(cell, index),
+  }));
+  if (!stableDomOrder) {
+    return entries;
+  }
+  return [...entries].sort((a, b) => a.cell.id.localeCompare(b.cell.id) || a.index - b.index);
+}
+
+function cellListItemOrderStyle(index: number): CSSProperties {
+  return { order: index };
 }
 
 function defaultKeyForCell(cell: NotebookCellListItem): string {

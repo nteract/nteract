@@ -56,6 +56,7 @@ export function CloudLiveNotebook({
       className="cloud-report-notebook"
       slot="cloud-live-notebook"
       scrollable
+      stableDomOrder
       renderCellError={(error, _cell, index) => (
         <div className="cloud-state" data-kind="error">
           Unable to render cell {index + 1}: {error.message}

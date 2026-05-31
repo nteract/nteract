@@ -214,6 +214,14 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
   assert.doesNotMatch(sourceText, /findCellElement: \(outlineItem\)/);
 });
 
+test("cloud editable notebook opts into the shared stable cell-list DOM order", () => {
+  const sourcePath = new URL("../viewer/cloud-live-notebook.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /<NotebookEditableView[\s\S]*stableDomOrder/);
+  assert.doesNotMatch(sourceText, /\.map\(\(cell/);
+});
+
 test("cloud live materialization skips empty room handles before resolving outputs", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

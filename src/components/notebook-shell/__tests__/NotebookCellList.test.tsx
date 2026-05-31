@@ -74,6 +74,40 @@ describe("NotebookCellList", () => {
     expect(screen.getByLabelText("Notebook cells")).toHaveClass("overscroll-contain");
   });
 
+  it("can keep stable DOM order while preserving the visual cell order", () => {
+    const reorderedCells: NotebookViewCell[] = [
+      { ...cells[0], id: "z-cell", source: "# Visual first" },
+      { ...cells[1], id: "a-cell", source: "print('dom first')" },
+    ];
+    const { container } = render(
+      <NotebookCellList
+        cells={reorderedCells}
+        stableDomOrder
+        renderCell={(cell, index) => (
+          <article data-testid="cell" data-cell-id={cell.id} data-visual-index={index}>
+            {cell.source}
+          </article>
+        )}
+      />,
+    );
+
+    const renderedCells = screen.getAllByTestId("cell");
+    expect(renderedCells.map((cell) => cell.getAttribute("data-cell-id"))).toEqual([
+      "a-cell",
+      "z-cell",
+    ]);
+    expect(renderedCells.map((cell) => cell.getAttribute("data-visual-index"))).toEqual(["1", "0"]);
+
+    const listItems = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="notebook-cell-list-item"]'),
+    );
+    expect(listItems.map((item) => item.textContent)).toEqual([
+      "print('dom first')",
+      "# Visual first",
+    ]);
+    expect(listItems.map((item) => item.style.order)).toEqual(["1", "0"]);
+  });
+
   it("lets read-only hosts keep duplicate cell ids renderable for malformed imported notebooks", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
