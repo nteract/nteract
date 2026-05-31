@@ -32,7 +32,7 @@ const variants: Array<{
   {
     variant: "production",
     label: "Production line",
-    body: "The current shape lets active states lead with the signal, while completed metadata stays available but visually quiet.",
+    body: "The current shape keeps the signal lane flexible and pins the language/state readout to the right, so running, queued, failed, and completed states share one grammar.",
   },
   {
     variant: "quiet",

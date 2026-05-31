@@ -230,7 +230,7 @@ describe("CodeCell output focus", () => {
     expect(getByTestId("output").getAttribute("data-focused")).toBe("true");
   });
 
-  it("keeps completed execution state readable but visually quiet", () => {
+  it("keeps completed execution state in the stable right readout slot", () => {
     mockOutputs = [];
     mockExecution = { execution_count: 12, submitted_by_actor_label: null };
 
@@ -246,13 +246,15 @@ describe("CodeCell output focus", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer?.getAttribute("data-execution-label")).toBe("Execution 12");
     expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python/run12");
     expect(footer?.textContent).not.toContain("In [12]");
-    expect(status).toHaveClass("max-w-0");
-    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveClass("max-w-64");
+    expect(status).toHaveClass("opacity-100");
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
+    expect(rule).toHaveClass("flex-1");
   });
 
   it("keeps running status active while the stop control carries danger", () => {
@@ -272,12 +274,13 @@ describe("CodeCell output focus", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
     const stopButton = getByTestId("execute-button");
 
     expect(footer?.getAttribute("data-execution-state")).toBe("running");
     expect(status?.textContent).toBe("Python/running");
-    expect(status).toHaveClass("text-emerald-700");
+    expect(detail).toHaveClass("text-emerald-700");
     expect(status).not.toHaveClass("text-destructive/80");
     expect(rule).toHaveClass("text-emerald-500/65");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -306,7 +309,7 @@ describe("CodeCell output focus", () => {
     const runButton = getByTestId("execute-button");
 
     expect(footer?.getAttribute("data-execution-state")).toBe("error");
-    expect(status?.textContent).toBe("Python/run 14 failed");
+    expect(status?.textContent).toBe("Python/failed");
     expect(rule).toHaveClass("text-destructive/60");
     expect(runButton).toHaveAttribute("data-execution-state", "error");
     expect(runButton).toHaveAttribute("aria-label", "Run cell again; last execution 14 failed");
@@ -331,11 +334,11 @@ describe("CodeCell output focus", () => {
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer?.getAttribute("data-execution-state")).toBe("error");
-    expect(status?.textContent).toBe("Python/error");
+    expect(status?.textContent).toBe("Python/failed");
     expect(rule).toHaveClass("text-destructive/60");
   });
 
-  it("keeps idle footer language quiet until the cell is engaged", () => {
+  it("keeps idle footer language in the stable right readout slot", () => {
     mockOutputs = [];
     mockExecution = null;
 
@@ -355,10 +358,10 @@ describe("CodeCell output focus", () => {
 
     expect(footer?.getAttribute("data-execution-state")).toBe("idle");
     expect(status?.textContent).toBe("Python/ready");
-    expect(status).toHaveClass("max-w-0");
-    expect(status).toHaveClass("opacity-0");
-    expect(status).toHaveClass("group-hover:max-w-64");
+    expect(status).toHaveClass("max-w-64");
+    expect(status).toHaveClass("opacity-100");
     expect(rule).toHaveClass("bg-border/15");
+    expect(rule).toHaveClass("flex-1");
   });
 
   it("uses compact current-line chrome for empty idle code cells", () => {
@@ -406,7 +409,7 @@ describe("CodeCell output focus", () => {
     expect(rule).not.toBeNull();
   });
 
-  it("keeps focused idle footer language collapsed into the boundary", () => {
+  it("keeps focused idle footer language pinned to the same readout slot", () => {
     mockOutputs = [];
     mockExecution = null;
     mockIsFocused = true;
@@ -424,9 +427,8 @@ describe("CodeCell output focus", () => {
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(status?.textContent).toBe("Python/ready");
-    expect(status).toHaveClass("max-w-0");
-    expect(status).toHaveClass("opacity-0");
-    expect(status).toHaveClass("group-focus-within:max-w-64");
+    expect(status).toHaveClass("max-w-64");
+    expect(status).toHaveClass("opacity-100");
   });
 
   it("keeps the current line visible when source is hidden but output remains visible", () => {

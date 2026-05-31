@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { CodeCellCurrentLine } from "../CodeCellCurrentLine";
 
 describe("CodeCellCurrentLine", () => {
-  it("keeps idle language quiet until the cell is engaged", () => {
+  it("keeps idle language in the stable right readout slot", () => {
     const { container } = render(<CodeCellCurrentLine languageLabel="Python" count={null} />);
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
@@ -13,9 +13,11 @@ describe("CodeCellCurrentLine", () => {
     expect(footer).toHaveAttribute("data-execution-state", "idle");
     expect(footer).toHaveClass("min-h-4");
     expect(status).toHaveTextContent("Python/ready");
-    expect(status).toHaveClass("max-w-0");
-    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveClass("max-w-64");
+    expect(status).toHaveClass("opacity-100");
     expect(rule).toHaveClass("bg-border/15");
+    expect(rule).toHaveClass("flex-1");
+    expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("keeps blank idle cells slim without separator chrome", () => {
@@ -32,7 +34,7 @@ describe("CodeCellCurrentLine", () => {
     expect(rule).toBeNull();
   });
 
-  it("keeps focused idle language collapsed into the boundary", () => {
+  it("keeps focused idle language pinned to the same readout slot", () => {
     const { container } = render(
       <CodeCellCurrentLine languageLabel="Python" count={null} isFocused />,
     );
@@ -40,9 +42,8 @@ describe("CodeCellCurrentLine", () => {
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(status).toHaveTextContent("Python/ready");
-    expect(status).toHaveClass("max-w-0");
-    expect(status).toHaveClass("opacity-0");
-    expect(status).toHaveClass("group-focus-within:max-w-64");
+    expect(status).toHaveClass("max-w-64");
+    expect(status).toHaveClass("opacity-100");
   });
 
   it("separates active running status from the execution control lane", () => {
@@ -52,13 +53,14 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "running");
     expect(status).toHaveTextContent("Python/running");
     expect(status).toHaveAttribute("aria-label", "Python: Running");
     expect(status).toHaveAttribute("aria-live", "polite");
-    expect(status).toHaveClass("text-emerald-700");
+    expect(detail).toHaveClass("text-emerald-700");
     expect(rule).toHaveClass("text-emerald-500/65");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(rule).toHaveAttribute("data-execution-signal", "building");
@@ -144,11 +146,13 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "queued");
     expect(status).toHaveTextContent("Python/queued");
     expect(status).toHaveAttribute("aria-live", "polite");
+    expect(detail).toHaveClass("text-sky-700");
     expect(rule).toHaveClass("bg-sky-400/45");
     expect(rule).toHaveAttribute("data-queue-priority", "0.35");
     expect(rule).toHaveClass("animate-queue-boundary-pulse");
@@ -177,12 +181,13 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "error");
-    expect(status).toHaveTextContent("Python/run 12 failed");
+    expect(status).toHaveTextContent("Python/failed");
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 failed");
-    expect(status).toHaveClass("text-destructive/80");
+    expect(detail).toHaveClass("text-destructive/80");
     expect(rule).toHaveClass("text-destructive/60");
   });
 
@@ -197,18 +202,21 @@ describe("CodeCellCurrentLine", () => {
     expect(footer).toHaveAttribute("data-execution-label", "Execution 12");
     expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python/run12·1.5s");
     expect(footer).not.toHaveTextContent("In [12]");
-    expect(status).toHaveClass("max-w-0");
+    expect(status).toHaveClass("max-w-64");
   });
 
-  it("keeps completed metadata quiet until the cell is engaged", () => {
+  it("keeps completed metadata in the same right readout slot", () => {
     const { container } = render(<CodeCellCurrentLine languageLabel="Python" count={12} />);
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(status).toHaveTextContent("Python/run 12");
-    expect(status).toHaveClass("max-w-0");
-    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveClass("max-w-64");
+    expect(status).toHaveClass("opacity-100");
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
+    expect(rule).toHaveClass("flex-1");
+    expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("can carry activity context after the run state", () => {
@@ -223,9 +231,13 @@ describe("CodeCellCurrentLine", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     const activity = container.querySelector('[data-slot="code-cell-current-line-activity"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(footer).toHaveTextContent("Kyle");
     expect(activity).toHaveClass("max-w-0");
+    expect(activity?.compareDocumentPosition(status as Element)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(screen.getByTestId("peer-activity")).toBeInTheDocument();
   });
 });

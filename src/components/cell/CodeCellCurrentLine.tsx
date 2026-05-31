@@ -52,7 +52,7 @@ function visualExecutionDetail({
 }): string {
   if (isExecuting) return "running";
   if (isQueued) return "queued";
-  if (isErrored) return count === null ? "error" : `run ${formatExecutionCount(count)} failed`;
+  if (isErrored) return "failed";
   if (count !== null) {
     const runPrefix = `run ${formatExecutionCount(count)}`;
     return elapsedMs === null ? runPrefix : `${runPrefix} · ${formatElapsedMs(elapsedMs)}`;
@@ -156,13 +156,11 @@ function useRunningSignalPhase(isExecuting: boolean): RunningSignalPhase {
 function ExecutionBoundaryRule({
   state,
   runningSignalPhase,
-  isQuietResting,
   queuePriority,
   isFocused,
 }: {
   state: ExecutionBoundaryState;
   runningSignalPhase: RunningSignalPhase;
-  isQuietResting: boolean;
   queuePriority: number;
   isFocused: boolean;
 }) {
@@ -247,8 +245,7 @@ function ExecutionBoundaryRule({
     <div
       data-slot="code-cell-current-line-rule"
       className={cn(
-        "h-px min-w-4 rounded-full transition-[background-color,width,flex-basis] duration-150",
-        isQuietResting ? "w-10 flex-none group-hover:w-14 group-focus-within:w-14" : "flex-1",
+        "h-px min-w-8 flex-1 rounded-full transition-colors duration-150",
         executionLineClass({ isFocused }),
       )}
     />
@@ -280,7 +277,6 @@ export function CodeCellCurrentLine({
           : "idle";
   const isCompactIdle = compactIdle && state === "idle";
   const isQuietResting = state === "idle" || state === "ran";
-  const isSignalLed = state === "running" || state === "queued" || state === "error";
   const detailLabel = visualExecutionDetail({
     count,
     elapsedMs,
@@ -308,14 +304,26 @@ export function CodeCellCurrentLine({
         className,
       )}
     >
-      {!isCompactIdle && isSignalLed ? (
+      {!isCompactIdle ? (
         <ExecutionBoundaryRule
           state={state}
           runningSignalPhase={runningSignalPhase}
-          isQuietResting={isQuietResting}
           queuePriority={queuePriority}
           isFocused={isFocused}
         />
+      ) : null}
+      {!isCompactIdle && activityContent ? (
+        <div
+          data-slot="code-cell-current-line-activity"
+          className={cn(
+            "flex min-w-0 shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-150",
+            isQuietResting
+              ? "max-w-0 opacity-0 group-hover:max-w-24 group-hover:opacity-100 group-focus-within:max-w-24 group-focus-within:opacity-100"
+              : "max-w-24 opacity-100",
+          )}
+        >
+          {activityContent}
+        </div>
       ) : null}
       <span
         data-slot="code-cell-current-line-status"
@@ -323,28 +331,15 @@ export function CodeCellCurrentLine({
         aria-live={isExecuting || isQueued || isErrored ? "polite" : undefined}
         className={cn(
           "flex min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap font-medium transition-[color,opacity,max-width] duration-150",
-          isQuietResting
-            ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-64 group-hover:opacity-100 group-focus-within:max-w-64 group-focus-within:opacity-100"
-            : "max-w-64 opacity-100",
+          isCompactIdle ? "max-w-0 overflow-hidden opacity-0" : "max-w-64 opacity-100",
           isFocused && "text-foreground/70",
-          isExecuting && "text-emerald-700 dark:text-emerald-300",
-          isQueued && "text-sky-700 dark:text-sky-300",
-          isErrored && "text-destructive/80",
         )}
       >
         <span
           data-slot="code-cell-current-line-language"
           className={cn(
             "text-foreground/60 transition-colors duration-150",
-            isSignalLed
-              ? "px-0 py-0"
-              : "rounded-sm px-0.5 py-0.5 group-hover:bg-muted/50 group-hover:text-foreground/70 group-focus-within:bg-muted/50 group-focus-within:text-foreground/70",
-            !isSignalLed && isFocused && "bg-muted/45 text-foreground/70",
-            !isSignalLed &&
-              isExecuting &&
-              "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-            !isSignalLed && isQueued && "bg-sky-500/10 text-sky-700 dark:text-sky-300",
-            !isSignalLed && isErrored && "bg-destructive/10 text-destructive/90",
+            isFocused && "text-foreground/70",
           )}
         >
           {languageLabel}
@@ -357,37 +352,18 @@ export function CodeCellCurrentLine({
         </span>
         <span
           data-slot="code-cell-current-line-detail"
-          className={cn("tabular-nums", isCompactIdle && "sr-only", isSignalLed && "font-semibold")}
+          className={cn(
+            "tabular-nums",
+            isCompactIdle && "sr-only",
+            isExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
+            isQueued && "font-semibold text-sky-700 dark:text-sky-300",
+            isErrored && "font-semibold text-destructive/80",
+            !isExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
+          )}
         >
           {detailLabel}
         </span>
       </span>
-      {!isCompactIdle && (
-        <>
-          {activityContent ? (
-            <div
-              data-slot="code-cell-current-line-activity"
-              className={cn(
-                "flex min-w-0 shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-150",
-                isQuietResting
-                  ? "max-w-0 opacity-0 group-hover:max-w-24 group-hover:opacity-100 group-focus-within:max-w-24 group-focus-within:opacity-100"
-                  : "max-w-24 opacity-100",
-              )}
-            >
-              {activityContent}
-            </div>
-          ) : null}
-          {!isSignalLed ? (
-            <ExecutionBoundaryRule
-              state={state}
-              runningSignalPhase={runningSignalPhase}
-              isQuietResting={isQuietResting}
-              queuePriority={queuePriority}
-              isFocused={isFocused}
-            />
-          ) : null}
-        </>
-      )}
     </div>
   );
 }
