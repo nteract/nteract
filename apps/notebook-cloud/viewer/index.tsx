@@ -1250,8 +1250,7 @@ function NotebookViewer({
           <NotebookView
             cellIds={notebookCellIds}
             isLoading={status.kind === "loading"}
-            canAcceptCellMutations={false}
-            readOnly={!canEditMarkdown}
+            capabilities={shellCapabilities}
             runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
             sessionRuntimeState={connectionError ? "error" : "ready"}
             onFocusCell={setFocusedCellId}

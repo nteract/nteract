@@ -8,7 +8,9 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
 
   assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/components\/NotebookView"/);
   assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
-  assert.match(sourceText, /readOnly=\{!canEditMarkdown\}/);
+  assert.match(sourceText, /<NotebookView[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.doesNotMatch(sourceText, /canAcceptCellMutations=\{false\}/);
+  assert.doesNotMatch(sourceText, /readOnly=\{!canEditMarkdown\}/);
   assert.doesNotMatch(sourceText, /import \{ CloudLiveNotebook \}/);
   assert.doesNotMatch(sourceText, /<CloudLiveNotebook/);
   assert.doesNotMatch(sourceText, /NotebookReadOnlyView/);
@@ -93,4 +95,12 @@ test("cloud viewer shell keeps render endpoints out of the interactive load path
   assert.doesNotMatch(sourceText, /renderEndpoint/);
   assert.doesNotMatch(sourceText, /pinnedRenderBasePath/);
   assert.doesNotMatch(sourceText, /api\/n\/[^"`']+\/render/);
+});
+
+test("hosted smoke waits for shared NotebookView cell markers", () => {
+  const sourcePath = new URL("../scripts/hosted-render-smoke.mjs", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /\[data-slot='cell-container'\], \[data-cell-id\]/);
+  assert.doesNotMatch(sourceText, /read-only-report-cell/);
 });

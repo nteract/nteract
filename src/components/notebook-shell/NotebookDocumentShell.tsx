@@ -44,6 +44,7 @@ export function NotebookDocumentShell({
       data-access-level={capabilities?.access.level}
       data-access-source={capabilities?.access.source}
       data-can-edit={capabilities?.canEditCells}
+      data-can-edit-structure={capabilities?.canEditStructure}
       data-can-execute={capabilities?.canExecute}
       data-can-share={capabilities?.canManageSharing}
       data-slot="notebook-document-shell"

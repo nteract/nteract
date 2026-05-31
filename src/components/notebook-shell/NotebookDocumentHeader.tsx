@@ -44,6 +44,7 @@ export function NotebookDocumentHeader({
       data-authenticated={capabilities.auth.canUseAuthenticatedIdentity}
       data-access-level={capabilities.access.level}
       data-can-edit={capabilities.canEditCells}
+      data-can-edit-structure={capabilities.canEditStructure}
       data-can-request-edit={capabilities.canRequestEdit}
       data-can-share={capabilities.canManageSharing}
     >
