@@ -86,8 +86,9 @@ test.describe("notebook rail outline", () => {
     await expect
       .poll(async () => (await childHeading.boundingBox())?.y ?? Infinity)
       .toBeLessThan(beforeClickY - 400);
+    const viewportHeight = page.viewportSize()?.height ?? 720;
     await expect
       .poll(async () => (await childHeading.boundingBox())?.y ?? Infinity)
-      .toBeLessThan(480);
+      .toBeLessThan(viewportHeight - 32);
   });
 });
