@@ -204,7 +204,7 @@ interface NotebookPrincipalSurface {
   label: string;
   imageUrl?: string | null;
   source?: {
-    provider: "local" | "oidc" | "anaconda-api-key" | "jupyterhub" | "anonymous" | "dev";
+    provider: "local" | "anaconda" | "oidc" | "jupyterhub" | "anonymous" | "dev";
     namespace: string;
   };
 }
@@ -246,6 +246,9 @@ second enum that can drift. Display labels like "Codex for Kyle" are also
 derived from `operator` plus `principal`; they do not need a separate
 `onBehalfOf` field unless the product later models delegation chains between
 multiple principals.
+`source.provider` names the principal authority, not the credential transport:
+an Anaconda API key still projects an Anaconda principal, while the API key
+itself remains credential-layer metadata.
 
 ## Placement
 

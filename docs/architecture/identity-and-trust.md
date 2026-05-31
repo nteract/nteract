@@ -186,7 +186,7 @@ interface PresenceActorProjection {
     label?: string;
     imageUrl?: string;
     source?: {
-      provider: "local" | "oidc" | "anaconda-api-key" | "jupyterhub" | "anonymous" | "dev";
+      provider: "local" | "anaconda" | "oidc" | "jupyterhub" | "anonymous" | "dev";
       namespace: string;
     };
   };
@@ -205,6 +205,11 @@ The nested `operator` is accepted attribution for this connection. Display text
 such as "Codex for Kyle Kelley" is derived from `operator` plus `principal`; it
 does not require a separate `on_behalf_of` field unless a future feature models
 delegation chains between multiple principals.
+
+`principal.source.provider` names the principal authority used for federation
+and display. It is not the credential transport. For example, an API key that
+authenticates an Anaconda user still projects as provider `anaconda`; the API
+key detail belongs to the credential layer described below.
 
 ## Decision 4: Credentials and identity providers are separate concerns
 
