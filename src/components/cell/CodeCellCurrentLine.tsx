@@ -299,6 +299,7 @@ export function CodeCellCurrentLine({
     isQueued,
     isErrored,
   });
+  const isIdleReadyDetail = boundaryState === "idle" && detailLabel === "ready";
   const accessibleDetailLabel = accessibleExecutionDetail({
     count,
     elapsedMs,
@@ -346,8 +347,9 @@ export function CodeCellCurrentLine({
         aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
         aria-live={isExecuting || isQueued || isErrored ? "polite" : undefined}
         className={cn(
-          "flex min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap font-medium transition-[color,opacity,max-width] duration-150",
+          "flex min-w-0 shrink-0 items-center whitespace-nowrap font-medium transition-[color,opacity,max-width,gap] duration-150",
           isCompactIdle ? "max-w-0 overflow-hidden opacity-0" : "max-w-64 opacity-100",
+          isIdleReadyDetail ? "gap-0 group-hover:gap-1.5 group-focus-within:gap-1.5" : "gap-1.5",
           isFocused && "text-foreground/70",
         )}
       >
@@ -361,23 +363,33 @@ export function CodeCellCurrentLine({
           {languageLabel}
         </span>
         <span
-          className={cn("text-muted-foreground/35", isCompactIdle && "sr-only")}
-          aria-hidden="true"
-        >
-          /
-        </span>
-        <span
-          data-slot="code-cell-current-line-detail"
+          data-slot="code-cell-current-line-detail-group"
           className={cn(
-            "tabular-nums",
-            isCompactIdle && "sr-only",
-            visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
-            isQueued && "font-semibold text-sky-700 dark:text-sky-300",
-            isErrored && "font-semibold text-destructive/80",
-            !visualIsExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
+            "flex shrink-0 items-center gap-1.5 transition-[max-width,opacity] duration-150",
+            isIdleReadyDetail
+              ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-16 group-hover:opacity-100 group-focus-within:max-w-16 group-focus-within:opacity-100"
+              : "max-w-64 opacity-100",
           )}
         >
-          {detailLabel}
+          <span
+            className={cn("text-muted-foreground/35", isCompactIdle && "sr-only")}
+            aria-hidden="true"
+          >
+            /
+          </span>
+          <span
+            data-slot="code-cell-current-line-detail"
+            className={cn(
+              "tabular-nums",
+              isCompactIdle && "sr-only",
+              visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
+              isQueued && "font-semibold text-sky-700 dark:text-sky-300",
+              isErrored && "font-semibold text-destructive/80",
+              !visualIsExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
+            )}
+          >
+            {detailLabel}
+          </span>
         </span>
       </span>
     </div>

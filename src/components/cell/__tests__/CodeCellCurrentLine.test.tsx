@@ -8,6 +8,9 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const detailGroup = container.querySelector(
+      '[data-slot="code-cell-current-line-detail-group"]',
+    );
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "idle");
@@ -15,6 +18,9 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveTextContent("Python/ready");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
+    expect(detailGroup).toHaveClass("max-w-0");
+    expect(detailGroup).toHaveClass("opacity-0");
+    expect(detailGroup).toHaveClass("group-hover:max-w-16");
     expect(rule).toHaveClass("bg-border/15");
     expect(rule).toHaveClass("flex-1");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -34,16 +40,22 @@ describe("CodeCellCurrentLine", () => {
     expect(rule).toBeNull();
   });
 
-  it("keeps focused idle language pinned to the same readout slot", () => {
+  it("keeps focused idle language pinned while ready stays a quiet caption", () => {
     const { container } = render(
       <CodeCellCurrentLine languageLabel="Python" count={null} isFocused />,
     );
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const detailGroup = container.querySelector(
+      '[data-slot="code-cell-current-line-detail-group"]',
+    );
 
     expect(status).toHaveTextContent("Python/ready");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
+    expect(detailGroup).toHaveClass("max-w-0");
+    expect(detailGroup).toHaveClass("opacity-0");
+    expect(detailGroup).toHaveClass("group-focus-within:max-w-16");
   });
 
   it("keeps initial running state visually quiet while execution settles", () => {
