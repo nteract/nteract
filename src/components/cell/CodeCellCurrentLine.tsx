@@ -7,11 +7,14 @@ export interface CodeCellCurrentLineProps {
   elapsedMs?: number | null;
   isExecuting?: boolean;
   isQueued?: boolean;
+  isErrored?: boolean;
   isFocused?: boolean;
   compactIdle?: boolean;
   activityContent?: ReactNode;
   className?: string;
 }
+
+type ExecutionBoundaryState = "idle" | "ran" | "queued" | "running" | "error";
 
 function formatExecutionCount(count: number): string {
   return count > 999 ? "999+" : String(count);
@@ -34,16 +37,19 @@ function visualExecutionDetail({
   elapsedMs,
   isExecuting,
   isQueued,
+  isErrored,
 }: {
   count: number | null;
   elapsedMs: number | null;
   isExecuting: boolean;
   isQueued: boolean;
+  isErrored: boolean;
 }): string {
   const runPrefix = count === null ? null : `Run ${formatExecutionCount(count)}`;
 
   if (isExecuting) return "Running";
   if (isQueued) return "Queued";
+  if (isErrored) return runPrefix === null ? "Error" : `${runPrefix} failed`;
   if (count !== null) {
     return elapsedMs === null ? `${runPrefix}` : `${runPrefix} · ${formatElapsedMs(elapsedMs)}`;
   }
@@ -56,16 +62,19 @@ function accessibleExecutionDetail({
   elapsedMs,
   isExecuting,
   isQueued,
+  isErrored,
 }: {
   count: number | null;
   elapsedMs: number | null;
   isExecuting: boolean;
   isQueued: boolean;
+  isErrored: boolean;
 }): string {
   const runPrefix = count === null ? null : `Run ${formatExecutionCount(count)}`;
 
   if (isExecuting) return "Running";
   if (isQueued) return "Queued";
+  if (isErrored) return runPrefix === null ? "Execution failed" : `${runPrefix} failed`;
   if (count !== null) {
     return elapsedMs === null
       ? `${runPrefix} completed`
@@ -97,7 +106,7 @@ function ExecutionBoundaryRule({
   isQueued,
   isFocused,
 }: {
-  state: "idle" | "ran" | "queued" | "running";
+  state: ExecutionBoundaryState;
   isQuietResting: boolean;
   isQueued: boolean;
   isFocused: boolean;
@@ -106,7 +115,7 @@ function ExecutionBoundaryRule({
     return (
       <div
         data-slot="code-cell-current-line-rule"
-        className="relative h-3 min-w-14 flex-1 overflow-hidden text-sky-500/55 dark:text-sky-300/55 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]"
+        className="relative h-3 min-w-14 flex-1 overflow-hidden text-emerald-500/65 dark:text-emerald-300/65 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]"
       >
         <svg
           className="absolute inset-y-0 left-0 h-full w-[200%] animate-exec-signal-wave"
@@ -123,6 +132,43 @@ function ExecutionBoundaryRule({
             vectorEffect="non-scaling-stroke"
           />
         </svg>
+      </div>
+    );
+  }
+
+  if (state === "queued") {
+    return (
+      <div
+        data-slot="code-cell-current-line-rule"
+        className="flex h-3 min-w-12 flex-1 items-center gap-1 text-sky-500/60 dark:text-sky-300/60"
+      >
+        {[0, 120, 240].map((delay) => (
+          <span
+            key={delay}
+            className="size-1 rounded-full bg-current animate-queue-breathe"
+            style={{ animationDelay: `${delay}ms` }}
+            aria-hidden="true"
+          />
+        ))}
+        <span className="h-px min-w-4 flex-1 rounded-full bg-sky-400/20" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  if (state === "error") {
+    return (
+      <div
+        data-slot="code-cell-current-line-rule"
+        className="relative h-3 min-w-12 flex-1 overflow-hidden text-destructive/60"
+      >
+        <span
+          className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-[repeating-linear-gradient(to_right,currentColor_0_0.375rem,transparent_0.375rem_0.625rem)]"
+          aria-hidden="true"
+        />
+        <span
+          className="absolute left-0 top-1/2 size-1.5 -translate-y-1/2 rounded-full bg-current"
+          aria-hidden="true"
+        />
       </div>
     );
   }
@@ -146,20 +192,36 @@ export function CodeCellCurrentLine({
   elapsedMs = null,
   isExecuting = false,
   isQueued = false,
+  isErrored = false,
   isFocused = false,
   compactIdle = false,
   activityContent,
   className,
 }: CodeCellCurrentLineProps) {
-  const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
+  const state: ExecutionBoundaryState = isExecuting
+    ? "running"
+    : isQueued
+      ? "queued"
+      : isErrored
+        ? "error"
+        : count !== null
+          ? "ran"
+          : "idle";
   const isCompactIdle = compactIdle && state === "idle";
   const isQuietResting = state === "idle" || state === "ran";
-  const detailLabel = visualExecutionDetail({ count, elapsedMs, isExecuting, isQueued });
+  const detailLabel = visualExecutionDetail({
+    count,
+    elapsedMs,
+    isExecuting,
+    isQueued,
+    isErrored,
+  });
   const accessibleDetailLabel = accessibleExecutionDetail({
     count,
     elapsedMs,
     isExecuting,
     isQueued,
+    isErrored,
   });
   const countLabel = executionCountLabel(count);
   return (
@@ -177,7 +239,7 @@ export function CodeCellCurrentLine({
       <span
         data-slot="code-cell-current-line-status"
         aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
-        aria-live={isExecuting || isQueued ? "polite" : undefined}
+        aria-live={isExecuting || isQueued || isErrored ? "polite" : undefined}
         className={cn(
           "flex min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap font-medium transition-[color,opacity,max-width] duration-150",
           isQuietResting
@@ -186,6 +248,7 @@ export function CodeCellCurrentLine({
           isFocused && "text-foreground/70",
           isExecuting && "text-primary",
           isQueued && "text-sky-700 dark:text-sky-300",
+          isErrored && "text-destructive/80",
         )}
       >
         <span
@@ -196,6 +259,7 @@ export function CodeCellCurrentLine({
             isFocused && "bg-muted/45 text-foreground/70",
             isExecuting && "bg-primary/10 text-primary",
             isQueued && "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+            isErrored && "bg-destructive/10 text-destructive/90",
           )}
         >
           {languageLabel}

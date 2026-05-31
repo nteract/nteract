@@ -59,8 +59,40 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveAttribute("aria-label", "Python: Running");
     expect(status).toHaveAttribute("aria-live", "polite");
     expect(status).toHaveClass("text-primary");
-    expect(rule).toHaveClass("text-sky-500/55");
+    expect(rule).toHaveClass("text-emerald-500/65");
     expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
+  });
+
+  it("gives queued cells a pending boundary", () => {
+    const { container } = render(
+      <CodeCellCurrentLine languageLabel="Python" count={12} isQueued />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(footer).toHaveAttribute("data-execution-state", "queued");
+    expect(status).toHaveTextContent("Python·Queued");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(rule).toHaveClass("text-sky-500/60");
+    expect(rule?.querySelectorAll(".animate-queue-breathe")).toHaveLength(3);
+  });
+
+  it("gives errored cells a broken boundary", () => {
+    const { container } = render(
+      <CodeCellCurrentLine languageLabel="Python" count={12} isErrored />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(footer).toHaveAttribute("data-execution-state", "error");
+    expect(status).toHaveTextContent("Python·Run 12 failed");
+    expect(status).toHaveAttribute("aria-label", "Python: Run 12 failed");
+    expect(status).toHaveClass("text-destructive/80");
+    expect(rule).toHaveClass("text-destructive/60");
   });
 
   it("keeps completed runs available without notebook prompt syntax", () => {

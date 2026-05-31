@@ -112,13 +112,18 @@ const currentLineStateFixtures = [
   },
   {
     label: "Queued",
-    detail: "Waiting uses the queue accent without becoming an error.",
+    detail: "Waiting gets a dotted signal so it feels pending rather than active.",
     line: <CodeCellCurrentLine languageLabel="Python" count={12} isQueued />,
   },
   {
     label: "Running",
-    detail: "Status reads active; the stop control carries danger.",
+    detail: "Runtime work gets a green floppy wave; the stop control lives outside this boundary.",
     line: <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
+  },
+  {
+    label: "Errored",
+    detail: "Failures keep the run context visible and break the boundary instead of pulsing.",
+    line: <CodeCellCurrentLine languageLabel="Python" count={12} isErrored />,
   },
   {
     label: "Completed",
@@ -713,8 +718,8 @@ function TimedExecutionSignalConcept() {
       </span>
       <span className="font-medium tabular-nums text-primary">Run 32</span>
       <span className="text-muted-foreground/45 tabular-nums">2.1s / ~4s</span>
-      <div className="relative h-3 min-w-24 flex-1 overflow-hidden rounded-full text-sky-500/60 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]">
-        <div className="absolute inset-y-1 left-0 w-[54%] rounded-full bg-sky-400/10 animate-exec-signal-tail" />
+      <div className="relative h-3 min-w-24 flex-1 overflow-hidden rounded-full text-emerald-500/65 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]">
+        <div className="absolute inset-y-1 left-0 w-[54%] rounded-full bg-emerald-400/10 animate-exec-signal-tail" />
         <svg
           className="absolute inset-y-0 left-0 h-full w-[200%] animate-exec-signal-wave"
           viewBox="0 0 240 12"
@@ -731,7 +736,7 @@ function TimedExecutionSignalConcept() {
           />
         </svg>
         <span
-          className="absolute left-[54%] top-1/2 h-2 w-8 -translate-y-1/2 rounded-full bg-gradient-to-r from-transparent via-sky-500/60 to-transparent blur-[0.5px]"
+          className="absolute left-[54%] top-1/2 h-2 w-8 -translate-y-1/2 rounded-full bg-gradient-to-r from-transparent via-emerald-500/60 to-transparent blur-[0.5px]"
           aria-hidden="true"
         />
       </div>

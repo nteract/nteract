@@ -8,6 +8,8 @@ let mockOutputs: unknown[] = [];
 let mockExecution: {
   execution_count: number | null;
   submitted_by_actor_label?: string | null;
+  status?: string;
+  success?: boolean | null;
 } | null = null;
 let mockIsExecuting = false;
 let mockIsFocused = false;
@@ -274,9 +276,35 @@ describe("CodeCell output focus", () => {
     expect(status?.textContent).toBe("Python·Running");
     expect(status).toHaveClass("text-primary");
     expect(status).not.toHaveClass("text-destructive/80");
-    expect(rule).toHaveClass("text-sky-500/55");
+    expect(rule).toHaveClass("text-emerald-500/65");
     expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
     expect(stopButton).toHaveClass("text-destructive");
+  });
+
+  it("uses the error boundary when the latest execution failed", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: 14, submitted_by_actor_label: null, success: false };
+
+    const { container, getByTestId } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+    const runButton = getByTestId("execute-button");
+
+    expect(footer?.getAttribute("data-execution-state")).toBe("error");
+    expect(status?.textContent).toBe("Python·Run 14 failed");
+    expect(rule).toHaveClass("text-destructive/60");
+    expect(runButton).toHaveAttribute("data-execution-state", "error");
+    expect(runButton).toHaveAttribute("aria-label", "Run cell again; last execution 14 failed");
   });
 
   it("keeps idle footer language quiet until the cell is engaged", () => {

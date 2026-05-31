@@ -196,6 +196,7 @@ export const CodeCell = memo(function CodeCell({
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
+  const isExecutionErrored = execution?.success === false || execution?.status === "error";
   const languageLabel =
     language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
   const isSourceEmpty = cell.source.trim().length === 0;
@@ -408,6 +409,7 @@ export const CodeCell = memo(function CodeCell({
       count={executionCount}
       isExecuting={isExecuting}
       isQueued={isQueued}
+      isErrored={isExecutionErrored}
       isFocused={isFocused}
       compactIdle={isSourceEmpty}
       activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
@@ -431,6 +433,7 @@ export const CodeCell = memo(function CodeCell({
               count={executionCount}
               isExecuting={isExecuting}
               isQueued={isQueued}
+              isErrored={isExecutionErrored}
               submittedByActorLabel={submittedByActorLabel}
               isCellFocused={isFocused}
               canExecute={canExecute}

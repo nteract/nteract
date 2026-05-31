@@ -8,6 +8,8 @@ interface CompactExecutionButtonProps {
   isExecuting?: boolean;
   /** Whether the cell is queued for execution */
   isQueued?: boolean;
+  /** Whether the latest execution finished with an error */
+  isErrored?: boolean;
   /** Authenticated actor label for the client that submitted the active execution */
   submittedByActorLabel?: string | null;
   /** Whether the owning cell currently has notebook focus */
@@ -36,6 +38,7 @@ export function CompactExecutionButton({
   count,
   isExecuting = false,
   isQueued = false,
+  isErrored = false,
   submittedByActorLabel = null,
   isCellFocused = false,
   canExecute = true,
@@ -43,7 +46,15 @@ export function CompactExecutionButton({
   onInterrupt,
   className,
 }: CompactExecutionButtonProps) {
-  const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
+  const state = isExecuting
+    ? "running"
+    : isQueued
+      ? "queued"
+      : isErrored
+        ? "error"
+        : count !== null
+          ? "ran"
+          : "idle";
   const displayCount = count === null ? null : formatExecutionCount(count);
   const handleClick = () => {
     if (!canExecute) return;
@@ -65,7 +76,9 @@ export function CompactExecutionButton({
           ? `Queued for execution by ${submittedByActorLabel}`
           : "Queued for execution"
         : count !== null
-          ? `Run cell again; last execution ${count}`
+          ? isErrored
+            ? `Run cell again; last execution ${count} failed`
+            : `Run cell again; last execution ${count}`
           : "Run cell"
     : "Execution unavailable";
 
@@ -83,6 +96,7 @@ export function CompactExecutionButton({
         state === "ran" && "text-muted-foreground/45 hover:bg-primary/5 hover:text-primary",
         state === "queued" && "text-sky-600 dark:text-sky-400",
         state === "running" && "text-destructive hover:bg-destructive/10",
+        state === "error" && "text-destructive/70 hover:bg-destructive/10 hover:text-destructive",
         isQueued || !canExecute ? "cursor-default" : "cursor-pointer",
         !canExecute && "opacity-35 hover:bg-transparent hover:text-muted-foreground/45",
         className,
