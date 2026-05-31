@@ -335,7 +335,7 @@ export class RoomMaterializer {
     const latest = catalog?.revisions.find(
       (revision) => revision.id === catalog.notebook.latest_revision_id,
     );
-    if (!latest?.runtime_snapshot_key) {
+    if (!latest?.runtime_state_doc_id || !latest.runtime_snapshot_key) {
       return null;
     }
 
@@ -395,14 +395,6 @@ function checkpointKeepReasonForRevisionMismatch(
 }
 
 function hasUnpublishedCheckpointChanges(metadata: RoomCheckpointMetadata): boolean {
-  if (
-    metadata.version >= CHECKPOINT_VERSION &&
-    metadata.published_revision_id === null &&
-    ((metadata.published_notebook_heads === null && metadata.notebook_heads.length > 0) ||
-      (metadata.published_runtime_state_heads === null && metadata.runtime_state_heads.length > 0))
-  ) {
-    return true;
-  }
   return (
     headsChanged(metadata.notebook_heads, metadata.published_notebook_heads) ||
     headsChanged(metadata.runtime_state_heads, metadata.published_runtime_state_heads)

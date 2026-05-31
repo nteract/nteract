@@ -664,7 +664,7 @@ describe("RoomMaterializer", () => {
     );
   });
 
-  it("keeps current checkpoints with no published baseline when a snapshot appears later", async () => {
+  it("uses the latest published snapshot instead of no-baseline checkpoints", async () => {
     const state = fakeState();
     const checkpointSnapshot = await createNotebookRoomSnapshot(
       "demo",
@@ -720,8 +720,40 @@ describe("RoomMaterializer", () => {
     const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
     assert.deepEqual(
       cells.map((cell) => [cell.id, cell.source]),
-      [["local-cell", "Local room edit before first publish\n"]],
+      [["published-cell", "Later published snapshot\n"]],
     );
+  });
+
+  it("ignores catalog revisions without RuntimeStateDoc ids", async () => {
+    const state = fakeState();
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Legacy metadata publish\n",
+    );
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-without-runtime-doc-id",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+      runtimeStateDocId: null,
+    });
+
+    const materializer = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      materializer,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
   });
 
   it("uses the latest published snapshot instead of stale revision checkpoints", async () => {
@@ -1548,6 +1580,7 @@ function fakePublishedSnapshotEnv(input: {
   actorLabel: string;
   notebookBytes: Uint8Array;
   runtimeStateBytes: Uint8Array;
+  runtimeStateDocId?: string | null;
 }): Env {
   const snapshotKey = "test:notebook-snapshot";
   const runtimeSnapshotKey = "test:runtime-state-snapshot";
@@ -1567,7 +1600,9 @@ function fakePublishedSnapshotEnv(input: {
       revision: {
         id: input.revisionId,
         notebook_id: input.notebookId,
-        runtime_state_doc_id: `runtime:${input.notebookId}`,
+        runtime_state_doc_id: Object.hasOwn(input, "runtimeStateDocId")
+          ? (input.runtimeStateDocId ?? null)
+          : `runtime:${input.notebookId}`,
         notebook_heads_hash: "heads-published",
         runtime_heads_hash: "runtime-published",
         snapshot_key: snapshotKey,
@@ -1616,7 +1651,7 @@ class FakeCatalogD1 implements D1Database {
       revision: {
         id: string;
         notebook_id: string;
-        runtime_state_doc_id: string;
+        runtime_state_doc_id: string | null;
         notebook_heads_hash: string;
         runtime_heads_hash: string;
         snapshot_key: string;
