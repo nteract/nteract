@@ -156,6 +156,16 @@ test("cloud rail binds through the shared document rail adapter", () => {
   assert.doesNotMatch(sourceText, /<NotebookRail[\s>]/);
 });
 
+test("cloud viewer shell uses the shared host header frame above the rail body", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /header=\{toolbar\}/);
+  assert.match(sourceText, /headerClassName="cloud-report-toolbar"/);
+  assert.match(sourceText, /bodyClassName="cloud-notebook-body"/);
+  assert.doesNotMatch(sourceText, /toolbar=\{toolbar\}/);
+});
+
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

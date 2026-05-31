@@ -1214,10 +1214,11 @@ function NotebookViewer({
     <NotebookDocumentShell
       rootElement="main"
       className="cloud-notebook-shell"
+      header={toolbar}
+      headerClassName="cloud-report-toolbar"
+      headerLabel="Notebook view status and controls"
+      bodyClassName="cloud-notebook-body"
       stageClassName="cloud-notebook-stage"
-      toolbar={toolbar}
-      toolbarClassName="cloud-report-toolbar"
-      toolbarLabel="Notebook view status and controls"
       capabilities={shellCapabilities}
       rail={rail}
       stageLabel="Hosted notebook"

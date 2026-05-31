@@ -37,6 +37,29 @@ describe("NotebookDocumentShell", () => {
     expect(screen.getByLabelText("Hosted notebook")).toBeVisible();
   });
 
+  it("can render a fixed host header above the rail and document stage", () => {
+    const { container } = render(
+      <NotebookDocumentShell
+        header={<button type="button">Sign in</button>}
+        headerLabel="Notebook controls"
+        rail={<nav aria-label="Rail">rail</nav>}
+        stageLabel="Hosted notebook"
+      >
+        <section aria-label="Notebook cells">cells</section>
+      </NotebookDocumentShell>,
+    );
+
+    const header = container.querySelector("[data-slot='notebook-document-header-frame']");
+    const body = container.querySelector("[data-slot='notebook-document-body']");
+    expect(header).not.toBeNull();
+    expect(header).toHaveAttribute("aria-label", "Notebook controls");
+    expect(body).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeVisible();
+    expect(screen.getByLabelText("Rail")).toBeVisible();
+    expect(screen.getByLabelText("Hosted notebook")).toBeVisible();
+    expect(screen.getByLabelText("Notebook cells")).toBeVisible();
+  });
+
   it("exposes host capabilities for adapters and smoke tests", () => {
     const capabilities: NotebookShellCapabilities = {
       canRead: true,

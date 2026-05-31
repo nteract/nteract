@@ -24,6 +24,14 @@ body {
   background: var(--background);
 }
 
+.cloud-notebook-body {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
 .cloud-notebook-rail {
   z-index: 15;
   height: 100%;
@@ -190,10 +198,9 @@ body {
 }
 
 .cloud-report-toolbar {
-  position: sticky;
-  top: 0;
   z-index: 20;
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
