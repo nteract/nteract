@@ -82,6 +82,10 @@ export function NotebookRail({
             icon={item.icon}
             active={!collapsed && activePanelId === item.id}
             onClick={() => {
+              if (!collapsed && activePanelId === item.id) {
+                onCollapsedChange(true);
+                return;
+              }
               onActivePanelChange(item.id);
               onCollapsedChange(false);
             }}

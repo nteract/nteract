@@ -59,6 +59,7 @@ describe("NotebookRail", () => {
 
   it("switches to packages without owning package-management state", () => {
     const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
 
     render(
       <NotebookRail
@@ -72,12 +73,73 @@ describe("NotebookRail", () => {
           </NotebookPackagesPanel>
         }
         onActivePanelChange={onActivePanelChange}
-        onCollapsedChange={vi.fn()}
+        onCollapsedChange={onCollapsedChange}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Packages" }));
     expect(onActivePanelChange).toHaveBeenCalledWith("packages");
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("collapses the rail when clicking the active expanded panel button", () => {
+    const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
+
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Outline" }));
+    expect(onCollapsedChange).toHaveBeenCalledWith(true);
+    expect(onActivePanelChange).not.toHaveBeenCalled();
+  });
+
+  it("collapses the expanded packages panel from its rail button", () => {
+    const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
+
+    render(
+      <NotebookRail
+        activePanelId="packages"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Packages" }));
+    expect(onCollapsedChange).toHaveBeenCalledWith(true);
+    expect(onActivePanelChange).not.toHaveBeenCalled();
+  });
+
+  it("expands the selected panel when clicking a panel button while collapsed", () => {
+    const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
+
+    render(
+      <NotebookRail
+        activePanelId="packages"
+        collapsed
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Packages" }));
+    expect(onActivePanelChange).toHaveBeenCalledWith("packages");
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });
 
   it("exposes a stable panel slot for host shell layout adapters", () => {
