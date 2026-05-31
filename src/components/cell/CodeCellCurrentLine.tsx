@@ -12,6 +12,7 @@ export interface CodeCellCurrentLineProps {
   compactIdle?: boolean;
   submittedByActorLabel?: string | null;
   activityContent?: ReactNode;
+  canExecute?: boolean;
   onExecute: () => void;
   onInterrupt: () => void;
   className?: string;
@@ -117,6 +118,7 @@ export function CodeCellCurrentLine({
   compactIdle = false,
   submittedByActorLabel = null,
   activityContent,
+  canExecute = true,
   onExecute,
   onInterrupt,
   className,
@@ -143,8 +145,10 @@ export function CodeCellCurrentLine({
       : count !== null
         ? `Run cell again; last execution ${count}`
         : "Run cell";
+  const scopedActionTitle = canExecute ? actionTitle : "Execution unavailable";
 
   const handleClick = () => {
+    if (!canExecute) return;
     if (isQueued) return;
     if (isExecuting) {
       onInterrupt();
@@ -168,9 +172,9 @@ export function CodeCellCurrentLine({
       <button
         type="button"
         onClick={handleClick}
-        disabled={isQueued}
-        title={actionTitle}
-        aria-label={actionTitle}
+        disabled={isQueued || !canExecute}
+        title={scopedActionTitle}
+        aria-label={scopedActionTitle}
         aria-busy={isExecuting || undefined}
         data-testid="execute-button"
         data-execution-state={state}
@@ -188,6 +192,8 @@ export function CodeCellCurrentLine({
           state === "ran" && "hover:bg-primary/5 hover:text-primary",
           state === "queued" && "cursor-default text-sky-600 dark:text-sky-400",
           state === "running" && "text-destructive hover:bg-destructive/10",
+          !canExecute &&
+            "cursor-default opacity-35 hover:bg-transparent hover:text-muted-foreground/55",
         )}
       >
         {isExecuting ? (

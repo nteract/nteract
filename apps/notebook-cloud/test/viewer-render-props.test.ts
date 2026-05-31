@@ -4,10 +4,7 @@ import { test } from "node:test";
 import * as ts from "typescript";
 
 test("cloud notebook rendering uses shared cell chrome instead of report-mode cells", () => {
-  const sourcePaths = [
-    new URL("../viewer/index.tsx", import.meta.url),
-    new URL("../viewer/cloud-live-notebook.tsx", import.meta.url),
-  ];
+  const sourcePaths = [new URL("../viewer/index.tsx", import.meta.url)];
   const offenders: string[] = [];
 
   for (const sourcePath of sourcePaths) {
@@ -70,7 +67,8 @@ test("cloud viewer routes notebook header controls through the shared shell head
   assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
-  assert.match(sourceText, /codeControls=\{[\s\S]*className="cloud-code-toggle"/);
+  assert.match(sourceText, /codeControls=\{null\}/);
+  assert.doesNotMatch(sourceText, /className="cloud-code-toggle"/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canManageSharing \? \(/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canToggleCode \? \(/);
 });
@@ -113,7 +111,7 @@ test("cloud notebook shell keeps the rail and toolbar outside the cell scroller"
   );
   assert.match(sourceText, /\.cloud-notebook-rail\s*\{[\s\S]*height: 100%;/);
   assert.match(sourceText, /\.cloud-report-toolbar\s*\{[\s\S]*top: 0;[\s\S]*border-bottom:/);
-  assert.match(sourceText, /\.cloud-report-notebook\s*\{[\s\S]*overflow-y: auto;/);
+  assert.match(sourceText, /@import "\.\.\/\.\.\/notebook\/src\/index\.css";/);
   assert.doesNotMatch(
     sourceText.match(/\.cloud-notebook-shell\s*\{[^}]*\}/)?.[0] ?? "",
     /flex-direction: column;/,

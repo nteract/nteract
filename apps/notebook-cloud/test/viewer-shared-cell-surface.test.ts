@@ -2,64 +2,26 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-test("cloud editable markdown cells use shared cell and output rendering surfaces", () => {
-  const sourcePath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
-
-  assert.match(
-    sourceText,
-    /import \{ EditableMarkdownCell as SharedEditableMarkdownCell \} from "@\/components\/cell\/EditableMarkdownCell";/,
-  );
-  assert.match(sourceText, /<SharedEditableMarkdownCell/);
-  assert.match(sourceText, /elementId=\{notebookCellAnchorId\(cell\.id\)\}/);
-  assert.match(sourceText, /priority=\{priority\}/);
-  assert.match(sourceText, /hostContext=\{hostContext\}/);
-  assert.match(sourceText, /editorExtensions=\{extensions\}/);
-  assert.doesNotMatch(sourceText, /from "@\/components\/cell\/CellContainer"/);
-  assert.doesNotMatch(sourceText, /from "@\/components\/cell\/OutputArea"/);
-  assert.doesNotMatch(sourceText, /from "@\/components\/editor\/codemirror-editor"/);
-});
-
-test("cloud markdown edit toggle avoids blur and stale-source races", () => {
-  const sourcePath = new URL(
-    "../../../src/components/cell/EditableMarkdownCell.tsx",
-    import.meta.url,
-  );
-  const sourceText = readFileSync(sourcePath, "utf8");
-
-  assert.match(sourceText, /editorRef\.current\?\.getEditor\(\)\?\.state\.doc\.toString\(\)/);
-  assert.match(sourceText, /suppressNextToggleClickRef/);
-  assert.match(sourceText, /onMouseDown=\{handleActionMouseDown\}/);
-  assert.match(sourceText, /onClick=\{handleActionClick\}/);
-});
-
-test("cloud markdown editor remounts with latest source state", () => {
-  const sourcePath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
-
-  assert.match(sourceText, /if \(!editing\) return;\s+bridge\.applyFullSource\(cell\.source\);/);
-  assert.match(sourceText, /cell\.source\.trim\(\)\.length === 0 && !editing/);
-});
-
-test("cloud live notebook passes renderer policy into editable markdown cells", () => {
-  const sourcePath = new URL("../viewer/cloud-live-notebook.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
-
-  assert.match(sourceText, /NotebookCellList/);
-  assert.match(sourceText, /slot="cloud-live-notebook"/);
-  assert.match(sourceText, /viewModel: NotebookViewModel<ResolvedCell>/);
-  assert.match(sourceText, /const cells = viewModel\.cells;/);
-  assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
-  assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
-});
-
-test("cloud read-only notebook renders from the shared notebook view model", () => {
+test("cloud notebook body renders through the desktop NotebookView surface", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /NotebookReadOnlyView/);
-  assert.match(sourceText, /<NotebookReadOnlyView[\s\S]*viewModel=\{notebookViewModel\}/);
-  assert.doesNotMatch(sourceText, /cells=\{readOnlyCells\}/);
+  assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/components\/NotebookView"/);
+  assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
+  assert.match(sourceText, /readOnly=\{!canEditMarkdown\}/);
+  assert.doesNotMatch(sourceText, /import \{ CloudLiveNotebook \}/);
+  assert.doesNotMatch(sourceText, /<CloudLiveNotebook/);
+  assert.doesNotMatch(sourceText, /NotebookReadOnlyView/);
+  assert.doesNotMatch(sourceText, /<NotebookReadOnlyView/);
+});
+
+test("cloud projects live cells into the NotebookView stores", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /projectCloudCellsIntoNotebookViewStores\(cells\)/);
+  assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
+  assert.match(sourceText, /onSourceChanged=\{handleMarkdownSourceChange\}/);
 });
 
 test("cloud package rail renders package metadata through the shared shell panel", () => {
