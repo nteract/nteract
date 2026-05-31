@@ -2,6 +2,58 @@ export type NotebookShellAccessLevel = "none" | "viewer" | "editor" | "owner";
 
 export type NotebookShellAccessSource = "cloud" | "local" | "fixture" | "unknown";
 
+export type NotebookActorSourceProvider =
+  | "anonymous"
+  | "anaconda-api-key"
+  | "dev"
+  | "jupyterhub"
+  | "local"
+  | "oidc";
+
+export interface NotebookActorPrincipal {
+  id: string;
+  label: string;
+  imageUrl?: string | null;
+  source?: {
+    provider: NotebookActorSourceProvider;
+    namespace: string;
+  };
+}
+
+export interface NotebookActorOperator {
+  id: string;
+  kind: string;
+  label: string;
+}
+
+export interface NotebookActorProjection {
+  actorLabel: string;
+  principal: NotebookActorPrincipal;
+  operator: NotebookActorOperator;
+  scope?: "viewer" | "editor" | "runtime_peer" | "owner";
+  status?: "active" | "attention" | "idle" | "offline";
+}
+
+export type NotebookActorKind =
+  | "agent"
+  | "human"
+  | "local"
+  | "public"
+  | "runtime"
+  | "system"
+  | "unknown";
+
+export interface NotebookActorIdentity {
+  id: string;
+  label: string;
+  detail: string | null;
+  kind: NotebookActorKind;
+  imageUrl?: string | null;
+  status?: "active" | "attention" | "idle" | "offline";
+  principalLabel?: string | null;
+  operatorLabel?: string | null;
+}
+
 export interface NotebookShellAccessCapabilities {
   /**
    * The document-level access granted to the current identity. Hosts derive
@@ -12,6 +64,12 @@ export interface NotebookShellAccessCapabilities {
   isPublic: boolean;
   actorLabel: string | null;
   identityLabel: string | null;
+  /**
+   * Structured host-owned actor projection. Durable actor labels remain the
+   * backend/CRDT attribution source; React falls back to parsing them only
+   * while hosts are still adopting this source-shaped projection.
+   */
+  actor?: NotebookActorProjection | null;
 }
 
 export interface NotebookShellAuthCapabilities {
@@ -31,6 +89,7 @@ export interface NotebookShellRuntimeCapabilities {
   source: NotebookShellAccessSource;
   actorLabel: string | null;
   identityLabel: string | null;
+  actor?: NotebookActorProjection | null;
 }
 
 export interface NotebookShellCapabilities {

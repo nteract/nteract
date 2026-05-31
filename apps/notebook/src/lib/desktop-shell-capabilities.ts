@@ -1,8 +1,12 @@
+import {
+  notebookActorProjectionFromAccess,
+  notebookActorProjectionFromRuntime,
+} from "@/components/notebook-shell/actor-projection";
 import type {
   NotebookShellAccessLevel,
   NotebookShellAccessSource,
   NotebookShellCapabilities,
-} from "@/components/notebook-shell";
+} from "@/components/notebook-shell/capabilities";
 
 export interface DesktopNotebookShellCapabilityInput {
   canAcceptCellMutations: boolean;
@@ -24,6 +28,20 @@ export function desktopNotebookShellCapabilities({
     canAcceptCellMutations && (accessLevel === "editor" || accessLevel === "owner");
   const canWriteRuntimeState =
     sessionReady && (isRuntimePeer || (source === "local" && canWriteDocument));
+  const access = {
+    level: accessLevel,
+    source,
+    isPublic: false,
+    actorLabel: localActor,
+    identityLabel: null,
+  };
+  const runtime = {
+    canWriteRuntimeState,
+    connected: sessionReady && (source === "local" || isRuntimePeer),
+    source,
+    actorLabel: canWriteRuntimeState ? localActor : null,
+    identityLabel: null,
+  };
 
   return {
     canRead: accessLevel !== "none",
@@ -37,11 +55,8 @@ export function desktopNotebookShellCapabilities({
     canManagePackages: canWriteDocument,
     canManageSharing: accessLevel === "owner" && source === "cloud",
     access: {
-      level: accessLevel,
-      source,
-      isPublic: false,
-      actorLabel: localActor,
-      identityLabel: localActor,
+      ...access,
+      actor: notebookActorProjectionFromAccess(access),
     },
     auth: {
       canSignIn: false,
@@ -49,11 +64,8 @@ export function desktopNotebookShellCapabilities({
       needsAttention: false,
     },
     runtime: {
-      canWriteRuntimeState,
-      connected: sessionReady && (source === "local" || isRuntimePeer),
-      source,
-      actorLabel: canWriteRuntimeState ? localActor : null,
-      identityLabel: canWriteRuntimeState ? localActor : null,
+      ...runtime,
+      actor: notebookActorProjectionFromRuntime(runtime),
     },
   };
 }

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   NotebookIdentityBadge,
   NotebookIdentityGroup,
-  notebookActorFromAccess,
+  notebookActorIdentityFromAccess,
 } from "../NotebookIdentity";
 import type { NotebookShellCapabilities } from "../capabilities";
 
@@ -17,16 +17,16 @@ const cloudOwnerAccess: NotebookShellCapabilities["access"] = {
 
 describe("NotebookIdentity", () => {
   it("projects cloud access into a human identity badge", () => {
-    const actor = notebookActorFromAccess(cloudOwnerAccess);
+    const actor = notebookActorIdentityFromAccess(cloudOwnerAccess);
 
     render(<NotebookIdentityBadge actor={actor} />);
 
     expect(screen.getByText("Kyle")).toBeVisible();
-    expect(screen.getByText("owner through cloud")).toBeVisible();
+    expect(screen.getByText("Owner")).toBeVisible();
   });
 
-  it("projects agent access as acting on behalf of an identity", () => {
-    const actor = notebookActorFromAccess({
+  it("projects agent access as acting for an identity", () => {
+    const actor = notebookActorIdentityFromAccess({
       level: "editor",
       source: "cloud",
       isPublic: false,
@@ -37,11 +37,11 @@ describe("NotebookIdentity", () => {
     render(<NotebookIdentityBadge actor={actor} />);
 
     expect(screen.getByText("Codex")).toBeVisible();
-    expect(screen.getByText("on behalf of Kyle")).toBeVisible();
+    expect(screen.getByText("for Kyle")).toBeVisible();
   });
 
   it("projects durable principal/operator labels for delegated agents", () => {
-    const actor = notebookActorFromAccess({
+    const actor = notebookActorIdentityFromAccess({
       level: "editor",
       source: "cloud",
       isPublic: false,
@@ -54,11 +54,43 @@ describe("NotebookIdentity", () => {
     render(<NotebookIdentityBadge actor={actor} />);
 
     expect(screen.getByText("Codex")).toBeVisible();
-    expect(screen.getByText("on behalf of kyle@example.com")).toBeVisible();
+    expect(screen.getByText("for kyle@example.com")).toBeVisible();
+  });
+
+  it("prefers structured actor projections over durable label fallback", () => {
+    const actor = notebookActorIdentityFromAccess({
+      level: "editor",
+      source: "cloud",
+      isPublic: false,
+      actorLabel: "user:anaconda:opaque/browser:tab",
+      identityLabel: null,
+      actor: {
+        actorLabel: "user:anaconda:opaque/browser:tab",
+        principal: {
+          id: "user:anaconda:opaque",
+          label: "Alice Appleseed",
+          source: { provider: "oidc", namespace: "anaconda" },
+        },
+        operator: {
+          id: "browser:tab",
+          kind: "browser",
+          label: "Browser",
+        },
+        scope: "editor",
+      },
+    });
+
+    expect(actor.id).toBe("user:anaconda:opaque/browser:tab");
+    expect(actor.principalLabel).toBe("Alice Appleseed");
+
+    render(<NotebookIdentityBadge actor={actor} />);
+
+    expect(screen.getByText("Alice Appleseed")).toBeVisible();
+    expect(screen.queryByText("Anaconda user")).toBeNull();
   });
 
   it("projects durable runtime operators separately from document access", () => {
-    const actor = notebookActorFromAccess({
+    const actor = notebookActorIdentityFromAccess({
       level: "viewer",
       source: "cloud",
       isPublic: false,
@@ -75,7 +107,7 @@ describe("NotebookIdentity", () => {
   });
 
   it("projects durable system operators separately from human identity", () => {
-    const actor = notebookActorFromAccess({
+    const actor = notebookActorIdentityFromAccess({
       level: "viewer",
       source: "fixture",
       isPublic: false,
@@ -93,15 +125,15 @@ describe("NotebookIdentity", () => {
 
   it("renders grouped notebook actors with overflow", () => {
     const actors = [
-      notebookActorFromAccess(cloudOwnerAccess),
-      notebookActorFromAccess({
+      notebookActorIdentityFromAccess(cloudOwnerAccess),
+      notebookActorIdentityFromAccess({
         level: "viewer",
         source: "cloud",
         isPublic: true,
         actorLabel: "public viewer",
         identityLabel: null,
       }),
-      notebookActorFromAccess({
+      notebookActorIdentityFromAccess({
         level: "editor",
         source: "local",
         isPublic: false,

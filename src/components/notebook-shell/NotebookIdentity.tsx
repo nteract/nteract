@@ -16,33 +16,12 @@ import {
   AvatarGroup,
   AvatarImage,
 } from "@/components/ui/avatar";
-import type {
-  NotebookShellAccessCapabilities,
-  NotebookShellAuthCapabilities,
-} from "./capabilities";
-import {
-  friendlyNotebookActorLabel,
-  parseNotebookActorLabel,
-  type ParsedNotebookActorKind,
-} from "./actor-labels";
-
-export type NotebookActorKind =
-  | "agent"
-  | "human"
-  | "local"
-  | "public"
-  | "runtime"
-  | "system"
-  | "unknown";
-
-export interface NotebookActorIdentity {
-  id: string;
-  label: string;
-  detail: string | null;
-  kind: NotebookActorKind;
-  imageUrl?: string | null;
-  status?: "active" | "attention" | "idle" | "offline";
-}
+import type { NotebookActorIdentity, NotebookActorKind } from "./capabilities";
+export {
+  notebookActorIdentityFromAccess,
+  notebookActorIdentityFromProjection,
+  notebookActorIdentityFromRuntime,
+} from "./actor-projection";
 
 export interface NotebookIdentityBadgeProps {
   actor: NotebookActorIdentity;
@@ -56,70 +35,6 @@ export interface NotebookIdentityGroupProps {
   maxVisible?: number;
   label?: string;
   className?: string;
-}
-
-export function notebookActorFromAccess(
-  access: NotebookShellAccessCapabilities,
-  auth?: NotebookShellAuthCapabilities,
-): NotebookActorIdentity {
-  const parsedLabel = parseNotebookActorLabel(access.actorLabel);
-  const kind = actorKindFromAccess(access, parsedLabel?.kind ?? null);
-  const accessLabel = accessLevelLabel(access.level);
-  const sourceLabel = accessSourceLabel(access.source);
-
-  if (parsedLabel?.kind === "agent") {
-    const behalfLabel = access.identityLabel ?? parsedLabel.onBehalfOf;
-    return {
-      id: access.actorLabel ?? parsedLabel.label,
-      label: parsedLabel.label,
-      detail: behalfLabel ? `on behalf of ${behalfLabel}` : accessLabel,
-      kind: "agent",
-      status: auth?.needsAttention ? "attention" : "active",
-    };
-  }
-
-  if (parsedLabel?.kind === "runtime") {
-    return {
-      id: access.actorLabel ?? parsedLabel.label,
-      label: parsedLabel.label,
-      detail: access.identityLabel ? `for ${access.identityLabel}` : accessLabel,
-      kind: "runtime",
-      status: auth?.needsAttention ? "attention" : "active",
-    };
-  }
-
-  if (parsedLabel?.kind === "system") {
-    return {
-      id: access.actorLabel ?? parsedLabel.label,
-      label: parsedLabel.label,
-      detail: access.identityLabel ? `for ${access.identityLabel}` : accessLabel,
-      kind: "system",
-      status: auth?.needsAttention ? "attention" : "active",
-    };
-  }
-
-  if (access.isPublic) {
-    return {
-      id: access.actorLabel ?? "public-viewer",
-      label: access.identityLabel ?? "Public viewer",
-      detail: accessLabel,
-      kind: "public",
-      status: auth?.needsAttention ? "attention" : "active",
-    };
-  }
-
-  const label =
-    access.identityLabel ?? friendlyNotebookActorLabel(access.actorLabel) ?? "Unknown viewer";
-  const detail =
-    sourceLabel === null ? accessLabel : `${accessLabel.toLowerCase()} through ${sourceLabel}`;
-
-  return {
-    id: access.actorLabel ?? label,
-    label,
-    detail,
-    kind,
-    status: auth?.needsAttention ? "attention" : "active",
-  };
 }
 
 export function NotebookIdentityBadge({
@@ -230,17 +145,6 @@ function NotebookActorAvatar({
   );
 }
 
-function actorKindFromAccess(
-  access: NotebookShellAccessCapabilities,
-  parsedKind: ParsedNotebookActorKind | null,
-): NotebookActorKind {
-  if (parsedKind) return parsedKind;
-  if (access.isPublic) return "public";
-  if (access.source === "local") return "local";
-  if (access.identityLabel || access.actorLabel) return "human";
-  return "unknown";
-}
-
 function actorIcon(kind: NotebookActorKind): LucideIcon {
   switch (kind) {
     case "agent":
@@ -289,32 +193,6 @@ function statusTone(status: NonNullable<NotebookActorIdentity["status"]>): strin
       return "bg-muted-foreground";
     case "offline":
       return "bg-muted";
-  }
-}
-
-function accessLevelLabel(level: NotebookShellAccessCapabilities["level"]): string {
-  switch (level) {
-    case "none":
-      return "No access";
-    case "viewer":
-      return "Viewer";
-    case "editor":
-      return "Editor";
-    case "owner":
-      return "Owner";
-  }
-}
-
-function accessSourceLabel(source: NotebookShellAccessCapabilities["source"]): string | null {
-  switch (source) {
-    case "cloud":
-      return "cloud";
-    case "local":
-      return "local";
-    case "fixture":
-      return "fixture";
-    case "unknown":
-      return null;
   }
 }
 

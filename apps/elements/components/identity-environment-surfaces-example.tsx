@@ -8,7 +8,7 @@ import {
   NotebookIdentityBadge,
   NotebookIdentityGroup,
   NotebookDocumentHeader,
-  notebookActorFromAccess,
+  notebookActorIdentityFromAccess,
   type NotebookActorIdentity,
 } from "@/components/notebook-shell";
 import { cn } from "@/lib/utils";
@@ -260,7 +260,7 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 function scenarioActor(scenario: ElementsNotebookScenario): NotebookActorIdentity {
-  return notebookActorFromAccess(scenario.capabilities.access, scenario.capabilities.auth);
+  return notebookActorIdentityFromAccess(scenario.capabilities.access, scenario.capabilities.auth);
 }
 
 function syncLabel(scenario: ElementsNotebookScenario): string {

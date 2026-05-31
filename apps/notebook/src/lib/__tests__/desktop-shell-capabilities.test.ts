@@ -27,6 +27,19 @@ describe("desktopNotebookShellCapabilities", () => {
       source: "local",
       actorLabel: "local:kyle/desktop:window",
     });
+    expect(capabilities.access.actor).toMatchObject({
+      principal: {
+        label: "Kyle",
+        source: { provider: "local", namespace: "kyle" },
+      },
+      operator: { kind: "desktop" },
+      scope: "owner",
+    });
+    expect(capabilities.runtime.actor).toMatchObject({
+      principal: { label: "Kyle" },
+      operator: { kind: "desktop" },
+      scope: "runtime_peer",
+    });
   });
 
   it("maps cloud viewer scope in desktop to read-only shell access", () => {
@@ -54,6 +67,15 @@ describe("desktopNotebookShellCapabilities", () => {
       source: "cloud",
       actorLabel: null,
     });
+    expect(capabilities.access.actor).toMatchObject({
+      principal: {
+        label: "Alice",
+        source: { provider: "oidc", namespace: "anaconda" },
+      },
+      operator: { kind: "desktop" },
+      scope: "viewer",
+    });
+    expect(capabilities.runtime.actor).toBeNull();
   });
 
   it("keeps desktop editing disabled until local Automerge mutations are accepted", () => {
@@ -89,6 +111,11 @@ describe("desktopNotebookShellCapabilities", () => {
       connected: true,
       source: "cloud",
       actorLabel: "user:anaconda:alice/runtime:jupyterhub",
+    });
+    expect(capabilities.runtime.actor).toMatchObject({
+      principal: { label: "Alice" },
+      operator: { kind: "runtime", label: "JupyterHub" },
+      scope: "runtime_peer",
     });
   });
 });

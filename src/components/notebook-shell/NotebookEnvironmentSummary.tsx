@@ -1,7 +1,7 @@
 import { CheckCircle2, Lock, Package, RefreshCw, Server, ShieldAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { friendlyNotebookActorLabel, parseNotebookActorLabel } from "./actor-labels";
+import { notebookActorIdentityFromRuntime } from "./actor-projection";
 import type { NotebookShellCapabilities } from "./capabilities";
 import type { NotebookPackageViewModel } from "./view-model";
 
@@ -31,11 +31,9 @@ export function NotebookEnvironmentSummary({
       : "Package metadata hidden";
   const runtimeStateLabel =
     runtimeLabel ?? (capabilities.canExecute ? "Runtime ready" : "No runtime");
-  const runtimeActorLabel =
-    parseNotebookActorLabel(capabilities.runtime.actorLabel)?.label ??
-    friendlyNotebookActorLabel(capabilities.runtime.actorLabel);
+  const runtimeActor = notebookActorIdentityFromRuntime(capabilities.runtime, capabilities.auth);
   const runtimeDetail = capabilities.runtime.canWriteRuntimeState
-    ? `Runtime author: ${runtimeActorLabel ?? "connected runtime"}`
+    ? `Runtime author: ${runtimeActor?.label ?? "connected runtime"}`
     : capabilities.runtime.connected
       ? `Runtime connected through ${accessSourceLabel(capabilities.runtime.source)}`
       : null;

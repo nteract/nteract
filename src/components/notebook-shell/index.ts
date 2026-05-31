@@ -8,7 +8,20 @@ export {
   type ParsedNotebookActorLabel,
 } from "./actor-labels";
 export {
+  notebookActorIdentityFromAccess,
+  notebookActorIdentityFromProjection,
+  notebookActorIdentityFromRuntime,
+  notebookActorProjectionFromAccess,
+  notebookActorProjectionFromRuntime,
+} from "./actor-projection";
+export {
   readOnlyNotebookShellCapabilities,
+  type NotebookActorIdentity,
+  type NotebookActorKind,
+  type NotebookActorOperator,
+  type NotebookActorPrincipal,
+  type NotebookActorProjection,
+  type NotebookActorSourceProvider,
   type NotebookShellAccessCapabilities,
   type NotebookShellAccessLevel,
   type NotebookShellAccessSource,
@@ -21,9 +34,6 @@ export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./Note
 export {
   NotebookIdentityBadge,
   NotebookIdentityGroup,
-  notebookActorFromAccess,
-  type NotebookActorIdentity,
-  type NotebookActorKind,
   type NotebookIdentityBadgeProps,
   type NotebookIdentityGroupProps,
 } from "./NotebookIdentity";
