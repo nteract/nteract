@@ -32,14 +32,11 @@ import { type BlobUploader, WidgetUpdateManager } from "@/components/widgets/wid
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
-import {
-  NotebookPackagesPanel,
-  NotebookRail,
-  type NotebookRailPanelId,
-} from "@/components/notebook-rail";
+import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   createNotebookViewModel,
   navigateNotebookOutlineItem,
+  NotebookDocumentRail,
   NotebookDocumentShell,
   type NotebookViewCell,
 } from "@/components/notebook-shell";
@@ -1946,10 +1943,10 @@ function AppContent() {
           stageLabel="Notebook editor"
           stageClassName="flex-row min-w-0 flex-1"
           rail={
-            <NotebookRail
+            <NotebookDocumentRail
+              viewModel={notebookViewModel}
               activePanelId={activeRailPanel}
               collapsed={railCollapsed}
-              outlineItems={outlineItems}
               outlineCellIds={cellIds}
               activeOutlineItemId={activeOutlineItemId}
               selectedOutlineItemId={selectedOutlineItemId}
