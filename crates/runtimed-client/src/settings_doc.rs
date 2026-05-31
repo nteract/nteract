@@ -1517,7 +1517,7 @@ impl SettingsDoc {
             })
             .is_ok()
         {
-            return Err(AutomergeError::PatchLogMismatch);
+            return Err(automerge::PatchLogMismatch.into());
         }
         Ok(())
     }
