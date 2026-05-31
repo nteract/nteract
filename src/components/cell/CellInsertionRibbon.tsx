@@ -31,6 +31,17 @@ const actionButtonIntentClasses: Record<CellInsertionType, string> = {
     "bg-emerald-500/12 text-emerald-700 ring-emerald-500/20 hover:bg-emerald-500/16 dark:text-emerald-300",
 };
 
+const insertionRuleIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-400/50 dark:bg-sky-300/40",
+  markdown: "bg-emerald-400/50 dark:bg-emerald-300/40",
+};
+
+const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-gradient-to-r from-sky-400/35 via-border/35 to-transparent dark:from-sky-300/30 dark:via-border/30",
+  markdown:
+    "bg-gradient-to-r from-emerald-400/35 via-border/35 to-transparent dark:from-emerald-300/30 dark:via-border/30",
+};
+
 export function CellInsertionRibbon({
   terminal = false,
   activeType,
@@ -65,8 +76,17 @@ export function CellInsertionRibbon({
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
       visualActiveType === type
         ? actionButtonIntentClasses[type]
-        : "hover:bg-muted/60 hover:text-foreground",
+        : "hover:bg-muted/45 hover:text-foreground",
     );
+
+  const leadingInsertionRuleClass = cn(
+    "h-px rounded-full transition-colors duration-150",
+    visualActiveType ? insertionRuleIntentClasses[visualActiveType] : "bg-border/45",
+  );
+  const trailingInsertionRuleClass = cn(
+    "h-px rounded-full transition-colors duration-150",
+    visualActiveType ? insertionTrailingRuleIntentClasses[visualActiveType] : "bg-border/45",
+  );
 
   return (
     <div
@@ -153,16 +173,21 @@ export function CellInsertionRibbon({
       <div
         data-slot="cell-adder-actions"
         className={cn(
-          "flex items-center transition-opacity duration-150",
+          "flex min-w-0 flex-1 items-center transition-opacity duration-150",
           terminal && "pt-0.5",
           forceActionsVisible
             ? "opacity-100"
             : "opacity-0 group-hover/adder:opacity-100 group-hover/adder:delay-75 group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
         )}
       >
+        <span
+          data-slot="cell-adder-leading-rule"
+          className={cn("w-4 shrink-0", leadingInsertionRuleClass)}
+          aria-hidden="true"
+        />
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 items-center gap-1 rounded-full bg-background/80 px-1 shadow-sm shadow-black/[0.04] ring-1 ring-border/45 backdrop-blur-sm"
+          className="flex h-7 shrink-0 items-center gap-1 px-1"
         >
           <button
             type="button"
@@ -191,8 +216,12 @@ export function CellInsertionRibbon({
             <span>Markdown</span>
           </button>
         </div>
+        <span
+          data-slot="cell-adder-trailing-rule"
+          className={cn("min-w-8 flex-1", trailingInsertionRuleClass)}
+          aria-hidden="true"
+        />
       </div>
-      <div className="flex-1" />
     </div>
   );
 }
