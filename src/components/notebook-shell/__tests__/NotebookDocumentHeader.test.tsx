@@ -50,6 +50,7 @@ describe("NotebookDocumentHeader", () => {
     render(
       <NotebookDocumentHeader
         capabilities={capabilities()}
+        runtimeControls={<button type="button">Run</button>}
         codeControls={<button type="button">Code</button>}
         sharingControls={<button type="button">Share</button>}
         editControls={<button type="button">Edit</button>}
@@ -57,6 +58,7 @@ describe("NotebookDocumentHeader", () => {
       />,
     );
 
+    expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Code" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
@@ -85,6 +87,7 @@ describe("NotebookDocumentHeader", () => {
             needsAttention: false,
           },
         })}
+        runtimeControls={<button type="button">Run</button>}
         codeControls={<button type="button">Code</button>}
         sharingControls={<button type="button">Share</button>}
         editControls={<button type="button">Edit</button>}
@@ -92,6 +95,7 @@ describe("NotebookDocumentHeader", () => {
       />,
     );
 
+    expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Code" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Share" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Edit" })).toBeVisible();

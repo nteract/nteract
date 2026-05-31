@@ -6,6 +6,7 @@ export interface NotebookDocumentHeaderProps {
   capabilities: NotebookShellCapabilities;
   presence?: ReactNode;
   utilityControls?: ReactNode;
+  runtimeControls?: ReactNode;
   codeControls?: ReactNode;
   sharingControls?: ReactNode;
   editControls?: ReactNode;
@@ -17,6 +18,7 @@ export function NotebookDocumentHeader({
   capabilities,
   presence,
   utilityControls,
+  runtimeControls,
   codeControls,
   sharingControls,
   editControls,
@@ -24,6 +26,9 @@ export function NotebookDocumentHeader({
   className,
 }: NotebookDocumentHeaderProps) {
   const showCodeControls = capabilities.canToggleCode && Boolean(codeControls);
+  const showRuntimeControls =
+    Boolean(runtimeControls) &&
+    (capabilities.canExecute || capabilities.canViewPackages || capabilities.canManagePackages);
   const showSharingControls = capabilities.canManageSharing && Boolean(sharingControls);
   const showEditControls = capabilities.canRequestEdit && Boolean(editControls);
   const showAuthControls =
@@ -52,6 +57,11 @@ export function NotebookDocumentHeader({
         {utilityControls ? (
           <div className="contents" data-slot="notebook-document-header-utility-controls">
             {utilityControls}
+          </div>
+        ) : null}
+        {showRuntimeControls ? (
+          <div className="contents" data-slot="notebook-document-header-runtime-controls">
+            {runtimeControls}
           </div>
         ) : null}
         {showCodeControls ? (
