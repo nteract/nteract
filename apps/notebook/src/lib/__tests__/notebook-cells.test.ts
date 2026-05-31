@@ -174,7 +174,7 @@ describe("subscriber notifications", () => {
   });
 });
 
-describe("materialization version", () => {
+describe("cell chrome version", () => {
   it("does not bump for output-only replacements", () => {
     const firstOutput = {
       output_type: "stream" as const,
@@ -226,6 +226,47 @@ describe("materialization version", () => {
 
     expect(result.current).toBe(initialVersion + 1);
     expect(renderCount.current).toBe(2);
+  });
+
+  it("bumps when updateCellById changes cell chrome", () => {
+    replaceNotebookCells([codeCell("a", "old")]);
+
+    const { result } = renderHook(() => useMaterializeVersion());
+    const initialVersion = result.current;
+
+    act(() => {
+      updateCellById("a", (cell) =>
+        cell.cell_type === "code" ? { ...cell, execution_count: 1 } : cell,
+      );
+    });
+
+    expect(result.current).toBe(initialVersion + 1);
+  });
+
+  it("does not bump when updateCellById changes only legacy outputs", () => {
+    replaceNotebookCells([codeCell("a", "print('hello')")]);
+
+    const { result } = renderHook(() => useMaterializeVersion());
+    const initialVersion = result.current;
+
+    act(() => {
+      updateCellById("a", (cell) =>
+        cell.cell_type === "code"
+          ? {
+              ...cell,
+              outputs: [
+                {
+                  output_type: "stream" as const,
+                  name: "stdout" as const,
+                  text: "hello",
+                },
+              ],
+            }
+          : cell,
+      );
+    });
+
+    expect(result.current).toBe(initialVersion);
   });
 });
 

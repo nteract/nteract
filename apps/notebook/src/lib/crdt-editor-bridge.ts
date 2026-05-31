@@ -237,13 +237,16 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
             const { fromA, toA, inserted } = changes[i];
             const deleteCount = toA - fromA;
 
-            // Diagnostic: log splices near non-BMP characters (surrogate pairs)
+            // Diagnostic: log splices near non-BMP characters (surrogate pairs).
+            // Do not compare against the WASM source length here: the handle
+            // has not applied this splice yet, so ordinary edits are expected
+            // to differ from the post-transaction CodeMirror document.
             const docText = vu.state.doc.toString();
-            const wasmSource = handle.get_cell_source(cellId) ?? "";
             const hasNonBMP = /[\uD800-\uDBFF]/.test(
               docText.slice(Math.max(0, fromA - 4), fromA + deleteCount + 4),
             );
-            if (hasNonBMP || wasmSource.length !== docText.length) {
+            if (hasNonBMP) {
+              const wasmSource = handle.get_cell_source(cellId) ?? "";
               logger.debug("[crdt-bridge] SPLICE", {
                 cellId: cellId.slice(0, 8),
                 fromA,

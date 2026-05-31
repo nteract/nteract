@@ -29,7 +29,6 @@ import { IsolatedRendererProvider } from "@/components/isolated/isolated-rendere
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
-  createNotebookViewModel,
   NotebookDocumentHeader,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
@@ -71,6 +70,7 @@ import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import { flushCellUIState, setFocusedCellId } from "../../notebook/src/lib/cell-ui-state";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
+import { useNotebookViewModel } from "../../notebook/src/lib/notebook-view-model";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudViewStoreProjection,
@@ -1060,14 +1060,10 @@ function NotebookViewer({
     widgetStore,
   ]);
 
-  const notebookViewModel = useMemo(
-    () =>
-      createNotebookViewModel(cells, {
-        metadata: notebookMetadata,
-        resolveLanguage: cloudSourceLanguage,
-      }),
-    [cells, notebookMetadata],
-  );
+  const notebookViewModel = useNotebookViewModel({
+    metadata: notebookMetadata,
+    resolveLanguage: cloudSourceLanguage,
+  });
   const { codeCellCount, outlineItems } = notebookViewModel;
   useEffect(() => {
     if (!selectedOutlineItemId) return;
@@ -1093,7 +1089,7 @@ function NotebookViewer({
     [authState, codeCellCount, connectionActorLabel, connectionScope],
   );
   const canEditMarkdown = shellCapabilities.canEditMarkdown;
-  const notebookCellIds = useMemo(() => cells.map((cell) => cell.id), [cells]);
+  const notebookCellIds = notebookViewModel.cellIds;
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
   const cloudPresenceContext = useMemo<PresenceContextValue | null>(
     () =>
