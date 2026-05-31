@@ -19,16 +19,16 @@ import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import {
+  getElementsNotebookPrimaryCodeCell,
   getElementsNotebookScenario,
   resolveElementsNotebookLanguage,
 } from "@/components/notebook-scenarios";
-import type { NotebookViewCell } from "@/components/notebook-shell";
 import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 
 const anatomyScenario = getElementsNotebookScenario("desktop-local-owner");
-const primaryCell = getPrimaryAnatomyCell(anatomyScenario.cells);
+const primaryCell = getElementsNotebookPrimaryCodeCell(anatomyScenario.cells);
 const primaryCellId = primaryCell.id;
 const sourceFixture = primaryCell.source;
 const outputFixtures = primaryCell.outputs;
@@ -36,19 +36,6 @@ const executionCount = primaryCell.executionCount;
 const languageLabel =
   primaryCell.language === "python" ? "Python" : (primaryCell.language ?? "Cell");
 const editorLanguage = resolveElementsNotebookLanguage(primaryCell.language) ?? "plain";
-
-function getPrimaryAnatomyCell(cells: readonly NotebookViewCell[]) {
-  const cell =
-    cells.find((item) => item.id === "cell-model-code") ??
-    cells.find((item) => item.cellType === "code") ??
-    cells[0];
-  if (!cell) {
-    throw new Error(
-      "Elements notebook scenario needs at least one cell for the cell anatomy page.",
-    );
-  }
-  return cell;
-}
 
 const layers = [
   {

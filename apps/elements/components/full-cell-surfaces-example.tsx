@@ -7,6 +7,7 @@ import { MarkdownCell } from "@/notebook-components/MarkdownCell";
 import { NotebookView } from "@/notebook-components/NotebookView";
 import { RawCell } from "@/notebook-components/RawCell";
 import {
+  getElementsNotebookPrimaryCodeCell,
   getElementsNotebookScenario,
   resolveElementsNotebookLanguage,
 } from "@/components/notebook-scenarios";
@@ -36,7 +37,7 @@ import type {
 } from "../../notebook/src/types";
 
 const fullCellScenario = getElementsNotebookScenario("desktop-local-owner");
-const primaryScenarioCodeCell = getPrimaryFullCellScenarioCodeCell(fullCellScenario.cells);
+const primaryScenarioCodeCell = getElementsNotebookPrimaryCodeCell(fullCellScenario.cells);
 const standaloneCodeCellId = "elements-full-code-cell";
 const standaloneCodeCellExecutionId = "elements-full-code-execution";
 const standaloneCodeCellOutputs = primaryScenarioCodeCell.outputs.map((output, index) => ({
@@ -147,16 +148,6 @@ const fullCellBoundaryRows = [
 ];
 
 const noop = () => {};
-
-function getPrimaryFullCellScenarioCodeCell(cells: readonly NotebookViewCell[]) {
-  const cell =
-    cells.find((item) => item.id === "cell-model-code") ??
-    cells.find((item) => item.cellType === "code");
-  if (!cell) {
-    throw new Error("Elements notebook scenario needs a code cell for full-cell previews.");
-  }
-  return cell;
-}
 
 function standaloneCodeCellOutputId(output: { output_id?: string }, index: number) {
   return `elements-full-code:${output.output_id ?? `output-${index}`}`;

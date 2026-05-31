@@ -403,6 +403,18 @@ export function getElementsNotebookScenario(id: ElementsNotebookScenarioId) {
   return elementsNotebookScenarios[id];
 }
 
+export function getElementsNotebookPrimaryCodeCell(
+  cells: readonly NotebookViewCell[] = notebookCells,
+) {
+  const cell =
+    cells.find((item) => item.id === "cell-model-code") ??
+    cells.find((item) => item.cellType === "code");
+  if (!cell) {
+    throw new Error("Elements notebook scenario needs at least one code cell.");
+  }
+  return cell;
+}
+
 export function resolveElementsNotebookLanguage(
   language: string | null | undefined,
 ): SupportedLanguage | null {
