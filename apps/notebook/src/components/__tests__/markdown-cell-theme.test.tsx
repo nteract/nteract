@@ -341,4 +341,35 @@ describe("MarkdownCell theme sync", () => {
 
     expect(preview.className).not.toContain("hidden");
   });
+
+  it("keeps view-mode keyboard navigation active for read-only markdown cells", () => {
+    const onFocusNext = vi.fn();
+    const onFocusPrevious = vi.fn();
+
+    const { getByLabelText } = render(
+      <MarkdownCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onFocusNext={onFocusNext}
+        onFocusPrevious={onFocusPrevious}
+        readOnly
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+
+    fireEvent.keyDown(preview, { key: "ArrowDown" });
+    expect(onFocusNext).toHaveBeenCalledWith("start");
+
+    fireEvent.keyDown(preview, { key: "ArrowUp" });
+    expect(onFocusPrevious).toHaveBeenCalledWith("end");
+
+    fireEvent.keyDown(preview, { key: "Enter", shiftKey: true });
+    expect(onFocusNext).toHaveBeenCalledTimes(2);
+    expect(onFocusNext).toHaveBeenLastCalledWith("start");
+
+    fireEvent.keyDown(preview, { key: "Enter" });
+    expect(preview.className).not.toContain("hidden");
+  });
 });
