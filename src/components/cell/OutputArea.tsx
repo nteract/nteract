@@ -192,6 +192,11 @@ interface OutputAreaProps {
    */
   cellId?: string;
   /**
+   * Explicit isolated iframe name. Markdown preview surfaces use this to keep
+   * their frame discoverable as `md-{cellId}` for outline heading navigation.
+   */
+  isolatedFrameName?: string;
+  /**
    * Execution count for the cell. Used to label the isolated iframe with
    * `code-Out[N]-{cellId}` so the dev-tools frame picker shows something
    * meaningful instead of a stack of identical `localhost` rows.
@@ -279,6 +284,12 @@ interface OutputAreaProps {
    */
   deferredIsolatedFrameRootMargin?: string;
   /**
+   * Hide the isolated iframe until the first render payload lands. This avoids
+   * a visible empty-frame flash on markdown preview surfaces that keep their
+   * iframe mounted across edit toggles.
+   */
+  revealIsolatedFrameOnRender?: boolean;
+  /**
    * Callback when a link is clicked in isolated outputs.
    */
   onLinkClick?: (url: string, newTab: boolean) => void;
@@ -302,6 +313,23 @@ interface OutputAreaProps {
    * Use to update cell focus when the click is captured by the iframe.
    */
   onIframeMouseDown?: () => void;
+  /**
+   * Override isolated iframe scroll passthrough without opting into the focused
+   * output-well layout. Markdown previews use this while the frame owns pointer
+   * interaction but should keep natural auto-height sizing.
+   */
+  isolatedFrameScrollPassthrough?: boolean;
+  /**
+   * Override whether wheel events at the isolated iframe boundary propagate to
+   * the notebook scroll container.
+   */
+  isolatedFrameAllowWheelBoundaryScroll?: boolean;
+  /**
+   * Callback when the user double-clicks inside an isolated output iframe.
+   * Markdown cells use this to enter edit mode even after the iframe owns
+   * pointer events.
+   */
+  onIframeDoubleClick?: () => void;
   /**
    * Exposes the mounted isolated frame handle to shared cell surfaces that need
    * iframe RPCs, such as markdown heading measurement for outline navigation.
@@ -604,6 +632,7 @@ export function OutputArea({
 function OutputAreaSingle({
   outputs,
   cellId,
+  isolatedFrameName,
   executionCount,
   collapsed = false,
   collapseOutputCount = outputs.length,
@@ -619,11 +648,15 @@ function OutputAreaSingle({
   preloadIframe = false,
   deferIsolatedFrameUntilVisible = false,
   deferredIsolatedFrameRootMargin = DEFAULT_DEFERRED_ISOLATED_FRAME_ROOT_MARGIN,
+  revealIsolatedFrameOnRender = false,
   onLinkClick,
   onWidgetUpdate,
   searchQuery,
   onSearchMatchCount,
   onIframeMouseDown,
+  isolatedFrameScrollPassthrough,
+  isolatedFrameAllowWheelBoundaryScroll,
+  onIframeDoubleClick,
   onIsolatedFrameHandleChange,
   onDiagnostic,
   hostContext,
@@ -689,9 +722,9 @@ function OutputAreaSingle({
   // Jupyter `Out[N]` convention with the cell ID appended so the picker can
   // distinguish reruns and concurrent cells. `*` matches Jupyter's queued /
   // never-run indicator.
-  const frameName = cellId
-    ? `code-Out[${executionCount == null ? "*" : executionCount}]-${cellId}`
-    : undefined;
+  const frameName =
+    isolatedFrameName ??
+    (cellId ? `code-Out[${executionCount == null ? "*" : executionCount}]-${cellId}` : undefined);
 
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
@@ -703,10 +736,12 @@ function OutputAreaSingle({
     !hasWidgets &&
     outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
   const shouldScrollPassthroughFrame =
-    shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+    isolatedFrameScrollPassthrough ??
+    (shouldUseScrollPassthroughFrame && !staticFrameInteractionActive);
   const shouldLockSiftWheelBoundary = hasSiftOutputs && staticFrameInteractionActive;
   const allowWheelBoundaryScroll =
-    !focused && !shouldScrollPassthroughFrame && !shouldLockSiftWheelBoundary;
+    isolatedFrameAllowWheelBoundaryScroll ??
+    (!focused && !shouldScrollPassthroughFrame && !shouldLockSiftWheelBoundary);
   const showSiftInteractionCue =
     shouldMountIsolatedFrame &&
     hasSiftOutputs &&
@@ -1094,10 +1129,12 @@ function OutputAreaSingle({
                   onReady={handleIsolatedFrameReady}
                   onLinkClick={onLinkClick}
                   onMouseDown={activateStaticFrameInteraction}
+                  onDoubleClick={onIframeDoubleClick}
                   onWidgetUpdate={onWidgetUpdate}
                   onMessage={handleIframeMessage}
                   onError={handleIframeError}
                   onDiagnostic={onDiagnostic}
+                  revealOnRender={revealIsolatedFrameOnRender}
                   hostContext={hostContext}
                   outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
                 />

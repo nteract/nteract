@@ -1,4 +1,4 @@
-import { createEvent, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
@@ -29,11 +29,16 @@ vi.mock("@/lib/dark-mode", () => ({
   useColorTheme: () => mockColorTheme,
 }));
 
-vi.mock("@/components/isolated/iframe-libraries", () => ({
-  injectPluginsForMimes: vi.fn(async () => {}),
-}));
+vi.mock("@/components/isolated/iframe-libraries", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/isolated/iframe-libraries")>();
+  return {
+    ...actual,
+    injectPluginsForMimes: vi.fn(async () => {}),
+  };
+});
 
-vi.mock("@/components/isolated", async () => {
+vi.mock("@/components/isolated", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/isolated")>();
   const React = await import("react");
 
   const MockIsolatedFrame = React.forwardRef<
@@ -57,6 +62,7 @@ vi.mock("@/components/isolated", async () => {
   });
 
   return {
+    ...actual,
     IsolatedFrame: MockIsolatedFrame,
   };
 });
@@ -203,15 +209,17 @@ describe("MarkdownCell theme sync", () => {
     });
 
     expect(isolatedFrameProps.at(-1)?.colorTheme).toBe("cream");
+    expect(isolatedFrameProps.at(-1)?.revealOnRender).toBe(true);
 
     await waitFor(() => {
-      expect(mockFrameHandle.render).toHaveBeenCalledWith({
-        mimeType: "text/markdown",
-        data: "```python\nprint('hello')\n```",
-        outputId: "markdown:md-1",
-        cellId: "md-1",
-        replace: true,
-      });
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/markdown",
+          data: "```python\nprint('hello')\n```",
+          outputId: "markdown:md-1",
+          cellId: "md-1",
+        }),
+      ]);
     });
   });
 
@@ -221,13 +229,14 @@ describe("MarkdownCell theme sync", () => {
     render(<MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />);
 
     await waitFor(() => {
-      expect(mockFrameHandle.render).toHaveBeenCalledWith({
-        mimeType: "text/plain",
-        data: "Failed to load markdown renderer: chunk failed",
-        outputId: "markdown-error:md-1",
-        cellId: "md-1",
-        replace: true,
-      });
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/plain",
+          data: "Failed to load renderer plugin: chunk failed",
+          outputId: "md-1:plugin-load-error",
+          cellId: "md-1",
+        }),
+      ]);
     });
   });
 
@@ -252,14 +261,15 @@ describe("MarkdownCell theme sync", () => {
     );
 
     await waitFor(() => {
-      expect(mockFrameHandle.render).toHaveBeenCalledWith({
-        mimeType: "text/markdown",
-        data: "# Load data",
-        metadata: { nteractMarkdownHeadingAnchors: headingAnchors },
-        outputId: "markdown:md-1",
-        cellId: "md-1",
-        replace: true,
-      });
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/markdown",
+          data: "# Load data",
+          metadata: { nteractMarkdownHeadingAnchors: headingAnchors },
+          outputId: "markdown:md-1",
+          cellId: "md-1",
+        }),
+      ]);
     });
   });
 
@@ -280,53 +290,67 @@ describe("MarkdownCell theme sync", () => {
     });
   });
 
-  it("activates markdown iframe pointer interaction after clicking the preview", () => {
+  it("lets the markdown iframe own pointer interaction without entering output-well layout", async () => {
     const onFocus = vi.fn();
 
-    const { getByTestId } = render(
+    const { getByLabelText } = render(
       <MarkdownCell cell={makeCell()} onFocus={onFocus} onDelete={() => {}} />,
     );
 
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
     expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+    expect(isolatedFrameProps.at(-1)?.autoHeight).toBe(true);
 
-    const previewWrapper = getByTestId("markdown-frame").parentElement as HTMLElement;
+    const previewWrapper = getByLabelText("Markdown cell content");
 
     fireEvent.pointerDown(previewWrapper);
 
     expect(onFocus).toHaveBeenCalled();
-    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
-    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+    await waitFor(() => {
+      expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+      expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+      expect(isolatedFrameProps.at(-1)?.autoHeight).toBe(true);
+    });
 
     pointerOutWithButtons(previewWrapper, 1);
-
-    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
-    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
-
     pointerOutWithButtons(previewWrapper, 0);
+    await waitFor(() => {
+      expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
+      expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+    });
+  });
 
-    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
-    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+  it("enters edit mode from double-clicks forwarded by the iframe", async () => {
+    const { getByTestId } = render(
+      <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    expect(getByTestId("markdown-frame")).toBeVisible();
+
+    act(() => {
+      (isolatedFrameProps.at(-1)?.onDoubleClick as (() => void) | undefined)?.();
+    });
+
+    await waitFor(() => {
+      expect(getByTestId("markdown-editor")).toBeVisible();
+    });
   });
 
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {
     const cell = { ...makeCell(), source: "" };
 
-    const { getByLabelText, getByTestId } = render(
+    const { getByTestId, queryByLabelText, findByLabelText } = render(
       <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
     );
 
-    const preview = getByLabelText("Markdown cell content");
-    expect(preview.className).toContain("hidden");
+    expect(queryByLabelText("Markdown cell content")?.className).toContain("hidden");
 
     fireEvent.keyDown(getByTestId("markdown-editor"), {
       key: "Enter",
       ctrlKey: true,
     });
 
-    await waitFor(() => {
-      expect(preview.className).not.toContain("hidden");
-    });
+    await expect(findByLabelText("Markdown cell content")).resolves.toBeVisible();
   });
 
   it("Ctrl+Enter keeps markdown preview in view mode", () => {

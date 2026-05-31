@@ -8,6 +8,7 @@ import {
   useRef,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -30,9 +31,16 @@ export interface EditableMarkdownCellProps {
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
   editorRef: RefObject<CodeMirrorEditorRef | null>;
+  isFocused?: boolean;
+  onFocus?: () => void;
+  isPreviousCellFromFocused?: boolean;
+  isNextCellFromFocused?: boolean;
+  dragHandleProps?: Record<string, unknown>;
+  isDragging?: boolean;
   className?: string;
   sourceClassName?: string;
   editorClassName?: string;
+  editorHeaderContent?: ReactNode;
   previewClassName?: string;
   previewOutputClassName?: string;
   actionClassName?: string;
@@ -41,7 +49,24 @@ export interface EditableMarkdownCellProps {
   hostContext?: NteractEmbedHostContextPatch;
   editorExtensions?: readonly Extension[];
   editorKeyMap?: readonly KeyBinding[];
+  previewSource?: string;
+  previewOutputId?: string;
+  previewFrameName?: string;
+  previewMetadata?: Record<string, unknown>;
+  previewSearchQuery?: string;
+  previewFocused?: boolean;
+  keepPreviewMounted?: boolean;
+  revealPreviewOnRender?: boolean;
+  previewLabel?: string;
+  onPreviewSearchMatchCount?: (count: number) => void;
+  onPreviewLinkClick?: (url: string, newTab: boolean) => void;
+  onPreviewKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => boolean | void;
+  onPreviewPointerDown?: (event: PointerEvent<HTMLDivElement>) => void;
+  onPreviewPointerOut?: (event: PointerEvent<HTMLDivElement>) => void;
+  onPreviewIframeMouseDown?: () => void;
+  onPreviewIframeDoubleClick?: () => void;
   presenceIndicators?: ReactNode;
+  rightGutterContent?: ReactNode;
 }
 
 export function EditableMarkdownCell({
@@ -51,9 +76,16 @@ export function EditableMarkdownCell({
   editing,
   onEditingChange,
   editorRef,
+  isFocused = false,
+  onFocus,
+  isPreviousCellFromFocused = false,
+  isNextCellFromFocused = false,
+  dragHandleProps,
+  isDragging = false,
   className,
   sourceClassName,
   editorClassName,
+  editorHeaderContent,
   previewClassName,
   previewOutputClassName,
   actionClassName,
@@ -62,20 +94,38 @@ export function EditableMarkdownCell({
   hostContext,
   editorExtensions,
   editorKeyMap,
+  previewSource = source,
+  previewOutputId = `markdown-source:${id}`,
+  previewFrameName,
+  previewMetadata,
+  previewSearchQuery,
+  previewFocused = false,
+  keepPreviewMounted = false,
+  revealPreviewOnRender = true,
+  previewLabel = "Markdown cell content",
+  onPreviewSearchMatchCount,
+  onPreviewLinkClick,
+  onPreviewKeyDown,
+  onPreviewPointerDown,
+  onPreviewPointerOut,
+  onPreviewIframeMouseDown,
+  onPreviewIframeDoubleClick,
   presenceIndicators,
+  rightGutterContent,
 }: EditableMarkdownCellProps) {
   const suppressNextToggleClickRef = useRef(false);
   const viewRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const previewFrameRef = useRef<IsolatedFrameHandle | null>(null);
 
   const markdownOutput = useMemo<JupyterOutput>(
     () => ({
-      output_id: `markdown-source:${id}`,
+      output_id: previewOutputId,
       output_type: "display_data",
-      data: { "text/markdown": source },
-      metadata: {},
+      data: { "text/markdown": previewSource },
+      metadata: previewMetadata ? { "text/markdown": previewMetadata } : {},
     }),
-    [id, source],
+    [previewMetadata, previewOutputId, previewSource],
   );
   const editorExtensionArray = useMemo(
     () => (editorExtensions ? [...editorExtensions] : undefined),
@@ -125,12 +175,13 @@ export function EditableMarkdownCell({
 
   const handlePreviewKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
+      if (onPreviewKeyDown?.(event) || event.defaultPrevented) return;
       if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
         enterEditing();
       }
     },
-    [enterEditing],
+    [enterEditing, onPreviewKeyDown],
   );
 
   const handlePreviewFrameHandleChange = useCallback((handle: IsolatedFrameHandle | null) => {
@@ -162,62 +213,104 @@ export function EditableMarkdownCell({
     return () => cancelAnimationFrame(frame);
   }, [editing, editorRef]);
 
+  useEffect(() => {
+    if (!isFocused || editing) return;
+    const frame = requestAnimationFrame(() => {
+      previewRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editing, isFocused]);
+
+  const actionButton = (
+    <button
+      type="button"
+      className={actionClassName}
+      aria-label={editing ? "Render markdown" : "Edit markdown"}
+      title={editing ? "Render markdown" : "Edit markdown"}
+      onMouseDown={handleActionMouseDown}
+      onClick={handleActionClick}
+    >
+      {editing ? <Check aria-hidden="true" /> : <Pencil aria-hidden="true" />}
+    </button>
+  );
+
   return (
     <CellContainer
       ref={viewRef}
       id={id}
       elementId={elementId}
       cellType="markdown"
+      isFocused={isFocused}
+      onFocus={onFocus}
+      isPreviousCellFromFocused={isPreviousCellFromFocused}
+      isNextCellFromFocused={isNextCellFromFocused}
+      dragHandleProps={dragHandleProps}
+      isDragging={isDragging}
       className={className}
       presenceIndicators={presenceIndicators}
       rightGutterContent={
-        <button
-          type="button"
-          className={actionClassName}
-          aria-label={editing ? "Render markdown" : "Edit markdown"}
-          title={editing ? "Render markdown" : "Edit markdown"}
-          onMouseDown={handleActionMouseDown}
-          onClick={handleActionClick}
-        >
-          {editing ? <Check aria-hidden="true" /> : <Pencil aria-hidden="true" />}
-        </button>
-      }
-      codeContent={
-        editing ? (
-          <div className={sourceClassName} data-slot="editable-markdown-source">
-            <CodeMirrorEditor
-              ref={editorRef}
-              initialValue={source}
-              language="markdown"
-              lineWrapping
-              onBlur={exitEditing}
-              keyMap={editorKeyMapArray}
-              extensions={editorExtensionArray}
-              placeholder={placeholder}
-              className={cn("min-h-[2rem]", editorClassName)}
-            />
+        rightGutterContent ? (
+          <div className="flex flex-col gap-0.5">
+            {actionButton}
+            {rightGutterContent}
           </div>
         ) : (
-          <div
-            className={cn(previewClassName, sourceClassName)}
-            data-slot="editable-markdown-preview"
-            role="textbox"
-            aria-readonly
-            tabIndex={0}
-            onDoubleClick={enterEditing}
-            onKeyDown={handlePreviewKeyDown}
-          >
-            <OutputArea
-              cellId={id}
-              outputs={[markdownOutput]}
-              isolated="auto"
-              priority={priority}
-              hostContext={hostContext}
-              className={previewOutputClassName}
-              onIsolatedFrameHandleChange={handlePreviewFrameHandleChange}
-            />
-          </div>
+          actionButton
         )
+      }
+      codeContent={
+        <>
+          {editing ? (
+            <div className={sourceClassName} data-slot="editable-markdown-source">
+              {editorHeaderContent}
+              <CodeMirrorEditor
+                ref={editorRef}
+                initialValue={source}
+                language="markdown"
+                lineWrapping
+                onBlur={exitEditing}
+                keyMap={editorKeyMapArray}
+                extensions={editorExtensionArray}
+                placeholder={placeholder}
+                className={cn("min-h-[2rem]", editorClassName)}
+              />
+            </div>
+          ) : null}
+          {!editing || keepPreviewMounted ? (
+            <div
+              ref={previewRef}
+              className={cn(previewClassName, sourceClassName, editing && "hidden")}
+              data-slot="editable-markdown-preview"
+              role="textbox"
+              aria-readonly
+              aria-label={previewLabel}
+              tabIndex={0}
+              onDoubleClick={enterEditing}
+              onKeyDown={handlePreviewKeyDown}
+              onPointerDown={onPreviewPointerDown}
+              onPointerOut={onPreviewPointerOut}
+            >
+              <OutputArea
+                cellId={id}
+                isolatedFrameName={previewFrameName}
+                outputs={[markdownOutput]}
+                isolated="auto"
+                priority={priority}
+                hostContext={hostContext}
+                className={previewOutputClassName}
+                searchQuery={previewSearchQuery}
+                isolatedFrameScrollPassthrough={!previewFocused}
+                isolatedFrameAllowWheelBoundaryScroll={previewFocused}
+                revealIsolatedFrameOnRender={revealPreviewOnRender}
+                onSearchMatchCount={onPreviewSearchMatchCount}
+                onLinkClick={onPreviewLinkClick}
+                onIframeMouseDown={onPreviewIframeMouseDown}
+                onIframeDoubleClick={onPreviewIframeDoubleClick}
+                onIsolatedFrameHandleChange={handlePreviewFrameHandleChange}
+              />
+            </div>
+          ) : null}
+        </>
       }
     />
   );
