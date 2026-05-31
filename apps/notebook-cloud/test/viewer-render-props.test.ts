@@ -85,3 +85,24 @@ test("cloud viewer defers supplemental CSS loading until the notebook surface mo
     /function CloudNotebookProviders[\s\S]*useEffect\(\(\) => \{\s*loadSupplementalViewerCss\(\);\s*\}, \[\]\);/,
   );
 });
+
+test("cloud notebook shell keeps the rail and toolbar outside the cell scroller", () => {
+  const sourcePath = new URL("../viewer/index.css", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /html,\s*\nbody,\s*\n#root\s*\{[\s\S]*height: 100%;[\s\S]*overflow: hidden;/,
+  );
+  assert.match(
+    sourceText,
+    /\.cloud-notebook-shell\s*\{[\s\S]*height: 100%;[\s\S]*overflow: hidden;/,
+  );
+  assert.match(sourceText, /\.cloud-notebook-rail\s*\{[\s\S]*height: 100%;/);
+  assert.match(sourceText, /\.cloud-report-toolbar\s*\{[\s\S]*top: 0;[\s\S]*border-bottom:/);
+  assert.match(sourceText, /\.cloud-report-notebook\s*\{[\s\S]*overflow-y: auto;/);
+  assert.doesNotMatch(
+    sourceText.match(/\.cloud-notebook-shell\s*\{[^}]*\}/)?.[0] ?? "",
+    /flex-direction: column;/,
+  );
+});
