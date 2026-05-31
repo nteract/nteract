@@ -97,7 +97,7 @@ export function ReadOnlyNotebook({
                 priority={priority}
                 hostContext={hostContext}
                 displayMode={displayMode}
-                showSource={displayMode === "report" ? cell.cellType !== "code" || showCode : true}
+                showSource={cell.cellType !== "code" || showCode}
                 focusOutputs={focusOutputs}
                 deferIsolatedFrameUntilVisible={deferIsolatedFrameUntilVisible}
                 deferredIsolatedFrameRootMargin={deferredIsolatedFrameRootMargin}

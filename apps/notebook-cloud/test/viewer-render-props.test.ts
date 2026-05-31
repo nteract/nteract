@@ -3,50 +3,52 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as ts from "typescript";
 
-test("cloud report-mode rendering leaves output iframes unfocused for page scrolling", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
-  const sourceFile = ts.createSourceFile(
-    sourcePath.pathname,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX,
-  );
+test("cloud notebook rendering uses shared cell chrome instead of report-mode cells", () => {
+  const sourcePaths = [
+    new URL("../viewer/index.tsx", import.meta.url),
+    new URL("../viewer/cloud-live-notebook.tsx", import.meta.url),
+  ];
   const offenders: string[] = [];
 
-  const visit = (node: ts.Node) => {
-    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
-      const tagName = node.tagName.getText(sourceFile);
-      if (tagName === "ReadOnlyNotebook" || tagName === "ReadOnlyNotebookCell") {
-        const attributes = node.attributes.properties;
-        const hasReportMode = attributes.some(
-          (attribute) =>
-            ts.isJsxAttribute(attribute) &&
-            attribute.name.getText(sourceFile) === "displayMode" &&
-            attribute.initializer?.getText(sourceFile) === '"report"',
-        );
-        const focusesOutputs = attributes.some(
-          (attribute) =>
-            ts.isJsxAttribute(attribute) && attribute.name.getText(sourceFile) === "focusOutputs",
-        );
+  for (const sourcePath of sourcePaths) {
+    const sourceText = readFileSync(sourcePath, "utf8");
+    const sourceFile = ts.createSourceFile(
+      sourcePath.pathname,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
 
-        if (hasReportMode && focusesOutputs) {
-          const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-          offenders.push(`${tagName}:${position.line + 1}`);
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+        const tagName = node.tagName.getText(sourceFile);
+        if (tagName === "ReadOnlyNotebook" || tagName === "ReadOnlyNotebookCell") {
+          const attributes = node.attributes.properties;
+          const hasReportMode = attributes.some(
+            (attribute) =>
+              ts.isJsxAttribute(attribute) &&
+              attribute.name.getText(sourceFile) === "displayMode" &&
+              attribute.initializer?.getText(sourceFile) === '"report"',
+          );
+
+          if (hasReportMode) {
+            const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+            offenders.push(`${sourcePath.pathname}:${tagName}:${position.line + 1}`);
+          }
         }
       }
-    }
 
-    ts.forEachChild(node, visit);
-  };
+      ts.forEachChild(node, visit);
+    };
 
-  visit(sourceFile);
+    visit(sourceFile);
+  }
 
   assert.deepEqual(
     offenders,
     [],
-    "cloud report rendering should not focus output iframes; focused iframes trap page scroll",
+    "cloud notebook rendering should stay on notebook-mode cells so shared cell lanes and ribbons render",
   );
 });
 
@@ -81,5 +83,26 @@ test("cloud viewer defers supplemental CSS loading until the notebook surface mo
   assert.match(
     sourceText,
     /function CloudNotebookProviders[\s\S]*useEffect\(\(\) => \{\s*loadSupplementalViewerCss\(\);\s*\}, \[\]\);/,
+  );
+});
+
+test("cloud notebook shell keeps the rail and toolbar outside the cell scroller", () => {
+  const sourcePath = new URL("../viewer/index.css", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /html,\s*\nbody,\s*\n#root\s*\{[\s\S]*height: 100%;[\s\S]*overflow: hidden;/,
+  );
+  assert.match(
+    sourceText,
+    /\.cloud-notebook-shell\s*\{[\s\S]*height: 100%;[\s\S]*overflow: hidden;/,
+  );
+  assert.match(sourceText, /\.cloud-notebook-rail\s*\{[\s\S]*height: 100%;/);
+  assert.match(sourceText, /\.cloud-report-toolbar\s*\{[\s\S]*top: 0;[\s\S]*border-bottom:/);
+  assert.match(sourceText, /\.cloud-report-notebook\s*\{[\s\S]*overflow-y: auto;/);
+  assert.doesNotMatch(
+    sourceText.match(/\.cloud-notebook-shell\s*\{[^}]*\}/)?.[0] ?? "",
+    /flex-direction: column;/,
   );
 });

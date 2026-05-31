@@ -87,7 +87,6 @@ export function CloudLiveNotebook({
             executionCount={cell.executionCount}
             priority={priority}
             hostContext={hostContext}
-            displayMode="report"
             showSource={cell.cellType !== "code" || showCode}
             className="cloud-cell"
             sourceClassName="cloud-source-block"

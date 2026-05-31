@@ -1283,7 +1283,6 @@ function NotebookViewer({
           viewModel={notebookViewModel}
           priority={CLOUD_VIEWER_PRIORITY}
           hostContext={outputHostContext}
-          displayMode="report"
           showCode={showCode}
           className="cloud-report-notebook"
           cellClassName="cloud-cell"
