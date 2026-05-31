@@ -17,6 +17,7 @@ import { getCellIdsSnapshot, subscribeIds } from "./notebook-cells";
 let _focusedCellId: string | null = null;
 let _executingCellIds: Set<string> = new Set();
 let _queuedCellIds: Set<string> = new Set();
+let _queuedCellPriority = new Map<string, number>();
 let _searchQuery: string | undefined; // eslint-disable-line -- intentionally uninitialized alongside siblings
 let _searchCurrentMatch: FindMatch | null = null;
 
@@ -50,6 +51,19 @@ function setsEqual(a: Set<string>, b: Set<string>): boolean {
   return true;
 }
 
+function mapsEqual(a: Map<string, number>, b: Map<string, number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [key, value] of a) {
+    if (b.get(key) !== value) return false;
+  }
+  return true;
+}
+
+function queuePriorityForIndex(index: number, length: number): number {
+  if (length <= 1) return 1;
+  return Math.max(0.25, 1 - index / length);
+}
+
 // ── Setters ─────────────────────────────────────────────────────────────
 //
 // Two-phase update pattern for StrictMode safety:
@@ -72,9 +86,15 @@ export function setExecutingCellIds(ids: Set<string>): void {
   _dirtySubscribers.add(_executingSubscribers);
 }
 
-export function setQueuedCellIds(ids: Set<string>): void {
-  if (setsEqual(_queuedCellIds, ids)) return;
-  _queuedCellIds = ids;
+export function setQueuedCellIds(ids: Iterable<string>): void {
+  const orderedIds = Array.from(ids);
+  const nextIds = new Set(orderedIds);
+  const nextPriority = new Map(
+    orderedIds.map((id, index) => [id, queuePriorityForIndex(index, orderedIds.length)]),
+  );
+  if (setsEqual(_queuedCellIds, nextIds) && mapsEqual(_queuedCellPriority, nextPriority)) return;
+  _queuedCellIds = nextIds;
+  _queuedCellPriority = nextPriority;
   _dirtySubscribers.add(_queuedSubscribers);
 }
 
@@ -121,6 +141,13 @@ export function useIsCellExecuting(cellId: string): boolean {
 export function useIsCellQueued(cellId: string): boolean {
   const subscribe = useMemo(() => subscribeQueuedFor(cellId), [cellId]);
   const getSnapshot = useMemo(() => getIsQueuedSnapshot(cellId), [cellId]);
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+/** Returns a 0..1 visual priority for a queued cell, where 1 is next to run. */
+export function useCellQueuePriority(cellId: string): number {
+  const subscribe = useMemo(() => subscribeQueuedFor(cellId), [cellId]);
+  const getSnapshot = useMemo(() => getQueuePrioritySnapshot(cellId), [cellId]);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
@@ -300,6 +327,15 @@ function getIsQueuedSnapshot(cellId: string): () => boolean {
   let prev = _queuedCellIds.has(cellId);
   return () => {
     const next = _queuedCellIds.has(cellId);
+    if (next !== prev) prev = next;
+    return prev;
+  };
+}
+
+function getQueuePrioritySnapshot(cellId: string): () => number {
+  let prev = _queuedCellPriority.get(cellId) ?? 0;
+  return () => {
+    const next = _queuedCellPriority.get(cellId) ?? 0;
     if (next !== prev) prev = next;
     return prev;
   };

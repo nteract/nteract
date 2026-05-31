@@ -90,6 +90,20 @@
   animation: queue-breathe 3s ease-in-out infinite;
 }
 
+@keyframes queue-boundary-pulse {
+  0%,
+  100% {
+    opacity: var(--queue-pulse-low, 0.42);
+  }
+  50% {
+    opacity: var(--queue-pulse-high, 0.72);
+  }
+}
+
+.animate-queue-boundary-pulse {
+  animation: queue-boundary-pulse var(--queue-pulse-duration, 2.8s) ease-in-out infinite;
+}
+
 @keyframes exec-squish {
   0% {
     transform: scale(1, 1) rotate(0deg);
@@ -139,6 +153,39 @@
   animation: exec-signal-wave 1.6s linear infinite;
 }
 
+@keyframes exec-signal-build {
+  0% {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.55;
+  }
+  100% {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+  }
+}
+
+.animate-exec-signal-build {
+  animation: exec-signal-build 220ms ease-out both;
+}
+
+@keyframes exec-signal-settle {
+  0% {
+    clip-path: inset(0 0 0 0);
+    opacity: 0.85;
+  }
+  100% {
+    clip-path: inset(0 0 0 72%);
+    opacity: 0;
+  }
+}
+
+.animate-exec-signal-settle {
+  animation: exec-signal-settle 320ms ease-out both;
+}
+
 @keyframes exec-signal-tail {
   0% {
     opacity: 0;
@@ -164,7 +211,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .animate-queue-breathe,
+  .animate-queue-boundary-pulse,
   .animate-exec-squish,
+  .animate-exec-signal-build,
+  .animate-exec-signal-settle,
   .animate-exec-signal-wave,
   .animate-exec-signal-tail {
     animation: none;

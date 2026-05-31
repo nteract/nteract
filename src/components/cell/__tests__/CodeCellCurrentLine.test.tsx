@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vite-plus/test";
+import { act, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { CodeCellCurrentLine } from "../CodeCellCurrentLine";
 
 describe("CodeCellCurrentLine", () => {
@@ -60,7 +60,80 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveAttribute("aria-live", "polite");
     expect(status).toHaveClass("text-primary");
     expect(rule).toHaveClass("text-emerald-500/65");
-    expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
+    expect(rule).toHaveAttribute("data-execution-signal", "building");
+    expect(
+      rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
+    ).toBeInTheDocument();
+    expect(rule?.querySelector("svg")).toBeNull();
+  });
+
+  it("delays the running wave so fast executions do not flicker", () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container, rerender } = render(
+        <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(119);
+      });
+
+      expect(container.querySelector('[data-slot="code-cell-current-line-rule"] svg')).toBeNull();
+
+      rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
+
+      const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      expect(rule).not.toHaveAttribute("data-execution-signal");
+      expect(rule?.querySelector("svg")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("builds up and settles the running wave after sustained execution", () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container, rerender } = render(
+        <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(120);
+      });
+
+      let rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      let signal = container.querySelector('[data-slot="code-cell-current-line-signal"]');
+
+      expect(rule).toHaveAttribute("data-execution-signal", "active");
+      expect(signal).toHaveClass("animate-exec-signal-build");
+      expect(
+        rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
+      ).not.toBeInTheDocument();
+      expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
+
+      rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
+
+      rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      signal = container.querySelector('[data-slot="code-cell-current-line-signal"]');
+
+      expect(rule).toHaveAttribute("data-execution-signal", "settling");
+      expect(signal).toHaveClass("animate-exec-signal-settle");
+      expect(
+        rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
+      ).not.toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(320);
+      });
+
+      rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      expect(rule).not.toHaveAttribute("data-execution-signal");
+      expect(rule?.querySelector("svg")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives queued cells a pending boundary", () => {
@@ -75,8 +148,25 @@ describe("CodeCellCurrentLine", () => {
     expect(footer).toHaveAttribute("data-execution-state", "queued");
     expect(status).toHaveTextContent("Python·Queued");
     expect(status).toHaveAttribute("aria-live", "polite");
-    expect(rule).toHaveClass("text-sky-500/60");
-    expect(rule?.querySelectorAll(".animate-queue-breathe")).toHaveLength(3);
+    expect(rule).toHaveClass("bg-sky-400/45");
+    expect(rule).toHaveAttribute("data-queue-priority", "0.35");
+    expect(rule).toHaveClass("animate-queue-boundary-pulse");
+    expect(rule?.querySelectorAll(".animate-queue-breathe")).toHaveLength(0);
+  });
+
+  it("uses queue priority to tune the pending pulse", () => {
+    const { container } = render(
+      <CodeCellCurrentLine languageLabel="Python" count={12} isQueued queuePriority={1} />,
+    );
+
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(rule).toHaveAttribute("data-queue-priority", "1.00");
+    expect(rule).toHaveStyle({
+      "--queue-pulse-duration": "1450ms",
+      "--queue-pulse-low": "0.44",
+      "--queue-pulse-high": "0.76",
+    });
   });
 
   it("gives errored cells a broken boundary", () => {

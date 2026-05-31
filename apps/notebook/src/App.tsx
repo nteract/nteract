@@ -741,7 +741,6 @@ function AppContent() {
   const executingCellIds = new Set(
     notebookQueueProjection.executing_cell_id ? [notebookQueueProjection.executing_cell_id] : [],
   );
-  const queuedCellIds = new Set(notebookQueueProjection.queued_cell_ids);
   const sourceVersion = useSourceVersion();
   const notebookViewModel = useMemo(() => {
     void cellIds;
@@ -784,7 +783,7 @@ function AppContent() {
   // notify subscribers. Discarded renders never trigger notifications.
   storeSetFocusedCellId(focusedCellId);
   storeSetExecutingCellIds(executingCellIds);
-  storeSetQueuedCellIds(queuedCellIds);
+  storeSetQueuedCellIds(notebookQueueProjection.queued_cell_ids);
   storeSetSearchQuery(globalFind.query);
   storeSetSearchCurrentMatch(globalFind.currentMatch);
 
