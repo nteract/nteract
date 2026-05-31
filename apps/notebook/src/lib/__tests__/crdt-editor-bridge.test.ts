@@ -84,7 +84,7 @@ describe("remoteChangesFromTextAttributions", () => {
 });
 
 describe("createCrdtBridge capability gating", () => {
-  it("blocks outbound editor transactions when the host cannot write", () => {
+  it("reconciles outbound editor transactions when the host cannot write", () => {
     const calls: string[] = [];
     const bridge = createCrdtBridge({
       getHandle: () =>
@@ -93,7 +93,7 @@ describe("createCrdtBridge capability gating", () => {
             calls.push(text);
             return true;
           },
-          get_cell_source: () => "unchanged",
+          get_cell_source: () => "hello",
         }) as never,
       cellId: "cell-a",
       canWriteSource: () => false,
@@ -110,8 +110,57 @@ describe("createCrdtBridge capability gating", () => {
 
     view.dispatch({ changes: { from: 5, insert: "!" } });
 
-    expect(view.state.doc.toString()).toBe("hello!");
+    expect(view.state.doc.toString()).toBe("hello");
     expect(calls).toEqual([]);
+  });
+
+  it("reconciles outbound editor transactions when the handle is unavailable", () => {
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () => null,
+      cellId: "cell-a",
+      onSourceChanged: (source) => calls.push(`store:${source}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "hello",
+        extensions: [bridge.extension],
+      }),
+    });
+    views.push(view);
+
+    view.dispatch({ changes: { from: 5, insert: "!" } });
+
+    expect(view.state.doc.toString()).toBe("hello");
+    expect(calls).toEqual([]);
+  });
+
+  it("reconciles to the handle source when a splice is rejected", async () => {
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () =>
+        ({
+          splice_source: () => false,
+          get_cell_source: () => "authoritative",
+        }) as never,
+      cellId: "cell-a",
+      onSourceChanged: (source) => calls.push(`store:${source}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "hello",
+        extensions: [bridge.extension],
+      }),
+    });
+    views.push(view);
+
+    view.dispatch({ changes: { from: 5, insert: "!" } });
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toBe("authoritative");
+    expect(calls).toEqual(["store:authoritative", "sync"]);
   });
 
   it("blocks imperative source replacement when the host cannot write", () => {
