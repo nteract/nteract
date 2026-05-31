@@ -12,6 +12,7 @@ export {
   NotebookPackageSummaryPanel,
   type NotebookPackageSummaryPanelProps,
 } from "./NotebookPackageSummaryPanel";
+export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
 export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
 export {
   navigateNotebookOutlineItem,
