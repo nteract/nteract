@@ -57,6 +57,7 @@ export function CellInsertionRibbon({
   const resolvedActiveType = activeType === undefined ? uncontrolledActiveType : activeType;
   const visualActiveType = resolvedActiveType ?? null;
   const isOpen = interactionActive || forceActionsVisible;
+  const actionTabIndex = isOpen ? 0 : -1;
   const ribbonClass = visualActiveType
     ? terminal
       ? terminalInsertionRibbonClasses[visualActiveType]
@@ -172,6 +173,7 @@ export function CellInsertionRibbon({
       </button>
       <div
         data-slot="cell-adder-actions"
+        aria-hidden={isOpen ? undefined : true}
         className={cn(
           "flex min-w-0 flex-1 items-center transition-opacity duration-150",
           terminal && "pt-0.5",
@@ -193,6 +195,7 @@ export function CellInsertionRibbon({
             type="button"
             title="Add code cell"
             aria-label="Add code cell"
+            tabIndex={actionTabIndex}
             onPointerEnter={() => setActiveType("code")}
             onFocus={() => setActiveType("code")}
             onClick={() => onInsert("code")}
@@ -206,6 +209,7 @@ export function CellInsertionRibbon({
             type="button"
             title="Add markdown cell"
             aria-label="Add markdown cell"
+            tabIndex={actionTabIndex}
             onPointerEnter={() => setActiveType("markdown")}
             onFocus={() => setActiveType("markdown")}
             onClick={() => onInsert("markdown")}

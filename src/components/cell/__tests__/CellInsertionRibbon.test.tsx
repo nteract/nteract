@@ -55,6 +55,25 @@ describe("CellInsertionRibbon", () => {
     expect(hitTarget).toHaveClass("bg-muted/20");
   });
 
+  it("keeps explicit actions out of the tab order until the row is awake", () => {
+    const { container } = render(<CellInsertionRibbon onInsert={() => undefined} />);
+
+    const adder = container.querySelector('[data-slot="cell-adder"]');
+    const actions = container.querySelector('[data-slot="cell-adder-actions"]');
+    const addCodeButton = screen.getByTitle("Add code cell");
+    const addMarkdownButton = screen.getByTitle("Add markdown cell");
+
+    expect(actions).toHaveAttribute("aria-hidden", "true");
+    expect(addCodeButton).toHaveAttribute("tabindex", "-1");
+    expect(addMarkdownButton).toHaveAttribute("tabindex", "-1");
+
+    fireEvent.pointerEnter(adder!);
+
+    expect(actions).not.toHaveAttribute("aria-hidden");
+    expect(addCodeButton).toHaveAttribute("tabindex", "0");
+    expect(addMarkdownButton).toHaveAttribute("tabindex", "0");
+  });
+
   it("uses the controlled active type for catalog fixtures", () => {
     const { container } = render(
       <CellInsertionRibbon activeType="markdown" forceActionsVisible onInsert={() => undefined} />,
