@@ -25,6 +25,12 @@ const terminalInsertionRibbonClasses: Record<CellInsertionType, string> = {
     "bg-gradient-to-b from-emerald-400 via-emerald-400/60 to-emerald-400/0 dark:from-emerald-600 dark:via-emerald-600/60 dark:to-emerald-600/0",
 };
 
+const actionButtonIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-500/12 text-sky-700 ring-sky-500/20 hover:bg-sky-500/16 dark:text-sky-300",
+  markdown:
+    "bg-emerald-500/12 text-emerald-700 ring-emerald-500/20 hover:bg-emerald-500/16 dark:text-emerald-300",
+};
+
 export function CellInsertionRibbon({
   terminal = false,
   activeType,
@@ -36,11 +42,14 @@ export function CellInsertionRibbon({
   const [uncontrolledActiveType, setUncontrolledActiveType] = useState<CellInsertionType | null>(
     null,
   );
+  const [interactionActive, setInteractionActive] = useState(false);
   const resolvedActiveType = activeType === undefined ? uncontrolledActiveType : activeType;
-  const ribbonClass = resolvedActiveType
+  const visualActiveType =
+    resolvedActiveType ?? (interactionActive || forceActionsVisible ? "code" : null);
+  const ribbonClass = visualActiveType
     ? terminal
-      ? terminalInsertionRibbonClasses[resolvedActiveType]
-      : insertionRibbonClasses[resolvedActiveType]
+      ? terminalInsertionRibbonClasses[visualActiveType]
+      : insertionRibbonClasses[visualActiveType]
     : undefined;
 
   const setActiveType = (type: CellInsertionType | null) => {
@@ -52,10 +61,10 @@ export function CellInsertionRibbon({
 
   const actionButtonClass = (type: CellInsertionType) =>
     cn(
-      "inline-flex h-6 items-center justify-center gap-1 rounded-sm px-2 text-xs text-muted-foreground/60 transition-colors",
+      "inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors ring-1 ring-transparent",
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-      resolvedActiveType === type
-        ? "bg-muted text-foreground shadow-sm"
+      visualActiveType === type
+        ? actionButtonIntentClasses[type]
         : "hover:bg-muted/60 hover:text-foreground",
     );
 
@@ -69,10 +78,16 @@ export function CellInsertionRibbon({
         notebookCellLayoutVars,
         className,
       )}
-      onPointerLeave={() => setActiveType(null)}
+      onPointerEnter={() => setInteractionActive(true)}
+      onPointerLeave={() => {
+        setInteractionActive(false);
+        setActiveType(null);
+      }}
+      onFocusCapture={() => setInteractionActive(true)}
       onBlur={(event) => {
         const nextTarget = event.relatedTarget;
         if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          setInteractionActive(false);
           setActiveType(null);
         }
       }}
@@ -108,13 +123,13 @@ export function CellInsertionRibbon({
         data-slot="cell-adder-primary-hit-target"
         title="Add code cell from insertion margin"
         aria-label="Add code cell from insertion margin"
-        onPointerEnter={() => setActiveType(null)}
-        onFocus={() => setActiveType(null)}
+        onPointerEnter={() => setActiveType("code")}
+        onFocus={() => setActiveType("code")}
         onClick={() => onInsert("code")}
         className={cn(
           "h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
-          resolvedActiveType ? "bg-transparent" : "hover:bg-muted/20",
+          visualActiveType === "code" ? "bg-sky-500/5" : "hover:bg-muted/20",
           terminal && "h-7",
         )}
       >
@@ -132,7 +147,7 @@ export function CellInsertionRibbon({
       >
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 items-center gap-0.5 rounded-sm border border-border/45 bg-background/85 p-0.5 shadow-sm backdrop-blur-sm"
+          className="flex h-7 items-center gap-1 rounded-full bg-background/80 px-1 shadow-sm shadow-black/[0.04] ring-1 ring-border/45 backdrop-blur-sm"
         >
           <button
             type="button"
