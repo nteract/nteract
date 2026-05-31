@@ -1,10 +1,11 @@
-import { Check, FileText, Info, Package, Plus, RefreshCw, Terminal, X } from "lucide-react";
+import { Check, FileText, Info, Plus, RefreshCw, Terminal, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { EnvSyncState } from "./runtime-surface-types";
 import { addPixiDependency, removePixiDependency, usePixiDeps } from "../lib/notebook-metadata";
 import type { PixiInfo } from "../hooks/usePixiDetection";
 import { PixiIcon } from "./icons";
+import { PackageSpecList } from "./PackageSpecList";
 
 interface PixiDependencyHeaderProps {
   pixiInfo: PixiInfo | null;
@@ -28,6 +29,9 @@ export function PixiDependencyHeader({
   const [newDep, setNewDep] = useState("");
   const [loading, setLoading] = useState(false);
   const isRail = variant === "rail";
+  const pixiDependencyValues = pixiInfo
+    ? [...pixiInfo.dependencies, ...pixiInfo.pypi_dependencies]
+    : [];
 
   const handleAdd = useCallback(async () => {
     if (newDep.trim()) {
@@ -144,7 +148,16 @@ export function PixiDependencyHeader({
               </span>
             </div>
 
-            {pixiInfo.dependencies.length > 0 ? (
+            {isRail ? (
+              <PackageSpecList
+                values={pixiDependencyValues}
+                tone="pixi"
+                emptyLabel="No dependencies listed in pixi.toml."
+                loading={loading}
+                framed={false}
+                className="mt-2"
+              />
+            ) : pixiInfo.dependencies.length > 0 ? (
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {pixiInfo.dependencies.map((dep) => (
                   <span
@@ -156,7 +169,7 @@ export function PixiDependencyHeader({
                 ))}
               </div>
             ) : null}
-            {pixiInfo.pypi_dependencies.length > 0 ? (
+            {!isRail && pixiInfo.pypi_dependencies.length > 0 ? (
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 <span className="text-muted-foreground text-[10px] uppercase tracking-wide self-center">
                   PyPI
@@ -172,19 +185,24 @@ export function PixiDependencyHeader({
               </div>
             ) : null}
 
-            {pixiInfo.channels.length > 0 && (
-              <div className="mt-1.5 flex items-center gap-1.5 text-muted-foreground">
-                <Package className="h-3 w-3 shrink-0" />
-                {pixiInfo.channels.map((ch) => (
-                  <span key={ch} className="rounded bg-muted px-1.5 py-0.5">
-                    {ch}
-                  </span>
-                ))}
+            {(pixiInfo.python || pixiInfo.channels.length > 0) && (
+              <div className="mt-2 space-y-1 border-t border-border/60 pt-2 text-xs text-muted-foreground">
+                {pixiInfo.python && (
+                  <div>
+                    Python <span className="font-mono">{pixiInfo.python}</span>
+                  </div>
+                )}
+                {pixiInfo.channels.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    <span>Channels</span>
+                    {pixiInfo.channels.map((channel) => (
+                      <span key={channel} className="rounded bg-muted px-1.5 py-0.5 font-mono">
+                        {channel}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-
-            {pixiInfo.python && (
-              <div className="mt-1.5 text-muted-foreground">Python: {pixiInfo.python}</div>
             )}
           </div>
         )}
@@ -193,7 +211,16 @@ export function PixiDependencyHeader({
         {isInlineMode && (
           <>
             {/* Current inline deps */}
-            {pixiDeps && pixiDeps.dependencies.length > 0 && (
+            {isRail ? (
+              <PackageSpecList
+                values={pixiDeps?.dependencies ?? []}
+                tone="pixi"
+                emptyLabel="No Pixi dependencies yet."
+                loading={loading}
+                onRemove={handleRemove}
+                className="mb-2"
+              />
+            ) : pixiDeps && pixiDeps.dependencies.length > 0 ? (
               <div className="mb-2 flex flex-wrap gap-1.5">
                 {pixiDeps.dependencies.map((dep) => (
                   <div
@@ -212,7 +239,7 @@ export function PixiDependencyHeader({
                   </div>
                 ))}
               </div>
-            )}
+            ) : null}
 
             {/* Add dep input */}
             <div className="mb-3 flex gap-1.5">
@@ -249,7 +276,7 @@ export function PixiDependencyHeader({
         )}
 
         {/* Tip for pixi:toml mode */}
-        {!isInlineMode && (
+        {!isInlineMode && !isRail && (
           <div className="flex items-start gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
             <Terminal className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>

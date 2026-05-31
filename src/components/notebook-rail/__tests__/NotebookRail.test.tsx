@@ -183,6 +183,24 @@ describe("NotebookRail", () => {
     expect(onNavigateOutlineItem).toHaveBeenCalledWith(outlineItems[0], "#notebook-cell-cell-a");
   });
 
+  it("prevents outline links from starting browser drag previews", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    const outlineLink = screen.getByRole("link", { name: "Load data" });
+
+    expect(outlineLink).toHaveAttribute("draggable", "false");
+    expect(fireEvent.dragStart(outlineLink)).toBe(false);
+  });
+
   it("marks only the first outline item for a focused cell when no item is pinned", () => {
     render(
       <NotebookRail

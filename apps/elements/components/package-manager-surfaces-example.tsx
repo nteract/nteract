@@ -138,8 +138,9 @@ export function PackageManagerSurfacesExample() {
             pyprojectDeps={scenario.packageState.pyprojectDeps}
             onImportFromPyproject={asyncNoop}
             onUseProjectEnv={asyncNoop}
-            isUsingProjectEnv={false}
+            isUsingProjectEnv
             justSynced={false}
+            variant="rail"
           />
         </SurfaceFrame>
 
@@ -153,6 +154,8 @@ export function PackageManagerSurfacesExample() {
             channels={["conda-forge", "nvidia"]}
             python="3.13"
             loading={false}
+            envSource="conda:env_yml"
+            variant="rail"
             syncState={{ status: "dirty" }}
             onAdd={asyncNoop}
             onRemove={asyncNoop}
@@ -206,6 +209,7 @@ export function PackageManagerSurfacesExample() {
               channels: ["conda-forge"],
             }}
             envSource="pixi:toml"
+            variant="rail"
             syncState={{ status: "dirty", added: ["plotly"], removed: [] }}
             onSyncNow={asyncTrue}
             justSynced={false}

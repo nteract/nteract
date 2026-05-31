@@ -19,7 +19,7 @@ describe("CellInsertionRibbon", () => {
     expect(onInsert).toHaveBeenCalledWith("code");
   });
 
-  it("keeps the left insertion channel neutral while remaining a primary code target", () => {
+  it("uses the left insertion channel as the resting code target", () => {
     const onInsert = vi.fn();
     const { container } = render(<CellInsertionRibbon onInsert={onInsert} />);
 
@@ -27,7 +27,9 @@ describe("CellInsertionRibbon", () => {
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
 
     fireEvent.pointerEnter(hitTarget!);
-    expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toBeNull();
+    expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toHaveClass(
+      "bg-sky-400",
+    );
 
     fireEvent.click(hitTarget!);
 
@@ -44,9 +46,10 @@ describe("CellInsertionRibbon", () => {
     const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
 
     expect(actions).toHaveClass("opacity-100");
-    expect(palette).toHaveClass("bg-background/85");
+    expect(palette).toHaveClass("bg-background/80");
+    expect(palette).toHaveClass("rounded-full");
     expect(intent).toHaveClass("bg-emerald-400");
-    expect(screen.getByTitle("Add markdown cell")).toHaveClass("text-foreground");
+    expect(screen.getByTitle("Add markdown cell")).toHaveClass("text-emerald-700");
   });
 
   it("softens the terminal row into a document tail", () => {
