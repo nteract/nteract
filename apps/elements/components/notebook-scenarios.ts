@@ -20,6 +20,7 @@ export type ElementsNotebookScenarioId =
   | "cloud-public-viewer"
   | "cloud-editor"
   | "cloud-owner"
+  | "agent-on-behalf"
   | "runtime-unavailable";
 
 export interface ElementsNotebookScenario {
@@ -231,13 +232,36 @@ const notebookCells: readonly NotebookViewCell[] = [
   },
 ];
 
+const packageDependencies = ["pandas>=2", "polars", "plotly", "scikit-learn"];
+const packageRequiresPython = ">=3.13";
+
+const notebookMetadata = {
+  runt: {
+    uv: {
+      dependencies: packageDependencies,
+      "requires-python": packageRequiresPython,
+    },
+    pixi: {
+      dependencies: ["numpy", "pandas"],
+      pypi_dependencies: ["altair", "great-tables"],
+      channels: ["conda-forge"],
+      python: packageRequiresPython,
+    },
+    deno: {
+      permissions: ["net", "read"],
+      flexible_npm_imports: true,
+    },
+  },
+};
+
 const viewModel = createNotebookViewModel(notebookCells, {
   resolveLanguage: resolveElementsNotebookLanguage,
+  metadata: notebookMetadata,
 });
 
 const packageState: ElementsNotebookPackageState = {
-  dependencies: ["pandas>=2", "polars", "plotly", "scikit-learn"],
-  requiresPython: ">=3.13",
+  dependencies: packageDependencies,
+  requiresPython: packageRequiresPython,
   syncState: { status: "dirty", added: ["altair"], removed: [] },
   pyprojectInfo: {
     path: "/Users/kyle/notebooks/pyproject.toml",
@@ -652,6 +676,39 @@ export const elementsNotebookScenarios: Record<
         source: "cloud",
         isPublic: false,
         actorLabel: "cloud:kyle",
+        identityLabel: "Kyle",
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+    },
+  }),
+  "agent-on-behalf": createScenario({
+    id: "agent-on-behalf",
+    title: "Agent on behalf",
+    eyebrow: "agency fixture",
+    summary:
+      "An authenticated agent actor working through the cloud shell on behalf of a notebook owner.",
+    runtimeLabel: "Cloud notebook - agent session active",
+    packageSummary: "visible - 8 packages",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: true,
+      canEditCells: true,
+      canEditStructure: false,
+      canRequestEdit: false,
+      canExecute: true,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "editor",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: "agent:codex/on-behalf-of:kyle",
         identityLabel: "Kyle",
       },
       auth: {
