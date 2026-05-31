@@ -1,6 +1,7 @@
 import { Check, Download, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { PackageSpecList } from "./PackageSpecList";
 import type { EnvSyncState, PyProjectDeps, PyProjectInfo } from "./runtime-surface-types";
 
 type DependencyPanelVariant = "header" | "rail";
@@ -49,6 +50,14 @@ export function DependencyHeader({
   const [newDep, setNewDep] = useState("");
   const [pythonSpec, setPythonSpec] = useState(requiresPython ?? "");
   const isRail = variant === "rail";
+  const pyprojectDependencyValues = pyprojectDeps
+    ? [...pyprojectDeps.dependencies, ...pyprojectDeps.dev_dependencies]
+    : [];
+  const pyprojectDependencyCount =
+    pyprojectDependencyValues.length || pyprojectInfo?.dependency_count || 0;
+  const hasPyprojectDependencies =
+    Boolean(pyprojectInfo?.has_dependencies) || pyprojectDependencyCount > 0;
+  const pyprojectPath = pyprojectInfo?.relative_path ?? "pyproject.toml";
 
   useEffect(() => {
     setPythonSpec(requiresPython ?? "");
@@ -168,14 +177,14 @@ export function DependencyHeader({
         )}
 
         {/* pyproject.toml detected banner */}
-        {pyprojectInfo?.has_dependencies && (
+        {hasPyprojectDependencies && !isUsingProjectEnv && (
           <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
             <div className={cn("flex items-center justify-between", isRail && "items-start gap-3")}>
               <div className="flex min-w-0 items-start gap-2">
                 <FileText className="h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0">
-                  <code className="rounded bg-muted px-1">{pyprojectInfo.relative_path}</code>
-                  {pyprojectInfo.project_name && (
+                  <code className="rounded bg-muted px-1">{pyprojectPath}</code>
+                  {pyprojectInfo?.project_name && (
                     <span className="text-muted-foreground ml-1">
                       ({pyprojectInfo.project_name})
                     </span>
@@ -215,7 +224,17 @@ export function DependencyHeader({
             </div>
             {pyprojectDeps &&
               (pyprojectDeps.dependencies.length > 0 ||
-                pyprojectDeps.dev_dependencies.length > 0) && (
+                pyprojectDeps.dev_dependencies.length > 0) &&
+              (isRail ? (
+                <PackageSpecList
+                  values={pyprojectDependencyValues}
+                  tone="uv"
+                  emptyLabel="No dependencies listed in pyproject.toml."
+                  loading={loading}
+                  framed={false}
+                  className="mt-2"
+                />
+              ) : (
                 <div className="mt-2 text-xs text-muted-foreground">
                   {pyprojectDeps.dependencies.length > 0 && (
                     <div className="flex flex-wrap gap-1 mb-1">
@@ -237,7 +256,7 @@ export function DependencyHeader({
                     </div>
                   )}
                 </div>
-              )}
+              ))}
           </div>
         )}
 
@@ -245,13 +264,22 @@ export function DependencyHeader({
         {isUsingProjectEnv && (
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Managed by{" "}
-              <code className="rounded bg-muted px-1">
-                {pyprojectInfo?.relative_path ?? "pyproject.toml"}
-              </code>{" "}
-              — re-initialize the environment to pick up dependency changes.
-            </span>
+            <div className="min-w-0 space-y-1 leading-5">
+              <div>
+                Using <code className="rounded bg-muted px-1">{pyprojectPath}</code>
+              </div>
+              <div>Re-initialize after dependency changes.</div>
+              {isRail && pyprojectDependencyValues.length > 0 && (
+                <PackageSpecList
+                  values={pyprojectDependencyValues}
+                  tone="uv"
+                  emptyLabel="No dependencies listed in pyproject.toml."
+                  loading={loading}
+                  framed={false}
+                  className="pt-1"
+                />
+              )}
+            </div>
           </div>
         )}
 
@@ -291,7 +319,16 @@ export function DependencyHeader({
 
         {/* Dependencies list (read-only when using project env) */}
         {!isUsingProjectEnv &&
-          (dependencies.length > 0 ? (
+          (isRail ? (
+            <PackageSpecList
+              values={dependencies}
+              tone="uv"
+              emptyLabel="No inline dependencies. Add packages to create an isolated environment."
+              loading={loading}
+              onRemove={onRemove}
+              className="mb-3"
+            />
+          ) : dependencies.length > 0 ? (
             <div className="mb-3 flex flex-wrap gap-1.5">
               {dependencies.map((dep) => (
                 <div
