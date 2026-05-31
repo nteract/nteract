@@ -67,6 +67,32 @@ describe("live notebook fixture", () => {
     ]);
   });
 
+  it("creates the lets-edit notebook as a lightweight markdown fixture", async () => {
+    const calls = [];
+    const session = {
+      createCell: async (source, options) => calls.push(["createCell", source, options]),
+    };
+    const rt = {
+      createNotebook: async (options) => {
+        calls.push(["createNotebook", options]);
+        return session;
+      },
+    };
+
+    const result = await createLiveNotebookFixture(rt, { preset: "lets-edit" });
+
+    assert.equal(result, session);
+    assert.deepEqual(
+      calls.map(([name]) => name),
+      ["createNotebook", "createCell", "createCell", "createCell"],
+    );
+    assert.equal(calls[0][1].description, "notebook-cloud shared editing smoke");
+    assert.equal(calls[1][2].cellType, "markdown");
+    assert.match(calls[1][1], /# Let's edit/);
+    assert.match(calls[2][1], /## Notes/);
+    assert.match(calls[3][1], /## Scratch space/);
+  });
+
   it("rejects unknown presets before creating a notebook", async () => {
     const rt = {
       createNotebook() {

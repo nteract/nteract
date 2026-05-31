@@ -5,6 +5,9 @@ export async function createLiveNotebookFixture(rt, { preset = "mathnet" } = {})
   if (preset === "html-output") {
     return createHtmlOutputNotebook(rt);
   }
+  if (preset === "lets-edit") {
+    return createLetsEditNotebook(rt);
+  }
   throw new Error(`Unknown NOTEBOOK_CLOUD_LIVE_PRESET ${preset}`);
 }
 
@@ -51,6 +54,44 @@ async function createMathNetNotebook(rt) {
       ].join("\n"),
       { timeoutMs: 10 * 60 * 1000 },
     );
+    return session;
+  } catch (error) {
+    await session.shutdownNotebook().catch(() => {});
+    await session.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function createLetsEditNotebook(rt) {
+  const session = await rt.createNotebook({
+    runtime: "python",
+    description: "notebook-cloud shared editing smoke",
+    packageManager: "uv",
+    environmentMode: "notebook",
+  });
+
+  try {
+    await session.createCell(
+      [
+        "# Let's edit",
+        "",
+        "This is a small shared notebook for trying the hosted editor flow on preview.runt.run.",
+      ].join("\n"),
+      { cellType: "markdown" },
+    );
+    await session.createCell(
+      [
+        "## Notes",
+        "",
+        "- Add a section below.",
+        "- Try editing together from separate accounts.",
+        "- Keep this notebook intentionally lightweight while auth and sharing are still settling.",
+      ].join("\n"),
+      { cellType: "markdown" },
+    );
+    await session.createCell(["## Scratch space", "", "Start here."].join("\n"), {
+      cellType: "markdown",
+    });
     return session;
   } catch (error) {
     await session.shutdownNotebook().catch(() => {});

@@ -5,12 +5,12 @@ import { fileURLToPath } from "node:url";
 
 import { collectBlobRefs } from "../src/blob-refs.ts";
 import { createLiveNotebookFixture } from "./live-notebook-fixture.mjs";
+import { publishIdentityHeaders } from "./publish-auth.mjs";
 import { loadRuntimedNode } from "./runtimed-node-loader.mjs";
 
 const rt = loadRuntimedNode();
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
-const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const sourceNotebookId = process.env.NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID;
 const preset = process.env.NOTEBOOK_CLOUD_LIVE_PRESET ?? "mathnet";
 const notebookId =
@@ -190,16 +190,13 @@ async function putBytes(pathname, body, contentType, extraHeaders = {}) {
 function publishHeaders(contentType, extraHeaders) {
   return {
     "Content-Type": contentType,
-    "X-User": "live-publish",
-    "X-Operator": "agent:publish-live",
-    "X-Scope": "owner",
-    ...devAuthHeaders(),
+    ...publishIdentityHeaders({
+      user: "live-publish",
+      operator: "agent:publish-live",
+      scope: "owner",
+    }),
     ...extraHeaders,
   };
-}
-
-function devAuthHeaders() {
-  return devAuthToken ? { "X-Notebook-Cloud-Dev-Token": devAuthToken } : {};
 }
 
 async function fetchJson(pathname) {
