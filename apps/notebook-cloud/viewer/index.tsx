@@ -27,7 +27,6 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import { ReadOnlyNotebook } from "@/components/cell/ReadOnlyNotebook";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
@@ -35,6 +34,8 @@ import {
   createNotebookViewModel,
   navigateNotebookOutlineItem,
   NotebookDocumentShell,
+  NotebookPackageSummaryPanel,
+  NotebookReadOnlyView,
 } from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -593,6 +594,7 @@ function NotebookViewer({
     message: loadingPolicy.initialStatusMessage,
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
+  const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
   const [showCode, setShowCode] = useState(true);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(false);
@@ -774,6 +776,7 @@ function NotebookViewer({
         });
         if (cancelled || liveMaterializedRef.current) return;
         notebookLanguageRef.current = materialized.notebookLanguage;
+        setNotebookMetadata(materialized.metadata);
 
         snapshotResolvedRef.current = true;
         await projectCloudWidgetComms(
@@ -905,6 +908,7 @@ function NotebookViewer({
       }
       if (disposed || sequence !== materializeSequence) return;
       notebookLanguageRef.current = materialized.notebookLanguage;
+      setNotebookMetadata(materialized.metadata);
 
       await projectCloudWidgetComms(
         widgetStore,
@@ -1053,11 +1057,14 @@ function NotebookViewer({
   ]);
 
   const notebookViewModel = useMemo(
-    () => createNotebookViewModel(cells, { resolveLanguage: cloudSourceLanguage }),
-    [cells],
+    () =>
+      createNotebookViewModel(cells, {
+        metadata: notebookMetadata,
+        resolveLanguage: cloudSourceLanguage,
+      }),
+    [cells, notebookMetadata],
   );
-  const { readOnlyCells, codeCellCount, outlineItems, tracebackTargetsByExecutionId } =
-    notebookViewModel;
+  const { codeCellCount, outlineItems, tracebackTargetsByExecutionId } = notebookViewModel;
   useEffect(() => {
     if (!selectedOutlineItemId) return;
     if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {
@@ -1135,7 +1142,13 @@ function NotebookViewer({
       collapsed={railCollapsed}
       outlineItems={outlineItems}
       selectedOutlineItemId={selectedOutlineItemId}
-      packagesPanel={<CloudRailPackagesPanel />}
+      packagesSummary={notebookViewModel.packages.summary}
+      packagesPanel={
+        <NotebookPackageSummaryPanel
+          packages={notebookViewModel.packages}
+          readOnly={!shellCapabilities.canManagePackages}
+        />
+      }
       onActivePanelChange={setActiveRailPanel}
       onCollapsedChange={setRailCollapsed}
       onSelectOutlineItem={handleSelectOutlineItem}
@@ -1250,7 +1263,7 @@ function NotebookViewer({
 
       {canEditMarkdown ? (
         <CloudLiveNotebook
-          cells={cells}
+          viewModel={notebookViewModel}
           priority={CLOUD_VIEWER_PRIORITY}
           hostContext={outputHostContext}
           showCode={showCode}
@@ -1266,8 +1279,8 @@ function NotebookViewer({
           onNavigateToTracebackCell={handleTracebackCellNavigate}
         />
       ) : (
-        <ReadOnlyNotebook
-          cells={readOnlyCells}
+        <NotebookReadOnlyView
+          viewModel={notebookViewModel}
           priority={CLOUD_VIEWER_PRIORITY}
           hostContext={outputHostContext}
           displayMode="report"
@@ -1288,14 +1301,6 @@ function NotebookViewer({
         />
       )}
     </NotebookDocumentShell>
-  );
-}
-
-function CloudRailPackagesPanel() {
-  return (
-    <div className="cloud-rail-panel-note">
-      <p>Package details are not surfaced in the hosted viewer yet.</p>
-    </div>
   );
 }
 

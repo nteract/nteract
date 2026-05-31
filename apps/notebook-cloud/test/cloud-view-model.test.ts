@@ -32,7 +32,14 @@ describe("cloud notebook view model materialization", () => {
           ],
         },
       ],
-      metadata: { language_info: { name: "python" } },
+      metadata: {
+        language_info: { name: "python" },
+        runt: {
+          uv: {
+            dependencies: ["pandas>=2"],
+          },
+        },
+      },
       runtimeState: {
         comms: {
           "slider-1": {
@@ -53,6 +60,14 @@ describe("cloud notebook view model materialization", () => {
     });
 
     assert.equal(materialized.notebookLanguage, "python");
+    assert.deepEqual(materialized.metadata, {
+      language_info: { name: "python" },
+      runt: {
+        uv: {
+          dependencies: ["pandas>=2"],
+        },
+      },
+    });
     assert.equal(materialized.rawCellCount, 2);
     assert.deepEqual(
       materialized.cells.map((cell) => [cell.id, cell.cellType, cell.language]),

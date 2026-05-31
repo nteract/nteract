@@ -11,6 +11,7 @@ export interface CloudNotebookViewMaterialization {
   cells: ResolvedCell[];
   widgetComms: SnapshotWidgetComm[];
   notebookLanguage: string;
+  metadata: unknown;
   rawCellCount: number;
 }
 
@@ -26,7 +27,9 @@ export async function materializeCloudNotebookView(
   options: MaterializeCloudNotebookViewOptions,
 ): Promise<CloudNotebookViewMaterialization> {
   const rawCells = JSON.parse(handle.get_cells_json()) as RenderCell[];
-  const notebookLanguage = cloudNotebookLanguageFromHandle(handle, options.defaultNotebookLanguage);
+  const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json?.());
+  const notebookLanguage =
+    languageFromNotebookMetadata(metadata) ?? options.defaultNotebookLanguage;
   const widgetComms = snapshotWidgetCommsFromRuntimeState(
     handle.get_runtime_state(),
     options.blobResolver,
@@ -43,6 +46,7 @@ export async function materializeCloudNotebookView(
     cells,
     widgetComms,
     notebookLanguage,
+    metadata,
     rawCellCount: rawCells.length,
   };
 }

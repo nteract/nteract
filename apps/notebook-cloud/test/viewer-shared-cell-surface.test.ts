@@ -47,8 +47,29 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
 
   assert.match(sourceText, /NotebookCellList/);
   assert.match(sourceText, /slot="cloud-live-notebook"/);
+  assert.match(sourceText, /viewModel: NotebookViewModel<ResolvedCell>/);
+  assert.match(sourceText, /const cells = viewModel\.cells;/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
+});
+
+test("cloud read-only notebook renders from the shared notebook view model", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookReadOnlyView/);
+  assert.match(sourceText, /<NotebookReadOnlyView[\s\S]*viewModel=\{notebookViewModel\}/);
+  assert.doesNotMatch(sourceText, /cells=\{readOnlyCells\}/);
+});
+
+test("cloud package rail renders package metadata through the shared shell panel", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookPackageSummaryPanel/);
+  assert.match(sourceText, /packagesSummary=\{notebookViewModel\.packages\.summary\}/);
+  assert.match(sourceText, /packages=\{notebookViewModel\.packages\}/);
+  assert.doesNotMatch(sourceText, /Package details are not surfaced/);
 });
 
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {

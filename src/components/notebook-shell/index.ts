@@ -9,6 +9,11 @@ export {
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
+  NotebookPackageSummaryPanel,
+  type NotebookPackageSummaryPanelProps,
+} from "./NotebookPackageSummaryPanel";
+export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
+export {
   navigateNotebookOutlineItem,
   type NavigateNotebookOutlineItemOptions,
 } from "./outline-navigation";
@@ -20,6 +25,9 @@ export {
   notebookViewCellsToTracebackTargets,
   notebookOutlineItemsToMarkdownHeadingAnchors,
   type CreateNotebookViewModelOptions,
+  type NotebookPackageManager,
+  type NotebookPackageSection,
+  type NotebookPackageViewModel,
   type NotebookViewModel,
   type NotebookViewCell,
   type NotebookViewCellType,
