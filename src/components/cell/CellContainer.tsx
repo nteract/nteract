@@ -138,7 +138,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {/* Optional state lane - lives inside the source inset so clipped scroll containers do not hide it. */}
         <div
           data-slot="cell-state-lane"
-          className="absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-3.5 select-none"
+          className="absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-[1.125rem] select-none sm:pt-3.5"
           onMouseDown={onFocus}
         >
           {gutterContent}
@@ -148,7 +148,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {useSegmentedRibbon ? (
           <div className="flex min-w-0 flex-1 flex-col">
             {/* Code row - ribbon + content + right gutter */}
-            <div className="relative flex" onMouseDown={onFocus}>
+            <div data-slot="cell-code-row" className="relative flex" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
                 data-slot="cell-ribbon"
@@ -177,7 +177,11 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
             {/* Output row - ribbon + content + right gutter
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
-              <div className={cn("relative flex", hideOutput && "hidden")} onMouseDown={onFocus}>
+              <div
+                data-slot="cell-output-row"
+                className={cn("relative flex", hideOutput && "hidden")}
+                onMouseDown={onFocus}
+              >
                 <div
                   data-slot="cell-output-ribbon"
                   className={cn("w-1 transition-colors duration-150", outputRibbonColor)}

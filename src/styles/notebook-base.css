@@ -35,6 +35,12 @@ code {
   font-family: "SF Mono", Consolas, Monaco, "Andale Mono", monospace;
 }
 
+@media (max-width: 640px) {
+  [data-slot="cell-code-content"] .cm-editor.cm-editor {
+    margin-top: 0;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
