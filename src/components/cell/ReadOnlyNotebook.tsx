@@ -23,6 +23,7 @@ export interface ReadOnlyNotebookProps {
   outputClassName?: string;
   lineWrapping?: boolean;
   label?: string;
+  scrollable?: boolean;
   emptyContent?: ReactNode;
   renderCellError?: (error: Error, cell: ReadOnlyNotebookCellData, index: number) => ReactNode;
   resolveTracebackExecutionTarget?: TracebackExecutionResolver;
@@ -44,6 +45,7 @@ export function ReadOnlyNotebook({
   outputClassName,
   lineWrapping = true,
   label = "Notebook cells",
+  scrollable = false,
   emptyContent = null,
   renderCellError,
   resolveTracebackExecutionTarget,
@@ -55,6 +57,7 @@ export function ReadOnlyNotebook({
       label={label}
       className={className}
       slot="read-only-notebook"
+      scrollable={scrollable}
       emptyContent={emptyContent}
       keyForCell={(cell, index) => `${cell.id}:${index}`}
       renderCellError={(error, cell, index) =>

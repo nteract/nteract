@@ -8,6 +8,7 @@ export interface NotebookCellListProps<TCell extends NotebookCellListItem = Note
   label?: string;
   className?: string;
   slot?: string;
+  scrollable?: boolean;
   emptyContent?: ReactNode;
   keyForCell?: (cell: TCell, index: number) => string;
   resetKeysForCell?: (cell: TCell, index: number) => readonly unknown[];
@@ -20,6 +21,7 @@ export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCe
   label = "Notebook cells",
   className,
   slot = "notebook-cell-list",
+  scrollable = false,
   emptyContent = null,
   keyForCell = defaultKeyForCell,
   resetKeysForCell = defaultResetKeysForCell,
@@ -29,7 +31,11 @@ export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCe
   return (
     <section
       aria-label={label}
-      className={cn("flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain", className)}
+      className={cn(
+        "flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain",
+        scrollable && "overflow-y-auto overscroll-contain scroll-smooth",
+        className,
+      )}
       data-cell-count={cells.length}
       data-slot={slot}
     >

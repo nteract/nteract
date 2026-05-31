@@ -758,9 +758,6 @@ body {
 
 .cloud-report-notebook {
   min-height: 0;
-  overflow-y: auto;
-  scroll-behavior: smooth;
-  overscroll-behavior: contain;
   padding-inline: clamp(0.75rem, 4vw, 2rem) clamp(0.5rem, 2vw, 0.75rem);
   padding-block: 1rem 2rem;
 }

@@ -97,6 +97,7 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
 
   assert.match(sourceText, /NotebookEditableView/);
   assert.match(sourceText, /slot="cloud-live-notebook"/);
+  assert.match(sourceText, /scrollable/);
   assert.match(sourceText, /viewModel: NotebookViewModel<ResolvedCell>/);
   assert.match(sourceText, /<NotebookEditableView[\s\S]*viewModel=\{viewModel\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
@@ -134,6 +135,7 @@ test("cloud read-only notebook renders from the shared notebook view model", () 
 
   assert.match(sourceText, /NotebookReadOnlyView/);
   assert.match(sourceText, /<NotebookReadOnlyView[\s\S]*viewModel=\{notebookViewModel\}/);
+  assert.match(sourceText, /<NotebookReadOnlyView[\s\S]*scrollable/);
   assert.doesNotMatch(sourceText, /cells=\{readOnlyCells\}/);
 });
 

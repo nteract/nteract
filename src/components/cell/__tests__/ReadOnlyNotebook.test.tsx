@@ -103,6 +103,7 @@ describe("ReadOnlyNotebook", () => {
           },
         }}
         className="notebook-shell"
+        scrollable
         cellClassName="cell-shell"
         sourceClassName="source-shell"
         outputClassName="output-shell"
@@ -113,6 +114,7 @@ describe("ReadOnlyNotebook", () => {
     expect(notebook).toHaveAttribute("aria-label", "Notebook cells");
     expect(notebook).toHaveAttribute("data-cell-count", "2");
     expect(notebook).toHaveClass("notebook-shell");
+    expect(notebook).toHaveClass("overflow-y-auto");
 
     const cells = screen.getAllByTestId("read-only-cell");
     expect(cells).toHaveLength(2);

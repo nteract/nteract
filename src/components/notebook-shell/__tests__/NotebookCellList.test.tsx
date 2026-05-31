@@ -60,6 +60,20 @@ describe("NotebookCellList", () => {
     expect(screen.getByText("No cells")).toBeVisible();
   });
 
+  it("can own notebook cell scrolling for document-shell hosts", () => {
+    render(
+      <NotebookCellList
+        cells={cells}
+        scrollable
+        renderCell={(cell) => <article>{cell.source}</article>}
+      />,
+    );
+
+    expect(screen.getByLabelText("Notebook cells")).toHaveClass("overflow-y-auto");
+    expect(screen.getByLabelText("Notebook cells")).toHaveClass("scroll-smooth");
+    expect(screen.getByLabelText("Notebook cells")).toHaveClass("overscroll-contain");
+  });
+
   it("lets read-only hosts keep duplicate cell ids renderable for malformed imported notebooks", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {

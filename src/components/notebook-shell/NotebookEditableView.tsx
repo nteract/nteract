@@ -6,6 +6,7 @@ export interface NotebookEditableViewProps<TCell extends NotebookViewCell = Note
   viewModel: Pick<NotebookViewModel<TCell>, "cells">;
   className?: string;
   slot?: string;
+  scrollable?: boolean;
   renderMarkdownCell: (cell: TCell, index: number) => ReactNode;
   renderCodeCell: (cell: TCell, index: number) => ReactNode;
   renderFallbackCell: (cell: TCell, index: number) => ReactNode;
@@ -16,6 +17,7 @@ export function NotebookEditableView<TCell extends NotebookViewCell = NotebookVi
   viewModel,
   className,
   slot = "notebook-editable-view",
+  scrollable,
   renderMarkdownCell,
   renderCodeCell,
   renderFallbackCell,
@@ -26,6 +28,7 @@ export function NotebookEditableView<TCell extends NotebookViewCell = NotebookVi
       cells={viewModel.cells}
       className={className}
       slot={slot}
+      scrollable={scrollable}
       renderCellError={renderCellError}
       renderCell={(cell, index) => {
         if (cell.cellType === "markdown") {

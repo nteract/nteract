@@ -44,6 +44,7 @@ describe("NotebookEditableView", () => {
       <NotebookEditableView
         viewModel={viewModel}
         slot="host-editable-cells"
+        scrollable
         renderMarkdownCell={(cell) => <article>markdown:{cell.source}</article>}
         renderCodeCell={(cell) => <article>code:{cell.source}</article>}
         renderFallbackCell={(cell) => <article>fallback:{cell.source}</article>}
@@ -54,6 +55,7 @@ describe("NotebookEditableView", () => {
       "data-slot",
       "host-editable-cells",
     );
+    expect(screen.getByLabelText("Notebook cells")).toHaveClass("overflow-y-auto");
     expect(screen.getByText("markdown:# Intro")).toBeVisible();
     expect(screen.getByText("code:print('ok')")).toBeVisible();
     expect(screen.getByText("fallback:raw body")).toBeVisible();

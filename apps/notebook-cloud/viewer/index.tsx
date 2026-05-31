@@ -1290,6 +1290,7 @@ function NotebookViewer({
           hostContext={outputHostContext}
           showCode={showCode}
           className="cloud-report-notebook"
+          scrollable
           cellClassName="cloud-cell"
           sourceClassName="cloud-source-block"
           outputClassName="cloud-output-block"
