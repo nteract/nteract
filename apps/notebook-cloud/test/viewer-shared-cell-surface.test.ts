@@ -74,7 +74,9 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NotebookDocumentRail/);
-  assert.match(sourceText, /createNotebookViewModel\(cells/);
+  assert.match(sourceText, /useNotebookViewModel\(/);
+  assert.doesNotMatch(sourceText, /createNotebookViewModel\(\s+cells/);
+  assert.doesNotMatch(sourceText, /useSourceVersion\(\)/);
   assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
   assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
   assert.match(sourceText, /navigateNotebookOutlineItem\(item, href/);
@@ -107,4 +109,13 @@ test("hosted smoke waits for shared NotebookView cell markers", () => {
 
   assert.match(sourceText, /\[data-slot='cell-container'\], \[data-cell-id\]/);
   assert.doesNotMatch(sourceText, /read-only-report-cell/);
+});
+
+test("cloud sync keeps routine frame logs out of the browser console", () => {
+  const sourcePath = new URL("../viewer/live-sync.ts", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /const consoleSyncLogger = \{[\s\S]*debug: \(\) => \{\}/);
+  assert.match(sourceText, /const consoleSyncLogger = \{[\s\S]*info: \(\) => \{\}/);
+  assert.match(sourceText, /warn: \(message: string, \.\.\.args: unknown\[\]\) => console\.warn/);
 });

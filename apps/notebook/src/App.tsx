@@ -34,11 +34,9 @@ import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import {
-  createNotebookViewModel,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
-  type NotebookViewCell,
 } from "@/components/notebook-shell";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
@@ -89,12 +87,13 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
-import { getNotebookCellsSnapshot, useSourceVersion } from "./lib/notebook-cells";
+import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
 import { useNotebookQueueProjection } from "./lib/notebook-executions";
+import { useNotebookViewModel } from "./lib/notebook-view-model";
 import { useDetectRuntime, useNotebookMetadata, usePixiDeps } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
-import type { JupyterOutput, NotebookCell } from "./types";
+import type { JupyterOutput } from "./types";
 
 /** MIME bundle type for output data */
 export type MimeBundle = Record<string, unknown>;
@@ -742,29 +741,18 @@ function AppContent() {
   const executingCellIds = new Set(
     notebookQueueProjection.executing_cell_id ? [notebookQueueProjection.executing_cell_id] : [],
   );
-  const sourceVersion = useSourceVersion();
-  const notebookViewModel = useMemo(() => {
-    void cellIds;
-    void sourceVersion;
-    const executingCellId = notebookQueueProjection.executing_cell_id;
-    const queuedOutlineCellIds = new Set(notebookQueueProjection.queued_cell_ids);
-
-    return createNotebookViewModel(getNotebookCellsSnapshot().map(notebookCellToViewCell), {
-      getOutlineStatusLabel: (cell) => {
-        if (cell.id === executingCellId) return "running";
-        if (queuedOutlineCellIds.has(cell.id)) return "queued";
-        if (cell.cellType === "code" && cell.executionCount !== null) {
-          return `run ${cell.executionCount}`;
-        }
-        return null;
-      },
-    });
-  }, [
-    cellIds,
-    sourceVersion,
-    notebookQueueProjection.executing_cell_id,
-    notebookQueueProjection.queued_cell_ids,
-  ]);
+  const getOutlineStatusLabel = useCallback(
+    (cell: { id: string; cellType: string; executionCount: number | null }) => {
+      if (cell.id === notebookQueueProjection.executing_cell_id) return "running";
+      if (notebookQueueProjection.queued_cell_ids.includes(cell.id)) return "queued";
+      if (cell.cellType === "code" && cell.executionCount !== null) {
+        return `run ${cell.executionCount}`;
+      }
+      return null;
+    },
+    [notebookQueueProjection.executing_cell_id, notebookQueueProjection.queued_cell_ids],
+  );
+  const notebookViewModel = useNotebookViewModel({ getOutlineStatusLabel });
   const outlineItems = notebookViewModel.outlineItems;
   const markdownHeadingAnchorsByCellId = notebookViewModel.markdownHeadingAnchorsByCellId;
   const activeOutlineItemId = useActiveOutlineItemId(
@@ -2182,24 +2170,6 @@ function AppContent() {
       </div>
     </PresenceProvider>
   );
-}
-
-function notebookCellToViewCell(cell: NotebookCell): NotebookViewCell {
-  return {
-    id: cell.id,
-    cellType: cell.cell_type,
-    source: cell.source,
-    language: cell.cell_type === "code" ? notebookCellLanguage(cell.metadata) : null,
-    executionId: null,
-    executionCount: cell.cell_type === "code" ? cell.execution_count : null,
-    outputs: cell.cell_type === "code" ? cell.outputs : [],
-    metadata: cell.metadata,
-  };
-}
-
-function notebookCellLanguage(metadata: Record<string, unknown>): string | null {
-  const language = metadata.language;
-  return typeof language === "string" ? language : null;
 }
 
 function packageCountLabel(count: number): string {

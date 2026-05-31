@@ -27,10 +27,10 @@ const _idsSubscribers = new Set<() => void>();
 // Per-cell subscribers (keyed by cell ID)
 const _cellSubscribers = new Map<string, Set<() => void>>();
 
-// Materialization version — bumps when full-array ops change the ordered
-// cell list or cell chrome (source / metadata / type / execution count),
-// but not when they only refresh legacy `cell.outputs`. Used by components
-// that derive cross-cell state (e.g., hiddenGroups).
+// Cell chrome version — bumps when ops change the ordered cell list or cell
+// chrome (source / metadata / type / execution count), but not when they only
+// refresh legacy `cell.outputs`. Used by components that derive cross-cell
+// state (e.g., hiddenGroups, NotebookViewModel/outline).
 let _materializeVersion = 0;
 const _materializeSubscribers = new Set<() => void>();
 
@@ -82,9 +82,9 @@ export function useCell(id: string): NotebookCell | undefined {
 }
 
 /**
- * Subscribe to the materialization version counter. Re-renders on
- * replaceNotebookCells / updateNotebookCells (full-array ops) but NOT
- * on per-cell updateCellById. Useful for cross-cell derived state.
+ * Subscribe to the cell chrome version counter. Re-renders on
+ * replaceNotebookCells / updateNotebookCells and on per-cell updateCellById
+ * when the update changes cell chrome. Useful for cross-cell derived state.
  */
 export function useMaterializeVersion(): number {
   return useSyncExternalStore(subscribeMaterialize, getMaterializeSnapshot);
@@ -234,8 +234,12 @@ export function updateCellById(
   if (!cell) return;
   const updated = updater(cell);
   if (cellsEqual(cell, updated)) return;
+  const chromeChanged = !cellChromeEqual(cell, updated);
   _cellMap.set(id, updated);
   emitCellChange(id);
+  if (chromeChanged) {
+    emitMaterializeChange();
+  }
   if (updated.source !== cell.source) {
     emitSourceChange();
   }
