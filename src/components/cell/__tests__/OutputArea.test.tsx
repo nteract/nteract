@@ -176,6 +176,17 @@ function makeParquetOutput(): JupyterOutput[] {
   ];
 }
 
+function makeVegaOutput(): JupyterOutput[] {
+  return [
+    {
+      output_id: "vega-output",
+      output_type: "display_data",
+      data: { "application/vnd.vegalite.v5+json": { mark: "circle" } },
+      metadata: {},
+    },
+  ];
+}
+
 function pointerOutWithButtons(element: HTMLElement, buttons: number) {
   const event = createEvent.pointerOut(element);
   Object.defineProperty(event, "buttons", { value: buttons });
@@ -425,6 +436,35 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "false",
     );
+  });
+
+  it("puts Vega/Altair outputs on the click-to-engage path so the page wheels through the chart", () => {
+    // Interactive Altair charts trap the wheel and zoom while the user is
+    // scrolling the page. Routing them through scroll passthrough lets the page
+    // wheel past until the user clicks in to pan/zoom.
+    const { getByTestId } = render(<OutputArea outputs={makeVegaOutput()} isolated />);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "false",
+    );
+  });
+
+  it("locks the wheel boundary for an engaged Vega/Altair chart so zoom stays in the chart", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeVegaOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+
+    fireEvent.keyDown(activationWell, { key: "Escape" });
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
   });
 
   it("aligns sift before engaging iframe scrolling and releases on Escape", () => {

@@ -1,8 +1,9 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { DEFAULT_PRIORITY, selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
+import { isVegaMimeType } from "@/components/outputs/vega-mime";
 
-export type OutputLane = "dom" | "static-frame" | "interactive-frame" | "sift-frame";
+export type OutputLane = "dom" | "static-frame" | "interactive-frame" | "sift-frame" | "vega-frame";
 
 export interface OutputSegment {
   lane: OutputLane;
@@ -16,12 +17,13 @@ export interface OutputSegmentationOptions {
 }
 
 const SCROLL_PASSTHROUGH_MIME_TYPES = new Set([
-  // Static document-like outputs (markdown / HTML / SVG) and sift's
-  // interactive tables all behave better as click-to-engage: the page wheels
-  // through them by default, while pointer-down hands events back to the iframe.
+  // Static document-like outputs (markdown / HTML / SVG) all behave better as
+  // click-to-engage: the page wheels through them by default, while
+  // pointer-down hands events back to the iframe.
   "text/markdown",
   "text/html",
   "image/svg+xml",
+  // Sift's interactive tables are also click-to-engage (see SIFT_MIME_TYPES).
   "application/vnd.apache.parquet",
   "application/vnd.apache.arrow.stream",
   "application/vnd.nteract.arrow-stream-manifest+json",
@@ -45,7 +47,7 @@ export function selectedOutputMimeType(
 }
 
 export function isScrollPassthroughMimeType(mimeType: string): boolean {
-  return SCROLL_PASSTHROUGH_MIME_TYPES.has(mimeType);
+  return SCROLL_PASSTHROUGH_MIME_TYPES.has(mimeType) || isVegaMimeType(mimeType);
 }
 
 export function isSiftMimeType(mimeType: string): boolean {
@@ -70,6 +72,27 @@ export function outputUsesSift(
 ): boolean {
   const mimeType = selectedOutputMimeType(output, priority);
   return mimeType !== null && isSiftMimeType(mimeType);
+}
+
+export function outputUsesVega(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  const mimeType = selectedOutputMimeType(output, priority);
+  return mimeType !== null && isVegaMimeType(mimeType);
+}
+
+/**
+ * Outputs whose iframe must own the wheel once the user engages it: Sift's
+ * crossfilter tables scroll internally, Vega/Altair charts pan and zoom. While
+ * engaged the wheel-boundary forwarding is locked so the page does not steal
+ * the gesture (the source of unintended Altair zoom-while-scrolling).
+ */
+export function outputUsesWheelOwningFrame(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  return outputUsesSift(output, priority) || outputUsesVega(output, priority);
 }
 
 export function outputUsesWidget(
@@ -108,8 +131,16 @@ export function outputSegmentLane(
 ): OutputLane {
   if (!outputNeedsIsolation(output, priority)) return "dom";
   if (outputUsesSift(output, priority)) return "sift-frame";
+  if (outputUsesVega(output, priority)) return "vega-frame";
   if (outputAllowsScrollPassthrough(output, priority)) return "static-frame";
   return "interactive-frame";
+}
+
+function laneStandsAlone(lane: OutputLane): boolean {
+  // Sift tables and Vega/Altair charts each own their wheel once engaged, so
+  // they must never coalesce with neighbors: a shared iframe would lock the
+  // wheel boundary over sibling document outputs too.
+  return lane === "sift-frame" || lane === "vega-frame";
 }
 
 export function splitOutputSegments(
@@ -122,7 +153,7 @@ export function splitOutputSegments(
     const lane = outputSegmentLane(output, priority);
     const previous = segments.at(-1);
 
-    if (lane !== "sift-frame" && previous && previous.lane === lane) {
+    if (!laneStandsAlone(lane) && previous && previous.lane === lane) {
       previous.outputs.push(output);
     } else {
       segments.push({ lane, outputs: [output] });
@@ -143,9 +174,9 @@ export function segmentedOutputLanes(
   if (outputs.length <= 1) return [];
 
   const segments = splitOutputSegments(outputs, priority);
-  const hasSiftBoundary = segments.some((segment) => segment.lane === "sift-frame");
+  const hasStandaloneBoundary = segments.some((segment) => laneStandsAlone(segment.lane));
   if (isolated !== "auto" || hasCollapseControl) {
-    return hasSiftBoundary && segments.length > 1 ? segments : [];
+    return hasStandaloneBoundary && segments.length > 1 ? segments : [];
   }
 
   return segments.length > 1 ? segments : [];
