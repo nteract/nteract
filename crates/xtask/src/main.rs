@@ -123,7 +123,11 @@ fn main() {
                 .map(|s| s.as_str());
             cmd_wasm(target, skip_renderer_plugins);
         }
-        "renderer-plugins" => cmd_renderer_plugins(),
+        "renderer-plugins" => {
+            let only = parse_renderer_plugin_targets(&args[1..]);
+            let only_refs: Vec<&str> = only.iter().map(String::as_str).collect();
+            cmd_renderer_plugins(&only_refs);
+        }
         "verify-plugins" => cmd_verify_plugins(),
         "verify-genesis" => cmd_verify_genesis(),
         "wasm-ensure" => cmd_wasm_ensure(),
@@ -200,16 +204,20 @@ Testing:
 
 Other:
   wasm                       Rebuild all WASM targets (runtimed-wasm + sift-wasm).
-                             If sift-wasm was (re)built, also runs renderer-plugins
-                             so the sift.js bundles re-embed the fresh wasm-bindgen glue.
+                             If sift-wasm was (re)built, also rebuilds the sift
+                             renderer plugin so it re-embeds fresh wasm-bindgen glue.
   wasm runtimed              Rebuild only runtimed-wasm
   wasm sift                  Rebuild only sift-wasm (bindings for @nteract/sift);
                              also copies the binary to crates/runt-mcp/assets/plugins/
-                             and rebuilds renderer plugins.
+                             and rebuilds the sift renderer plugin.
   wasm --skip-renderer-plugins
                              Skip the chained renderer-plugins rebuild (escape hatch
                              for intentionally testing drift between the two).
   renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
+  renderer-plugins --only sift
+                             Rebuild one renderer plugin target. Valid targets:
+                             isolated-renderer, core, markdown, plotly, vega,
+                             leaflet, sift.
   verify-plugins             Check renderer plugin bundles match their wasm artifacts
                              (every wasm-bindgen import in the plugin JS must be
                              exported by the paired wasm binary). Catches #2048-style
@@ -1342,9 +1350,9 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
         );
     }
 
-    // Renderer plugin bundles embed wasm-bindgen glue from sift-wasm (the
+    // The sift renderer plugin bundle embeds wasm-bindgen glue from sift-wasm (the
     // `__wbg_*_<hash>` import names). Rebuilding sift-wasm without rebuilding
-    // the plugins leaves them pointing at stale names — see #2048 (the
+    // that plugin leaves it pointing at stale names — see #2048 (the
     // `__wbg_call_<hash> must be callable` runtime error). Chain the plugin
     // build by default so that class of drift can't happen via this command.
     //
@@ -1353,11 +1361,58 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
     // bundle, or CI steps that intentionally test one half of the chain).
     if build_sift && !skip_renderer_plugins {
         println!();
-        cmd_renderer_plugins();
+        cmd_renderer_plugins(&["sift"]);
     }
 }
 
-fn cmd_renderer_plugins() {
+fn parse_renderer_plugin_targets(args: &[String]) -> Vec<String> {
+    let mut only = Vec::new();
+    let mut saw_only = false;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--help" || arg == "-h" {
+            eprintln!("Usage: cargo xtask renderer-plugins [--only <target>[,<target>...]]");
+            eprintln!();
+            eprintln!("Targets: isolated-renderer, core, markdown, plotly, vega, leaflet, sift");
+            exit(0);
+        }
+        if arg == "--only" {
+            saw_only = true;
+            let Some(value) = args.get(index + 1) else {
+                eprintln!("Missing renderer plugin target after --only");
+                exit(1);
+            };
+            only.extend(split_renderer_plugin_targets(value));
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--only=") {
+            saw_only = true;
+            only.extend(split_renderer_plugin_targets(value));
+            index += 1;
+            continue;
+        }
+        eprintln!("Unknown renderer-plugins argument: {arg}");
+        exit(1);
+    }
+    if saw_only && only.is_empty() {
+        eprintln!("No renderer plugin targets specified");
+        exit(1);
+    }
+    only
+}
+
+fn split_renderer_plugin_targets(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn cmd_renderer_plugins(only: &[&str]) {
     // The `node scripts/build-renderer-plugins.ts` call below resolves
     // the script path against cwd — normalize it so this works from
     // any subdirectory.
@@ -1368,18 +1423,24 @@ fn cmd_renderer_plugins() {
     // Single canonical output: apps/notebook/src/renderer-plugins/. The
     // notebook Vite app loads these directly; runtimed `include_bytes!`-es
     // them and wraps `.js` at serve time for MCP App consumers.
-    run_cmd(
-        "node",
-        &[
-            "--experimental-strip-types",
-            "scripts/build-renderer-plugins.ts",
-        ],
-    );
+    let mut args = vec![
+        "--experimental-strip-types",
+        "scripts/build-renderer-plugins.ts",
+    ];
+    for &target in only {
+        args.push("--only");
+        args.push(target);
+    }
+    run_cmd("node", &args);
     println!("Renderer plugins built.");
     println!("  Output: apps/notebook/src/renderer-plugins/");
-    println!(
-        "Stable bundles are LFS-tracked; sift.js/sift.css regenerate with every `cargo xtask wasm`."
-    );
+    if only.is_empty() {
+        println!(
+            "Stable bundles are LFS-tracked; sift.js/sift.css regenerate with every `cargo xtask wasm`."
+        );
+    } else {
+        println!("  Targets: {}", only.join(", "));
+    }
 }
 
 /// Verify renderer plugin bundles are coherent with their paired wasm binaries.
@@ -2764,10 +2825,8 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
     }
 }
 
-/// Probe the gitignored wasm + renderer-plugin outputs and run `cargo xtask
-/// wasm` once if anything is missing. One canonical file per output dir is
-/// enough — `cmd_wasm` rebuilds the whole set in one shot, so we never have
-/// to chase a partial state.
+/// Probe the gitignored wasm + renderer-plugin outputs and rebuild the
+/// affected artifacts when anything is missing or stale.
 ///
 /// Called from the top of every entry point that compiles `runtimed`,
 /// `notebook`, or runs the dev daemon, so a fresh clone can go straight to
@@ -2847,13 +2906,17 @@ fn ensure_build_artifacts() {
                 "(If these should already be on disk, run `git lfs pull` to hydrate LFS-tracked bundles.)"
             );
         } else if sift_missing {
-            println!("[xtask] sift renderer bundle missing; rebuilding renderer plugins");
+            println!("[xtask] sift renderer bundle missing; rebuilding sift renderer plugin");
         } else if sift_source_changed {
             println!(
-                "[xtask] sift-wasm source changed; rebuilding renderer plugins so sift.js re-embeds the fresh __wbg_* names"
+                "[xtask] sift-wasm source changed; rebuilding sift renderer plugin so sift.js re-embeds the fresh __wbg_* names"
             );
         }
-        cmd_renderer_plugins();
+        if !missing_stable.is_empty() {
+            cmd_renderer_plugins(&[]);
+        } else {
+            cmd_renderer_plugins(&["sift"]);
+        }
     }
 
     if let Some(fp) = sift_source_fingerprint {
@@ -3715,6 +3778,30 @@ mod tests {
                 skip_install: true,
                 skip_build: true,
             }
+        );
+    }
+
+    #[test]
+    fn parse_renderer_plugin_targets_defaults_to_all() {
+        let args: Vec<String> = Vec::new();
+        assert!(parse_renderer_plugin_targets(&args).is_empty());
+    }
+
+    #[test]
+    fn parse_renderer_plugin_targets_reads_repeated_and_csv_only_flags() {
+        let args = vec![
+            "--only".to_string(),
+            "sift, markdown".to_string(),
+            "--only=isolated-renderer".to_string(),
+        ];
+
+        assert_eq!(
+            parse_renderer_plugin_targets(&args),
+            vec![
+                "sift".to_string(),
+                "markdown".to_string(),
+                "isolated-renderer".to_string()
+            ]
         );
     }
 

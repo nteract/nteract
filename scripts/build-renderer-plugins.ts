@@ -13,6 +13,7 @@
  * Run locally after a fresh clone, or when renderer source changes:
  *
  *   cargo xtask renderer-plugins
+ *   cargo xtask renderer-plugins --only sift
  */
 
 import fs from "node:fs";
@@ -30,6 +31,78 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 
 const notebookPluginDir = path.join(repoRoot, "apps/notebook/src/renderer-plugins");
+const coreTargetNames = new Set(["core", "isolated-renderer"]);
+
+type RendererPluginSelection = {
+  buildCore: boolean;
+  plugins: typeof RENDERER_PLUGINS;
+};
+
+function printUsage() {
+  console.log(`Usage: node --experimental-strip-types scripts/build-renderer-plugins.ts [--only <target>[,<target>...]]
+
+Targets:
+  isolated-renderer  Core isolated renderer IIFE and CSS
+  core               Alias for isolated-renderer
+  markdown           Markdown renderer plugin
+  plotly             Plotly renderer plugin
+  vega               Vega renderer plugin
+  leaflet            Leaflet renderer plugin
+  sift               Sift renderer plugin
+`);
+}
+
+function splitTargetList(value: string): string[] {
+  return value
+    .split(",")
+    .map((target) => target.trim())
+    .filter(Boolean);
+}
+
+function parseSelection(args: string[]): RendererPluginSelection {
+  const onlyTargets: string[] = [];
+  let sawOnly = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--help" || arg === "-h") {
+      printUsage();
+      process.exit(0);
+    }
+    if (arg === "--only") {
+      sawOnly = true;
+      const value = args[index + 1];
+      if (!value) throw new Error("Missing renderer plugin target after --only");
+      onlyTargets.push(...splitTargetList(value));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--only=")) {
+      sawOnly = true;
+      onlyTargets.push(...splitTargetList(arg.slice("--only=".length)));
+      continue;
+    }
+    throw new Error(`Unknown renderer plugin build argument: ${arg}`);
+  }
+
+  if (onlyTargets.length === 0) {
+    if (sawOnly) throw new Error("No renderer plugin targets specified");
+    return { buildCore: true, plugins: RENDERER_PLUGINS };
+  }
+
+  const pluginNames = new Set(RENDERER_PLUGINS.map((plugin) => plugin.name));
+  const unknownTargets = onlyTargets.filter(
+    (target) => !coreTargetNames.has(target) && !pluginNames.has(target),
+  );
+  if (unknownTargets.length > 0) {
+    throw new Error(`Unknown renderer plugin target(s): ${unknownTargets.join(", ")}`);
+  }
+
+  const targetSet = new Set(onlyTargets);
+  return {
+    buildCore: [...coreTargetNames].some((target) => targetSet.has(target)),
+    plugins: RENDERER_PLUGINS.filter((plugin) => targetSet.has(plugin.name)),
+  };
+}
 
 async function buildCoreIIFE(): Promise<{ code: string; css: string }> {
   const srcDir = path.join(repoRoot, "src");
@@ -115,15 +188,25 @@ async function buildCoreIIFE(): Promise<{ code: string; css: string }> {
 
 async function main() {
   fs.mkdirSync(notebookPluginDir, { recursive: true });
+  const selection = parseSelection(process.argv.slice(2));
 
-  // Build core IIFE and renderer plugins in parallel
-  const [iife, plugins] = await Promise.all([buildCoreIIFE(), buildAllRendererPlugins(RENDERER_PLUGINS)]);
+  // Build selected artifacts in parallel. `cargo xtask wasm` uses this to
+  // refresh only sift after rebuilding sift-wasm, avoiding incidental churn in
+  // the LFS-tracked stable renderer bundles.
+  const [iife, plugins] = await Promise.all([
+    selection.buildCore ? buildCoreIIFE() : Promise.resolve(null),
+    selection.plugins.length > 0
+      ? buildAllRendererPlugins(selection.plugins)
+      : Promise.resolve([]),
+  ]);
 
-  fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.js"), iife.code);
-  fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.css"), iife.css);
-  console.log(
-    `  isolated-renderer: ${(iife.code.length / 1024).toFixed(0)} kB JS, ${(iife.css.length / 1024).toFixed(0)} kB CSS`,
-  );
+  if (iife) {
+    fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.js"), iife.code);
+    fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.css"), iife.css);
+    console.log(
+      `  isolated-renderer: ${(iife.code.length / 1024).toFixed(0)} kB JS, ${(iife.css.length / 1024).toFixed(0)} kB CSS`,
+    );
+  }
 
   for (const { name, code, css } of plugins) {
     fs.writeFileSync(path.join(notebookPluginDir, `${name}.js`), code);
