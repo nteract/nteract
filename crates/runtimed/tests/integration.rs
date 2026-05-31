@@ -206,6 +206,25 @@ async fn wait_for_cell_count(
     false
 }
 
+async fn wait_for_cells_matching<F>(
+    handle: &notebook_sync::DocHandle,
+    timeout: Duration,
+    predicate: F,
+) -> bool
+where
+    F: Fn(&[notebook_doc::CellSnapshot]) -> bool,
+{
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        let cells = handle.get_cells();
+        if predicate(&cells) {
+            return true;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 async fn wait_for_presence_update_actor_label(
     frame_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
     peer_label: &str,
@@ -2603,11 +2622,14 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         .unwrap();
     nb_c.add_cell_after("gamma-3", "code", Some("gamma-2"))
         .unwrap();
-    let _ = tokio::join!(
+    let (sync_a, sync_b, sync_c) = tokio::join!(
         nb_a.confirm_sync(),
         nb_b.confirm_sync(),
         nb_c.confirm_sync()
     );
+    sync_a.unwrap();
+    sync_b.unwrap();
+    sync_c.unwrap();
 
     // Verify each notebook is isolated by connecting fresh clients
     let (fresh_a, fresh_b, fresh_c) = tokio::join!(
@@ -2636,23 +2658,44 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         SESSION_READY_TIMEOUT
     );
 
-    // Wait for initial sync to deliver the cells map before reading.
-    // session_ready only guarantees status=Interactive, not that the
-    // snapshot watch channel has published cells from the sync frames.
+    // Wait for initial sync to deliver the expected cells before reading.
+    // session_ready only guarantees status=Interactive, and the cells map
+    // itself can arrive before later cell-entry/source changes under load.
     assert!(
-        wait_for_cells_map(&handle_a, SESSION_READY_TIMEOUT).await,
-        "alpha sync did not deliver cells map within {:?}",
-        SESSION_READY_TIMEOUT
+        wait_for_cells_matching(&handle_a, SESSION_READY_TIMEOUT, |cells| {
+            cells.len() == 1 && cells[0].id == "alpha-1" && cells[0].source == "print('alpha')"
+        })
+        .await,
+        "alpha sync did not deliver expected cells within {:?}: {:?}",
+        SESSION_READY_TIMEOUT,
+        handle_a.get_cell_ids()
     );
     assert!(
-        wait_for_cells_map(&handle_b, SESSION_READY_TIMEOUT).await,
-        "beta sync did not deliver cells map within {:?}",
-        SESSION_READY_TIMEOUT
+        wait_for_cells_matching(&handle_b, SESSION_READY_TIMEOUT, |cells| {
+            cells.len() == 2
+                && cells
+                    .iter()
+                    .any(|c| c.id == "beta-1" && c.cell_type == "markdown")
+                && cells
+                    .iter()
+                    .any(|c| c.id == "beta-2" && c.source == "x = 99")
+        })
+        .await,
+        "beta sync did not deliver expected cells within {:?}: {:?}",
+        SESSION_READY_TIMEOUT,
+        handle_b.get_cell_ids()
     );
     assert!(
-        wait_for_cells_map(&handle_c, SESSION_READY_TIMEOUT).await,
-        "gamma sync did not deliver cells map within {:?}",
-        SESSION_READY_TIMEOUT
+        wait_for_cells_matching(&handle_c, SESSION_READY_TIMEOUT, |cells| {
+            cells.len() == 3
+                && cells
+                    .iter()
+                    .any(|c| c.id == "gamma-1" && c.source == "import os")
+        })
+        .await,
+        "gamma sync did not deliver expected cells within {:?}: {:?}",
+        SESSION_READY_TIMEOUT,
+        handle_c.get_cell_ids()
     );
 
     let cells_a = handle_a.get_cells();
