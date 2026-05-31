@@ -1,9 +1,17 @@
 import type { ReactNode } from "react";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
-import type { NotebookViewCell } from "./view-model";
 
-export interface NotebookCellListProps<TCell extends NotebookViewCell = NotebookViewCell> {
+export interface NotebookCellListItem {
+  id: string;
+  cellType: string;
+  source: string;
+  language?: string | null;
+  executionCount?: number | null;
+  outputs?: readonly unknown[];
+}
+
+export interface NotebookCellListProps<TCell extends NotebookCellListItem = NotebookCellListItem> {
   cells: readonly TCell[];
   label?: string;
   className?: string;
@@ -14,7 +22,7 @@ export interface NotebookCellListProps<TCell extends NotebookViewCell = Notebook
   renderCellError?: (error: Error, cell: TCell, index: number) => ReactNode;
 }
 
-export function NotebookCellList<TCell extends NotebookViewCell = NotebookViewCell>({
+export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCellListItem>({
   cells,
   label = "Notebook cells",
   className,
@@ -50,14 +58,14 @@ export function NotebookCellList<TCell extends NotebookViewCell = NotebookViewCe
   );
 }
 
-function defaultResetKeysForCell(cell: NotebookViewCell): readonly unknown[] {
+function defaultResetKeysForCell(cell: NotebookCellListItem): readonly unknown[] {
   return [
     cell.id,
     cell.cellType,
     cell.source,
     cell.language,
     cell.executionCount,
-    cell.outputs.length,
+    cell.outputs?.length ?? 0,
   ];
 }
 
