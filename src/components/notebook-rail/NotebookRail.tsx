@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, ListTree, Package, type LucideIcon } from "lucide-react";
-import { useMemo, type MouseEvent, type ReactNode } from "react";
+import { useMemo, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   buildNotebookOutlineTree,
   resolveNotebookOutlineSelection,
@@ -55,12 +55,7 @@ export function NotebookRail({
   className,
 }: NotebookRailProps) {
   const title = activePanelId === "outline" ? "Outline" : "Packages";
-  const summary =
-    activePanelId === "outline"
-      ? outlineItems.length === 1
-        ? "1 item"
-        : `${outlineItems.length} items`
-      : packagesSummary;
+  const summary = activePanelId === "packages" ? packagesSummary : null;
 
   return (
     <aside
@@ -211,9 +206,17 @@ export function NotebookOutlinePanel({
   const activeSelectedItemId =
     activeItemId && items.some((item) => item.id === activeItemId) ? activeItemId : null;
   const currentItemId = resolvedSelectedItemId ?? activeSelectedItemId;
+  const handleDragStart = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+  };
 
   return (
-    <nav aria-label="Notebook outline" data-testid="notebook-outline-panel">
+    <nav
+      aria-label="Notebook outline"
+      data-testid="notebook-outline-panel"
+      data-drag-policy="navigation-only"
+      onDragStartCapture={handleDragStart}
+    >
       <ol className="space-y-0.5">
         {tree.map((node) => (
           <NotebookOutlineNode
@@ -247,29 +250,34 @@ function NotebookOutlineNode({
   const selected = selectedItemId === item.id;
   const itemHref = getItemHref?.(item) ?? item.href ?? null;
   const className = cn(
-    "flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-    "select-none [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+    "relative flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 pl-3 pr-2 text-left text-sm transition-colors",
+    "cursor-pointer select-none touch-manipulation [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+    "before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-0.5 before:rounded-full before:bg-transparent before:transition-colors",
     selected
-      ? "bg-primary text-primary-foreground"
-      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+      ? "bg-primary/8 text-foreground before:bg-primary"
+      : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
   );
   const content = (
     <>
-      <span className="min-w-0 flex-1 truncate">{item.title}</span>
+      <span data-slot="notebook-outline-item-title" className="min-w-0 flex-1 truncate">
+        {item.title}
+      </span>
       {item.statusLabel ? (
         <span
+          data-slot="notebook-outline-item-meta"
           className={cn(
-            "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
-            selected ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground",
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
+            selected ? "bg-primary/10 text-foreground/70" : "bg-muted text-muted-foreground",
           )}
         >
           {item.statusLabel}
         </span>
       ) : item.detail ? (
         <span
+          data-slot="notebook-outline-item-meta"
           className={cn(
-            "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
-            selected ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground",
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
+            selected ? "bg-primary/10 text-foreground/70" : "bg-muted text-muted-foreground",
           )}
         >
           {item.detail}

@@ -30,10 +30,29 @@ describe("CellInsertionRibbon", () => {
     expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toHaveClass(
       "bg-sky-400",
     );
+    expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toHaveClass(
+      "opacity-100",
+    );
 
     fireEvent.click(hitTarget!);
 
     expect(onInsert).toHaveBeenCalledWith("code");
+  });
+
+  it("keeps the row neutral until a concrete cell type is targeted", () => {
+    const { container } = render(<CellInsertionRibbon onInsert={() => undefined} />);
+
+    const adder = container.querySelector('[data-slot="cell-adder"]');
+    const continuation = container.querySelector('[data-slot="cell-adder-ribbon-continuation"]');
+    const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
+
+    fireEvent.pointerEnter(adder!);
+
+    expect(adder).toHaveAttribute("data-interaction-active", "true");
+    expect(adder).not.toHaveAttribute("data-active-type");
+    expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toBeNull();
+    expect(continuation).toHaveClass("bg-gray-300/70");
+    expect(hitTarget).toHaveClass("bg-muted/20");
   });
 
   it("uses the controlled active type for catalog fixtures", () => {

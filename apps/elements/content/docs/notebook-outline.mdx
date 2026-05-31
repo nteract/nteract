@@ -11,6 +11,12 @@ slots for packages, variables, renderers, and future notebook tools.
 The rail owns notebook-level navigation and tools; the ribbon and code-cell
 chrome remain inside the notebook surface for per-cell focus and execution
 state.
+Outline rows are navigation, not drag handles. The active row now uses a quiet
+spine marker instead of a full-color selected block, and native drag previews
+are cancelled until notebook reordering through the outline is a real workflow.
+The outline header stays label-only; package panels can use the summary chip for
+runtime state, but an outline item count adds bookkeeping noise without helping
+reading flow.
 
 This fixture now renders the current notebook app toolbar and shared
 `NotebookRail` directly. The outline is projected with the same
@@ -39,12 +45,17 @@ states stay aligned with the app shell.
   the production projection path from materialized markdown headings.
 - Contextual selection depends on `outlineCellIds`: a focused code cell inside a
   section highlights the nearest preceding markdown heading.
+- Outline panel chrome is intentionally sparse. The panel title names the mode,
+  and the rows carry the useful context without an extra item-count badge.
 - Production active-section tracking still belongs to the app shell through
   viewport observation and `resolveNotebookOutlineSelection`; this page only
   fixtures the active item.
 - Heading navigation remains app-owned. Production routes heading anchors
   through `navigateMarkdownHeading`, `scrollIntoView`, and history replacement;
   the catalog keeps the callback inert.
+- Outline rows use a navigation-only drag policy. If outline-driven cell
+  reordering ships later, it should have explicit drop targets instead of a
+  browser drag ghost.
 - Keep the rail icon-led. The current shared rail exposes outline and packages;
   variables, renderers, and future side panels are tracked as planned sibling
   panels until the app has current components for them.
