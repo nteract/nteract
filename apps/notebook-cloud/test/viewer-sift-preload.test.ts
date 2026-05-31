@@ -141,7 +141,7 @@ function preloadOptions(overrides: Partial<Parameters<typeof siftWasmPreloadUrlF
   return {
     blobBasePath: "/api/n/demo/blobs/",
     rendererAssetsBasePath: "/renderer-assets/",
-    pageUrl: "https://cloud.test/n/demo",
+    pageUrl: "https://cloud.test/n/demo/example",
     ...overrides,
   };
 }

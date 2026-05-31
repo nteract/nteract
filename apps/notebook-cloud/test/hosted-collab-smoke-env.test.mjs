@@ -51,7 +51,10 @@ describe("hosted browser collaboration smoke environment", () => {
     );
     const parsed = new URL(url);
 
-    assert.equal(url, "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/room%2Fwith%2Fslashes");
+    assert.equal(
+      url,
+      "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/room%2Fwith%2Fslashes/collab",
+    );
     assert.equal(parsed.search, "");
     assert.equal(parsed.hash, "");
   });

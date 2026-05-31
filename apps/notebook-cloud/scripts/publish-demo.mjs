@@ -6,6 +6,9 @@ import { publishIdentityHeaders } from "./publish-auth.mjs";
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const notebookId = process.env.NOTEBOOK_CLOUD_NOTEBOOK_ID ?? "nteract-cloud-demo";
+const vanityName = process.env.NOTEBOOK_CLOUD_VANITY_NAME ?? "demo";
+const runtimeStateDocIdOverride =
+  process.env.NOTEBOOK_CLOUD_RUNTIME_STATE_DOC_ID ?? `${notebookId}:runtime-state`;
 const actorLabel = "user:dev:demo/agent:publish-demo";
 const wasmJsUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
@@ -24,6 +27,7 @@ initSync({ module: wasmBytes });
 
 const handle = new NotebookHandle(notebookId);
 handle.set_actor(actorLabel);
+handle.set_runtime_state_doc_id(runtimeStateDocIdOverride);
 handle.add_cell_after("intro", "markdown", null);
 handle.update_source(
   "intro",
@@ -87,7 +91,8 @@ console.log(
       ok: true,
       baseUrl,
       notebookId,
-      viewerUrl: new URL(`/n/${encodeURIComponent(notebookId)}`, baseUrl).href,
+      vanityName,
+      viewerUrl: canonicalViewerUrl(baseUrl, notebookId, vanityName),
       runtimeStateDocId,
       headsHash,
       runtimeHeadsHash,
@@ -107,6 +112,11 @@ console.log(
 function headsDigest(heads) {
   const input = heads.length > 0 ? heads.slice().sort().join("\n") : "empty";
   return `heads-${createHash("sha256").update(input).digest("hex").slice(0, 24)}`;
+}
+
+function canonicalViewerUrl(baseUrl, notebookId, vanityName) {
+  return new URL(`/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanityName)}`, baseUrl)
+    .href;
 }
 
 function requiredRuntimeStateDocId(handle) {

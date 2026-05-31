@@ -25,8 +25,9 @@ export function browserDevTokenForSmoke({ baseUrl, devAuthToken }) {
   throw new Error("NOTEBOOK_CLOUD_DEV_TOKEN is required for deployed browser collaboration smoke");
 }
 
-export function viewerUrlForRoom(baseUrl, roomId) {
-  return new URL(`/n/${encodeURIComponent(roomId)}`, baseUrl).href;
+export function viewerUrlForRoom(baseUrl, roomId, vanityName = "collab") {
+  return new URL(`/n/${encodeURIComponent(roomId)}/${encodeURIComponent(vanityName)}`, baseUrl)
+    .href;
 }
 
 export function storageStateForDevIdentity({ origin, token, user, scope }) {

@@ -587,9 +587,11 @@ function parseJson(stdout, label) {
 
 function roomFromViewerUrl(viewerUrl) {
   const parsed = new URL(viewerUrl);
-  const [, prefix, encodedRoomId] = parsed.pathname.split("/");
-  if (prefix !== "n" || !encodedRoomId) {
-    throw new Error(`NOTEBOOK_CLOUD_COLLAB_VIEWER_URL must point at /n/:id, got ${viewerUrl}`);
+  const [, prefix, encodedRoomId, vanityName] = parsed.pathname.split("/");
+  if (prefix !== "n" || !encodedRoomId || !vanityName) {
+    throw new Error(
+      `NOTEBOOK_CLOUD_COLLAB_VIEWER_URL must point at /n/:id/:vanityName, got ${viewerUrl}`,
+    );
   }
   return {
     roomId: decodeURIComponent(encodedRoomId),

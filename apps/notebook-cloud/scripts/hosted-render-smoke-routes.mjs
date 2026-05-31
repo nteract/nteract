@@ -19,15 +19,15 @@ export function isRenderCacheApiUrl(requestUrl) {
 
 export function notebookViewerUrl(viewerUrl) {
   const parsed = new URL(viewerUrl);
-  const match = parsed.pathname.match(/^\/n\/([^/]+)(?:\/([^/]+))?\/?$/);
+  const match = parsed.pathname.match(/^\/n\/([^/]+)\/([^/]+)\/?$/);
   if (!match) {
     return null;
   }
   const [, notebookId, vanityName] = match;
-  if (vanityName && ["debug", "r", "sync"].includes(vanityName)) {
+  if (["debug", "r", "sync"].includes(vanityName)) {
     return null;
   }
-  return { origin: parsed.origin, notebookId, vanityName: vanityName ?? null };
+  return { origin: parsed.origin, notebookId, vanityName };
 }
 
 export function pinnedNotebookViewerUrl(viewerUrl) {

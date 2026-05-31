@@ -103,9 +103,19 @@ describe("HTML script serialization", () => {
     assert.doesNotMatch(html, /id="notebook"/);
   });
 
-  it("serves latest notebook viewers as live-sync shells without a latest render endpoint", async () => {
+  it("does not serve legacy one-segment notebook viewer URLs", async () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/demo"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+  });
+
+  it("serves vanity notebook viewers as live-sync shells without a latest render endpoint", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo/example"),
       fakeEnv(),
       fakeContext(),
     );
@@ -159,7 +169,7 @@ describe("HTML script serialization", () => {
 
   it("injects OIDC runtime config without exposing it through health", async () => {
     const response = await worker.fetch(
-      new Request("https://preview.runt.run/n/demo"),
+      new Request("https://preview.runt.run/n/demo/example"),
       fakeEnv({
         NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
         NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
@@ -200,7 +210,7 @@ describe("HTML script serialization", () => {
 
   it("allows the host to place renderer assets on a separate origin", async () => {
     const response = await worker.fetch(
-      new Request("https://cloud.test/n/demo"),
+      new Request("https://cloud.test/n/demo/example"),
       fakeEnv({
         RENDERER_ASSETS_BASE_URL: "https://outputs.example/plugins",
       }),
@@ -219,7 +229,7 @@ describe("HTML script serialization", () => {
 
   it("allows the host to place runtimed WASM assets on a separate origin", async () => {
     const response = await worker.fetch(
-      new Request("https://cloud.test/n/demo"),
+      new Request("https://cloud.test/n/demo/example"),
       fakeEnv({
         RUNTIMED_WASM_BASE_URL: "https://wasm.example/runtime",
       }),
@@ -253,7 +263,7 @@ describe("HTML script serialization", () => {
 
   it("allows the host to place output documents on a separate origin", async () => {
     const response = await worker.fetch(
-      new Request("https://cloud.test/n/demo"),
+      new Request("https://cloud.test/n/demo/example"),
       fakeEnv({
         OUTPUT_DOCUMENT_BASE_URL: "https://outputs.example/frame",
       }),
@@ -272,7 +282,7 @@ describe("HTML script serialization", () => {
 
   it("deduplicates hosted sidecar preconnect hints by origin", async () => {
     const response = await worker.fetch(
-      new Request("https://cloud.test/n/demo"),
+      new Request("https://cloud.test/n/demo/example"),
       fakeEnv({
         OUTPUT_DOCUMENT_BASE_URL: "https://outputs.example/frame",
         RENDERER_ASSETS_BASE_URL: "https://outputs.example/renderer-assets",

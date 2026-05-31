@@ -52,7 +52,7 @@ describe("cloud OIDC browser auth", () => {
       challenge: "challenge",
       verifier: "verifier",
       state: "state-123",
-      returnUrl: "https://preview.runt.run/n/demo",
+      returnUrl: "https://preview.runt.run/n/demo/example",
     };
 
     const url = buildOidcAuthorizationUrl(

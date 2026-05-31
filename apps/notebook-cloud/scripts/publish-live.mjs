@@ -16,6 +16,8 @@ const preset = process.env.NOTEBOOK_CLOUD_LIVE_PRESET ?? "mathnet";
 const notebookId =
   process.env.NOTEBOOK_CLOUD_NOTEBOOK_ID ??
   (sourceNotebookId ? `live-${sourceNotebookId}` : `nteract-cloud-live-${preset}`);
+const vanityName =
+  process.env.NOTEBOOK_CLOUD_VANITY_NAME ?? defaultLiveVanityName({ preset, sourceNotebookId });
 const wasmJsUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
   import.meta.url,
@@ -84,7 +86,8 @@ try {
         preset: sourceNotebookId ? "source-notebook" : preset,
         sourceNotebookId: sourceNotebookId ?? session.notebookId,
         notebookId,
-        viewerUrl: new URL(`/n/${encodeURIComponent(notebookId)}`, baseUrl).href,
+        vanityName,
+        viewerUrl: canonicalViewerUrl(baseUrl, notebookId, vanityName),
         runtimeStateDocId,
         headsHash,
         runtimeHeadsHash,
@@ -130,6 +133,21 @@ function requiredRuntimeStateDocId(handle) {
     "NotebookDoc live snapshot is missing runtime_state_doc_id",
   );
   return runtimeStateDocId;
+}
+
+function defaultLiveVanityName({ preset, sourceNotebookId }) {
+  if (sourceNotebookId) {
+    return "source";
+  }
+  if (preset === "mathnet") {
+    return "topic-viz";
+  }
+  return preset;
+}
+
+function canonicalViewerUrl(baseUrl, notebookId, vanityName) {
+  return new URL(`/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanityName)}`, baseUrl)
+    .href;
 }
 
 async function uploadLiveBlob(ref, snapshot) {

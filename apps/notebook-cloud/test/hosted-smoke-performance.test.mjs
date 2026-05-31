@@ -46,7 +46,7 @@ describe("hosted smoke performance diagnostics", () => {
       "notebook_blob",
     );
     assert.equal(
-      classifyPerformanceResource("https://preview.runt.run/n/topic-viz", origins),
+      classifyPerformanceResource("https://preview.runt.run/n/topic-viz/topic-viz", origins),
       "viewer_document",
     );
     assert.equal(
