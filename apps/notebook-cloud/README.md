@@ -66,7 +66,7 @@ http://127.0.0.1:8787/n/demo/debug
 The notebook viewer is available at:
 
 ```text
-http://127.0.0.1:8787/n/nteract-cloud-demo/demo
+http://127.0.0.1:8787/n/{generated-ulid}/demo
 ```
 
 `/` serves the sign-in shell; open notebooks through `/n/{id}/{vanityName}`.
@@ -75,11 +75,15 @@ http://127.0.0.1:8787/n/nteract-cloud-demo/demo
 and publishes a notebook revision with real `RuntimeStateDoc` output manifests:
 
 ```text
-http://127.0.0.1:8787/n/nteract-cloud-fixture-output_streaming/output_streaming
+http://127.0.0.1:8787/n/{generated-ulid}/output_streaming
 ```
 
 Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
-`NOTEBOOK_CLOUD_NOTEBOOK_ID=<id>` to publish another fixture pair.
+`NOTEBOOK_CLOUD_NOTEBOOK_ID=<id>` to publish another fixture pair. If no
+notebook id is provided, `publish:demo`, `publish:fixture`, and `publish:live`
+generate a fresh ULID-shaped `NotebookDoc` id. The readable path segment is a
+vanity name derived from the notebook title or filename stem when available,
+and can be overridden with `NOTEBOOK_CLOUD_VANITY_NAME`.
 
 `smoke:hosted` runs a headless Chromium check against the deployed
 `preview.runt.run` topic-viz notebook by default:

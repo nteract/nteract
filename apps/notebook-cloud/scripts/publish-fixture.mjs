@@ -2,14 +2,19 @@ import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
+import {
+  canonicalViewerUrl,
+  notebookIdFromEnvOrGenerated,
+  runtimeStateDocIdFromEnvOrDefault,
+  vanityNameFromEnvOrNotebookName,
+} from "./publish-notebook-id.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const fixtureName = process.env.NOTEBOOK_CLOUD_FIXTURE ?? "output_streaming";
-const notebookId = process.env.NOTEBOOK_CLOUD_NOTEBOOK_ID ?? `nteract-cloud-fixture-${fixtureName}`;
-const vanityName = process.env.NOTEBOOK_CLOUD_VANITY_NAME ?? fixtureName;
-const runtimeStateDocIdOverride =
-  process.env.NOTEBOOK_CLOUD_RUNTIME_STATE_DOC_ID ?? `${notebookId}:runtime-state`;
+const notebookId = notebookIdFromEnvOrGenerated();
+const vanityName = vanityNameFromEnvOrNotebookName(fixtureName);
+const runtimeStateDocIdOverride = runtimeStateDocIdFromEnvOrDefault(notebookId);
 const fixtureRoot = new URL(
   `../../../packages/runtimed/tests/fixtures/${fixtureName}/`,
   import.meta.url,
@@ -135,11 +140,6 @@ async function uploadFixtureBlob(blob) {
     bytes,
     typeof blob.content_type === "string" ? blob.content_type : "application/octet-stream",
   );
-}
-
-function canonicalViewerUrl(baseUrl, notebookId, vanityName) {
-  return new URL(`/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanityName)}`, baseUrl)
-    .href;
 }
 
 function headsDigest(heads) {
