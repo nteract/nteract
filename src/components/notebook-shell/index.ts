@@ -1,4 +1,13 @@
 export {
+  friendlyNotebookActorLabel,
+  friendlyNotebookOperatorLabel,
+  parseNotebookActorLabel,
+  parseNotebookOperatorLabel,
+  splitNotebookActorPrincipalOperator,
+  type ParsedNotebookActorKind,
+  type ParsedNotebookActorLabel,
+} from "./actor-labels";
+export {
   readOnlyNotebookShellCapabilities,
   type NotebookShellAccessCapabilities,
   type NotebookShellAccessLevel,

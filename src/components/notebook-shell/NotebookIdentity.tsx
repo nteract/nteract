@@ -20,6 +20,11 @@ import type {
   NotebookShellAccessCapabilities,
   NotebookShellAuthCapabilities,
 } from "./capabilities";
+import {
+  friendlyNotebookActorLabel,
+  parseNotebookActorLabel,
+  type ParsedNotebookActorKind,
+} from "./actor-labels";
 
 export type NotebookActorKind =
   | "agent"
@@ -103,7 +108,8 @@ export function notebookActorFromAccess(
     };
   }
 
-  const label = access.identityLabel ?? friendlyActorLabel(access.actorLabel) ?? "Unknown viewer";
+  const label =
+    access.identityLabel ?? friendlyNotebookActorLabel(access.actorLabel) ?? "Unknown viewer";
   const detail =
     sourceLabel === null ? accessLabel : `${accessLabel.toLowerCase()} through ${sourceLabel}`;
 
@@ -283,128 +289,6 @@ function statusTone(status: NonNullable<NotebookActorIdentity["status"]>): strin
       return "bg-muted-foreground";
     case "offline":
       return "bg-muted";
-  }
-}
-
-type ParsedNotebookActorKind = "agent" | "runtime" | "system";
-
-function parseNotebookActorLabel(actorLabel: string | null): {
-  kind: ParsedNotebookActorKind;
-  label: string;
-  onBehalfOf: string | null;
-} | null {
-  if (!actorLabel) return null;
-
-  const [principal, operator] = splitActorPrincipalOperator(actorLabel);
-  const operatorProjection = operator ? parseOperatorLabel(operator, principal) : null;
-  if (operatorProjection) return operatorProjection;
-
-  if (principal === "system" && operator) {
-    return {
-      kind: "system",
-      label: friendlyOperatorLabel(operator) ?? "System",
-      onBehalfOf: null,
-    };
-  }
-
-  if (actorLabel.startsWith("agent:")) {
-    const agentValue = actorLabel.slice("agent:".length);
-    const [rawAgent, rawBehalf] = agentValue.split("/on-behalf-of:");
-    return {
-      kind: "agent",
-      label: friendlyActorLabel(rawAgent) ?? "Agent",
-      onBehalfOf: friendlyActorLabel(rawBehalf ?? null),
-    };
-  }
-
-  return parseOperatorLabel(actorLabel, null);
-}
-
-function parseOperatorLabel(
-  operatorLabel: string,
-  principalLabel: string | null,
-): {
-  kind: ParsedNotebookActorKind;
-  label: string;
-  onBehalfOf: string | null;
-} | null {
-  if (operatorLabel.startsWith("agent:")) {
-    return {
-      kind: "agent",
-      label: friendlyOperatorLabel(operatorLabel.slice("agent:".length)) ?? "Agent",
-      onBehalfOf: friendlyActorLabel(principalLabel),
-    };
-  }
-
-  if (operatorLabel.startsWith("runtime:")) {
-    return {
-      kind: "runtime",
-      label: friendlyOperatorLabel(operatorLabel.slice("runtime:".length)) ?? "Runtime",
-      onBehalfOf: friendlyActorLabel(principalLabel),
-    };
-  }
-
-  if (operatorLabel.startsWith("system:")) {
-    return {
-      kind: "system",
-      label: friendlyOperatorLabel(operatorLabel.slice("system:".length)) ?? "System",
-      onBehalfOf: friendlyActorLabel(principalLabel),
-    };
-  }
-
-  return null;
-}
-
-function splitActorPrincipalOperator(actorLabel: string): [string, string | null] {
-  const separatorIndex = actorLabel.indexOf("/");
-  if (separatorIndex === -1) {
-    return [actorLabel, null];
-  }
-  return [actorLabel.slice(0, separatorIndex), actorLabel.slice(separatorIndex + 1)];
-}
-
-function friendlyActorLabel(actorLabel: string | null | undefined): string | null {
-  const trimmed = actorLabel?.trim();
-  if (!trimmed) return null;
-
-  const lastSegment = trimmed.split(/[/:]/).filter(Boolean).at(-1) ?? trimmed;
-  const decoded = safeDecodeActorSegment(lastSegment);
-  if (decoded.includes("@")) {
-    return decoded;
-  }
-  const knownLabel = knownActorLabel(decoded);
-  if (knownLabel) return knownLabel;
-  return decoded.replace(/[-_]+/g, " ").replace(/\b\w/g, titleCaseChar).trim();
-}
-
-function friendlyOperatorLabel(operatorLabel: string | null | undefined): string | null {
-  const trimmed = operatorLabel?.trim();
-  if (!trimmed) return null;
-
-  const firstSegment = trimmed.split(":").find(Boolean) ?? trimmed;
-  return friendlyActorLabel(firstSegment);
-}
-
-function safeDecodeActorSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
-}
-
-function titleCaseChar(char: string): string {
-  return char.toUpperCase();
-}
-
-function knownActorLabel(label: string): string | null {
-  switch (label.toLowerCase()) {
-    case "codex":
-      return "Codex";
-    case "jupyterhub":
-      return "JupyterHub";
-    default:
-      return null;
   }
 }
 
