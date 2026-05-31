@@ -92,6 +92,10 @@ function executionCountLabel(count: number | null): string | null {
   return count === null ? null : `Execution ${formatExecutionCount(count)}`;
 }
 
+function quietBoundaryState(count: number | null): ExecutionBoundaryState {
+  return count === null ? "idle" : "ran";
+}
+
 function executionLineClass({ isFocused }: { isFocused: boolean }) {
   if (isFocused) {
     return "bg-border/30";
@@ -164,7 +168,7 @@ function ExecutionBoundaryRule({
   queuePriority: number;
   isFocused: boolean;
 }) {
-  if (state === "running" || runningSignalPhase === "settling") {
+  if (state === "running") {
     const showSignal = runningSignalPhase === "active" || runningSignalPhase === "settling";
 
     return (
@@ -275,12 +279,23 @@ export function CodeCellCurrentLine({
         : count !== null
           ? "ran"
           : "idle";
-  const isCompactIdle = compactIdle && state === "idle";
-  const isQuietResting = state === "idle" || state === "ran";
+  const hasRunningSignal =
+    !isErrored &&
+    !isQueued &&
+    ((state === "running" && runningSignalPhase === "active") || runningSignalPhase === "settling");
+  const boundaryState =
+    state === "running" && !hasRunningSignal
+      ? quietBoundaryState(count)
+      : hasRunningSignal
+        ? "running"
+        : state;
+  const visualIsExecuting = state === "running" && runningSignalPhase === "active";
+  const isCompactIdle = compactIdle && boundaryState === "idle";
+  const isQuietResting = boundaryState === "idle" || boundaryState === "ran";
   const detailLabel = visualExecutionDetail({
     count,
     elapsedMs,
-    isExecuting,
+    isExecuting: visualIsExecuting,
     isQueued,
     isErrored,
   });
@@ -296,6 +311,7 @@ export function CodeCellCurrentLine({
     <div
       data-slot="code-cell-current-line"
       data-execution-state={state}
+      data-execution-visual-state={boundaryState}
       data-execution-count={count ?? undefined}
       data-execution-label={countLabel ?? undefined}
       className={cn(
@@ -306,7 +322,7 @@ export function CodeCellCurrentLine({
     >
       {!isCompactIdle ? (
         <ExecutionBoundaryRule
-          state={state}
+          state={boundaryState}
           runningSignalPhase={runningSignalPhase}
           queuePriority={queuePriority}
           isFocused={isFocused}
@@ -355,10 +371,10 @@ export function CodeCellCurrentLine({
           className={cn(
             "tabular-nums",
             isCompactIdle && "sr-only",
-            isExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
+            visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
             isQueued && "font-semibold text-sky-700 dark:text-sky-300",
             isErrored && "font-semibold text-destructive/80",
-            !isExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
+            !visualIsExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
           )}
         >
           {detailLabel}

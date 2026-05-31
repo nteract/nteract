@@ -46,7 +46,7 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveClass("opacity-100");
   });
 
-  it("separates active running status from the execution control lane", () => {
+  it("keeps initial running state visually quiet while execution settles", () => {
     const { container } = render(
       <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
     );
@@ -57,16 +57,16 @@ describe("CodeCellCurrentLine", () => {
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "running");
-    expect(status).toHaveTextContent("Python/running");
+    expect(footer).toHaveAttribute("data-execution-visual-state", "ran");
+    expect(footer).toHaveClass("min-h-4");
+    expect(status).toHaveTextContent("Python/run 12");
     expect(status).toHaveAttribute("aria-label", "Python: Running");
     expect(status).toHaveAttribute("aria-live", "polite");
-    expect(detail).toHaveClass("text-emerald-700");
-    expect(rule).toHaveClass("text-emerald-500/65");
+    expect(detail).toHaveClass("text-muted-foreground/70");
+    expect(detail).not.toHaveClass("text-emerald-700");
+    expect(rule).toHaveClass("bg-border/15");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(rule).toHaveAttribute("data-execution-signal", "building");
-    expect(
-      rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
-    ).toBeInTheDocument();
+    expect(rule).not.toHaveAttribute("data-execution-signal");
     expect(rule?.querySelector("svg")).toBeNull();
   });
 
@@ -82,6 +82,9 @@ describe("CodeCellCurrentLine", () => {
         vi.advanceTimersByTime(119);
       });
 
+      expect(
+        container.querySelector('[data-slot="code-cell-current-line-status"]'),
+      ).toHaveTextContent("Python/run 12");
       expect(container.querySelector('[data-slot="code-cell-current-line-rule"] svg')).toBeNull();
 
       rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
@@ -106,9 +109,13 @@ describe("CodeCellCurrentLine", () => {
         vi.advanceTimersByTime(120);
       });
 
+      const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+      const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
       let rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
       let signal = container.querySelector('[data-slot="code-cell-current-line-signal"]');
 
+      expect(footer).toHaveAttribute("data-execution-visual-state", "running");
+      expect(status).toHaveTextContent("Python/running");
       expect(rule).toHaveAttribute("data-execution-signal", "active");
       expect(signal).toHaveClass("animate-exec-signal-build");
       expect(
@@ -132,6 +139,35 @@ describe("CodeCellCurrentLine", () => {
       });
 
       rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      expect(rule).not.toHaveAttribute("data-execution-signal");
+      expect(rule?.querySelector("svg")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets failed state interrupt the running settle affordance", () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container, rerender } = render(
+        <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(120);
+      });
+
+      rerender(<CodeCellCurrentLine languageLabel="Python" count={13} isErrored />);
+
+      const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+      const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+      const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+      expect(footer).toHaveAttribute("data-execution-state", "error");
+      expect(footer).toHaveAttribute("data-execution-visual-state", "error");
+      expect(status).toHaveTextContent("Python/failed");
+      expect(rule).toHaveClass("text-destructive/60");
       expect(rule).not.toHaveAttribute("data-execution-signal");
       expect(rule?.querySelector("svg")).toBeNull();
     } finally {
