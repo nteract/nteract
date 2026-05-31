@@ -141,11 +141,11 @@ describe("notebook shell view model", () => {
     });
     expect(viewModel.outlineItems[0]).toMatchObject({
       cellId: "code-1",
-      statusLabel: "In [7]",
+      statusLabel: "run 7",
     });
     expect(viewModel.tracebackTargetsByExecutionId.get("exec-1")).toEqual({
       cellId: "code-1",
-      label: "In [7]",
+      label: "run 7",
     });
     expect(viewModel.markdownHeadingAnchorsByCellId.get("code-1")).toBeUndefined();
     expect(viewModel.packages.sections).toEqual([]);
@@ -242,7 +242,7 @@ describe("notebook shell view model", () => {
     ]);
 
     expect([...targets.entries()]).toEqual([
-      ["exec-1", { cellId: "code-1", label: "In [4]" }],
+      ["exec-1", { cellId: "code-1", label: "run 4" }],
       ["exec-2", { cellId: "code-2" }],
     ]);
   });

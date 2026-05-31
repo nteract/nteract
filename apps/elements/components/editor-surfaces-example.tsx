@@ -163,7 +163,7 @@ const scenarioFacts = [
     value:
       scenarioCodeCell.executionCount === null
         ? "not run"
-        : `In [${scenarioCodeCell.executionCount}]`,
+        : `run ${scenarioCodeCell.executionCount}`,
   },
 ];
 

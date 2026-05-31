@@ -48,6 +48,9 @@ describe("NotebookRail", () => {
       "aria-current",
       "location",
     );
+    expect(screen.getByRole("link", { name: "Load data" })).toHaveClass("bg-primary/8");
+    expect(screen.queryByText("2 items")).not.toBeInTheDocument();
+    expect(screen.queryByText("1 item")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Load data" })).toHaveAttribute(
       "href",
       "#notebook-cell-cell-a",
@@ -184,7 +187,7 @@ describe("NotebookRail", () => {
   });
 
   it("prevents outline links from starting browser drag previews", () => {
-    render(
+    const { container } = render(
       <NotebookRail
         activePanelId="outline"
         collapsed={false}
@@ -195,10 +198,14 @@ describe("NotebookRail", () => {
       />,
     );
 
+    const outlinePanel = screen.getByTestId("notebook-outline-panel");
     const outlineLink = screen.getByRole("link", { name: "Load data" });
+    const outlineTitle = container.querySelector('[data-slot="notebook-outline-item-title"]');
 
+    expect(outlinePanel).toHaveAttribute("data-drag-policy", "navigation-only");
     expect(outlineLink).toHaveAttribute("draggable", "false");
     expect(fireEvent.dragStart(outlineLink)).toBe(false);
+    expect(fireEvent.dragStart(outlineTitle!)).toBe(false);
   });
 
   it("marks only the first outline item for a focused cell when no item is pinned", () => {

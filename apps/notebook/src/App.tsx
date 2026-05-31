@@ -751,10 +751,10 @@ function AppContent() {
 
     return createNotebookViewModel(getNotebookCellsSnapshot().map(notebookCellToViewCell), {
       getOutlineStatusLabel: (cell) => {
-        if (cell.id === executingCellId) return "Running";
-        if (queuedOutlineCellIds.has(cell.id)) return "Queued";
+        if (cell.id === executingCellId) return "running";
+        if (queuedOutlineCellIds.has(cell.id)) return "queued";
         if (cell.cellType === "code" && cell.executionCount !== null) {
-          return `In [${cell.executionCount}]`;
+          return `run ${cell.executionCount}`;
         }
         return null;
       },

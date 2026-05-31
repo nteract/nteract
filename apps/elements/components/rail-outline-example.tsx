@@ -68,6 +68,11 @@ const outlineBoundaryRows = [
     production: "NotebookView focus state + shared outline selection",
   },
   {
+    label: "Header chrome",
+    catalog: "outline title without item count",
+    production: "packages may summarize state; outline stays reading-first",
+  },
+  {
     label: "Heading anchors",
     catalog: "viewModel.markdownHeadingAnchorsByCellId",
     production: "MarkdownCell receives anchors from the shell view model",
@@ -76,6 +81,11 @@ const outlineBoundaryRows = [
     label: "Heading navigation",
     catalog: "inert outline callback updates fixture focus",
     production: "navigateMarkdownHeading, scrollIntoView, and history.replaceState",
+  },
+  {
+    label: "Drag policy",
+    catalog: "outline rows cancel native drag previews",
+    production: "navigation-only until the app owns true outline reordering",
   },
   {
     label: "DOM order",
@@ -302,14 +312,14 @@ function ScenarioNotebookCell({
 function ScenarioCellBadge({ cell }: { cell: NotebookViewCell }) {
   const label =
     cell.id === executingCellId
-      ? "Running"
+      ? "running"
       : queuedCellIds.has(cell.id)
-        ? "Queued"
+        ? "queued"
         : cell.cellType === "code"
           ? cell.executionCount === null
-            ? "Ready"
-            : `Run ${cell.executionCount}`
-          : "Markdown";
+            ? "ready"
+            : `run ${cell.executionCount}`
+          : "markdown";
 
   return (
     <span

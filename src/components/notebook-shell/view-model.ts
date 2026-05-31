@@ -128,7 +128,7 @@ export function notebookViewCellsToTracebackTargets(
     if (!cell.executionId) continue;
     const target: NotebookTracebackCellTarget = { cellId: cell.id };
     if (typeof cell.executionCount === "number") {
-      target.label = `In [${cell.executionCount}]`;
+      target.label = `run ${cell.executionCount}`;
     }
     targets.set(cell.executionId, target);
   }
@@ -156,7 +156,7 @@ export function notebookOutlineItemsToMarkdownHeadingAnchors(
 
 function notebookViewCellOutlineStatusLabel(cell: NotebookViewCell): string | null {
   if (cell.cellType === "code" && cell.executionCount !== null) {
-    return `In [${cell.executionCount}]`;
+    return `run ${cell.executionCount}`;
   }
   return null;
 }
