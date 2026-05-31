@@ -78,12 +78,20 @@ Use these terms consistently in UI copy, component names, and docs.
 | Operator | Client or process currently acting for the principal, such as desktop, browser, runtime, Codex, or a scheduled job. |
 | Actor | UI projection of principal plus operator for attribution and presence. A human, agent, runtime, system process, or public viewer can all appear as actors. |
 | Delegated agent | Agent operator acting on behalf of a human principal. The UI should show both the agent and the human subject. |
-| Access scope | What the current connection can do in this notebook: none, viewer, editor, owner, plus future runtime-peer and capability refinements. |
+| Access scope | Host-derived authorization facts projected for UI rendering. `viewer`, `editor`, `owner`, and `runtime_peer` are room/ACL scopes; `none` is a UI-only display state for missing or rejected access. |
 | Environment | Notebook execution context: runtime availability, package declarations, dependency trust, package sync, and captured environment state. |
 | Public viewer | Authorized anonymous read access through an explicit public ACL row, not a fallback guest identity. |
 
 The display string is never the authority. Display names, emails, avatars, and
-labels are projections from authenticated/host-owned facts.
+labels are projections from authenticated/host-owned facts. Access scope and
+capability projections are also advisory for rendering only; enforcement stays
+in the host, room, or daemon authority.
+
+A runtime operator projects to a runtime-kind actor when it is visible in the
+UI. `runtime_peer` should not become a value in `NotebookShellAccessLevel`;
+model it as a separate capability and actor kind because runtime peers author
+execution lifecycle/output state, not notebook structure, sharing, or package
+management.
 
 ## Target Roles and Scenarios
 
@@ -93,10 +101,14 @@ Elements and production host adapters should cover these states first:
 |----------|----------------------------------|
 | Desktop local owner | Shows local identity, editable notebook controls, executable runtime, and manageable packages when daemon state allows. |
 | Desktop read-only file | Shows local identity, readable notebook state, disabled edit affordances, and environment facts that remain safe to inspect. |
+| Desktop remote room | Shows desktop app plus local daemon/socket identity connecting to a remote service with a stored API key or credential, without treating cloud browser auth as the only remote identity model. |
 | Cloud public viewer | Shows public viewer access, read-only controls, no collaborator identity leakage, and package/runtime facts safe for public notebooks. |
 | Cloud authenticated editor | Shows signed-in identity, editor affordances allowed by ACL-derived capabilities, and gated sharing/package/runtime controls. |
 | Cloud owner | Shows owner identity, sharing management, and the same notebook cells/header/rail as desktop. |
 | Delegated agent | Shows the agent as the acting operator and the human subject it acts for; attribution should not collapse to a generic model selector. |
+| One principal, multiple operators | Shows a human principal with multiple active operators, such as desktop plus an agent, without merging away operator-specific attribution. |
+| Mixed-IdP room | Shows collaborators from multiple identity providers using display metadata without making provider-specific UI forks. |
+| Credential needs attention | Shows expired, missing, or invalid auth as an attention state without implying the notebook content or local runtime is broken. |
 | Runtime unavailable | Shows why execution is unavailable without implying the notebook itself is broken. |
 | Runtime peer | Shows runtime attribution for execution/output state without granting notebook-editing affordances. |
 | Untrusted dependencies | Shows dependency trust attention near package/runtime controls without making the shared UI mutate trust directly. |
@@ -107,16 +119,19 @@ Elements and production host adapters should cover these states first:
 
 1. Shared UI consumes a structured actor projection. It must not parse raw
    Automerge actor labels as its only source of truth.
-2. The actor projection must distinguish human, local, public, agent, runtime,
+2. Raw actor-label parsing is transitional compatibility input for current
+   adapters only. The target projection carries principal, operator,
+   on-behalf-of, and display metadata as structured host-owned facts.
+3. The actor projection must distinguish human, local, public, agent, runtime,
    system, and unknown actors.
-3. Delegated agent UI must show both sides of the relationship, for example
+4. Delegated agent UI must show both sides of the relationship, for example
    "Codex on behalf of Kyle". An agent avatar or icon can follow the visual
    pattern of model-selector components, but the semantic source is notebook
    actor state.
-4. Public viewers render as public viewer state, not as collaborators. Anonymous
+5. Public viewers render as public viewer state, not as collaborators. Anonymous
    public sessions should not expose per-user identity unless product later
    defines a separate public-presence policy.
-5. Execution attribution, presence, and cell edit attribution should use the
+6. Execution attribution, presence, and cell edit attribution should use the
    same actor projection so they do not disagree about who acted.
 
 ### Access and Capabilities
@@ -133,6 +148,9 @@ Elements and production host adapters should cover these states first:
 5. Runtime-peer authority should not be collapsed into editor or owner UI.
    Runtime-peer capability is about lifecycle/output authorship, not notebook
    structure edits or ACL management.
+6. Desktop remote rooms should use the same capability projection as cloud
+   rooms while preserving their separate identity path: desktop app, local
+   daemon/socket identity, and remote service credential or API key.
 
 ### Environment and Packages
 
@@ -157,12 +175,16 @@ Elements and production host adapters should cover these states first:
    components with fixture projections.
 2. Elements scenarios should include at least: local owner, public viewer, cloud
    editor, cloud owner, delegated agent, runtime unavailable, read-only local,
-   runtime peer, and untrusted dependencies.
+   desktop remote room, one-principal/multiple-operator, mixed-IdP,
+   credential-attention, runtime peer, and untrusted dependencies.
 3. Elements must remain runtime-free: no daemon, sync, generated WASM,
    iframe-host, Cloudflare, auth-provider, or local filesystem side effects.
 4. Elements should document the source boundary for every surface: which facts
    come from host adapters, which belong in shared view models, and which stay
    in product-specific control slots.
+5. Current Elements visuals, including the surfaces introduced around #3240,
+   are illustrative scenario chrome. They should validate semantics and
+   component composition, not freeze final production appearance.
 
 ## Shared Surface Projection
 
@@ -184,13 +206,13 @@ interface NotebookActorSurface {
   kind: NotebookActorKind;
   label: string;
   detail: string | null;
-  avatarUrl?: string | null;
+  imageUrl?: string | null;
   status?: "active" | "attention" | "idle" | "offline";
   principalLabel?: string | null;
   operatorLabel?: string | null;
   onBehalfOf?: {
     label: string;
-    avatarUrl?: string | null;
+    imageUrl?: string | null;
   } | null;
 }
 
@@ -211,6 +233,8 @@ interface NotebookEnvironmentSurface {
 Short-term code can keep the smaller existing `NotebookActorIdentity` and
 `NotebookEnvironmentSummary` props, but new host adapter work should avoid
 adding more page-local strings that cannot map into the structured projection.
+The projection uses `imageUrl` to stay aligned with the existing
+`NotebookActorIdentity` field name.
 
 ## Placement
 
@@ -232,20 +256,23 @@ adding more page-local strings that cannot map into the structured projection.
    logic.
 3. `NotebookIdentityBadge`, `NotebookIdentityGroup`, and
    `NotebookEnvironmentSummary` can render the cloud owner, public viewer,
-   delegated agent, local owner, read-only, runtime-unavailable, and untrusted
-   states without host imports.
+   delegated agent, local owner, desktop remote room, read-only,
+   credential-attention, mixed-IdP, runtime-unavailable, runtime-peer, and
+   untrusted states without host imports.
 4. Code-cell current-line, execution attribution, and presence can be pointed at
    the same actor projection.
 5. The hosted public viewer path does not display anonymous viewers as named
-   collaborators.
+   collaborators, and public viewer presence remains connection-local or
+   aggregate-only until a separate public-presence policy changes it.
 6. Shared components stay presentational. Auth, ACL mutation, trust mutation,
    package install, runtime launch, and file-system writes stay in host
    adapters or daemon/room authorities.
 
 ## Suggested Work Slices
 
-1. Expand the Elements scenario layer to include read-only local, runtime peer,
-   and untrusted dependency fixtures.
+1. Expand the Elements scenario layer to include read-only local, desktop
+   remote room, credential-attention, mixed-IdP, one-principal/multiple-operator,
+   runtime peer, and untrusted dependency fixtures.
 2. Extend the shared actor projection to represent runtime and system actors
    without parsing demo-only agent labels.
 3. Teach desktop and cloud adapters to map their current facts into the shared
@@ -259,11 +286,9 @@ adding more page-local strings that cannot map into the structured projection.
 
 ## Open Questions
 
-1. Does `NotebookShellAccessLevel` need an explicit `runtime_peer` level, or
-   should runtime-peer remain a separate capability set outside document access?
-2. Which actor fields should be persisted in room activity/audit events versus
+1. Which actor fields should be persisted in room activity/audit events versus
    derived only for UI display?
-3. Should public viewer presence remain completely local, aggregate-only, or
+2. Should public viewer presence remain completely local, aggregate-only, or
    eventually become full cursor/cell presence?
-4. Where should package/environment actions live when the rail is collapsed:
+3. Where should package/environment actions live when the rail is collapsed:
    header slot, rail popover, or dedicated drawer?
