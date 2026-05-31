@@ -817,21 +817,6 @@ body {
   height: 1rem;
 }
 
-.cloud-markdown-presence {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  align-items: center;
-  padding-top: 0.25rem;
-}
-
-.cloud-markdown-presence span {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 999px;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--background) 80%, transparent);
-}
-
 .cloud-editable-markdown-cell .cm-editor {
   border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
   border-radius: 6px;

@@ -13,6 +13,7 @@ import { type CloudTextAttributionQueue, useCloudEditableCellBridge } from "./cl
 import type { ResolvedCell } from "./render-resolution";
 import type { NotebookHandle } from "./runtimed-wasm-client";
 import { cloudSourceLanguage } from "./source-language";
+import { CloudCellPresenceIndicators } from "./cell-presence";
 
 export interface EditableCodeCellProps {
   cell: ResolvedCell;
@@ -99,45 +100,11 @@ export function EditableCodeCell({
       sourceClassName={sourceClassName}
       outputClassName={outputClassName}
       editorClassName="cloud-code-editor"
-      presenceIndicators={<CloudCodePresenceIndicators presence={remotePresence} />}
+      presenceIndicators={<CloudCellPresenceIndicators presence={remotePresence} />}
       deferIsolatedFrameUntilVisible
       deferredIsolatedFrameRootMargin="600px 0px"
       resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
       onNavigateToTracebackCell={onNavigateToTracebackCell}
     />
-  );
-}
-
-function CloudCodePresenceIndicators({ presence }: { presence?: RemoteCellPresence }) {
-  const peersById = new Map<string, { label: string; color: string }>();
-  for (const cursor of presence?.cursors ?? []) {
-    peersById.set(cursor.peerId, {
-      label: cursor.peerLabel,
-      color: cursor.color,
-    });
-  }
-  for (const selection of presence?.selections ?? []) {
-    peersById.set(selection.peerId, {
-      label: selection.peerLabel,
-      color: selection.color,
-    });
-  }
-  const peers = Array.from(peersById.entries()).map(([peerId, peer]) => ({ peerId, ...peer }));
-
-  if (peers.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="cloud-markdown-presence" aria-label="Remote editors">
-      {peers.slice(0, 4).map((peer) => (
-        <span
-          key={peer.peerId}
-          style={{ backgroundColor: peer.color }}
-          title={peer.label}
-          aria-label={peer.label}
-        />
-      ))}
-    </div>
   );
 }

@@ -74,6 +74,23 @@ test("cloud editable cells share hosted CRDT and presence bridge plumbing", () =
   );
 });
 
+test("cloud editable cells render presence through shared cell dots", () => {
+  const adapterPath = new URL("../viewer/cell-presence.tsx", import.meta.url);
+  const adapterSource = readFileSync(adapterPath, "utf8");
+  const markdownPath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
+  const markdownSource = readFileSync(markdownPath, "utf8");
+  const codePath = new URL("../viewer/editable-code-cell.tsx", import.meta.url);
+  const codeSource = readFileSync(codePath, "utf8");
+
+  assert.match(
+    adapterSource,
+    /import \{ CellPresenceDots, type CellPresencePeer \} from "@\/components\/cell\/CellPresenceDots";/,
+  );
+  assert.match(adapterSource, /<CellPresenceDots peers=\{peers\} maxVisible=\{4\}/);
+  assert.match(markdownSource, /presenceIndicators=\{<CloudCellPresenceIndicators/);
+  assert.match(codeSource, /presenceIndicators=\{<CloudCellPresenceIndicators/);
+});
+
 test("cloud live notebook passes renderer policy into editable markdown cells", () => {
   const sourcePath = new URL("../viewer/cloud-live-notebook.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditableMarkdownCell as SharedEditableMarkdownCell } from "@/components/cell/EditableMarkdownCell";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import { setRemoteCursors, setRemoteSelections } from "@/components/editor/remote-cursors";
@@ -6,6 +6,7 @@ import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { notebookCellAnchorId } from "runtimed";
 import { type CloudTextAttributionQueue, useCloudEditableCellBridge } from "./cloud-cell-editing";
+import { CloudCellPresenceIndicators } from "./cell-presence";
 import type { ResolvedCell } from "./render-resolution";
 import type { NotebookHandle } from "./runtimed-wasm-client";
 
@@ -94,43 +95,7 @@ export function EditableMarkdownCell({
       priority={priority}
       hostContext={hostContext}
       editorExtensions={editorExtensions}
-      presenceIndicators={<CloudMarkdownPresenceIndicators presence={remotePresence} />}
+      presenceIndicators={<CloudCellPresenceIndicators presence={remotePresence} />}
     />
-  );
-}
-
-function CloudMarkdownPresenceIndicators({ presence }: { presence?: RemoteCellPresence }) {
-  const peers = useMemo(() => {
-    const byPeer = new Map<string, { label: string; color: string }>();
-    for (const cursor of presence?.cursors ?? []) {
-      byPeer.set(cursor.peerId, {
-        label: cursor.peerLabel,
-        color: cursor.color,
-      });
-    }
-    for (const selection of presence?.selections ?? []) {
-      byPeer.set(selection.peerId, {
-        label: selection.peerLabel,
-        color: selection.color,
-      });
-    }
-    return Array.from(byPeer.entries()).map(([peerId, peer]) => ({ peerId, ...peer }));
-  }, [presence]);
-
-  if (peers.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="cloud-markdown-presence" aria-label="Remote editors">
-      {peers.slice(0, 4).map((peer) => (
-        <span
-          key={peer.peerId}
-          style={{ backgroundColor: peer.color }}
-          title={peer.label}
-          aria-label={peer.label}
-        />
-      ))}
-    </div>
   );
 }
