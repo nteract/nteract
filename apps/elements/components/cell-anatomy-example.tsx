@@ -112,12 +112,18 @@ const currentLineStateFixtures = [
   },
   {
     label: "Queued",
-    detail: "Waiting gets a dotted signal so it feels pending rather than active.",
+    detail: "Waiting keeps a simple blue boundary with only a small pulse.",
     line: <CodeCellCurrentLine languageLabel="Python" count={12} isQueued />,
   },
   {
+    label: "Next queued",
+    detail: "Queue priority can proportionally tighten the pulse without exposing queue order.",
+    line: <CodeCellCurrentLine languageLabel="Python" count={12} isQueued queuePriority={1} />,
+  },
+  {
     label: "Running",
-    detail: "Runtime work gets a green floppy wave; the stop control lives outside this boundary.",
+    detail:
+      "Runtime work starts as a line, then earns the green wave if it stays busy long enough.",
     line: <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
   },
   {

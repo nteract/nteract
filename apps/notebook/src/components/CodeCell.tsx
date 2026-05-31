@@ -17,6 +17,7 @@ import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
+  useCellQueuePriority,
   useIsCellExecuting,
   useIsCellFocused,
   useIsCellQueued,
@@ -178,6 +179,7 @@ export const CodeCell = memo(function CodeCell({
   const isFocused = useIsCellFocused(cell.id);
   const isExecuting = useIsCellExecuting(cell.id);
   const isQueued = useIsCellQueued(cell.id);
+  const queuePriority = useCellQueuePriority(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
   const isNextCellFromFocused = useIsNextCellFromFocused(cell.id);
   const searchQuery = useSearchQuery();
@@ -410,6 +412,7 @@ export const CodeCell = memo(function CodeCell({
       count={executionCount}
       isExecuting={isExecuting}
       isQueued={isQueued}
+      queuePriority={queuePriority}
       isErrored={isExecutionErrored}
       isFocused={isFocused}
       compactIdle={isSourceEmpty}

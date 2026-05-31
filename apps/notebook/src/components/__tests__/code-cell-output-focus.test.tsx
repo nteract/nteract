@@ -14,6 +14,7 @@ let mockExecution: {
 let mockIsExecuting = false;
 let mockIsFocused = false;
 let mockIsQueued = false;
+let mockQueuePriority = 0;
 const mockEditorBlur = vi.fn();
 
 vi.mock("@/components/cell/CellContainer", () => ({
@@ -109,6 +110,7 @@ vi.mock("../../hooks/useCrdtBridge", () => ({
 }));
 
 vi.mock("../../lib/cell-ui-state", () => ({
+  useCellQueuePriority: () => mockQueuePriority,
   useIsCellExecuting: () => mockIsExecuting,
   useIsCellFocused: () => mockIsFocused,
   useIsCellQueued: () => mockIsQueued,
@@ -178,6 +180,7 @@ describe("CodeCell output focus", () => {
     mockIsExecuting = false;
     mockIsFocused = false;
     mockIsQueued = false;
+    mockQueuePriority = 0;
     mockOutputs = [
       {
         output_type: "display_data",
@@ -277,7 +280,8 @@ describe("CodeCell output focus", () => {
     expect(status).toHaveClass("text-primary");
     expect(status).not.toHaveClass("text-destructive/80");
     expect(rule).toHaveClass("text-emerald-500/65");
-    expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
+    expect(rule).toHaveAttribute("data-execution-signal", "building");
+    expect(rule?.querySelector("svg")).toBeNull();
     expect(stopButton).toHaveClass("text-destructive");
   });
 
