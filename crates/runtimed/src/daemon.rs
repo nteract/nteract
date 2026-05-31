@@ -2706,8 +2706,6 @@ impl Daemon {
         };
 
         info!("[runtimed] OpenNotebook requested for {}", path);
-        let connection_identity =
-            crate::notebook_sync_server::RoomConnectionIdentity::local(operator.clone()).await?;
 
         // Diagnostic: flag suspicious path shapes. UUID-shaped paths (no slash,
         // no extension, parses as a UUID) almost certainly indicate a bug
@@ -2839,6 +2837,30 @@ impl Daemon {
             }
         };
 
+        fn existing_file_allows_write(path: &std::path::Path) -> bool {
+            match std::fs::metadata(path) {
+                Ok(metadata) if metadata.permissions().readonly() => return false,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+
+                let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+                    return false;
+                };
+                // SAFETY: `path` is a valid NUL-terminated C string created
+                // from the OS path bytes above. `access` does not retain it.
+                unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        }
+
         // Derive notebook_id from path
         // For existing files: canonicalize for stable cross-process identity
         // For new files: use absolute path (canonicalize would fail)
@@ -2862,6 +2884,19 @@ impl Daemon {
                 .to_string_lossy()
                 .to_string()
         };
+
+        let connection_scope =
+            if file_exists && !existing_file_allows_write(&PathBuf::from(&notebook_id)) {
+                nteract_identity::ConnectionScope::Viewer
+            } else {
+                nteract_identity::ConnectionScope::Owner
+            };
+        let connection_identity =
+            crate::notebook_sync_server::RoomConnectionIdentity::local_with_scope(
+                operator.clone(),
+                connection_scope,
+            )
+            .await?;
 
         // Get or create room for this notebook.
         // First check if an existing room already owns this canonical path.

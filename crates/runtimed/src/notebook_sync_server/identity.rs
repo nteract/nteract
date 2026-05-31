@@ -16,11 +16,23 @@ pub(crate) struct RoomConnectionIdentity {
 impl RoomConnectionIdentity {
     /// Authenticate a local same-UID daemon connection.
     pub(crate) async fn local(presented_operator: Option<String>) -> anyhow::Result<Self> {
+        Self::local_with_scope(presented_operator, ConnectionScope::Owner).await
+    }
+
+    /// Authenticate a local same-UID daemon connection with an explicit scope.
+    ///
+    /// Local file-backed rooms use this to downgrade a connection to viewer
+    /// when the host can read a notebook but cannot write it. The principal is
+    /// still the local user; only the room-enforced document capabilities differ.
+    pub(crate) async fn local_with_scope(
+        presented_operator: Option<String>,
+        scope: ConnectionScope,
+    ) -> anyhow::Result<Self> {
         let username = local_username();
         let provider = IdentityProvider::local();
         let credential = Credential::LocalPeer(LocalPeerCredential::new(username)?);
         let user = provider.authenticate(credential).await?;
-        let auth = AuthenticatedConnection::from_user(user);
+        let auth = AuthenticatedConnection::new(user.principal().clone(), scope);
         let fallback_operator = fallback_operator("desktop");
         let operator = presented_operator
             .as_deref()
@@ -173,6 +185,24 @@ mod tests {
         assert_eq!(identity.scope(), ConnectionScope::Owner);
         assert!(identity.allows_notebook_write());
         assert!(identity.allows_runtime_state_write());
+    }
+
+    #[tokio::test]
+    async fn local_identity_can_be_downgraded_to_viewer() {
+        let identity = RoomConnectionIdentity::local_with_scope(
+            Some("desktop:window-1".to_string()),
+            ConnectionScope::Viewer,
+        )
+        .await
+        .expect("local viewer identity");
+
+        assert_eq!(identity.scope(), ConnectionScope::Viewer);
+        assert!(!identity.allows_notebook_write());
+        assert!(!identity.allows_runtime_state_write());
+        assert!(identity
+            .actor_label()
+            .as_str()
+            .contains("/desktop:window-1"));
     }
 
     #[tokio::test]

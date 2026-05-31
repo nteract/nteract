@@ -275,9 +275,17 @@ async function handleRelayConnection(
       ephemeral?: boolean;
       notebook_path?: string | null;
       runtime?: string;
+      actor_label?: string;
+      connection_scope?: string;
+      capabilities?: {
+        actor_label?: string;
+        connection_scope?: string;
+      };
     };
 
     if (info.error) throw new Error(info.error);
+    const actorLabel = info.actor_label ?? info.capabilities?.actor_label;
+    const connectionScope = info.connection_scope ?? info.capabilities?.connection_scope;
 
     const daemonInfoJson = readDaemonInfo(socketPath);
     control(ws, {
@@ -289,6 +297,8 @@ async function handleRelayConnection(
         ephemeral: info.ephemeral ?? true,
         notebook_path: info.notebook_path ?? null,
         runtime: info.runtime,
+        actor_label: actorLabel,
+        connection_scope: connectionScope,
       },
       blob_port: daemonInfoJson?.blob_port ?? null,
       daemon: daemonInfoJson

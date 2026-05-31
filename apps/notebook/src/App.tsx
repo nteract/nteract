@@ -954,13 +954,17 @@ function AppContent() {
   }, []);
 
   const handleTogglePackagesRail = useCallback(() => {
+    if (!shellCapabilities.canViewPackages) {
+      logger.debug("[App] handleTogglePackagesRail: package view capability unavailable, skipping");
+      return;
+    }
     if (activeRailPanel === "packages" && !railCollapsed) {
       setRailCollapsed(true);
       return;
     }
     setActiveRailPanel("packages");
     setRailCollapsed(false);
-  }, [activeRailPanel, railCollapsed]);
+  }, [activeRailPanel, railCollapsed, shellCapabilities.canViewPackages]);
 
   const handleSelectOutlineItem = useCallback(
     (item: NotebookOutlineItem) => {
@@ -1024,6 +1028,10 @@ function AppContent() {
   // Returns true if kernel was started, false if trust dialog opened or error.
   const tryStartKernel = useCallback(
     async (blockedAction: PendingTrustAction | null = null): Promise<boolean> => {
+      if (!shellCapabilities.canExecute) {
+        logger.debug("[App] tryStartKernel: execute capability unavailable, skipping");
+        return false;
+      }
       // Fail-closed until the daemon has confirmed first RuntimeStateSync.
       // Before that, `runtimeState.trust.status` is the default and cannot
       // gate an install. Buttons are disabled in this state, but keyboard
@@ -1061,6 +1069,7 @@ function AppContent() {
     },
     [
       sessionReady,
+      shellCapabilities.canExecute,
       checkTrust,
       launchKernel,
       envProgress,
@@ -1378,6 +1387,12 @@ function AppContent() {
 
   // Start kernel explicitly with pyproject.toml (user action from DependencyHeader)
   const handleStartKernelWithPyproject = useCallback(async () => {
+    if (!shellCapabilities.canExecute) {
+      logger.debug(
+        "[App] handleStartKernelWithPyproject: execute capability unavailable, skipping",
+      );
+      return;
+    }
     if (!sessionReady) {
       logger.debug("[App] handleStartKernelWithPyproject: session not ready, skipping");
       return;
@@ -1388,10 +1403,14 @@ function AppContent() {
     } else if (response.result === "guard_rejected") {
       setTrustActionNotice(response.reason);
     }
-  }, [sessionReady, launchKernel, setTrustActionNotice]);
+  }, [sessionReady, shellCapabilities.canExecute, launchKernel, setTrustActionNotice]);
 
   const handleExecuteCell = useCallback(
     async (cellId: string) => {
+      if (!shellCapabilities.canExecute) {
+        logger.debug("[App] handleExecuteCell: execute capability unavailable, skipping");
+        return;
+      }
       // Fail-closed until the daemon has confirmed first RuntimeStateSync.
       // If a runtime agent is already alive from a prior session,
       // `execute_cell` would otherwise queue into RuntimeStateDoc before
@@ -1451,14 +1470,25 @@ function AppContent() {
         }, 150);
       }
     },
-    [sessionReady, kernelStatus, tryStartKernel, captureExecuteTrustAction, executeCell],
+    [
+      sessionReady,
+      shellCapabilities.canExecute,
+      kernelStatus,
+      tryStartKernel,
+      captureExecuteTrustAction,
+      executeCell,
+    ],
   );
 
   const handleAddCell = useCallback(
     (type: "code" | "markdown" | "raw", afterCellId?: string | null) => {
+      if (!shellCapabilities.canEditStructure) {
+        logger.debug("[App] handleAddCell: structure edit capability unavailable, skipping");
+        return null;
+      }
       return addCell(type, afterCellId);
     },
-    [addCell],
+    [addCell, shellCapabilities.canEditStructure],
   );
 
   // Wrapper for toolbar's start kernel - uses trust check before starting
@@ -1471,6 +1501,10 @@ function AppContent() {
 
   // Restart kernel (shutdown then start)
   const handleRestartKernel = useCallback(async () => {
+    if (!shellCapabilities.canExecute) {
+      logger.debug("[App] handleRestartKernel: execute capability unavailable, skipping");
+      return;
+    }
     // Fail-closed until first RuntimeStateSync. Shutdown writes
     // RuntimeLifecycle::Shutdown via the runtime-agent request path, so
     // firing it against a still-syncing session would mutate kernel
@@ -1483,9 +1517,13 @@ function AppContent() {
     }
     await shutdownKernel();
     await tryStartKernel();
-  }, [sessionReady, shutdownKernel, tryStartKernel]);
+  }, [sessionReady, shellCapabilities.canExecute, shutdownKernel, tryStartKernel]);
 
   const handleRunAllCells = useCallback(async () => {
+    if (!shellCapabilities.canExecute) {
+      logger.debug("[App] handleRunAllCells: execute capability unavailable, skipping");
+      return;
+    }
     // Fail-closed until first RuntimeStateSync. Same reasoning as
     // handleExecuteCell: if a runtime agent is already alive, the daemon
     // would queue into RuntimeStateDoc before we've verified trust.
@@ -1528,13 +1566,24 @@ function AppContent() {
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [sessionReady, kernelStatus, tryStartKernel, captureRunAllTrustAction, daemonRunAllCells]);
+  }, [
+    sessionReady,
+    shellCapabilities.canExecute,
+    kernelStatus,
+    tryStartKernel,
+    captureRunAllTrustAction,
+    daemonRunAllCells,
+  ]);
 
   const handleRestartAndRunAll = useCallback(async () => {
+    if (!shellCapabilities.canExecute) {
+      logger.debug("[App] handleRestartAndRunAll: execute capability unavailable, skipping");
+      return;
+    }
     // The daemon clears visible outputs by moving cells to fresh execution
     // pointers before queuing, then ensureKernelStarted restarts the kernel.
     await restartAndRunAll();
-  }, [restartAndRunAll]);
+  }, [restartAndRunAll, shellCapabilities.canExecute]);
 
   // Cmd+S keyboard shortcut. The native menu item is routed through
   // host.commands.run("notebook.save") by the Tauri menu bridge.
@@ -1918,6 +1967,9 @@ function AppContent() {
           onAddCell={handleAddCell}
           onToggleDependencies={handleTogglePackagesRail}
           isDepsOpen={packagesRailOpen}
+          canEditStructure={shellCapabilities.canEditStructure}
+          canExecute={shellCapabilities.canExecute}
+          canViewPackages={shellCapabilities.canViewPackages}
           depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
           updateStatus={updateStatus}
           updateVersion={updateVersion}

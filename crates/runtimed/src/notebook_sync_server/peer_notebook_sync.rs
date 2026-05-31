@@ -16,16 +16,25 @@ pub(super) async fn handle_notebook_doc_frame(
     connection_identity: &RoomConnectionIdentity,
     writer: &PeerWriter,
     payload: &[u8],
-) -> anyhow::Result<NotebookDocFrameOutcome> {
-    let message =
+) -> anyhow::Result<NotebookDocSideEffects> {
+    let mut message =
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
+    let has_client_changes = !message.changes.is_empty();
+    if has_client_changes && !connection_identity.allows_notebook_write() {
+        warn!(
+            "[notebook-sync] Stripping unauthorized NotebookDoc changes for scope {}",
+            connection_identity.scope()
+        );
+        message.changes = sync::ChunkList::empty();
+    }
+    let has_client_changes = !message.changes.is_empty();
 
     // Complete all document mutations inside the lock, encode the reply, then
     // release the lock before performing async I/O.
     let (persist_bytes, reply_encoded, metadata_changed) = {
         let mut doc = room.doc.write().await;
 
-        if !message.changes.is_empty() {
+        if has_client_changes {
             // v1: clone-preview validator. Replace with sync_message_new_changes
             // once nteract/automerge ships Patch 1.
             let heads_before = doc.get_heads();
@@ -58,12 +67,15 @@ pub(super) async fn handle_notebook_doc_frame(
         }
 
         let heads_after = doc.get_heads();
-        let metadata_changed = diff_metadata_touched(doc.doc_mut(), &heads_before, &heads_after);
+        let changed = heads_before != heads_after;
+        let metadata_changed =
+            changed && diff_metadata_touched(doc.doc_mut(), &heads_before, &heads_after);
 
-        let bytes = doc.save();
-
-        // Notify other peers in this room.
-        let _ = room.broadcasts.changed_tx.send(());
+        let bytes = if changed { Some(doc.save()) } else { None };
+        if changed {
+            // Notify other peers in this room.
+            let _ = room.broadcasts.changed_tx.send(());
+        }
 
         let encoded = match doc.generate_sync_message_recovering(peer_state, "doc-sync-reply") {
             Ok(message) => message.map(|reply| reply.encode()),
@@ -82,18 +94,14 @@ pub(super) async fn handle_notebook_doc_frame(
         writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
     }
 
-    Ok(NotebookDocFrameOutcome::Applied(NotebookDocSideEffects {
+    Ok(NotebookDocSideEffects {
         persist_bytes,
         metadata_changed,
-    }))
-}
-
-pub(super) enum NotebookDocFrameOutcome {
-    Applied(NotebookDocSideEffects),
+    })
 }
 
 pub(super) struct NotebookDocSideEffects {
-    persist_bytes: Vec<u8>,
+    persist_bytes: Option<Vec<u8>>,
     metadata_changed: bool,
 }
 
@@ -101,8 +109,11 @@ pub(super) async fn finish_notebook_doc_frame(
     room: &NotebookRoom,
     effects: NotebookDocSideEffects,
 ) {
-    room.persistence
-        .enqueue_persist_bytes(effects.persist_bytes);
+    let Some(persist_bytes) = effects.persist_bytes else {
+        return;
+    };
+
+    room.persistence.enqueue_persist_bytes(persist_bytes);
 
     if effects.metadata_changed {
         check_and_broadcast_sync_state(room).await;

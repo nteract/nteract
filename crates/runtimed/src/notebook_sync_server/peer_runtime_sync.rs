@@ -77,13 +77,22 @@ pub(super) async fn handle_runtime_state_frame(
     persisted_records: &mut PersistedExecutionRecords,
     connection_identity: &RoomConnectionIdentity,
 ) -> anyhow::Result<bool> {
-    let message =
+    let mut message =
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
+    let has_client_changes = !message.changes.is_empty();
+    if has_client_changes && !connection_identity.allows_runtime_state_write() {
+        warn!(
+            "[notebook-sync] Stripping unauthorized RuntimeStateDoc changes for scope {}",
+            connection_identity.scope()
+        );
+        message.changes = sync::ChunkList::empty();
+    }
+    let has_client_changes = !message.changes.is_empty();
     let mut runtime_file_dirty = false;
 
     let reply_encoded = room.state.with_doc(|state_doc| {
         let before = runtime_file_save_fingerprint(state_doc);
-        if !message.changes.is_empty() {
+        if has_client_changes {
             // v1: clone-preview validator. Replace with sync_message_new_changes
             // once nteract/automerge ships Patch 1.
             let heads_before = state_doc.get_heads();
