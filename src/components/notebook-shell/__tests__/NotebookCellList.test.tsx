@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { NotebookCellList } from "../NotebookCellList";
 import type { NotebookViewCell } from "../view-model";
 
@@ -58,5 +58,31 @@ describe("NotebookCellList", () => {
     );
 
     expect(screen.getByText("No cells")).toBeVisible();
+  });
+
+  it("lets read-only hosts keep duplicate cell ids renderable for malformed imported notebooks", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      render(
+        <NotebookCellList
+          cells={[
+            { ...cells[0], id: "duplicate", source: "# First" },
+            { ...cells[1], id: "duplicate", source: "print('second')" },
+          ]}
+          keyForCell={(cell, index) => `${cell.id}:${index}`}
+          renderCell={(cell) => <article>{cell.source}</article>}
+        />,
+      );
+
+      expect(screen.getByText("# First")).toBeVisible();
+      expect(screen.getByText("print('second')")).toBeVisible();
+      expect(
+        consoleError.mock.calls.some((args) =>
+          String(args[0]).includes("Encountered two children with the same key"),
+        ),
+      ).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

@@ -9,6 +9,7 @@ export interface NotebookCellListProps<TCell extends NotebookCellListItem = Note
   className?: string;
   slot?: string;
   emptyContent?: ReactNode;
+  keyForCell?: (cell: TCell, index: number) => string;
   resetKeysForCell?: (cell: TCell, index: number) => readonly unknown[];
   renderCell: (cell: TCell, index: number) => ReactNode;
   renderCellError?: (error: Error, cell: TCell, index: number) => ReactNode;
@@ -20,6 +21,7 @@ export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCe
   className,
   slot = "notebook-cell-list",
   emptyContent = null,
+  keyForCell = defaultKeyForCell,
   resetKeysForCell = defaultResetKeysForCell,
   renderCell,
   renderCellError,
@@ -35,7 +37,7 @@ export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCe
         ? emptyContent
         : cells.map((cell, index) => (
             <ErrorBoundary
-              key={cell.id}
+              key={keyForCell(cell, index)}
               resetKeys={resetKeysForCell(cell, index)}
               fallback={(error) =>
                 renderCellError
@@ -48,6 +50,10 @@ export function NotebookCellList<TCell extends NotebookCellListItem = NotebookCe
           ))}
     </section>
   );
+}
+
+function defaultKeyForCell(cell: NotebookCellListItem): string {
+  return cell.id;
 }
 
 function defaultResetKeysForCell(cell: NotebookCellListItem): readonly unknown[] {

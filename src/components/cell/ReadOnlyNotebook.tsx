@@ -56,6 +56,7 @@ export function ReadOnlyNotebook({
       className={className}
       slot="read-only-notebook"
       emptyContent={emptyContent}
+      keyForCell={(cell, index) => `${cell.id}:${index}`}
       renderCellError={(error, cell, index) =>
         renderCellError ? renderCellError(error, cell, index) : defaultCellError(error, index)
       }
