@@ -184,6 +184,19 @@ export function MarkdownOutput({
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={{
+          // Fenced code blocks render their own styled `<pre>` via CodeBlock,
+          // so unwrap react-markdown's default `<pre>` to avoid a redundant
+          // nested box (and invalid `<pre>` nesting). Only unwrap the wrapper
+          // react-markdown generates around a fenced block — a `<pre>` whose
+          // sole child is a `<code>` element — so literal `<pre>` HTML keeps
+          // its block semantics.
+          pre({ node, children }) {
+            const childElements = node?.children.filter((child) => child.type === "element") ?? [];
+            const wrapsCodeBlock =
+              childElements.length === 1 && childElements[0].tagName === "code";
+            return wrapsCodeBlock ? <>{children}</> : <pre>{children}</pre>;
+          },
+
           // Code blocks with syntax highlighting
           code({ className, children, ...props }) {
             const match = /language-(\w+)/.exec(className || "");
