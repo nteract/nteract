@@ -10,7 +10,7 @@ type Intent = "code" | "markdown";
 const concepts = [
   {
     label: "Production row",
-    body: "A compact action palette appears over a continuous neutral spine.",
+    body: "The row wakes in a neutral insertion state; color appears only when code or markdown is targeted.",
     render: <ProductionInsertionPreview />,
   },
   {
@@ -77,9 +77,7 @@ export function CellInsertionAffordancesExample() {
 }
 
 function ProductionInsertionPreview() {
-  return (
-    <CellInsertionRibbon activeType="markdown" forceActionsVisible onInsert={() => undefined} />
-  );
+  return <CellInsertionRibbon forceActionsVisible onInsert={() => undefined} />;
 }
 
 function ThreadedLinePreview() {

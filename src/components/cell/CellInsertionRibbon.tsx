@@ -44,8 +44,8 @@ export function CellInsertionRibbon({
   );
   const [interactionActive, setInteractionActive] = useState(false);
   const resolvedActiveType = activeType === undefined ? uncontrolledActiveType : activeType;
-  const visualActiveType =
-    resolvedActiveType ?? (interactionActive || forceActionsVisible ? "code" : null);
+  const visualActiveType = resolvedActiveType ?? null;
+  const isOpen = interactionActive || forceActionsVisible;
   const ribbonClass = visualActiveType
     ? terminal
       ? terminalInsertionRibbonClasses[visualActiveType]
@@ -72,6 +72,8 @@ export function CellInsertionRibbon({
     <div
       data-slot="cell-adder"
       data-terminal={terminal || undefined}
+      data-active-type={visualActiveType ?? undefined}
+      data-interaction-active={isOpen || undefined}
       className={cn(
         "group/adder flex w-full select-none",
         terminal ? "h-[clamp(3.5rem,9vh,5.5rem)] items-start" : "h-7 items-center",
@@ -103,8 +105,9 @@ export function CellInsertionRibbon({
         <div
           data-slot="cell-adder-ribbon-continuation"
           className={cn(
-            "absolute inset-0 dark:bg-gray-700/55",
+            "absolute inset-0 transition-colors duration-150 dark:bg-gray-700/55",
             terminal ? "bg-gray-200/70" : "bg-gray-200/55",
+            isOpen && !visualActiveType && "bg-gray-300/70 dark:bg-gray-600/60",
           )}
         />
         {ribbonClass ? (
@@ -127,12 +130,24 @@ export function CellInsertionRibbon({
         onFocus={() => setActiveType("code")}
         onClick={() => onInsert("code")}
         className={cn(
-          "h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 rounded-none transition-colors duration-150",
+          "flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
-          visualActiveType === "code" ? "bg-sky-500/5" : "hover:bg-muted/20",
+          visualActiveType === "code"
+            ? "bg-sky-500/6 text-sky-700 dark:text-sky-300"
+            : isOpen
+              ? "bg-muted/20 text-muted-foreground/45 hover:bg-muted/30 hover:text-muted-foreground/70"
+              : "text-muted-foreground/0 hover:bg-muted/20",
           terminal && "h-7",
         )}
       >
+        <Plus
+          data-slot="cell-adder-primary-glyph"
+          className={cn(
+            "size-3 transition-opacity duration-150",
+            isOpen || visualActiveType === "code" ? "opacity-100" : "opacity-0",
+          )}
+          aria-hidden="true"
+        />
         <span className="sr-only">Add code cell</span>
       </button>
       <div
