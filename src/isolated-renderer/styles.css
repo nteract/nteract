@@ -3,10 +3,10 @@
  * Includes Tailwind CSS and theme variables matching the main app.
  */
 
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @import "../styles/ansi.css";
 
-/* Source paths for Tailwind to scan for class names */
+/* Source paths for Tailwind to scan for isolated iframe class names */
 @source "../components/outputs/**/*.{ts,tsx}";
 @source "../components/widgets/**/*.{ts,tsx}";
 @source "../components/ui/**/*.{ts,tsx}";
