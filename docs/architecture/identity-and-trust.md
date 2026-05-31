@@ -185,8 +185,10 @@ interface PresenceActorProjection {
     id: string;
     label?: string;
     imageUrl?: string;
-    provider?: string;
-    namespace?: string;
+    source?: {
+      provider: "local" | "oidc" | "anaconda-api-key" | "jupyterhub" | "anonymous" | "dev";
+      namespace: string;
+    };
   };
   operator: {
     id: string;
