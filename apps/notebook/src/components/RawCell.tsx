@@ -24,7 +24,7 @@ import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 interface RawCellProps {
   cell: RawCellType;
   onFocus: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;

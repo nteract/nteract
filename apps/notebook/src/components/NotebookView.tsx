@@ -807,11 +807,11 @@ function NotebookViewContent({
             onOutputFocusChange={(focused) => handleOutputFocusChange(cell.id, focused)}
             onExecute={() => onExecuteCell(cell.id)}
             onInterrupt={onInterruptKernel}
-            onDelete={() => onDeleteCell(cell.id)}
+            onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
             onNavigateToCell={onNavigateToCell}
-            onInsertCellAfter={() => onAddCell("code", cell.id)}
+            onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
             isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
@@ -820,12 +820,12 @@ function NotebookViewContent({
             canExecute={canExecuteCells}
             outputHostContext={outputHostContext}
             onToggleSourceHidden={
-              onSetCellSourceHidden
+              canMutateCells && onSetCellSourceHidden
                 ? (hidden: boolean) => onSetCellSourceHidden(cell.id, hidden)
                 : undefined
             }
             onToggleOutputsHidden={
-              onSetCellOutputsHidden
+              canMutateCells && onSetCellOutputsHidden
                 ? (hidden: boolean) => onSetCellOutputsHidden(cell.id, hidden)
                 : undefined
             }
@@ -834,6 +834,7 @@ function NotebookViewContent({
             hiddenGroupCellIds={hiddenGroupsRef.current.get(cell.id)?.groupCellIds}
             onExpandHiddenGroup={
               hiddenGroupsRef.current.has(cell.id) &&
+              canMutateCells &&
               onSetCellSourceHidden &&
               onSetCellOutputsHidden
                 ? () => {
@@ -860,10 +861,10 @@ function NotebookViewContent({
               onFocusCell(cell.id);
               presence?.setFocus(cell.id);
             }}
-            onDelete={() => onDeleteCell(cell.id)}
+            onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
-            onInsertCellAfter={() => onAddCell("markdown", cell.id)}
+            onInsertCellAfter={canMutateCells ? () => onAddCell("markdown", cell.id) : undefined}
             isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
@@ -884,10 +885,10 @@ function NotebookViewContent({
             onFocusCell(cell.id);
             presence?.setFocus(cell.id);
           }}
-          onDelete={() => onDeleteCell(cell.id)}
+          onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
-          onInsertCellAfter={() => onAddCell("code", cell.id)}
+          onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
           isLastCell={index === cellIdsRef.current.length - 1}
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
