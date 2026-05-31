@@ -42,6 +42,7 @@ describe("NotebookDocumentShell", () => {
       canRead: true,
       canEditMarkdown: true,
       canEditCells: true,
+      canRequestEdit: true,
       canExecute: false,
       canToggleCode: true,
       canViewPackages: true,

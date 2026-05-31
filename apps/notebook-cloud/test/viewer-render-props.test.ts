@@ -62,6 +62,19 @@ test("cloud viewer exposes the shared theme toggle and shared theme hook", () =>
   assert.match(sourceText, /className="cloud-theme-toggle"/);
 });
 
+test("cloud viewer routes notebook header controls through the shared shell header", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NotebookDocumentHeader,/);
+  assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
+  assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
+  assert.match(sourceText, /codeControls=\{[\s\S]*className="cloud-code-toggle"/);
+  assert.doesNotMatch(sourceText, /shellCapabilities\.canManageSharing \? \(/);
+  assert.doesNotMatch(sourceText, /shellCapabilities\.canToggleCode \? \(/);
+});
+
 test("cloud viewer defers supplemental CSS loading until the notebook surface mounts", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

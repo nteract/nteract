@@ -242,14 +242,6 @@ body {
   line-height: 1;
 }
 
-.cloud-toolbar-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  pointer-events: auto;
-}
-
 .cloud-theme-toggle {
   height: 2rem;
   border-color: color-mix(in srgb, var(--foreground) 16%, transparent);
