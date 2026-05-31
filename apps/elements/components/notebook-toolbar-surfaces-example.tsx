@@ -112,7 +112,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
       title: "Environment preparation",
       source: "apps/notebook/src/components/NotebookToolbar.tsx",
       scenario: cloudEditor,
-      role: `${cloudEditor.title} can edit cells, but this fixture keeps execution detached while conda solve/install progress renders.`,
+      role: `${cloudEditor.title} can edit markdown, but this fixture keeps execution detached while conda solve/install progress renders.`,
       props: toolbarProps(cloudEditor, {
         kernelStatus: KERNEL_STATUS.STARTING,
         statusKey: RUNTIME_STATUS.PREPARING_ENV,
