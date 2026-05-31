@@ -125,6 +125,10 @@ Elements and production host adapters should cover these states first:
 2. Raw actor-label parsing is transitional compatibility input for current
    adapters only. The target projection carries the verified principal,
    accepted operator, and display metadata as structured host-owned facts.
+   `NotebookShellCapabilities.access.actor` and
+   `NotebookShellCapabilities.runtime.actor` carry this projection today;
+   fallback helpers may parse durable labels while hosts grow richer profile
+   data.
 3. The actor projection must let UI derive human, local, public, agent,
    runtime, system, and unknown actor presentations from principal source plus
    operator kind.

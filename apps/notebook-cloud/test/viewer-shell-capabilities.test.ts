@@ -35,6 +35,9 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.access.level, "viewer");
   assert.equal(capabilities.access.source, "cloud");
   assert.equal(capabilities.access.isPublic, true);
+  assert.equal(capabilities.access.actor?.principal.label, "Public viewer");
+  assert.equal(capabilities.access.actor?.principal.source?.provider, "anonymous");
+  assert.equal(capabilities.access.actor?.operator.kind, "browser");
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
@@ -54,6 +57,9 @@ test("cloud shell capabilities grant editor markdown writes without code, struct
   assert.equal(capabilities.canManagePackages, false);
   assert.equal(capabilities.access.level, "editor");
   assert.equal(capabilities.access.identityLabel, "user@example.test");
+  assert.equal(capabilities.access.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.access.actor?.principal.source?.provider, "oidc");
+  assert.equal(capabilities.access.actor?.operator.kind, "browser");
   assert.equal(capabilities.auth.canUseAuthenticatedIdentity, true);
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
@@ -134,6 +140,8 @@ test("cloud shell capabilities preserve room actor labels for shared access UI",
   assert.equal(capabilities.access.level, "owner");
   assert.equal(capabilities.access.actorLabel, "user:anaconda:alice/browser:tab");
   assert.equal(capabilities.access.identityLabel, "user@example.test");
+  assert.equal(capabilities.access.actor?.actorLabel, "user:anaconda:alice/browser:tab");
+  assert.equal(capabilities.access.actor?.principal.label, "user@example.test");
 });
 
 test("cloud shell capabilities keep runtime peer authority separate from document access", () => {
@@ -154,4 +162,8 @@ test("cloud shell capabilities keep runtime peer authority separate from documen
   assert.equal(capabilities.runtime.source, "cloud");
   assert.equal(capabilities.runtime.actorLabel, "user:anaconda:alice/runtime:jupyterhub");
   assert.equal(capabilities.runtime.identityLabel, "user@example.test");
+  assert.equal(capabilities.runtime.actor?.scope, "runtime_peer");
+  assert.equal(capabilities.runtime.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.runtime.actor?.operator.kind, "runtime");
+  assert.equal(capabilities.runtime.actor?.operator.label, "JupyterHub");
 });

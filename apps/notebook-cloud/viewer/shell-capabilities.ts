@@ -1,4 +1,8 @@
-import type { NotebookShellCapabilities } from "@/components/notebook-shell";
+import {
+  notebookActorProjectionFromAccess,
+  notebookActorProjectionFromRuntime,
+} from "@/components/notebook-shell/actor-projection";
+import type { NotebookShellCapabilities } from "@/components/notebook-shell/capabilities";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 
 export interface CloudNotebookShellCapabilityInput {
@@ -22,6 +26,25 @@ export function cloudNotebookShellCapabilities({
   const canEditCells = activeEditLevel === "owner";
   const authenticated = authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
+  const auth = {
+    canSignIn: authState.mode !== "oidc",
+    canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
+    needsAttention: authNeedsAttention,
+  };
+  const access = {
+    level: accessLevel,
+    source: "cloud" as const,
+    isPublic: !authenticated && accessLevel === "viewer",
+    actorLabel: connectionActorLabel,
+    identityLabel: authState.user,
+  };
+  const runtime = {
+    canWriteRuntimeState: isRuntimePeer,
+    connected: isRuntimePeer,
+    source: "cloud" as const,
+    actorLabel: isRuntimePeer ? connectionActorLabel : null,
+    identityLabel: isRuntimePeer ? authState.user : null,
+  };
 
   return {
     canRead: true,
@@ -35,23 +58,13 @@ export function cloudNotebookShellCapabilities({
     canManagePackages: false,
     canManageSharing: connectionScope === "owner",
     access: {
-      level: accessLevel,
-      source: "cloud",
-      isPublic: !authenticated && accessLevel === "viewer",
-      actorLabel: connectionActorLabel,
-      identityLabel: authState.user,
+      ...access,
+      actor: notebookActorProjectionFromAccess(access, auth),
     },
-    auth: {
-      canSignIn: authState.mode !== "oidc",
-      canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
-      needsAttention: authNeedsAttention,
-    },
+    auth,
     runtime: {
-      canWriteRuntimeState: isRuntimePeer,
-      connected: isRuntimePeer,
-      source: "cloud",
-      actorLabel: isRuntimePeer ? connectionActorLabel : null,
-      identityLabel: isRuntimePeer ? authState.user : null,
+      ...runtime,
+      actor: notebookActorProjectionFromRuntime(runtime, auth),
     },
   };
 }

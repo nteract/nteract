@@ -2,6 +2,8 @@ import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import {
   createNotebookViewModel,
+  notebookActorProjectionFromAccess,
+  notebookActorProjectionFromRuntime,
   type NotebookShellCapabilities,
   type NotebookViewCell,
   type NotebookViewModel,
@@ -919,12 +921,28 @@ function createScenario({
   packageSummary: string;
   capabilities: NotebookShellCapabilities;
 }): ElementsNotebookScenario {
+  const projectedCapabilities: NotebookShellCapabilities = {
+    ...capabilities,
+    access: {
+      ...capabilities.access,
+      actor:
+        capabilities.access.actor ??
+        notebookActorProjectionFromAccess(capabilities.access, capabilities.auth),
+    },
+    runtime: {
+      ...capabilities.runtime,
+      actor:
+        capabilities.runtime.actor ??
+        notebookActorProjectionFromRuntime(capabilities.runtime, capabilities.auth),
+    },
+  };
+
   return {
     id,
     title,
     eyebrow,
     summary,
-    capabilities,
+    capabilities: projectedCapabilities,
     cells: notebookCells,
     viewModel,
     runtimeLabel,
