@@ -31,6 +31,7 @@ describe("NotebookDocumentRail", () => {
         viewModel={viewModel}
         activePanelId="packages"
         collapsed={false}
+        packagesSummary="Runtime packages"
         packagesPanel={<p>Package details</p>}
         onActivePanelChange={() => {}}
         onCollapsedChange={() => {}}
@@ -38,7 +39,45 @@ describe("NotebookDocumentRail", () => {
     );
 
     expect(screen.getByTestId("notebook-rail")).toHaveAttribute("data-collapsed", "false");
-    expect(screen.getByText("uv · 2 packages")).toBeVisible();
+    expect(screen.getByText("Runtime packages")).toBeVisible();
     expect(screen.getByText("Package details")).toBeVisible();
+  });
+
+  it("forwards host outline selection state", () => {
+    const viewModel: Pick<NotebookViewModel, "outlineItems" | "packages"> = {
+      outlineItems: [
+        {
+          id: "intro:heading:0",
+          kind: "heading",
+          cellId: "intro",
+          title: "Intro",
+          level: 1,
+          order: 0,
+          statusLabel: null,
+          href: "#intro",
+          anchor: "intro",
+          headingAnchorId: "notebook-cell-intro-heading-intro",
+        },
+      ],
+      packages: {
+        summary: "uv · 2 packages",
+        sections: [],
+      },
+    };
+
+    render(
+      <NotebookDocumentRail
+        viewModel={viewModel}
+        activePanelId="outline"
+        collapsed={false}
+        outlineCellIds={["intro"]}
+        activeOutlineItemId="intro:heading:0"
+        packagesPanel={<p>Package details</p>}
+        onActivePanelChange={() => {}}
+        onCollapsedChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Intro" })).toHaveAttribute("aria-current", "location");
   });
 });
