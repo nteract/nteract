@@ -103,6 +103,7 @@ describe("CodeCellCurrentLine", () => {
         languageLabel="Python"
         count={12}
         elapsedMs={1476}
+        isFocused
         onExecute={() => undefined}
         onInterrupt={() => undefined}
       />,
@@ -111,8 +112,30 @@ describe("CodeCellCurrentLine", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     expect(footer).toHaveAttribute("data-execution-label", "Execution 12");
-    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12·completedin1.5s");
+    expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python·Run12·1.5s");
     expect(footer).not.toHaveTextContent("In [12]");
+  });
+
+  it("keeps completed metadata quiet until the cell is engaged", () => {
+    const { container } = render(
+      <CodeCellCurrentLine
+        languageLabel="Python"
+        count={12}
+        onExecute={() => undefined}
+        onInterrupt={() => undefined}
+      />,
+    );
+
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const button = screen.getByRole("button", {
+      name: "Run cell again; last execution 12",
+    });
+
+    expect(status).toHaveTextContent("Python·Run 12");
+    expect(status).toHaveClass("max-w-0");
+    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
+    expect(button).toHaveClass("opacity-45");
   });
 
   it("can carry activity context after the run state", () => {
@@ -128,7 +151,10 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
+    const activity = container.querySelector('[data-slot="code-cell-current-line-activity"]');
+
     expect(footer).toHaveTextContent("Kyle");
+    expect(activity).toHaveClass("max-w-0");
     expect(screen.getByTestId("peer-activity")).toBeInTheDocument();
   });
 });

@@ -164,7 +164,7 @@ const currentLineStateFixtures = [
   },
   {
     label: "Completed",
-    detail: "The finished state leads with language, then compact run metadata.",
+    detail: "Finished cells keep run metadata collapsed until hover or focus.",
     line: (
       <CodeCellCurrentLine
         languageLabel="Python"
@@ -181,13 +181,12 @@ const currentLineStateFixtures = [
 const currentLineConceptFixtures = [
   {
     label: "Production",
-    detail: "Control, language, run state, activity, and rule in one boundary line.",
+    detail: "Default reading mode keeps completed metadata collapsed into the boundary line.",
     line: (
       <CodeCellCurrentLine
         languageLabel="Python"
         count={26}
         elapsedMs={1476}
-        isFocused
         activityContent={<StaticPresenceActivity />}
         onExecute={() => {}}
         onInterrupt={() => {}}
@@ -205,7 +204,7 @@ const currentLineConceptFixtures = [
         <span className="rounded-full border border-border bg-background px-2 py-0.5 font-medium tabular-nums text-foreground/65">
           Run 26
         </span>
-        <span className="text-muted-foreground/55">completed in 1.5s</span>
+        <span className="text-muted-foreground/55">1.5s</span>
         <StaticPresenceDots />
       </CurrentLineConcept>
     ),
@@ -219,7 +218,7 @@ const currentLineConceptFixtures = [
           Python
         </span>
         <span className="font-medium tabular-nums text-foreground/65">Run 26</span>
-        <span className="text-muted-foreground/45">completed</span>
+        <span className="text-muted-foreground/45">1.5s</span>
         <div className="h-px min-w-8 flex-1 rounded-full bg-border/45" />
         <StaticPresenceDots />
       </CurrentLineConcept>
