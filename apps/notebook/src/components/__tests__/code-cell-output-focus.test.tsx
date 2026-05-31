@@ -307,6 +307,29 @@ describe("CodeCell output focus", () => {
     expect(runButton).toHaveAttribute("aria-label", "Run cell again; last execution 14 failed");
   });
 
+  it("keeps the error boundary visible without an execution count", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: null, submitted_by_actor_label: null, success: false };
+
+    const { container } = render(
+      <CodeCell
+        cell={makeCell({ source: "" })}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(footer?.getAttribute("data-execution-state")).toBe("error");
+    expect(status?.textContent).toBe("Python·Error");
+    expect(rule).toHaveClass("text-destructive/60");
+  });
+
   it("keeps idle footer language quiet until the cell is engaged", () => {
     mockOutputs = [];
     mockExecution = null;

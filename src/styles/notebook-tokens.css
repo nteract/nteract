@@ -163,6 +163,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .animate-queue-breathe,
+  .animate-exec-squish,
   .animate-exec-signal-wave,
   .animate-exec-signal-tail {
     animation: none;

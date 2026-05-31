@@ -402,6 +402,7 @@ export const CodeCell = memo(function CodeCell({
     executionCount !== null ||
     isExecuting ||
     isQueued ||
+    isExecutionErrored ||
     isSourceHidden;
   const currentLine = hasCurrentLine ? (
     <CodeCellCurrentLine
