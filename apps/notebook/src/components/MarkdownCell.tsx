@@ -402,9 +402,6 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Handle keyboard navigation in view mode (when not editing)
   const handleViewKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (readOnly) {
-        return;
-      }
       if (e.key === "ArrowDown") {
         onFocusNext?.("start");
         e.preventDefault();
@@ -419,6 +416,9 @@ export const MarkdownCell = memo(function MarkdownCell({
         onFocusNext?.("start");
         e.preventDefault();
       } else if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (readOnly) {
+          return;
+        }
         // Enter: enter edit mode
         setEditing(true);
         e.preventDefault();
