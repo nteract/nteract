@@ -1,7 +1,7 @@
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
-import { NotebookCellList, type NotebookViewModel } from "@/components/notebook-shell";
+import { NotebookEditableView, type NotebookViewModel } from "@/components/notebook-shell";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import type { CloudTextAttributionQueue } from "./cloud-cell-editing";
 import { EditableCodeCell } from "./editable-code-cell";
@@ -50,11 +50,9 @@ export function CloudLiveNotebook({
   resolveTracebackExecutionTarget,
   onNavigateToTracebackCell,
 }: CloudLiveNotebookProps) {
-  const cells = viewModel.cells;
-
   return (
-    <NotebookCellList
-      cells={cells}
+    <NotebookEditableView
+      viewModel={viewModel}
       className="cloud-report-notebook"
       slot="cloud-live-notebook"
       renderCellError={(error, _cell, index) => (
@@ -62,64 +60,64 @@ export function CloudLiveNotebook({
           Unable to render cell {index + 1}: {error.message}
         </div>
       )}
-      renderCell={(cell) =>
-        cell.cellType === "markdown" ? (
-          <EditableMarkdownCell
-            cell={cell}
-            className="cloud-cell cloud-editable-markdown-cell"
-            sourceClassName="cloud-source-block"
-            priority={priority}
-            hostContext={hostContext}
-            onSourceChange={onCellSourceChange}
-            onSyncNeeded={onCellSyncNeeded}
-            getHandle={getHandle}
-            localActorLabel={localActorLabel}
-            textAttributionQueue={textAttributionQueue}
-            remotePresence={presenceForCell(livePresence, cell.id)}
-            onPresenceCursor={onPresenceCursor}
-            onPresenceSelection={onPresenceSelection}
-          />
-        ) : cell.cellType === "code" ? (
-          <EditableCodeCell
-            cell={cell}
-            className="cloud-cell cloud-editable-code-cell"
-            sourceClassName="cloud-source-block"
-            outputClassName="cloud-output-block"
-            priority={priority}
-            hostContext={hostContext}
-            showSource={showCode}
-            onSourceChange={onCellSourceChange}
-            onSyncNeeded={onCellSyncNeeded}
-            getHandle={getHandle}
-            localActorLabel={localActorLabel}
-            textAttributionQueue={textAttributionQueue}
-            remotePresence={presenceForCell(livePresence, cell.id)}
-            onPresenceCursor={onPresenceCursor}
-            onPresenceSelection={onPresenceSelection}
-            resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-            onNavigateToTracebackCell={onNavigateToTracebackCell}
-          />
-        ) : (
-          <ReadOnlyNotebookCell
-            id={cell.id}
-            cellType={cell.cellType}
-            source={cell.source}
-            language={cloudSourceLanguage(cell.language)}
-            outputs={cell.outputs}
-            executionCount={cell.executionCount}
-            priority={priority}
-            hostContext={hostContext}
-            showSource
-            className="cloud-cell"
-            sourceClassName="cloud-source-block"
-            outputClassName="cloud-output-block"
-            deferIsolatedFrameUntilVisible
-            deferredIsolatedFrameRootMargin="600px 0px"
-            resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-            onNavigateToTracebackCell={onNavigateToTracebackCell}
-          />
-        )
-      }
+      renderMarkdownCell={(cell) => (
+        <EditableMarkdownCell
+          cell={cell}
+          className="cloud-cell cloud-editable-markdown-cell"
+          sourceClassName="cloud-source-block"
+          priority={priority}
+          hostContext={hostContext}
+          onSourceChange={onCellSourceChange}
+          onSyncNeeded={onCellSyncNeeded}
+          getHandle={getHandle}
+          localActorLabel={localActorLabel}
+          textAttributionQueue={textAttributionQueue}
+          remotePresence={presenceForCell(livePresence, cell.id)}
+          onPresenceCursor={onPresenceCursor}
+          onPresenceSelection={onPresenceSelection}
+        />
+      )}
+      renderCodeCell={(cell) => (
+        <EditableCodeCell
+          cell={cell}
+          className="cloud-cell cloud-editable-code-cell"
+          sourceClassName="cloud-source-block"
+          outputClassName="cloud-output-block"
+          priority={priority}
+          hostContext={hostContext}
+          showSource={showCode}
+          onSourceChange={onCellSourceChange}
+          onSyncNeeded={onCellSyncNeeded}
+          getHandle={getHandle}
+          localActorLabel={localActorLabel}
+          textAttributionQueue={textAttributionQueue}
+          remotePresence={presenceForCell(livePresence, cell.id)}
+          onPresenceCursor={onPresenceCursor}
+          onPresenceSelection={onPresenceSelection}
+          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+          onNavigateToTracebackCell={onNavigateToTracebackCell}
+        />
+      )}
+      renderFallbackCell={(cell) => (
+        <ReadOnlyNotebookCell
+          id={cell.id}
+          cellType={cell.cellType}
+          source={cell.source}
+          language={cloudSourceLanguage(cell.language)}
+          outputs={cell.outputs}
+          executionCount={cell.executionCount}
+          priority={priority}
+          hostContext={hostContext}
+          showSource
+          className="cloud-cell"
+          sourceClassName="cloud-source-block"
+          outputClassName="cloud-output-block"
+          deferIsolatedFrameUntilVisible
+          deferredIsolatedFrameRootMargin="600px 0px"
+          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+          onNavigateToTracebackCell={onNavigateToTracebackCell}
+        />
+      )}
     />
   );
 }

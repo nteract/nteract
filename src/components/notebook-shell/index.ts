@@ -10,6 +10,7 @@ export type { NotebookCellListItem, ReadOnlyNotebookCellData } from "./cell-data
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
+export { NotebookEditableView, type NotebookEditableViewProps } from "./NotebookEditableView";
 export {
   NotebookPackageSummaryPanel,
   type NotebookPackageSummaryPanelProps,

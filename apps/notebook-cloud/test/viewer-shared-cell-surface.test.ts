@@ -95,10 +95,10 @@ test("cloud live notebook passes renderer policy into editable markdown cells", 
   const sourcePath = new URL("../viewer/cloud-live-notebook.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /NotebookCellList/);
+  assert.match(sourceText, /NotebookEditableView/);
   assert.match(sourceText, /slot="cloud-live-notebook"/);
   assert.match(sourceText, /viewModel: NotebookViewModel<ResolvedCell>/);
-  assert.match(sourceText, /const cells = viewModel\.cells;/);
+  assert.match(sourceText, /<NotebookEditableView[\s\S]*viewModel=\{viewModel\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*priority=\{priority\}/);
   assert.match(sourceText, /<EditableMarkdownCell[\s\S]*hostContext=\{hostContext\}/);
 });
@@ -108,7 +108,7 @@ test("cloud live notebook routes editor code cells through the shared editable c
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /import \{ EditableCodeCell \} from "\.\/editable-code-cell";/);
-  assert.match(sourceText, /cell\.cellType === "code" \? \(/);
+  assert.match(sourceText, /renderCodeCell=\{\(cell\) => \(/);
   assert.match(sourceText, /<EditableCodeCell[\s\S]*showSource=\{showCode\}/);
   assert.match(sourceText, /<EditableCodeCell[\s\S]*onSourceChange=\{onCellSourceChange\}/);
   assert.match(sourceText, /<EditableCodeCell[\s\S]*onSyncNeeded=\{onCellSyncNeeded\}/);
