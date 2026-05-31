@@ -17,7 +17,7 @@ The identity design is highly guided by these projects:
 - **[`runtimed/anaconda`](https://github.com/runtimed/anaconda)** validates bearer tokens against Anaconda's userinfo endpoint and maps Anaconda scopes to runtimed scopes.
 - **JupyterHub** stamps spawned single-user servers via environment variables at launch, and the spawned server validates user identity by calling back to `/hub/api/user`. No `X-Forwarded-User` header is trusted.
 
-As a result, our rule is to never trust a locally-stamped identity claim. We validate against the upstream authority that issued the credential. The other modern concern is that nteract is very agent centric. A human user has many operators acting on their behalf: the desktop app, a TUI, Agents enabled via MCP, the runtimed bindings for bespoke agent usage, and scheduled notebook jobs. All of those actors are legitimately authoring edits "on behalf of" the user. Since, token wise, they operate "as" the user, attribution must distinguish operators while the trust gate enforces the user.
+As a result, our rule is to never trust a locally-stamped identity claim. We validate against the upstream authority that issued the credential. The other modern concern is that nteract is very agent centric. A human user has many operators acting under their principal: the desktop app, a TUI, Agents enabled via MCP, the runtimed bindings for bespoke agent usage, and scheduled notebook jobs. All of those actors are legitimately authoring edits as that principal. Since, token wise, they operate as the user, attribution must distinguish operators while the trust gate enforces the user.
 
 ## Decision 1: Two-layer actor labels
 
@@ -28,11 +28,19 @@ Every Automerge actor label is a string of the form:
 ```
 
 - **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org:rgbkrk-notebooks-i28hqg97`, `system`.
-- **Operator**: the actor doing the work right now, on behalf of the principal. Self-declared by the connecting client. Convention: `<kind>:<vendor?>:<session-uuid>`. Examples: `desktop:7f3a`, `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`, `runtime:py-3.12-s4`.
+- **Operator**: the actor doing the work right now, under the principal. Self-declared by the connecting client. Convention: `<kind>:<vendor?>:<session-uuid>`. Examples: `desktop:7f3a`, `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`, `runtime:py-3.12-s4`.
 
 Slash is the delimiter, taken on the first occurrence. If a principal ever contains a literal `/` it is percent-encoded; in practice this does not arise (UUIDs, hostnames, and usernames don't contain slashes).
 
 An `ActorLabel` newtype with `principal()` and `operator()` accessors shall live in the new `nteract-identity` crate. Existing code that treats the label as an opaque string keeps working; code that wants the breakdown adopts the newtype.
+
+The principal is the security boundary. It is verified by the room host's
+configured identity provider, namespace-qualified by that provider, and matched
+against the room ACL. The operator is connection-scoped attribution. The host
+may syntax-check it and may constrain accepted operator kinds for a credential
+class, but an operator string is not proof that the process is really Desktop,
+Codex, Claude, Python, or any other runtime. UI can display operator kind as an
+attribution hint; authorization must use the authenticated principal and scope.
 
 Worked examples are at the end of this document.
 
@@ -68,7 +76,7 @@ acl:
   - principal: hub:hub.2i2c.org:rgbkrk         scope: viewer
 ```
 
-The ACL can reference principals from any identity provider the host is configured to validate against. v1 deployments will typically use a single IdP per host (Anaconda hosted only validates Anaconda credentials, etc.), but that is convention, not a protocol constraint. Federation (host A trusting host B's identity claims) is a separate open follow-up.
+The ACL can reference principals from any identity provider the host is configured to validate against. v1 deployments will typically use a single IdP per host (Anaconda hosted only validates Anaconda credentials, etc.), but that is convention, not a protocol constraint. Cross-provider federation means the room host validates each credential with its configured upstream provider and produces a namespace-qualified principal in the same ACL space. It does not mean Desktop or a browser translates local display identity into a remote principal on its own.
 
 Three properties fall out:
 
@@ -85,6 +93,23 @@ Three properties fall out:
 4. The connection's `AuthenticatedConnection` carries that principal and scope for the life of the socket.
 
 What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. v1 enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc` and `RuntimeStateDoc` sync frames. The Automerge fork patch tracked in `docs/architecture/automerge-fork-patches.md` remains the intended lower-cost replacement for that validator.
+
+### Federated principal display
+
+The principal identifier is stable, namespace-qualified, and verified. Display
+metadata is separate and advisory. A local Desktop room might project
+`local:kylekelley` with display label `Kyle Kelley`; an Anaconda-hosted room
+might project `user:anaconda:550e...` with the same display label. Those are
+different principals unless a future account-linking layer explicitly relates
+them.
+
+Desktop remote rooms consume the remote room host's stamped identity projection.
+The local daemon/socket identity proves that the Desktop process can talk to the
+local runtime, but the remote room principal comes from the remote service
+credential, such as an API key, OIDC token, or hosted service session. Shared UI
+must therefore render the host-projected principal, provider namespace, and
+display label without assuming cloud browser auth is the only remote identity
+model.
 
 ### ACL mechanics
 
@@ -133,17 +158,58 @@ The frozen genesis actors today are not principal-prefixed:
 
 As part of this work the schema bumps (notebook v5, runtime-state v3) and the new seed actors adopt the `system/schema:notebook:v5` and `system/schema:runtime-state:v3` form so they are first-class within the principal model. Existing notebooks keep the legacy labels in historical changes (immutable in the DAG); new rooms ship with the new genesis bytes from day one.
 
-### Presence rewrite
+### Presence rewrite and actor projection
 
-Presence frames carry `peer_id`, `peer_label`, and `actor_label` (the last two optional, per `crates/notebook-doc/src/presence.rs:161, 200`). All three are self-declared today. On ingress:
+Presence frames carry `peer_id`, `peer_label`, and `actor_label` (the last two optional, per `crates/notebook-doc/src/presence.rs:161, 200`). Legacy clients may present all three, but the room host is the authority on the peer ID and principal projection. On ingress:
 
 - **`actor_label` present**: overwrite the principal prefix with the connection's authenticated principal. The operator suffix passes through unchanged.
 - **`actor_label` missing**: synthesize one from the connection's authenticated principal plus the connection-level operator declared at handshake (or, if the client never declared one, a synthetic operator built from the listener's connection id, e.g., `unknown:<connection-uuid>`). The synthesized label always has the correct principal.
 - **`actor_label` malformed** (no `/`, principal-only, or unrecognized shape): treat as missing. Synthesize as above.
-- **`peer_label` (display name)**: passes through unchanged. It's UI text.
-- **`peer_id`**: passes through unchanged. It's a transport-layer connection scope.
+- **`peer_label` (display name)**: may be passed through, sanitized, or replaced
+  by the host with a display label derived from authenticated profile metadata.
+  It is UI text, not authority.
+- **`peer_id`**: replaced or confirmed by the room host's transport-scoped peer
+  ID before broadcast. It is connection identity, not a user identity.
 
-The principal prefix is always server-controlled; no presence ingress path lets a client choose what principal it appears as. Operator and display name are client-declared.
+The principal prefix is always server-controlled; no presence ingress path lets a client choose what principal it appears as. Operator and display name are client-declared unless the host replaces them with connection-derived defaults.
+
+The target presence protocol keeps `actor_label` as the stable attribution key
+and adds a compact, host-stamped actor projection to presence `Update` and
+`Snapshot` messages so shared UI does not parse raw labels as its primary
+identity source:
+
+```ts
+interface PresenceActorProjection {
+  actorLabel: string;
+  principal: {
+    id: string;
+    label?: string;
+    imageUrl?: string;
+    source?: {
+      provider: "local" | "anaconda" | "oidc" | "jupyterhub" | "anonymous" | "dev";
+      namespace: string;
+    };
+  };
+  operator: {
+    id: string;
+    kind: string;
+    label?: string;
+  };
+  scope?: "viewer" | "editor" | "runtime_peer" | "owner";
+}
+```
+
+`actorLabel` remains the exact `<principal>/<operator>` label used for CRDT
+attribution and color matching. The nested `principal` is verified host state.
+The nested `operator` is accepted attribution for this connection. Display text
+such as "Codex for Kyle Kelley" is derived from `operator` plus `principal`; it
+does not require a separate `on_behalf_of` field unless a future feature models
+delegation chains between multiple principals.
+
+`principal.source.provider` names the principal authority used for federation
+and display. It is not the credential transport. For example, an API key that
+authenticates an Anaconda user still projects as provider `anaconda`; the API
+key detail belongs to the credential layer described below.
 
 ## Decision 4: Credentials and identity providers are separate concerns
 

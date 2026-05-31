@@ -77,15 +77,18 @@ Use these terms consistently in UI copy, component names, and docs.
 | Principal | Authenticated entity the trust gate enforces, such as a local user, Anaconda user, JupyterHub user, or system principal. |
 | Operator | Client or process currently acting for the principal, such as desktop, browser, runtime, Codex, or a scheduled job. |
 | Actor | UI projection of principal plus operator for attribution and presence. A human, agent, runtime, system process, or public viewer can all appear as actors. |
-| Delegated agent | Agent operator acting on behalf of a human principal. The UI should show both the agent and the human subject. |
+| Delegated agent | Agent operator acting under a human principal. The UI should show both the agent operator and the verified principal. |
 | Access scope | Host-derived authorization facts projected for UI rendering. `viewer`, `editor`, `owner`, and `runtime_peer` are room/ACL scopes; `none` is a UI-only display state for missing or rejected access. |
 | Environment | Notebook execution context: runtime availability, package declarations, dependency trust, package sync, and captured environment state. |
 | Public viewer | Authorized anonymous read access through an explicit public ACL row, not a fallback guest identity. |
 
-The display string is never the authority. Display names, emails, avatars, and
-labels are projections from authenticated/host-owned facts. Access scope and
-capability projections are also advisory for rendering only; enforcement stays
-in the host, room, or daemon authority.
+The principal identifier is the authority. Display names, emails, avatars, and
+labels are projections from authenticated/host-owned facts. Operators are
+accepted attribution supplied by a client or runtime connection; their kind is
+useful UI information, but it is not proof that the process really is Desktop,
+Codex, Python, or any other claimed operator. Access scope and capability
+projections are also advisory for rendering only; enforcement stays in the host,
+room, or daemon authority.
 
 A runtime operator projects to a runtime-kind actor when it is visible in the
 UI. `runtime_peer` should not become a value in `NotebookShellAccessLevel`;
@@ -120,14 +123,14 @@ Elements and production host adapters should cover these states first:
 1. Shared UI consumes a structured actor projection. It must not parse raw
    Automerge actor labels as its only source of truth.
 2. Raw actor-label parsing is transitional compatibility input for current
-   adapters only. The target projection carries principal, operator,
-   on-behalf-of, and display metadata as structured host-owned facts.
-3. The actor projection must distinguish human, local, public, agent, runtime,
-   system, and unknown actors.
+   adapters only. The target projection carries the verified principal,
+   accepted operator, and display metadata as structured host-owned facts.
+3. The actor projection must let UI derive human, local, public, agent,
+   runtime, system, and unknown actor presentations from principal source plus
+   operator kind.
 4. Delegated agent UI must show both sides of the relationship, for example
-   "Codex on behalf of Kyle". An agent avatar or icon can follow the visual
-   pattern of model-selector components, but the semantic source is notebook
-   actor state.
+   "Codex for Kyle". An agent avatar or icon can follow the visual pattern of
+   model-selector components, but the semantic source is notebook actor state.
 5. Public viewers render as public viewer state, not as collaborators. Anonymous
    public sessions should not expose per-user identity unless product later
    defines a separate public-presence policy.
@@ -196,28 +199,28 @@ This is a product contract, not a final TypeScript API. Implementation can land
 incrementally, but adapter props should move toward these shapes.
 
 ```ts
-type NotebookActorKind =
-  | "human"
-  | "local"
-  | "public"
-  | "agent"
-  | "runtime"
-  | "system"
-  | "unknown";
+interface NotebookPrincipalSurface {
+  id: string;
+  label: string;
+  imageUrl?: string | null;
+  source?: {
+    provider: "local" | "anaconda" | "oidc" | "jupyterhub" | "anonymous" | "dev";
+    namespace: string;
+  };
+}
+
+interface NotebookOperatorSurface {
+  id: string;
+  kind: string;
+  label: string;
+}
 
 interface NotebookActorSurface {
-  id: string;
-  kind: NotebookActorKind;
-  label: string;
-  detail: string | null;
-  imageUrl?: string | null;
+  actorLabel: string;
+  principal: NotebookPrincipalSurface;
+  operator: NotebookOperatorSurface;
+  scope?: "viewer" | "editor" | "runtime_peer" | "owner";
   status?: "active" | "attention" | "idle" | "offline";
-  principalLabel?: string | null;
-  operatorLabel?: string | null;
-  onBehalfOf?: {
-    label: string;
-    imageUrl?: string | null;
-  } | null;
 }
 
 interface NotebookEnvironmentSurface {
@@ -237,8 +240,15 @@ interface NotebookEnvironmentSurface {
 Short-term code can keep the smaller existing `NotebookActorIdentity` and
 `NotebookEnvironmentSummary` props, but new host adapter work should avoid
 adding more page-local strings that cannot map into the structured projection.
-The projection uses `imageUrl` to stay aligned with the existing
-`NotebookActorIdentity` field name.
+Presentation helpers can derive actor categories such as agent, runtime, system,
+public, or human from the principal source and operator kind instead of storing a
+second enum that can drift. Display labels like "Codex for Kyle" are also
+derived from `operator` plus `principal`; they do not need a separate
+`onBehalfOf` field unless the product later models delegation chains between
+multiple principals.
+`source.provider` names the principal authority, not the credential transport:
+an Anaconda API key still projects an Anaconda principal, while the API key
+itself remains credential-layer metadata.
 
 ## Placement
 
