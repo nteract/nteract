@@ -4,7 +4,7 @@ export type NotebookShellAccessSource = "cloud" | "local" | "fixture" | "unknown
 
 export type NotebookActorSourceProvider =
   | "anonymous"
-  | "anaconda-api-key"
+  | "anaconda"
   | "dev"
   | "jupyterhub"
   | "local"

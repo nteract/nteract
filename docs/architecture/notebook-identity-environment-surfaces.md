@@ -251,8 +251,9 @@ derived from `operator` plus `principal`; they do not need a separate
 `onBehalfOf` field unless the product later models delegation chains between
 multiple principals.
 `source.provider` names the principal authority, not the credential transport:
-an Anaconda API key still projects an Anaconda principal, while the API key
-itself remains credential-layer metadata.
+browser OAuth, an OIDC bearer token, and an Anaconda API key can all project the
+same Anaconda principal. The credential path stays in host/auth metadata; shared
+notebook UI sees provider `anaconda`.
 
 ## Placement
 

@@ -69,7 +69,7 @@ describe("NotebookIdentity", () => {
         principal: {
           id: "user:anaconda:opaque",
           label: "Alice Appleseed",
-          source: { provider: "oidc", namespace: "anaconda" },
+          source: { provider: "anaconda", namespace: "anaconda" },
         },
         operator: {
           id: "browser:tab",
@@ -87,6 +87,37 @@ describe("NotebookIdentity", () => {
 
     expect(screen.getByText("Alice Appleseed")).toBeVisible();
     expect(screen.queryByText("Anaconda user")).toBeNull();
+  });
+
+  it("does not reparse raw labels over structured agent projections", () => {
+    const actor = notebookActorIdentityFromAccess({
+      level: "editor",
+      source: "cloud",
+      isPublic: false,
+      actorLabel: "agent:legacy/on-behalf-of:someone-else",
+      identityLabel: null,
+      actor: {
+        actorLabel: "agent:legacy/on-behalf-of:someone-else",
+        principal: {
+          id: "user:anaconda:opaque",
+          label: "Alice Appleseed",
+          source: { provider: "anaconda", namespace: "anaconda" },
+        },
+        operator: {
+          id: "agent:codex:s1",
+          kind: "agent",
+          label: "Codex",
+        },
+        scope: "editor",
+      },
+    });
+
+    render(<NotebookIdentityBadge actor={actor} />);
+
+    expect(screen.getByText("Codex")).toBeVisible();
+    expect(screen.getByText("for Alice Appleseed")).toBeVisible();
+    expect(screen.queryByText("Legacy")).toBeNull();
+    expect(screen.queryByText("for Someone Else")).toBeNull();
   });
 
   it("projects durable runtime operators separately from document access", () => {

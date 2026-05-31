@@ -192,7 +192,7 @@ function principalSource(
     return { provider: "local", namespace: principalId.split(":")[1] ?? "desktop" };
   }
   if (principalId.startsWith("user:anaconda:")) {
-    return { provider: "oidc", namespace: "anaconda" };
+    return { provider: "anaconda", namespace: "anaconda" };
   }
   if (principalId.startsWith("hub:")) {
     return { provider: "jupyterhub", namespace: principalId.split(":")[1] ?? "hub" };
@@ -217,10 +217,6 @@ function actorKindFromProjection(actor: NotebookActorProjection): NotebookActorK
 }
 
 function actorLabelFromProjection(actor: NotebookActorProjection, kind: NotebookActorKind): string {
-  const parsed = parseNotebookActorLabel(actor.actorLabel);
-  if (parsed && (kind === "agent" || kind === "runtime" || kind === "system")) {
-    return parsed.label;
-  }
   if (kind === "agent" || kind === "runtime" || kind === "system") {
     return actor.operator.label;
   }
@@ -231,10 +227,9 @@ function actorDetailFromProjection(
   actor: NotebookActorProjection,
   kind: NotebookActorKind,
 ): string | null {
-  const parsed = parseNotebookActorLabel(actor.actorLabel);
   if (kind === "agent" || kind === "runtime" || kind === "system") {
-    const principalLabel = parsed?.onBehalfOf ?? actor.principal.label;
-    return kind === "system" && !parsed?.onBehalfOf
+    const principalLabel = actor.principal.label;
+    return kind === "system" && actor.principal.id === "system"
       ? accessScopeLabel(actor.scope)
       : `for ${principalLabel}`;
   }

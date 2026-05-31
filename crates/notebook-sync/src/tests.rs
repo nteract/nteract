@@ -706,8 +706,13 @@ mod tests {
     #[test]
     fn test_set_actor_and_get_actor_id() {
         let (handle, _changed_rx, _cmd_rx) = test_handle();
-        handle.set_actor("agent:claude:abc123").unwrap();
-        assert_eq!(handle.get_actor_id().unwrap(), "agent:claude:abc123");
+        handle
+            .set_actor("user:anaconda:alice/agent:claude:s1")
+            .unwrap();
+        assert_eq!(
+            handle.get_actor_id().unwrap(),
+            "user:anaconda:alice/agent:claude:s1"
+        );
     }
 
     #[test]

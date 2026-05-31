@@ -167,7 +167,8 @@ pub enum PresenceMessage {
         peer_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         peer_label: Option<String>,
-        /// Automerge actor label (e.g. "human:abc123", "agent:claude:def456").
+        /// Automerge actor label (e.g. "local:kyle/desktop:window",
+        /// "user:anaconda:alice/agent:claude:s1").
         /// Bridges presence identity to CRDT attribution identity so
         /// attribution highlights can use the same color as the peer's cursor.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,7 +199,7 @@ pub enum PresenceMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerSnapshot {
     pub peer_id: String,
-    /// Free-form label identifying the peer (e.g. "human", "agent", "daemon").
+    /// Free-form display label identifying the peer (e.g. "Kyle", "Codex", "daemon").
     pub peer_label: String,
     /// Automerge actor label for CRDT attribution color matching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1295,7 +1296,7 @@ mod tests {
         let encoded = encode_cursor_update_labeled(
             "peer-1",
             Some("Claude"),
-            Some("agent:claude:abc123"),
+            Some("user:anaconda:alice/agent:claude:s1"),
             &CursorPosition {
                 cell_id: "c1".into(),
                 line: 5,
@@ -1314,7 +1315,10 @@ mod tests {
             } => {
                 assert_eq!(peer_id, "peer-1");
                 assert_eq!(peer_label, Some("Claude".to_string()));
-                assert_eq!(actor_label, Some("agent:claude:abc123".to_string()));
+                assert_eq!(
+                    actor_label,
+                    Some("user:anaconda:alice/agent:claude:s1".to_string())
+                );
                 assert!(matches!(data, ChannelData::Cursor(_)));
             }
             _ => panic!("expected Update"),
@@ -1355,14 +1359,17 @@ mod tests {
         state1.update_peer(
             "agent-peer",
             "Claude",
-            Some("agent:claude:abc123"),
+            Some("user:anaconda:alice/agent:claude:s1"),
             cursor,
             1000,
         );
 
         // Verify actor_label is stored in state
         let peer = state1.get_peer("agent-peer").unwrap();
-        assert_eq!(peer.actor_label, Some("agent:claude:abc123".to_string()));
+        assert_eq!(
+            peer.actor_label,
+            Some("user:anaconda:alice/agent:claude:s1".to_string())
+        );
 
         // Encode snapshot and decode into fresh state
         let snapshot_bytes = state1.encode_snapshot("daemon").unwrap();
@@ -1372,7 +1379,7 @@ mod tests {
             // Verify actor_label is in the snapshot wire data
             assert_eq!(
                 peers[0].actor_label,
-                Some("agent:claude:abc123".to_string())
+                Some("user:anaconda:alice/agent:claude:s1".to_string())
             );
             state2.apply_snapshot(&peers, 2000);
         } else {
@@ -1381,7 +1388,10 @@ mod tests {
 
         // Verify actor_label survived into the new state
         let peer2 = state2.get_peer("agent-peer").unwrap();
-        assert_eq!(peer2.actor_label, Some("agent:claude:abc123".to_string()));
+        assert_eq!(
+            peer2.actor_label,
+            Some("user:anaconda:alice/agent:claude:s1".to_string())
+        );
     }
 
     #[test]

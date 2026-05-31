@@ -232,12 +232,12 @@ describe("cursor-registry cell-level functions", () => {
         type: "update",
         peer_id: "peer-1",
         peer_label: "Claude",
-        actor_label: "agent:claude:abc123",
+        actor_label: "user:anaconda:alice/agent:claude:s1",
         channel: "cursor",
         data: { cell_id: "cell-1", line: 0, column: 0 },
       });
 
-      const color = findPeerColorByActorLabel("agent:claude:abc123");
+      const color = findPeerColorByActorLabel("user:anaconda:alice/agent:claude:s1");
       expect(color).toBeDefined();
       // peerColor mock returns `#${peerId.slice(0, 6)}`
       expect(color).toBe("#peer-1");
@@ -248,17 +248,17 @@ describe("cursor-registry cell-level functions", () => {
         type: "update",
         peer_id: "peer-1",
         peer_label: "Claude",
-        actor_label: "agent:claude:abc123",
+        actor_label: "user:anaconda:alice/agent:claude:s1",
         channel: "cursor",
         data: { cell_id: "cell-1", line: 0, column: 0 },
       });
 
-      const color = findPeerColorByActorLabel("agent:other:xyz789");
+      const color = findPeerColorByActorLabel("user:anaconda:bob/agent:other:s2");
       expect(color).toBeUndefined();
     });
 
     it("returns undefined when no peers are connected", () => {
-      const color = findPeerColorByActorLabel("agent:claude:abc123");
+      const color = findPeerColorByActorLabel("user:anaconda:alice/agent:claude:s1");
       expect(color).toBeUndefined();
     });
 
@@ -268,12 +268,12 @@ describe("cursor-registry cell-level functions", () => {
         type: "update",
         peer_id: "local-peer",
         peer_label: "Me",
-        actor_label: "human:local-session",
+        actor_label: "local:kyle/desktop:window",
         channel: "cursor",
         data: { cell_id: "cell-1", line: 0, column: 0 },
       });
 
-      const color = findPeerColorByActorLabel("human:local-session");
+      const color = findPeerColorByActorLabel("local:kyle/desktop:window");
       expect(color).toBeUndefined();
     });
 
@@ -285,7 +285,7 @@ describe("cursor-registry cell-level functions", () => {
           {
             peer_id: "agent-peer",
             peer_label: "Claude",
-            actor_label: "agent:claude:snap123",
+            actor_label: "user:anaconda:alice/agent:claude:snap123",
             channels: [
               {
                 channel: "cursor",
@@ -296,7 +296,7 @@ describe("cursor-registry cell-level functions", () => {
         ],
       });
 
-      const color = findPeerColorByActorLabel("agent:claude:snap123");
+      const color = findPeerColorByActorLabel("user:anaconda:alice/agent:claude:snap123");
       expect(color).toBeDefined();
       expect(color).toBe("#agent-");
     });
@@ -306,13 +306,13 @@ describe("cursor-registry cell-level functions", () => {
         type: "update",
         peer_id: "peer-1",
         peer_label: "Claude",
-        actor_label: "agent:claude:abc123",
+        actor_label: "user:anaconda:alice/agent:claude:s1",
         channel: "cursor",
         data: { cell_id: "cell-1", line: 0, column: 0 },
       });
 
       // Verify it's there
-      expect(findPeerColorByActorLabel("agent:claude:abc123")).toBeDefined();
+      expect(findPeerColorByActorLabel("user:anaconda:alice/agent:claude:s1")).toBeDefined();
 
       // Peer disconnects
       presenceHandler?.({
@@ -321,7 +321,7 @@ describe("cursor-registry cell-level functions", () => {
       });
 
       // Actor label lookup should no longer match
-      expect(findPeerColorByActorLabel("agent:claude:abc123")).toBeUndefined();
+      expect(findPeerColorByActorLabel("user:anaconda:alice/agent:claude:s1")).toBeUndefined();
     });
 
     it("does not match by substring (exact only)", () => {
@@ -329,7 +329,7 @@ describe("cursor-registry cell-level functions", () => {
         type: "update",
         peer_id: "peer-1",
         peer_label: "Claude",
-        actor_label: "agent:claude:abc123",
+        actor_label: "user:anaconda:alice/agent:claude:s1",
         channel: "cursor",
         data: { cell_id: "cell-1", line: 0, column: 0 },
       });
@@ -338,7 +338,7 @@ describe("cursor-registry cell-level functions", () => {
       // the old fuzzy findPeerColorByLabel
       expect(findPeerColorByActorLabel("agent:claude")).toBeUndefined();
       expect(findPeerColorByActorLabel("claude")).toBeUndefined();
-      expect(findPeerColorByActorLabel("abc123")).toBeUndefined();
+      expect(findPeerColorByActorLabel("alice")).toBeUndefined();
     });
   });
 
@@ -348,14 +348,14 @@ describe("cursor-registry cell-level functions", () => {
         type: "update",
         peer_id: "peer-1",
         peer_label: "Claude",
-        actor_label: "agent:claude:abc123",
+        actor_label: "user:anaconda:alice/agent:claude:s1",
         channel: "cursor",
         data: { cell_id: "cell-1", line: 0, column: 0 },
       });
 
       const peers = getPeersForCell("cell-1");
       expect(peers).toHaveLength(1);
-      expect(peers[0].actorLabel).toBe("agent:claude:abc123");
+      expect(peers[0].actorLabel).toBe("user:anaconda:alice/agent:claude:s1");
     });
 
     it("stores actor_label from snapshot", () => {
@@ -366,7 +366,7 @@ describe("cursor-registry cell-level functions", () => {
           {
             peer_id: "peer-1",
             peer_label: "Human",
-            actor_label: "human:session-abc",
+            actor_label: "local:kyle/desktop:session-abc",
             channels: [
               {
                 channel: "cursor",
@@ -379,7 +379,7 @@ describe("cursor-registry cell-level functions", () => {
 
       const peers = getPeersForCell("cell-1");
       expect(peers).toHaveLength(1);
-      expect(peers[0].actorLabel).toBe("human:session-abc");
+      expect(peers[0].actorLabel).toBe("local:kyle/desktop:session-abc");
     });
 
     it("preserves actor_label when absent from subsequent updates", () => {
@@ -388,7 +388,7 @@ describe("cursor-registry cell-level functions", () => {
         type: "update",
         peer_id: "peer-1",
         peer_label: "Claude",
-        actor_label: "agent:claude:abc123",
+        actor_label: "user:anaconda:alice/agent:claude:s1",
         channel: "cursor",
         data: { cell_id: "cell-1", line: 0, column: 0 },
       });
@@ -404,7 +404,7 @@ describe("cursor-registry cell-level functions", () => {
 
       const peers = getPeersForCell("cell-1");
       expect(peers).toHaveLength(1);
-      expect(peers[0].actorLabel).toBe("agent:claude:abc123");
+      expect(peers[0].actorLabel).toBe("user:anaconda:alice/agent:claude:s1");
     });
 
     it("handles peer with no actor_label gracefully", () => {
