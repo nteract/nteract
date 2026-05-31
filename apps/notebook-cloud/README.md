@@ -312,15 +312,26 @@ The dedicated renderer asset Worker serves only public, build-time sidecar files
 
 Schema lives in `migrations/`. The Worker also creates the current catalog tables lazily in local dev so the WebSocket path can run before applying migrations.
 
-Accepted WebSocket frame payload caps mirror `notebook-wire` per-frame limits: Automerge sync and runtime-state frames may be up to 64 MiB, `PUT_BLOB` up to 32 MiB, request frames up to 16 MiB, and presence/pool-state/session-control frames up to 1 MiB. The Durable Object keeps only the latest 500 `frame:*` metadata entries in object storage; D1 is not a frame replay log.
+Accepted WebSocket frame payload caps mirror `notebook-wire` per-frame limits:
+Automerge sync, runtime-state sync, and response frames may be up to 64 MiB;
+`PUT_BLOB` up to 32 MiB; request and broadcast frames up to 16 MiB; presence
+frames up to 4 KiB; and pool-state/session-control frames up to 1 MiB. The
+Durable Object keeps only the latest 500 `frame:*` metadata entries in object
+storage; D1 is not a frame replay log.
 
 Published revision artifacts follow `docs/architecture/hosted-notebook-artifacts.md`:
 
 ```text
 n/{id}/snapshots/{notebookHeadsHash}.am
-n/{id}/snapshots/runtime-state/{runtimeHeadsHash}.am
+docs/{runtimeStateDocId}/snapshots/{runtimeHeadsHash}.am
 n/{id}/blobs/{sha256}
 ```
+
+Notebook snapshots currently retain the `n/{id}` compatibility namespace.
+Runtime-state snapshots are keyed by first-class `runtime_state_doc_id`; publish
+and runtime-snapshot routes require `X-Runtime-State-Doc-Id`, and the catalog row
+stores both `runtime_state_doc_id` and the concrete `runtime_snapshot_key`.
+Legacy revisions can still be read through their recorded snapshot keys.
 
 Snapshot-pair publishes validate that the pair can be loaded through
 `runtimed-wasm` and that all referenced blobs are present before recording a

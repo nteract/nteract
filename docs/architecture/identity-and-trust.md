@@ -149,14 +149,20 @@ For non-empty `NotebookDoc` and `RuntimeStateDoc` sync messages, the room-host a
 
 This closes live principal forgery for v1, but it is intentionally a stopgap. It deep-clones the document and applies each non-empty inbound message twice, which is most expensive on the high-churn `RuntimeStateDoc` path. `docs/architecture/automerge-fork-patches.md` Patch 1 (`sync_message_new_changes`) is the planned v2 replacement: inspect the new changes from a sync message without cloning or applying to a throwaway document.
 
-### Schema-seed actors get principal-prefixed labels
+### Schema-seed actors are canonical, with principal-prefixed labels as target
 
-The frozen genesis actors today are not principal-prefixed:
+The frozen genesis actors today are canonical seed labels, but they are not yet
+principal-prefixed:
 
-- `nteract:notebook-schema:v4` (`crates/notebook-doc/src/lib.rs:79`)
-- `nteract:runtime-state-schema:v2` (`crates/runtime-doc/src/doc.rs:318`)
+- `nteract:notebook-schema:v5` (`crates/notebook-doc/src/lib.rs`)
+- `nteract:runtime-state-schema:v2` (`crates/runtime-doc/src/doc.rs`)
 
-As part of this work the schema bumps (notebook v5, runtime-state v3) and the new seed actors adopt the `system/schema:notebook:v5` and `system/schema:runtime-state:v3` form so they are first-class within the principal model. Existing notebooks keep the legacy labels in historical changes (immutable in the DAG); new rooms ship with the new genesis bytes from day one.
+Those seed labels are hash-pinned into the genesis bytes, so changing them is a
+schema/genesis decision rather than a display-only rename. The target actor
+language for future schema bumps remains `system/schema:notebook:vN` and
+`system/schema:runtime-state:vN`, so schema-authored changes become first-class
+within the principal model. Existing notebooks keep historical labels in the
+immutable DAG; new seed actor labels require new genesis bytes from day one.
 
 ### Presence rewrite and actor projection
 
@@ -217,11 +223,24 @@ frames, publishes presence, and consumes the same structured actor projection as
 editors and owners. Scope only constrains writes and mutating requests at the
 server boundary.
 
+The current hosted public-read policy has one important product exception:
+anonymous public viewers are local or aggregate presence only. Authenticated
+read-only viewers remain full sync and presence participants, but anonymous
+public viewer cursor/selection frames are acknowledged locally and not
+broadcast as named collaborators unless a future product decision changes that
+policy.
+
 `principal.source.provider` names the principal authority used for federation
 and display. It is not the credential transport. For example, a browser OAuth
 session, OIDC bearer token, or API key that authenticates an Anaconda user all
 project as provider `anaconda`; the OAuth/API-key detail belongs to the
 credential layer described below.
+
+Do not confuse this with the hosted prototype's `identity_provider` field on
+`cloud_room_ready`: that field is current auth-validator metadata and may say
+`anaconda-api-key`. Shared UI should derive principal authority from the actor
+principal namespace, or from a future explicit principal-authority field, rather
+than treating credential transport metadata as `NotebookActorSourceProvider`.
 
 ## Decision 4: Credentials and identity providers are separate concerns
 
@@ -340,19 +359,31 @@ The extraction logic (parse subprotocol header, look up ticket, read cookie, que
 
 A connection carries exactly one scope, determined at authentication time. The four scopes are:
 
-- `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames (see `crates/notebook-sync/src/sync_task.rs:680-724`). The trust gate rejects any inbound `0x00` or `0x05` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
+- `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames through the normal `notebook-sync` task loop. The trust gate rejects any inbound `0x00` or `0x05` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
   - Note on the upstream Automerge `read_only` API: `State::new_read_only()` and `MessageFlags::READ_ONLY` are **not** the client-side viewer primitive. Upstream `read_only` means "the holder of this state will not apply incoming changes but will still send its own" (publish-only semantics; see `rust/automerge/src/sync.rs:408` and `rust/automerge/src/sync/state.rs:65-67`). A viewer client that uses `State::new_read_only()` will not apply live room updates. Hosted room hosts may still use `State::new_read_only()` for their per-viewer peer state as an optimization and protocol hint: the host will not apply that peer's changes while still sending room changes to the peer. That is not the authorization boundary; the server must still reject any viewer `Message.changes` explicitly.
-- `editor` - live edit on `NotebookDoc` within the room host's document-write policy, plus a narrow allowed-write surface on `RuntimeStateDoc` for widget comm state. The widget surface is existing `doc.comms/*/state/*`, mediated client-side by the approved comm writer (`apps/notebook/src/App.tsx:465-477`, `set_comm_state_batch` + `triggerSync`) and enforced server-side by the shared runtime-doc policy (`crates/runtime-doc/src/policy.rs`). Outside that subtree, editor `RuntimeStateDoc` writes are rejected. Editors cannot create executions, manipulate queue/kernel/environment state, rewrite output routing, create/remove comms, or add hidden RuntimeStateDoc root keys.
+- `editor` - live edit on `NotebookDoc` within the room host's document-write policy, plus a narrow allowed-write surface on `RuntimeStateDoc` for widget comm state. The widget surface is existing `doc.comms/*/state/*`, mediated client-side by the approved comm writer (`RuntimeStateHandle::set_comm_state_property` / `set_comm_state_batch`) and enforced server-side by the shared runtime-doc policy (`crates/runtime-doc/src/policy.rs`). Outside that subtree, editor `RuntimeStateDoc` writes are rejected. Editors cannot create executions, manipulate queue/kernel/environment state, rewrite output routing, create/remove comms, or add hidden RuntimeStateDoc root keys.
 - `runtime_peer` - permitted to write `RuntimeStateDoc` execution progress, output, lifecycle, and comm topology state for already accepted executions. It cannot create execution intent or edit `NotebookDoc`. Used by future remote-runtime services and by JupyterHub-spawned runtime sidecars/services when they connect a kernel. The hosted Worker prototype exercises this as direct `0x05` sync from a runtime authoring handle; it still does not host kernels inside the Durable Object.
 - `owner` - editor plus publish-revisions and manage-ACL requests.
 
 ### Where scope comes from
 
-Scope is determined by intersecting two sources: what the IdP says about the user (claims/roles in the validated credential) and what the room's ACL says about the principal. The narrower of the two wins. A principal that the IdP marks as `editor` but the ACL marks as `viewer` is a viewer in that room. A principal not present in the ACL at all is rejected at connection time. Anonymous viewer access is only considered for unauthenticated requests when the room contains a public-read entry.
+The target model is an effective scope derived from the credential's validated
+authority and the room ACL. The narrower result wins: a principal whose
+credential can ask for editor but whose room ACL grants viewer is a viewer in
+that room. A principal not present in the ACL is rejected at connection time.
+Anonymous viewer access is only considered for unauthenticated requests when
+the room contains a public-read entry.
+
+Current Cloud Worker semantics are more concrete: the request presents a desired
+scope through `x-scope` or query parameters, provider-specific validation can
+cap that request, and the room host authorizes or downgrades it against the ACL.
+The resulting `connection_scope` is the server-authorized effective scope the UI
+may render.
 
 ### Scope enforcement points
 
-Scope is enforced server-side at three points, each with a clear boundary:
+Scope is enforced server-side at three points in the target architecture, each
+with a clear boundary:
 
 1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame`, `peer_runtime_sync.rs`, and the hosted WASM room host): the validator consults `AuthenticatedConnection.scope` and rejects frames that exceed the scope: viewer with non-empty changes on any doc, `runtime_peer` sending changes to `NotebookDoc`, or editor/owner `RuntimeStateDoc` changes outside the existing widget comm-state surface. The hosted Worker and daemon share the same RuntimeStateDoc policy helper so this is no longer a hosted-only TODO.
 2. **Request dispatch**: each `NotebookRequest` variant declares its minimum required scope via an annotation or registry lookup. The request handler rejects with a typed `Unauthorized` response before any side effect. New scope-gated requests declare their requirement at the definition site; no scattered `if scope == ...` checks elsewhere.
@@ -362,16 +393,25 @@ Scope is enforced server-side at three points, each with a clear boundary:
 
 Every new request variant or frame type must specify its required scope at the definition site. A CI lint (or a small `#[derive]` macro) verifies that every variant has a scope annotation. This makes scope creep visible in code review and prevents the "wrong layer for enforcing it" failure mode.
 
+Current implementation status is intentionally narrower: frame-level scope
+gating and runtime-doc policy validation are active in the hosted room path,
+while full semantic request-scope dispatch is still the desired shape for
+future execution-intent and hosted mutation APIs.
+
 ### What does and does not appear on the wire
 
 The post-handshake capability payload includes `actor_label` and
 `connection_scope` so UIs can render current-actor and read-only/runtime-peer
-state without inferring scope from request failures. The client may consume this
-payload to choose UI capabilities, but it is informational from the server's
-trust perspective. The server remains the only authority and still enforces
-scope at frame ingress, request dispatch, and ACL mutation boundaries. A
-`viewer` connection remains a full sync, presence, and projection peer; only its
-changes and mutating requests are denied.
+state without inferring scope from request failures. Remote/cloud hosts should
+always send the server-authorized effective scope. Local daemon paths still have
+legacy and compatibility cases where the field is absent; desktop treats that
+absence as local owner capability.
+
+The client may consume this payload to choose UI capabilities, but it is
+informational from the server's trust perspective. The server remains the only
+authority and still enforces scope at frame ingress, request dispatch, and ACL
+mutation boundaries. A `viewer` connection remains a full sync, presence, and
+projection peer; only its changes and mutating requests are denied.
 
 ## Decision 6: Publish is a fresh document in the destination space
 
@@ -382,7 +422,7 @@ The reason is the same one that makes git commits with arbitrary `Author:` lines
 Concretely: quill publishes a local untitled notebook to Anaconda.
 
 1. Desktop captures the current rendered state of the local `NotebookDoc` and `RuntimeStateDoc`: cells, metadata, outputs, blob references. This is essentially the `.ipynb`-equivalent plus output blobs.
-2. The destination creates a **new** Automerge document in its own identity space. A `system/schema:notebook:vN` seed actor establishes the schema; a fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`) authors all the imported cells, metadata, and outputs as a single round of changes.
+2. The destination creates a **new** Automerge document in its own identity space. The current canonical schema seed actor establishes the schema; a fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`) authors all the imported cells, metadata, and outputs as a single round of changes. Future schema bumps should move the seed actor toward the `system/schema:*` target naming above.
 3. Blob references are uploaded by SHA-256 hash. R2 dedupes; the destination room references them by the same hashes.
 4. The destination registers the room in its catalog (D1 row, latest revision pointer).
 5. Future edits in the destination room author under destination-space principals normally. There are no `local:*` actors in the doc.

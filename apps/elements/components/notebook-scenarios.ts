@@ -4,6 +4,7 @@ import {
   createNotebookViewModel,
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
+  type NotebookActorProjection,
   type NotebookShellCapabilities,
   type NotebookViewCell,
   type NotebookViewModel,
@@ -327,6 +328,112 @@ const renderers: readonly ElementsNotebookRenderer[] = [
   { name: "image/png", state: "inline" },
 ];
 
+const desktopOwnerActor = actorProjection({
+  actorLabel: "local:kyle/desktop:app",
+  principalId: "local:kyle",
+  principalLabel: "Kyle",
+  provider: "local",
+  namespace: "kyle",
+  operatorId: "desktop:app",
+  operatorKind: "desktop",
+  operatorLabel: "Desktop",
+  scope: "owner",
+});
+
+const desktopRuntimeActor = actorProjection({
+  actorLabel: "local:kyle/runtime:python",
+  principalId: "local:kyle",
+  principalLabel: "Kyle",
+  provider: "local",
+  namespace: "kyle",
+  operatorId: "runtime:python",
+  operatorKind: "runtime",
+  operatorLabel: "Python",
+  scope: "runtime_peer",
+});
+
+const publicViewerActor = actorProjection({
+  actorLabel: "anonymous:public/browser:viewer",
+  principalId: "anonymous:public",
+  principalLabel: "Public viewer",
+  provider: "anonymous",
+  namespace: "public",
+  operatorId: "browser:viewer",
+  operatorKind: "browser",
+  operatorLabel: "Browser",
+  scope: "viewer",
+});
+
+const cloudEditorActor = actorProjection({
+  actorLabel: "user:anaconda:morgan/browser:cloud",
+  principalId: "user:anaconda:morgan",
+  principalLabel: "Morgan",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "browser:cloud",
+  operatorKind: "browser",
+  operatorLabel: "Browser",
+  scope: "editor",
+});
+
+const cloudOwnerActor = actorProjection({
+  actorLabel: "user:anaconda:kyle/browser:cloud",
+  principalId: "user:anaconda:kyle",
+  principalLabel: "Kyle",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "browser:cloud",
+  operatorKind: "browser",
+  operatorLabel: "Browser",
+  scope: "owner",
+});
+
+const codexAgentActor = actorProjection({
+  actorLabel: "user:anaconda:kyle/agent:codex:s1",
+  principalId: "user:anaconda:kyle",
+  principalLabel: "Kyle",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "agent:codex:s1",
+  operatorKind: "agent",
+  operatorLabel: "Codex",
+  scope: "editor",
+});
+
+const jupyterHubRuntimeActor = actorProjection({
+  actorLabel: "user:anaconda:alice/runtime:jupyterhub",
+  principalId: "user:anaconda:alice",
+  principalLabel: "Alice",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "runtime:jupyterhub",
+  operatorKind: "runtime",
+  operatorLabel: "JupyterHub",
+  scope: "runtime_peer",
+});
+
+const systemSchemaActor = actorProjection({
+  actorLabel: "system/schema:notebook:v5",
+  principalId: "system",
+  principalLabel: "System",
+  operatorId: "schema:notebook:v5",
+  operatorKind: "system",
+  operatorLabel: "Notebook schema",
+  scope: "viewer",
+});
+
+const elementsFixtureActor = actorProjection({
+  actorLabel: "local:elements/browser:preview",
+  principalId: "local:elements",
+  principalLabel: "Elements fixture",
+  provider: "local",
+  namespace: "elements",
+  operatorId: "browser:preview",
+  operatorKind: "browser",
+  operatorLabel: "Browser",
+  scope: "editor",
+});
+
 const jsonOutputFixture = {
   run: {
     id: "forecast-042",
@@ -580,20 +687,22 @@ export const elementsNotebookScenarios: Record<
         level: "owner",
         source: "local",
         isPublic: false,
-        actorLabel: "local:kyle",
+        actorLabel: desktopOwnerActor.actorLabel,
         identityLabel: "Kyle",
+        actor: desktopOwnerActor,
       },
       auth: {
         canSignIn: false,
-        canUseAuthenticatedIdentity: false,
+        canUseAuthenticatedIdentity: true,
         needsAttention: false,
       },
       runtime: {
         canWriteRuntimeState: true,
         connected: true,
         source: "local",
-        actorLabel: "local:kyle/runtime:python",
+        actorLabel: desktopRuntimeActor.actorLabel,
         identityLabel: "Kyle",
+        actor: desktopRuntimeActor,
       },
     },
   }),
@@ -620,8 +729,9 @@ export const elementsNotebookScenarios: Record<
         level: "viewer",
         source: "cloud",
         isPublic: true,
-        actorLabel: "public viewer",
+        actorLabel: publicViewerActor.actorLabel,
         identityLabel: null,
+        actor: publicViewerActor,
       },
       auth: {
         canSignIn: true,
@@ -660,8 +770,9 @@ export const elementsNotebookScenarios: Record<
         level: "editor",
         source: "cloud",
         isPublic: false,
-        actorLabel: "cloud:morgan",
+        actorLabel: cloudEditorActor.actorLabel,
         identityLabel: "Morgan",
+        actor: cloudEditorActor,
       },
       auth: {
         canSignIn: false,
@@ -700,8 +811,9 @@ export const elementsNotebookScenarios: Record<
         level: "owner",
         source: "cloud",
         isPublic: false,
-        actorLabel: "cloud:kyle",
+        actorLabel: cloudOwnerActor.actorLabel,
         identityLabel: "Kyle",
+        actor: cloudOwnerActor,
       },
       auth: {
         canSignIn: false,
@@ -731,7 +843,7 @@ export const elementsNotebookScenarios: Record<
       canEditCells: true,
       canEditStructure: false,
       canRequestEdit: false,
-      canExecute: true,
+      canExecute: false,
       canToggleCode: true,
       canViewPackages: true,
       canManagePackages: false,
@@ -740,8 +852,9 @@ export const elementsNotebookScenarios: Record<
         level: "editor",
         source: "cloud",
         isPublic: false,
-        actorLabel: "agent:codex/on-behalf-of:kyle",
+        actorLabel: codexAgentActor.actorLabel,
         identityLabel: "Kyle",
+        actor: codexAgentActor,
       },
       auth: {
         canSignIn: false,
@@ -780,8 +893,9 @@ export const elementsNotebookScenarios: Record<
         level: "viewer",
         source: "cloud",
         isPublic: false,
-        actorLabel: "user:anaconda:alice/runtime:jupyterhub",
+        actorLabel: jupyterHubRuntimeActor.actorLabel,
         identityLabel: "Alice",
+        actor: jupyterHubRuntimeActor,
       },
       auth: {
         canSignIn: false,
@@ -792,8 +906,9 @@ export const elementsNotebookScenarios: Record<
         canWriteRuntimeState: true,
         connected: true,
         source: "cloud",
-        actorLabel: "user:anaconda:alice/runtime:jupyterhub",
+        actorLabel: jupyterHubRuntimeActor.actorLabel,
         identityLabel: "Alice",
+        actor: jupyterHubRuntimeActor,
       },
     },
   }),
@@ -820,8 +935,9 @@ export const elementsNotebookScenarios: Record<
         level: "viewer",
         source: "fixture",
         isPublic: false,
-        actorLabel: "system/schema:notebook:v5",
+        actorLabel: systemSchemaActor.actorLabel,
         identityLabel: null,
+        actor: systemSchemaActor,
       },
       auth: {
         canSignIn: false,
@@ -860,8 +976,9 @@ export const elementsNotebookScenarios: Record<
         level: "editor",
         source: "fixture",
         isPublic: false,
-        actorLabel: "fixture editor",
+        actorLabel: elementsFixtureActor.actorLabel,
         identityLabel: "Elements fixture",
+        actor: elementsFixtureActor,
       },
       auth: {
         canSignIn: false,
@@ -952,5 +1069,42 @@ function createScenario({
     outputState,
     variables,
     renderers,
+  };
+}
+
+function actorProjection({
+  actorLabel,
+  principalId,
+  principalLabel,
+  provider,
+  namespace,
+  operatorId,
+  operatorKind,
+  operatorLabel,
+  scope,
+}: {
+  actorLabel: string;
+  principalId: string;
+  principalLabel: string;
+  provider?: NonNullable<NotebookActorProjection["principal"]["source"]>["provider"];
+  namespace?: string;
+  operatorId: string;
+  operatorKind: string;
+  operatorLabel: string;
+  scope: NonNullable<NotebookActorProjection["scope"]>;
+}): NotebookActorProjection {
+  return {
+    actorLabel,
+    principal: {
+      id: principalId,
+      label: principalLabel,
+      ...(provider && namespace ? { source: { provider, namespace } } : {}),
+    },
+    operator: {
+      id: operatorId,
+      kind: operatorKind,
+      label: operatorLabel,
+    },
+    scope,
   };
 }

@@ -139,12 +139,20 @@ pub struct TrustRuntimeState {
 }
 ```
 
-RuntimeStateDoc is the per-room runtime view. Two consequences:
+RuntimeStateDoc is the per-room runtime view for the local daemon topology. Two
+local consequences:
 
 1. **Different peers see different verdicts.** Each daemon (each machine) owns its own RuntimeStateDoc for the room. A user on machine A who has approved `pandas` will see `status: trusted`; a user on machine B who has not will see `status: untrusted`. The two RuntimeStateDocs are not synced across machines; only the local daemon writes its own.
 2. **Frontend never re-derives.** The UI reads `runtime_state.trust` and decides whether to render the approval dialog. The `needs_approval` flag is precomputed by the daemon as `!matches!(status, Trusted | NoDependencies)`. Frontend logic is "if needs_approval, open dialog; else proceed."
 
 The `approved_*` fields are diagnostic: they let the dialog render "you have already approved 3 of these 5 packages" without the frontend having to query the store itself. The frontend has no SQLite access; everything it knows about the allowlist arrives through RuntimeStateDoc.
+
+Hosted rooms use the same projection shape but a different authority path. The
+room host owns the shared runtime/trust projection for the hosted notebook, and
+runtime peers may write only the policy-limited runtime/output surface. Local
+per-machine allowlists remain daemon-owned; a hosted deployment must decide how
+room-host trust, remote credentials, and local desktop approvals compose before
+letting a peer mutate trust or environment state.
 
 ## Decision 5: Approval is a NotebookRequest, not a doc mutation
 
