@@ -1,0 +1,31 @@
+---
+title: Identity and environment surfaces
+description: Notebook identity, agency, access, runtime, and package summary composites.
+---
+
+import { IdentityEnvironmentSurfacesExample } from "@/components/identity-environment-surfaces-example";
+
+Notebook UI needs product language for who is acting and what environment they
+are acting within. This page catalogs notebook-semantic composites, not raw
+primitive components.
+
+`NotebookIdentityBadge` and `NotebookIdentityGroup` wrap the shared Avatar
+primitive with notebook actor/access facts. `NotebookEnvironmentSummary` wraps
+the shared package view model and shell capabilities into a compact runtime and
+dependency state surface.
+
+The fixtures come from `ElementsNotebookScenario`: local owner, public viewer,
+cloud editor, cloud owner, agent-on-behalf-of-user, and runtime-unavailable
+states. Desktop and cloud should feed the same production components from their
+host adapters.
+
+<IdentityEnvironmentSurfacesExample />
+
+## Boundary
+
+- Raw shadcn primitives stay implementation details.
+- Actor labels, access state, auth state, runtime labels, and package summaries
+  come from notebook shell projections.
+- Agent attribution is represented as notebook identity, not as a generic model
+  selector.
+- Package info is notebook environment context, not an npm-style package profile.

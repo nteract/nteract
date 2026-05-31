@@ -5,6 +5,7 @@ import {
   Cloud,
   FileCode2,
   Frame,
+  IdCard,
   PackageCheck,
   Palette,
   PanelLeft,
@@ -34,6 +35,12 @@ const entries = [
     description: "Dependency headers and package-state controls from the notebook app.",
     href: "/docs/package-manager-surfaces",
     icon: PackageCheck,
+  },
+  {
+    title: "Identity and environment",
+    description: "Notebook actors, access state, runtime, and package context.",
+    href: "/docs/identity-environment-surfaces",
+    icon: IdCard,
   },
   {
     title: "Cell anatomy",

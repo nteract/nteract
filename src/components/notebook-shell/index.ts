@@ -8,6 +8,19 @@ export {
 } from "./capabilities";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
+export {
+  NotebookIdentityBadge,
+  NotebookIdentityGroup,
+  notebookActorFromAccess,
+  type NotebookActorIdentity,
+  type NotebookActorKind,
+  type NotebookIdentityBadgeProps,
+  type NotebookIdentityGroupProps,
+} from "./NotebookIdentity";
+export {
+  NotebookEnvironmentSummary,
+  type NotebookEnvironmentSummaryProps,
+} from "./NotebookEnvironmentSummary";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
   NotebookPackageSummaryPanel,
