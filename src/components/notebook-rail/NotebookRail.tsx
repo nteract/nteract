@@ -248,7 +248,7 @@ function NotebookOutlineNode({
   const itemHref = getItemHref?.(item) ?? item.href ?? null;
   const className = cn(
     "flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+    "select-none [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
     selected
       ? "bg-primary text-primary-foreground"
       : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -305,7 +305,9 @@ function NotebookOutlineNode({
       <li data-outline-level={item.level}>
         <a
           href={itemHref}
+          draggable={false}
           aria-current={selected ? "location" : undefined}
+          onDragStart={(event) => event.preventDefault()}
           onClick={handleClick}
           className={className}
         >
