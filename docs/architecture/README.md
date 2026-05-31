@@ -35,6 +35,7 @@ These entries define the center of gravity for the system:
 | Runtime-state identity | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft |
 | Environment lifecycle | [Captured Environment Lifecycle](captured-environment-lifecycle.md) | Draft |
 | Notebook host shell | [Notebook Host Shell Convergence](notebook-host-shell-convergence.md) | Draft |
+| Notebook identity and environment surfaces | [Notebook Identity and Environment Surfaces](notebook-identity-environment-surfaces.md) | PRD draft |
 | Execution ordering | [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md) | Draft |
 | Blob storage | [Blob Storage and Content Addressing](blob-storage-and-content-addressing.md) | Draft |
 | Sharing product requirements | [Hosted Notebook Sharing and Invites](hosted-sharing-invites.md) | PRD draft |
@@ -97,6 +98,7 @@ These entries define the center of gravity for the system:
 | Entry | Status | Notes |
 |-------|--------|-------|
 | [Hosted Notebook Sharing and Invites](hosted-sharing-invites.md) | PRD draft | User-facing sharing, invite, first-login, public-viewer, and revocation requirements. |
+| [Notebook Identity and Environment Surfaces](notebook-identity-environment-surfaces.md) | PRD draft | Shared product language and UI contract for actors, agents, access, runtime, packages, and trust across desktop, cloud, and Elements. |
 
 ## Maintenance Rules
 
