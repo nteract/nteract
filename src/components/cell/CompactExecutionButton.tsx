@@ -12,6 +12,8 @@ interface CompactExecutionButtonProps {
   submittedByActorLabel?: string | null;
   /** Whether the owning cell currently has notebook focus */
   isCellFocused?: boolean;
+  /** Whether execution controls are available in this shell */
+  canExecute?: boolean;
   /** Called when user clicks to execute */
   onExecute?: () => void;
   /** Called when user clicks to interrupt */
@@ -36,6 +38,7 @@ export function CompactExecutionButton({
   isQueued = false,
   submittedByActorLabel = null,
   isCellFocused = false,
+  canExecute = true,
   onExecute,
   onInterrupt,
   className,
@@ -43,6 +46,7 @@ export function CompactExecutionButton({
   const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
   const displayCount = count === null ? null : formatExecutionCount(count);
   const handleClick = () => {
+    if (!canExecute) return;
     if (isQueued) return; // already in queue — no-op
     if (isExecuting) {
       onInterrupt?.();
@@ -51,81 +55,59 @@ export function CompactExecutionButton({
     }
   };
 
-  const title = isExecuting
-    ? submittedByActorLabel
-      ? `Stop execution submitted by ${submittedByActorLabel}`
-      : "Stop execution"
-    : isQueued
+  const title = canExecute
+    ? isExecuting
       ? submittedByActorLabel
-        ? `Queued for execution by ${submittedByActorLabel}`
-        : "Queued for execution"
-      : count !== null
-        ? `Run cell again; last execution ${count}`
-        : "Run cell";
+        ? `Stop execution submitted by ${submittedByActorLabel}`
+        : "Stop execution"
+      : isQueued
+        ? submittedByActorLabel
+          ? `Queued for execution by ${submittedByActorLabel}`
+          : "Queued for execution"
+        : count !== null
+          ? `Run cell again; last execution ${count}`
+          : "Run cell"
+    : "Execution unavailable";
 
   return (
     <button
       type="button"
       onClick={handleClick}
       className={cn(
-        "group/exec inline-flex h-6 min-w-9 items-center justify-end rounded-sm",
-        "font-mono text-[11px] leading-none tabular-nums",
+        "group/exec inline-flex size-5 items-center justify-center rounded-full",
         "transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:text-primary",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
         state === "idle" &&
-          "text-muted-foreground/45 opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
-        state === "idle" && isCellFocused && "opacity-100",
-        state === "ran" && "text-muted-foreground/70 hover:text-primary",
+          "text-muted-foreground/35 opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
+        state === "idle" && isCellFocused && "opacity-70",
+        state === "ran" && "text-muted-foreground/45 hover:bg-primary/5 hover:text-primary",
         state === "queued" && "text-sky-600 dark:text-sky-400",
-        state === "running" && "text-destructive",
-        isQueued ? "cursor-default" : "cursor-pointer",
+        state === "running" && "text-destructive hover:bg-destructive/10",
+        isQueued || !canExecute ? "cursor-default" : "cursor-pointer",
+        !canExecute && "opacity-35 hover:bg-transparent hover:text-muted-foreground/45",
         className,
       )}
       title={title}
       aria-label={title}
-      aria-disabled={isQueued || undefined}
+      aria-disabled={isQueued || !canExecute || undefined}
       aria-busy={isExecuting || undefined}
       data-execution-state={state}
       data-execution-count={count ?? undefined}
       data-testid="execute-button"
     >
-      <span className="relative inline-flex min-w-[5ch] items-center justify-end">
-        {state === "running" ? (
-          <span className="inline-flex items-center gap-0">
-            <span className="text-muted-foreground/50">[</span>
-            <Square className="size-2.5 fill-current animate-exec-squish" aria-hidden="true" />
-            <span className="text-muted-foreground/50">]</span>
-          </span>
-        ) : state === "queued" ? (
-          <span className="inline-flex items-center gap-0">
-            <span className="text-muted-foreground/50">[</span>
-            <span
-              className="mx-[0.2ch] block size-1.5 rounded-full bg-current animate-queue-breathe"
-              aria-hidden="true"
-            />
-            <span className="text-muted-foreground/50">]</span>
-          </span>
-        ) : state === "ran" && displayCount !== null ? (
-          <>
-            <span className="transition-opacity group-hover/exec:opacity-0">
-              <span className="text-muted-foreground/50">[</span>
-              {displayCount}
-              <span className="text-muted-foreground/50">]</span>
-            </span>
-            <span className="absolute inset-0 flex items-center justify-end opacity-0 transition-opacity group-hover/exec:opacity-100">
-              <span className="text-muted-foreground/50">[</span>
-              <Play className="size-3 fill-current" aria-hidden="true" />
-              <span className="text-muted-foreground/50">]</span>
-            </span>
-          </>
-        ) : (
-          <span className="inline-flex items-center gap-0">
-            <span className="text-muted-foreground/50">[</span>
-            <Play className="size-3 fill-current" aria-hidden="true" />
-            <span className="text-muted-foreground/50">]</span>
-          </span>
-        )}
-      </span>
+      {state === "running" ? (
+        <Square className="size-2.5 fill-current animate-exec-squish" aria-hidden="true" />
+      ) : state === "queued" ? (
+        <span
+          className="block size-1.5 rounded-full bg-current animate-queue-breathe"
+          aria-hidden="true"
+        />
+      ) : (
+        <Play className="size-2.5 fill-current" aria-hidden="true" />
+      )}
+      {state === "ran" && displayCount !== null ? (
+        <span className="sr-only">Last run {displayCount}</span>
+      ) : null}
     </button>
   );
 }

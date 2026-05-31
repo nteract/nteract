@@ -10,6 +10,7 @@ describe("CellInsertionRibbon", () => {
     expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toBeNull();
 
     const addCodeButton = screen.getByTitle("Add code cell");
+    expect(addCodeButton).toHaveTextContent("Code");
     fireEvent.pointerEnter(addCodeButton);
     fireEvent.click(addCodeButton);
 
@@ -18,7 +19,7 @@ describe("CellInsertionRibbon", () => {
     expect(onInsert).toHaveBeenCalledWith("code");
   });
 
-  it("uses the left insertion channel as a primary code target", () => {
+  it("keeps the left insertion channel neutral while remaining a primary code target", () => {
     const onInsert = vi.fn();
     const { container } = render(<CellInsertionRibbon onInsert={onInsert} />);
 
@@ -26,10 +27,10 @@ describe("CellInsertionRibbon", () => {
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
 
     fireEvent.pointerEnter(hitTarget!);
+    expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toBeNull();
+
     fireEvent.click(hitTarget!);
 
-    const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
-    expect(intent).toHaveClass("bg-sky-400");
     expect(onInsert).toHaveBeenCalledWith("code");
   });
 

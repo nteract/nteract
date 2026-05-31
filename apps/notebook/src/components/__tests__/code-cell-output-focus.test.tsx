@@ -17,18 +17,21 @@ const mockEditorBlur = vi.fn();
 vi.mock("@/components/cell/CellContainer", () => ({
   CellContainer: ({
     codeContent,
+    gutterContent,
     outputContent,
     outputRightGutterContent,
     outputFocused,
     outputDimmed,
   }: {
     codeContent?: React.ReactNode;
+    gutterContent?: React.ReactNode;
     outputContent?: React.ReactNode;
     outputRightGutterContent?: React.ReactNode;
     outputFocused?: boolean;
     outputDimmed?: boolean;
   }) => (
     <div data-output-dimmed={String(outputDimmed)} data-output-focused={String(outputFocused)}>
+      {gutterContent}
       {codeContent}
       {outputContent}
       {outputRightGutterContent}
@@ -271,7 +274,8 @@ describe("CodeCell output focus", () => {
     expect(status?.textContent).toBe("Python·Running");
     expect(status).toHaveClass("text-primary");
     expect(status).not.toHaveClass("text-destructive/80");
-    expect(rule).toHaveClass("bg-primary/45");
+    expect(rule).toHaveClass("text-sky-500/55");
+    expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
     expect(stopButton).toHaveClass("text-destructive");
   });
 
@@ -298,12 +302,33 @@ describe("CodeCell output focus", () => {
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
     expect(status).toHaveClass("group-hover:max-w-64");
-    expect(rule).toHaveClass("bg-border/25");
+    expect(rule).toHaveClass("bg-border/15");
   });
 
   it("uses compact current-line chrome for empty idle code cells", () => {
     mockOutputs = [];
     mockExecution = null;
+    mockIsFocused = true;
+
+    const { container, getByTestId } = render(
+      <CodeCell
+        cell={makeCell({ source: "" })}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+
+    expect(footer).toBeNull();
+    expect(getByTestId("execute-button")).toHaveAttribute("aria-label", "Run cell");
+  });
+
+  it("keeps current-line metadata for empty cells after execution state appears", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: 3, submitted_by_actor_label: null };
     mockIsFocused = true;
 
     const { container } = render(
@@ -321,8 +346,8 @@ describe("CodeCell output focus", () => {
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveClass("min-h-4");
-    expect(detail).toHaveClass("sr-only");
-    expect(rule).toBeNull();
+    expect(detail).not.toHaveClass("sr-only");
+    expect(rule).not.toBeNull();
   });
 
   it("keeps focused idle footer language collapsed into the boundary", () => {

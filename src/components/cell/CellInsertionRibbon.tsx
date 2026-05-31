@@ -1,4 +1,4 @@
-import { Code2, Pilcrow, Plus } from "lucide-react";
+import { Code, LetterText, Plus } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { notebookCellLayoutVars } from "./cell-layout";
@@ -52,7 +52,7 @@ export function CellInsertionRibbon({
 
   const actionButtonClass = (type: CellInsertionType) =>
     cn(
-      "inline-flex h-5 w-8 items-center justify-center gap-0.5 rounded-sm text-muted-foreground/55 transition-colors",
+      "inline-flex h-6 items-center justify-center gap-1 rounded-sm px-2 text-xs text-muted-foreground/60 transition-colors",
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
       resolvedActiveType === type
         ? "bg-muted text-foreground shadow-sm"
@@ -108,13 +108,13 @@ export function CellInsertionRibbon({
         data-slot="cell-adder-primary-hit-target"
         title="Add code cell from insertion margin"
         aria-label="Add code cell from insertion margin"
-        onPointerEnter={() => setActiveType("code")}
-        onFocus={() => setActiveType("code")}
+        onPointerEnter={() => setActiveType(null)}
+        onFocus={() => setActiveType(null)}
         onClick={() => onInsert("code")}
         className={cn(
           "h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
-          resolvedActiveType === "code" ? "bg-sky-400/5" : "hover:bg-muted/20",
+          resolvedActiveType ? "bg-transparent" : "hover:bg-muted/20",
           terminal && "h-7",
         )}
       >
@@ -132,7 +132,7 @@ export function CellInsertionRibbon({
       >
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-6 items-center gap-0.5 rounded-sm border border-border/45 bg-background/85 p-0.5 shadow-sm backdrop-blur-sm"
+          className="flex h-7 items-center gap-0.5 rounded-sm border border-border/45 bg-background/85 p-0.5 shadow-sm backdrop-blur-sm"
         >
           <button
             type="button"
@@ -144,7 +144,8 @@ export function CellInsertionRibbon({
             className={actionButtonClass("code")}
           >
             <Plus className="h-2.5 w-2.5" aria-hidden="true" />
-            <Code2 className="h-3 w-3" aria-hidden="true" />
+            <Code className="h-3 w-3" aria-hidden="true" />
+            <span>Code</span>
           </button>
           <button
             type="button"
@@ -156,7 +157,8 @@ export function CellInsertionRibbon({
             className={actionButtonClass("markdown")}
           >
             <Plus className="h-2.5 w-2.5" aria-hidden="true" />
-            <Pilcrow className="h-3 w-3" aria-hidden="true" />
+            <LetterText className="h-3 w-3" aria-hidden="true" />
+            <span>Markdown</span>
           </button>
         </div>
       </div>

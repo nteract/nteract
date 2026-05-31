@@ -1,60 +1,40 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vite-plus/test";
 import { CodeCellCurrentLine } from "../CodeCellCurrentLine";
 
 describe("CodeCellCurrentLine", () => {
   it("keeps idle language quiet until the cell is engaged", () => {
-    const { container } = render(
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={null}
-        onExecute={() => undefined}
-        onInterrupt={() => undefined}
-      />,
-    );
+    const { container } = render(<CodeCellCurrentLine languageLabel="Python" count={null} />);
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "idle");
-    expect(footer).toHaveClass("min-h-[1.125rem]");
+    expect(footer).toHaveClass("min-h-4");
     expect(status).toHaveTextContent("Python·Ready");
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
-    expect(rule).toHaveClass("bg-border/25");
+    expect(rule).toHaveClass("bg-border/15");
   });
 
   it("keeps blank idle cells slim without separator chrome", () => {
     const { container } = render(
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={null}
-        compactIdle
-        isFocused
-        onExecute={() => undefined}
-        onInterrupt={() => undefined}
-      />,
+      <CodeCellCurrentLine languageLabel="Python" count={null} compactIdle isFocused />,
     );
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
-    expect(footer).toHaveClass("min-h-4");
+    expect(footer).toHaveClass("min-h-3.5");
     expect(detail).toHaveClass("sr-only");
     expect(rule).toBeNull();
   });
 
   it("keeps focused idle language collapsed into the boundary", () => {
     const { container } = render(
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={null}
-        isFocused
-        onExecute={() => undefined}
-        onInterrupt={() => undefined}
-      />,
+      <CodeCellCurrentLine languageLabel="Python" count={null} isFocused />,
     );
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
@@ -65,49 +45,27 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveClass("group-focus-within:max-w-64");
   });
 
-  it("separates active running status from the destructive stop control", () => {
-    const onInterrupt = vi.fn();
+  it("separates active running status from the execution control lane", () => {
     const { container } = render(
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={12}
-        isExecuting
-        submittedByActorLabel="local:kyle"
-        onExecute={() => undefined}
-        onInterrupt={onInterrupt}
-      />,
+      <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
     );
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
-    const stopButton = screen.getByRole("button", {
-      name: "Stop execution submitted by local:kyle",
-    });
 
     expect(footer).toHaveAttribute("data-execution-state", "running");
     expect(status).toHaveTextContent("Python·Running");
     expect(status).toHaveAttribute("aria-label", "Python: Running");
     expect(status).toHaveAttribute("aria-live", "polite");
     expect(status).toHaveClass("text-primary");
-    expect(rule).toHaveClass("bg-primary/45");
-    expect(stopButton).toHaveClass("text-destructive");
-
-    fireEvent.click(stopButton);
-
-    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    expect(rule).toHaveClass("text-sky-500/55");
+    expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
   });
 
   it("keeps completed runs available without notebook prompt syntax", () => {
     const { container } = render(
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={12}
-        elapsedMs={1476}
-        isFocused
-        onExecute={() => undefined}
-        onInterrupt={() => undefined}
-      />,
+      <CodeCellCurrentLine languageLabel="Python" count={12} elapsedMs={1476} isFocused />,
     );
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
@@ -120,26 +78,14 @@ describe("CodeCellCurrentLine", () => {
   });
 
   it("keeps completed metadata quiet until the cell is engaged", () => {
-    const { container } = render(
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={12}
-        onExecute={() => undefined}
-        onInterrupt={() => undefined}
-      />,
-    );
+    const { container } = render(<CodeCellCurrentLine languageLabel="Python" count={12} />);
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
-    const button = screen.getByRole("button", {
-      name: "Run cell again; last execution 12",
-    });
 
     expect(status).toHaveTextContent("Python·Run 12");
     expect(status).toHaveClass("max-w-0");
     expect(status).toHaveClass("opacity-0");
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
-    expect(button).toHaveClass("opacity-35");
-    expect(button).toHaveClass("size-3.5");
   });
 
   it("can carry activity context after the run state", () => {
@@ -148,8 +94,6 @@ describe("CodeCellCurrentLine", () => {
         languageLabel="Python"
         count={12}
         activityContent={<span data-testid="peer-activity">Kyle</span>}
-        onExecute={() => undefined}
-        onInterrupt={() => undefined}
       />,
     );
 

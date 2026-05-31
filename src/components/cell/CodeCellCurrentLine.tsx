@@ -1,4 +1,3 @@
-import { Play, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -10,11 +9,7 @@ export interface CodeCellCurrentLineProps {
   isQueued?: boolean;
   isFocused?: boolean;
   compactIdle?: boolean;
-  submittedByActorLabel?: string | null;
   activityContent?: ReactNode;
-  canExecute?: boolean;
-  onExecute: () => void;
-  onInterrupt: () => void;
   className?: string;
 }
 
@@ -84,28 +79,65 @@ function executionCountLabel(count: number | null): string | null {
   return count === null ? null : `Execution ${formatExecutionCount(count)}`;
 }
 
-function executionLineClass({
-  isExecuting,
-  isQueued,
-  isFocused,
-}: {
-  isExecuting: boolean;
-  isQueued: boolean;
-  isFocused: boolean;
-}) {
-  if (isExecuting) {
-    return "bg-primary/45";
-  }
-
+function executionLineClass({ isQueued, isFocused }: { isQueued: boolean; isFocused: boolean }) {
   if (isQueued) {
-    return "bg-sky-400/35";
+    return "bg-sky-400/30";
   }
 
   if (isFocused) {
-    return "bg-border/50";
+    return "bg-border/30";
   }
 
-  return "bg-border/25 group-hover:bg-border/45";
+  return "bg-border/15 group-hover:bg-border/25 group-focus-within:bg-border/25";
+}
+
+function ExecutionBoundaryRule({
+  state,
+  isQuietResting,
+  isQueued,
+  isFocused,
+}: {
+  state: "idle" | "ran" | "queued" | "running";
+  isQuietResting: boolean;
+  isQueued: boolean;
+  isFocused: boolean;
+}) {
+  if (state === "running") {
+    return (
+      <div
+        data-slot="code-cell-current-line-rule"
+        className="relative h-3 min-w-14 flex-1 overflow-hidden text-sky-500/55 dark:text-sky-300/55 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]"
+      >
+        <svg
+          className="absolute inset-y-0 left-0 h-full w-[200%] animate-exec-signal-wave"
+          viewBox="0 0 240 12"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M0 6 C5 1 10 1 15 6 S25 11 30 6 S40 1 45 6 S55 11 60 6 S70 1 75 6 S85 11 90 6 S100 1 105 6 S115 11 120 6 S130 1 135 6 S145 11 150 6 S160 1 165 6 S175 11 180 6 S190 1 195 6 S205 11 210 6 S220 1 225 6 S235 11 240 6"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeWidth="1.4"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-slot="code-cell-current-line-rule"
+      className={cn(
+        "h-px min-w-4 rounded-full transition-[background-color,width,flex-basis] duration-150",
+        isQuietResting ? "w-10 flex-none group-hover:w-14 group-focus-within:w-14" : "flex-1",
+        executionLineClass({ isQueued, isFocused }),
+        isQueued && "animate-queue-breathe",
+      )}
+    />
+  );
 }
 
 export function CodeCellCurrentLine({
@@ -116,11 +148,7 @@ export function CodeCellCurrentLine({
   isQueued = false,
   isFocused = false,
   compactIdle = false,
-  submittedByActorLabel = null,
   activityContent,
-  canExecute = true,
-  onExecute,
-  onInterrupt,
   className,
 }: CodeCellCurrentLineProps) {
   const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
@@ -134,29 +162,6 @@ export function CodeCellCurrentLine({
     isQueued,
   });
   const countLabel = executionCountLabel(count);
-  const actionTitle = isExecuting
-    ? submittedByActorLabel
-      ? `Stop execution submitted by ${submittedByActorLabel}`
-      : "Stop execution"
-    : isQueued
-      ? submittedByActorLabel
-        ? `Queued for execution by ${submittedByActorLabel}`
-        : "Queued for execution"
-      : count !== null
-        ? `Run cell again; last execution ${count}`
-        : "Run cell";
-  const scopedActionTitle = canExecute ? actionTitle : "Execution unavailable";
-
-  const handleClick = () => {
-    if (!canExecute) return;
-    if (isQueued) return;
-    if (isExecuting) {
-      onInterrupt();
-    } else {
-      onExecute();
-    }
-  };
-
   return (
     <div
       data-slot="code-cell-current-line"
@@ -164,48 +169,11 @@ export function CodeCellCurrentLine({
       data-execution-count={count ?? undefined}
       data-execution-label={countLabel ?? undefined}
       className={cn(
-        "mt-1 flex items-center gap-1.5 text-[11px] leading-none text-muted-foreground/60",
-        isCompactIdle ? "min-h-4" : isQuietResting ? "min-h-[1.125rem]" : "min-h-6",
+        "mt-1.5 flex items-center gap-1.5 text-[11px] leading-none text-muted-foreground/60",
+        isCompactIdle ? "min-h-3.5" : isQuietResting ? "min-h-4" : "min-h-5",
         className,
       )}
     >
-      <button
-        type="button"
-        onClick={handleClick}
-        disabled={isQueued || !canExecute}
-        title={scopedActionTitle}
-        aria-label={scopedActionTitle}
-        aria-busy={isExecuting || undefined}
-        data-testid="execute-button"
-        data-execution-state={state}
-        data-execution-count={count ?? undefined}
-        className={cn(
-          "inline-flex size-4 shrink-0 items-center justify-center rounded-full",
-          "transition-colors duration-150",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-          isQuietResting &&
-            "size-3.5 opacity-35 group-hover:opacity-85 group-focus-within:opacity-85",
-          !isExecuting && state !== "queued" && "text-muted-foreground/55",
-          isCompactIdle && "opacity-45 hover:opacity-100",
-          state === "idle" && "hover:bg-muted hover:text-foreground",
-          state === "ran" && "hover:bg-primary/5 hover:text-primary",
-          state === "queued" && "cursor-default text-sky-600 dark:text-sky-400",
-          state === "running" && "text-destructive hover:bg-destructive/10",
-          !canExecute &&
-            "cursor-default opacity-35 hover:bg-transparent hover:text-muted-foreground/55",
-        )}
-      >
-        {isExecuting ? (
-          <Square className="size-2.5 fill-current animate-exec-squish" aria-hidden="true" />
-        ) : isQueued ? (
-          <span
-            className="block size-1.5 rounded-full bg-current animate-queue-breathe"
-            aria-hidden="true"
-          />
-        ) : (
-          <Play className="size-2.5 fill-current" aria-hidden="true" />
-        )}
-      </button>
       <span
         data-slot="code-cell-current-line-status"
         aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
@@ -260,12 +228,11 @@ export function CodeCellCurrentLine({
               {activityContent}
             </div>
           ) : null}
-          <div
-            data-slot="code-cell-current-line-rule"
-            className={cn(
-              "h-px min-w-8 flex-1 rounded-full transition-colors duration-150",
-              executionLineClass({ isExecuting, isQueued, isFocused }),
-            )}
+          <ExecutionBoundaryRule
+            state={state}
+            isQuietResting={isQuietResting}
+            isQueued={isQueued}
+            isFocused={isFocused}
           />
         </>
       )}

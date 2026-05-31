@@ -3,6 +3,7 @@ import { ChevronRight, Code2, EyeOff } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
+import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
@@ -394,7 +395,14 @@ export const CodeCell = memo(function CodeCell({
     [onNavigateToCell],
   );
 
-  const currentLine = (
+  const hasCurrentLine =
+    !isSourceEmpty ||
+    outputs.length > 0 ||
+    executionCount !== null ||
+    isExecuting ||
+    isQueued ||
+    isSourceHidden;
+  const currentLine = hasCurrentLine ? (
     <CodeCellCurrentLine
       languageLabel={languageLabel}
       count={executionCount}
@@ -402,13 +410,9 @@ export const CodeCell = memo(function CodeCell({
       isQueued={isQueued}
       isFocused={isFocused}
       compactIdle={isSourceEmpty}
-      submittedByActorLabel={submittedByActorLabel}
       activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
-      canExecute={canExecute}
-      onExecute={handleExecute}
-      onInterrupt={onInterrupt}
     />
-  );
+  ) : null;
 
   return (
     <>
@@ -421,6 +425,20 @@ export const CodeCell = memo(function CodeCell({
         outputFocused={outputFocused}
         outputDimmed={outputDimmed}
         onFocus={onFocus}
+        gutterContent={
+          !bothHidden ? (
+            <CompactExecutionButton
+              count={executionCount}
+              isExecuting={isExecuting}
+              isQueued={isQueued}
+              submittedByActorLabel={submittedByActorLabel}
+              isCellFocused={isFocused}
+              canExecute={canExecute}
+              onExecute={handleExecute}
+              onInterrupt={onInterrupt}
+            />
+          ) : undefined
+        }
         rightGutterContent={rightGutterContent}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}

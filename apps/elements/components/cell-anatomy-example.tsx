@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   CircleDot,
   FileText,
-  Play,
   Rows3,
   Search,
   ShieldCheck,
@@ -104,55 +103,22 @@ const currentLineStateFixtures = [
   {
     label: "Idle",
     detail: "Quiet until hover, focus, or keyboard focus.",
-    line: (
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={null}
-        onExecute={() => {}}
-        onInterrupt={() => {}}
-      />
-    ),
+    line: <CodeCellCurrentLine languageLabel="Python" count={null} />,
   },
   {
     label: "Focused idle",
     detail: "Cell selection colors the rule; metadata waits for hover or keyboard focus.",
-    line: (
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={null}
-        isFocused
-        onExecute={() => {}}
-        onInterrupt={() => {}}
-      />
-    ),
+    line: <CodeCellCurrentLine languageLabel="Python" count={null} isFocused />,
   },
   {
     label: "Queued",
     detail: "Waiting uses the queue accent without becoming an error.",
-    line: (
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={12}
-        isQueued
-        submittedByActorLabel="local:kyle"
-        onExecute={() => {}}
-        onInterrupt={() => {}}
-      />
-    ),
+    line: <CodeCellCurrentLine languageLabel="Python" count={12} isQueued />,
   },
   {
     label: "Running",
     detail: "Status reads active; the stop control carries danger.",
-    line: (
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={12}
-        isExecuting
-        submittedByActorLabel="local:kyle"
-        onExecute={() => {}}
-        onInterrupt={() => {}}
-      />
-    ),
+    line: <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
   },
   {
     label: "Completed",
@@ -163,8 +129,6 @@ const currentLineStateFixtures = [
         count={12}
         elapsedMs={1476}
         activityContent={<StaticPresenceActivity />}
-        onExecute={() => {}}
-        onInterrupt={() => {}}
       />
     ),
   },
@@ -180,10 +144,14 @@ const currentLineConceptFixtures = [
         count={26}
         elapsedMs={1476}
         activityContent={<StaticPresenceActivity />}
-        onExecute={() => {}}
-        onInterrupt={() => {}}
       />
     ),
+  },
+  {
+    label: "Timed signal",
+    detail:
+      "Speculative: start time plus recent durations could turn the running wave into rough progress.",
+    line: <TimedExecutionSignalConcept />,
   },
   {
     label: "Run state chip",
@@ -376,8 +344,6 @@ function SourceFixture() {
         activityContent={
           <CellPresenceIndicators cellId={primaryCellId} variant="inline" prefixSeparator />
         }
-        onExecute={() => {}}
-        onInterrupt={() => {}}
       />
     </div>
   );
@@ -442,8 +408,6 @@ function BoundarySourceFixture({ sourceHidden = false }: { sourceHidden?: boolea
         count={executionCount}
         elapsedMs={1476}
         isFocused
-        onExecute={() => {}}
-        onInterrupt={() => {}}
       />
     </div>
   );
@@ -609,8 +573,8 @@ export function CellAnatomyExample() {
           <h2 className="text-sm font-semibold">Current Line Studio</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
             These are low-risk composition sketches for the source/result boundary. They keep the
-            production run button and layout nearby while letting the activity and completion copy
-            move around.
+            production boundary nearby while letting activity, completion copy, and future timing
+            affordances move around.
           </p>
         </div>
         <div className="divide-y divide-fd-border bg-background">
@@ -735,14 +699,42 @@ function StaticPresenceActivity() {
 function CurrentLineConcept({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-[1.125rem] min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground/70">
-      <button
-        type="button"
-        className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-full text-muted-foreground/55 transition-colors hover:bg-muted hover:text-foreground"
-        aria-label="Run cell"
-      >
-        <Play className="size-2.5 fill-current" aria-hidden="true" />
-      </button>
       {children}
+    </div>
+  );
+}
+
+function TimedExecutionSignalConcept() {
+  return (
+    <div className="flex min-h-5 min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground/70">
+      <span className="rounded-sm bg-primary/10 px-1 py-0.5 font-medium text-primary">Python</span>
+      <span className="text-muted-foreground/35" aria-hidden="true">
+        ·
+      </span>
+      <span className="font-medium tabular-nums text-primary">Run 32</span>
+      <span className="text-muted-foreground/45 tabular-nums">2.1s / ~4s</span>
+      <div className="relative h-3 min-w-24 flex-1 overflow-hidden rounded-full text-sky-500/60 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]">
+        <div className="absolute inset-y-1 left-0 w-[54%] rounded-full bg-sky-400/10 animate-exec-signal-tail" />
+        <svg
+          className="absolute inset-y-0 left-0 h-full w-[200%] animate-exec-signal-wave"
+          viewBox="0 0 240 12"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M0 6 C5 1 10 1 15 6 S25 11 30 6 S40 1 45 6 S55 11 60 6 S70 1 75 6 S85 11 90 6 S100 1 105 6 S115 11 120 6 S130 1 135 6 S145 11 150 6 S160 1 165 6 S175 11 180 6 S190 1 195 6 S205 11 210 6 S220 1 225 6 S235 11 240 6"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeWidth="1.4"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+        <span
+          className="absolute left-[54%] top-1/2 h-2 w-8 -translate-y-1/2 rounded-full bg-gradient-to-r from-transparent via-sky-500/60 to-transparent blur-[0.5px]"
+          aria-hidden="true"
+        />
+      </div>
     </div>
   );
 }
