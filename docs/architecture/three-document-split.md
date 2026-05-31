@@ -60,12 +60,12 @@ The split is not bandwidth optimization. It is what makes the trust model expres
 
 The cleavage line is "what should survive a kernel restart, a daemon restart, a save-to-`.ipynb` round trip?"
 
-What lives in `NotebookDoc` (schema v4, `crates/notebook-doc/src/lib.rs:18-40`):
+What lives in `NotebookDoc` (schema v5, `crates/notebook-doc/src/lib.rs`):
 
 - `cells/{cell_id}/`: `id`, `cell_type`, `position` (fractional index hex string for ordering), `source` (Automerge Text), `metadata`, `resolved_assets`, `attachments`, `execution_count` (legacy JSON-encoded string preserved for nbformat round-trip).
 - `cells/{cell_id}/execution_id`: a pointer that the daemon stamps at queue time. This is the **only** runtime-state field that lives in `NotebookDoc`.
 - `metadata/`: `runtime`, `kernelspec`, `language_info`, `runt` (deps / trust / cell-execution metadata), legacy `notebook_metadata` JSON string.
-- `schema_version`, `notebook_id`.
+- `schema_version`, `notebook_id`, `runtime_state_doc_id`.
 
 What lives in `RuntimeStateDoc` (schema v2, `crates/runtime-doc/src/doc.rs:8-73`):
 
@@ -157,7 +157,7 @@ Room eviction is driven by "last peer disconnected." `peer_eviction.rs` runs the
 Each doc's `receive_sync_message` makes a different choice about client changes:
 
 - **`NotebookDoc::receive_sync_message_with_changes_recovering`** applies client changes. The clone-preview validator runs first (per identity ADR Decision 3) to reject actor-principal forgery, then changes apply.
-- **`RuntimeStateDoc::receive_sync_message_with_changes_recovering`** also applies client changes (the widget subtree path). Same validator runs first. Convention restricts what the client may legally write; the server does not yet enforce paths.
+- **`RuntimeStateDoc::receive_sync_message_with_changes_recovering`** also applies client changes for approved runtime-state ingress paths. The same actor validator runs first, then the shared runtime-doc policy enforces the allowed path surface for editor/owner widget state and runtime-peer lifecycle/output state.
 - **`PoolDoc::receive_sync_message`** (`crates/notebook-doc/src/pool_state.rs:341`) explicitly clears `message.changes = Vec::<Vec<u8>>::new().into()` before passing to Automerge. The `heads`, `need`, and `have` fields are preserved by omission so the sync handshake still completes (bloom-filter exchange, ACKs); only the change payload is dropped.
 
 This is three different ingress shapes for what looks like one protocol. `PoolDoc`'s read-only mode is the most aggressive: a malicious peer cannot even cause Automerge to evaluate the changes; the strip happens before any apply.
@@ -198,7 +198,7 @@ This is three different ingress shapes for what looks like one protocol. `PoolDo
 2. **Is `last_saved` in the right document?** It lives in `RuntimeStateDoc`, which does not persist. The justification in the field's doc comment is that it tracks ephemeral save bookkeeping, not document schema. But the field survives only as long as the room is open, which means a room reopened from disk has no record of when it was last saved. If the answer is "use mtime on the `.ipynb`," that should be explicit.
 3. **Is `cells[cell_id].execution_count` in the right document?** Today it lives in `NotebookDoc` as a JSON-encoded string ("5", "null") for nbformat round-trip. Live execution counts live in `RuntimeStateDoc.executions[execution_id].execution_count`. The frontend has to know to consult the live source first and fall back to the legacy field. Splitting one concept across two documents creates a stale-on-reload hazard.
 4. **`comms/*/outputs` is inline manifests, not blob refs.** Most output payloads in `RuntimeStateDoc.executions/*/outputs` go through the blob store; comm outputs (the OutputModel widget) inline their manifests. The reason is that comm outputs are scoped to a widget, not a cell, and don't go through the cell output path. Whether the comm-outputs storage should converge with execution outputs is open.
-5. **`PoolDoc` per-pool-type vs per-pool-instance.** UV / Conda / Pixi are hard-coded top-level keys. Adding a new env manager (mamba, rattler, future) requires a schema change, not data. A keyed map `pools/{kind}` would be more extensible; the trade-off is that schema-versioned hard-coded keys make pool absence explicit in the type rather than a missing entry. Note also that `PoolDoc` has no `schema_version` field at all (`NotebookDoc` is v4, `RuntimeStateDoc` is v2); a future incompatible change has no version pin to negotiate against.
+5. **`PoolDoc` per-pool-type vs per-pool-instance.** UV / Conda / Pixi are hard-coded top-level keys. Adding a new env manager (mamba, rattler, future) requires a schema change, not data. A keyed map `pools/{kind}` would be more extensible; the trade-off is that schema-versioned hard-coded keys make pool absence explicit in the type rather than a missing entry. Note also that `PoolDoc` has no `schema_version` field at all (`NotebookDoc` is v5, `RuntimeStateDoc` is v2); a future incompatible change has no version pin to negotiate against.
 6. **What happens to `RuntimeStateDoc` on schema bump?** v2 today. The bump path is "discard and re-seed" because there is no persisted state. That works as long as no consumer treats `RuntimeStateDoc` as durable. If a future feature (e.g., persistent execution history across daemon restart) adds a persistence layer, the schema-bump strategy needs a migration story.
 7. **Cross-document heads correlation belongs to the publish boundary, not the live docs.** A snapshot for replay or audit needs (`NotebookDoc` heads, `RuntimeStateDoc` heads) as a pair. The desktop daemon does not produce or store this pair anywhere, and that is probably correct: forcing the live docs to reference each other's heads buys nothing for editing and adds a write-amplification path on every change. The natural home for the pair is publish metadata — the hosted-room prototype already stores both hashes together in its D1 catalog row alongside `latest_revision_id`, and a desktop "export snapshot" or "save versioned" feature would write the same pair into the export artifact. Leaving it out of the live documents keeps the cleavage line clean.
 8. **`PoolDoc` does not participate in the v1 clone-preview validator.** Because all changes are stripped on ingress, the principal-forgery problem doesn't arise. But the validator's absence means a malicious peer's stripped changes still contribute to the bloom-filter handshake. Probably benign; worth noting.
@@ -215,7 +215,7 @@ The split was designed for the desktop topology (one daemon per user, same-UID t
 
 ## References
 
-- `crates/notebook-doc/src/lib.rs:18-40` - NotebookDoc schema v4.
+- `crates/notebook-doc/src/lib.rs` - NotebookDoc schema v5.
 - `crates/notebook-doc/AGENTS.md` - mutation rules for NotebookDoc.
 - `crates/runtime-doc/src/doc.rs:8-73` - RuntimeStateDoc schema v2.
 - `crates/notebook-doc/src/pool_state.rs:8-27, :128-141` - PoolDoc schema. The doc-comment at 8-27 names `uv` and `conda` only; the live scaffold at 128-141 also includes `pixi` and a per-pool `failed_package` field (`pool_state.rs:52, :223`). The doc-comment is stale.

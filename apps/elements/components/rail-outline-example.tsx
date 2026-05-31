@@ -12,14 +12,11 @@ import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import {
   NotebookCellList,
   NotebookDocumentHeader,
+  NotebookDocumentRail,
   NotebookDocumentShell,
   type NotebookViewCell,
 } from "@/components/notebook-shell";
-import {
-  NotebookPackagesPanel,
-  NotebookRail,
-  type NotebookRailPanelId,
-} from "@/components/notebook-rail";
+import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import { DependencyHeader } from "@/notebook-components/DependencyHeader";
 import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
@@ -80,7 +77,7 @@ const outlineBoundaryRows = [
   {
     label: "Heading navigation",
     catalog: "inert outline callback updates fixture focus",
-    production: "navigateMarkdownHeading, scrollIntoView, and history.replaceState",
+    production: "navigateNotebookOutlineItem, heading measurement, and cell-anchor fallback",
   },
   {
     label: "Drag policy",
@@ -137,6 +134,9 @@ export function RailOutlineExample() {
               runtime="python"
               focusedCellId={focusedCellId}
               lastCellId="cell-findings"
+              canEditStructure={scenario.capabilities.canEditStructure}
+              canExecute={scenario.capabilities.canExecute}
+              canViewPackages={scenario.capabilities.canViewPackages}
               onStartKernel={noop}
               onInterruptKernel={noop}
               onRestartKernel={noop}
@@ -151,10 +151,10 @@ export function RailOutlineExample() {
         />
       }
       rail={
-        <NotebookRail
+        <NotebookDocumentRail
+          viewModel={viewModel}
           activePanelId={activePanel}
           collapsed={railCollapsed}
-          outlineItems={viewModel.outlineItems}
           outlineCellIds={viewModel.cellIds}
           activeOutlineItemId={activeOutlineItemId}
           selectedOutlineItemId={selectedOutlineItemId}

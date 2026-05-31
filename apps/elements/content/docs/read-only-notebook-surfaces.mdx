@@ -1,13 +1,14 @@
 ---
 title: Read-only notebook surfaces
-description: Shared hosted notebook components rendered from runtime-free fixtures.
+description: Static report and embed components rendered from runtime-free fixtures.
 ---
 
 import { ReadOnlyNotebookSurfacesExample } from "@/components/read-only-notebook-surfaces-example";
 
-Hosted notebooks and cloud previews should not fork the notebook cell stack.
-This page renders the shared read-only path from current nteract components
-with static nbformat-style fixtures.
+Static reports, embeds, and fixture previews should not fork the notebook cell
+stack. Cloud's live viewer now renders the shared notebook document shell and
+cell surface; this page keeps the lower-level read-only components available for
+runtime-free report-style contexts with static nbformat-style fixtures.
 The cloud viewer fixture follows the shared
 [notebook shell capabilities](/docs/notebook-shell-capabilities) contract:
 public readers can inspect notebook and package state but cannot request edit
@@ -17,7 +18,8 @@ until a host-authenticated flow is active.
 
 ## Implementation intent
 
-- `ReadOnlyNotebook` and `ReadOnlyNotebookCell` come from `src/components/cell`.
+- `ReadOnlyNotebook` and `ReadOnlyNotebookCell` come from `src/components/cell`
+  for static report and embed use cases, not as a separate cloud notebook app.
 - `CellSkeleton` comes from the notebook app loading state.
 - The examples exercise `OutputArea` through static outputs, not a kernel,
   daemon, CRDT handle, live room, or generated WASM binding.

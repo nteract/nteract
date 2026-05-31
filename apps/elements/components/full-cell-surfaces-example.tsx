@@ -213,7 +213,7 @@ function seedFullCellFixtures() {
     output_ids: standaloneCodeCellOutputs
       .map((output) => output.output_id)
       .filter((outputId): outputId is string => Boolean(outputId)),
-    submitted_by_actor_label: "local:kyle",
+    submitted_by_actor_label: fullCellScenario.capabilities.access.actorLabel,
   });
   setCellExecutionPointer(codeCell.id, standaloneCodeCellExecutionId);
 

@@ -169,16 +169,20 @@ The first hosted implementation can write only compact snapshots. Incremental
 object chunks are an optimization to evaluate after snapshot-pair bootstrap is
 measured; live deltas can remain in the room's sync protocol memory until then.
 
-The current cloud R2 layout remains a compatibility path:
+The cloud R2 layout is currently hybrid: notebook snapshots retain the
+compatibility path, while runtime-state snapshots use the first-class
+document-id path:
 
 ```text
 n/{notebookId}/snapshots/{notebookHeadsHash}.am
-n/{notebookId}/snapshots/runtime-state/{runtimeHeadsHash}.am
+docs/{runtimeStateDocId}/snapshots/{runtimeHeadsHash}.am
 ```
 
-New code should not deepen that nesting. It makes the runtime-state document
-look like a file inside the notebook instead of a first-class Automerge document
-associated by the notebook model.
+Legacy nested runtime-state keys remain a read path only when recorded on older
+revision rows. New runtime-state snapshot writes should not deepen the old
+nesting because it makes the runtime-state document look like a file inside the
+notebook instead of a first-class Automerge document associated by the notebook
+model.
 
 ## Rejected Alternatives
 
@@ -223,18 +227,22 @@ The identity pointer fixes association without erasing the boundary.
 
 ## Migration Plan
 
-1. Add typed accessors for `NotebookDoc.runtime_state_doc_id` and bump the
-   notebook schema.
-2. Add a typed self-identifying field to `RuntimeStateDoc`.
-3. During room creation/load, mint and persist a runtime-state document id when
-   opening an older notebook document.
-4. Keep the existing sync streams and room shape while changing how
-   `NotebookRoom.state` is initialized.
-5. Add `runtime_state_doc_id` to cloud revision/catalog metadata.
-6. Teach cloud materialization to prefer the pointer and retain legacy nested
-   runtime-state snapshot fallback.
-7. Move new object snapshots toward `docs/{docId}/snapshot/{headsHash}`.
-8. Evaluate incremental object chunks only after snapshot-pair bootstrap is
+Status as of 2026-05-31:
+
+1. `NotebookDoc.runtime_state_doc_id` has landed with NotebookDoc schema v5.
+2. `RuntimeStateDoc` carries its self identity when known.
+3. Room creation/load can mint and persist a runtime-state document id for
+   older notebook documents.
+4. The typed-frame streams remain split: NotebookDoc and RuntimeStateDoc still
+   sync over separate frame types.
+5. Cloud revision/catalog metadata records `runtime_state_doc_id` and the
+   concrete `runtime_snapshot_key`.
+6. New cloud runtime snapshots write to
+   `docs/{runtimeStateDocId}/snapshots/{headsHash}.am`; notebook snapshots still
+   use the `n/{notebookId}/snapshots/{headsHash}.am` compatibility namespace.
+7. Legacy nested runtime-state snapshot keys remain a compatibility read path
+   when recorded on existing revision rows.
+8. Incremental object chunks remain deferred until snapshot-pair bootstrap is
    measured.
 
 ## Compatibility

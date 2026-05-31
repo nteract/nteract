@@ -38,17 +38,26 @@ NotebookDocumentShell
   package/runtime/presence slots
 
 NotebookShellCapabilities
+  access
+    level
+    source
+    actor
+  auth
+    canSignIn
+    needsAttention
+  runtime
+    canWriteRuntimeState
+    actor
   canRead
   canEditMarkdown
   canEditCells
+  canEditStructure
   canRequestEdit
   canExecute
   canToggleCode
   canViewPackages
   canManagePackages
   canManageSharing
-  access
-  auth
 ```
 
 Desktop, cloud, and elements are hosts around that shell:
@@ -100,6 +109,18 @@ Examples:
 The room or document authority should provide the source facts. Host adapters
 translate those facts into `NotebookShellCapabilities`.
 
+`NotebookShellCapabilities.access.level` is document UI access only:
+`none | viewer | editor | owner`. Room-level `runtime_peer` is modeled through
+`NotebookShellCapabilities.runtime.canWriteRuntimeState` and a runtime actor
+projection, not by adding another document access level. This keeps runtime
+output/lifecycle authorship separate from editing, package management, and
+sharing controls.
+
+Actor labels remain durable attribution keys, but shared UI should consume
+structured actor projections when hosts can provide them. Raw label parsing in
+React is a compatibility fallback while desktop, cloud, and Elements converge on
+principal/operator projections.
+
 `canRequestEdit` is distinct from `canEditCells`. A host can show an edit
 request/sign-in affordance before the room grants editor access. The write path
 must still check `canEditMarkdown`/`canEditCells` and the room's authorization
@@ -144,15 +165,24 @@ Recommended fixture scenarios:
 
 - desktop writable notebook;
 - desktop read-only notebook;
+- desktop remote room with local daemon/socket identity plus remote credential;
 - cloud public viewer;
 - cloud authenticated editor;
+- cloud owner;
+- delegated agent for a human principal;
+- one principal with multiple operators;
+- mixed-IdP room;
+- credential attention;
+- runtime peer;
 - runtime unavailable;
 - package management unavailable;
+- untrusted dependencies;
 - output frame domains allowed or blocked.
 
-Catalog pages should render `NotebookDocumentShell` through those fixtures when
-they need notebook-level context. Lower-level fixtures remain useful for isolated
-component tests, but they should not become a second app model.
+Catalog pages should render `NotebookDocumentShell`, `NotebookDocumentRail`,
+`NotebookDocumentHeader`, and `NotebookCellList` through those fixtures when
+they need notebook-level context. Lower-level fixtures remain useful for
+isolated component tests, but they should not become a second app model.
 
 When a catalog page needs toolbar or header context, it should use
 `NotebookDocumentHeader` with fixture capabilities rather than inventing

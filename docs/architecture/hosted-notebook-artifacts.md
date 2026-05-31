@@ -61,19 +61,25 @@ leaves no revision row.
 
 ## Decision 2: R2 layout is deterministic
 
-The current compatibility layout for a notebook `n/:id` is:
+The current hybrid compatibility layout for a notebook `n/:id` is:
 
 ```text
 n/{id}/snapshots/{notebookHeadsHash}.am
-n/{id}/snapshots/runtime-state/{runtimeHeadsHash}.am
+docs/{runtimeStateDocId}/snapshots/{runtimeHeadsHash}.am
 n/{id}/blobs/{sha256}
 ```
 
-New storage work should move toward the first-class document namespace in
-`runtime-state-document-identity.md`:
+Notebook snapshots retain the `n/{id}` compatibility namespace for now.
+Runtime-state snapshots already use the first-class document namespace from
+`runtime-state-document-identity.md`; publish and runtime-snapshot routes
+require `runtime_state_doc_id`, and the revision row records the exact
+`runtime_snapshot_key`.
+
+Longer-term storage work should move all document snapshots toward the
+first-class document namespace:
 
 ```text
-docs/{docId}/snapshot/{headsHash}
+docs/{docId}/snapshots/{headsHash}.am
 docs/{docId}/incremental/{chunkHash}
 blobs/{sha256}
 ```
@@ -82,7 +88,8 @@ Snapshot paths and blob paths are the durable publish artifact set; incremental
 paths are an optional future optimization that should follow Automerge Repo's
 logical storage shape rather than introduce a new file-extension convention. The
 host can load the snapshot pair at publish time to prove the snapshot pair and
-blob set are complete.
+blob set are complete. Legacy nested runtime snapshot keys remain readable when
+they are recorded on older revision rows.
 
 For connected notebook pages, the live room is the primary read model. Viewers
 and editors render the same live `NotebookDoc` + `RuntimeStateDoc`; permission

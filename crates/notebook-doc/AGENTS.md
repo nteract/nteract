@@ -12,10 +12,11 @@ Scope: `crates/notebook-doc/`, `crates/runtimed-wasm/`, `apps/notebook/src/hooks
 | Cell structure (add/delete/move) | Frontend (`commitMutation`) | Author — `add_cell`, `delete_cell`, `move_cell` |
 | Cell metadata (tags, visibility) | Frontend | Author — `set_cell_source_hidden`, `set_cell_tags`, … |
 | Notebook metadata (deps, runtime) | Frontend or MCP agent | Author — `add_uv_dependency`, `set_metadata`, … |
-| Execution count | Daemon | Apply from broadcast |
-| Cell outputs | Daemon | Materialize from sync |
-| Output clearing (pre-execute) | Frontend clears locally; daemon also writes | Author for local clear; reader for daemon broadcast |
-| Kernel status / queue state | Daemon | Read-only UI state; not in CRDT |
+| `runtime_state_doc_id` | Daemon/schema migration | Reader; associates notebook cells with runtime/output state |
+| Execution count | Daemon/runtime via `RuntimeStateDoc` | Read from runtime-state projection; notebook field is legacy export/import fallback |
+| Cell outputs | Daemon/runtime via `RuntimeStateDoc` | Materialize from runtime-state sync and blob refs |
+| Output clearing (pre-execute) | Daemon/runtime via `RuntimeStateDoc` | Reader of runtime-state mutation |
+| Kernel status / queue state | Daemon/runtime via `RuntimeStateDoc` and session control | Read-only UI projection |
 
 ## Two paths
 
@@ -26,14 +27,22 @@ user action → WASM handle mutation → scheduleFlush() → daemon
                                     → store update (instant feedback)
 ```
 
-**Daemon projections.** Daemon writes its CRDT → sync frame → `receive_frame` → materialization updates the store. For real-time events (status, queue, execution start), the daemon also sends broadcasts that drive store-only UI updates.
+**Daemon/runtime projections.** Daemon writes `NotebookDoc` for notebook-owned
+state and `RuntimeStateDoc` for runtime/output state → sync frame →
+`receive_frame` → materialization updates the store. Session-control and
+broadcast frames may still carry transient readiness or notification state, but
+outputs, execution lifecycle, queue, kernel, trust, and environment state are
+durable runtime-state projections.
 
 ```
-daemon CRDT write → sync frame → receive_frame → materializeFromBatch → store
-                                                → text attributions → CM bridge
+daemon/runtime CRDT write → sync frame → receive_frame → materializeFromBatch → store
+                                                        → text attributions → CM bridge
 ```
 
-In a daemon broadcast callback, update the store only. The daemon already wrote the CRDT; re-authoring under the frontend's actor generates redundant sync and marks the notebook dirty.
+When a daemon/runtime event corresponds to durable state, read it from the
+synced document projection instead of re-authoring under the frontend actor.
+Re-authoring daemon-owned state from the UI generates redundant sync and marks
+the notebook dirty.
 
 ## Naming convention
 
@@ -138,5 +147,9 @@ doc.fork_and_merge(|fork| {
 
 ## Direction of travel
 
-- Execution lifecycle states (queued, executing, done) are UI-derived from daemon broadcasts, not CRDT fields.
-- The cell store is moving toward fully derived: every field comes from CRDT materialization or daemon broadcasts, with no direct store writes outside the local/daemon paths above.
+- Execution lifecycle states (queued, executing, done) are projected from
+  `RuntimeStateDoc`, with session-control/broadcast frames reserved for
+  transient coordination and notifications.
+- The cell store is moving toward fully derived: every field comes from
+  NotebookDoc/RuntimeStateDoc materialization or explicit transient frame
+  handling, with no direct store writes outside the local/daemon paths above.

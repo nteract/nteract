@@ -19,8 +19,9 @@ runtime state, but an outline item count adds bookkeeping noise without helping
 reading flow.
 
 This fixture now renders the current notebook app toolbar and shared
-`NotebookRail` directly. The outline is projected with the same
-`projectNotebookOutline` helper production uses, then fed `outlineCellIds` so a
+`NotebookDocumentRail`, which wraps the presentational `NotebookRail` used by
+desktop and cloud. The outline is projected with the same
+`createNotebookViewModel` path production uses, then fed `outlineCellIds` so a
 focused code cell resolves to the nearest preceding heading. The package panel
 is supplied through `NotebookPackagesPanel` and hosts the current
 `DependencyHeader` with static dependency state.
@@ -36,12 +37,13 @@ states stay aligned with the app shell.
   moving cells into the sidebar.
 - `NotebookToolbar` is imported from `apps/notebook/src/components` with inert
   fixture callbacks and runtime status props.
-- `NotebookRail` and `NotebookPackagesPanel` come from
-  `src/components/notebook-rail`, with docs-owned active panel, collapsed state,
-  outline selection, and inert navigation callbacks.
+- `NotebookDocumentRail` comes from `src/components/notebook-shell`; its
+  packages panel uses `NotebookPackagesPanel` from `src/components/notebook-rail`.
+  Docs own active panel, collapsed state, outline selection, and inert
+  navigation callbacks.
 - The package panel imports `DependencyHeader` from the notebook app with
   fixture dependency and sync state.
-- The outline starts from `projectNotebookOutline` over fixture cells, matching
+- The outline starts from `createNotebookViewModel` over fixture cells, matching
   the production projection path from materialized markdown headings.
 - Contextual selection depends on `outlineCellIds`: a focused code cell inside a
   section highlights the nearest preceding markdown heading.
@@ -50,9 +52,10 @@ states stay aligned with the app shell.
 - Production active-section tracking still belongs to the app shell through
   viewport observation and `resolveNotebookOutlineSelection`; this page only
   fixtures the active item.
-- Heading navigation remains app-owned. Production routes heading anchors
-  through `navigateMarkdownHeading`, `scrollIntoView`, and history replacement;
-  the catalog keeps the callback inert.
+- Heading navigation uses the shared `navigateNotebookOutlineItem` seam.
+  Production can measure headings inside markdown frames as an enhanced path,
+  then falls back to canonical cell anchors; the catalog keeps the callback
+  inert and stable.
 - Outline rows use a navigation-only drag policy. If outline-driven cell
   reordering ships later, it should have explicit drop targets instead of a
   browser drag ghost.

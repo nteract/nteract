@@ -20,32 +20,39 @@ This is not the general product docs site and it is not the architecture docs
 archive. Existing architecture and design documents should remain under the
 repo-level `docs/` tree.
 
-## Current slice
+## Current direction
 
-Start with the outline rail and the first production-backed component surfaces.
-The catalog should keep fixture-backed examples close to real notebook imports
-without importing the desktop runtime, sync engine, or generated runtimed WASM
+Keep the production-backed notebook surfaces ahead of design-only exploration.
+The catalog should render shared shell, rail, toolbar, identity, package, cell,
+output, and widget components from deterministic fixtures without importing the
+desktop runtime, sync engine, Cloudflare host, or generated runtimed WASM
 bindings. Renderer-specific assets like Sift WASM should stay explicit,
 docs-served adapters.
 
-## Current catalog
+## Production-backed catalog
 
 The catalog should make it obvious which surfaces are nteract-owned notebook
 concepts and which boundaries still need a notebook-semantic wrapper.
 
+- [Notebook shell capabilities](/docs/notebook-shell-capabilities)
+- [Identity and environment surfaces](/docs/identity-environment-surfaces)
+- [Notebook toolbar surfaces](/docs/notebook-toolbar-surfaces)
+- [Notebook outline rail](/docs/notebook-outline)
+- [Package manager surfaces](/docs/package-manager-surfaces)
 - [Cell anatomy](/docs/cell-anatomy)
-- [Cell execution language](/docs/cell-execution-language)
-- [Cell insertion affordances](/docs/cell-insertion-affordances)
 - [Editor surfaces](/docs/editor-surfaces)
 - [Runtime surfaces](/docs/runtime-surfaces)
-- [Package manager surfaces](/docs/package-manager-surfaces)
-- [Identity and environment surfaces](/docs/identity-environment-surfaces)
 - [Search surfaces](/docs/search-surfaces)
 - [Output renderers](/docs/output-renderers)
 - [Output isolation surfaces](/docs/isolated-output-surfaces)
 - [Read-only notebook surfaces](/docs/read-only-notebook-surfaces)
-- [Notebook shell capabilities](/docs/notebook-shell-capabilities)
-- [Notebook toolbar surfaces](/docs/notebook-toolbar-surfaces)
-- [Notebook outline rail](/docs/notebook-outline)
 - [Theme surfaces](/docs/theme-surfaces)
 - [Widget surfaces](/docs/widget-surfaces)
+
+## Design explorations
+
+These pages are still useful, but they are product-language studios until the
+corresponding shared component surface is ready:
+
+- [Cell execution language](/docs/cell-execution-language)
+- [Cell insertion affordances](/docs/cell-insertion-affordances)

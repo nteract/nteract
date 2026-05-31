@@ -54,9 +54,14 @@ The daemon returns `env_source` with `KernelLaunched`:
 - PEP 723: `"uv:pep723"` / `"conda:pep723"` / `"pixi:pep723"`
 - Deno: `"deno"`
 
-## Kernel starting phases
+## Runtime lifecycle
 
-RuntimeStateDoc tracks granular phases via `kernel.starting_phase`:
+RuntimeStateDoc's canonical runtime state is `RuntimeLifecycle`. Legacy
+`kernel.status` / `kernel.starting_phase` fields remain compatibility
+projections for older UI and bindings, but new code should reason from the
+typed lifecycle.
+
+Lifecycle preparation can still expose granular phase labels:
 
 | Phase | Description |
 |-------|-------------|
@@ -65,7 +70,9 @@ RuntimeStateDoc tracks granular phases via `kernel.starting_phase`:
 | `"launching"` | Spawning the kernel process |
 | `"connecting"` | Establishing ZMQ connection |
 
-Written by daemon to RuntimeStateDoc. Frontend displays via `useRuntimeState()`. Cleared when kernel reaches `idle` or `error`.
+Written by daemon to RuntimeStateDoc. Frontend displays via `useRuntimeState()`
+and shared toolbar/runtime surfaces. Compatibility starting-phase fields are
+cleared when the lifecycle reaches running/idle or error.
 
 ## Content-addressed caching
 
