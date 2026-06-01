@@ -49,7 +49,12 @@ interface NotebookToolbarProps {
   isDepsOpen?: boolean;
   capabilities: Pick<
     NotebookShellCapabilities,
-    "canEditStructure" | "canExecute" | "canViewPackages"
+    | "canEditStructure"
+    | "canExecute"
+    | "canViewPackages"
+    | "canManageSharing"
+    | "canRequestEdit"
+    | "auth"
   >;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
   depsOutOfSync?: boolean;
@@ -273,7 +278,7 @@ export function NotebookToolbar({
               }
             : null
         }
-        trailingControls={trailingControls}
+        identityControls={trailingControls}
       />
     </NotebookToolbarFrame>
   );

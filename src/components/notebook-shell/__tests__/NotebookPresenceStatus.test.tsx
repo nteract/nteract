@@ -14,7 +14,7 @@ describe("NotebookPresenceStatus", () => {
     );
 
     expect(screen.getByText("2 here now, editing")).toBeVisible();
-    expect(screen.getByLabelText("2 participants are in this notebook")).toHaveAttribute(
+    expect(screen.getByLabelText("2 participants are in this notebook. editing")).toHaveAttribute(
       "data-connected",
       "true",
     );

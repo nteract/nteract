@@ -53,7 +53,7 @@ function toolbarProps(
     onRunAllCells: noop,
     onRestartAndRunAll: noop,
     onTogglePackages: noop,
-    leadingControls: (
+    presenceControls: (
       <NotebookPresenceStatus
         connected={scenario.capabilities.runtime.connected || scenario.capabilities.canRead}
         label={presenceLabel(scenario)}
@@ -62,14 +62,14 @@ function toolbarProps(
         className="h-7 text-xs"
       />
     ),
-    trailingControls: <ToolbarIdentityControls scenario={scenario} />,
+    identityControls: <ToolbarIdentityControls scenario={scenario} />,
     ...overrides,
   };
 }
 
 function presenceLabel(scenario: ElementsNotebookScenario): string {
   const actorCount = Math.max(1, notebookToolbarActors(scenario.capabilities).length);
-  return actorCount === 1 ? "1 actor here" : `${actorCount} actors here`;
+  return actorCount === 1 ? "1 participant here" : `${actorCount} participants here`;
 }
 
 function runtimeStatus(

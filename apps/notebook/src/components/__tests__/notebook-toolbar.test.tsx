@@ -73,6 +73,13 @@ const baseProps = {
     canEditStructure: true,
     canExecute: true,
     canViewPackages: true,
+    canManageSharing: false,
+    canRequestEdit: false,
+    auth: {
+      canSignIn: false,
+      canUseAuthenticatedIdentity: false,
+      needsAttention: false,
+    },
   },
 };
 
