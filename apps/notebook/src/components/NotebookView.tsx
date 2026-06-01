@@ -737,7 +737,7 @@ function NotebookViewContent({
       };
 
       // Build right gutter content — delete button for all cells,
-      // plus source toggle for code cells
+      // plus input toggle for code cells
       const deleteButton = canMutateCells ? (
         <button
           type="button"
@@ -790,8 +790,9 @@ function NotebookViewContent({
         const language = runtime === "deno" ? "typescript" : "ipython";
         const hiddenGroup = hiddenGroupsRef.current.get(cell.id);
         const executeCellOrHiddenGroup = () => {
-          if (hiddenGroup && hiddenGroup.count > 1) {
-            for (const hiddenCellId of hiddenGroup.groupCellIds) {
+          const latestHiddenGroup = hiddenGroupsRef.current.get(cell.id);
+          if (latestHiddenGroup && latestHiddenGroup.count > 1) {
+            for (const hiddenCellId of latestHiddenGroup.groupCellIds) {
               onExecuteCell(hiddenCellId);
             }
           } else {

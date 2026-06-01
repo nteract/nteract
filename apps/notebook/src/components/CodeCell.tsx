@@ -80,7 +80,7 @@ interface CodeCellProps {
   hiddenGroupCellIds?: string[];
   /** Number of error outputs across all cells in a hidden group */
   hiddenGroupErrorCount?: number;
-  /** Content for the right gutter (e.g., delete button, source toggle) */
+  /** Content for the right gutter (e.g., delete button, input toggle) */
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
   canExecute?: boolean;
@@ -257,15 +257,23 @@ export const CodeCell = memo(function CodeCell({
   const isExecutionErrored = execution?.success === false || execution?.status === "error";
   const languageLabel =
     language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
-  const isSourceEmpty = cell.source.trim().length === 0;
-  const showOutputChrome = useMemo(() => needsOutputChrome(outputs), [outputs]);
-  const sourcePreview = cell.source.split("\n")[0]?.trim() || "source";
-
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
     (cell.metadata?.jupyter as { source_hidden?: boolean })?.source_hidden === true;
   const isOutputsHidden =
     (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden === true;
+  const isSourceEmpty = cell.source.trim().length === 0;
+  const showOutputChrome = useMemo(() => needsOutputChrome(outputs), [outputs]);
+  const sourcePreview = useMemo(() => {
+    if (!isSourceHidden) {
+      return "source";
+    }
+
+    const firstNewlineIndex = cell.source.indexOf("\n");
+    const firstLine =
+      firstNewlineIndex === -1 ? cell.source : cell.source.slice(0, firstNewlineIndex);
+    return firstLine.trim() || "source";
+  }, [cell.source, isSourceHidden]);
 
   // Fully collapsed when source is hidden AND there's nothing else to show
   // (outputs explicitly hidden, or no outputs at all).
