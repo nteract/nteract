@@ -1999,7 +1999,7 @@ function AppContent() {
         <NotebookDocumentShell
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
-          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[44rem]:hidden")}
+          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[37.5rem]:hidden")}
           rail={
             <NotebookDocumentRail
               viewModel={notebookViewModel}

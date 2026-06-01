@@ -179,7 +179,7 @@ describe("NotebookRail", () => {
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
       "w-[clamp(16rem,20vw,18rem)]",
-      "max-[44rem]:w-[calc(100vw-3rem)]",
+      "max-[37.5rem]:w-[calc(100vw-3rem)]",
     );
   });
 
@@ -196,8 +196,8 @@ describe("NotebookRail", () => {
     );
 
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(18rem,24vw,22rem)]",
-      "min-w-72",
+      "w-[clamp(17rem,21vw,19rem)]",
+      "min-w-[17rem]",
     );
   });
 
