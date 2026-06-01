@@ -37,13 +37,19 @@ type BooleanCapabilityKey = {
 
 const scenarioIds: ElementsNotebookScenarioId[] = [
   "desktop-local-owner",
+  "desktop-read-only",
+  "desktop-remote-room",
   "cloud-public-viewer",
   "cloud-editor",
   "cloud-owner",
   "agent-on-behalf",
+  "credential-attention",
+  "multi-operator",
+  "mixed-idp-room",
   "runtime-peer",
   "system-schema",
   "runtime-unavailable",
+  "untrusted-dependencies",
 ];
 
 const hostFlows: {

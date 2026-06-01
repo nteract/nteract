@@ -2,10 +2,14 @@ import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import {
   createNotebookViewModel,
+  createNotebookEnvironmentSurface,
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
   type NotebookActorProjection,
+  type NotebookEnvironmentSurface,
+  type NotebookPackageSyncStatus,
   type NotebookShellCapabilities,
+  type NotebookTrustStatus,
   type NotebookViewCell,
   type NotebookViewModel,
 } from "@/components/notebook-shell";
@@ -20,13 +24,19 @@ import { WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 export type ElementsNotebookScenarioId =
   | "desktop-local-owner"
+  | "desktop-read-only"
+  | "desktop-remote-room"
   | "cloud-public-viewer"
   | "cloud-editor"
   | "cloud-owner"
   | "agent-on-behalf"
+  | "credential-attention"
+  | "multi-operator"
+  | "mixed-idp-room"
   | "runtime-peer"
   | "system-schema"
-  | "runtime-unavailable";
+  | "runtime-unavailable"
+  | "untrusted-dependencies";
 
 export interface ElementsNotebookScenario {
   id: ElementsNotebookScenarioId;
@@ -34,6 +44,7 @@ export interface ElementsNotebookScenario {
   eyebrow: string;
   summary: string;
   capabilities: NotebookShellCapabilities;
+  environment: NotebookEnvironmentSurface;
   cells: readonly NotebookViewCell[];
   viewModel: NotebookViewModel;
   runtimeLabel: string;
@@ -352,6 +363,30 @@ const desktopRuntimeActor = actorProjection({
   scope: "runtime_peer",
 });
 
+const desktopReadOnlyActor = actorProjection({
+  actorLabel: "local:kyle/desktop:readonly-file",
+  principalId: "local:kyle",
+  principalLabel: "Kyle",
+  provider: "local",
+  namespace: "kyle",
+  operatorId: "desktop:readonly-file",
+  operatorKind: "desktop",
+  operatorLabel: "Desktop",
+  scope: "viewer",
+});
+
+const desktopRemoteActor = actorProjection({
+  actorLabel: "user:anaconda:kyle/desktop:app",
+  principalId: "user:anaconda:kyle",
+  principalLabel: "Kyle",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "desktop:app",
+  operatorKind: "desktop",
+  operatorLabel: "Desktop",
+  scope: "editor",
+});
+
 const publicViewerActor = actorProjection({
   actorLabel: "anonymous:public/browser:viewer",
   principalId: "anonymous:public",
@@ -388,6 +423,18 @@ const cloudOwnerActor = actorProjection({
   scope: "owner",
 });
 
+const cloudExpiredActor = actorProjection({
+  actorLabel: "user:anaconda:kyle/browser:cloud",
+  principalId: "user:anaconda:kyle",
+  principalLabel: "Kyle",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "browser:cloud",
+  operatorKind: "browser",
+  operatorLabel: "Browser",
+  scope: "viewer",
+});
+
 const codexAgentActor = actorProjection({
   actorLabel: "user:anaconda:kyle/agent:codex:s1",
   principalId: "user:anaconda:kyle",
@@ -410,6 +457,30 @@ const jupyterHubRuntimeActor = actorProjection({
   operatorKind: "runtime",
   operatorLabel: "JupyterHub",
   scope: "runtime_peer",
+});
+
+const kyleDesktopOperatorActor = actorProjection({
+  actorLabel: "user:anaconda:kyle/desktop:app",
+  principalId: "user:anaconda:kyle",
+  principalLabel: "Kyle",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "desktop:app",
+  operatorKind: "desktop",
+  operatorLabel: "Desktop",
+  scope: "editor",
+});
+
+const mixedIdpActor = actorProjection({
+  actorLabel: "hub:anaconda:avery/browser:cloud",
+  principalId: "hub:anaconda:avery",
+  principalLabel: "Avery",
+  provider: "jupyterhub",
+  namespace: "anaconda",
+  operatorId: "browser:cloud",
+  operatorKind: "browser",
+  operatorLabel: "Browser",
+  scope: "editor",
 });
 
 const systemSchemaActor = actorProjection({
@@ -706,6 +777,100 @@ export const elementsNotebookScenarios: Record<
       },
     },
   }),
+  "desktop-read-only": createScenario({
+    id: "desktop-read-only",
+    title: "Desktop read-only",
+    eyebrow: "local fixture",
+    summary:
+      "A local file that can be opened and inspected while filesystem/host permissions disable writes.",
+    runtimeLabel: "Python · local runtime detached",
+    runtimeStatus: "detached",
+    packageSummary: "read-only · 4 packages",
+    syncLabel: "Local file is read only",
+    syncStatus: "unavailable",
+    trustLabel: "Trust state preserved",
+    trustStatus: "trusted",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: false,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "viewer",
+        source: "local",
+        isPublic: false,
+        actorLabel: desktopReadOnlyActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: desktopReadOnlyActor,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        canWriteRuntimeState: false,
+        connected: true,
+        source: "local",
+        actorLabel: desktopRuntimeActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: desktopRuntimeActor,
+      },
+    },
+  }),
+  "desktop-remote-room": createScenario({
+    id: "desktop-remote-room",
+    title: "Desktop remote room",
+    eyebrow: "remote fixture",
+    summary:
+      "Desktop renders a hosted notebook through the same shell while a local daemon uses a remote credential.",
+    runtimeLabel: "Remote room · local daemon bridge",
+    runtimeStatus: "detached",
+    packageSummary: "visible · 4 packages",
+    syncLabel: "Remote sync connected",
+    syncStatus: "synced",
+    trustLabel: "Trust managed by room",
+    trustStatus: "trusted",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: true,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: false,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "editor",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: desktopRemoteActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: desktopRemoteActor,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        canWriteRuntimeState: false,
+        connected: true,
+        source: "local",
+        actorLabel: desktopRuntimeActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: desktopRuntimeActor,
+      },
+    },
+  }),
   "cloud-public-viewer": createScenario({
     id: "cloud-public-viewer",
     title: "Cloud public viewer",
@@ -870,6 +1035,153 @@ export const elementsNotebookScenarios: Record<
       },
     },
   }),
+  "credential-attention": createScenario({
+    id: "credential-attention",
+    title: "Credential attention",
+    eyebrow: "auth fixture",
+    summary:
+      "An expired hosted credential keeps the notebook readable but routes edit affordances to sign-in attention.",
+    runtimeLabel: "Cloud notebook · credential expired",
+    runtimeStatus: "unavailable",
+    packageSummary: "read-only · 4 packages",
+    syncLabel: "Reconnect required",
+    syncStatus: "unavailable",
+    trustLabel: "Trust state not required",
+    trustStatus: "not_required",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: true,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "viewer",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: cloudExpiredActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: { ...cloudExpiredActor, status: "attention" },
+      },
+      auth: {
+        canSignIn: true,
+        canUseAuthenticatedIdentity: false,
+        needsAttention: true,
+      },
+      runtime: {
+        canWriteRuntimeState: false,
+        connected: false,
+        source: "cloud",
+        actorLabel: null,
+        identityLabel: null,
+      },
+    },
+  }),
+  "multi-operator": createScenario({
+    id: "multi-operator",
+    title: "One principal, multiple operators",
+    eyebrow: "identity fixture",
+    summary:
+      "A single user appears through desktop editing and a runtime operator without collapsing their attribution.",
+    runtimeLabel: "JupyterHub runtime · connected",
+    runtimeStatus: "ready",
+    packageSummary: "visible · 4 packages",
+    syncLabel: "Remote sync connected",
+    syncStatus: "synced",
+    trustLabel: "Trusted by Kyle",
+    trustStatus: "trusted",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: true,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: false,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "editor",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: kyleDesktopOperatorActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: kyleDesktopOperatorActor,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        canWriteRuntimeState: true,
+        connected: true,
+        source: "cloud",
+        actorLabel: jupyterHubRuntimeActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: {
+          ...jupyterHubRuntimeActor,
+          principal: {
+            ...jupyterHubRuntimeActor.principal,
+            id: "user:anaconda:kyle",
+            label: "Kyle",
+          },
+          actorLabel: "user:anaconda:kyle/runtime:jupyterhub",
+        },
+      },
+    },
+  }),
+  "mixed-idp-room": createScenario({
+    id: "mixed-idp-room",
+    title: "Mixed IdP room",
+    eyebrow: "identity fixture",
+    summary:
+      "A hosted room can display a JupyterHub principal beside Anaconda users through the same projection.",
+    runtimeLabel: "Cloud notebook · runtime detached",
+    runtimeStatus: "detached",
+    packageSummary: "visible · 4 packages",
+    syncLabel: "Remote sync connected",
+    syncStatus: "synced",
+    trustLabel: "Trust state not required",
+    trustStatus: "not_required",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: true,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: false,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "editor",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: mixedIdpActor.actorLabel,
+        identityLabel: "Avery",
+        actor: mixedIdpActor,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        canWriteRuntimeState: false,
+        connected: false,
+        source: "cloud",
+        actorLabel: null,
+        identityLabel: null,
+      },
+    },
+  }),
   "runtime-peer": createScenario({
     id: "runtime-peer",
     title: "Runtime peer",
@@ -994,6 +1306,53 @@ export const elementsNotebookScenarios: Record<
       },
     },
   }),
+  "untrusted-dependencies": createScenario({
+    id: "untrusted-dependencies",
+    title: "Untrusted dependencies",
+    eyebrow: "trust fixture",
+    summary:
+      "Package metadata is visible, but dependency trust requires review before mutation or execution.",
+    runtimeLabel: "Python · blocked by trust",
+    runtimeStatus: "error",
+    packageSummary: "uv:inline · 4 packages",
+    syncLabel: "Package metadata has pending changes",
+    syncStatus: "dirty",
+    trustLabel: "Untrusted dependencies",
+    trustStatus: "untrusted",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: true,
+      canEditCells: true,
+      canEditStructure: true,
+      canRequestEdit: false,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "owner",
+        source: "local",
+        isPublic: false,
+        actorLabel: desktopOwnerActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: desktopOwnerActor,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        canWriteRuntimeState: false,
+        connected: true,
+        source: "local",
+        actorLabel: desktopRuntimeActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: desktopRuntimeActor,
+      },
+    },
+  }),
 };
 
 export function getElementsNotebookScenario(id: ElementsNotebookScenarioId) {
@@ -1027,7 +1386,13 @@ function createScenario({
   eyebrow,
   summary,
   runtimeLabel,
+  runtimeStatus = null,
   packageSummary,
+  packageSourceLabel = packageState.pyprojectInfo.relative_path,
+  syncLabel = packageSyncLabel(packageState.syncState.status),
+  syncStatus = notebookPackageSyncStatus(packageState.syncState.status),
+  trustLabel = trustStatusLabel(trustState.trustInfo.status),
+  trustStatus = notebookTrustStatus(trustState.trustInfo.status),
   capabilities,
 }: {
   id: ElementsNotebookScenarioId;
@@ -1035,7 +1400,13 @@ function createScenario({
   eyebrow: string;
   summary: string;
   runtimeLabel: string;
+  runtimeStatus?: NotebookEnvironmentSurface["runtime"]["status"] | null;
   packageSummary: string;
+  packageSourceLabel?: string | null;
+  syncLabel?: string | null;
+  syncStatus?: NotebookPackageSyncStatus | null;
+  trustLabel?: string | null;
+  trustStatus?: NotebookTrustStatus | null;
   capabilities: NotebookShellCapabilities;
 }): ElementsNotebookScenario {
   const projectedCapabilities: NotebookShellCapabilities = {
@@ -1053,6 +1424,17 @@ function createScenario({
         notebookActorProjectionFromRuntime(capabilities.runtime, capabilities.auth),
     },
   };
+  const environment = createNotebookEnvironmentSurface({
+    capabilities: projectedCapabilities,
+    packages: viewModel.packages,
+    runtimeLabel,
+    runtimeStatus,
+    packageSourceLabel,
+    syncLabel,
+    syncStatus,
+    trustLabel,
+    trustStatus,
+  });
 
   return {
     id,
@@ -1060,6 +1442,7 @@ function createScenario({
     eyebrow,
     summary,
     capabilities: projectedCapabilities,
+    environment,
     cells: notebookCells,
     viewModel,
     runtimeLabel,
@@ -1107,4 +1490,47 @@ function actorProjection({
     },
     scope,
   };
+}
+
+function packageSyncLabel(status: ElementsNotebookPackageState["syncState"]["status"]) {
+  switch (status) {
+    case "dirty":
+      return "Package metadata has pending changes";
+    case "not_running":
+      return "Runtime is not running";
+    case "not_uv_managed":
+      return "Package metadata is outside uv";
+    case "synced":
+      return "Package metadata synced";
+  }
+}
+
+function notebookPackageSyncStatus(
+  status: ElementsNotebookPackageState["syncState"]["status"],
+): NotebookPackageSyncStatus {
+  return status;
+}
+
+function trustStatusLabel(status: ElementsNotebookTrustState["trustInfo"]["status"]) {
+  switch (status) {
+    case "trusted":
+      return "Trusted";
+    case "untrusted":
+      return "Untrusted dependencies";
+    case "no_dependencies":
+      return "No dependency trust review needed";
+  }
+}
+
+function notebookTrustStatus(
+  status: ElementsNotebookTrustState["trustInfo"]["status"],
+): NotebookTrustStatus {
+  switch (status) {
+    case "trusted":
+      return "trusted";
+    case "untrusted":
+      return "untrusted";
+    case "no_dependencies":
+      return "not_required";
+  }
 }
