@@ -105,9 +105,12 @@ export type MimeBundle = Record<string, unknown>;
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
 
-const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599px)";
+const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
 
-function focusRailCollapseButtonWhenStageIsHidden(railCollapsed: boolean): void {
+function focusRailCollapseButtonWhenStageIsHidden(
+  railCollapsed: boolean,
+  stageHadFocusBeforeTakeover: boolean,
+): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
 
   const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
@@ -117,7 +120,10 @@ function focusRailCollapseButtonWhenStageIsHidden(railCollapsed: boolean): void 
   if (!(activeElement instanceof HTMLElement)) return;
 
   const stage = document.querySelector('[data-slot="notebook-document-stage"]');
-  if (!stage?.contains(activeElement)) return;
+  const focusWasInStage = stage?.contains(activeElement);
+  const focusWasClearedFromHiddenStage =
+    stageHadFocusBeforeTakeover && activeElement === document.body;
+  if (!focusWasInStage && !focusWasClearedFromHiddenStage) return;
 
   const collapseButton = document.querySelector<HTMLButtonElement>(
     '[data-slot="notebook-rail-collapse-button"]',
@@ -405,6 +411,7 @@ function AppContent() {
 
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(true);
+  const stageHadFocusBeforeRailTakeoverRef = useRef(false);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
@@ -425,19 +432,40 @@ function AppContent() {
   const [dismissedLaunchError, setDismissedLaunchError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+      stageHadFocusBeforeRailTakeoverRef.current = Boolean(
+        event.target instanceof Node && stage?.contains(event.target),
+      );
+    };
+
+    document.addEventListener("focusin", handleFocusIn);
+    return () => {
+      document.removeEventListener("focusin", handleFocusIn);
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
 
     const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
     if (!takeoverQuery) return;
 
     const handleTakeoverChange = () => {
-      focusRailCollapseButtonWhenStageIsHidden(railCollapsed);
+      focusRailCollapseButtonWhenStageIsHidden(
+        railCollapsed,
+        stageHadFocusBeforeRailTakeoverRef.current,
+      );
     };
 
     handleTakeoverChange();
     takeoverQuery.addEventListener("change", handleTakeoverChange);
+    window.addEventListener("resize", handleTakeoverChange);
     return () => {
       takeoverQuery.removeEventListener("change", handleTakeoverChange);
+      window.removeEventListener("resize", handleTakeoverChange);
     };
   }, [railCollapsed]);
 
@@ -2036,7 +2064,7 @@ function AppContent() {
         <NotebookDocumentShell
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
-          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[600px]:hidden")}
+          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[599.98px]:hidden")}
           rail={
             <NotebookDocumentRail
               viewModel={notebookViewModel}

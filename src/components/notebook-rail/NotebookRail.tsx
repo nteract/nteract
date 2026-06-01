@@ -96,7 +96,7 @@ export function NotebookRail({
             activePanelId === "packages"
               ? "w-[clamp(14rem,21vw,18rem)] min-w-56"
               : "w-[clamp(14rem,20vw,17rem)] min-w-56",
-            "max-[600px]:w-[calc(100vw-3rem)] max-[600px]:min-w-0 max-[600px]:max-w-none",
+            "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none",
           )}
           data-slot="notebook-rail-panel"
         >
