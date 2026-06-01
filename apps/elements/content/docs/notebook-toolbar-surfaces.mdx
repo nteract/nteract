@@ -1,17 +1,18 @@
 ---
 title: Notebook toolbar surfaces
-description: Runtime-free NotebookToolbar states from the current notebook app.
+description: Runtime-free shared command toolbar states from the notebook shell.
 ---
 
 import { NotebookToolbarSurfacesExample } from "@/components/notebook-toolbar-surfaces-example";
 
 The notebook toolbar is workspace chrome, not generic button inventory. This
-page renders the current `NotebookToolbar` with static runtime, environment,
-package, and update facts so the catalog can track the real desktop
-surface without importing daemon hooks or notebook state.
+page renders the shared `NotebookCommandToolbar` with static runtime,
+environment, package, identity, and update facts so the catalog can track the
+desktop and cloud contract without importing daemon hooks or notebook state.
 The hosted scenarios are shared with the
-[notebook shell capabilities](/docs/notebook-shell-capabilities) page so editor
-and owner access do not drift from cloud ACL semantics.
+[notebook shell capabilities](/docs/notebook-shell-capabilities) page so editor,
+owner, runtime peer, agent, and local desktop access do not drift from the
+shared capability model.
 
 <NotebookToolbarSurfacesExample />
 
@@ -19,7 +20,7 @@ and owner access do not drift from cloud ACL semantics.
 
 Toolbar previews own only props and callbacks. Kernel start, interrupt, restart,
 package toggles, update restarts, and cell insertion stay inert in the docs app
-until the host deliberately wires them. The rendered boundary map keeps runtime
-status projection, kernel actions, package panel state, cell insertion, and
-desktop update restart behavior named separately so future toolbar work can move
-one host-owned action at a time.
+until the host deliberately wires them. The rendered boundary map keeps shared
+command chrome, interaction mode, actor identity, runtime status projection,
+package panel state, and host-owned actions named separately so future toolbar
+work can move one host-owned action at a time.
