@@ -3,6 +3,7 @@
 import { Bot, CheckCircle2, Cloud, KeyRound, Package, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
+import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
 import {
   NotebookEnvironmentSummary,
   NotebookIdentityBadge,
@@ -50,6 +51,39 @@ const remainingNotebookSurfaces = [
   },
 ];
 
+const environmentIconSurfaces = [
+  {
+    label: "Python",
+    description: "Runtime language",
+    icon: PythonIcon,
+    className: "text-blue-600 dark:text-blue-400",
+  },
+  {
+    label: "Deno",
+    description: "Runtime language",
+    icon: DenoIcon,
+    className: "text-emerald-600 dark:text-emerald-400",
+  },
+  {
+    label: "uv",
+    description: "Python package manager",
+    icon: UvIcon,
+    className: "text-fuchsia-600 dark:text-fuchsia-400",
+  },
+  {
+    label: "Conda",
+    description: "Python environment manager",
+    icon: CondaIcon,
+    className: "text-emerald-600 dark:text-emerald-400",
+  },
+  {
+    label: "Pixi",
+    description: "Project environment manager",
+    icon: PixiIcon,
+    className: "text-amber-600 dark:text-amber-400",
+  },
+];
+
 export function IdentityEnvironmentSurfacesExample() {
   const scenarios = identityScenarioIds.map((id) => getElementsNotebookScenario(id));
   const desktopOwner = getElementsNotebookScenario("desktop-local-owner");
@@ -87,6 +121,43 @@ export function IdentityEnvironmentSurfacesExample() {
         {scenarios.map((scenario) => (
           <IdentityScenarioCard key={scenario.id} scenario={scenario} />
         ))}
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
+          <div className="flex items-center gap-2">
+            <Package className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+            <h2 className="text-sm font-semibold">Canonical environment icons</h2>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+            Runtime and package-manager marks come from `src/components/environment`, so notebook,
+            settings, onboarding, and the registry catalog render the same symbols.
+          </p>
+        </div>
+        <div className="grid gap-px bg-fd-border sm:grid-cols-2 lg:grid-cols-5">
+          {environmentIconSurfaces.map((surface) => {
+            const Icon = surface.icon;
+
+            return (
+              <article key={surface.label} className="bg-background p-4 text-foreground">
+                <div className="flex items-center gap-3">
+                  <span
+                    className={cn(
+                      "grid size-9 place-items-center rounded-md border border-border bg-card",
+                      surface.className,
+                    )}
+                  >
+                    <Icon className="size-4" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-sm font-semibold">{surface.label}</h3>
+                    <p className="truncate text-xs text-muted-foreground">{surface.description}</p>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       </section>
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
