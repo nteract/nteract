@@ -32,6 +32,7 @@ import { type BlobUploader, WidgetUpdateManager } from "@/components/widgets/wid
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { cn } from "@/lib/utils";
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   navigateNotebookOutlineItem,
@@ -2000,7 +2001,7 @@ function AppContent() {
         <NotebookDocumentShell
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
-          stageClassName="flex-row min-w-0 flex-1"
+          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-sm:hidden")}
           rail={
             <NotebookDocumentRail
               viewModel={notebookViewModel}
