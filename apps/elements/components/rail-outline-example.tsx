@@ -61,43 +61,43 @@ const queuedCellIds = new Set(["cell-shape-output"]);
 const outlineBoundaryRows = [
   {
     label: "Projection source",
-    catalog: "createNotebookViewModel(fixture cells)",
-    production: "host adapter materializes cells before the shared shell projection",
+    preview: "createNotebookViewModel(fixture cells)",
+    notebook: "host materializes cells before the shared shell projection",
   },
   {
     label: "Shell capabilities",
-    catalog: "ElementsNotebookScenario.capabilities",
-    production: "desktop local state or cloud ACL/auth adapter",
+    preview: "ElementsNotebookScenario.capabilities",
+    notebook: "desktop local state or cloud ACL/auth state",
   },
   {
     label: "Context selection",
-    catalog: "focusedCellId fixture + viewModel.cellIds",
-    production: "NotebookView focus state + shared outline selection",
+    preview: "focusedCellId fixture + viewModel.cellIds",
+    notebook: "NotebookView focus state + shared outline selection",
   },
   {
     label: "Header chrome",
-    catalog: "outline title without item count",
-    production: "packages may summarize state; outline stays reading-first",
+    preview: "outline title without item count",
+    notebook: "packages may summarize state; outline stays reading-first",
   },
   {
     label: "Heading anchors",
-    catalog: "viewModel.markdownHeadingAnchorsByCellId",
-    production: "MarkdownCell receives anchors from the shell view model",
+    preview: "viewModel.markdownHeadingAnchorsByCellId",
+    notebook: "MarkdownCell receives anchors from the shell view model",
   },
   {
     label: "Heading navigation",
-    catalog: "inert outline callback updates fixture focus",
-    production: "navigateNotebookOutlineItem, heading measurement, and cell-anchor fallback",
+    preview: "inert outline callback updates fixture focus",
+    notebook: "navigateNotebookOutlineItem, heading measurement, and cell-anchor fallback",
   },
   {
     label: "Drag policy",
-    catalog: "outline rows cancel native drag previews",
-    production: "navigation-only until the app owns true outline reordering",
+    preview: "outline rows cancel native drag previews",
+    notebook: "navigation-only until the app owns true outline reordering",
   },
   {
     label: "DOM order",
-    catalog: "fixture cell order",
-    production: "stableDomOrder renders DOM while CSS order controls visual position",
+    preview: "fixture cell order",
+    notebook: "stableDomOrder renders DOM while CSS order controls visual position",
   },
 ];
 
@@ -253,7 +253,7 @@ function ScenarioNotice({
           from current sources.
         </div>
         <p>
-          The docs app owns only scenario facts: capabilities, fixture cells, package metadata,
+          The docs app owns only scenario facts: capabilities, fixture cells, package details,
           focused cell, active panel, and inert navigation callbacks.
         </p>
       </div>
@@ -380,8 +380,8 @@ function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario 
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-fd-border bg-fd-muted/40 p-3 text-xs leading-5 text-fd-muted-foreground">
-        This uses the current notebook dependency panel in a rail-sized frame. The catalog owns only
-        scenario metadata and inert callbacks.
+        This uses the current notebook package panel in a rail-sized frame. The preview owns only
+        scenario facts and inert callbacks.
       </div>
       <div className="overflow-hidden rounded-md border border-fd-border bg-fd-card">
         <DependencyHeader
@@ -407,7 +407,7 @@ function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario 
       <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
         <div className="mb-3 flex items-center gap-2">
           <ListTree className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h4 className="text-sm font-semibold">Adapter boundary</h4>
+          <h4 className="text-sm font-semibold">Live work stays with the notebook</h4>
         </div>
         <div className="space-y-2">
           {outlineBoundaryRows.map((row) => (
@@ -418,15 +418,15 @@ function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario 
               <div className="font-medium text-fd-foreground">{row.label}</div>
               <div className="min-w-0">
                 <span className="mb-1 block text-[10px] uppercase tracking-[0.08em] text-fd-muted-foreground">
-                  Catalog
+                  Preview uses
                 </span>
-                <span className="break-words text-fd-muted-foreground">{row.catalog}</span>
+                <span className="break-words text-fd-muted-foreground">{row.preview}</span>
               </div>
               <div className="min-w-0">
                 <span className="mb-1 block text-[10px] uppercase tracking-[0.08em] text-fd-muted-foreground">
-                  Production
+                  Notebook owns
                 </span>
-                <span className="break-words text-fd-muted-foreground">{row.production}</span>
+                <span className="break-words text-fd-muted-foreground">{row.notebook}</span>
               </div>
             </div>
           ))}

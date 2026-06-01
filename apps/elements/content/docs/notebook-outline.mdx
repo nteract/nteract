@@ -21,10 +21,10 @@ reading flow.
 This fixture now renders the current notebook app toolbar and shared
 `NotebookDocumentRail`, which wraps the presentational `NotebookRail` used by
 desktop and cloud. The outline is projected with the same
-`createNotebookViewModel` path production uses, then fed `outlineCellIds` so a
+`createNotebookViewModel` path the notebook uses, then fed `outlineCellIds` so a
 focused code cell resolves to the nearest preceding heading. The package panel
 is supplied through `NotebookPackagesPanel` and hosts the current
-`DependencyHeader` with static dependency state.
+`DependencyHeader` with static package state.
 Scenario selection comes from the shared [notebook shell capabilities](/docs/notebook-shell-capabilities)
 fixtures so desktop, cloud viewer, cloud editor, cloud owner, and runtime-blocked
 states stay aligned with the app shell.
@@ -42,18 +42,18 @@ states stay aligned with the app shell.
   Docs own active panel, collapsed state, outline selection, and inert
   navigation callbacks.
 - The package panel imports `DependencyHeader` from the notebook app with
-  fixture dependency and sync state.
+  fixture package and sync state.
 - The outline starts from `createNotebookViewModel` over fixture cells, matching
   the production projection path from materialized markdown headings.
 - Contextual selection depends on `outlineCellIds`: a focused code cell inside a
   section highlights the nearest preceding markdown heading.
 - Outline panel chrome is intentionally sparse. The panel title names the mode,
   and the rows carry the useful context without an extra item-count badge.
-- Production active-section tracking still belongs to the app shell through
+- Notebook active-section tracking still belongs to the app shell through
   viewport observation and `resolveNotebookOutlineSelection`; this page only
   fixtures the active item.
 - Heading navigation uses the shared `navigateNotebookOutlineItem` seam.
-  Production can measure headings inside markdown frames as an enhanced path,
+  The notebook can measure headings inside markdown frames as an enhanced path,
   then falls back to canonical cell anchors; the catalog keeps the callback
   inert and stable.
 - Outline rows use a navigation-only drag policy. If outline-driven cell
