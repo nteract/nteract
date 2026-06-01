@@ -181,7 +181,7 @@ describe("NotebookRail", () => {
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(16rem,20vw,18rem)]",
+      "w-[clamp(14rem,20vw,17rem)]",
       "max-[37.5rem]:w-[calc(100vw-3rem)]",
     );
   });
@@ -199,8 +199,8 @@ describe("NotebookRail", () => {
     );
 
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(17rem,21vw,19rem)]",
-      "min-w-[17rem]",
+      "w-[clamp(14rem,21vw,18rem)]",
+      "min-w-56",
     );
   });
 

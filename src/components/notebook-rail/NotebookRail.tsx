@@ -93,8 +93,8 @@ export function NotebookRail({
           className={cn(
             "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col bg-background",
             activePanelId === "packages"
-              ? "w-[clamp(17rem,21vw,19rem)] min-w-[17rem]"
-              : "w-[clamp(16rem,20vw,18rem)] min-w-64",
+              ? "w-[clamp(14rem,21vw,18rem)] min-w-56"
+              : "w-[clamp(14rem,20vw,17rem)] min-w-56",
             "max-[37.5rem]:w-[calc(100vw-3rem)] max-[37.5rem]:min-w-0 max-[37.5rem]:max-w-none",
           )}
           data-slot="notebook-rail-panel"
