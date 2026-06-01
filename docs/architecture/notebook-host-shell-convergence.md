@@ -34,6 +34,7 @@ NotebookDocumentShell
   rail
   document stage
   NotebookDocumentHeader control slots
+  NotebookToolbarFrame / NotebookCommandToolbar
   notice slots
   package/runtime/presence slots
 
@@ -48,6 +49,11 @@ NotebookShellCapabilities
   runtime
     canWriteRuntimeState
     actor
+  interaction
+    selectedMode
+    activeMode
+    state
+    canRequestEdit
   canRead
   canEditMarkdown
   canEditCells
@@ -83,6 +89,8 @@ The shared component surface should be the preferred place for:
 
 - notebook rail and outline behavior;
 - document header layout and capability-scoped control slots;
+- shared command toolbar chrome, toolbar identity, and interaction-mode
+  presentation;
 - markdown editing and preview rendering;
 - read-only and editable cell chrome;
 - output frame policy and widget-state rendering;
@@ -126,6 +134,13 @@ request/sign-in affordance before the room grants editor access. The write path
 must still check `canEditMarkdown`/`canEditCells` and the room's authorization
 policy before mutating Automerge.
 
+`NotebookInteractionModeProjection` separates what the user selected from what
+the host can actively perform. `selectedMode = "edit"` with
+`state = "requested"` is an edit request or sign-in/request-access state, not a
+write grant. `activeMode = "edit"` and the `canEdit*` booleans are still
+display affordances; room, daemon, and filesystem authorities enforce the write
+path.
+
 `NotebookDocumentHeader` owns shared slot visibility for document-level
 controls:
 
@@ -138,6 +153,13 @@ controls:
 
 The controls themselves can stay host-specific while the visibility policy stays
 in the shared shell contract.
+
+The split should be explicit in code review. If a branch needs a new notebook
+presentation pattern for cloud, first ask whether desktop and Elements should
+consume the same component. If a branch needs a new desktop control, first ask
+whether cloud should receive the same typed projection and provide different
+callbacks. Divergence is justified for authority and side effects, not for
+duplicating notebook chrome.
 
 ## Anchor And Navigation Contract
 
@@ -185,7 +207,8 @@ they need notebook-level context. Lower-level fixtures remain useful for
 isolated component tests, but they should not become a second app model.
 
 When a catalog page needs toolbar or header context, it should use
-`NotebookDocumentHeader` with fixture capabilities rather than inventing
+`NotebookDocumentHeader`, `NotebookToolbarFrame`, `NotebookCommandToolbar`, and
+`NotebookToolbarIdentity` with fixture capabilities rather than inventing
 page-local visibility rules. This keeps the catalog useful as an early warning
 when shared shell controls are still coupled to desktop or cloud specifics.
 

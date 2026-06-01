@@ -1,6 +1,6 @@
 # Notebook Identity and Environment Surface Audit
 
-**Status:** Audit, 2026-05-31.
+**Status:** Audit, refreshed 2026-06-01.
 
 **Related:**
 
@@ -40,16 +40,17 @@ Current evidence came from:
 
 | Surface | Current state | Gap |
 |---------|---------------|-----|
-| Shell capabilities | `NotebookShellCapabilities` is the shared input for read/edit/execute/package/share/auth affordances. Desktop, cloud, and Elements already feed it, including separate `access.actor` and `runtime.actor` projections. | Environment and package state are still spread across strings and package view models rather than a typed shared environment projection. |
+| Shell capabilities | `NotebookShellCapabilities` is the shared input for read/edit/execute/package/share/auth affordances. Desktop, cloud, and Elements already feed it, including separate `access.actor`, `runtime.actor`, and `interaction` projections. | Capability projection is in good shape; the next risk is making sure new sharing/activity controls consume it instead of reintroducing host-specific gates. |
 | Identity badge/group | `NotebookIdentityBadge`, `NotebookIdentityGroup`, and actor projection helpers render current actor, public viewer, local identity, delegated agent, runtime, and system states. | React still has fallback parsing for raw actor labels while hosts finish sending structured projections. Presence, execution attribution, and future activity surfaces do not yet all consume the same projection. |
-| Environment summary | `NotebookEnvironmentSummary` renders runtime label, package source label, sync label, trust label, and package access from existing package view models. | Runtime status, package source, sync state, and trust state are still string props. There is no shared environment surface model with typed status. |
+| Interaction mode and command toolbar | `NotebookInteractionModeProjection` is now the shared selected/active/requested view-edit projection. Desktop, cloud, and Elements feed it into shared toolbar chrome: `NotebookToolbarFrame`, `NotebookCommandToolbar`, `NotebookToolbarIdentity`, and the edit-mode button. | Keep interaction state host-neutral. It should drive labels and affordances, not become the authority for writes or replace room/daemon enforcement. |
+| Environment summary | `NotebookEnvironmentSummary` consumes `NotebookEnvironmentSurface`, a typed shared projection with access, runtime, package, sync, and trust sections. Elements scenarios build it through `createNotebookEnvironmentSurface()`. Cloud no longer renders the environment summary in its package rail after #3273; the cloud rail is package-only. | Desktop/cloud still need to keep mapping real daemon, ACL, credential, and package facts into this surface wherever they intentionally render an environment summary, instead of passing ad hoc labels at page boundaries. |
 | Desktop adapter | `desktopNotebookShellCapabilities()` maps local sessions and remote connection scopes into the shared shell. Local notebooks default to owner-level local access, and `runtime_peer` maps to viewer document access plus runtime write capability. | Desktop remote room identity is still only distinguished by actor/source shape. The product model is desktop app plus local daemon/socket identity plus remote service credential or API key. Auth attention is always false. |
-| Cloud adapter | `cloudNotebookShellCapabilities()` maps hosted auth and ACL scope into the shared shell. `invalid` and `oidc_expired` modes set auth attention. Public viewers become read-only cloud viewers, and `runtime_peer` maps to runtime authorship rather than document edit access. | Cloud exposes credential transport metadata such as `anaconda-api-key`; shared UI should continue deriving principal authority from the principal namespace/projection, not from that transport field. Elements does not yet render a dedicated credential-attention scenario. |
+| Cloud adapter | `cloudNotebookShellCapabilities()` maps hosted auth and ACL scope into the shared shell. `invalid` and `oidc_expired` modes set auth attention. Public viewers become read-only cloud viewers, and `runtime_peer` maps to runtime authorship rather than document edit access. | Cloud still exposes credential transport metadata such as `anaconda-api-key`; shared UI should continue deriving principal authority from the principal namespace/projection, not from that transport field. |
 | Hosted authority | Cloud auth and storage treat `runtime_peer` as a first-class current scope, public viewers are explicit ACL rows, and anonymous public viewer presence is local/aggregate-only today. | Request-scope enforcement and hosted execution-intent semantics still need clearer current-vs-target documentation across the architecture docs. |
-| Elements scenarios | `ElementsNotebookScenario` centralizes fixture cells, package state, trust state, outputs, variables, renderers, and shell capabilities. Current scenario ids include desktop local owner, cloud public viewer, cloud editor, cloud owner, agent on behalf, runtime peer, system schema, and runtime unavailable. | Missing PRD scenarios: desktop read-only, desktop remote room, credential attention, one principal with multiple operators, mixed-IdP room, and a dedicated untrusted-dependency scenario separate from the shared trust fixture. |
+| Elements scenarios | `ElementsNotebookScenario` centralizes fixture cells, package state, trust state, outputs, variables, renderers, shell capabilities, and the typed environment surface. Scenario ids now cover desktop local owner, desktop read-only, desktop remote room, cloud public viewer, cloud editor, cloud owner, agent on behalf, credential attention, one principal with multiple operators, mixed-IdP, runtime peer, system schema, runtime unavailable, and untrusted dependencies. | Scenario coverage is now adequate; the gap is keeping new catalog pages and production adapters on these fixtures/projections rather than adding page-local mock state. |
 | Elements catalog | The catalog already covers cell anatomy, editor, runtime, package manager, identity/environment, search, output renderers, output isolation, read-only notebooks, toolbar, theme, and widget surfaces with runtime-free fixtures. | Identity/environment guidance is newer than many pages, so pages do not all name how their state should flow through actor, access, environment, package, and trust projections. |
 | Cell attribution | Code cells can receive submitted durable actor labels, and Elements shows an agent badge in the current-line example. | Execution attribution, presence, editor attribution, and activity are not yet driven by one structured actor projection. |
-| Package rail direction | Package-manager docs render current app dependency components with fixture metadata, and the shell has `NotebookDocumentRail` plus `NotebookPackageSummaryPanel` for host-neutral package viewing. | The rail package/environment panel is not yet a single shared environment surface fed by typed runtime/package/trust state. |
+| Package rail direction | Package-manager docs render current app dependency components with fixture metadata, and the shell has `NotebookDocumentRail` plus `NotebookPackageSummaryPanel` for host-neutral package viewing. Cloud now keeps the package rail package-only, while Elements can still render `NotebookEnvironmentSummary` in dedicated identity/environment and rail examples. | The remaining work is connecting more production rail actions to host-owned callbacks while keeping Elements inert, and deciding where environment summaries should appear outside the package-only rail. |
 
 ## What Is Already Solid
 
@@ -60,33 +61,59 @@ The repo now has a useful convergence spine:
 - `NotebookShellCapabilities` is the common adapter vocabulary for desktop,
   cloud, and catalog fixtures, including the separate runtime-authority
   projection that keeps `runtime_peer` out of document access.
+- `NotebookInteractionModeProjection`, `NotebookToolbarFrame`,
+  `NotebookCommandToolbar`, and `NotebookToolbarIdentity` are shared across
+  desktop, cloud, and Elements, so toolbar interaction language is no longer
+  a cloud-only or desktop-only concern.
 - Elements is using fixture-backed scenarios rather than daemon, sync,
   generated WASM, Cloudflare, or local filesystem dependencies.
+- Elements now covers the identity/environment PRD scenario set, including
+  desktop remote, credential attention, mixed-IdP, multi-operator, runtime-peer,
+  and untrusted dependency states.
+- `NotebookEnvironmentSurface` exists as a typed shared projection consumed by
+  `NotebookEnvironmentSummary`.
 - Cloud already owns the authority decisions for hosted ACL scope, public
   viewer rows, anonymous public viewer presence policy, and runtime-peer
   capability.
 - Desktop already maps local mutability and session readiness into the same
   shell capability object.
 
+## Cross-Host Convergence Notes
+
+Cloud should keep converging toward the desktop/shared shell by moving notebook
+presentation into `src/components/notebook-shell/**` whenever the behavior is
+not inherently hosted:
+
+- command toolbar chrome, identity controls, interaction mode, and cell surfaces
+  should stay shared;
+- package rail rendering should use shared package components with cloud-owned
+  callbacks and authority checks;
+- presence, activity, execution attribution, and sharing surfaces should consume
+  the same actor/access/interaction projections instead of cloud-local labels;
+- hosted auth, ACL, public viewer policy, credential refresh, and room mutation
+  should remain cloud adapter responsibilities.
+
+Desktop should be more explicit about the facts it projects into the same shell:
+
+- local file mutability, daemon/session readiness, package trust, and dependency
+  sync should map into shell/environment projections rather than toolbar-local
+  booleans;
+- desktop remote rooms should project a distinct identity path: desktop app,
+  local daemon/socket identity, and remote service credential or API key;
+- remote credential attention should eventually be represented instead of
+  leaving desktop auth attention always false;
+- local read-only notebooks should continue to distinguish readable notebook
+  state from writable document/package/runtime capabilities.
+
+The maintainability rule is: duplicate host adapters when the host authority is
+different; do not duplicate notebook presentation just because the source facts
+come from different authorities. Shared components should receive typed
+projections plus host callbacks, while desktop/cloud keep enforcement, auth,
+filesystem, daemon, and room-host side effects outside the shared shell.
+
 ## Highest-Leverage Follow-Up Slices
 
-### 1. Complete Elements Scenario Coverage
-
-Add missing fixture scenarios without changing production behavior:
-
-- desktop read-only file;
-- desktop remote room with local daemon/socket identity plus remote service
-  credential;
-- credential needs attention;
-- one principal with multiple operators;
-- mixed-IdP room;
-- dedicated untrusted dependencies.
-
-This should update `apps/elements/components/notebook-scenarios.ts`, the
-identity/environment page, and the notebook shell capabilities page. It is the
-smallest PR that makes the PRD visible in the catalog.
-
-### 2. Finish Structured Actor Projection Adoption
+### 1. Finish Structured Actor Projection Adoption
 
 The shared component contract now has structured actor projections. The next
 step is to remove remaining page-local/raw-label assumptions:
@@ -103,7 +130,7 @@ This should continue in `src/components/notebook-shell/**` and host adapters,
 then feed the same projection to Elements fixtures. The important direction is
 shared projection, not cloud-specific display fixes.
 
-### 3. Keep Runtime Peer Semantics Explicit
+### 2. Keep Runtime Peer Semantics Explicit
 
 `runtime_peer` is now intentionally outside `NotebookShellAccessLevel`.
 Continue treating it as runtime authorship/capability that lets UI show runtime
@@ -120,10 +147,22 @@ Keep the docs and adapters reconciled across:
 - shell display level `none | viewer | editor | owner`;
 - runtime actor badges and output/lifecycle attribution.
 
-### 4. Type The Environment Projection
+### 3. Keep Interaction And Command Chrome Host-Neutral
 
-Replace loose runtime/package/trust strings with a typed environment surface
-that can be shared by Elements, desktop, and cloud:
+`NotebookInteractionModeProjection` now separates requested edit state from
+active edit permission and host support. Keep new toolbar, presence, and
+activity work on that projection:
+
+- selected mode says what the user asked for;
+- active mode and `canEdit*` say what this host can currently perform;
+- room, daemon, or filesystem authorities still enforce all writes;
+- shared toolbar chrome should keep receiving capabilities and callbacks rather
+  than importing cloud or desktop state directly.
+
+### 4. Keep Environment Projection Typed End-To-End
+
+`NotebookEnvironmentSurface` now exists, so the follow-up is not inventing the
+shape. It is mapping every host source into it consistently:
 
 - runtime status: ready, detached, unavailable, launching, error;
 - package summary and source;
@@ -131,15 +170,17 @@ that can be shared by Elements, desktop, and cloud:
 - trust status and attention;
 - package view/manage capabilities.
 
-`NotebookEnvironmentSummary` can remain the first renderer, but the facts should
-come from a shared projection rather than page-local strings.
+`NotebookEnvironmentSummary` is the first renderer. The facts should continue to
+come from the shared projection rather than page-local strings.
 
-### 5. Move Package/Environment Rail Toward The Shared Surface
+### 5. Keep Package Rail Package-Focused
 
 The rail-forward direction is right: outline, packages, variables, renderers,
-and future activity belong beside the notebook, not inside cell chrome. The next
-package rail slice should consume the shared environment projection and reuse
-existing dependency components through adapters.
+and future activity belong beside the notebook, not inside cell chrome. After
+#3273, cloud's package rail is deliberately package-only. Environment/access,
+runtime, sync, and trust summary facts should render through
+`NotebookEnvironmentSummary` or a sibling shared component where product wants
+that summary, not by overloading the package panel.
 
 Keep daemon-owned actions inert in Elements and host-owned in production:
 
@@ -193,20 +234,18 @@ dispatch once the next hosted mutation/runtime slices land.
 
 ## Suggested Next PR Order
 
-Slices 1 and 2 can land in either order. If shared identity work is already in
-flight, prefer landing runtime/system/delegated-operator support before adding
-decorative Elements scenarios that cannot yet consume faithful projections.
-
-1. Add missing Elements scenarios and update identity/capability catalog pages,
-   or land immediately after slice 2 if the actor projection is actively
-   changing.
+1. Keep interaction-mode and command-toolbar semantics aligned across desktop,
+   cloud, and Elements.
 2. Finish projection adoption for presence, execution attribution, editor
    attribution, and activity.
 3. Keep runtime-peer shell projection and architecture docs aligned with
    `NotebookShellCapabilities.runtime`.
-4. Introduce a typed `NotebookEnvironmentSurface` view model.
-5. Refactor package/environment rail rendering onto that model.
-6. Start activity and sharing composites once actor/access projection is stable.
+4. Keep desktop/cloud environment facts flowing through
+   `NotebookEnvironmentSurface`.
+5. Refactor package rail actions onto package-focused host callbacks and decide
+   where environment summaries belong.
+6. Start activity and sharing composites once actor/access/interaction
+   projection is stable.
 
 ## Open Questions
 

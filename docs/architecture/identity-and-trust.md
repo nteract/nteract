@@ -286,22 +286,28 @@ nteract-identity/
 +-- lib.rs            # ActorLabel, Principal, AuthenticatedUser, AuthError, Credential, IdentityProvider enum
 +-- local.rs          # LocalProvider (peer creds)
 +-- oidc.rs           # OidcProvider (JWKS bearer; configurable for Anaconda, Clerk, Auth0, Okta, WorkOS, generic OIDC)
-\-- jupyterhub.rs     # JupyterHubProvider (Hub cookie/token via /hub/api/user)
+\-- jupyterhub.rs     # JupyterHubProvider placeholder, pending /hub/api/user validation
 ```
 
 Multi-crate decomposition (`nteract-identity-local`, `-oidc`, `-jupyterhub`) would put `Credential`, `AuthenticatedUser`, and `AuthError` in `nteract-identity` while the implementor crates also need those types; the enum then has to depend back on its implementors, producing a Cargo cycle. One crate avoids it.
 
-Provider-specific dependencies (jose, jwks, openidconnect for OIDC; reqwest for JupyterHub) are gated by Cargo features so a build that only needs `LocalProvider` does not pull them in:
+Provider-specific dependencies are gated by Cargo features so a build that only
+needs `LocalProvider` does not pull them in. The current crate uses
+`jsonwebtoken` for OIDC/JWKS validation. `JupyterHubProvider` is feature-gated
+and present in the dispatch enum, but still returns
+`ProviderUnavailable("jupyterhub")` until the Hub API validation path lands:
 
 ```toml
 [features]
 default = ["local"]
 local = []
-oidc = ["dep:openidconnect", "dep:jose"]
-jupyterhub = ["dep:reqwest"]
+oidc = ["dep:jsonwebtoken"]
+jupyterhub = []
 ```
 
-Each provider module is testable in isolation against fixture credentials and a fake IdP. The crate has no dependency on `runtimed`, `kernel-env`, or any daemon internals.
+Implemented provider modules are testable in isolation against fixture
+credentials and fake IdP material. The crate has no dependency on `runtimed`,
+`kernel-env`, or any daemon internals.
 
 **Client-side: `Credential` keyring**
 
@@ -343,13 +349,16 @@ Base options by provider:
 
 The Worker DO extracts the credential at upgrade time, validates via the configured `IdentityProvider`, and rejects the upgrade with HTTP 401 (or closes immediately with a typed close code) if validation fails. After upgrade, the WebSocket carries no further auth; per-frame validation runs against the in-memory `AuthenticatedConnection`.
 
-The `Credential` enum therefore covers all of these:
+The `Credential` enum therefore covers all of these. The current
+implementation names local peer credentials explicitly and includes a
+`OneTimeTicket` variant for listener-side ticket consumption:
 
 ```rust
 pub enum Credential {
     BearerToken(String),     // from subprotocol, ticket exchange, or Authorization header
     Cookie(String),          // from upgrade-request cookies
-    UnixPeer(PeerCredInfo),  // SO_PEERCRED for the local daemon's listener
+    OneTimeTicket(String),   // short-lived ticket issued by the listener/host
+    LocalPeer(LocalPeerCredential), // listener-verified local peer credentials
 }
 ```
 
