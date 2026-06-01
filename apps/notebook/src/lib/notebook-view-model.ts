@@ -4,7 +4,7 @@ import {
   type CreateNotebookViewModelOptions,
   type NotebookViewCell,
   type NotebookViewModel,
-} from "../../../../src/components/notebook-shell/view-model";
+} from "../../../../src/components/notebook/view-model";
 import {
   getNotebookCellsSnapshot,
   useCellIds,

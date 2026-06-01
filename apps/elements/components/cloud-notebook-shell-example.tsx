@@ -28,7 +28,7 @@ import {
   type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
   type NotebookShellCapabilities,
-} from "@/components/notebook-shell";
+} from "@/components/notebook";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import {

@@ -1,5 +1,5 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
-import type { NotebookViewCell } from "@/components/notebook-shell";
+import type { NotebookViewCell } from "@/components/notebook";
 import {
   isOutputManifest,
   resolveContentRef,

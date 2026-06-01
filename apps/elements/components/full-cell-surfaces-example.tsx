@@ -11,7 +11,7 @@ import {
   getElementsNotebookScenario,
   resolveElementsNotebookLanguage,
 } from "@/components/notebook-scenarios";
-import type { NotebookViewCell } from "@/components/notebook-shell";
+import type { NotebookViewCell } from "@/components/notebook";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import {
   flushCellUIState,

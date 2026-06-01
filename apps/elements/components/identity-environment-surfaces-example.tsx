@@ -11,7 +11,7 @@ import {
   NotebookDocumentHeader,
   notebookActorIdentityFromAccess,
   type NotebookActorIdentity,
-} from "@/components/notebook-shell";
+} from "@/components/notebook";
 import { cn } from "@/lib/utils";
 import {
   getElementsNotebookScenario,

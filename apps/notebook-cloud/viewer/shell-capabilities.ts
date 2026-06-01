@@ -1,12 +1,12 @@
 import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
-} from "@/components/notebook-shell/actor-projection";
-import type { NotebookShellCapabilities } from "@/components/notebook-shell/capabilities";
+} from "@/components/notebook/actor-projection";
+import type { NotebookShellCapabilities } from "@/components/notebook/capabilities";
 import {
   createNotebookInteractionModeProjection,
   type NotebookInteractionMode,
-} from "@/components/notebook-shell/interaction-mode";
+} from "@/components/notebook/interaction-mode";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 
 export interface CloudNotebookShellCapabilityInput {

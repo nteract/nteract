@@ -12,7 +12,7 @@ import {
   type NotebookTrustStatus,
   type NotebookViewCell,
   type NotebookViewModel,
-} from "@/components/notebook-shell";
+} from "@/components/notebook";
 import type {
   EnvSyncState,
   PyProjectDeps,

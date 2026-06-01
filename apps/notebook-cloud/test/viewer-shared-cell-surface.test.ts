@@ -92,7 +92,7 @@ test("cloud presence chrome renders through the shared shell component", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
   const sharedPresencePath = new URL(
-    "../../../src/components/notebook-shell/NotebookPresenceStatus.tsx",
+    "../../../src/components/notebook/NotebookPresenceStatus.tsx",
     import.meta.url,
   );
   const sharedPresenceText = readFileSync(sharedPresencePath, "utf8");

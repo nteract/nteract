@@ -23,7 +23,7 @@ import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/C
 import { CellSkeleton } from "@/components/cell/CellSkeleton";
 import { Button } from "@/components/ui/button";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
-import type { NotebookShellCapabilities } from "@/components/notebook-shell";
+import type { NotebookShellCapabilities } from "@/components/notebook";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";

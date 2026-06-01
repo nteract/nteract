@@ -2,7 +2,7 @@ import type { SessionControlMessage } from "../src/protocol";
 import {
   notebookActorIdentityFromProjection,
   notebookActorProjectionFromLabel,
-} from "@/components/notebook-shell/actor-projection";
+} from "@/components/notebook/actor-projection";
 
 export type CloudViewerPresenceConnection = "connecting" | "connected" | "disconnected";
 

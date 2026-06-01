@@ -21,7 +21,7 @@ import {
   Workflow,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { NotebookShellCapabilities } from "@/components/notebook-shell";
+import type { NotebookShellCapabilities } from "@/components/notebook";
 import { cn } from "@/lib/utils";
 import {
   getElementsNotebookScenario,
@@ -165,13 +165,13 @@ const capabilityRows: {
 const componentRows = [
   {
     component: "NotebookDocumentShell",
-    path: "src/components/notebook-shell/NotebookDocumentShell.tsx",
+    path: "src/components/notebook/NotebookDocumentShell.tsx",
     use: "Hosts the document stage, header, rail, notice slots, and capability data attributes.",
     hostBoundary: "No Tauri, OIDC, room host, daemon, or catalog router imports.",
   },
   {
     component: "NotebookDocumentHeader",
-    path: "src/components/notebook-shell/NotebookDocumentHeader.tsx",
+    path: "src/components/notebook/NotebookDocumentHeader.tsx",
     use: "Gates utility, runtime, code, sharing, edit, and auth slots from capabilities.",
     hostBoundary: "Controls stay host-specific; visibility policy stays shared.",
   },
@@ -183,13 +183,13 @@ const componentRows = [
   },
   {
     component: "NotebookDocumentRail",
-    path: "src/components/notebook-shell/NotebookDocumentRail.tsx",
+    path: "src/components/notebook/NotebookDocumentRail.tsx",
     use: "Projects outline and packages through the shared view model.",
     hostBoundary: "Navigation and package writes remain host callbacks.",
   },
   {
     component: "createNotebookViewModel",
-    path: "src/components/notebook-shell/view-model.ts",
+    path: "src/components/notebook/view-model.ts",
     use: "Materializes cells, outline items, heading anchors, view-only cells, and package summaries.",
     hostBoundary: "Hosts provide source facts; the projection stays notebook-semantic.",
   },
