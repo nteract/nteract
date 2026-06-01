@@ -28,6 +28,7 @@ import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-headin
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
+import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
@@ -776,11 +777,12 @@ function NotebookViewContent({
         }
       };
 
-      const onNavigateToCell = (targetCellId: string) => {
+      const onNavigateToCell = (target: TracebackCellTarget) => {
+        const targetCellId = target.cellId;
         logger.debug(`[cell-nav] Navigating to traceback cell: ${targetCellId.slice(0, 8)}`);
         onFocusCell(targetCellId);
         presence?.setFocus(targetCellId);
-        focusCell(targetCellId, "start");
+        focusCell(targetCellId, typeof target.line === "number" ? { line: target.line } : "start");
       };
 
       // Build right gutter content — delete button for all cells,

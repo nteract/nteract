@@ -34,6 +34,7 @@ import {
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
 import {
+  classicTracebackToPayload,
   TracebackOutput,
   type TracebackCellTarget,
   type TracebackCellNavigator,
@@ -404,6 +405,21 @@ function renderOutput(
           <TracebackOutput
             key={key}
             data={output.rich}
+            resolveExecutionTarget={resolveTracebackExecutionTarget}
+            onNavigateToCell={onNavigateToTracebackCell}
+          />
+        );
+      }
+      const classicTraceback = classicTracebackToPayload({
+        ename: output.ename,
+        evalue: output.evalue,
+        traceback: output.traceback,
+      });
+      if (classicTraceback) {
+        return (
+          <TracebackOutput
+            key={key}
+            data={classicTraceback}
             resolveExecutionTarget={resolveTracebackExecutionTarget}
             onNavigateToCell={onNavigateToTracebackCell}
           />

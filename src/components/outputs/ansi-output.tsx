@@ -1,5 +1,6 @@
 import Anser from "anser";
 import { escapeCarriageReturn } from "escape-carriage";
+import { X } from "lucide-react";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -348,17 +349,27 @@ export function AnsiErrorOutput({
   traceback,
   className = "",
 }: AnsiErrorOutputProps) {
+  const headline = ename && evalue ? `${ename}: ${evalue}` : (ename ?? evalue ?? "Error");
+  const tracebackText = Array.isArray(traceback) ? traceback.join("\n") : traceback;
+
   return (
-    <div data-slot="ansi-error-output" className={cn("not-prose py-3", className)}>
-      {ename && evalue && (
-        <div className="mb-1 font-semibold text-red-700 dark:text-red-400">
-          <AnsiOutput isError>{`${ename}: ${evalue}`}</AnsiOutput>
-        </div>
+    <div
+      data-slot="ansi-error-output"
+      className={cn(
+        "not-prose my-1 rounded-md border border-destructive/15 bg-destructive/[0.018]",
+        "px-2 py-1.5 text-sm shadow-[0_1px_0_rgba(0,0,0,0.02)]",
+        className,
       )}
-      {traceback && (
-        <div className="mt-2 text-xs text-red-600 dark:text-red-400 opacity-80">
-          <AnsiOutput isError>
-            {Array.isArray(traceback) ? traceback.join("\n") : traceback}
+    >
+      <div className="flex items-center gap-2 px-1 py-1.5 font-mono">
+        <X aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" strokeWidth={2.5} />
+        <div className="min-w-0 truncate font-semibold text-destructive">{headline}</div>
+        <div className="h-px min-w-6 flex-1 bg-destructive/10" />
+      </div>
+      {tracebackText && (
+        <div className="mx-1 mb-1 rounded-sm bg-background/55 px-2 py-1.5">
+          <AnsiOutput isError className="text-xs leading-5 text-destructive/80">
+            {tracebackText}
           </AnsiOutput>
         </div>
       )}
