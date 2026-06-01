@@ -22,7 +22,7 @@ export function NotebookPackageSummaryPanel({
         {header}
         {packages.sections.length === 0 ? (
           <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-            No package metadata in this notebook.
+            No package details yet.
           </div>
         ) : (
           packages.sections.map((section) => (
@@ -35,13 +35,13 @@ export function NotebookPackageSummaryPanel({
                   <h3 className="truncate text-sm font-semibold">{section.label}</h3>
                   <p className="text-xs text-muted-foreground">
                     {section.dependencies.length === 1
-                      ? "1 dependency"
-                      : `${section.dependencies.length} dependencies`}
+                      ? "1 declared dependency"
+                      : `${section.dependencies.length} declared dependencies`}
                   </p>
                 </div>
                 {readOnly ? (
                   <span className="shrink-0 rounded-full border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                    Read only
+                    View only
                   </span>
                 ) : null}
               </div>
@@ -49,7 +49,7 @@ export function NotebookPackageSummaryPanel({
               {section.dependencies.length > 0 ? (
                 <PackageValueList values={section.dependencies} />
               ) : (
-                <p className="text-xs text-muted-foreground">No inline dependencies.</p>
+                <p className="text-xs text-muted-foreground">No inline dependencies yet.</p>
               )}
 
               {section.details.length > 0 ? (
