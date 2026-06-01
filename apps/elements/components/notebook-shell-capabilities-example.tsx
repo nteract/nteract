@@ -102,21 +102,21 @@ const capabilityRows: {
     label: "Edit markdown",
     icon: PencilLine,
     component: "NotebookView, MarkdownCell",
-    meaning: "Markdown writes are allowed through the host bridge.",
+    meaning: "Markdown changes are allowed through the host bridge.",
   },
   {
     key: "canEditCells",
     label: "Edit code source",
     icon: Code2,
     component: "NotebookView, CodeCell",
-    meaning: "Code and raw cell source editors are writable.",
+    meaning: "Code and raw cell source editors can accept changes.",
   },
   {
     key: "canEditStructure",
     label: "Edit structure",
     icon: GitBranch,
-    component: "NotebookView mutation controls",
-    meaning: "Cell insert, delete, move, and structural document writes are available.",
+    component: "NotebookView structure controls",
+    meaning: "Cell insert, delete, move, and document structure changes are available.",
   },
   {
     key: "canRequestEdit",
@@ -130,7 +130,7 @@ const capabilityRows: {
     label: "Execute",
     icon: PlayCircle,
     component: "NotebookToolbar, CodeCell run controls",
-    meaning: "Runtime actions are available through the host execution adapter.",
+    meaning: "Run and kernel controls are available through the host execution adapter.",
   },
   {
     key: "canToggleCode",
@@ -144,14 +144,14 @@ const capabilityRows: {
     label: "View packages",
     icon: Package,
     component: "NotebookDocumentRail, NotebookPackageSummaryPanel",
-    meaning: "Dependency metadata can be inspected even when mutation is disabled.",
+    meaning: "Package details can be inspected even when management is disabled.",
   },
   {
     key: "canManagePackages",
     label: "Manage packages",
     icon: Package,
     component: "DependencyHeader, package rail controls",
-    meaning: "Dependency changes and environment sync actions are writable.",
+    meaning: "Package edits, sync actions, and rebuild decisions are available.",
   },
   {
     key: "canManageSharing",
@@ -185,12 +185,12 @@ const componentRows = [
     component: "NotebookDocumentRail",
     path: "src/components/notebook-shell/NotebookDocumentRail.tsx",
     use: "Projects outline and packages through the shared view model.",
-    hostBoundary: "Navigation and package mutations remain adapter callbacks.",
+    hostBoundary: "Navigation and package writes remain host callbacks.",
   },
   {
     component: "createNotebookViewModel",
     path: "src/components/notebook-shell/view-model.ts",
-    use: "Materializes cells, outline items, heading anchors, read-only cells, and package summaries.",
+    use: "Materializes cells, outline items, heading anchors, view-only cells, and package summaries.",
     hostBoundary: "Hosts provide source facts; the projection stays notebook-semantic.",
   },
 ];
@@ -308,7 +308,7 @@ export function NotebookShellCapabilitiesExample() {
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="flex items-center gap-2 border-b border-fd-border p-4">
           <Workflow className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h2 className="text-sm font-semibold">Shared component boundary</h2>
+          <h2 className="text-sm font-semibold">Shared notebook surface</h2>
         </div>
         <div className="grid gap-2 p-4">
           {componentRows.map((row) => (
@@ -329,7 +329,7 @@ export function NotebookShellCapabilitiesExample() {
                   </div>
                   <div>
                     <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                      Host boundary
+                      Host keeps
                     </div>
                     <p className="mt-1 text-fd-muted-foreground">{row.hostBoundary}</p>
                   </div>
@@ -409,7 +409,7 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
         <ScenarioPill label={scenario.runtimeLabel} />
         <ScenarioPill label={scenario.packageSummary} />
         <ScenarioPill
-          label={enabledLabels.length ? `writes: ${enabledLabels.join(", ")}` : "read-only"}
+          label={enabledLabels.length ? `can change: ${enabledLabels.join(", ")}` : "view only"}
         />
       </div>
     </article>

@@ -46,38 +46,38 @@ const packageSurfaces = [
     name: "DependencyHeader",
     source: "apps/notebook/src/components/DependencyHeader.tsx",
     manager: "uv",
-    role: "Inline uv dependencies, project pyproject.toml state, and sync prompts.",
+    role: "Inline uv dependencies, project pyproject.toml details, and sync prompts.",
   },
   {
     name: "CondaDependencyHeader",
     source: "apps/notebook/src/components/CondaDependencyHeader.tsx",
     manager: "conda",
-    role: "Conda package specs, channels, environment.yml detection, and solve progress.",
+    role: "Conda packages, channels, environment.yml details, and solve progress.",
   },
   {
     name: "PixiDependencyHeader",
     source: "apps/notebook/src/components/PixiDependencyHeader.tsx",
     manager: "pixi",
-    role: "pixi.toml detection, conda and PyPI dependency display, and restart prompts.",
+    role: "pixi.toml details, Conda and PyPI dependency display, and restart prompts.",
   },
   {
     name: "DenoDependencyHeader",
     source: "apps/notebook/src/components/DenoDependencyHeader.tsx",
     manager: "deno",
-    role: "deno.json state, npm import behavior, and Deno import examples.",
+    role: "deno.json details, npm import behavior, and Deno import examples.",
   },
 ];
 
 const packageBoundaryRows = [
   {
-    boundary: "Notebook metadata",
-    catalogPath: "static package-manager records",
-    productionBoundary: "Automerge notebook metadata and pyproject/environment files",
+    boundary: "Package details",
+    catalogPath: "static package records",
+    productionBoundary: "Automerge package state and project files",
     detail:
-      "uv, Conda, Pixi, and Deno headers receive the same prop shapes they use in the notebook app without mutating notebook documents.",
+      "uv, Conda, Pixi, and Deno headers receive the same prop shapes they use in the notebook app without editing notebook documents.",
   },
   {
-    boundary: "Manager actions",
+    boundary: "Package actions",
     catalogPath: "inert async callbacks",
     productionBoundary: "host commands, daemon sync, and environment solves",
     detail:
@@ -123,7 +123,7 @@ export function PackageManagerSurfacesExample() {
         <SurfaceFrame
           icon={<PackageCheck className="size-4 text-fuchsia-500" aria-hidden="true" />}
           title="uv inline and project"
-          detail="Elements scenario package metadata plus detected pyproject.toml state."
+          detail="Fixture package details plus detected pyproject.toml project-env state."
         >
           <DependencyHeader
             dependencies={[...scenario.packageState.dependencies]}
@@ -147,7 +147,7 @@ export function PackageManagerSurfacesExample() {
         <SurfaceFrame
           icon={<RefreshCw className="size-4 text-emerald-500" aria-hidden="true" />}
           title="Conda environment"
-          detail="Fixture channels, environment.yml imports, and environment preparation progress."
+          detail="Fixture channels, environment.yml imports, and solve progress."
         >
           <CondaDependencyHeader
             dependencies={["python=3.13", "scikit-learn", "seaborn"]}
@@ -192,7 +192,7 @@ export function PackageManagerSurfacesExample() {
         <SurfaceFrame
           icon={<Layers3 className="size-4 text-amber-500" aria-hidden="true" />}
           title="Pixi project"
-          detail="Fixture pixi.toml state with Conda and PyPI dependencies."
+          detail="Fixture pixi.toml project details with Conda and PyPI dependencies."
         >
           <PixiDependencyHeader
             pixiInfo={{
@@ -219,7 +219,7 @@ export function PackageManagerSurfacesExample() {
         <SurfaceFrame
           icon={<TerminalSquare className="size-4 text-emerald-500" aria-hidden="true" />}
           title="Deno imports"
-          detail="Fixture deno.json state and the flexible npm imports toggle."
+          detail="Fixture deno.json imports and the flexible npm toggle."
         >
           <DenoDependencyHeader
             denoConfigInfo={{
@@ -242,12 +242,12 @@ export function PackageManagerSurfacesExample() {
       <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
         <div className="mb-3 flex items-center gap-2">
           <FileCode2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h2 className="text-sm font-semibold">Adapter boundary</h2>
+          <h2 className="text-sm font-semibold">Live work stays with the host</h2>
         </div>
         <p className="text-xs leading-5 text-fd-muted-foreground">
-          This page owns only fixture metadata and inert callbacks. The rendered headers come from
-          the notebook app, while live notebook metadata writes, daemon sync, and environment
-          rebuilding stay outside the docs runtime.
+          This page owns fixture package details and inert callbacks. The rendered headers come from
+          the notebook app, while live package writes, daemon sync, and environment rebuilding stay
+          outside the docs runtime.
         </p>
         <div className="mt-4 overflow-hidden rounded-md border border-fd-border bg-fd-card">
           <div className="hidden grid-cols-[190px_210px_240px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">

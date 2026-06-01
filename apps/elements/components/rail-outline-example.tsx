@@ -1,6 +1,6 @@
 "use client";
 
-import { Boxes, ListTree, ShieldCheck, Variable } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import {
   KERNEL_STATUS,
@@ -58,49 +58,6 @@ const scenarioIds: ElementsNotebookScenarioId[] = [
 const executingCellId = "cell-model-code";
 const queuedCellIds = new Set(["cell-shape-output"]);
 
-const outlineBoundaryRows = [
-  {
-    label: "Projection source",
-    catalog: "createNotebookViewModel(fixture cells)",
-    production: "host adapter materializes cells before the shared shell projection",
-  },
-  {
-    label: "Shell capabilities",
-    catalog: "ElementsNotebookScenario.capabilities",
-    production: "desktop local state or cloud ACL/auth adapter",
-  },
-  {
-    label: "Context selection",
-    catalog: "focusedCellId fixture + viewModel.cellIds",
-    production: "NotebookView focus state + shared outline selection",
-  },
-  {
-    label: "Header chrome",
-    catalog: "outline title without item count",
-    production: "packages may summarize state; outline stays reading-first",
-  },
-  {
-    label: "Heading anchors",
-    catalog: "viewModel.markdownHeadingAnchorsByCellId",
-    production: "MarkdownCell receives anchors from the shell view model",
-  },
-  {
-    label: "Heading navigation",
-    catalog: "inert outline callback updates fixture focus",
-    production: "navigateNotebookOutlineItem, heading measurement, and cell-anchor fallback",
-  },
-  {
-    label: "Drag policy",
-    catalog: "outline rows cancel native drag previews",
-    production: "navigation-only until the app owns true outline reordering",
-  },
-  {
-    label: "DOM order",
-    catalog: "fixture cell order",
-    production: "stableDomOrder renders DOM while CSS order controls visual position",
-  },
-];
-
 export function RailOutlineExample() {
   const [scenarioId, setScenarioId] = useState<ElementsNotebookScenarioId>("desktop-local-owner");
   const scenario = getElementsNotebookScenario(scenarioId);
@@ -122,7 +79,7 @@ export function RailOutlineExample() {
 
   return (
     <NotebookDocumentShell
-      className="not-prose min-h-[700px] overflow-hidden rounded-lg border border-fd-border bg-fd-card text-fd-card-foreground shadow-sm"
+      className="not-prose min-h-[560px] overflow-hidden rounded-lg border border-fd-border bg-fd-card text-fd-card-foreground shadow-sm md:min-h-[700px] max-md:[&_[data-slot=notebook-document-stage]]:hidden max-md:[&_[data-slot=notebook-rail-panel]]:min-w-0 max-md:[&_[data-slot=notebook-rail-panel]]:max-w-none max-md:[&_[data-slot=notebook-rail-panel]]:flex-1 max-md:[&_[data-testid=notebook-rail]]:w-full"
       stageClassName="min-w-[320px] bg-fd-muted/20"
       toolbarClassName="border-b border-fd-border"
       toolbarLabel="Notebook fixture toolbar"
@@ -253,7 +210,7 @@ function ScenarioNotice({
           from current sources.
         </div>
         <p>
-          The docs app owns only scenario facts: capabilities, fixture cells, package metadata,
+          The docs app owns only scenario facts: capabilities, fixture cells, package details,
           focused cell, active panel, and inert navigation callbacks.
         </p>
       </div>
@@ -362,26 +319,11 @@ function ScenarioCellBadge({ cell }: { cell: NotebookViewCell }) {
 }
 
 function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario }) {
-  const plannedRailPanels = [
-    {
-      icon: Variable,
-      title: "Variables",
-      detail: `${scenario.variables.length} fixture names`,
-      body: "A future rail sibling for live namespace inspection once the app has a current variable surface.",
-    },
-    {
-      icon: Boxes,
-      title: "Renderers",
-      detail: `${scenario.renderers.length} fixture MIME lanes`,
-      body: "A future diagnostics panel for output MIME routing, plugin loading, and renderer health.",
-    },
-  ];
-
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-fd-border bg-fd-muted/40 p-3 text-xs leading-5 text-fd-muted-foreground">
-        This uses the current notebook dependency panel in a rail-sized frame. The catalog owns only
-        scenario metadata and inert callbacks.
+        Current notebook package controls in a rail-sized frame. The preview owns only scenario
+        facts and inert callbacks.
       </div>
       <div className="overflow-hidden rounded-md border border-fd-border bg-fd-card">
         <DependencyHeader
@@ -404,56 +346,6 @@ function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario 
           justSynced={false}
         />
       </div>
-      <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <ListTree className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h4 className="text-sm font-semibold">Adapter boundary</h4>
-        </div>
-        <div className="space-y-2">
-          {outlineBoundaryRows.map((row) => (
-            <div
-              key={row.label}
-              className="space-y-2 rounded-md border border-fd-border p-3 text-xs leading-5"
-            >
-              <div className="font-medium text-fd-foreground">{row.label}</div>
-              <div className="min-w-0">
-                <span className="mb-1 block text-[10px] uppercase tracking-[0.08em] text-fd-muted-foreground">
-                  Catalog
-                </span>
-                <span className="break-words text-fd-muted-foreground">{row.catalog}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="mb-1 block text-[10px] uppercase tracking-[0.08em] text-fd-muted-foreground">
-                  Production
-                </span>
-                <span className="break-words text-fd-muted-foreground">{row.production}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-      <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <ListTree className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h4 className="text-sm font-semibold">Planned sibling panels</h4>
-        </div>
-        <div className="grid gap-2">
-          {plannedRailPanels.map((panel) => (
-            <div key={panel.title} className="rounded-md border border-fd-border p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <panel.icon className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-                  <h5 className="text-sm font-medium">{panel.title}</h5>
-                </div>
-                <span className="shrink-0 rounded bg-fd-muted px-1.5 py-0.5 text-[10px] text-fd-muted-foreground">
-                  {panel.detail}
-                </span>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{panel.body}</p>
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
   );
 }

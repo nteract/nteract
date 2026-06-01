@@ -76,7 +76,7 @@ export function IdentityEnvironmentSurfacesExample() {
             <h2 className="text-sm font-semibold">Notebook-semantic composites</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               These examples wrap shared primitives in notebook concepts: current actor, access
-              source, agent delegation, runtime state, and package metadata. Raw Avatar, Badge,
+              source, agent delegation, runtime state, and package details. Raw Avatar, Badge,
               Select, and Button primitives stay implementation details.
             </p>
           </div>

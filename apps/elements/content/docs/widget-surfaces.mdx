@@ -5,38 +5,9 @@ description: Fixture-backed notebook widget components from nteract/nteract.
 
 import { WidgetSurfacesExample } from "@/components/widget-surfaces-example";
 
-Widgets are notebook output components. This page catalogs the current
-`src/components/widgets` path with local comm-state fixtures, not a live kernel,
-iframe, sync engine, or generated WASM resolver. The interactive examples import
-the production controls registry and render through `WidgetView`, so the page is
-tracking nteract-owned widget surfaces instead of page-local form stand-ins.
-The catalog now includes saved-state fixtures for control widgets, media
-widgets, `FileUploadModel`, `OutputModel`, layout containers, play controls, and
-controller controls. The controller fixture installs a local Gamepad API response
-so `ControllerModel` can poll browser state and update child button/axis models
-without a real gamepad. It also renders `CanvasModel` through the ipycanvas path
-with a local binary command buffer routed by the CanvasManager adapter, and it
-restores saved `image_data` bytes through the same `CanvasWidget` effect used
-when ipycanvas snapshots restore canvas state. `AnyModel` fixtures render through
-`AnyWidgetView` with inline plus URL-backed `_esm` and `_css` assets. The media
-section includes an `ImageModel` whose `value` is a hydrated `DataView`, so the
-same `buildMediaSrc` binary path used by ipywidgets media traitlets is visible in
-the catalog. It also includes a same-origin static fixture URL listed in
-`bufferPaths`, hydrated into a `DataView` before seeding `WidgetStore`, mirroring
-the iframe bridge shape without importing that runtime. The persistence fixture
-routes `sendUpdate` through `WidgetUpdateManager`, uploads binary leaves to a
-docs-local blob uploader, and writes the resulting `ContentRef` through an inert
-CRDT writer while keeping the optimistic `DataView` in the store.
-The `OutputModel` fixture also includes a nested
-`application/vnd.jupyter.widget-view+json` output, resolved by the same
-`MediaProvider` custom renderer shape used by the notebook app. A local replay
-control updates the same `outputs` trait through the widget context, so the
-catalog covers the `OutputWidget` state-update path without opening a live comm
-channel. The widget boundary map separates the catalog's deterministic
-`WidgetStore`, `WidgetUpdateManager`, media buffer, and anywidget asset fixtures
-from the production RuntimeStateDoc, live comm bridge, daemon blob resolver, and
-kernel-originated asset paths. The remaining work is listed as named next
-adapter rows so the catalog keeps runtime gaps explicit and reviewable.
+Widgets are notebook outputs. This catalog renders production `WidgetView`
+surfaces against deterministic comm-state fixtures, then names the host
+boundaries that still belong outside the docs runtime.
 
 <WidgetSurfacesExample />
 

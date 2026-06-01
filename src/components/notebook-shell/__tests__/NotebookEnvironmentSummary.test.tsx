@@ -63,14 +63,14 @@ describe("NotebookEnvironmentSummary", () => {
 
     expect(screen.getByRole("heading", { name: "Notebook environment" })).toBeVisible();
     expect(screen.getByText("Python - local runtime ready")).toBeVisible();
-    expect(screen.getByText("Runtime author: Python")).toBeVisible();
+    expect(screen.getByText("Python authors runtime state")).toBeVisible();
     expect(screen.getByText("uv + pixi - 3 packages")).toBeVisible();
     expect(screen.getByText("pyproject.toml")).toBeVisible();
     expect(screen.getByText("dirty - 1 pending change")).toBeVisible();
     expect(screen.getByText("pandas>=2")).toBeVisible();
   });
 
-  it("shows read-only environment state when package mutation is unavailable", () => {
+  it("shows view-only environment state when package management is unavailable", () => {
     render(
       <NotebookEnvironmentSummary
         capabilities={{
@@ -90,8 +90,8 @@ describe("NotebookEnvironmentSummary", () => {
 
     expect(screen.getByText("Public")).toBeVisible();
     expect(screen.getByText("No runtime")).toBeVisible();
-    expect(screen.getByText("No package metadata")).toBeVisible();
-    expect(screen.getByText("No package manager metadata available.")).toBeVisible();
+    expect(screen.getByText("No package details")).toBeVisible();
+    expect(screen.getByText("No package manager details yet.")).toBeVisible();
   });
 
   it("can render only environment facts when package details are shown elsewhere", () => {
@@ -115,7 +115,7 @@ describe("NotebookEnvironmentSummary", () => {
 
     expect(screen.getByRole("heading", { name: "Notebook environment" })).toBeVisible();
     expect(screen.getByText("Live sync connected")).toBeVisible();
-    expect(screen.getByText("Package metadata read only")).toBeVisible();
+    expect(screen.getByText("Read-only in this notebook")).toBeVisible();
     expect(screen.queryByText("pandas>=2")).toBeNull();
   });
 
@@ -142,7 +142,7 @@ describe("NotebookEnvironmentSummary", () => {
           packages: {
             summary: "uv - 2 packages",
             sourceLabel: "pyproject.toml",
-            accessLabel: "Package edits available",
+            accessLabel: "Editable in this notebook",
             muted: false,
           },
           sync: {
@@ -160,7 +160,7 @@ describe("NotebookEnvironmentSummary", () => {
       />,
     );
 
-    expect(screen.getByText("Owner access through desktop host")).toBeVisible();
+    expect(screen.getByText("Owner access from desktop host.")).toBeVisible();
     expect(screen.getByText("Runtime launching")).toBeVisible();
     expect(screen.getByText("Package metadata has pending changes")).toBeVisible();
     expect(screen.getByText("Untrusted dependencies")).toBeVisible();

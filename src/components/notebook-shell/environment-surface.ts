@@ -73,15 +73,15 @@ export function createNotebookEnvironmentSurface({
   trustStatus = null,
 }: CreateNotebookEnvironmentSurfaceOptions): NotebookEnvironmentSurface {
   const packageAccessLabel = capabilities.canManagePackages
-    ? "Package edits available"
+    ? "Editable in this notebook"
     : capabilities.canViewPackages
-      ? "Package metadata read only"
-      : "Package metadata hidden";
+      ? "Read-only in this notebook"
+      : "Hidden for this viewer";
   const runtimeStateLabel =
     runtimeLabel ?? (capabilities.canExecute ? "Runtime ready" : "No runtime");
   const runtimeActor = notebookActorIdentityFromRuntime(capabilities.runtime, capabilities.auth);
   const runtimeDetail = capabilities.runtime.canWriteRuntimeState
-    ? `Runtime author: ${runtimeActor?.label ?? "connected runtime"}`
+    ? `${runtimeActor?.label ?? "Connected runtime"} authors runtime state`
     : capabilities.runtime.connected
       ? `Runtime connected through ${accessSourceLabel(capabilities.runtime.source)}`
       : null;
@@ -108,7 +108,7 @@ export function createNotebookEnvironmentSurface({
       muted: !capabilities.canExecute && !capabilities.runtime.connected,
     },
     packages: {
-      summary: packages.summary ?? "No package metadata",
+      summary: packages.summary ?? "No package details",
       sourceLabel: packageSourceLabel ?? packageAccessLabel,
       accessLabel: packageAccessLabel,
       muted: !capabilities.canViewPackages,
@@ -153,7 +153,7 @@ export function accessSourceLabel(source: NotebookShellAccessSource): string {
     case "cloud":
       return "cloud";
     case "local":
-      return "local";
+      return "local host";
     case "fixture":
       return "fixture";
     case "unknown":

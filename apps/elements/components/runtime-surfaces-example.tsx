@@ -42,7 +42,7 @@ const runtimePieces = [
   {
     name: "TrustDialog",
     source: "apps/notebook/src/components/TrustDialog.tsx",
-    role: "Dependency review gate with approved packages, typosquat warnings, and trust actions.",
+    role: "Package trust gate with approved packages, typosquat warnings, and trust actions.",
     status: "rendered",
   },
   {
@@ -54,7 +54,7 @@ const runtimePieces = [
   {
     name: "DependencyHeader",
     source: "apps/notebook/src/components/DependencyHeader.tsx",
-    role: "Notebook dependency panel for uv metadata, pyproject state, and sync prompts.",
+    role: "Notebook package panel for uv package details, pyproject state, and sync prompts.",
     status: "rendered",
   },
   {
@@ -78,7 +78,7 @@ const runtimePieces = [
   {
     name: "UntrustedBanner",
     source: "apps/notebook/src/components/UntrustedBanner.tsx",
-    role: "Inline dependency approval gate that opens TrustDialog before kernel start.",
+    role: "Inline package approval gate that opens TrustDialog before kernel start.",
     status: "rendered",
   },
   {
@@ -92,24 +92,24 @@ const runtimePieces = [
 const runtimeAdapterRows = [
   {
     boundary: "Desktop host actions",
-    catalogPath: "NotebookHostProvider fixture",
-    productionBoundary: "notebook shell host commands",
+    previewPath: "NotebookHostProvider fixture",
+    notebookOwner: "notebook shell host commands",
     detail:
-      "Pool settings, clipboard, and command callbacks stay inert in the catalog while the production app routes them through the host bridge.",
+      "Pool settings, clipboard, and command callbacks stay inert in the preview while the notebook routes them through the host bridge.",
   },
   {
     boundary: "Runtime side effects",
-    catalogPath: "static decisions with async no-ops",
-    productionBoundary: "daemon and kernel lifecycle",
+    previewPath: "static decisions with async no-ops",
+    notebookOwner: "daemon and kernel lifecycle",
     detail:
-      "Trust, environment build, retry, dismiss, and sync actions render with the current components but do not start kernels or mutate runtime state.",
+      "Trust, environment build, retry, dismiss, and sync actions render with the current components but do not start kernels or change runtime state.",
   },
   {
-    boundary: "Dependency and trust state",
-    catalogPath: "typed fixture records",
-    productionBoundary: "settings, pyproject, and RuntimeStateDoc updates",
+    boundary: "Package and trust state",
+    previewPath: "typed fixture records",
+    notebookOwner: "settings, pyproject, and RuntimeStateDoc updates",
     detail:
-      "The catalog owns deterministic package, typosquat, and pyproject data; live settings and runtime documents remain outside the docs app.",
+      "The preview owns deterministic package, typosquat, and pyproject facts; live settings and runtime documents stay outside the docs app.",
   },
 ];
 
@@ -139,7 +139,7 @@ function RuntimeDialogs({ scenario }: { scenario: ElementsNotebookScenario }) {
         <ShieldAlert className="mb-3 size-4 text-amber-500" aria-hidden="true" />
         <h3 className="text-sm font-semibold">Trust review</h3>
         <p className="mt-2 min-h-[3rem] text-xs leading-5 text-fd-muted-foreground">
-          Opens the current dependency trust dialog with approved and suspicious package fixtures.
+          Opens the current package trust dialog with approved and suspicious package fixtures.
         </p>
         <Button className="mt-4" size="sm" onClick={() => setTrustOpen(true)}>
           Open TrustDialog
@@ -178,7 +178,7 @@ function RuntimeDialogs({ scenario }: { scenario: ElementsNotebookScenario }) {
         <PackageCheck className="mb-3 size-4 text-emerald-600" aria-hidden="true" />
         <h3 className="text-sm font-semibold">Decision shell</h3>
         <p className="mt-2 min-h-[3rem] text-xs leading-5 text-fd-muted-foreground">
-          Opens the shared runtime decision shell with catalog-owned fixture content.
+          Opens the shared runtime decision shell with preview-owned fixture content.
         </p>
         <Button className="mt-4" size="sm" onClick={() => setDecisionShellOpen(true)}>
           Open RuntimeDecisionDialog
@@ -219,25 +219,31 @@ function DependencyHeaderFixture({ scenario }: { scenario: ElementsNotebookScena
       <div className="border-b border-fd-border p-4">
         <h2 className="text-sm font-semibold">DependencyHeader</h2>
         <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-          Rendered from the notebook app with fixture dependency state and inert async handlers.
+          Rendered from the notebook app in the same rail-sized package surface used by the notebook
+          shell.
         </p>
       </div>
-      <DependencyHeader
-        dependencies={[...scenario.packageState.dependencies]}
-        requiresPython={scenario.packageState.requiresPython}
-        loading={false}
-        onAdd={asyncNoop}
-        onRemove={asyncNoop}
-        onSetRequiresPython={asyncNoop}
-        syncState={scenario.packageState.syncState}
-        onSyncNow={asyncTrue}
-        pyprojectInfo={scenario.packageState.pyprojectInfo}
-        pyprojectDeps={scenario.packageState.pyprojectDeps}
-        onImportFromPyproject={asyncNoop}
-        onUseProjectEnv={asyncNoop}
-        isUsingProjectEnv={false}
-        justSynced={false}
-      />
+      <div className="bg-fd-muted/20 p-4">
+        <div className="mx-auto w-full max-w-[22rem]">
+          <DependencyHeader
+            dependencies={[...scenario.packageState.dependencies]}
+            requiresPython={scenario.packageState.requiresPython}
+            loading={false}
+            variant="rail"
+            onAdd={asyncNoop}
+            onRemove={asyncNoop}
+            onSetRequiresPython={asyncNoop}
+            syncState={scenario.packageState.syncState}
+            onSyncNow={asyncTrue}
+            pyprojectInfo={scenario.packageState.pyprojectInfo}
+            pyprojectDeps={scenario.packageState.pyprojectDeps}
+            onImportFromPyproject={asyncNoop}
+            onUseProjectEnv={asyncNoop}
+            isUsingProjectEnv={false}
+            justSynced={false}
+          />
+        </div>
+      </div>
     </section>
   );
 }
@@ -325,7 +331,7 @@ function RuntimeBanners() {
         <BannerFixture
           icon={<ShieldAlert className="size-4" aria-hidden="true" />}
           name="UntrustedBanner"
-          description="Inline trust gate before dependency-backed kernel start."
+          description="Inline trust gate before package-backed kernel start."
         >
           <UntrustedBanner onReviewClick={noop} />
         </BannerFixture>
@@ -443,18 +449,18 @@ export function RuntimeSurfacesExample() {
         <div className="rounded-lg border border-fd-border bg-fd-card p-4">
           <div className="mb-3 flex items-center gap-2">
             <CircleDot className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-            <h2 className="text-sm font-semibold">Adapter Boundary</h2>
+            <h2 className="text-sm font-semibold">Live work stays with the notebook</h2>
           </div>
           <p className="text-xs leading-5 text-fd-muted-foreground">
             Components that need runtime values, daemon actions, or host-backed hooks should name
-            the boundary first, then move through a small fixture adapter before joining the
-            rendered catalog.
+            the notebook-owned work first, then move through a small preview fixture before joining
+            the rendered catalog.
           </p>
           <div className="mt-4 overflow-hidden rounded-md border border-fd-border">
             <div className="hidden grid-cols-[190px_210px_230px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
               <span>Boundary</span>
-              <span>Catalog path</span>
-              <span>Production boundary</span>
+              <span>Preview uses</span>
+              <span>Notebook owns</span>
               <span>Notes</span>
             </div>
             {runtimeAdapterRows.map((row) => (
@@ -470,18 +476,18 @@ export function RuntimeSurfacesExample() {
                 </div>
                 <div>
                   <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                    Catalog path
+                    Preview uses
                   </div>
                   <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
-                    {row.catalogPath}
+                    {row.previewPath}
                   </div>
                 </div>
                 <div>
                   <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
-                    Production boundary
+                    Notebook owns
                   </div>
                   <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
-                    {row.productionBoundary}
+                    {row.notebookOwner}
                   </div>
                 </div>
                 <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
