@@ -35,6 +35,7 @@ import {
   NotebookIdentityBadge,
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
+  createNotebookEnvironmentSurface,
   notebookActorIdentityFromAccess,
   type NotebookShellCapabilities,
 } from "@/components/notebook-shell";
@@ -1145,6 +1146,19 @@ function NotebookViewer({
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
   }, [refreshAuthState]);
+  const environmentSurface = useMemo(
+    () =>
+      createNotebookEnvironmentSurface({
+        capabilities: shellCapabilities,
+        packages: notebookViewModel.packages,
+        runtimeLabel: connectionScope === "runtime_peer" ? "Runtime peer connected" : null,
+        syncLabel: connectionScope ? "Live sync connected" : "Live sync unavailable",
+        syncStatus: connectionScope ? "synced" : "unavailable",
+        trustLabel: "Trust state not required",
+        trustStatus: "not_required",
+      }),
+    [connectionScope, notebookViewModel.packages, shellCapabilities],
+  );
 
   const rail = (
     <NotebookDocumentRail
@@ -1159,10 +1173,8 @@ function NotebookViewer({
           header={
             <NotebookEnvironmentSummary
               capabilities={shellCapabilities}
+              environment={environmentSurface}
               packages={notebookViewModel.packages}
-              runtimeLabel={connectionScope === "runtime_peer" ? "Runtime peer connected" : null}
-              syncLabel={connectionScope ? "Live sync connected" : "Live sync unavailable"}
-              trustLabel="Trust state not required"
               showPackageDetails={false}
               className="shadow-none"
             />
