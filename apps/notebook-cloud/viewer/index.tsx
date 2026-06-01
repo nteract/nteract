@@ -36,6 +36,7 @@ import {
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
   NotebookToolbarIdentity,
+  NotebookToolbarFrame,
   createNotebookEnvironmentSurface,
   notebookInteractionPresenceLabel,
   notebookActorIdentityFromAccess,
@@ -1276,38 +1277,40 @@ function NotebookViewer({
   );
 
   const toolbar = (
-    <NotebookCommandToolbar
-      capabilities={shellCapabilities}
-      runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-      environmentManager={packageEnvironmentManager}
-      environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
-      runtimeStatus={runtimeStatus}
-      addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
-      onAddCell={handleCloudAddCell}
-      onTogglePackages={handleTogglePackagesRail}
-      leadingControls={
-        <CloudPresenceStatus
-          presence={presence}
-          interaction={shellCapabilities.interaction ?? null}
-        />
-      }
-      trailingControls={
-        <>
-          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-          <CloudSharingControls
-            aclEndpoint={config.aclEndpoint}
-            invitesEndpoint={config.invitesEndpoint}
-            authState={authState}
-          />
-          <CloudNotebookEditModeButton
-            authState={authState}
+    <NotebookToolbarFrame className="z-20">
+      <NotebookCommandToolbar
+        capabilities={shellCapabilities}
+        runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+        environmentManager={packageEnvironmentManager}
+        environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
+        runtimeStatus={runtimeStatus}
+        addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
+        onAddCell={handleCloudAddCell}
+        onTogglePackages={handleTogglePackagesRail}
+        leadingControls={
+          <CloudPresenceStatus
+            presence={presence}
             interaction={shellCapabilities.interaction ?? null}
-            onAuthStateChange={refreshAuthState}
           />
-          <NotebookToolbarIdentity capabilities={shellCapabilities} />
-        </>
-      }
-    />
+        }
+        trailingControls={
+          <>
+            <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+            <CloudSharingControls
+              aclEndpoint={config.aclEndpoint}
+              invitesEndpoint={config.invitesEndpoint}
+              authState={authState}
+            />
+            <CloudNotebookEditModeButton
+              authState={authState}
+              interaction={shellCapabilities.interaction ?? null}
+              onAuthStateChange={refreshAuthState}
+            />
+            <NotebookToolbarIdentity capabilities={shellCapabilities} />
+          </>
+        }
+      />
+    </NotebookToolbarFrame>
   );
   const authDiagnostics = shouldShowPrototypeDevControls({
     oidcConfigured: Boolean(authConfig.oidc),
@@ -1333,7 +1336,6 @@ function NotebookViewer({
       className="cloud-notebook-shell"
       stageClassName="cloud-notebook-stage"
       toolbar={toolbar}
-      toolbarClassName="cloud-report-toolbar"
       toolbarLabel="Notebook view status and controls"
       capabilities={shellCapabilities}
       rail={rail}

@@ -68,7 +68,10 @@ test("cloud viewer routes notebook header controls through the shared command to
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NotebookCommandToolbar,/);
+  assert.match(sourceText, /NotebookToolbarFrame,/);
+  assert.match(sourceText, /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookCommandToolbar/);
   assert.match(sourceText, /<NotebookCommandToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /trailingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /trailingControls=\{[\s\S]*<CloudNotebookEditModeButton/);
   assert.match(
