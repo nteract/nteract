@@ -3,11 +3,12 @@ import { useCallback, useEffect, useState, type ReactElement, type ReactNode } f
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   NotebookCommandToolbar,
+  NotebookToolbarIdentity,
   NotebookToolbarFrame,
   type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
-  type NotebookShellCapabilities,
 } from "@/components/notebook-shell";
+import type { NotebookShellCapabilities } from "@/components/notebook-shell";
 import type { UpdateStatus } from "../hooks/useUpdater";
 import { KERNEL_ERROR_REASON, type EnvProgressState, type ProjectContext } from "runtimed";
 import {
@@ -47,15 +48,7 @@ interface NotebookToolbarProps {
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onToggleDependencies: () => void;
   isDepsOpen?: boolean;
-  capabilities: Pick<
-    NotebookShellCapabilities,
-    | "canEditStructure"
-    | "canExecute"
-    | "canViewPackages"
-    | "canManageSharing"
-    | "canRequestEdit"
-    | "auth"
-  >;
+  capabilities: NotebookShellCapabilities;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
   depsOutOfSync?: boolean;
   updateStatus?: UpdateStatus;
@@ -169,6 +162,9 @@ export function NotebookToolbar({
         : (envTypeHint ?? null)
       : null;
   const runtimeStatusState = notebookCommandRuntimeState(kernelStatus, Boolean(envErrorMessage));
+  const identityControls = trailingControls ?? (
+    <NotebookToolbarIdentity capabilities={capabilities} variant="inline" />
+  );
   const runtimeStatusError = envErrorMessage ? (
     <HoverCard openDelay={150} closeDelay={100}>
       <HoverCardTrigger asChild>
@@ -278,7 +274,7 @@ export function NotebookToolbar({
               }
             : null
         }
-        identityControls={trailingControls}
+        identityControls={identityControls}
       />
     </NotebookToolbarFrame>
   );

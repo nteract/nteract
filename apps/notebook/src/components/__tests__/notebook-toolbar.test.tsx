@@ -75,15 +75,56 @@ const baseProps = {
     canViewPackages: true,
     canManageSharing: false,
     canRequestEdit: false,
+    access: {
+      level: "owner",
+      source: "local",
+      isPublic: false,
+      actorLabel: "local:kyle/desktop:window",
+      identityLabel: null,
+      actor: {
+        actorLabel: "local:kyle/desktop:window",
+        principal: {
+          id: "local:kyle",
+          label: "Kyle",
+          source: { provider: "local", namespace: "kyle" },
+        },
+        operator: { id: "desktop:window", kind: "desktop", label: "Desktop" },
+        scope: "owner",
+      },
+    },
     auth: {
       canSignIn: false,
       canUseAuthenticatedIdentity: false,
       needsAttention: false,
     },
+    runtime: {
+      canWriteRuntimeState: true,
+      connected: true,
+      source: "local",
+      actorLabel: "local:kyle/desktop:window",
+      identityLabel: null,
+      actor: {
+        actorLabel: "local:kyle/desktop:window",
+        principal: {
+          id: "local:kyle",
+          label: "Kyle",
+          source: { provider: "local", namespace: "kyle" },
+        },
+        operator: { id: "desktop:window", kind: "desktop", label: "Desktop" },
+        scope: "runtime_peer",
+      },
+    },
   },
 };
 
 describe("NotebookToolbar", () => {
+  it("renders desktop actor identity through the shared toolbar identity surface", () => {
+    render(<NotebookToolbar {...baseProps} />);
+
+    expect(screen.getByLabelText("Notebook actors")).toBeInTheDocument();
+    expect(screen.getByText("Kyle")).toBeInTheDocument();
+  });
+
   describe("start button visibility", () => {
     it("hides start button when kernel is idle", () => {
       render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
