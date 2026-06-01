@@ -135,6 +135,40 @@ describe("DependencyHeader rail package copy", () => {
     expect(screen.getByTestId("deps-add-input")).toHaveClass("min-w-0");
   });
 
+  it("stacks pyproject actions under the file label in the rail", () => {
+    const { container } = render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={["pandas"]}
+        requiresPython=">=3.12"
+        loading={false}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+        onImportFromPyproject={async () => undefined}
+        onUseProjectEnv={async () => undefined}
+        pyprojectInfo={{
+          path: "/work/pyproject.toml",
+          relative_path: "pyproject.toml",
+          has_dependencies: true,
+          has_dev_dependencies: false,
+          dependency_count: 1,
+          project_name: "analysis",
+          requires_python: ">=3.12",
+          has_venv: false,
+        }}
+      />,
+    );
+
+    const banner = container.querySelector('[data-slot="deps-pyproject-banner"]');
+    const actions = container.querySelector('[data-slot="deps-pyproject-actions"]');
+
+    expect(banner?.firstElementChild).toHaveClass("flex-col");
+    expect(actions).toHaveClass("pl-5");
+    expect(actions).toHaveTextContent("Use project env");
+    expect(actions).toHaveTextContent("Copy to notebook");
+  });
+
   it("splits project environment copy into fact and action lines", () => {
     render(
       <DependencyHeader

@@ -178,8 +178,13 @@ export function DependencyHeader({
 
         {/* pyproject.toml detected banner */}
         {hasPyprojectDependencies && !isUsingProjectEnv && (
-          <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
-            <div className={cn("flex items-center justify-between", isRail && "items-start gap-3")}>
+          <div
+            className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground"
+            data-slot="deps-pyproject-banner"
+          >
+            <div
+              className={cn(isRail ? "flex flex-col gap-2" : "flex items-center justify-between")}
+            >
               <div className="flex min-w-0 items-start gap-2">
                 <FileText className="h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0">
@@ -191,7 +196,10 @@ export function DependencyHeader({
                   )}
                 </span>
               </div>
-              <div className={cn("flex items-center gap-2", isRail && "flex-wrap justify-end")}>
+              <div
+                data-slot="deps-pyproject-actions"
+                className={cn("flex items-center gap-2", isRail && "flex-wrap justify-start pl-5")}
+              >
                 {onUseProjectEnv && !isUsingProjectEnv && (
                   <button
                     type="button"

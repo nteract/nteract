@@ -224,7 +224,7 @@ function DependencyHeaderFixture({ scenario }: { scenario: ElementsNotebookScena
         </p>
       </div>
       <div className="bg-fd-muted/20 p-4">
-        <div className="mx-auto w-full max-w-[22rem]">
+        <div className="mx-auto w-[clamp(14rem,19vw,16rem)] max-w-full">
           <DependencyHeader
             dependencies={[...scenario.packageState.dependencies]}
             requiresPython={scenario.packageState.requiresPython}
