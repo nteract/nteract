@@ -105,7 +105,7 @@ export type MimeBundle = Record<string, unknown>;
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
 
-const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 40rem)";
+const RAIL_TAKEOVER_MEDIA_QUERY = "(width < 600px)";
 
 function focusRailCollapseButtonWhenStageIsHidden(railCollapsed: boolean): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -2036,7 +2036,7 @@ function AppContent() {
         <NotebookDocumentShell
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
-          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[40rem]:hidden")}
+          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[600px]:hidden")}
           rail={
             <NotebookDocumentRail
               viewModel={notebookViewModel}
