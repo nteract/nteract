@@ -81,6 +81,7 @@ describe("CellInsertionRibbon", () => {
 
     const actions = container.querySelector('[data-slot="cell-adder-actions"]');
     const palette = container.querySelector('[data-slot="cell-adder-action-palette"]');
+    const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
     const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
     const leadingRule = container.querySelector('[data-slot="cell-adder-leading-rule"]');
     const trailingRule = container.querySelector('[data-slot="cell-adder-trailing-rule"]');
@@ -88,9 +89,13 @@ describe("CellInsertionRibbon", () => {
     expect(actions).toHaveClass("opacity-100");
     expect(actions).toHaveClass("flex-1");
     expect(palette).toHaveClass("shrink-0");
+    expect(palette).toHaveClass("pl-0.5");
     expect(palette).not.toHaveClass("rounded-full");
     expect(palette).not.toHaveClass("shadow-sm");
+    expect(hitTarget).toHaveClass("bg-emerald-500/6");
+    expect(hitTarget).toHaveClass("text-emerald-700");
     expect(intent).toHaveClass("bg-emerald-400");
+    expect(leadingRule).toHaveClass("w-2");
     expect(leadingRule).toHaveClass("bg-emerald-400/50");
     expect(trailingRule).toHaveClass("bg-gradient-to-r");
     expect(trailingRule).toHaveClass("from-emerald-400/35");

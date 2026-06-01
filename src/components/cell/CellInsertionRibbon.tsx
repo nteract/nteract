@@ -42,6 +42,11 @@ const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
     "bg-gradient-to-r from-emerald-400/35 via-border/35 to-transparent dark:from-emerald-300/30 dark:via-border/30",
 };
 
+const insertionChannelIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-500/6 text-sky-700 dark:text-sky-300",
+  markdown: "bg-emerald-500/6 text-emerald-700 dark:text-emerald-300",
+};
+
 export function CellInsertionRibbon({
   terminal = false,
   activeType,
@@ -153,8 +158,8 @@ export function CellInsertionRibbon({
         className={cn(
           "flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
-          visualActiveType === "code"
-            ? "bg-sky-500/6 text-sky-700 dark:text-sky-300"
+          visualActiveType
+            ? insertionChannelIntentClasses[visualActiveType]
             : isOpen
               ? "bg-muted/20 text-muted-foreground/45 hover:bg-muted/30 hover:text-muted-foreground/70"
               : "text-muted-foreground/0 hover:bg-muted/20",
@@ -184,12 +189,12 @@ export function CellInsertionRibbon({
       >
         <span
           data-slot="cell-adder-leading-rule"
-          className={cn("w-4 shrink-0", leadingInsertionRuleClass)}
+          className={cn("w-2 shrink-0", leadingInsertionRuleClass)}
           aria-hidden="true"
         />
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 shrink-0 items-center gap-1 px-1"
+          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1"
         >
           <button
             type="button"
