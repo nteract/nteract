@@ -1,36 +1,45 @@
 "use client";
 
 import {
-  BookOpen,
   CheckCircle2,
   Cloud,
   CloudOff,
-  Code2,
   Globe2,
   LogIn,
-  Pencil,
   Play,
   Radio,
   Share2,
-  UsersRound,
   WifiOff,
   type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
 import {
+  createNotebookInteractionModeProjection,
+  NotebookCommandToolbar,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookEditModeButton,
   NotebookEnvironmentSummary,
+  NotebookIdentityBadge,
   NotebookPackageSummaryPanel,
+  NotebookPresenceStatus,
   notebookActorIdentityFromAccess,
   type NotebookActorIdentity,
+  type NotebookInteractionMode,
+  type NotebookInteractionModeProjection,
+  type NotebookShellCapabilities,
 } from "@/components/notebook-shell";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
-import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
+import {
+  getElementsNotebookScenario,
+  type ElementsNotebookScenario,
+} from "@/components/notebook-scenarios";
 
 type CloudConnectionState = "live" | "reconnecting" | "offline";
-type CloudModeState = "view" | "edit";
+type CloudModeState = NotebookInteractionMode;
+
+const noop = () => {};
 
 const activePeople: NotebookActorIdentity[] = [
   {
@@ -52,7 +61,7 @@ const activePeople: NotebookActorIdentity[] = [
 const shellStates = [
   {
     title: "Owner editing",
-    description: "Presence, live sync, mode, sharing, and account all fit on one quiet line.",
+    description: "Presence and sync stay app-level while the notebook row owns language.",
     scenarioId: "cloud-owner" as const,
     connection: "live" as const,
     mode: "edit" as const,
@@ -89,8 +98,8 @@ const cloudStateRows = [
   {
     surface: "Presence",
     owner: "Room session",
-    language: "2 here now, editing",
-    reason: "People are peers on the document, not kernel state.",
+    language: "2 here now",
+    reason: "People are peers on the document; mode belongs to the view/edit control.",
   },
   {
     surface: "Connection",
@@ -100,15 +109,15 @@ const cloudStateRows = [
   },
   {
     surface: "Mode",
-    owner: "Access request",
-    language: "View or Edit",
-    reason: "Mode is the user's current affordance, not a permission dump.",
+    owner: "Frontend affordance",
+    language: "Viewing or Editing",
+    reason: "Users with edit access can locally step out of editing without requesting access.",
   },
   {
     surface: "Runtime",
     owner: "Notebook toolbar",
-    language: "Python / detached",
-    reason: "Cloud previews can show language context without implying local execution.",
+    language: "Python / uv",
+    reason: "Language and package affordances stay on the notebook command toolbar.",
   },
   {
     surface: "Account",
@@ -120,11 +129,16 @@ const cloudStateRows = [
 
 export function CloudNotebookShellExample() {
   const scenario = getElementsNotebookScenario("cloud-owner");
+  const [mode, setMode] = useState<CloudModeState>("edit");
   const [activePanel, setActivePanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(true);
   const actor = notebookActorIdentityFromAccess(
     scenario.capabilities.access,
     scenario.capabilities.auth,
+  );
+  const shellCapabilities = withInteractionProjection(
+    scenario.capabilities,
+    cloudInteractionProjection(scenario, mode),
   );
 
   const rail = (
@@ -138,7 +152,7 @@ export function CloudNotebookShellExample() {
           readOnly
           header={
             <NotebookEnvironmentSummary
-              capabilities={scenario.capabilities}
+              capabilities={shellCapabilities}
               packages={scenario.viewModel.packages}
               environment={scenario.environment}
               showPackageDetails={false}
@@ -183,7 +197,8 @@ export function CloudNotebookShellExample() {
             <CloudNotebookChrome
               actor={actor}
               connection="live"
-              mode="edit"
+              mode={mode}
+              onModeChange={setMode}
               people={activePeople}
               scenario={scenario}
             />
@@ -191,7 +206,7 @@ export function CloudNotebookShellExample() {
           toolbarClassName="border-b bg-background/95 backdrop-blur"
           toolbarLabel="Cloud notebook session"
           rail={rail}
-          capabilities={scenario.capabilities}
+          capabilities={shellCapabilities}
         >
           <CloudNotebookDocument />
         </NotebookDocumentShell>
@@ -278,14 +293,16 @@ function CloudNotebookChrome({
   actor,
   connection,
   mode,
+  onModeChange,
   people,
   scenario,
 }: {
   actor: NotebookActorIdentity;
   connection: CloudConnectionState;
   mode: CloudModeState;
+  onModeChange: (mode: CloudModeState) => void;
   people: readonly NotebookActorIdentity[];
-  scenario: ReturnType<typeof getElementsNotebookScenario>;
+  scenario: ElementsNotebookScenario;
 }) {
   return (
     <div className="flex min-w-0 flex-col" data-slot="cloud-notebook-chrome">
@@ -293,10 +310,11 @@ function CloudNotebookChrome({
         actor={actor}
         connection={connection}
         mode={mode}
+        onModeChange={onModeChange}
         people={people}
         scenario={scenario}
       />
-      <CloudNotebookToolbar scenario={scenario} />
+      <CloudNotebookToolbar mode={mode} scenario={scenario} />
     </div>
   );
 }
@@ -305,33 +323,41 @@ function CloudAppToolbar({
   actor,
   connection,
   mode,
+  onModeChange,
   people,
   scenario,
 }: {
   actor: NotebookActorIdentity;
   connection: CloudConnectionState;
   mode: CloudModeState;
+  onModeChange?: (mode: CloudModeState) => void;
   people: readonly NotebookActorIdentity[];
-  scenario: ReturnType<typeof getElementsNotebookScenario>;
+  scenario: ElementsNotebookScenario;
 }) {
+  const interaction = cloudInteractionProjection(scenario, mode);
+  const effectiveCapabilities = withInteractionProjection(scenario.capabilities, interaction);
+
   return (
     <div
       className="flex min-h-14 min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border/70 px-4 py-2"
       data-slot="cloud-app-toolbar"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <CloudPresence people={people} mode={mode} compact={false} />
+      <div className="flex min-w-0 flex-1 basis-56 items-center gap-3">
+        <CloudPresence people={people} compact={false} />
         <CloudConnectionPill state={connection} compact={false} />
       </div>
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
         {scenario.capabilities.canManageSharing ? <CloudShareButton compact={false} /> : null}
-        {scenario.capabilities.canRequestEdit ? (
-          <CloudModeButton mode={mode} compact={false} />
-        ) : null}
+        <CloudModeToggle
+          compact={false}
+          interaction={interaction}
+          mode={mode}
+          onModeChange={onModeChange}
+        />
         {scenario.capabilities.auth.canSignIn ||
         scenario.capabilities.auth.canUseAuthenticatedIdentity ||
         scenario.capabilities.auth.needsAttention ? (
-          <CloudAccountButton actor={actor} compact={false} />
+          <CloudAccountButton actor={actor} capabilities={effectiveCapabilities} compact={false} />
         ) : null}
       </div>
     </div>
@@ -339,21 +365,35 @@ function CloudAppToolbar({
 }
 
 function CloudNotebookToolbar({
+  mode,
   scenario,
 }: {
-  scenario: ReturnType<typeof getElementsNotebookScenario>;
+  mode: CloudModeState;
+  scenario: ElementsNotebookScenario;
 }) {
-  const canShowRuntime =
-    scenario.capabilities.canExecute ||
-    scenario.capabilities.canViewPackages ||
-    scenario.capabilities.canManagePackages;
+  const firstRunnableCell = scenario.cells.find((cell) => cell.cellType === "code");
+  const cellIds = scenario.viewModel.cellIds;
+  const interaction = cloudInteractionProjection(scenario, mode);
+  const capabilities = withInteractionProjection(scenario.capabilities, interaction);
 
   return (
-    <div
-      className="flex min-h-12 min-w-0 items-center justify-end gap-3 px-4 py-2"
-      data-slot="cloud-notebook-toolbar"
-    >
-      {canShowRuntime ? <CloudRuntimePill compact={false} /> : null}
+    <div className="min-w-0 overflow-hidden" data-slot="cloud-notebook-toolbar">
+      <NotebookCommandToolbar
+        capabilities={capabilities}
+        runtime="python"
+        environmentManager="uv"
+        environmentOutOfSync={scenario.packageState.syncState.status === "dirty"}
+        runtimeStatus={null}
+        addAfterCellId={firstRunnableCell?.id ?? cellIds[cellIds.length - 1] ?? null}
+        onAddCell={noop}
+        onStartRuntime={noop}
+        onInterruptRuntime={noop}
+        onRestartRuntime={noop}
+        onRunAllCells={noop}
+        onRestartAndRunAll={noop}
+        onTogglePackages={noop}
+        className="h-12 px-4"
+      />
     </div>
   );
 }
@@ -369,8 +409,11 @@ function CloudStatePreview({
   connection: CloudConnectionState;
   mode: CloudModeState;
   people: readonly NotebookActorIdentity[];
-  scenario: ReturnType<typeof getElementsNotebookScenario>;
+  scenario: ElementsNotebookScenario;
 }) {
+  const interaction = cloudInteractionProjection(scenario, mode);
+  const effectiveCapabilities = withInteractionProjection(scenario.capabilities, interaction);
+
   return (
     <div
       className="divide-y divide-border/70"
@@ -379,19 +422,19 @@ function CloudStatePreview({
       aria-label="Cloud notebook state"
     >
       <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5">
-        <CloudPresence people={people} mode={mode} compact />
+        <CloudPresence people={people} compact />
         <span className="h-4 w-px bg-border/70" aria-hidden="true" />
         <CloudConnectionPill state={connection} compact />
         {scenario.capabilities.canManageSharing ? <CloudShareButton compact /> : null}
-        {scenario.capabilities.canRequestEdit ? <CloudModeButton mode={mode} compact /> : null}
+        <CloudModeToggle compact={false} interaction={interaction} mode={mode} />
         {scenario.capabilities.auth.canSignIn ||
         scenario.capabilities.auth.canUseAuthenticatedIdentity ||
         scenario.capabilities.auth.needsAttention ? (
-          <CloudAccountButton actor={actor} compact />
+          <CloudAccountButton actor={actor} capabilities={effectiveCapabilities} compact />
         ) : null}
       </div>
-      <div className="flex min-h-9 items-center justify-end px-3 py-1">
-        <CloudRuntimePill compact />
+      <div className="[&_[data-slot=notebook-command-toolbar]]:h-9 [&_[data-slot=notebook-command-toolbar]]:px-3">
+        <CloudNotebookToolbar mode={mode} scenario={scenario} />
       </div>
     </div>
   );
@@ -399,43 +442,33 @@ function CloudStatePreview({
 
 function CloudPresence({
   compact,
-  mode,
   people,
 }: {
   compact: boolean;
-  mode: CloudModeState;
   people: readonly NotebookActorIdentity[];
 }) {
-  const summary = presenceSummary(people, mode, compact);
+  const summary = presenceSummary(people, compact);
   const hasPeers = people.length > 0;
 
   return (
-    <div
+    <NotebookPresenceStatus
+      connected={hasPeers}
+      label={summary.label}
+      title={summary.title}
+      variant="inline"
       className={cn(
-        "inline-flex h-8 min-w-0 items-center gap-2 px-1 text-sm text-foreground",
-        compact ? "max-w-[min(18rem,54vw)]" : "max-w-[min(16rem,28vw)]",
+        "px-1",
+        compact ? "max-w-[min(18rem,54vw)]" : "max-w-[min(18rem,42vw)]",
         !hasPeers && "text-muted-foreground",
       )}
-      title={summary.title}
-    >
-      <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
-        <UsersRound className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        {hasPeers ? (
-          <span className="absolute bottom-0 right-0 size-1.5 rounded-full bg-emerald-500" />
-        ) : null}
-      </span>
-      <span className="min-w-0 truncate">{summary.label}</span>
-    </div>
+    />
   );
 }
 
 function presenceSummary(
   people: readonly NotebookActorIdentity[],
-  mode: CloudModeState,
   compact: boolean,
 ): { label: string; title: string } {
-  const modeLabel = mode === "edit" ? "editing" : "viewing";
-
   if (people.length === 0) {
     return {
       label: compact ? "No live peers" : "No one live here",
@@ -445,13 +478,13 @@ function presenceSummary(
 
   if (compact) {
     return {
-      label: `${people.length} here, ${modeLabel}`,
+      label: `${people.length} here`,
       title: people.map((person) => `${person.label}: ${person.detail ?? "connected"}`).join(", "),
     };
   }
 
   return {
-    label: `${people.length} here now, ${modeLabel}`,
+    label: `${people.length} here now`,
     title: people.map((person) => `${person.label}: ${person.detail ?? "connected"}`).join(", "),
   };
 }
@@ -479,24 +512,6 @@ function CloudConnectionPill({
   );
 }
 
-function CloudRuntimePill({ compact }: { compact: boolean }) {
-  return (
-    <span
-      className="inline-flex h-8 max-w-[10rem] items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-500/10 dark:text-blue-300"
-      title="Notebook language, runtime detached in cloud preview"
-    >
-      <Code2 className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="truncate">Python</span>
-      {!compact ? (
-        <>
-          <span className="text-blue-700/45 dark:text-blue-300/45">/</span>
-          <span className="text-blue-700/60 dark:text-blue-300/60">detached</span>
-        </>
-      ) : null}
-    </span>
-  );
-}
-
 function CloudShareButton({ compact }: { compact: boolean }) {
   return (
     <button
@@ -509,31 +524,92 @@ function CloudShareButton({ compact }: { compact: boolean }) {
   );
 }
 
-function CloudModeButton({ compact, mode }: { compact: boolean; mode: CloudModeState }) {
-  const Icon = mode === "edit" ? BookOpen : Pencil;
-  const label = mode === "edit" ? "View" : "Edit";
+function CloudModeToggle({
+  compact,
+  interaction,
+  mode,
+  onModeChange,
+}: {
+  compact: boolean;
+  interaction: NotebookInteractionModeProjection;
+  mode: CloudModeState;
+  onModeChange?: (mode: CloudModeState) => void;
+}) {
+  if (!interaction.canRequestEdit && interaction.state === "viewing") {
+    return (
+      <span
+        className="inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-muted-foreground"
+        title="This notebook is view-only for the current identity"
+      >
+        <CheckCircle2 className="size-3.5" aria-hidden="true" />
+        {compact ? null : <span>View only</span>}
+      </span>
+    );
+  }
+
+  if (compact) {
+    return (
+      <NotebookEditModeButton
+        mode={mode}
+        state={interaction.state}
+        onModeChange={(nextMode) => onModeChange?.(nextMode)}
+        className="border-0 bg-transparent px-1.5 shadow-none"
+      />
+    );
+  }
 
   return (
-    <button
-      type="button"
-      aria-pressed={mode === "edit"}
-      className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium transition-colors hover:bg-muted/70",
-        mode === "edit" ? "text-emerald-700 dark:text-emerald-300" : "text-foreground",
-      )}
-      title={mode === "edit" ? "Return to read-only viewing" : "Request edit access"}
-    >
-      <Icon className="size-3.5" aria-hidden="true" />
-      {compact ? null : <span>{label}</span>}
-    </button>
+    <NotebookEditModeButton
+      mode={mode}
+      state={interaction.state}
+      onModeChange={(nextMode) => onModeChange?.(nextMode)}
+      variant="segmented"
+      className="h-8 rounded-md bg-muted/35 p-0.5 text-sm"
+    />
   );
+}
+
+function cloudInteractionProjection(
+  scenario: ElementsNotebookScenario,
+  mode: CloudModeState,
+): NotebookInteractionModeProjection {
+  return createNotebookInteractionModeProjection({
+    selectedMode: mode,
+    permission: {
+      canEditMarkdown: scenario.capabilities.canEditMarkdown,
+      canEditCells: scenario.capabilities.canEditCells,
+      canEditStructure: scenario.capabilities.canEditStructure,
+    },
+    hostSupport: {
+      canEditMarkdown: scenario.capabilities.canEditMarkdown,
+      canEditCells: scenario.capabilities.canEditCells,
+      canEditStructure: scenario.capabilities.canEditStructure,
+      canRequestEdit: scenario.capabilities.canRequestEdit,
+    },
+  });
+}
+
+function withInteractionProjection(
+  capabilities: NotebookShellCapabilities,
+  interaction: NotebookInteractionModeProjection,
+): NotebookShellCapabilities {
+  return {
+    ...capabilities,
+    canEditMarkdown: interaction.canEditMarkdown,
+    canEditCells: interaction.canEditCells,
+    canEditStructure: interaction.canEditStructure,
+    canRequestEdit: interaction.canRequestEdit,
+    interaction,
+  };
 }
 
 function CloudAccountButton({
   actor,
+  capabilities,
   compact,
 }: {
   actor: NotebookActorIdentity;
+  capabilities: NotebookShellCapabilities;
   compact: boolean;
 }) {
   if (actor.kind === "public") {
@@ -551,11 +627,16 @@ function CloudAccountButton({
   return (
     <button
       type="button"
-      className="inline-flex h-8 max-w-[min(14rem,34vw)] items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70"
+      className="inline-flex h-8 max-w-[min(14rem,34vw)] items-center rounded-md px-1.5 transition-colors hover:bg-muted/70"
       title={actor.detail ?? actor.label}
     >
-      <span className="size-2 rounded-full bg-emerald-500" aria-hidden="true" />
-      <span className={cn("min-w-0 truncate", compact && "max-w-16")}>{actor.label}</span>
+      <NotebookIdentityBadge
+        actor={actor}
+        variant="inline"
+        showDetail={false}
+        className={cn("max-w-full", compact && "max-w-16")}
+      />
+      <span className="sr-only">{capabilities.access.level} account</span>
     </button>
   );
 }
