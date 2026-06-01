@@ -291,30 +291,39 @@ export function AnsiStreamOutput({ text, streamName, className = "" }: AnsiStrea
       {preview.isLong && (
         <div
           className={cn(
-            "mb-2 flex flex-wrap items-center gap-2 rounded-md border px-2 py-1 text-xs",
-            isStderr
-              ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
-              : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-300",
+            "mb-2 flex flex-wrap items-center gap-2 text-xs leading-none",
+            isStderr ? "text-red-700/80 dark:text-red-300/80" : "text-muted-foreground/70",
           )}
         >
-          <span className="font-semibold">{label}</span>
-          <span>
+          <span className="font-mono font-semibold">{label}</span>
+          <span
+            className={cn(
+              "h-px min-w-8 flex-1 rounded-full",
+              isStderr ? "bg-red-500/20 dark:bg-red-300/20" : "bg-border/20",
+            )}
+            aria-hidden="true"
+          />
+          <span className="tabular-nums">
             {preview.lineCount.toLocaleString()} lines · {formatBytes(text.length)}
           </span>
           {!expanded && preview.omittedLines > 0 && (
-            <span>{preview.omittedLines.toLocaleString()} lines hidden</span>
+            <span className="tabular-nums text-muted-foreground/55">
+              {preview.omittedLines.toLocaleString()} lines hidden
+            </span>
           )}
           <button
             type="button"
             className={cn(
-              "ml-auto rounded px-1.5 py-0.5 font-medium transition-colors",
+              "rounded-sm px-1.5 py-1 font-medium transition-colors",
               isStderr
-                ? "hover:bg-red-100 dark:hover:bg-red-900/50"
-                : "hover:bg-slate-200 dark:hover:bg-slate-800",
+                ? "hover:bg-red-500/10 hover:text-red-700 dark:hover:bg-red-300/10 dark:hover:text-red-200"
+                : "hover:bg-muted hover:text-foreground",
             )}
             onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
+            aria-label={expanded ? "Collapse log" : "Show full log"}
           >
-            {expanded ? "Collapse log" : "Show full log"}
+            {expanded ? "Collapse" : "Show full"}
           </button>
         </div>
       )}

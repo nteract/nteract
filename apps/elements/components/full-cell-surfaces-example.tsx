@@ -2,7 +2,7 @@
 
 import { FileCode2, FileText, Rows3, ShieldCheck } from "lucide-react";
 import { useLayoutEffect, useMemo, useState } from "react";
-import { CodeCell } from "@/notebook-components/CodeCell";
+import { CodeCell, type HiddenGroupCellSummary } from "@/notebook-components/CodeCell";
 import { MarkdownCell } from "@/notebook-components/MarkdownCell";
 import { NotebookView } from "@/notebook-components/NotebookView";
 import { RawCell } from "@/notebook-components/RawCell";
@@ -77,6 +77,41 @@ const hiddenCodeCellRows = [
     outputsHidden: true,
     hiddenGroupCount: 1,
   }),
+  hiddenCodeCellFixture({
+    id: "elements-hidden-group-cell",
+    label: "Hidden group",
+    detail:
+      "Consecutive fully-hidden cells merge into one quiet document line with targeted reveal rows.",
+    sourceHidden: true,
+    outputsHidden: true,
+    hiddenGroupCount: 5,
+    hiddenGroupItems: [
+      {
+        id: "elements-hidden-group-load",
+        preview: "load_dataset('mathnet/topic-viz')",
+        outputCount: 1,
+        hasError: false,
+      },
+      {
+        id: "elements-hidden-group-schema",
+        preview: "schema = topics_df.dtypes",
+        outputCount: 1,
+        hasError: false,
+      },
+      {
+        id: "elements-hidden-group-sunburst",
+        preview: "fig = px.sunburst(topic_tree)",
+        outputCount: 2,
+        hasError: false,
+      },
+      {
+        id: "elements-hidden-group-invalid",
+        preview: "render_topic_panel(topic='missing')",
+        outputCount: 1,
+        hasError: true,
+      },
+    ],
+  }),
 ];
 
 const markdownFixtureSource = [
@@ -148,7 +183,7 @@ const fullCellBoundaryRows = [
     catalogPath: "fixture metadata.jupyter flags",
     productionBoundary: "NotebookView source/output visibility mutations",
     detail:
-      "The catalog renders production CodeCell hidden affordances from static metadata. Production writes those flags back through notebook document mutations.",
+      "The catalog renders production CodeCell hidden affordances from static metadata, including grouped hidden-cell previews. Production writes those flags back through notebook document mutations.",
   },
   {
     surface: "Transient cell UI state",
@@ -208,6 +243,7 @@ function hiddenCodeCellFixture({
   sourceHidden,
   outputsHidden,
   hiddenGroupCount,
+  hiddenGroupItems,
 }: {
   id: string;
   label: string;
@@ -215,6 +251,7 @@ function hiddenCodeCellFixture({
   sourceHidden: boolean;
   outputsHidden: boolean;
   hiddenGroupCount?: number;
+  hiddenGroupItems?: HiddenGroupCellSummary[];
 }) {
   const outputs = primaryScenarioCodeCell.outputs.map((output, index) => ({
     ...output,
@@ -238,6 +275,7 @@ function hiddenCodeCellFixture({
     sourceHidden,
     outputsHidden,
     hiddenGroupCount,
+    hiddenGroupItems,
     executionId: `${id}:execution`,
     outputs,
     cell,
@@ -463,7 +501,9 @@ export function FullCellSurfacesExample() {
                     onToggleSourceHidden={noop}
                     onToggleOutputsHidden={noop}
                     hiddenGroupCount={row.hiddenGroupCount}
+                    hiddenGroupItems={row.hiddenGroupItems}
                     onExpandHiddenGroup={noop}
+                    onExpandHiddenGroupCell={noop}
                   />
                 </div>
               </div>

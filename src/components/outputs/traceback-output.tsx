@@ -214,7 +214,7 @@ export function TracebackOutput({
     <div
       data-slot="traceback"
       className={cn(
-        "rounded-md border border-destructive/25 bg-destructive/5",
+        "border-l-2 border-destructive/45 bg-destructive/[0.03] pl-2",
         "text-sm",
         className,
       )}
@@ -240,7 +240,7 @@ export function TracebackOutput({
         />
       ) : (
         clusters.length > 0 && (
-          <ol className="divide-y divide-destructive/15">
+          <ol className="divide-y divide-destructive/10">
             {clusters.map((cluster, i) => (
               <FrameRow
                 key={`${cluster.frame.filename}:${cluster.frame.lineno}:${cluster.firstIndex}`}
@@ -284,7 +284,7 @@ function Header({
   // disagree on edge cases.
   const canInline = inlineEvalue && Boolean(evalue);
   return (
-    <div className="flex items-start gap-2 px-3 py-2 font-mono">
+    <div className="flex items-start gap-2 px-2 py-2 font-mono">
       <OctagonAlert
         aria-hidden="true"
         className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
@@ -358,7 +358,7 @@ function SyntaxErrorBlock({
   const location = sourceLocation(syntax, currentExecutionId, resolveExecutionTarget);
 
   return (
-    <div className="px-3 pb-2">
+    <div className="px-2 pb-2">
       <div className="mb-1.5 font-mono text-xs text-muted-foreground" title={location.title}>
         <LocationLabel
           location={location}
@@ -368,7 +368,7 @@ function SyntaxErrorBlock({
       </div>
       <pre
         className={cn(
-          "overflow-x-auto rounded border border-destructive/15 bg-muted/40",
+          "overflow-x-auto border-l-2 border-destructive/20 bg-muted/30",
           "px-2 py-1.5 leading-5",
         )}
         style={{ fontFamily: CM_FONT_FAMILY, fontSize: "13px" }}
@@ -430,7 +430,7 @@ function CopyButton({
       aria-label={copied ? "Copied" : "Copy traceback"}
       title={copied ? "Copied" : "Copy traceback"}
       className={cn(
-        "shrink-0 rounded px-1.5 py-1 text-xs font-mono transition-colors",
+        "shrink-0 rounded-sm px-1.5 py-1 text-xs font-mono transition-colors",
         "text-muted-foreground hover:bg-destructive/10 hover:text-destructive",
       )}
     >
@@ -465,12 +465,12 @@ function FrameRow({
   const { frame, count } = cluster;
   const location = sourceLocation(frame, currentExecutionId, resolveExecutionTarget);
   return (
-    <li className={cn("px-3 py-1.5", frame.library && "opacity-60")}>
+    <li className={cn("px-2 py-1.5", frame.library && "opacity-60")}>
       <div className="flex w-full items-center gap-2 font-mono text-xs">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="rounded-sm text-muted-foreground transition-colors hover:text-destructive"
+          className="rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
           aria-expanded={open}
           aria-label={open ? "Collapse traceback frame" : "Expand traceback frame"}
         >
@@ -782,7 +782,7 @@ function SourceBlock({ lines, language }: { lines: Line[]; language: string }) {
   return (
     <pre
       className={cn(
-        "mt-1.5 overflow-x-auto rounded border border-destructive/15 bg-muted/40",
+        "mt-1.5 overflow-x-auto border-l-2 border-destructive/20 bg-muted/30",
         "px-2 py-1.5 leading-5",
       )}
       style={{ fontFamily: CM_FONT_FAMILY, fontSize: "13px" }}

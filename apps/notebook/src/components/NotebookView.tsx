@@ -32,14 +32,19 @@ import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
 import { logger } from "../lib/logger";
-import { getNotebookCellsSnapshot, useCell, useMaterializeVersion } from "../lib/notebook-cells";
+import {
+  getCellById,
+  getNotebookCellsSnapshot,
+  useCell,
+  useMaterializeVersion,
+} from "../lib/notebook-cells";
 import {
   getCellOutputsSnapshot,
   subscribeOutputsVersion,
   useOutputStructureVersion,
 } from "../lib/notebook-outputs";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
-import { CodeCell } from "./CodeCell";
+import { CodeCell, type HiddenGroupCellSummary } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 
@@ -195,6 +200,24 @@ function isCellFullyHidden(cell: NotebookCell): boolean {
   // output-only frames.
   if (jupyter.outputs_hidden === true) return true;
   return getCellOutputsSnapshot(cell.id).length === 0;
+}
+
+function hiddenGroupCellSummary(
+  cell: NotebookCell,
+  outputCount: number,
+  hasError: boolean,
+): HiddenGroupCellSummary {
+  const firstLine = cell.source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+
+  return {
+    id: cell.id,
+    preview: firstLine ?? "empty cell",
+    outputCount,
+    hasError,
+  };
 }
 
 /**
@@ -532,6 +555,7 @@ function NotebookViewContent({
         count: number;
         isFirst: boolean;
         groupCellIds: string[];
+        items: HiddenGroupCellSummary[];
         errorCount: number;
       }
     >();
@@ -539,16 +563,18 @@ function NotebookViewContent({
     while (i < cells.length) {
       if (isCellFullyHidden(cells[i])) {
         const groupCellIds: string[] = [];
+        const groupItems: HiddenGroupCellSummary[] = [];
         let groupErrorCount = 0;
         while (i < cells.length && isCellFullyHidden(cells[i])) {
           const c = cells[i];
+          const outputs = c.cell_type === "code" ? getCellOutputsSnapshot(c.id) : [];
+          const errorCount = outputs.filter((o) => o.output_type === "error").length;
           groupCellIds.push(c.id);
+          groupItems.push(hiddenGroupCellSummary(c, outputs.length, errorCount > 0));
           if (c.cell_type === "code") {
             // Read from the outputs store - `c.outputs` is stale under
             // Phase C-lite on output-only frame updates.
-            groupErrorCount += getCellOutputsSnapshot(c.id).filter(
-              (o) => o.output_type === "error",
-            ).length;
+            groupErrorCount += errorCount;
           }
           i++;
         }
@@ -557,6 +583,7 @@ function NotebookViewContent({
             count: groupCellIds.length,
             isFirst: j === 0,
             groupCellIds,
+            items: groupItems,
             errorCount: groupErrorCount,
           });
         }
@@ -568,6 +595,26 @@ function NotebookViewContent({
   }, [cellIds, materializeVersion, outputStructureVersion]);
   const hiddenGroupsRef = useRef(hiddenGroups);
   hiddenGroupsRef.current = hiddenGroups;
+  const pendingRevealFocusCellIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const cellId = pendingRevealFocusCellIdRef.current;
+    if (!cellId) return;
+
+    const cell = getCellById(cellId);
+    if (!cell) {
+      pendingRevealFocusCellIdRef.current = null;
+      return;
+    }
+
+    if (isCellFullyHidden(cell)) return;
+
+    pendingRevealFocusCellIdRef.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      focusCell(cellId, "start");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusCell, hiddenGroups, materializeVersion, outputStructureVersion]);
 
   // Prevent horizontal scroll drift (can happen during text selection) and
   // remember whether the user is already reading at the notebook tail.
@@ -844,6 +891,7 @@ function NotebookViewContent({
             hiddenGroupCount={hiddenGroup?.count}
             hiddenGroupErrorCount={hiddenGroup?.errorCount}
             hiddenGroupCellIds={hiddenGroup?.groupCellIds}
+            hiddenGroupItems={hiddenGroup?.items}
             onExpandHiddenGroup={
               hiddenGroupsRef.current.has(cell.id) &&
               canMutateCells &&
@@ -857,6 +905,20 @@ function NotebookViewContent({
                         onSetCellOutputsHidden(id, false);
                       }
                     }
+                  }
+                : undefined
+            }
+            onExpandHiddenGroupCell={
+              hiddenGroupsRef.current.has(cell.id) &&
+              canMutateCells &&
+              onSetCellSourceHidden &&
+              onSetCellOutputsHidden
+                ? (hiddenCellId: string) => {
+                    pendingRevealFocusCellIdRef.current = hiddenCellId;
+                    onSetCellSourceHidden(hiddenCellId, false);
+                    onSetCellOutputsHidden(hiddenCellId, false);
+                    onFocusCell(hiddenCellId);
+                    presence?.setFocus(hiddenCellId);
                   }
                 : undefined
             }
