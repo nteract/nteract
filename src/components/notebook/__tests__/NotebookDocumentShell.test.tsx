@@ -10,6 +10,7 @@ describe("NotebookDocumentShell", () => {
         rail={<nav aria-label="Rail">rail</nav>}
         toolbar={<button type="button">Run</button>}
         notices={<p>Syncing</p>}
+        toolbarLabel="Notebook fixture toolbar"
         stageLabel="Hosted notebook"
       >
         <section aria-label="Notebook cells">cells</section>
@@ -19,6 +20,18 @@ describe("NotebookDocumentShell", () => {
     expect(screen.getByLabelText("Rail")).toBeVisible();
     expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
     expect(screen.getByText("Syncing")).toBeVisible();
+    expect(screen.getByLabelText("Notebook fixture toolbar")).toHaveAttribute(
+      "data-slot",
+      "notebook-document-toolbar",
+    );
+    expect(screen.getByText("Syncing").parentElement).toHaveAttribute(
+      "data-slot",
+      "notebook-document-notices",
+    );
+    expect(screen.getByLabelText("Rail").parentElement).toHaveAttribute(
+      "data-slot",
+      "notebook-document-body",
+    );
     expect(screen.getByLabelText("Hosted notebook")).toHaveAttribute(
       "data-slot",
       "notebook-document-stage",

@@ -146,6 +146,25 @@ test("cloud rail binds through the shared document rail adapter", () => {
   assert.doesNotMatch(sourceText, /<NotebookRail[\s>]/);
 });
 
+test("cloud host notices sit in the shared shell above the rail and notebook stage", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const shellPath = new URL(
+    "../../../src/components/notebook/NotebookDocumentShell.tsx",
+    import.meta.url,
+  );
+  const shellText = readFileSync(shellPath, "utf8");
+
+  assert.match(sourceText, /const hasNotices =/);
+  assert.match(sourceText, /const notices = hasNotices \? \(/);
+  assert.match(sourceText, /notices=\{notices\}/);
+  assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
+  assert.match(
+    shellText,
+    /data-slot="notebook-document-notices"[\s\S]*data-slot="notebook-document-body"[\s\S]*\{rail\}[\s\S]*data-slot="notebook-document-stage"/,
+  );
+});
+
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

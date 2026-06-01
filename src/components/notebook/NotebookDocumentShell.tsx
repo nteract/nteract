@@ -39,7 +39,7 @@ export function NotebookDocumentShell({
 
   return (
     <Root
-      className={cn("flex min-h-0 flex-1 overflow-hidden", className)}
+      className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", className)}
       data-authenticated={capabilities?.auth.canUseAuthenticatedIdentity}
       data-access-level={capabilities?.access.level}
       data-access-source={capabilities?.access.source}
@@ -51,28 +51,30 @@ export function NotebookDocumentShell({
       data-runtime-connected={capabilities?.runtime.connected}
       data-slot="notebook-document-shell"
     >
-      {rail}
-      <section
-        className={cn("flex min-w-0 flex-1 flex-col", stageClassName)}
-        aria-label={stageLabel}
-        data-slot="notebook-document-stage"
-      >
-        {toolbar ? (
-          <div
-            className={toolbarClassName}
-            aria-label={toolbarLabel}
-            data-slot="notebook-document-toolbar"
-          >
-            {toolbar}
-          </div>
-        ) : null}
-        {notices ? (
-          <div className={noticesClassName} data-slot="notebook-document-notices">
-            {notices}
-          </div>
-        ) : null}
-        {children}
-      </section>
+      {toolbar ? (
+        <div
+          className={toolbarClassName}
+          aria-label={toolbarLabel}
+          data-slot="notebook-document-toolbar"
+        >
+          {toolbar}
+        </div>
+      ) : null}
+      {notices ? (
+        <div className={noticesClassName} data-slot="notebook-document-notices">
+          {notices}
+        </div>
+      ) : null}
+      <div className="flex min-h-0 flex-1 overflow-hidden" data-slot="notebook-document-body">
+        {rail}
+        <section
+          className={cn("flex min-w-0 flex-1 flex-col", stageClassName)}
+          aria-label={stageLabel}
+          data-slot="notebook-document-stage"
+        >
+          {children}
+        </section>
+      </div>
     </Root>
   );
 }
