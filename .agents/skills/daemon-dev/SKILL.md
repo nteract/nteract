@@ -15,6 +15,7 @@ description: >
 | Start dev daemon | `cargo xtask dev-daemon` |
 | Full build | `cargo xtask build` |
 | Rust-only rebuild | `cargo xtask build --rust-only` |
+| Fast sidecar check | `cargo xtask build --rust-only --skip-tauri` |
 | Run bundled binary | `cargo xtask run` |
 | WASM rebuild | `cargo xtask wasm` |
 | Install nightly (Linux) | `./scripts/install-nightly` |
@@ -42,10 +43,10 @@ The daemon (`runtimed`) is a singleton coordinating notebook windows over a Unix
 
 ### How `cargo xtask build` works (4 phases)
 
-0. **Artifact check** — verify gitignored WASM + renderer-plugin outputs exist; run `cargo xtask wasm` if missing.
+0. **Artifact guard** — verify gitignored WASM + renderer-plugin outputs. Build/dev commands fingerprint workspace inputs and skip wasm-pack when outputs are current; rebuild only when outputs are missing, invalid, or stale.
 1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook`. Sidecars copied to `crates/notebook/binaries/`.
 2. **Frontend build** — `pnpm build` (TypeScript + Vite). `--rust-only` skips this.
-3. **Tauri link** — `cargo tauri build --debug --no-bundle` with embedded frontend assets.
+3. **Tauri link** — `cargo tauri build --debug --no-bundle` with embedded frontend assets. Use `--skip-tauri` only for fast edit checks where updated sidecar binaries are enough; run a normal build before launching the bundled app.
 
 All Rust targets build in one `cargo build` call to avoid feature-unification recompilation. WASM outputs are gitignored; `runtimed`'s `build.rs` panics if missing.
 
@@ -69,6 +70,7 @@ cargo xtask dev-daemon
 
 # Terminal 2
 cargo xtask build --rust-only     # Fast rebuild (reuses frontend assets)
+cargo xtask build --rust-only --skip-tauri  # Faster compile check for Rust sidecars
 cargo xtask run                   # Run the bundled binary
 ```
 
