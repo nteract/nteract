@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import { CondaDependencyHeader } from "@/notebook-components/CondaDependencyHeader";
 import { DenoDependencyHeader } from "@/notebook-components/DenoDependencyHeader";
 import { DependencyHeader } from "@/notebook-components/DependencyHeader";
+import { EnvironmentPackageSummaryPanel } from "@/components/environment";
 import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
 
 const PixiDependencyHeader = dynamic(
@@ -42,6 +43,12 @@ const condaProgress: EnvProgressState = {
 };
 
 const packageSurfaces = [
+  {
+    name: "EnvironmentPackageSummaryPanel",
+    source: "src/components/environment/EnvironmentPackageSummaryPanel.tsx",
+    manager: "summary",
+    role: "Host-neutral package summary projection for rails, cloud views, and read-only embeds.",
+  },
   {
     name: "DependencyHeader",
     source: "apps/notebook/src/components/DependencyHeader.tsx",
@@ -120,6 +127,16 @@ export function PackageManagerSurfacesExample() {
       </section>
 
       <section className="grid items-start gap-4 xl:grid-cols-2">
+        <SurfaceFrame
+          icon={<PackageCheck className="size-4 text-sky-500" aria-hidden="true" />}
+          title="Shared package summary"
+          detail="Pure package projection with no rail wrapper or host actions."
+        >
+          <div className="p-3">
+            <EnvironmentPackageSummaryPanel packages={scenario.viewModel.packages} readOnly />
+          </div>
+        </SurfaceFrame>
+
         <SurfaceFrame
           icon={<PackageCheck className="size-4 text-fuchsia-500" aria-hidden="true" />}
           title="uv inline and project"

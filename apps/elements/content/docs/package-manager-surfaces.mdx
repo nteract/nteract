@@ -18,9 +18,9 @@ remain disabled.
 
 ## Rail intent
 
-- `NotebookDocumentRail` is the notebook home for package details. It can render
-  the shared `NotebookPackageSummaryPanel` for host-neutral view-only state, or
-  host manager-specific panels when management is available.
+- `NotebookDocumentRail` is the notebook home for package details. It can wrap
+  the shared `EnvironmentPackageSummaryPanel` for host-neutral view-only state,
+  or host manager-specific panels when management is available.
 - Manager headers remain app-adapter surfaces because they can write project
   files, approve trust, sync packages, and start rebuild decisions.
 - The catalog should keep using existing notebook components, not parallel
