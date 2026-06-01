@@ -9,6 +9,12 @@ const runtimeStatus = {
   title: "Kernel is idle",
 };
 
+const editableToolbarCapabilities = {
+  canEditStructure: true,
+  canExecute: true,
+  canViewPackages: true,
+};
+
 describe("NotebookCommandToolbar", () => {
   it("renders shared desktop command controls when host capabilities allow them", () => {
     const onAddCell = vi.fn();
@@ -16,9 +22,7 @@ describe("NotebookCommandToolbar", () => {
 
     render(
       <NotebookCommandToolbar
-        canEditStructure
-        canExecute
-        canViewPackages
+        capabilities={editableToolbarCapabilities}
         runtime="python"
         environmentManager="uv"
         runtimeStatus={runtimeStatus}
@@ -45,9 +49,11 @@ describe("NotebookCommandToolbar", () => {
   it("hides mutation and execution controls when the host does not grant them", () => {
     render(
       <NotebookCommandToolbar
-        canEditStructure={false}
-        canExecute={false}
-        canViewPackages
+        capabilities={{
+          ...editableToolbarCapabilities,
+          canEditStructure: false,
+          canExecute: false,
+        }}
         runtime="python"
         runtimeStatus={runtimeStatus}
         onAddCell={() => {}}

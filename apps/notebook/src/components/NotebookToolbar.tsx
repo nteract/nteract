@@ -5,6 +5,7 @@ import {
   NotebookCommandToolbar,
   type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
+  type NotebookShellCapabilities,
 } from "@/components/notebook-shell";
 import type { UpdateStatus } from "../hooks/useUpdater";
 import { KERNEL_ERROR_REASON, type EnvProgressState, type ProjectContext } from "runtimed";
@@ -45,9 +46,10 @@ interface NotebookToolbarProps {
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onToggleDependencies: () => void;
   isDepsOpen?: boolean;
-  canEditStructure?: boolean;
-  canExecute?: boolean;
-  canViewPackages?: boolean;
+  capabilities: Pick<
+    NotebookShellCapabilities,
+    "canEditStructure" | "canExecute" | "canViewPackages"
+  >;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
   depsOutOfSync?: boolean;
   updateStatus?: UpdateStatus;
@@ -79,9 +81,7 @@ export function NotebookToolbar({
   onAddCell,
   onToggleDependencies,
   isDepsOpen = false,
-  canEditStructure = true,
-  canExecute = true,
-  canViewPackages = true,
+  capabilities,
   depsOutOfSync = false,
   listKernelspecs,
   updateStatus,
@@ -184,9 +184,7 @@ export function NotebookToolbar({
   return (
     <header className="@container sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60 select-none">
       <NotebookCommandToolbar
-        canEditStructure={canEditStructure}
-        canExecute={canExecute}
-        canViewPackages={canViewPackages}
+        capabilities={capabilities}
         runtime={runtime}
         environmentManager={envManager}
         environmentPanelOpen={isDepsOpen}

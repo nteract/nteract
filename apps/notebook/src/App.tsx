@@ -1956,9 +1956,7 @@ function AppContent() {
           onAddCell={handleAddCell}
           onToggleDependencies={handleTogglePackagesRail}
           isDepsOpen={packagesRailOpen}
-          canEditStructure={shellCapabilities.canEditStructure}
-          canExecute={shellCapabilities.canExecute}
-          canViewPackages={shellCapabilities.canViewPackages}
+          capabilities={shellCapabilities}
           depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
           updateStatus={updateStatus}
           updateVersion={updateVersion}

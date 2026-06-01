@@ -39,9 +39,7 @@ function toolbarProps(
   const interaction = scenario.capabilities.interaction;
 
   return {
-    canEditStructure: scenario.capabilities.canEditStructure,
-    canExecute: scenario.capabilities.canExecute,
-    canViewPackages: scenario.capabilities.canViewPackages,
+    capabilities: scenario.capabilities,
     runtime: "python",
     environmentManager: "uv",
     environmentPanelOpen: false,
