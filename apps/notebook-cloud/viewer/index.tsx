@@ -32,13 +32,11 @@ import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
-  NotebookEnvironmentSummary,
   NotebookIdentityBadge,
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
   NotebookToolbarIdentity,
   NotebookToolbarFrame,
-  createNotebookEnvironmentSurface,
   notebookInteractionPresenceLabel,
   notebookActorIdentityFromAccess,
   type NotebookEnvironmentManager,
@@ -1232,20 +1230,6 @@ function NotebookViewer({
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
   }, [refreshAuthState]);
-  const environmentSurface = useMemo(
-    () =>
-      createNotebookEnvironmentSurface({
-        capabilities: shellCapabilities,
-        packages: notebookViewModel.packages,
-        runtimeLabel: connectionScope === "runtime_peer" ? "Runtime peer connected" : null,
-        syncLabel: connectionScope ? "Live sync connected" : "Live sync unavailable",
-        syncStatus: connectionScope ? "synced" : "unavailable",
-        trustLabel: "Trust state not required",
-        trustStatus: "not_required",
-      }),
-    [connectionScope, notebookViewModel.packages, shellCapabilities],
-  );
-
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
@@ -1256,15 +1240,6 @@ function NotebookViewer({
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
           readOnly={!shellCapabilities.canManagePackages}
-          header={
-            <NotebookEnvironmentSummary
-              capabilities={shellCapabilities}
-              environment={environmentSurface}
-              packages={notebookViewModel.packages}
-              showPackageDetails={false}
-              className="shadow-none"
-            />
-          }
         />
       }
       onActivePanelChange={setActiveRailPanel}

@@ -60,16 +60,18 @@ test("cloud package rail renders package metadata through the shared shell panel
   assert.doesNotMatch(sourceText, /Package details are not surfaced/);
 });
 
-test("cloud environment rail header uses the shared typed environment surface", () => {
+test("cloud package rail stays package-only and leaves sync/env state to app chrome", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /createNotebookEnvironmentSurface/);
-  assert.match(sourceText, /const environmentSurface = useMemo/);
-  assert.match(sourceText, /syncStatus: connectionScope \? "synced" : "unavailable"/);
-  assert.match(sourceText, /trustStatus: "not_required"/);
-  assert.match(sourceText, /<NotebookEnvironmentSummary[\s\S]*environment=\{environmentSurface\}/);
-  assert.doesNotMatch(sourceText, /<NotebookEnvironmentSummary[\s\S]*syncLabel=/);
+  assert.match(
+    sourceText,
+    /<NotebookPackageSummaryPanel[\s\S]*readOnly=\{!shellCapabilities\.canManagePackages\}/,
+  );
+  assert.doesNotMatch(sourceText, /NotebookEnvironmentSummary/);
+  assert.doesNotMatch(sourceText, /createNotebookEnvironmentSurface/);
+  assert.doesNotMatch(sourceText, /syncLabel: connectionScope/);
+  assert.doesNotMatch(sourceText, /Live sync connected/);
 });
 
 test("cloud identity chrome renders through the shared actor projection surface", () => {
