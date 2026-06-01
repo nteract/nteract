@@ -47,6 +47,11 @@ export {
 } from "./NotebookIdentity";
 export { NotebookPresenceStatus, type NotebookPresenceStatusProps } from "./NotebookPresenceStatus";
 export {
+  NotebookToolbarIdentity,
+  notebookToolbarActors,
+  type NotebookToolbarIdentityProps,
+} from "./NotebookToolbarIdentity";
+export {
   NotebookEnvironmentSummary,
   type NotebookEnvironmentSummaryProps,
 } from "./NotebookEnvironmentSummary";
