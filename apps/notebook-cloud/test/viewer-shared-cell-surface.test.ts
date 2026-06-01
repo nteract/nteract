@@ -97,6 +97,22 @@ test("cloud presence chrome renders through the shared shell component", () => {
   assert.doesNotMatch(collabSmokeText, /cloud-presence/);
 });
 
+test("cloud edit mode chrome renders through the shared shell component", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssText = readFileSync(cssPath, "utf8");
+
+  assert.match(sourceText, /NotebookEditModeButton/);
+  assert.match(
+    sourceText,
+    /<NotebookEditModeButton[\s\S]*mode=\{requestingEdit \? "edit" : "view"\}/,
+  );
+  assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
+  assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
+  assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);
+});
+
 test("cloud rail binds through the shared document rail adapter", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

@@ -10,7 +10,6 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  BookOpen,
   Copy,
   Globe2,
   KeyRound,
@@ -18,7 +17,6 @@ import {
   LogIn,
   LogOut,
   Mail,
-  Pencil,
   RotateCcw,
   Share2,
   Trash2,
@@ -29,6 +27,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   NotebookDocumentHeader,
+  NotebookEditModeButton,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -1636,31 +1635,20 @@ function CloudNotebookEditModeButton({
   const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
   const requestingEdit = requestedScope === "editor" || requestedScope === "owner";
   const editing = connectionScope === "editor" || connectionScope === "owner";
-  const label = requestingEdit ? "View" : "Edit";
-  const title = requestingEdit
-    ? editing
-      ? "Return to read-only viewing"
-      : "Stop requesting edit access"
-    : "Request edit access";
+  const state = editing ? "editing" : requestingEdit ? "requested" : "viewing";
 
   return (
-    <button
-      type="button"
-      className="cloud-scope-toggle-button"
-      aria-pressed={requestingEdit}
-      data-state={editing ? "editing" : requestingEdit ? "requested" : "viewing"}
-      title={title}
-      onClick={() => {
+    <NotebookEditModeButton
+      mode={requestingEdit ? "edit" : "view"}
+      state={state}
+      onModeChange={(mode) => {
         storeCloudRequestedScope(
           window.localStorage,
-          requestingEdit ? NOTEBOOK_CLOUD_DEFAULT_SCOPE : "editor",
+          mode === "edit" ? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE,
         );
         onAuthStateChange();
       }}
-    >
-      {requestingEdit ? <BookOpen aria-hidden="true" /> : <Pencil aria-hidden="true" />}
-      <span>{label}</span>
-    </button>
+    />
   );
 }
 

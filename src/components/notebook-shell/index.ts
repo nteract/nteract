@@ -42,6 +42,12 @@ export {
   NotebookEnvironmentSummary,
   type NotebookEnvironmentSummaryProps,
 } from "./NotebookEnvironmentSummary";
+export {
+  NotebookEditModeButton,
+  type NotebookEditMode,
+  type NotebookEditModeButtonProps,
+  type NotebookEditModeState,
+} from "./NotebookEditModeButton";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
   NotebookPackageSummaryPanel,
