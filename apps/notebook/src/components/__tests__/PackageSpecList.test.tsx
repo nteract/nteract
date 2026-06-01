@@ -139,6 +139,55 @@ describe("DependencyHeader rail package copy", () => {
     expect(screen.getByTestId("deps-add-input")).toHaveClass("min-w-0");
   });
 
+  it("leaves package counts to the rail title summary", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={["pandas", "polars"]}
+        requiresPython=">=3.12"
+        loading={false}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+      />,
+    );
+
+    expect(screen.queryByText("2 packages")).not.toBeInTheDocument();
+  });
+
+  it("describes dirty dependencies without overstating all packages as new", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={[
+          "pandas",
+          "polars",
+          "matplotlib",
+          "plotly",
+          "altair",
+          "vega_datasets",
+          "kyle",
+        ]}
+        requiresPython=">=3.13"
+        loading={false}
+        syncState={{
+          status: "dirty",
+          added: ["pandas", "polars", "matplotlib", "plotly", "altair", "vega_datasets", "kyle"],
+          removed: [],
+        }}
+        onSyncNow={async () => true}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+      />,
+    );
+
+    expect(
+      screen.getByText("Re-initialize the environment to apply dependency changes."),
+    ).toBeVisible();
+    expect(screen.queryByText(/7 new packages/)).not.toBeInTheDocument();
+  });
+
   it("stacks pyproject actions under the file label in the rail", () => {
     const { container } = render(
       <DependencyHeader
@@ -243,6 +292,7 @@ describe("file-backed package rail variants", () => {
     );
 
     expect(screen.getByText("environment.yaml")).toBeVisible();
+    expect(screen.queryByText("0 packages")).not.toBeInTheDocument();
     expect(screen.getByText("python")).toBeVisible();
     expect(screen.getByText("=3.13")).toBeVisible();
     expect(screen.getByText("scipy")).toBeVisible();
@@ -273,6 +323,8 @@ describe("file-backed package rail variants", () => {
     );
 
     expect(screen.getByText("pixi.toml")).toBeVisible();
+    expect(screen.getByText("Project")).toBeVisible();
+    expect(screen.queryByText("0 packages")).not.toBeInTheDocument();
     expect(screen.getByText("python")).toBeVisible();
     expect(screen.getAllByText(">=3.13").length).toBeGreaterThan(0);
     expect(screen.getByText("numpy")).toBeVisible();

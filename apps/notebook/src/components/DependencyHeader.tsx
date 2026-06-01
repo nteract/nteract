@@ -118,9 +118,9 @@ export function DependencyHeader({
               <span className="whitespace-nowrap text-xs text-muted-foreground">Python</span>
             )}
           </div>
-          {isRail && (
+          {isRail && isUsingProjectEnv && (
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {isUsingProjectEnv ? "Project env" : packageCountLabel(dependencies.length)}
+              Project env
             </span>
           )}
         </div>
@@ -145,22 +145,7 @@ export function DependencyHeader({
           >
             <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                Re-initialize the environment to use{" "}
-                {syncState.added.length > 0 && (
-                  <span>
-                    {syncState.added.length} new package
-                    {syncState.added.length > 1 ? "s" : ""}
-                  </span>
-                )}
-                {syncState.added.length > 0 && syncState.removed.length > 0 && " and remove "}
-                {syncState.removed.length > 0 && (
-                  <span>
-                    {syncState.removed.length} package
-                    {syncState.removed.length > 1 ? "s" : ""}
-                  </span>
-                )}
-              </span>
+              <span>Re-initialize the environment to apply dependency changes.</span>
             </div>
             <button
               type="button"
@@ -394,8 +379,4 @@ export function DependencyHeader({
       </div>
     </div>
   );
-}
-
-function packageCountLabel(count: number): string {
-  return count === 1 ? "1 package" : `${count} packages`;
 }

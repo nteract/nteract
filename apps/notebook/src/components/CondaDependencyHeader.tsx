@@ -151,11 +151,6 @@ export function CondaDependencyHeader({
               <span className="whitespace-nowrap text-xs text-muted-foreground">Environment</span>
             )}
           </div>
-          {isRail && (
-            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {packageCountLabel(dependencies.length)}
-            </span>
-          )}
         </div>
 
         {/* Environment preparation progress */}
@@ -493,8 +488,4 @@ export function CondaDependencyHeader({
       </div>
     </div>
   );
-}
-
-function packageCountLabel(count: number): string {
-  return count === 1 ? "1 package" : `${count} packages`;
 }

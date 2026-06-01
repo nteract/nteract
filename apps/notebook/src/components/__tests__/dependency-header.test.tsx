@@ -53,7 +53,7 @@ describe("DependencyHeader", () => {
     });
 
     expect(screen.getByTestId("deps-panel").getAttribute("data-variant")).toBe("rail");
-    expect(screen.getByText("2 packages")).toBeDefined();
+    expect(screen.queryByText("2 packages")).not.toBeInTheDocument();
 
     await user.type(screen.getByTestId("deps-add-input"), "  numpy  {Enter}");
 

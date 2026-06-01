@@ -92,9 +92,9 @@ export function PixiDependencyHeader({
               {isInlineMode ? "Dependencies" : "Environment"}
             </span>
           </div>
-          {isRail && (
+          {isRail && !isInlineMode && (
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {isInlineMode ? packageCountLabel(pixiDeps?.dependencies.length ?? 0) : "Project"}
+              Project
             </span>
           )}
         </div>
@@ -119,11 +119,7 @@ export function PixiDependencyHeader({
           >
             <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                Dependencies changed
-                {syncState.added.length > 0 && ` — ${syncState.added.length} added`}
-                {syncState.removed.length > 0 && ` — ${syncState.removed.length} removed`}
-              </span>
+              <span>Dependencies changed.</span>
             </div>
             <button
               type="button"
@@ -294,8 +290,4 @@ export function PixiDependencyHeader({
       </div>
     </div>
   );
-}
-
-function packageCountLabel(count: number): string {
-  return count === 1 ? "1 package" : `${count} packages`;
 }
