@@ -77,7 +77,7 @@ export function desktopNotebookShellCapabilities({
     },
     auth: {
       canSignIn: false,
-      canUseAuthenticatedIdentity: Boolean(localActor),
+      canUseAuthenticatedIdentity: source === "cloud" && Boolean(localActor),
       needsAttention: false,
     },
     runtime: {
