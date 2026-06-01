@@ -2,6 +2,7 @@ import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
 } from "@/components/notebook-shell/actor-projection";
+import { createNotebookInteractionModeProjection } from "@/components/notebook-shell/interaction-mode";
 import type {
   NotebookShellAccessLevel,
   NotebookShellAccessSource,
@@ -24,10 +25,25 @@ export function desktopNotebookShellCapabilities({
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
   const source = desktopAccessSourceFromActor(connectionScope, localActor);
   const isRuntimePeer = connectionScope === "runtime_peer";
+  const hasDocumentEditPermission = accessLevel === "editor" || accessLevel === "owner";
   const canWriteDocument =
-    canAcceptCellMutations && (accessLevel === "editor" || accessLevel === "owner");
+    canAcceptCellMutations && hasDocumentEditPermission;
   const canWriteRuntimeState =
     sessionReady && (isRuntimePeer || (source === "local" && canWriteDocument));
+  const interaction = createNotebookInteractionModeProjection({
+    selectedMode: hasDocumentEditPermission ? "edit" : "view",
+    permission: {
+      canEditMarkdown: hasDocumentEditPermission,
+      canEditCells: hasDocumentEditPermission,
+      canEditStructure: hasDocumentEditPermission,
+    },
+    hostSupport: {
+      canEditMarkdown: canAcceptCellMutations,
+      canEditCells: canAcceptCellMutations,
+      canEditStructure: canAcceptCellMutations,
+      canRequestEdit: false,
+    },
+  });
   const access = {
     level: accessLevel,
     source,
@@ -54,6 +70,7 @@ export function desktopNotebookShellCapabilities({
     canViewPackages: true,
     canManagePackages: canWriteDocument,
     canManageSharing: accessLevel === "owner" && source === "cloud",
+    interaction,
     access: {
       ...access,
       actor: notebookActorProjectionFromAccess(access),

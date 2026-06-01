@@ -84,6 +84,32 @@ describe("createNotebookInteractionModeProjection", () => {
     });
   });
 
+  it("treats edit as requested when the host cannot accept edits yet", () => {
+    const interaction = createNotebookInteractionModeProjection({
+      selectedMode: "edit",
+      permission: {
+        canEditMarkdown: true,
+        canEditCells: true,
+        canEditStructure: true,
+      },
+      hostSupport: {
+        canEditMarkdown: false,
+        canEditCells: false,
+        canEditStructure: false,
+        canRequestEdit: false,
+      },
+    });
+
+    expect(interaction).toMatchObject({
+      selectedMode: "edit",
+      activeMode: "view",
+      state: "requested",
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+    });
+  });
+
   it("uses selected mode, permission, and host support for shared presence copy", () => {
     const editableView = createNotebookInteractionModeProjection({
       selectedMode: "view",

@@ -35,7 +35,11 @@ export function createNotebookInteractionModeProjection({
   const wantsEdit = selectedMode === "edit";
   const hasAnyEditPermission =
     permission.canEditMarkdown || permission.canEditCells || permission.canEditStructure;
-  const canActivateEdit = wantsEdit && hasAnyEditPermission;
+  const hasAnyHostEditSupport =
+    (permission.canEditMarkdown && hostSupport.canEditMarkdown) ||
+    (permission.canEditCells && hostSupport.canEditCells) ||
+    (permission.canEditStructure && hostSupport.canEditStructure);
+  const canActivateEdit = wantsEdit && hasAnyEditPermission && hasAnyHostEditSupport;
   const activeMode: NotebookInteractionMode = canActivateEdit ? "edit" : "view";
   const state: NotebookInteractionState = !wantsEdit
     ? "viewing"
