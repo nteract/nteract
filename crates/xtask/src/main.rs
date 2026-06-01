@@ -1191,39 +1191,23 @@ fn cmd_e2e_test_fixture(args: Vec<String>) {
 }
 
 fn cmd_e2e_test_all() {
-    println!("Running all E2E tests...\n");
+    println!("Running native Tauri E2E tests...\n");
     let mut failed = false;
 
-    // 1. Smoke tests (default specs, excluding fixtures)
-    println!("=== Smoke Tests ===");
+    // 1. Native smoke tests. Most notebook UI/runtime coverage runs through
+    // Playwright via `pnpm --filter notebook-ui test:e2e:browser`.
+    println!("=== Native Smoke Tests ===");
     if run_e2e_session(None, None, None) != 0 {
         eprintln!("Smoke tests failed.");
         failed = true;
     }
 
-    // 2. Fixture tests (mirroring CI e2e-fixtures job)
-    let fixtures: &[(&str, &str, &str)] = &[
-        (
-            "crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb",
-            "e2e/specs/cell-visibility.spec.js",
-            "Cell Visibility Test",
-        ),
-        (
-            "crates/notebook/fixtures/audit-test/1-vanilla.ipynb",
-            "e2e/specs/prewarmed-uv.spec.js",
-            "Prewarmed Pool Test",
-        ),
-        (
-            "crates/notebook/fixtures/audit-test/10-deno.ipynb",
-            "e2e/specs/deno.spec.js",
-            "Deno Kernel Test",
-        ),
-        (
-            "crates/notebook/fixtures/audit-test/16-widget-slider.ipynb",
-            "e2e/specs/widget-slider-stall.spec.js",
-            "Widget Slider Stall Reproducer",
-        ),
-    ];
+    // 2. Long-tail native-only fixture tests.
+    let fixtures: &[(&str, &str, &str)] = &[(
+        "crates/notebook/fixtures/audit-test/16-widget-slider.ipynb",
+        "e2e/specs/widget-slider-stall.spec.js",
+        "Widget Slider Stall Reproducer",
+    )];
 
     for (notebook, spec, name) in fixtures {
         println!("\n=== {name} ===");
@@ -1256,7 +1240,7 @@ fn cmd_e2e_test_all() {
         eprintln!("\nSome E2E tests failed.");
         exit(1);
     }
-    println!("\nAll E2E tests passed!");
+    println!("\nNative Tauri E2E tests passed!");
 }
 
 fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {

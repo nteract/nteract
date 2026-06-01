@@ -261,7 +261,7 @@ jobs:
         run: vp test bench --run apps/notebook/src/lib/__tests__/
 
   browser-e2e:
-    name: Browser E2E (Vite)
+    name: Browser E2E (Playwright)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -575,8 +575,9 @@ jobs:
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         run: cargo test --workspace --exclude runtimed-node --exclude runtimed-py --verbose
 
-  # Build Tauri app once and share with E2E shards
-  # E2E smoke test - verifies basic app functionality
+  # Native WebDriver E2E stays focused on Tauri shell behavior. Notebook UI,
+  # runtime, and fixture coverage run in the faster Browser E2E (Playwright)
+  # job above.
   e2e:
     name: "E2E: ${{ matrix.name }}"
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -589,36 +590,6 @@ jobs:
           - name: Smoke
             spec: "e2e/specs/smoke.spec.js"
             notebook: ""
-            uv_pool: 3
-            conda_pool: 0
-            timeout: 12
-          - name: Tab Completion
-            spec: "e2e/specs/tab-completion.spec.js"
-            notebook: ""
-            uv_pool: 3
-            conda_pool: 0
-            timeout: 12
-          - name: UI (Cell Visibility)
-            spec: "e2e/specs/cell-visibility.spec.js"
-            notebook: "crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb"
-            uv_pool: 0
-            conda_pool: 0
-            timeout: 5
-          - name: UV Prewarmed
-            spec: "e2e/specs/prewarmed-uv.spec.js"
-            notebook: "crates/notebook/fixtures/audit-test/1-vanilla.ipynb"
-            uv_pool: 3
-            conda_pool: 0
-            timeout: 12
-          - name: Deno
-            spec: "e2e/specs/deno.spec.js"
-            notebook: "crates/notebook/fixtures/audit-test/10-deno.ipynb"
-            uv_pool: 0
-            conda_pool: 0
-            timeout: 8
-          - name: UV Pyproject
-            spec: "e2e/specs/uv-pyproject.spec.js"
-            notebook: "crates/notebook/fixtures/audit-test/pyproject-project/5-pyproject.ipynb"
             uv_pool: 3
             conda_pool: 0
             timeout: 12
