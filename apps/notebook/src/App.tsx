@@ -1,12 +1,4 @@
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deriveEnvManager,
   deriveRuntimeKind,
@@ -79,14 +71,7 @@ import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
 import { getBlobResolver, useBlobPort } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
-import {
-  flushCellUIState,
-  setExecutingCellIds as storeSetExecutingCellIds,
-  setFocusedCellId as storeSetFocusedCellId,
-  setQueuedCellIds as storeSetQueuedCellIds,
-  setSearchCurrentMatch as storeSetSearchCurrentMatch,
-  setSearchQuery as storeSetSearchQuery,
-} from "./lib/cell-ui-state";
+import { useNotebookCellUIStateBridge } from "./lib/cell-ui-state";
 import { startCursorDispatch } from "./lib/cursor-registry";
 import { desktopNotebookShellCapabilities } from "./lib/desktop-shell-capabilities";
 import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kernel-status";
@@ -830,23 +815,13 @@ function AppContent() {
     !railCollapsed && activeRailPanel === "outline",
   );
 
-  // ── Sync transient UI state into the cell-ui-state store ────────────
-  // Two-phase update for StrictMode safety:
-  //
-  // Phase 1 (render): Assign module-level variables so child
-  // useSyncExternalStore snapshots return current values. Equality
-  // guards make this idempotent — same inputs produce no mutation.
-  //
-  // Phase 2 (commit): useLayoutEffect calls flushCellUIState() to
-  // notify subscribers. Discarded renders never trigger notifications.
-  storeSetFocusedCellId(focusedCellId);
-  storeSetExecutingCellIds(executingCellIds);
-  storeSetQueuedCellIds(notebookQueueProjection.queued_cell_ids);
-  storeSetSearchQuery(globalFind.query);
-  storeSetSearchCurrentMatch(globalFind.currentMatch);
-
-  useLayoutEffect(() => {
-    flushCellUIState();
+  // ── Sync host-owned transient UI state into shared cell UI store ─────
+  useNotebookCellUIStateBridge({
+    focusedCellId,
+    executingCellIds,
+    queuedCellIds: notebookQueueProjection.queued_cell_ids,
+    searchQuery: globalFind.query,
+    searchCurrentMatch: globalFind.currentMatch,
   });
 
   // Env manager (uv / conda / pixi) — drives the toolbar badge and

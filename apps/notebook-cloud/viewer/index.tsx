@@ -81,7 +81,7 @@ import {
   type PresenceContextValue,
 } from "../../notebook/src/contexts/PresenceContext";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
-import { flushCellUIState, setFocusedCellId } from "../../notebook/src/lib/cell-ui-state";
+import { useNotebookCellUIStateBridge } from "../../notebook/src/lib/cell-ui-state";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { setLoggerHost } from "../../notebook/src/lib/logger";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
@@ -623,6 +623,7 @@ function NotebookViewer({
     message: loadingPolicy.initialStatusMessage,
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
+  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(false);
@@ -696,9 +697,7 @@ function NotebookViewer({
 
   useEffect(() => resetCloudViewStoreProjection, []);
 
-  useLayoutEffect(() => {
-    flushCellUIState();
-  }, [cells]);
+  useNotebookCellUIStateBridge({ focusedCellId });
 
   useEffect(() => {
     if (authRenewal.kind === "refreshing") {
