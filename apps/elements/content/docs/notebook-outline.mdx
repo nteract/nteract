@@ -5,29 +5,18 @@ description: A fixture-backed preview of a left rail for notebook reading and na
 
 import { RailOutlineExample } from "@/components/rail-outline-example";
 
-The rail outline is the first production direction for a notebook table of
-contents. It keeps reading navigation available while leaving clear sibling
-slots for packages, variables, renderers, and future notebook tools.
-The rail owns notebook-level navigation and tools; the ribbon and code-cell
-chrome remain inside the notebook surface for per-cell focus and execution
-state.
-Outline rows are navigation, not drag handles. The active row now uses a quiet
-spine marker instead of a full-color selected block, and native drag previews
-are cancelled until notebook reordering through the outline is a real workflow.
-The outline header stays label-only; package panels can use the summary chip for
-runtime state, but an outline item count adds bookkeeping noise without helping
-reading flow.
+The rail is notebook-level navigation and tools. It keeps reading context beside
+the document while the ribbon and code-cell chrome stay inside the notebook
+surface for per-cell focus and execution state.
 
-This fixture now renders the current notebook app toolbar and shared
-`NotebookDocumentRail`, which wraps the presentational `NotebookRail` used by
-desktop and cloud. The outline is projected with the same
-`createNotebookViewModel` path the notebook uses, then fed `outlineCellIds` so a
-focused code cell resolves to the nearest preceding heading. The package panel
-is supplied through `NotebookPackagesPanel` and hosts the current
-`DependencyHeader` with static package state.
-Scenario selection comes from the shared [notebook shell capabilities](/docs/notebook-shell-capabilities)
-fixtures so desktop, cloud viewer, cloud editor, cloud owner, and runtime-blocked
-states stay aligned with the app shell.
+Outline rows navigate; they are not drag handles. The active row uses a quiet
+spine marker, and native drag previews are cancelled until outline-driven
+reordering becomes a real workflow.
+
+This fixture renders the shared `NotebookDocumentRail` and current notebook
+toolbar with scenario state from the [notebook shell capabilities](/docs/notebook-shell-capabilities)
+fixtures. The package panel hosts the current `DependencyHeader` in its rail
+variant instead of adding docs-only chrome inside the rail.
 
 <RailOutlineExample />
 
