@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import type { FindMatch } from "../hooks/useGlobalFind";
 import { getCellIdsSnapshot, subscribeIds } from "./notebook-cells";
 
@@ -43,6 +43,39 @@ export function flushCellUIState(): void {
   const batch = [..._dirtySubscribers];
   _dirtySubscribers.clear();
   for (const subs of batch) emit(subs);
+}
+
+export interface NotebookCellUIStateBridgeInput {
+  focusedCellId: string | null;
+  executingCellIds?: Set<string>;
+  queuedCellIds?: Iterable<string>;
+  searchQuery?: string;
+  searchCurrentMatch?: FindMatch | null;
+}
+
+/**
+ * Project host-owned transient notebook UI state into the shared cell UI store.
+ *
+ * Hosts own focus/search/execution state because those facts come from their
+ * transport, runtime, and app shell. Cell components consume the shared store so
+ * desktop, cloud, and fixture hosts do not grow separate focus contracts.
+ */
+export function useNotebookCellUIStateBridge({
+  focusedCellId,
+  executingCellIds,
+  queuedCellIds,
+  searchQuery,
+  searchCurrentMatch,
+}: NotebookCellUIStateBridgeInput): void {
+  setFocusedCellId(focusedCellId);
+  if (executingCellIds) setExecutingCellIds(executingCellIds);
+  if (queuedCellIds) setQueuedCellIds(queuedCellIds);
+  setSearchQuery(searchQuery);
+  setSearchCurrentMatch(searchCurrentMatch ?? null);
+
+  useLayoutEffect(() => {
+    flushCellUIState();
+  });
 }
 
 function setsEqual(a: Set<string>, b: Set<string>): boolean {

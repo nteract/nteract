@@ -33,6 +33,23 @@ test("cloud projects live cells into the NotebookView stores", () => {
   assert.doesNotMatch(sourceText, /onSourceChanged=/);
 });
 
+test("cloud projects host focus through the shared cell UI state bridge", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /useNotebookCellUIStateBridge/);
+  assert.match(
+    sourceText,
+    /const \[focusedCellId, setFocusedCellId\] = useState<string \| null>\(null\)/,
+  );
+  assert.match(sourceText, /useNotebookCellUIStateBridge\(\{ focusedCellId \}\)/);
+  assert.match(sourceText, /onFocusCell=\{setFocusedCellId\}/);
+  assert.doesNotMatch(
+    sourceText,
+    /import \{[^}]*setFocusedCellId[^}]*\} from "\.\.\/\.\.\/notebook\/src\/lib\/cell-ui-state"/,
+  );
+});
+
 test("cloud wires shared presence and cleans projected store entries", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
