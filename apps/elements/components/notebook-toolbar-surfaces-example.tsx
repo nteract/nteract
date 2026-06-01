@@ -94,14 +94,14 @@ function createStatusSurfaces(): ToolbarSurface[] {
       title: "Idle Python notebook",
       source: "apps/notebook/src/components/NotebookToolbar.tsx",
       scenario: desktopOwner,
-      role: `${desktopOwner.runtimeLabel}; normal editing state with uv inline dependency metadata and running kernel controls.`,
+      role: `${desktopOwner.runtimeLabel}; normal editing state with uv package details and running kernel controls.`,
       props: toolbarProps(desktopOwner),
     },
     {
-      title: "Busy with dependency restart",
+      title: "Busy with package restart",
       source: "apps/notebook/src/components/NotebookToolbar.tsx",
       scenario: desktopOwner,
-      role: `Execution state from ${desktopOwner.title}; restart-and-run-all is marked by ${desktopOwner.packageState.syncState.status} dependency metadata.`,
+      role: `Execution state from ${desktopOwner.title}; restart-and-run-all is marked by ${desktopOwner.packageState.syncState.status} package details.`,
       props: toolbarProps(desktopOwner, {
         kernelStatus: KERNEL_STATUS.BUSY,
         statusKey: RUNTIME_STATUS.RUNNING_BUSY,
@@ -115,7 +115,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
       title: "Environment preparation",
       source: "apps/notebook/src/components/NotebookToolbar.tsx",
       scenario: cloudEditor,
-      role: `${cloudEditor.title} can edit markdown, but this fixture keeps execution detached while conda solve/install progress renders.`,
+      role: `${cloudEditor.title} can edit markdown, but this preview keeps execution detached while Conda solve progress renders.`,
       props: toolbarProps(cloudEditor, {
         kernelStatus: KERNEL_STATUS.STARTING,
         statusKey: RUNTIME_STATUS.PREPARING_ENV,
@@ -142,7 +142,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
       title: "Published viewer with no kernel",
       source: "apps/notebook/src/components/NotebookToolbar.tsx",
       scenario: cloudViewer,
-      role: `${cloudViewer.title} uses the same fixture notebook IDs while exposing read-only, published access context.`,
+      role: `${cloudViewer.title} uses the same notebook IDs while exposing view-only, published access context.`,
       props: toolbarProps(cloudViewer, {
         kernelStatus: KERNEL_STATUS.ERROR,
         statusKey: RUNTIME_STATUS.ERROR,
@@ -171,7 +171,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
       title: "Pixi missing ipykernel",
       source: "apps/notebook/src/components/NotebookToolbar.tsx",
       scenario: runtimeUnavailable,
-      role: "Python runtime error branch for pixi.toml notebooks that need an explicit ipykernel dependency.",
+      role: "Python runtime error branch for pixi.toml notebooks that need an explicit ipykernel package.",
       props: toolbarProps(runtimeUnavailable, {
         kernelStatus: KERNEL_STATUS.ERROR,
         statusKey: RUNTIME_STATUS.ERROR,
@@ -219,7 +219,7 @@ const contractItems = [
   {
     icon: PlayCircle,
     title: "Runtime-free",
-    body: "Kernel actions, dependency toggles, update clicks, and cell insertion callbacks are inert.",
+    body: "Kernel actions, package toggles, update clicks, and cell insertion callbacks are inert.",
   },
   {
     icon: TimerReset,
@@ -244,16 +244,16 @@ const toolbarBoundaryRows = [
       "Start, interrupt, restart, run-all, and restart-and-run-all buttons render here without side effects. The notebook app wires them to execution and runtime control paths.",
   },
   {
-    boundary: "Dependency drawer",
+    boundary: "Package panel",
     catalogPath: "scenario.packageState + inert toggle",
-    productionBoundary: "Package rail and notebook metadata",
+    productionBoundary: "Package rail and project writes",
     detail:
-      "The fixture reads package sync state from the shared scenario and toggles visual dependency state only. Production opens package UI, writes notebook metadata, and coordinates environment rebuild decisions.",
+      "The preview reads package sync state from the shared scenario and toggles visual package state only. The notebook opens package UI, writes project files, and coordinates environment rebuild decisions.",
   },
   {
     boundary: "Cell insertion",
     catalogPath: "scenario.viewModel.cellIds",
-    productionBoundary: "NotebookView focus and CRDT mutation",
+    productionBoundary: "NotebookView focus and document changes",
     detail:
       "The add-cell affordance receives stable IDs from the shared scenario projection. Production inserts new cells through the notebook document and restores editor focus.",
   },
@@ -330,12 +330,12 @@ export function NotebookToolbarSurfacesExample() {
       <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
         <div className="mb-3 flex items-center gap-2">
           <CircleDot className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h2 className="text-sm font-semibold">Adapter boundary</h2>
+          <h2 className="text-sm font-semibold">Live work stays with the notebook</h2>
         </div>
         <p className="text-xs leading-5 text-fd-muted-foreground">
           NotebookToolbar renders from the production component, but this page owns only static
-          status props and inert callbacks. Runtime state, kernel controls, dependency writes, cell
-          insertion, and desktop update restarts stay behind the notebook app adapters.
+          status props and inert callbacks. Runtime state, kernel controls, package writes, cell
+          insertion, and desktop update restarts stay with the notebook app.
         </p>
         <div className="mt-4 grid gap-2">
           {toolbarBoundaryRows.map((row) => (
@@ -348,7 +348,7 @@ export function NotebookToolbarSurfacesExample() {
                 <div className="grid gap-2 sm:grid-cols-2">
                   <div>
                     <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
-                      Catalog path
+                      Preview uses
                     </div>
                     <div className="mt-1 break-words font-mono text-[11px] leading-4 text-emerald-700 dark:text-emerald-300">
                       {row.catalogPath}
@@ -356,7 +356,7 @@ export function NotebookToolbarSurfacesExample() {
                   </div>
                   <div>
                     <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
-                      Production boundary
+                      Notebook owns
                     </div>
                     <div className="mt-1 break-words font-mono text-[11px] leading-4 text-amber-700 dark:text-amber-300">
                       {row.productionBoundary}
