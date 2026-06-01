@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ListTree, Package, type LucideIcon } from "lucide-react";
+import { ListTree, Package } from "lucide-react";
 import { useMemo, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   buildNotebookOutlineTree,
@@ -6,14 +6,20 @@ import {
   type NotebookOutlineItem,
   type NotebookOutlineTreeNode,
 } from "runtimed";
+import {
+  Rail,
+  RAIL_TAKEOVER_MEDIA_QUERY,
+  RAIL_TAKEOVER_PANEL_CLASS_NAMES,
+  RAIL_TAKEOVER_STAGE_CLASS_NAME,
+  type RailItem,
+} from "@/components/rail";
 import { cn } from "@/lib/utils";
 
 export type NotebookRailPanelId = "outline" | "packages";
 
-export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
-export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = "max-[599.98px]:hidden";
-export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES =
-  "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none";
+export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = RAIL_TAKEOVER_MEDIA_QUERY;
+export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = RAIL_TAKEOVER_STAGE_CLASS_NAME;
+export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES = RAIL_TAKEOVER_PANEL_CLASS_NAMES;
 const NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,18rem)] min-w-60";
 const NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,17rem)] min-w-60";
 
@@ -35,11 +41,7 @@ export interface NotebookRailProps {
   className?: string;
 }
 
-const railButtons: Array<{
-  id: NotebookRailPanelId;
-  label: string;
-  icon: LucideIcon;
-}> = [
+const railButtons: Array<RailItem<NotebookRailPanelId>> = [
   { id: "outline", label: "Outline", icon: ListTree },
   { id: "packages", label: "Packages", icon: Package },
 ];
@@ -63,131 +65,50 @@ export function NotebookRail({
 }: NotebookRailProps) {
   const title = activePanelId === "outline" ? "Outline" : "Packages";
   const summary = activePanelId === "packages" ? packagesSummary : null;
+  const panelClassName =
+    activePanelId === "packages"
+      ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
+      : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME;
 
   return (
-    <aside
-      className={cn("flex min-h-0 shrink-0 border-r bg-background", className)}
-      data-testid="notebook-rail"
-      data-collapsed={collapsed ? "true" : "false"}
+    <Rail
+      activePanelId={activePanelId}
+      collapsed={collapsed}
+      items={railButtons}
+      panelEyebrow="Notebook"
+      panelTitle={title}
+      panelSummary={summary}
+      panelClassName={panelClassName}
+      className={className}
+      dataTestId="notebook-rail"
+      collapseButtonSlot="notebook-rail-collapse-button"
+      panelSlot="notebook-rail-panel"
+      panelTitleRowSlot="notebook-rail-panel-title-row"
+      onActivePanelChange={onActivePanelChange}
+      onCollapsedChange={onCollapsedChange}
     >
-      <div className="flex w-12 shrink-0 flex-col items-center gap-2 border-r bg-muted/40 px-2 py-3">
-        <NotebookRailButton
-          label={collapsed ? "Expand rail" : "Collapse rail"}
-          icon={collapsed ? ChevronRight : ChevronLeft}
-          active={false}
-          dataSlot="notebook-rail-collapse-button"
-          onClick={() => onCollapsedChange(!collapsed)}
+      {activePanelId === "outline" ? (
+        <NotebookOutlinePanel
+          items={outlineItems}
+          cellIds={outlineCellIds}
+          activeItemId={activeOutlineItemId}
+          selectedItemId={selectedOutlineItemId}
+          selectedCellId={selectedOutlineCellId}
+          onSelectItem={onSelectOutlineItem}
+          onNavigateItem={onNavigateOutlineItem}
+          getItemHref={getOutlineItemHref}
         />
-        {railButtons.map((item) => (
-          <NotebookRailButton
-            key={item.id}
-            label={item.label}
-            icon={item.icon}
-            active={!collapsed && activePanelId === item.id}
-            onClick={() => {
-              if (!collapsed && activePanelId === item.id) {
-                onCollapsedChange(true);
-                return;
-              }
-              onActivePanelChange(item.id);
-              onCollapsedChange(false);
-            }}
-          />
-        ))}
-      </div>
-
-      {!collapsed && (
-        <div
-          className={cn(
-            "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col bg-background",
-            activePanelId === "packages"
-              ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
-              : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME,
-            NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
-          )}
-          data-slot="notebook-rail-panel"
-        >
-          <div className="border-b px-4 py-3">
-            <div className="flex flex-col gap-1.5">
-              <div className="min-w-0">
-                <p className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                  Notebook
-                </p>
-              </div>
-              <div
-                className="flex min-w-0 flex-wrap items-center justify-between gap-2"
-                data-slot="notebook-rail-panel-title-row"
-              >
-                <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-                {summary && (
-                  <span className="w-fit max-w-full truncate rounded-full border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                    {summary}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">
-            {activePanelId === "outline" ? (
-              <NotebookOutlinePanel
-                items={outlineItems}
-                cellIds={outlineCellIds}
-                activeItemId={activeOutlineItemId}
-                selectedItemId={selectedOutlineItemId}
-                selectedCellId={selectedOutlineCellId}
-                onSelectItem={onSelectOutlineItem}
-                onNavigateItem={onNavigateOutlineItem}
-                getItemHref={getOutlineItemHref}
-              />
-            ) : (
-              packagesPanel
-            )}
-          </div>
-        </div>
+      ) : (
+        packagesPanel
       )}
-    </aside>
+    </Rail>
   );
 }
 
-export interface NotebookRailButtonProps {
-  label: string;
-  icon: LucideIcon;
-  dataSlot?: string;
-  active?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-}
-
-export function NotebookRailButton({
-  label,
-  icon: Icon,
-  dataSlot,
-  active = false,
-  disabled = false,
-  onClick,
-}: NotebookRailButtonProps) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      aria-pressed={active}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      data-slot={dataSlot}
-      className={cn(
-        "flex size-8 items-center justify-center rounded-md border text-xs transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-        active
-          ? "border-primary bg-primary text-primary-foreground"
-          : "border-transparent text-muted-foreground hover:border-border hover:bg-background hover:text-foreground",
-        disabled && "cursor-not-allowed opacity-40 hover:border-transparent hover:bg-transparent",
-      )}
-    >
-      <Icon className="size-4" aria-hidden="true" />
-    </button>
-  );
-}
+export {
+  RailButton as NotebookRailButton,
+  type RailButtonProps as NotebookRailButtonProps,
+} from "@/components/rail";
 
 export interface NotebookOutlinePanelProps {
   items: readonly NotebookOutlineItem[];
