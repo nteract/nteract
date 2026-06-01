@@ -105,6 +105,26 @@ export type MimeBundle = Record<string, unknown>;
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
 
+const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 40rem)";
+
+function focusRailCollapseButtonWhenStageIsHidden(railCollapsed: boolean): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+
+  const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
+  if (!takeoverQuery?.matches || railCollapsed) return;
+
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLElement)) return;
+
+  const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+  if (!stage?.contains(activeElement)) return;
+
+  const collapseButton = document.querySelector<HTMLButtonElement>(
+    '[data-slot="notebook-rail-collapse-button"]',
+  );
+  requestAnimationFrame(() => collapseButton?.focus());
+}
+
 function isLaunchErrorHandledByRuntimeBanner(error: string): boolean {
   return (
     error.includes("ipykernel not found in pixi.toml") ||
@@ -403,6 +423,23 @@ function AppContent() {
   // whenever the kernel transitions out of Error (so the next failure
   // shows the banner fresh) or a different details string arrives.
   const [dismissedLaunchError, setDismissedLaunchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
+    if (!takeoverQuery) return;
+
+    const handleTakeoverChange = () => {
+      focusRailCollapseButtonWhenStageIsHidden(railCollapsed);
+    };
+
+    handleTakeoverChange();
+    takeoverQuery.addEventListener("change", handleTakeoverChange);
+    return () => {
+      takeoverQuery.removeEventListener("change", handleTakeoverChange);
+    };
+  }, [railCollapsed]);
 
   // Daemon startup status (installing, starting, failed, etc.)
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);

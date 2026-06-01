@@ -125,6 +125,23 @@ describe("NotebookRail", () => {
     expect(onActivePanelChange).not.toHaveBeenCalled();
   });
 
+  it("exposes the collapse control for narrow takeover focus recovery", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      container.querySelector('[data-slot="notebook-rail-collapse-button"]'),
+    ).toHaveAccessibleName("Collapse rail");
+  });
+
   it("collapses the expanded packages panel from its rail button", () => {
     const onActivePanelChange = vi.fn();
     const onCollapsedChange = vi.fn();

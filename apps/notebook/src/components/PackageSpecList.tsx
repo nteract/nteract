@@ -27,6 +27,9 @@ const toneDotClasses: Record<PackageSpecTone, string> = {
   neutral: "bg-muted-foreground/50",
 };
 
+const markerStartPattern =
+  /^(?:python_version|python_full_version|os_name|sys_platform|platform_release|platform_system|platform_version|platform_machine|platform_python_implementation|implementation_name|implementation_version|extra)\b/;
+
 export function PackageSpecList({
   values,
   tone = "neutral",
@@ -118,7 +121,7 @@ export function PackageSpecList({
 
 export function parsePackageSpec(value: string): { name: string; spec: string | null } {
   const trimmed = value.trim();
-  const markerStart = trimmed.indexOf(";");
+  const markerStart = findEnvironmentMarkerStart(trimmed);
   if (markerStart > 0) {
     const packagePart = trimmed.slice(0, markerStart).trim();
     const markerPart = trimmed.slice(markerStart + 1).trim();
@@ -129,10 +132,34 @@ export function parsePackageSpec(value: string): { name: string; spec: string | 
     };
   }
 
+  const urlDependencyStart = trimmed.indexOf(" @ ");
+  if (urlDependencyStart > 0) {
+    return {
+      name: trimmed.slice(0, urlDependencyStart).trim(),
+      spec: trimmed.slice(urlDependencyStart).trim() || null,
+    };
+  }
+
   const specStart = trimmed.search(/[<>=!~]/);
   if (specStart <= 0) return { name: trimmed, spec: null };
   return {
     name: trimmed.slice(0, specStart).trim(),
     spec: trimmed.slice(specStart).trim() || null,
   };
+}
+
+function findEnvironmentMarkerStart(value: string): number {
+  let searchStart = 0;
+
+  while (searchStart < value.length) {
+    const markerStart = value.indexOf(";", searchStart);
+    if (markerStart === -1) return -1;
+
+    const markerCandidate = value.slice(markerStart + 1).trimStart();
+    if (markerStartPattern.test(markerCandidate)) return markerStart;
+
+    searchStart = markerStart + 1;
+  }
+
+  return -1;
 }

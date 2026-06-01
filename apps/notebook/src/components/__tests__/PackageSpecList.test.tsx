@@ -62,6 +62,14 @@ describe("PackageSpecList", () => {
       name: "pyzmq",
       spec: ">=26 · python_version >= '3.11'",
     });
+    expect(
+      parsePackageSpec(
+        "example @ https://packages.example.test/example;download=1 ; python_version >= '3.11'",
+      ),
+    ).toEqual({
+      name: "example",
+      spec: "@ https://packages.example.test/example;download=1 · python_version >= '3.11'",
+    });
     expect(parsePackageSpec("numpy")).toEqual({ name: "numpy", spec: null });
   });
 });

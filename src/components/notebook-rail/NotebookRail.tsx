@@ -68,6 +68,7 @@ export function NotebookRail({
           label={collapsed ? "Expand rail" : "Collapse rail"}
           icon={collapsed ? ChevronRight : ChevronLeft}
           active={false}
+          dataSlot="notebook-rail-collapse-button"
           onClick={() => onCollapsedChange(!collapsed)}
         />
         {railButtons.map((item) => (
@@ -139,6 +140,7 @@ export function NotebookRail({
 export interface NotebookRailButtonProps {
   label: string;
   icon: LucideIcon;
+  dataSlot?: string;
   active?: boolean;
   disabled?: boolean;
   onClick?: () => void;
@@ -147,6 +149,7 @@ export interface NotebookRailButtonProps {
 export function NotebookRailButton({
   label,
   icon: Icon,
+  dataSlot,
   active = false,
   disabled = false,
   onClick,
@@ -159,6 +162,7 @@ export function NotebookRailButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
+      data-slot={dataSlot}
       className={cn(
         "flex size-8 items-center justify-center rounded-md border text-xs transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
