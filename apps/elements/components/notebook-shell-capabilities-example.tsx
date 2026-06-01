@@ -30,7 +30,7 @@ import {
 } from "@/components/notebook-scenarios";
 
 type BooleanCapabilityKey = {
-  [Key in keyof NotebookShellCapabilities]: NotebookShellCapabilities[Key] extends boolean
+  [Key in keyof NotebookShellCapabilities]-?: NotebookShellCapabilities[Key] extends boolean
     ? Key
     : never;
 }[keyof NotebookShellCapabilities];

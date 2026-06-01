@@ -1,8 +1,9 @@
 import { BookOpen, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { NotebookInteractionMode, NotebookInteractionState } from "./interaction-mode";
 
-export type NotebookEditMode = "view" | "edit";
-export type NotebookEditModeState = "viewing" | "requested" | "editing";
+export type NotebookEditMode = NotebookInteractionMode;
+export type NotebookEditModeState = NotebookInteractionState;
 
 export interface NotebookEditModeButtonProps {
   mode: NotebookEditMode;

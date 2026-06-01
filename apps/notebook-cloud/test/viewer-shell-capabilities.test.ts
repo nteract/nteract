@@ -32,6 +32,9 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.canExecute, false);
   assert.equal(capabilities.canToggleCode, true);
   assert.equal(capabilities.canManageSharing, false);
+  assert.equal(capabilities.interaction?.selectedMode, "view");
+  assert.equal(capabilities.interaction?.activeMode, "view");
+  assert.equal(capabilities.interaction?.state, "viewing");
   assert.equal(capabilities.access.level, "viewer");
   assert.equal(capabilities.access.source, "cloud");
   assert.equal(capabilities.access.isPublic, true);
@@ -55,6 +58,9 @@ test("cloud shell capabilities grant editor markdown writes without code, struct
   assert.equal(capabilities.canExecute, false);
   assert.equal(capabilities.canToggleCode, false);
   assert.equal(capabilities.canManagePackages, false);
+  assert.equal(capabilities.interaction?.selectedMode, "edit");
+  assert.equal(capabilities.interaction?.activeMode, "edit");
+  assert.equal(capabilities.interaction?.state, "editing");
   assert.equal(capabilities.access.level, "editor");
   assert.equal(capabilities.access.identityLabel, "user@example.test");
   assert.equal(capabilities.access.actor?.principal.label, "user@example.test");
@@ -74,9 +80,29 @@ test("cloud shell capabilities keep user-selected view mode read-only even with 
   assert.equal(capabilities.canEditMarkdown, false);
   assert.equal(capabilities.canEditCells, false);
   assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.interaction?.selectedMode, "view");
+  assert.equal(capabilities.interaction?.activeMode, "view");
+  assert.equal(capabilities.interaction?.state, "viewing");
   assert.equal(capabilities.access.level, "editor");
   assert.equal(capabilities.canToggleCode, true);
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
+});
+
+test("cloud shell capabilities keep requested edit pending until the room grants edit access", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "viewer",
+    hasCodeCells: true,
+  });
+
+  assert.equal(capabilities.canEditMarkdown, false);
+  assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.canRequestEdit, true);
+  assert.equal(capabilities.interaction?.selectedMode, "edit");
+  assert.equal(capabilities.interaction?.activeMode, "view");
+  assert.equal(capabilities.interaction?.state, "requested");
+  assert.equal(capabilities.access.level, "viewer");
 });
 
 test("cloud shell capabilities reserve code-cell and structure edits for owners", () => {
@@ -92,6 +118,9 @@ test("cloud shell capabilities reserve code-cell and structure edits for owners"
   assert.equal(capabilities.canExecute, false);
   assert.equal(capabilities.canManagePackages, false);
   assert.equal(capabilities.canManageSharing, true);
+  assert.equal(capabilities.interaction?.selectedMode, "edit");
+  assert.equal(capabilities.interaction?.activeMode, "edit");
+  assert.equal(capabilities.interaction?.state, "editing");
   assert.equal(capabilities.access.level, "owner");
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });

@@ -66,6 +66,15 @@ export {
   type NotebookEditModeButtonProps,
   type NotebookEditModeState,
 } from "./NotebookEditModeButton";
+export {
+  createNotebookInteractionModeProjection,
+  type CreateNotebookInteractionModeProjectionOptions,
+  type NotebookInteractionHostSupport,
+  type NotebookInteractionMode,
+  type NotebookInteractionModeProjection,
+  type NotebookInteractionPermission,
+  type NotebookInteractionState,
+} from "./interaction-mode";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
   NotebookPackageSummaryPanel,

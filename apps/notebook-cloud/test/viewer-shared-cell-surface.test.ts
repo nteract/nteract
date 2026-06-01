@@ -116,10 +116,8 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   const cssText = readFileSync(cssPath, "utf8");
 
   assert.match(sourceText, /NotebookEditModeButton/);
-  assert.match(
-    sourceText,
-    /<NotebookEditModeButton[\s\S]*mode=\{requestingEdit \? "edit" : "view"\}/,
-  );
+  assert.match(sourceText, /<NotebookEditModeButton[\s\S]*mode=\{interaction\.selectedMode\}/);
+  assert.match(sourceText, /<NotebookEditModeButton[\s\S]*state=\{interaction\.state\}/);
   assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
   assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);

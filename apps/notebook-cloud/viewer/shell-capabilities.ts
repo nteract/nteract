@@ -3,6 +3,7 @@ import {
   notebookActorProjectionFromRuntime,
 } from "@/components/notebook-shell/actor-projection";
 import type { NotebookShellCapabilities } from "@/components/notebook-shell/capabilities";
+import { createNotebookInteractionModeProjection } from "@/components/notebook-shell/interaction-mode";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 
 export interface CloudNotebookShellCapabilityInput {
@@ -20,13 +21,25 @@ export function cloudNotebookShellCapabilities({
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = cloudConnectionAccessLevel(connectionScope);
   const isRuntimePeer = connectionScope === "runtime_peer";
-  const userSelectedViewMode = authState.requestedScope === "viewer";
-  const activeEditLevel = userSelectedViewMode ? "viewer" : accessLevel;
-  const canEditMarkdown = activeEditLevel === "editor" || activeEditLevel === "owner";
-  const canEditCells = activeEditLevel === "owner";
-  const canEditStructure = activeEditLevel === "owner";
   const authenticated = authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
+  const interaction = createNotebookInteractionModeProjection({
+    selectedMode:
+      authState.requestedScope === "editor" || authState.requestedScope === "owner"
+        ? "edit"
+        : "view",
+    permission: {
+      canEditMarkdown: accessLevel === "editor" || accessLevel === "owner",
+      canEditCells: accessLevel === "owner",
+      canEditStructure: accessLevel === "owner",
+    },
+    hostSupport: {
+      canEditMarkdown: true,
+      canEditCells: true,
+      canEditStructure: true,
+      canRequestEdit: authState.mode === "oidc",
+    },
+  });
   const auth = {
     canSignIn: authState.mode !== "oidc",
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
@@ -49,15 +62,16 @@ export function cloudNotebookShellCapabilities({
 
   return {
     canRead: true,
-    canEditMarkdown,
-    canEditCells,
-    canEditStructure,
-    canRequestEdit: authState.mode === "oidc",
+    canEditMarkdown: interaction.canEditMarkdown,
+    canEditCells: interaction.canEditCells,
+    canEditStructure: interaction.canEditStructure,
+    canRequestEdit: interaction.canRequestEdit,
     canExecute: false,
     canToggleCode: hasCodeCells,
     canViewPackages: true,
     canManagePackages: false,
     canManageSharing: connectionScope === "owner",
+    interaction,
     access: {
       ...access,
       actor: notebookActorProjectionFromAccess(access, auth),
