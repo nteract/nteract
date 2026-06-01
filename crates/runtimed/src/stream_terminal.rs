@@ -500,6 +500,21 @@ mod tests {
     }
 
     #[test]
+    fn test_noisy_line_stream_preserves_full_scrollback() {
+        let mut terminals = StreamTerminals::new();
+        let line_count = 2_000;
+
+        for i in 0..line_count {
+            terminals.feed_chunk("cell-1", "stdout", &format!("chunk-{i}\n"));
+        }
+
+        let result = terminals.render("cell-1", "stdout").unwrap();
+        assert!(result.contains("chunk-0\n"));
+        assert!(result.contains("chunk-1999\n"));
+        assert_eq!(result.matches("chunk-").count(), line_count);
+    }
+
+    #[test]
     fn test_feed_chunk_renders_later() {
         let mut terminals = StreamTerminals::new();
 

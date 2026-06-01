@@ -1079,7 +1079,8 @@ for i in range({line_count}):
     sys.stdout.flush()
 """,
         )
-        result = await session.execute_cell(cell_id, timeout_secs=30)
+        # CI can take >45s to reconcile this blob-backed stress stream under load.
+        result = await session.execute_cell(cell_id, timeout_secs=90)
 
         assert result.success, result.stderr
         assert "chunk-0\n" in result.stdout

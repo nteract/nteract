@@ -60,6 +60,10 @@ pub enum ExecutionTerminalError {
 /// the caller does not override it. Bounded so a genuinely output-free
 /// execution cannot block the caller indefinitely.
 pub const DEFAULT_OUTPUT_SYNC_GRACE: Duration = Duration::from_millis(500);
+/// Default output-sync grace for blob-backed terminal streams, which can lag
+/// behind terminal status under CI load because the manifest update and blob
+/// write are larger than ordinary inline outputs.
+pub const DEFAULT_BLOB_OUTPUT_SYNC_GRACE: Duration = Duration::from_secs(3);
 
 /// Poll frequency while waiting for terminal status.
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -67,6 +71,8 @@ const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const OUTPUT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Quiet period after the last observed terminal stream-output mutation.
 const STREAM_OUTPUT_QUIET_PERIOD: Duration = Duration::from_millis(100);
+/// Quiet period for blob-backed terminal streams.
+const BLOB_STREAM_OUTPUT_QUIET_PERIOD: Duration = Duration::from_millis(500);
 
 /// Wait for a specific execution to reach terminal status in the
 /// `RuntimeStateDoc` and return the final outputs, execution count, and
@@ -140,19 +146,21 @@ pub async fn await_execution_terminal(
     // behind. Stream outputs are also updated in place, so a non-empty output
     // list can still contain the penultimate stream blob. Poll briefly until
     // stream outputs are quiet.
-    if final_state.output_manifests.is_empty() || has_stream_output(&final_state.output_manifests) {
-        let grace = output_sync_grace.unwrap_or(DEFAULT_OUTPUT_SYNC_GRACE);
+    if final_state.output_manifests.is_empty()
+        || stream_output_settle_window(&final_state.output_manifests).is_some()
+    {
+        let (default_quiet_period, default_grace) =
+            stream_output_settle_window(&final_state.output_manifests)
+                .unwrap_or((STREAM_OUTPUT_QUIET_PERIOD, DEFAULT_OUTPUT_SYNC_GRACE));
+        let grace = output_sync_grace.unwrap_or(default_grace);
         let remaining_until_deadline = deadline.saturating_duration_since(Instant::now());
         let output_deadline = Instant::now() + grace.min(remaining_until_deadline);
-        let mut stream_quiet_since = if has_stream_output(&final_state.output_manifests) {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let mut stream_quiet_since =
+            stream_output_settle_window(&final_state.output_manifests).map(|_| Instant::now());
+        let mut quiet_period = default_quiet_period;
 
         while Instant::now() < output_deadline {
-            if stream_quiet_since.is_some_and(|since| since.elapsed() >= STREAM_OUTPUT_QUIET_PERIOD)
-            {
+            if stream_quiet_since.is_some_and(|since| since.elapsed() >= quiet_period) {
                 break;
             }
 
@@ -163,14 +171,17 @@ pub async fn await_execution_terminal(
                         if final_state.execution_count.is_none() {
                             final_state.execution_count = exec.execution_count;
                         }
-                        stream_quiet_since = if has_stream_output(&final_state.output_manifests) {
-                            Some(Instant::now())
+                        let stream_window =
+                            stream_output_settle_window(&final_state.output_manifests);
+                        if let Some((next_quiet_period, _)) = stream_window {
+                            quiet_period = next_quiet_period;
+                            stream_quiet_since = Some(Instant::now());
                         } else {
-                            None
-                        };
+                            stream_quiet_since = None;
+                        }
 
                         if !final_state.output_manifests.is_empty()
-                            && !has_stream_output(&final_state.output_manifests)
+                            && stream_output_settle_window(&final_state.output_manifests).is_none()
                         {
                             break;
                         }
@@ -184,8 +195,23 @@ pub async fn await_execution_terminal(
     Ok(final_state)
 }
 
-fn has_stream_output(outputs: &[serde_json::Value]) -> bool {
+fn stream_output_settle_window(outputs: &[serde_json::Value]) -> Option<(Duration, Duration)> {
+    let has_blob_stream = outputs.iter().any(|output| {
+        output.get("output_type").and_then(|t| t.as_str()) == Some("stream")
+            && output
+                .get("text")
+                .and_then(|text| text.get("blob"))
+                .is_some()
+    });
+    if has_blob_stream {
+        return Some((
+            BLOB_STREAM_OUTPUT_QUIET_PERIOD,
+            DEFAULT_BLOB_OUTPUT_SYNC_GRACE,
+        ));
+    }
+
     outputs
         .iter()
         .any(|output| output.get("output_type").and_then(|t| t.as_str()) == Some("stream"))
+        .then_some((STREAM_OUTPUT_QUIET_PERIOD, DEFAULT_OUTPUT_SYNC_GRACE))
 }
