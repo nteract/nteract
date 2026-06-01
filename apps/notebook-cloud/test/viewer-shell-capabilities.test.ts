@@ -6,12 +6,13 @@ import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 function authState(
   mode: CloudPrototypeAuthState["mode"],
   requestedScope: CloudPrototypeAuthState["requestedScope"] = null,
+  oidcClaims: CloudPrototypeAuthState["oidcClaims"] = null,
 ): CloudPrototypeAuthState {
   return {
     mode,
     token: mode === "anonymous" ? null : "token",
     user: mode === "anonymous" ? null : "user@example.test",
-    oidcClaims: null,
+    oidcClaims,
     requestedScope,
     problem: mode === "invalid" || mode === "oidc_expired" ? "auth problem" : null,
   };
@@ -49,6 +50,7 @@ test("cloud shell capabilities grant editor markdown writes without code, struct
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
     hasCodeCells: false,
+    selectedMode: "edit",
   });
 
   assert.equal(capabilities.canEditMarkdown, true);
@@ -62,8 +64,8 @@ test("cloud shell capabilities grant editor markdown writes without code, struct
   assert.equal(capabilities.interaction?.activeMode, "edit");
   assert.equal(capabilities.interaction?.state, "editing");
   assert.equal(capabilities.access.level, "editor");
-  assert.equal(capabilities.access.identityLabel, "user@example.test");
-  assert.equal(capabilities.access.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.access.identityLabel, "user");
+  assert.equal(capabilities.access.actor?.principal.label, "user");
   assert.equal(capabilities.access.actor?.principal.source?.provider, "oidc");
   assert.equal(capabilities.access.actor?.operator.kind, "browser");
   assert.equal(capabilities.auth.canUseAuthenticatedIdentity, true);
@@ -72,9 +74,10 @@ test("cloud shell capabilities grant editor markdown writes without code, struct
 
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {
   const capabilities = cloudNotebookShellCapabilities({
-    authState: authState("oidc", "viewer"),
+    authState: authState("oidc", "editor"),
     connectionScope: "editor",
     hasCodeCells: true,
+    selectedMode: "view",
   });
 
   assert.equal(capabilities.canEditMarkdown, false);
@@ -88,11 +91,37 @@ test("cloud shell capabilities keep user-selected view mode read-only even with 
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
+test("cloud shell capabilities keep selected mode separate from requested auth scope", () => {
+  const viewerMode = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+    selectedMode: "view",
+  });
+  const editorMode = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "viewer"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+    selectedMode: "edit",
+  });
+
+  assert.equal(viewerMode.access.level, "editor");
+  assert.equal(viewerMode.interaction?.selectedMode, "view");
+  assert.equal(viewerMode.interaction?.activeMode, "view");
+  assert.equal(viewerMode.canEditMarkdown, false);
+
+  assert.equal(editorMode.access.level, "editor");
+  assert.equal(editorMode.interaction?.selectedMode, "edit");
+  assert.equal(editorMode.interaction?.activeMode, "edit");
+  assert.equal(editorMode.canEditMarkdown, true);
+});
+
 test("cloud shell capabilities keep requested edit pending until the room grants edit access", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "viewer",
     hasCodeCells: true,
+    selectedMode: "edit",
   });
 
   assert.equal(capabilities.canEditMarkdown, false);
@@ -110,6 +139,7 @@ test("cloud shell capabilities reserve code-cell and structure edits for owners"
     authState: authState("oidc", "owner"),
     connectionScope: "owner",
     hasCodeCells: true,
+    selectedMode: "edit",
   });
 
   assert.equal(capabilities.canEditMarkdown, true);
@@ -168,9 +198,29 @@ test("cloud shell capabilities preserve room actor labels for shared access UI",
 
   assert.equal(capabilities.access.level, "owner");
   assert.equal(capabilities.access.actorLabel, "user:anaconda:alice/browser:tab");
-  assert.equal(capabilities.access.identityLabel, "user@example.test");
+  assert.equal(capabilities.access.identityLabel, "user");
   assert.equal(capabilities.access.actor?.actorLabel, "user:anaconda:alice/browser:tab");
-  assert.equal(capabilities.access.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.access.actor?.principal.label, "user");
+});
+
+test("cloud shell capabilities prefer OIDC display names and pictures over raw emails", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor", {
+      sub: "anaconda-user-123",
+      email: "alice@example.com",
+      email_verified: true,
+      name: "Alice Example",
+      picture: "https://profiles.example/alice.png",
+    }),
+    connectionScope: "editor",
+    connectionActorLabel: "user:anaconda:alice/browser:tab",
+    hasCodeCells: false,
+    selectedMode: "edit",
+  });
+
+  assert.equal(capabilities.access.identityLabel, "Alice Example");
+  assert.equal(capabilities.access.actor?.principal.label, "Alice Example");
+  assert.equal(capabilities.access.actor?.principal.imageUrl, "https://profiles.example/alice.png");
 });
 
 test("cloud shell capabilities keep runtime peer authority separate from document access", () => {
@@ -190,9 +240,9 @@ test("cloud shell capabilities keep runtime peer authority separate from documen
   assert.equal(capabilities.runtime.connected, true);
   assert.equal(capabilities.runtime.source, "cloud");
   assert.equal(capabilities.runtime.actorLabel, "user:anaconda:alice/runtime:jupyterhub");
-  assert.equal(capabilities.runtime.identityLabel, "user@example.test");
+  assert.equal(capabilities.runtime.identityLabel, "user");
   assert.equal(capabilities.runtime.actor?.scope, "runtime_peer");
-  assert.equal(capabilities.runtime.actor?.principal.label, "user@example.test");
+  assert.equal(capabilities.runtime.actor?.principal.label, "user");
   assert.equal(capabilities.runtime.actor?.operator.kind, "runtime");
   assert.equal(capabilities.runtime.actor?.operator.label, "JupyterHub");
 });
