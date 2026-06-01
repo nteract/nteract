@@ -33,4 +33,19 @@ describe("NotebookPresenceStatus", () => {
       "false",
     );
   });
+
+  it("can render as inline app chrome", () => {
+    render(
+      <NotebookPresenceStatus
+        connected
+        label="2 here now"
+        title="2 participants are in this notebook"
+        variant="inline"
+      />,
+    );
+
+    const status = screen.getByLabelText("2 participants are in this notebook");
+    expect(status).toHaveAttribute("data-variant", "inline");
+    expect(screen.getByText("2 here now")).toBeVisible();
+  });
 });

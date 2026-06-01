@@ -10,6 +10,7 @@ export interface NotebookToolbarIdentityProps {
   capabilities: NotebookShellCapabilities;
   maxVisible?: number;
   showDetail?: boolean;
+  variant?: "badge" | "inline";
   className?: string;
 }
 
@@ -17,6 +18,7 @@ export function NotebookToolbarIdentity({
   capabilities,
   maxVisible = 2,
   showDetail = false,
+  variant = "badge",
   className,
 }: NotebookToolbarIdentityProps) {
   const actors = notebookToolbarActors(capabilities).slice(0, maxVisible);
@@ -28,7 +30,13 @@ export function NotebookToolbarIdentity({
       aria-label="Notebook actors"
     >
       {actors.map((actor) => (
-        <NotebookIdentityBadge key={actor.id} actor={actor} size="sm" showDetail={showDetail} />
+        <NotebookIdentityBadge
+          key={actor.id}
+          actor={actor}
+          size="sm"
+          showDetail={showDetail}
+          variant={variant}
+        />
       ))}
     </div>
   );

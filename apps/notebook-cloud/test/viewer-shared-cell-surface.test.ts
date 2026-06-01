@@ -103,6 +103,7 @@ test("cloud presence chrome renders through the shared shell component", () => {
 
   assert.match(sourceText, /NotebookPresenceStatus/);
   assert.match(sourceText, /<NotebookPresenceStatus[\s\S]*label=\{presenceDisplay\.label\}/);
+  assert.match(sourceText, /<NotebookPresenceStatus[\s\S]*variant="inline"/);
   assert.match(sharedPresenceText, /data-slot="notebook-presence-status"/);
   assert.match(hostedSmokeText, /\[data-slot='notebook-presence-status'\]/);
   assert.match(collabSmokeText, /\[data-slot='notebook-presence-status'\]/);
@@ -120,6 +121,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /NotebookEditModeButton/);
   assert.match(sourceText, /<NotebookEditModeButton[\s\S]*mode=\{interaction\.selectedMode\}/);
   assert.match(sourceText, /<NotebookEditModeButton[\s\S]*state=\{interaction\.state\}/);
+  assert.match(sourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
   assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);

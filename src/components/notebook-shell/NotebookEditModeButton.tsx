@@ -10,6 +10,7 @@ export interface NotebookEditModeButtonProps {
   state: NotebookEditModeState;
   onModeChange: (mode: NotebookEditMode) => void;
   disabled?: boolean;
+  variant?: "button" | "segmented";
   className?: string;
 }
 
@@ -19,6 +20,7 @@ export function NotebookEditModeButton({
   mode,
   onModeChange,
   state,
+  variant = "button",
 }: NotebookEditModeButtonProps) {
   const requestingEdit = mode === "edit";
   const nextMode: NotebookEditMode = requestingEdit ? "view" : "edit";
@@ -28,6 +30,52 @@ export function NotebookEditModeButton({
       ? "Return to read-only viewing"
       : "Stop requesting edit access"
     : "Request edit access";
+
+  if (variant === "segmented") {
+    return (
+      <div
+        className={cn(
+          "inline-flex h-9 max-w-[min(18rem,58vw)] min-w-0 items-center rounded-lg border border-border bg-background p-1 text-sm text-muted-foreground",
+          disabled && "opacity-60",
+          className,
+        )}
+        role="group"
+        aria-label="Notebook interaction mode"
+        data-slot="notebook-edit-mode-button"
+        data-state={state}
+        data-variant={variant}
+      >
+        <button
+          type="button"
+          aria-pressed={mode === "view"}
+          className={cn(
+            "inline-flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-md px-2.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed",
+            mode === "view" && "bg-background text-foreground shadow-sm",
+          )}
+          disabled={disabled}
+          title="View notebook"
+          onClick={() => onModeChange("view")}
+        >
+          <BookOpen className="size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 truncate leading-none">Viewing</span>
+        </button>
+        <button
+          type="button"
+          aria-pressed={mode === "edit"}
+          className={cn(
+            "inline-flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-md px-2.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed",
+            mode === "edit" && "bg-background text-emerald-700 shadow-sm dark:text-emerald-300",
+          )}
+          disabled={disabled}
+          title={state === "editing" ? "Editing notebook" : "Request edit access"}
+          onClick={() => onModeChange("edit")}
+        >
+          <Pencil className="size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 truncate leading-none">Editing</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <button
@@ -41,6 +89,7 @@ export function NotebookEditModeButton({
       )}
       data-slot="notebook-edit-mode-button"
       data-state={state}
+      data-variant={variant}
       disabled={disabled}
       title={title}
       onClick={() => onModeChange(nextMode)}

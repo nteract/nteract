@@ -118,4 +118,27 @@ describe("NotebookToolbarIdentity", () => {
     expect(screen.getByText("Kyle")).toBeVisible();
     expect(screen.getByText("JupyterHub for Kyle")).toBeVisible();
   });
+
+  it("can render actors as inline app chrome", () => {
+    render(
+      <NotebookToolbarIdentity
+        variant="inline"
+        capabilities={capabilities({
+          access: {
+            level: "owner",
+            source: "cloud",
+            isPublic: false,
+            actorLabel: "user:anaconda:kyle/browser:tab",
+            identityLabel: "Kyle",
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Kyle")).toBeVisible();
+    expect(document.querySelector("[data-slot='notebook-identity-badge']")).toHaveAttribute(
+      "data-variant",
+      "inline",
+    );
+  });
 });

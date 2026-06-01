@@ -37,7 +37,6 @@ import {
   NotebookPackageSummaryPanel,
   NotebookToolbarIdentity,
   NotebookToolbarFrame,
-  notebookInteractionPresenceLabel,
   notebookActorIdentityFromAccess,
   type NotebookEnvironmentManager,
   type NotebookInteractionModeProjection,
@@ -1255,12 +1254,7 @@ function NotebookViewer({
       <NotebookDocumentHeader
         capabilities={shellCapabilities}
         className="cloud-room-toolbar"
-        presence={
-          <CloudPresenceStatus
-            presence={presence}
-            interaction={shellCapabilities.interaction ?? null}
-          />
-        }
+        presence={<CloudPresenceStatus presence={presence} />}
         authControls={<CloudNotebookSignInButton authConfig={authConfig} authState={authState} />}
         sharingControls={
           <CloudSharingControls
@@ -1276,7 +1270,9 @@ function NotebookViewer({
             onAuthStateChange={refreshAuthState}
           />
         }
-        identityControls={<NotebookToolbarIdentity capabilities={shellCapabilities} />}
+        identityControls={
+          <NotebookToolbarIdentity capabilities={shellCapabilities} variant="inline" />
+        }
       />
       <NotebookCommandToolbar
         capabilities={shellCapabilities}
@@ -1756,6 +1752,7 @@ function CloudNotebookEditModeButton({
     <NotebookEditModeButton
       mode={interaction.selectedMode}
       state={interaction.state}
+      variant="segmented"
       onModeChange={(mode) => {
         storeCloudRequestedScope(
           window.localStorage,
@@ -2033,22 +2030,15 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.handle.free();
 }
 
-function CloudPresenceStatus({
-  presence,
-  interaction,
-}: {
-  presence: CloudViewerPresenceState;
-  interaction: NotebookInteractionModeProjection | null;
-}) {
+function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState }) {
   const presenceDisplay = cloudViewerPresenceDisplay(presence);
-  const scopeLabel = notebookInteractionPresenceLabel(interaction);
 
   return (
     <NotebookPresenceStatus
       connected={presenceDisplay.connected}
       label={presenceDisplay.label}
-      modeLabel={scopeLabel}
       title={presenceDisplay.title}
+      variant="inline"
     />
   );
 }
