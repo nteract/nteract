@@ -33,7 +33,12 @@ import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
-import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
+import {
+  NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
+  NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+  NotebookPackagesPanel,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
@@ -105,15 +110,13 @@ export type MimeBundle = Record<string, unknown>;
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
 
-const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
-
 function focusRailCollapseButtonWhenStageIsHidden(
   railCollapsed: boolean,
   stageHadFocusBeforeTakeover: boolean,
 ): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
 
-  const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
+  const takeoverQuery = window.matchMedia?.(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY);
   if (!takeoverQuery?.matches || railCollapsed) return;
 
   const activeElement = document.activeElement;
@@ -450,7 +453,7 @@ function AppContent() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
+    const takeoverQuery = window.matchMedia?.(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY);
     if (!takeoverQuery) return;
 
     const handleTakeoverChange = () => {
@@ -2064,7 +2067,10 @@ function AppContent() {
         <NotebookDocumentShell
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
-          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[599.98px]:hidden")}
+          stageClassName={cn(
+            "flex-row min-w-0 flex-1",
+            !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+          )}
           rail={
             <NotebookDocumentRail
               viewModel={notebookViewModel}

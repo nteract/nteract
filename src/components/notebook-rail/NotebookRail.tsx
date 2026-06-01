@@ -10,6 +10,11 @@ import { cn } from "@/lib/utils";
 
 export type NotebookRailPanelId = "outline" | "packages";
 
+export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
+export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = "max-[599.98px]:hidden";
+export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES =
+  "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none";
+
 export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
   collapsed: boolean;
@@ -96,7 +101,7 @@ export function NotebookRail({
             activePanelId === "packages"
               ? "w-[clamp(14rem,19vw,16rem)] min-w-56"
               : "w-[clamp(13rem,18vw,16rem)] min-w-52",
-            "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none",
+            NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
           )}
           data-slot="notebook-rail-panel"
         >

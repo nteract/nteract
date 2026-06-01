@@ -1,6 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { NotebookPackagesPanel, NotebookRail } from "../NotebookRail";
+import {
+  NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
+  NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
+  NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+  NotebookPackagesPanel,
+  NotebookRail,
+} from "../NotebookRail";
 
 const outlineItems = [
   {
@@ -199,7 +205,7 @@ describe("NotebookRail", () => {
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
       "w-[clamp(13rem,18vw,16rem)]",
-      "max-[599.98px]:w-[calc(100vw-3rem)]",
+      ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
   });
 
@@ -218,6 +224,14 @@ describe("NotebookRail", () => {
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
       "w-[clamp(14rem,19vw,16rem)]",
       "min-w-56",
+      ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
+    );
+  });
+
+  it("keeps the stage and panel takeover breakpoint in one rail contract", () => {
+    expect(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY).toBe("(max-width: 599.98px)");
+    expect(NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME).toBe("max-[599.98px]:hidden");
+    expect(NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES).toContain(
       "max-[599.98px]:w-[calc(100vw-3rem)]",
     );
   });

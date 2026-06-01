@@ -1,4 +1,7 @@
 export {
+  NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
+  NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
+  NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
   NotebookOutlinePanel,
   NotebookPackagesPanel,
   NotebookRail,
