@@ -84,6 +84,44 @@ export function notebookActorProjectionFromRuntime(
   );
 }
 
+export interface NotebookActorProjectionFromLabelOptions {
+  source?: NotebookShellAccessCapabilities["source"];
+  scope?: NotebookActorProjection["scope"];
+  identityLabel?: string | null;
+  isPublic?: boolean;
+  status?: NotebookActorProjection["status"];
+}
+
+export function notebookActorProjectionFromLabel(
+  actorLabel: string,
+  options: NotebookActorProjectionFromLabelOptions = {},
+): NotebookActorProjection {
+  const source = options.source ?? "unknown";
+  const isPublic = options.isPublic ?? actorLabel.startsWith("anonymous:");
+  const [principalId, operatorId] = splitNotebookActorPrincipalOperator(actorLabel);
+  const legacyProjection = parseNotebookActorLabel(actorLabel);
+  const principalLabel =
+    options.identityLabel ??
+    legacyProjection?.onBehalfOf ??
+    friendlyNotebookActorLabel(principalId) ??
+    (isPublic ? "Public viewer" : "Unknown viewer");
+
+  return {
+    actorLabel,
+    principal: {
+      id: principalId,
+      label: isPublic ? "Public viewer" : principalLabel,
+      source: principalSource(principalId, source, isPublic),
+    },
+    operator:
+      legacyProjection && (isLegacyAgentLabel(actorLabel) || !operatorId)
+        ? legacyOperatorFromProjection(actorLabel, legacyProjection)
+        : operatorFromLabel(operatorId, source),
+    scope: options.scope,
+    status: options.status,
+  };
+}
+
 export function notebookActorIdentityFromProjection(
   actor: NotebookActorProjection,
 ): NotebookActorIdentity {

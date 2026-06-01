@@ -1,4 +1,8 @@
 import { Play, Square } from "lucide-react";
+import {
+  notebookActorIdentityFromProjection,
+  notebookActorProjectionFromLabel,
+} from "@/components/notebook-shell/actor-projection";
 import { cn } from "@/lib/utils";
 
 interface CompactExecutionButtonProps {
@@ -26,6 +30,11 @@ interface CompactExecutionButtonProps {
 
 function formatExecutionCount(count: number): string {
   return count > 999 ? "999" : String(count);
+}
+
+function submittedByDisplayLabel(actorLabel: string | null): string | null {
+  if (!actorLabel) return null;
+  return notebookActorIdentityFromProjection(notebookActorProjectionFromLabel(actorLabel)).label;
 }
 
 /**
@@ -56,6 +65,7 @@ export function CompactExecutionButton({
           ? "ran"
           : "idle";
   const displayCount = count === null ? null : formatExecutionCount(count);
+  const submittedByLabel = submittedByDisplayLabel(submittedByActorLabel);
   const handleClick = () => {
     if (!canExecute) return;
     if (isQueued) return; // already in queue — no-op
@@ -68,12 +78,12 @@ export function CompactExecutionButton({
 
   const title = canExecute
     ? isExecuting
-      ? submittedByActorLabel
-        ? `Stop execution submitted by ${submittedByActorLabel}`
+      ? submittedByLabel
+        ? `Stop execution submitted by ${submittedByLabel}`
         : "Stop execution"
       : isQueued
-        ? submittedByActorLabel
-          ? `Queued for execution by ${submittedByActorLabel}`
+        ? submittedByLabel
+          ? `Queued for execution by ${submittedByLabel}`
           : "Queued for execution"
         : count !== null
           ? isErrored

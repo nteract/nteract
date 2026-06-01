@@ -1,5 +1,8 @@
 import type { SessionControlMessage } from "../src/protocol";
-import { friendlyNotebookActorLabel } from "@/components/notebook-shell/actor-labels";
+import {
+  notebookActorIdentityFromProjection,
+  notebookActorProjectionFromLabel,
+} from "@/components/notebook-shell/actor-projection";
 
 export type CloudViewerPresenceConnection = "connecting" | "connected" | "disconnected";
 
@@ -131,7 +134,12 @@ export function cloudFriendlyPeerLabel({
     return trimmedEmail;
   }
 
-  return friendlyNotebookActorLabel(actorLabel) ?? "Peer";
+  const trimmedActorLabel = actorLabel?.trim();
+  if (!trimmedActorLabel) return "Peer";
+
+  return notebookActorIdentityFromProjection(
+    notebookActorProjectionFromLabel(trimmedActorLabel, { source: "cloud", isPublic: false }),
+  ).label;
 }
 
 function safeRoomPeerCount(value: number): number {
