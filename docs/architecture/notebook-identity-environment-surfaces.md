@@ -22,7 +22,11 @@ Prototype and shared component surfaces:
 
 - `src/components/notebook-shell/capabilities.ts`
 - `src/components/notebook-shell/NotebookIdentity.tsx`
+- `src/components/notebook-shell/NotebookCommandToolbar.tsx`
+- `src/components/notebook-shell/NotebookToolbarFrame.tsx`
+- `src/components/notebook-shell/NotebookToolbarIdentity.tsx`
 - `src/components/notebook-shell/NotebookEnvironmentSummary.tsx`
+- `src/components/notebook-shell/interaction-mode.ts`
 - `apps/elements/components/notebook-scenarios.ts`
 
 ## Problem
@@ -150,16 +154,21 @@ Elements and production host adapters should cover these states first:
    paths still must enforce authorization in the host/room/daemon layer.
 3. `canRequestEdit` remains distinct from edit permission. It is a sign-in or
    request-access affordance, not a write grant.
-4. Cloud and desktop should feed the same header, rail, identity, and package
-   components whenever they are expressing the same notebook state.
-5. Runtime-peer authority should not be collapsed into editor or owner UI.
+4. `NotebookInteractionModeProjection` carries the selected view/edit mode,
+   active mode, requested-edit state, and effective edit booleans. The booleans
+   remain rendering affordances only; hosts and room authorities still gate
+   writes.
+5. Cloud and desktop should feed the same header, command toolbar, rail,
+   identity, and package components whenever they are expressing the same
+   notebook state.
+6. Runtime-peer authority should not be collapsed into editor or owner UI.
    Runtime-peer capability is about lifecycle/output authorship, not notebook
    structure edits or ACL management.
-6. `NotebookShellCapabilities.runtime` carries runtime authorship separately
+7. `NotebookShellCapabilities.runtime` carries runtime authorship separately
    from `NotebookShellCapabilities.access`. A `runtime_peer` connection can
    project `runtime.canWriteRuntimeState = true` while still projecting
    `access.level = "viewer"` for document editing, package, and sharing UI.
-7. Desktop remote rooms should use the same capability projection as cloud
+8. Desktop remote rooms should use the same capability projection as cloud
    rooms while preserving their separate identity path: desktop app, local
    daemon/socket identity, and remote service credential or API key.
 
@@ -196,11 +205,20 @@ Elements and production host adapters should cover these states first:
 5. Current Elements visuals, including the surfaces introduced around #3240,
    are illustrative scenario chrome. They should validate semantics and
    component composition, not freeze final production appearance.
+6. Current Elements fixtures cover the scenario set above. Future catalog work
+   should reuse `ElementsNotebookScenario` instead of reintroducing page-local
+   identity, access, runtime, package, or trust mock state.
+7. Elements should call out convergence gaps directly: when cloud has a richer
+   hosted behavior or desktop has a richer daemon/local behavior, the catalog
+   should show the shared projection and identify which host-owned callback or
+   authority still needs to be wired.
 
 ## Shared Surface Projection
 
-This is a product contract, not a final TypeScript API. Implementation can land
-incrementally, but adapter props should move toward these shapes.
+This is a product contract. The current shared implementation already exposes
+`NotebookActorProjection`, `NotebookInteractionModeProjection`, and
+`NotebookEnvironmentSurface`; host adapters should move facts into those shapes
+instead of adding page-local strings.
 
 ```ts
 interface NotebookPrincipalSurface {
@@ -227,23 +245,60 @@ interface NotebookActorSurface {
   status?: "active" | "attention" | "idle" | "offline";
 }
 
+interface NotebookInteractionModeProjection {
+  selectedMode: "view" | "edit";
+  activeMode: "view" | "edit";
+  state: "viewing" | "requested" | "editing";
+  canRequestEdit: boolean;
+  canEditMarkdown: boolean;
+  canEditCells: boolean;
+  canEditStructure: boolean;
+}
+
 interface NotebookEnvironmentSurface {
-  runtimeLabel: string;
-  runtimeStatus: "ready" | "detached" | "unavailable" | "launching" | "error";
-  packageSummary: string;
-  packageSourceLabel: string | null;
-  packageSyncLabel: string | null;
-  trustLabel: string | null;
-  trustStatus: "trusted" | "untrusted" | "attention" | "unknown";
-  canViewPackages: boolean;
-  canManagePackages: boolean;
-  canExecute: boolean;
+  access: {
+    level: "none" | "viewer" | "editor" | "owner";
+    source: "cloud" | "local" | "fixture" | "unknown";
+    label: string;
+    sourceLabel: string;
+    visibilityLabel: string;
+    isPublic: boolean;
+  };
+  runtime: {
+    status: "ready" | "detached" | "unavailable" | "launching" | "error";
+    label: string;
+    detail: string | null;
+    muted: boolean;
+  };
+  packages: {
+    summary: string;
+    sourceLabel: string;
+    accessLabel: string;
+    muted: boolean;
+  };
+  sync: {
+    status:
+      | "synced"
+      | "dirty"
+      | "not_running"
+      | "not_uv_managed"
+      | "unavailable"
+      | "unknown";
+    label: string;
+    muted: boolean;
+  };
+  trust: {
+    status: "trusted" | "untrusted" | "not_required" | "unknown";
+    label: string;
+    attention: boolean;
+  };
 }
 ```
 
-Short-term code can keep the smaller existing `NotebookActorIdentity` and
-`NotebookEnvironmentSummary` props, but new host adapter work should avoid
-adding more page-local strings that cannot map into the structured projection.
+Short-term code can keep deriving display-friendly `NotebookActorIdentity`
+objects and `NotebookEnvironmentSummary` cards from these surfaces, but new
+host adapter work should avoid adding more page-local strings that cannot map
+into the structured projection.
 Presentation helpers can derive actor categories such as agent, runtime, system,
 public, or human from the principal source and operator kind instead of storing a
 second enum that can drift. Display labels like "Codex for Kyle" are also
@@ -262,9 +317,10 @@ notebook UI sees provider `anaconda`.
 | Current actor | Notebook header identity group and presence slots. |
 | Delegated agent | Header identity badge, cell attribution, and activity/presence surfaces. |
 | Access scope | Header/share/edit affordances and read-only notices. |
-| Runtime state | Header runtime controls, rail package/environment panel, and execution controls. |
-| Package state | Rail package/environment panel and future package management drawer. |
-| Trust state | Package/environment panel and runtime launch affordance. |
+| Interaction mode | Shared command toolbar, edit-mode control, presence copy, and read/edit notices. |
+| Runtime state | Header runtime controls, environment summary, and execution controls. |
+| Package state | Package rail, environment summary, and future package management drawer. |
+| Trust state | Environment summary and runtime launch affordance. |
 | Public viewer state | Header identity/access area and share controls for owners. |
 
 ## Acceptance Criteria
@@ -274,12 +330,13 @@ notebook UI sees provider `anaconda`.
    shell props or shared view-model projections instead of duplicating component
    logic.
 3. `NotebookIdentityBadge`, `NotebookIdentityGroup`, and
-   `NotebookEnvironmentSummary` can render the cloud owner, public viewer,
-   delegated agent, local owner, desktop remote room, read-only,
-   credential-attention, mixed-IdP, runtime-unavailable, runtime-peer, and
-   untrusted states without host imports.
-4. Code-cell current-line, execution attribution, and presence can be pointed at
-   the same actor projection.
+   `NotebookToolbarIdentity`, plus `NotebookCommandToolbar`,
+   `NotebookToolbarFrame`, and `NotebookEnvironmentSummary`, can render the
+   cloud owner, public viewer, delegated agent, local owner, desktop remote
+   room, read-only, credential-attention, mixed-IdP, runtime-unavailable,
+   runtime-peer, and untrusted states without host imports.
+4. Code-cell current-line, execution attribution, toolbar interaction state,
+   and presence can be pointed at the same actor and interaction projections.
 5. The hosted public viewer path does not display anonymous viewers as named
    collaborators, and public viewer presence remains connection-local or
    aggregate-only until a separate public-presence policy changes it.
@@ -289,17 +346,21 @@ notebook UI sees provider `anaconda`.
 
 ## Suggested Work Slices
 
-1. Expand the Elements scenario layer to include read-only local, desktop
-   remote room, credential-attention, mixed-IdP, one-principal/multiple-operator,
-   runtime peer, and untrusted dependency fixtures.
-2. Extend the shared actor projection to represent runtime and system actors
+1. Use the now-complete Elements scenario layer as a regression surface for
+   desktop/cloud identity, access, runtime, package, and trust mappings.
+2. Continue replacing React-side raw actor-label fallbacks with host/backend
+   supplied structured projections for presence, execution attribution, editor
+   attribution, and activity.
+3. Extend the shared actor projection to represent runtime and system actors
    without parsing demo-only agent labels.
-3. Teach desktop and cloud adapters to map their current facts into the shared
-   identity/environment projection.
-4. Move package/environment rail content onto `NotebookEnvironmentSummary` or a
-   sibling shared component.
-5. Connect execution/cell attribution to the shared actor projection.
-6. Revisit this PRD and split out an ADR only when a durable code-level boundary
+4. Keep desktop and cloud adapters mapping their current facts into the shared
+   identity, interaction, and environment projections as new host capabilities
+   land.
+5. Keep package rail content package-focused and host-owned; render
+   `NotebookEnvironmentSummary` or a sibling shared component only where the
+   product intentionally shows environment/access/runtime/trust summary facts.
+6. Connect execution/cell attribution to the shared actor projection.
+7. Revisit this PRD and split out an ADR only when a durable code-level boundary
    needs acceptance, such as the final TypeScript projection API or a runtime
    peer capability extension.
 
