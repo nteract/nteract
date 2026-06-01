@@ -108,6 +108,11 @@ describe("NotebookRail", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
+    expect(
+      screen
+        .getByText("../pyproject.toml · 25 packages")
+        .closest('[data-slot="notebook-rail-panel-title-row"]'),
+    ).toHaveClass("flex-wrap", "justify-between");
     expect(screen.getByText("../pyproject.toml · 25 packages")).toHaveClass("w-fit", "max-w-full");
   });
 
