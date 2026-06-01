@@ -178,8 +178,26 @@ describe("NotebookRail", () => {
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(18rem,24vw,22rem)]",
+      "w-[clamp(16rem,20vw,18rem)]",
       "max-[44rem]:w-[calc(100vw-3rem)]",
+    );
+  });
+
+  it("gives package details a wider rail than outline navigation", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="packages"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
+      "w-[clamp(18rem,24vw,22rem)]",
+      "min-w-72",
     );
   });
 
