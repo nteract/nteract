@@ -1,10 +1,3 @@
-/**
- * Skeleton placeholder shown while the notebook document is loading from the daemon.
- *
- * Renders several placeholder cells with varying heights to mimic a real notebook.
- * The staggered animation delays give a subtle wave effect while loading.
- */
-
 import { cellContentColumnInset, notebookCellLayoutVars } from "@/components/cell/cell-layout";
 import { cn } from "@/lib/utils";
 
@@ -17,10 +10,8 @@ const skeletonCells = [
 function SkeletonCell({ height, delay }: { height: string; delay: string }) {
   return (
     <div className={cn("flex py-4", notebookCellLayoutVars)}>
-      {/* Ribbon — self-stretch to fill container height */}
       <div className="w-1 self-stretch rounded-sm bg-muted/40" />
 
-      {/* Editor area placeholder */}
       <div className={cn("min-w-0 flex-1 py-3 pr-3", cellContentColumnInset)}>
         <div
           className="rounded bg-muted/30 animate-pulse"
@@ -34,8 +25,8 @@ function SkeletonCell({ height, delay }: { height: string; delay: string }) {
 export function CellSkeleton() {
   return (
     <div>
-      {skeletonCells.map((cell, i) => (
-        <SkeletonCell key={i} height={cell.height} delay={cell.delay} />
+      {skeletonCells.map((cell, index) => (
+        <SkeletonCell key={index} height={cell.height} delay={cell.delay} />
       ))}
     </div>
   );

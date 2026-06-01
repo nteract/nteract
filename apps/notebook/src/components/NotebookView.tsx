@@ -20,6 +20,7 @@ import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId } from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
+import { CellSkeleton } from "@/components/cell/CellSkeleton";
 import { Button } from "@/components/ui/button";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type { NotebookShellCapabilities } from "@/components/notebook-shell";
@@ -38,7 +39,6 @@ import {
   useOutputStructureVersion,
 } from "../lib/notebook-outputs";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
-import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";

@@ -1,7 +1,7 @@
 "use client";
 
 import { Cloud, Eye, FileCode2, Loader2, Rows3 } from "lucide-react";
-import { CellSkeleton } from "@/notebook-components/CellSkeleton";
+import { CellSkeleton } from "@/components/cell/CellSkeleton";
 import { ReadOnlyNotebook } from "@/components/cell/ReadOnlyNotebook";
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import {
@@ -94,7 +94,7 @@ export function ReadOnlyNotebookSurfacesExample() {
               <div className="min-w-0">
                 <h2 className="text-sm font-semibold">CellSkeleton</h2>
                 <div className="mt-1 break-words font-mono text-[11px] leading-4 text-fd-muted-foreground [overflow-wrap:anywhere]">
-                  apps/notebook/src/components/CellSkeleton.tsx
+                  src/components/cell/CellSkeleton.tsx
                 </div>
               </div>
             </div>

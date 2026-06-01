@@ -9,10 +9,10 @@ import {
   Search,
   ShieldCheck,
 } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CellInsertionRibbon } from "@/components/cell/CellInsertionRibbon";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
+import { CellPresenceIndicators } from "@/components/cell/CellPresenceIndicators";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import {
@@ -20,9 +20,6 @@ import {
   getElementsNotebookScenario,
   resolveElementsNotebookLanguage,
 } from "@/components/notebook-scenarios";
-import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
-import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
-import { emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 
 const anatomyScenario = getElementsNotebookScenario("desktop-local-owner");
 const primaryCell = getElementsNotebookPrimaryCodeCell(anatomyScenario.cells);
@@ -55,8 +52,8 @@ const layers = [
   },
   {
     name: "CellPresenceIndicators",
-    source: "apps/notebook/src/components/cell/CellPresenceIndicators.tsx",
-    role: "Remote peer markers backed by the cursor registry and presence bus.",
+    source: "src/components/cell/CellPresenceIndicators.tsx",
+    role: "Remote peer markers rendered from adapter-provided presence peers.",
     status: "rendered",
   },
   {
@@ -169,71 +166,11 @@ const insertionRibbonRows = [
   },
 ];
 
-const presenceSnapshot = {
-  type: "snapshot",
-  peer_id: "local-docs-peer",
-  peers: [
-    {
-      peer_id: "peer-forecast",
-      peer_label: "forecast reviewer",
-      actor_label: "Forecast Reviewer",
-      channels: [
-        {
-          channel: "cursor",
-          data: { cell_id: primaryCellId, line: 2, column: 18 },
-        },
-      ],
-    },
-    {
-      peer_id: "peer-runtime",
-      peer_label: "runtime analyst",
-      actor_label: "Runtime Analyst",
-      channels: [
-        {
-          channel: "focus",
-          data: { cell_id: primaryCellId },
-        },
-      ],
-    },
-    {
-      peer_id: "peer-output",
-      peer_label: "output reviewer",
-      actor_label: "Output Reviewer",
-      channels: [
-        {
-          channel: "selection",
-          data: {
-            cell_id: primaryCellId,
-            anchor_line: 1,
-            anchor_col: 0,
-            head_line: 1,
-            head_col: 16,
-          },
-        },
-        {
-          channel: "cursor",
-          data: { cell_id: primaryCellId, line: 1, column: 16 },
-        },
-      ],
-    },
-  ],
-};
-
-function PresenceFixtureProvider({ children }: { children: ReactNode }) {
-  useEffect(() => {
-    const stopCursorDispatch = startCursorDispatch("local-docs-peer");
-
-    emitPresence(presenceSnapshot);
-    const retry = window.setTimeout(() => emitPresence(presenceSnapshot), 0);
-
-    return () => {
-      window.clearTimeout(retry);
-      stopCursorDispatch();
-    };
-  }, []);
-
-  return children;
-}
+const presencePeers = [
+  { peerId: "peer-forecast", peerLabel: "forecast reviewer", color: "#0ea5e9" },
+  { peerId: "peer-runtime", peerLabel: "runtime analyst", color: "#10b981" },
+  { peerId: "peer-output", peerLabel: "output reviewer", color: "#a855f7" },
+];
 
 function SourceFixture() {
   return (
@@ -272,7 +209,7 @@ function SourceFixture() {
         elapsedMs={1476}
         isFocused
         activityContent={
-          <CellPresenceIndicators cellId={primaryCellId} variant="inline" prefixSeparator />
+          <CellPresenceIndicators peers={presencePeers} variant="inline" prefixSeparator />
         }
       />
     </div>
@@ -339,27 +276,25 @@ export function CellAnatomyExample() {
           <div className="hidden text-right sm:block">real shell, fixture content</div>
         </div>
         <div className="bg-background py-4 pl-4 pr-2">
-          <PresenceFixtureProvider>
-            <CellContainer
-              id={primaryCellId}
-              cellType="code"
-              isFocused
-              className="mx-0 px-0"
-              codeContent={<SourceFixture />}
-              outputContent={<OutputFixture />}
-              rightGutterContent={
-                <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-900">
-                  real
-                </span>
-              }
-              outputRightGutterContent={
-                <span className="rounded-full bg-fd-muted px-1.5 py-0.5 text-[10px] font-medium text-fd-muted-foreground">
-                  fixture
-                </span>
-              }
-              dragHandleProps={{ "aria-label": "Fixture drag handle" }}
-            />
-          </PresenceFixtureProvider>
+          <CellContainer
+            id={primaryCellId}
+            cellType="code"
+            isFocused
+            className="mx-0 px-0"
+            codeContent={<SourceFixture />}
+            outputContent={<OutputFixture />}
+            rightGutterContent={
+              <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-900">
+                real
+              </span>
+            }
+            outputRightGutterContent={
+              <span className="rounded-full bg-fd-muted px-1.5 py-0.5 text-[10px] font-medium text-fd-muted-foreground">
+                fixture
+              </span>
+            }
+            dragHandleProps={{ "aria-label": "Fixture drag handle" }}
+          />
         </div>
       </section>
 
