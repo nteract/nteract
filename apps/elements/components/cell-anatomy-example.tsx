@@ -2,8 +2,6 @@
 
 import {
   Braces,
-  ChevronRight,
-  Code2,
   CheckCircle2,
   CircleDot,
   FileText,
@@ -171,33 +169,6 @@ const insertionRibbonRows = [
   },
 ];
 
-const hiddenBoundaryRows = [
-  {
-    id: "source-hidden-output-visible",
-    label: "Input hidden",
-    detail: "The source reveal sits above the current line; output still follows the boundary.",
-    codeContent: <BoundarySourceFixture sourceHidden />,
-    outputContent: <BoundaryOutputFixture />,
-    hideOutput: false,
-  },
-  {
-    id: "output-hidden-source-visible",
-    label: "Output hidden",
-    detail: "The current line stays with the source; the hidden output reveal owns the output row.",
-    codeContent: <BoundarySourceFixture />,
-    outputContent: <HiddenOutputFixture />,
-    hideOutput: false,
-  },
-  {
-    id: "both-hidden",
-    label: "Input and output hidden",
-    detail: "When both sides disappear, the cell collapses to one reveal affordance.",
-    codeContent: <HiddenCellFixture />,
-    outputContent: <HiddenOutputFixture />,
-    hideOutput: true,
-  },
-];
-
 const presenceSnapshot = {
   type: "snapshot",
   peer_id: "local-docs-peer",
@@ -345,67 +316,6 @@ function InsertionRibbonFixture({
   );
 }
 
-function BoundarySourceFixture({ sourceHidden = false }: { sourceHidden?: boolean }) {
-  return (
-    <div className="group min-w-0">
-      {sourceHidden ? (
-        <button
-          type="button"
-          className="inline-flex max-w-full items-center gap-1 rounded bg-muted/50 px-2 py-0.5 font-mono text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          <Code2 className="size-3 flex-none" aria-hidden="true" />
-          <span className="truncate">{sourceFixture.split("\n")[0]}</span>
-          <ChevronRight className="size-3 flex-none" aria-hidden="true" />
-        </button>
-      ) : (
-        <pre className="m-0 overflow-hidden rounded border border-border bg-background px-3 py-2 font-mono text-xs leading-5 text-foreground">
-          {sourceFixture.split("\n").slice(0, 2).join("\n")}
-        </pre>
-      )}
-      <CodeCellCurrentLine
-        languageLabel={languageLabel}
-        count={executionCount}
-        elapsedMs={1476}
-        isFocused
-      />
-    </div>
-  );
-}
-
-function BoundaryOutputFixture() {
-  return (
-    <div className="px-3 py-2 text-xs leading-5 text-fd-muted-foreground">
-      MAE=8.42&nbsp;&nbsp;MAPE=6.8%&nbsp;&nbsp;Backtest=16 weeks
-    </div>
-  );
-}
-
-function HiddenOutputFixture() {
-  return (
-    <div className="px-3 py-2">
-      <button
-        type="button"
-        className="inline-flex items-center gap-1 rounded bg-muted/50 px-2 py-0.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      >
-        <span>2 outputs</span>
-        <ChevronRight className="size-3" aria-hidden="true" />
-      </button>
-    </div>
-  );
-}
-
-function HiddenCellFixture() {
-  return (
-    <button
-      type="button"
-      className="inline-flex items-center gap-1 rounded bg-muted/50 px-2 py-0.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-    >
-      <span>Cell hidden</span>
-      <ChevronRight className="size-3" aria-hidden="true" />
-    </button>
-  );
-}
-
 export function CellAnatomyExample() {
   return (
     <div className="not-prose space-y-6">
@@ -522,35 +432,6 @@ export function CellAnatomyExample() {
                 <div className="mt-1 text-xs text-fd-muted-foreground">{state.detail}</div>
               </div>
               <div className="mt-3 min-w-0">{state.line}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-        <div className="border-b border-fd-border p-4">
-          <h2 className="text-sm font-semibold">Hidden Boundaries</h2>
-          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            The current line belongs to the source/result boundary. It remains when either side is
-            still visible and disappears only when the whole cell is intentionally collapsed.
-          </p>
-        </div>
-        <div className="divide-y divide-fd-border bg-background py-2">
-          {hiddenBoundaryRows.map((row) => (
-            <div key={row.id} className="grid gap-3 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-              <div>
-                <h3 className="text-sm font-semibold">{row.label}</h3>
-                <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{row.detail}</p>
-              </div>
-              <CellContainer
-                id={row.id}
-                cellType="code"
-                isFocused
-                className="mx-0 px-0"
-                codeContent={row.codeContent}
-                outputContent={row.outputContent}
-                hideOutput={row.hideOutput}
-              />
             </div>
           ))}
         </div>

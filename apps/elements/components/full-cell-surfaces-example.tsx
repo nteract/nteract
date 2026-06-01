@@ -53,6 +53,32 @@ const codeCell: CodeCellType = scenarioCodeCellToStandaloneCodeCell(
   standaloneCodeCellOutputs,
 );
 
+const hiddenCodeCellRows = [
+  hiddenCodeCellFixture({
+    id: "elements-hidden-source-cell",
+    label: "Source hidden",
+    detail: "Production CodeCell renders the source reveal while outputs remain visible.",
+    sourceHidden: true,
+    outputsHidden: false,
+  }),
+  hiddenCodeCellFixture({
+    id: "elements-hidden-output-cell",
+    label: "Outputs hidden",
+    detail:
+      "Production CodeCell keeps the source and current line visible while output reveal owns the output row.",
+    sourceHidden: false,
+    outputsHidden: true,
+  }),
+  hiddenCodeCellFixture({
+    id: "elements-hidden-both-cell",
+    label: "Source and outputs hidden",
+    detail: "Production CodeCell collapses to the shared hidden-cell reveal affordance.",
+    sourceHidden: true,
+    outputsHidden: true,
+    hiddenGroupCount: 1,
+  }),
+];
+
 const markdownFixtureSource = [
   "## Forecast review",
   "",
@@ -86,7 +112,7 @@ const fullCellRows = [
     label: "CodeCell",
     source: "apps/notebook/src/components/CodeCell.tsx",
     detail:
-      "Rendered with seeded execution and output stores, ribbon-first CellContainer, code-cell current line, and OutputArea.",
+      "Rendered with seeded execution and output stores, ribbon-first CellContainer, code-cell current line, OutputArea, and hidden source/output states.",
   },
   {
     label: "MarkdownCell",
@@ -116,6 +142,13 @@ const fullCellBoundaryRows = [
     productionBoundary: "runtimed execution pipeline",
     detail:
       "Scenario code cells seed the same execution pointer and output ID stores as production, but queueing, kernel lifecycle, and output mutation still stay outside the docs runtime.",
+  },
+  {
+    surface: "Hidden source/output state",
+    catalogPath: "fixture metadata.jupyter flags",
+    productionBoundary: "NotebookView source/output visibility mutations",
+    detail:
+      "The catalog renders production CodeCell hidden affordances from static metadata. Production writes those flags back through notebook document mutations.",
   },
   {
     surface: "Transient cell UI state",
@@ -168,6 +201,49 @@ function scenarioCodeCellToStandaloneCodeCell(
   };
 }
 
+function hiddenCodeCellFixture({
+  id,
+  label,
+  detail,
+  sourceHidden,
+  outputsHidden,
+  hiddenGroupCount,
+}: {
+  id: string;
+  label: string;
+  detail: string;
+  sourceHidden: boolean;
+  outputsHidden: boolean;
+  hiddenGroupCount?: number;
+}) {
+  const outputs = primaryScenarioCodeCell.outputs.map((output, index) => ({
+    ...output,
+    output_id: `${id}:output:${output.output_id ?? index}`,
+  })) as JupyterOutput[];
+  const cell = scenarioCodeCellToStandaloneCodeCell(primaryScenarioCodeCell, id, outputs);
+
+  cell.metadata = {
+    ...cell.metadata,
+    jupyter: {
+      ...(cell.metadata?.jupyter as Record<string, unknown> | undefined),
+      source_hidden: sourceHidden,
+      outputs_hidden: outputsHidden,
+    },
+  };
+
+  return {
+    id,
+    label,
+    detail,
+    sourceHidden,
+    outputsHidden,
+    hiddenGroupCount,
+    executionId: `${id}:execution`,
+    outputs,
+    cell,
+  };
+}
+
 function scenarioCellToNotebookCell(cell: NotebookViewCell): NotebookCell {
   if (cell.cellType === "code") {
     return {
@@ -216,6 +292,26 @@ function seedFullCellFixtures() {
     submitted_by_actor_label: fullCellScenario.capabilities.access.actorLabel,
   });
   setCellExecutionPointer(codeCell.id, standaloneCodeCellExecutionId);
+
+  for (const row of hiddenCodeCellRows) {
+    const outputIds = row.outputs
+      .map((output) => output.output_id)
+      .filter((outputId): outputId is string => Boolean(outputId));
+
+    for (const output of row.outputs) {
+      if (!output.output_id) continue;
+      setOutput(output.output_id, output);
+    }
+
+    setExecution(row.executionId, {
+      execution_count: primaryScenarioCodeCell.executionCount,
+      status: "done",
+      success: true,
+      output_ids: outputIds,
+      submitted_by_actor_label: fullCellScenario.capabilities.access.actorLabel,
+    });
+    setCellExecutionPointer(row.cell.id, row.executionId);
+  }
 
   for (const cell of fullCellScenario.cells) {
     if (cell.cellType !== "code" || !cell.executionId) continue;
@@ -331,6 +427,47 @@ export function FullCellSurfacesExample() {
                 </span>
               }
             />
+          </div>
+        </section>
+
+        <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+          <div className="border-b border-fd-border p-4">
+            <div className="flex items-center gap-2">
+              <FileCode2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+              <h2 className="text-sm font-semibold">CodeCell hidden states</h2>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+              Source-hidden, output-hidden, and fully-hidden affordances are owned by the production
+              `CodeCell`. The catalog seeds metadata and output stores, then supplies inert toggle
+              callbacks.
+            </p>
+          </div>
+          <div className="divide-y divide-border bg-background">
+            {hiddenCodeCellRows.map((row) => (
+              <div key={row.id} className="grid gap-4 p-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                <div>
+                  <h3 className="text-sm font-semibold">{row.label}</h3>
+                  <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{row.detail}</p>
+                </div>
+                <div className="min-w-0 rounded-md border border-border bg-background py-3 pl-3 pr-2">
+                  <CodeCell
+                    cell={row.cell}
+                    language={codeCellLanguage}
+                    onFocus={() => focusFixtureCell(row.cell.id)}
+                    onExecute={noop}
+                    onInterrupt={noop}
+                    onDelete={noop}
+                    onFocusPrevious={noop}
+                    onFocusNext={noop}
+                    onInsertCellAfter={noop}
+                    onToggleSourceHidden={noop}
+                    onToggleOutputsHidden={noop}
+                    hiddenGroupCount={row.hiddenGroupCount}
+                    onExpandHiddenGroup={noop}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         </section>
 
