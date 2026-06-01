@@ -20,6 +20,13 @@ const toneClasses: Record<PackageSpecTone, string> = {
   neutral: "text-muted-foreground bg-muted/70 ring-border/60",
 };
 
+const toneDotClasses: Record<PackageSpecTone, string> = {
+  uv: "bg-uv/60",
+  conda: "bg-emerald-500/60",
+  pixi: "bg-amber-500/60",
+  neutral: "bg-muted-foreground/50",
+};
+
 export function PackageSpecList({
   values,
   tone = "neutral",
@@ -45,27 +52,49 @@ export function PackageSpecList({
       {values.map((value, index) => {
         const parsed = parsePackageSpec(value);
         const hasEnvironmentMarker = value.includes(";");
+        const showIcon = framed || Boolean(onRemove);
+        const showDot = !showIcon;
         return (
           <div
             key={`${index}-${value}`}
             className={cn(
-              "grid min-h-9 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-2 gap-y-0.5 border-b px-2.5 py-1.5 text-xs last:border-b-0",
+              "grid items-center gap-x-2 gap-y-0.5 border-b px-2.5 py-1.5 text-xs last:border-b-0",
+              showIcon
+                ? "min-h-9 grid-cols-[auto_minmax(0,1fr)_auto_auto]"
+                : "min-h-8 grid-cols-[auto_minmax(0,1fr)_auto_auto]",
               !framed && "px-0",
             )}
           >
-            <span
-              className={cn(
-                "flex size-5 shrink-0 items-center justify-center rounded-full ring-1",
-                hasEnvironmentMarker && parsed.spec && "row-span-2 self-start",
-                toneClasses[tone],
-              )}
-              aria-hidden="true"
-            >
-              <Package className="size-3" />
-            </span>
+            {showIcon && (
+              <span
+                className={cn(
+                  "flex size-5 shrink-0 items-center justify-center rounded-full ring-1",
+                  hasEnvironmentMarker && parsed.spec && "row-span-2 self-start",
+                  toneClasses[tone],
+                )}
+                aria-hidden="true"
+              >
+                <Package className="size-3" />
+              </span>
+            )}
+            {showDot && (
+              <span
+                className={cn(
+                  "mt-1.5 size-1.5 self-start rounded-full",
+                  hasEnvironmentMarker && parsed.spec && "row-span-2",
+                  toneDotClasses[tone],
+                )}
+                aria-hidden="true"
+              />
+            )}
             <span className="min-w-0 flex-1 truncate font-mono text-foreground">{parsed.name}</span>
             {parsed.spec && hasEnvironmentMarker ? (
-              <span className="col-span-3 col-start-2 min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+              <span
+                className={cn(
+                  "min-w-0 truncate font-mono text-[11px] text-muted-foreground",
+                  showIcon || showDot ? "col-span-3 col-start-2" : "col-span-3 col-start-1",
+                )}
+              >
                 {parsed.spec}
               </span>
             ) : parsed.spec ? (
