@@ -38,6 +38,14 @@ describe("PackageSpecList", () => {
       name: "scikit-learn",
       spec: ">=1.5",
     });
+    expect(parsePackageSpec("gremlin ; sys_platform == 'darwin'")).toEqual({
+      name: "gremlin",
+      spec: "sys_platform == 'darwin'",
+    });
+    expect(parsePackageSpec("pyzmq>=26 ; python_version >= '3.11'")).toEqual({
+      name: "pyzmq",
+      spec: ">=26 · python_version >= '3.11'",
+    });
     expect(parsePackageSpec("numpy")).toEqual({ name: "numpy", spec: null });
   });
 });
