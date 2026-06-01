@@ -72,6 +72,27 @@ test("cloud shell capabilities grant editors full cell and structure editing wit
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
+test("cloud shell capabilities surface execution only when a runtime is available", () => {
+  const withoutRuntime = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+    selectedMode: "edit",
+  });
+  assert.equal(withoutRuntime.runtime.executionAvailable, false);
+  assert.equal(withoutRuntime.canExecute, false);
+
+  const withRuntime = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+  });
+  assert.equal(withRuntime.runtime.executionAvailable, true);
+  assert.equal(withRuntime.canExecute, true);
+});
+
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),

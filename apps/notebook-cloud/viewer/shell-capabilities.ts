@@ -15,6 +15,12 @@ export interface CloudNotebookShellCapabilityInput {
   connectionActorLabel?: string | null;
   hasCodeCells: boolean;
   selectedMode?: NotebookInteractionMode;
+  /**
+   * Whether an execution runtime is attached to the room. The hosted prototype
+   * has no kernel provider yet, so this defaults false and run controls stay
+   * hidden. Flip it on once a runtime peer can execute the room's cells.
+   */
+  runtimeAvailable?: boolean;
 }
 
 export function cloudNotebookShellCapabilities({
@@ -23,6 +29,7 @@ export function cloudNotebookShellCapabilities({
   connectionActorLabel = null,
   hasCodeCells,
   selectedMode = "view",
+  runtimeAvailable = false,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = cloudConnectionAccessLevel(connectionScope);
   const isRuntimePeer = connectionScope === "runtime_peer";
@@ -60,9 +67,14 @@ export function cloudNotebookShellCapabilities({
     actorLabel: connectionActorLabel,
     identityLabel,
   };
+  // Executing a cell needs both an attached runtime and document write
+  // authority. The room has no kernel provider yet, so runtimeAvailable
+  // defaults false and run controls stay hidden.
+  const canExecute = runtimeAvailable && (accessLevel === "editor" || accessLevel === "owner");
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
     connected: isRuntimePeer,
+    executionAvailable: runtimeAvailable,
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
     identityLabel: isRuntimePeer ? identityLabel : null,
@@ -80,7 +92,7 @@ export function cloudNotebookShellCapabilities({
     canEditCells: interaction.canEditCells,
     canEditStructure: interaction.canEditStructure,
     canRequestEdit: interaction.canRequestEdit,
-    canExecute: false,
+    canExecute,
     canToggleCode: hasCodeCells,
     canViewPackages: true,
     canManagePackages: false,

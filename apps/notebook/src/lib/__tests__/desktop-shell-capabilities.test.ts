@@ -2,6 +2,26 @@ import { describe, expect, it } from "vite-plus/test";
 import { desktopNotebookShellCapabilities } from "../desktop-shell-capabilities";
 
 describe("desktopNotebookShellCapabilities", () => {
+  it("exposes runtime execution availability from the daemon session", () => {
+    const ready = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+    });
+    expect(ready.runtime.executionAvailable).toBe(true);
+    expect(ready.canExecute).toBe(true);
+
+    const notReady = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: false,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+    });
+    expect(notReady.runtime.executionAvailable).toBe(false);
+    expect(notReady.canExecute).toBe(false);
+  });
+
   it("maps local notebooks to owner-level writable shell access", () => {
     const capabilities = desktopNotebookShellCapabilities({
       canAcceptCellMutations: true,
