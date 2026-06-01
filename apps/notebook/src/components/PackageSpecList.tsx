@@ -54,7 +54,7 @@ export function PackageSpecList({
     >
       {values.map((value, index) => {
         const parsed = parsePackageSpec(value);
-        const hasEnvironmentMarker = value.includes(";");
+        const hasEnvironmentMarker = findEnvironmentMarkerStart(value.trim()) > 0;
         const showIcon = framed || Boolean(onRemove);
         const showDot = !showIcon;
         return (
@@ -92,7 +92,7 @@ export function PackageSpecList({
             )}
             <span className="min-w-0 flex-1 truncate font-mono text-foreground">{parsed.name}</span>
             {parsed.spec && hasEnvironmentMarker ? (
-              <span className="col-span-3 col-start-2 min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+              <span className="col-span-3 col-start-2 min-w-0 whitespace-normal break-words text-[11px] leading-snug text-muted-foreground">
                 {parsed.spec}
               </span>
             ) : parsed.spec ? (

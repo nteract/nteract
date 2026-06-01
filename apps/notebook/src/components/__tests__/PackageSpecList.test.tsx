@@ -36,6 +36,8 @@ describe("PackageSpecList", () => {
     expect(container.querySelector(".bg-uv\\/60")).toBeInTheDocument();
     expect(screen.getByText("nteract")).toBeVisible();
     expect(screen.getByText("sys_platform == 'darwin'")).toBeVisible();
+    expect(screen.getByText("sys_platform == 'darwin'")).not.toHaveClass("truncate");
+    expect(screen.getByText("sys_platform == 'darwin'")).toHaveClass("whitespace-normal");
   });
 
   it("exposes row remove actions when mutation is available", () => {
@@ -70,7 +72,27 @@ describe("PackageSpecList", () => {
       name: "example",
       spec: "@ https://packages.example.test/example;download=1 · python_version >= '3.11'",
     });
+    expect(parsePackageSpec("example @ https://packages.example.test/example;download=1")).toEqual({
+      name: "example",
+      spec: "@ https://packages.example.test/example;download=1",
+    });
     expect(parsePackageSpec("numpy")).toEqual({ name: "numpy", spec: null });
+  });
+
+  it("does not render URL semicolons as environment-marker rows", () => {
+    render(
+      <PackageSpecList
+        values={["example @ https://packages.example.test/example;download=1"]}
+        tone="uv"
+        emptyLabel="No dependencies"
+        framed={false}
+      />,
+    );
+
+    const urlSpec = screen.getByText("@ https://packages.example.test/example;download=1");
+    expect(urlSpec).toBeVisible();
+    expect(urlSpec).not.toHaveClass("whitespace-normal");
+    expect(urlSpec).toHaveClass("font-mono");
   });
 });
 
