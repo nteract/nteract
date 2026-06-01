@@ -32,6 +32,13 @@ export {
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export {
+  NotebookNotice,
+  NotebookNoticeAction,
+  type NotebookNoticeActionProps,
+  type NotebookNoticeProps,
+  type NotebookNoticeTone,
+} from "./NotebookNotice";
+export {
   NotebookCommandToolbar,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarProps,

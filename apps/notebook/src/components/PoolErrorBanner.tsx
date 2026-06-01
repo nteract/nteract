@@ -1,5 +1,6 @@
 import { useNotebookHost } from "@nteract/notebook-host";
-import { AlertTriangle, Clock, Settings, X } from "lucide-react";
+import { AlertTriangle, Clock, Settings } from "lucide-react";
+import { NotebookNotice, NotebookNoticeAction } from "@/components/notebook/NotebookNotice";
 import type { PoolErrorWithTimestamp } from "../hooks/usePoolState";
 
 interface PoolErrorItemProps {
@@ -40,46 +41,27 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
   const isTimeout = error.error_kind === "timeout";
 
   return (
-    <div className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1.5 text-xs text-white">
-      <div className="flex items-center gap-2 min-w-0">
-        {isTimeout ? (
-          <Clock className="h-3 w-3 flex-shrink-0" />
-        ) : (
-          <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-        )}
-        <span className="font-medium flex-shrink-0">{error.message}</span>
-        {error.failed_package && (
-          <>
-            <span className="text-amber-200 flex-shrink-0">—</span>
-            <code className="bg-amber-700/50 px-1 rounded text-amber-100 flex-shrink-0">
-              {error.failed_package}
-            </code>
-          </>
-        )}
-        <span className="text-amber-200 flex-shrink-0">—</span>
-        <span className="text-amber-100">{errorSubtitle(error, envType)}</span>
-      </div>
-      <div className="flex items-center gap-2 flex-shrink-0">
-        {showSettingsButton(error) && (
-          <button
-            type="button"
-            onClick={openSettings}
-            className="flex items-center gap-1 rounded bg-amber-700/60 px-2 py-0.5 hover:bg-amber-700 transition-colors"
-          >
-            <Settings className="h-3 w-3" />
-            <span>Settings</span>
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="rounded p-0.5 hover:bg-amber-500/50 transition-colors"
-          aria-label="Dismiss"
-        >
-          <X className="h-3 w-3" />
-        </button>
-      </div>
-    </div>
+    <NotebookNotice
+      tone="warning"
+      icon={isTimeout ? <Clock className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+      title={error.message}
+      onDismiss={onDismiss}
+      actions={
+        showSettingsButton(error) ? (
+          <NotebookNoticeAction onClick={openSettings} icon={<Settings className="h-3 w-3" />}>
+            Settings
+          </NotebookNoticeAction>
+        ) : null
+      }
+    >
+      {error.failed_package ? (
+        <>
+          <code className="rounded bg-amber-500/20 px-1">{error.failed_package}</code>
+          <span> </span>
+        </>
+      ) : null}
+      {errorSubtitle(error, envType)}
+    </NotebookNotice>
   );
 }
 

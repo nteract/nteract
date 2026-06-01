@@ -10,12 +10,14 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AlertCircle,
   Copy,
   Globe2,
   KeyRound,
   Link2,
   LogIn,
   LogOut,
+  Loader2,
   Mail,
   RotateCcw,
   Share2,
@@ -29,6 +31,8 @@ import {
   NotebookCommandToolbar,
   NotebookDocumentHeader,
   NotebookEditModeButton,
+  NotebookNotice,
+  NotebookNoticeAction,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -1328,46 +1332,83 @@ function NotebookViewer({
   const notices = hasNotices ? (
     <>
       {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
-        <div className="cloud-state cloud-auth-state" data-kind="error">
-          <span>{prototypeAuthSummary(authState)}</span>
-          <button type="button" onClick={resetPrototypeAuth}>
-            <RotateCcw aria-hidden="true" />
-            Reset to anonymous
-          </button>
-        </div>
+        <NotebookNotice
+          tone="error"
+          icon={<AlertCircle className="h-4 w-4" />}
+          title="Auth needs attention."
+          actions={
+            <NotebookNoticeAction
+              onClick={resetPrototypeAuth}
+              icon={<RotateCcw className="h-3 w-3" />}
+            >
+              Reset to anonymous
+            </NotebookNoticeAction>
+          }
+        >
+          {prototypeAuthSummary(authState)}
+        </NotebookNotice>
       ) : null}
 
       {authRenewal.kind !== "idle" ? (
-        <div
-          className="cloud-state cloud-auth-state"
-          data-kind={authRenewal.kind === "failed" ? "error" : "loading"}
+        <NotebookNotice
+          tone={authRenewal.kind === "failed" ? "error" : "info"}
+          icon={
+            authRenewal.kind === "failed" ? (
+              <AlertCircle className="h-4 w-4" />
+            ) : (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            )
+          }
+          title={authRenewal.kind === "failed" ? "Sign-in refresh failed." : "Refreshing sign-in."}
+          actions={
+            authRenewal.kind === "failed" ? (
+              <NotebookNoticeAction
+                onClick={resetPrototypeAuth}
+                icon={<RotateCcw className="h-3 w-3" />}
+              >
+                Reset to anonymous
+              </NotebookNoticeAction>
+            ) : null
+          }
         >
-          <span>{authRenewal.message}</span>
-          {authRenewal.kind === "failed" ? (
-            <button type="button" onClick={resetPrototypeAuth}>
-              <RotateCcw aria-hidden="true" />
-              Reset to anonymous
-            </button>
-          ) : null}
-        </div>
+          {authRenewal.message}
+        </NotebookNotice>
       ) : null}
 
       {connectionError ? (
-        <div className="cloud-state cloud-auth-state" data-kind="error">
-          <span>Live room connection failed: {connectionError}</span>
-          <button type="button" onClick={resetPrototypeAuth}>
-            <RotateCcw aria-hidden="true" />
-            Reset to anonymous
-          </button>
-        </div>
+        <NotebookNotice
+          tone="error"
+          icon={<AlertCircle className="h-4 w-4" />}
+          title="Live room connection failed."
+          actions={
+            <NotebookNoticeAction
+              onClick={resetPrototypeAuth}
+              icon={<RotateCcw className="h-3 w-3" />}
+            >
+              Reset to anonymous
+            </NotebookNoticeAction>
+          }
+        >
+          {connectionError}
+        </NotebookNotice>
       ) : null}
 
       {authDiagnostics}
 
       {status.kind === "ready" ? null : (
-        <div className="cloud-state" data-kind={status.kind}>
+        <NotebookNotice
+          tone={status.kind === "error" ? "error" : "info"}
+          icon={
+            status.kind === "error" ? (
+              <AlertCircle className="h-4 w-4" />
+            ) : (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            )
+          }
+          title={status.kind === "error" ? "Unable to load notebook." : "Loading notebook."}
+        >
           {status.message}
-        </div>
+        </NotebookNotice>
       )}
     </>
   ) : null;

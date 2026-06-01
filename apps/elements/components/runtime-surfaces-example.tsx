@@ -18,6 +18,7 @@ import {
   createFixtureNotebookHost,
   noop,
 } from "@/components/fixture-notebook-host";
+import { NotebookNotice, NotebookNoticeAction } from "@/components/notebook";
 import { DaemonStatusBanner } from "@/notebook-components/DaemonStatusBanner";
 import { DebugBanner } from "@/notebook-components/DebugBanner";
 import { UvDependencyPanel } from "@/components/environment";
@@ -33,6 +34,12 @@ import {
 } from "@/components/notebook-scenarios";
 
 const runtimePieces = [
+  {
+    name: "NotebookNotice",
+    source: "src/components/notebook/NotebookNotice.tsx",
+    role: "Shared notice primitive for desktop daemon/runtime notices and cloud room/auth/sync notices.",
+    status: "rendered",
+  },
   {
     name: "RuntimeDecisionDialog",
     source: "apps/notebook/src/components/RuntimeDecisionDialog.tsx",
@@ -262,6 +269,22 @@ function RuntimeBanners() {
         </p>
       </div>
       <div className="divide-y divide-fd-border">
+        <BannerFixture
+          icon={<AlertTriangle className="size-4" aria-hidden="true" />}
+          name="NotebookNotice"
+          description="Host-neutral notice shell; desktop and cloud decide policy and actions."
+        >
+          <NotebookNotice
+            tone="warning"
+            icon={<AlertTriangle className="h-4 w-4" />}
+            title="Document attention needed."
+            actions={<NotebookNoticeAction onClick={noop}>Review</NotebookNoticeAction>}
+          >
+            The host owns what happened; the notebook shell owns how the notice sits with the
+            document.
+          </NotebookNotice>
+        </BannerFixture>
+
         <BannerFixture
           icon={<GitBranch className="size-4" aria-hidden="true" />}
           name="DebugBanner"
