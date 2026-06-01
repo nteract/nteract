@@ -72,6 +72,7 @@ import {
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import { flushCellUIState, setFocusedCellId } from "../../notebook/src/lib/cell-ui-state";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
+import { setLoggerHost } from "../../notebook/src/lib/logger";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 import { useNotebookViewModel } from "../../notebook/src/lib/notebook-view-model";
 import {
@@ -125,6 +126,13 @@ import {
   projectCloudWidgetComms,
 } from "./widget-runtime";
 import "./index.css";
+
+setLoggerHost({
+  debug: () => {},
+  info: () => {},
+  warn: (message: string, ...args: unknown[]) => console.warn(message, ...args),
+  error: (message: string, ...args: unknown[]) => console.error(message, ...args),
+});
 
 interface CloudViewerConfig {
   notebookId: string;

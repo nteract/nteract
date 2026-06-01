@@ -133,3 +133,13 @@ test("cloud sync keeps routine frame logs out of the browser console", () => {
   assert.match(sourceText, /const consoleSyncLogger = \{[\s\S]*info: \(\) => \{\}/);
   assert.match(sourceText, /warn: \(message: string, \.\.\.args: unknown\[\]\) => console\.warn/);
 });
+
+test("cloud installs a host logger sink for shared notebook components", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /setLoggerHost/);
+  assert.match(sourceText, /debug: \(\) => \{\}/);
+  assert.match(sourceText, /info: \(\) => \{\}/);
+  assert.match(sourceText, /warn: \(message: string, \.\.\.args: unknown\[\]\) => console\.warn/);
+});

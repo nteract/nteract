@@ -10,7 +10,7 @@
  * to await — the transport to the sink happens in the background.
  */
 
-import type { NotebookHost } from "@nteract/notebook-host";
+import type { HostLog, NotebookHost } from "@nteract/notebook-host";
 
 /** Serialize arguments to a single log message string. */
 function formatArgs(args: unknown[]): string {
@@ -33,17 +33,17 @@ function formatArgs(args: unknown[]): string {
 // `createTauriHost()`. Until then — and in tests, SSR, Storybook — we
 // fall back to the console. Never throw from logger; it's used at the
 // error-handling boundary.
-let _host: NotebookHost | null = null;
+let _log: HostLog | null = null;
 
 /** Install the `NotebookHost` whose `log` surface this logger writes to. */
-export function setLoggerHost(host: NotebookHost | null): void {
-  _host = host;
+export function setLoggerHost(host: NotebookHost | HostLog | null): void {
+  _log = host && "log" in host ? host.log : host;
 }
 
 function emit(level: "debug" | "info" | "warn" | "error", args: unknown[]): void {
   const message = formatArgs(args);
-  if (_host) {
-    _host.log[level](message);
+  if (_log) {
+    _log[level](message);
   } else {
     // Pre-host or non-host contexts: mirror to console with a level tag.
     // eslint-disable-next-line no-console
