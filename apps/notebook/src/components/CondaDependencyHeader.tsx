@@ -140,14 +140,16 @@ export function CondaDependencyHeader({
           className={cn(
             "mb-2 flex items-center gap-2",
             isRail &&
-              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+              "mb-3 flex-wrap justify-between gap-x-2 gap-y-1 rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
           )}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className={cn("flex min-w-0 items-center gap-2", isRail && "shrink-0")}>
             <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
               conda
             </span>
-            {isRail && <span className="truncate text-xs text-muted-foreground">Environment</span>}
+            {isRail && (
+              <span className="whitespace-nowrap text-xs text-muted-foreground">Environment</span>
+            )}
           </div>
           {isRail && (
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">

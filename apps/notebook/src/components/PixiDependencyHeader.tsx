@@ -75,15 +75,20 @@ export function PixiDependencyHeader({
           className={cn(
             "mb-2 flex items-center gap-2",
             isRail &&
-              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+              "mb-3 flex-wrap justify-between gap-x-2 gap-y-1 rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
           )}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className={cn("flex min-w-0 items-center gap-2", isRail && "shrink-0")}>
             <span className="flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
               <PixiIcon className="h-2.5 w-2.5" />
               Pixi
             </span>
-            <span className="truncate text-xs text-muted-foreground">
+            <span
+              className={cn(
+                "text-xs text-muted-foreground",
+                isRail ? "whitespace-nowrap" : "truncate",
+              )}
+            >
               {isInlineMode ? "Dependencies" : "Environment"}
             </span>
           </div>

@@ -222,8 +222,8 @@ describe("NotebookRail", () => {
     );
 
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(14rem,19vw,16rem)]",
-      "min-w-56",
+      "w-[clamp(12.5rem,17vw,14rem)]",
+      "min-w-[12.5rem]",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
   });

@@ -99,7 +99,7 @@ export function NotebookRail({
           className={cn(
             "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col bg-background",
             activePanelId === "packages"
-              ? "w-[clamp(14rem,19vw,16rem)] min-w-56"
+              ? "w-[clamp(12.5rem,17vw,14rem)] min-w-[12.5rem]"
               : "w-[clamp(13rem,18vw,16rem)] min-w-52",
             NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
           )}
