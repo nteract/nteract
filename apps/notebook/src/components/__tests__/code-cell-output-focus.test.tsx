@@ -546,4 +546,90 @@ describe("CodeCell output focus", () => {
     expect(queryByTitle("Constrain output height")).toBeNull();
     expect(queryByTitle("Expand output")).toBeNull();
   });
+
+  it("marks hidden-cell disclosure as the fallback focus target", () => {
+    mockOutputs = [];
+    const { getByTitle } = render(
+      <CodeCell
+        cell={makeCell({
+          metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
+        })}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleSourceHidden={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(getByTitle("Show cell").hasAttribute("data-cell-focus-target")).toBe(true);
+  });
+
+  it("lets arrow keys leave a focused hidden group", () => {
+    mockOutputs = [];
+    const onFocusPrevious = vi.fn();
+    const onFocusNext = vi.fn();
+
+    const { getByTitle } = render(
+      <CodeCell
+        cell={makeCell({
+          metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
+        })}
+        hiddenGroupCount={3}
+        hiddenGroupItems={[
+          { id: "code-1", preview: "first()", outputCount: 0, hasError: false },
+          { id: "code-2", preview: "second()", outputCount: 1, hasError: false },
+          { id: "code-3", preview: "third()", outputCount: 0, hasError: false },
+        ]}
+        onFocus={() => {}}
+        onFocusPrevious={onFocusPrevious}
+        onFocusNext={onFocusNext}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleSourceHidden={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    const disclosure = getByTitle("Show all 3 hidden cells");
+    fireEvent.keyDown(disclosure, { key: "ArrowDown" });
+    fireEvent.keyDown(disclosure, { key: "ArrowUp" });
+
+    expect(onFocusNext).toHaveBeenCalledWith("start");
+    expect(onFocusPrevious).toHaveBeenCalledWith("end");
+  });
+
+  it("does not navigate away from hidden group preview rows with arrow keys", () => {
+    mockOutputs = [];
+    const onFocusNext = vi.fn();
+    const onExpandHiddenGroupCell = vi.fn();
+
+    const { getByTitle } = render(
+      <CodeCell
+        cell={makeCell({
+          metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
+        })}
+        hiddenGroupCount={3}
+        hiddenGroupItems={[
+          { id: "code-1", preview: "first()", outputCount: 0, hasError: false },
+          { id: "code-2", preview: "second()", outputCount: 1, hasError: false },
+          { id: "code-3", preview: "third()", outputCount: 0, hasError: false },
+        ]}
+        onExpandHiddenGroupCell={onExpandHiddenGroupCell}
+        onFocus={() => {}}
+        onFocusNext={onFocusNext}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleSourceHidden={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    fireEvent.keyDown(getByTitle("Show hidden cell 2: second()"), { key: "ArrowDown" });
+
+    expect(onFocusNext).not.toHaveBeenCalled();
+  });
 });
