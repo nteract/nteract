@@ -3,7 +3,10 @@ import {
   notebookActorProjectionFromRuntime,
 } from "@/components/notebook-shell/actor-projection";
 import type { NotebookShellCapabilities } from "@/components/notebook-shell/capabilities";
-import { createNotebookInteractionModeProjection } from "@/components/notebook-shell/interaction-mode";
+import {
+  createNotebookInteractionModeProjection,
+  type NotebookInteractionMode,
+} from "@/components/notebook-shell/interaction-mode";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 
 export interface CloudNotebookShellCapabilityInput {
@@ -11,6 +14,7 @@ export interface CloudNotebookShellCapabilityInput {
   connectionScope: string | null;
   connectionActorLabel?: string | null;
   hasCodeCells: boolean;
+  selectedMode?: NotebookInteractionMode;
 }
 
 export function cloudNotebookShellCapabilities({
@@ -18,16 +22,16 @@ export function cloudNotebookShellCapabilities({
   connectionScope,
   connectionActorLabel = null,
   hasCodeCells,
+  selectedMode = "view",
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = cloudConnectionAccessLevel(connectionScope);
   const isRuntimePeer = connectionScope === "runtime_peer";
   const authenticated = authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
+  const identityLabel = cloudIdentityDisplayLabel(authState);
+  const identityImageUrl = cloudIdentityImageUrl(authState);
   const interaction = createNotebookInteractionModeProjection({
-    selectedMode:
-      authState.requestedScope === "editor" || authState.requestedScope === "owner"
-        ? "edit"
-        : "view",
+    selectedMode,
     permission: {
       canEditMarkdown: accessLevel === "editor" || accessLevel === "owner",
       canEditCells: accessLevel === "owner",
@@ -50,15 +54,21 @@ export function cloudNotebookShellCapabilities({
     source: "cloud" as const,
     isPublic: !authenticated && accessLevel === "viewer",
     actorLabel: connectionActorLabel,
-    identityLabel: authState.user,
+    identityLabel,
   };
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
     connected: isRuntimePeer,
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
-    identityLabel: isRuntimePeer ? authState.user : null,
+    identityLabel: isRuntimePeer ? identityLabel : null,
   };
+  const accessActor = withCloudIdentityImage(notebookActorProjectionFromAccess(access, auth), {
+    imageUrl: identityImageUrl,
+  });
+  const runtimeActor = withCloudIdentityImage(notebookActorProjectionFromRuntime(runtime, auth), {
+    imageUrl: identityImageUrl,
+  });
 
   return {
     canRead: true,
@@ -74,12 +84,12 @@ export function cloudNotebookShellCapabilities({
     interaction,
     access: {
       ...access,
-      actor: notebookActorProjectionFromAccess(access, auth),
+      actor: accessActor,
     },
     auth,
     runtime: {
       ...runtime,
-      actor: notebookActorProjectionFromRuntime(runtime, auth),
+      actor: runtimeActor,
     },
   };
 }
@@ -91,4 +101,44 @@ function cloudConnectionAccessLevel(
     return connectionScope;
   }
   return "viewer";
+}
+
+function cloudIdentityDisplayLabel(authState: CloudPrototypeAuthState): string | null {
+  const claimName = authState.oidcClaims?.name?.trim();
+  if (claimName) {
+    return claimName;
+  }
+  const claimEmail = compactEmailLabel(authState.oidcClaims?.email);
+  if (claimEmail) {
+    return claimEmail;
+  }
+  return compactEmailLabel(authState.user) ?? authState.user;
+}
+
+function cloudIdentityImageUrl(authState: CloudPrototypeAuthState): string | null {
+  return authState.oidcClaims?.picture?.trim() || null;
+}
+
+function compactEmailLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const match = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/.exec(trimmed);
+  return match?.[1] ?? null;
+}
+
+function withCloudIdentityImage<
+  T extends ReturnType<typeof notebookActorProjectionFromAccess> | null,
+>(actor: T, { imageUrl }: { imageUrl: string | null }): T {
+  if (!actor || !imageUrl) {
+    return actor;
+  }
+  return {
+    ...actor,
+    principal: {
+      ...actor.principal,
+      imageUrl,
+    },
+  };
 }

@@ -39,6 +39,7 @@ import {
   NotebookToolbarFrame,
   notebookActorIdentityFromAccess,
   type NotebookEnvironmentManager,
+  type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
   type NotebookPackageSection,
   type NotebookShellCapabilities,
@@ -638,6 +639,12 @@ function NotebookViewer({
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
+  const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
+    () =>
+      authState.requestedScope === "editor" || authState.requestedScope === "owner"
+        ? "edit"
+        : "view",
+  );
   const blobResolver = useMemo(
     () =>
       createNotebookCloudBlobResolver({
@@ -1114,8 +1121,9 @@ function NotebookViewer({
         connectionScope,
         connectionActorLabel,
         hasCodeCells: codeCellCount > 0,
+        selectedMode: selectedInteractionMode,
       }),
-    [authState, codeCellCount, connectionActorLabel, connectionScope],
+    [authState, codeCellCount, connectionActorLabel, connectionScope, selectedInteractionMode],
   );
   const canEditMarkdown = shellCapabilities.canEditMarkdown;
   const notebookCellIds = notebookViewModel.cellIds;
@@ -1227,6 +1235,12 @@ function NotebookViewer({
   );
   const resetPrototypeAuth = useCallback(() => {
     clearCloudPrototypeDevAuth(window.localStorage);
+    setSelectedInteractionMode("view");
+    refreshAuthState();
+  }, [refreshAuthState]);
+  const requestCloudEditAccess = useCallback(() => {
+    storeCloudRequestedScope(window.localStorage, "editor");
+    setSelectedInteractionMode("edit");
     refreshAuthState();
   }, [refreshAuthState]);
   const rail = (
@@ -1267,7 +1281,9 @@ function NotebookViewer({
           <CloudNotebookEditModeButton
             authState={authState}
             interaction={shellCapabilities.interaction ?? null}
-            onAuthStateChange={refreshAuthState}
+            accessLevel={shellCapabilities.access.level}
+            onModeChange={setSelectedInteractionMode}
+            onRequestEditAccess={requestCloudEditAccess}
           />
         }
         identityControls={
@@ -1734,12 +1750,16 @@ function CloudSharingControls({
 
 function CloudNotebookEditModeButton({
   authState,
+  accessLevel,
   interaction,
-  onAuthStateChange,
+  onModeChange,
+  onRequestEditAccess,
 }: {
   authState: CloudPrototypeAuthState;
+  accessLevel: NotebookShellCapabilities["access"]["level"];
   interaction: NotebookInteractionModeProjection | null;
-  onAuthStateChange: () => void;
+  onModeChange: (mode: NotebookInteractionMode) => void;
+  onRequestEditAccess: () => void;
 }) {
   if (
     authState.mode !== "oidc" ||
@@ -1754,11 +1774,11 @@ function CloudNotebookEditModeButton({
       state={interaction.state}
       variant="segmented"
       onModeChange={(mode) => {
-        storeCloudRequestedScope(
-          window.localStorage,
-          mode === "edit" ? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE,
-        );
-        onAuthStateChange();
+        if (mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner") {
+          onRequestEditAccess();
+          return;
+        }
+        onModeChange(mode);
       }}
     />
   );

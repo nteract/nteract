@@ -123,6 +123,16 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /<NotebookEditModeButton[\s\S]*state=\{interaction\.state\}/);
   assert.match(sourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
+  assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
+  assert.match(sourceText, /selectedMode: selectedInteractionMode/);
+  assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
+  assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
+  assert.match(
+    sourceText,
+    /if \(mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner"\) \{/,
+  );
+  assert.match(sourceText, /storeCloudRequestedScope\(window\.localStorage, "editor"\)/);
+  assert.doesNotMatch(sourceText, /mode === "edit" \? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE/);
   assert.doesNotMatch(sourceText, /className="cloud-scope-toggle-button"/);
   assert.doesNotMatch(cssText, /cloud-scope-toggle-button/);
 });
