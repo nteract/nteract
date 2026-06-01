@@ -919,7 +919,6 @@ function AppContent() {
     pyprojectDeps,
     pyprojectInfo?.dependency_count,
     pyprojectInfo?.has_dependencies,
-    pyprojectInfo?.relative_path,
     pixiDeps,
     pixiInfo,
     runtime,
