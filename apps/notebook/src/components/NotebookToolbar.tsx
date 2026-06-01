@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, type ReactElement, type ReactNode } f
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   NotebookCommandToolbar,
+  NotebookToolbarFrame,
   type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
   type NotebookShellCapabilities,
@@ -181,8 +182,54 @@ export function NotebookToolbar({
     </HoverCard>
   ) : null;
 
+  const notices = (
+    <>
+      {/* Deno install prompt */}
+      {runtime === "deno" && kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage && (
+        <div className="border-t px-3 py-2">
+          <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>
+              <span className="font-medium">Deno not available.</span> Auto-install failed. Install
+              manually with{" "}
+              <code className="rounded bg-amber-500/20 px-1">
+                curl -fsSL https://deno.land/install.sh | sh
+              </code>{" "}
+              and restart.
+            </span>
+          </div>
+        </div>
+      )}
+      {/* ipykernel install prompt — only when daemon signals missing_ipykernel.
+          Pixi and uv/conda inline envs reach this state through different
+          mechanisms (pixi.toml scan vs prepared-env scan), but the UX is the
+          same shape: explain where ipykernel should go for the current env,
+          then tell the user to restart. */}
+      {runtime === "python" &&
+        lifecycle.lifecycle === "Error" &&
+        envSource &&
+        hasToolbarHandledIpykernelError &&
+        renderIpykernelErrorPrompt({
+          envSource,
+          errorReason,
+          errorDetails: kernelErrorMessage ?? null,
+          condaPython,
+          condaChannels,
+          projectContext,
+        })}
+      {showCondaEnvYmlMissingBanner && (
+        <CondaEnvYmlMissingBanner
+          details={kernelErrorMessage}
+          command={condaEnvCreateCommand}
+          copied={condaCommandCopied}
+          onCopyCommand={copyCondaEnvCommand}
+        />
+      )}
+    </>
+  );
+
   return (
-    <header className="@container sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60 select-none">
+    <NotebookToolbarFrame notices={notices}>
       <NotebookCommandToolbar
         capabilities={capabilities}
         runtime={runtime}
@@ -228,49 +275,7 @@ export function NotebookToolbar({
         }
         trailingControls={trailingControls}
       />
-
-      {/* Deno install prompt */}
-      {runtime === "deno" && kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage && (
-        <div className="border-t px-3 py-2">
-          <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              <span className="font-medium">Deno not available.</span> Auto-install failed. Install
-              manually with{" "}
-              <code className="rounded bg-amber-500/20 px-1">
-                curl -fsSL https://deno.land/install.sh | sh
-              </code>{" "}
-              and restart.
-            </span>
-          </div>
-        </div>
-      )}
-      {/* ipykernel install prompt — only when daemon signals missing_ipykernel.
-          Pixi and uv/conda inline envs reach this state through different
-          mechanisms (pixi.toml scan vs prepared-env scan), but the UX is the
-          same shape: explain where ipykernel should go for the current env,
-          then tell the user to restart. */}
-      {runtime === "python" &&
-        lifecycle.lifecycle === "Error" &&
-        envSource &&
-        hasToolbarHandledIpykernelError &&
-        renderIpykernelErrorPrompt({
-          envSource,
-          errorReason,
-          errorDetails: kernelErrorMessage ?? null,
-          condaPython,
-          condaChannels,
-          projectContext,
-        })}
-      {showCondaEnvYmlMissingBanner && (
-        <CondaEnvYmlMissingBanner
-          details={kernelErrorMessage}
-          command={condaEnvCreateCommand}
-          copied={condaCommandCopied}
-          onCopyCommand={copyCondaEnvCommand}
-        />
-      )}
-    </header>
+    </NotebookToolbarFrame>
   );
 }
 

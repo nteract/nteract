@@ -39,6 +39,7 @@ export {
   type NotebookCommandToolbarUpdateAction,
   type NotebookEnvironmentManager,
 } from "./NotebookCommandToolbar";
+export { NotebookToolbarFrame, type NotebookToolbarFrameProps } from "./NotebookToolbarFrame";
 export {
   NotebookIdentityBadge,
   NotebookIdentityGroup,
