@@ -1,0 +1,55 @@
+---
+title: Cloud notebook shell
+description: A fluid cloud notebook chrome mockup for presence, access, sync, mode, and auth.
+---
+
+import { CloudNotebookShellExample } from "@/components/cloud-notebook-shell-example";
+
+Cloud notebooks reuse the document shell, rail, cells, and output language from
+desktop, but the host adds a few top-level concerns: room presence, document
+sync health, view/edit mode, sharing, and account controls.
+
+This mockup separates those concerns from runtime state. A cloud notebook can be
+live, reconnecting, signed out, public, or edit-requested without making the
+Python runtime chip carry those meanings.
+
+The first toolbar row is app-level cloud chrome. It answers "who is here, is the
+document connected, can I share, am I viewing or editing, and which account is
+active?" The second row is notebook chrome. It should continue to use the shared
+`NotebookCommandToolbar` for cell insertion, package/runtime language, and
+execution controls.
+
+<CloudNotebookShellExample />
+
+## Implementation intent
+
+- Cloud should own an app-level toolbar for presence, document sync, sharing,
+  view/edit state, and auth.
+- The notebook toolbar should remain the normal notebook-level surface for cell
+  insertion, package/runtime language, and execution controls.
+- The app row should compose shared primitives where possible:
+  `NotebookPresenceStatus`, `NotebookEditModeButton`, and account identity
+  surfaces. Cloud-specific transport and sharing controls can remain host-owned
+  slots.
+- Online/offline state should be projected from cloud transport and room state,
+  not from `RuntimeStateDoc`.
+- Runtime state should describe language and execution capability only; cloud
+  transport should not be folded into the Python badge.
+- Presence copy should name the room population only. View/edit state already
+  has its own control, so labels like `2 here now, viewing` are redundant.
+- View/edit is a local interaction mode over host permissions. Users with edit
+  permission can step into read-only viewing without requesting access again;
+  denied users stay gated by the host capability projection.
+- Elements scenarios should continue to model desktop and cloud differences
+  through capability facts, not forked shell components.
+
+## Surface split
+
+| Surface           | Shared component         | Host-owned input                            |
+| ----------------- | ------------------------ | ------------------------------------------- |
+| Presence          | `NotebookPresenceStatus` | room participant projection                 |
+| View/edit mode    | `NotebookEditModeButton` | ACL plus selected interaction mode          |
+| Notebook commands | `NotebookCommandToolbar` | runtime, package, and cell action callbacks |
+| Connection        | cloud slot               | room transport health                       |
+| Sharing           | cloud slot               | invite and ACL actions                      |
+| Account           | identity slot            | signed-in user and auth attention state     |
