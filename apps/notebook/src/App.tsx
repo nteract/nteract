@@ -44,13 +44,13 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
 } from "@/components/notebook";
+import { GlobalFindBar } from "@/components/search";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
 import { DebugBanner } from "./components/DebugBanner";
 import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
 import { DependencyHeader } from "./components/DependencyHeader";
 import { EnvBuildDecisionDialog } from "./components/EnvBuildDecisionDialog";
-import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";

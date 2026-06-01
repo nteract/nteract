@@ -1,14 +1,11 @@
 "use client";
 
-import { NotebookHostProvider } from "@nteract/notebook-host";
 import { FileSearch, History, Search, TextCursorInput } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { HistoryEntry, NotebookRequest, NotebookResponse } from "runtimed";
+import type { HistoryEntry } from "runtimed";
+import { GlobalFindBar, HistorySearchDialogView } from "@/components/search";
 import { Button } from "@/components/ui/button";
-import { createFixtureNotebookHost } from "@/components/fixture-notebook-host";
 import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
-import { GlobalFindBar } from "@/notebook-components/GlobalFindBar";
-import { HistorySearchDialog } from "@/notebook-components/HistorySearchDialog";
 
 const searchScenario = getElementsNotebookScenario("desktop-local-owner");
 const notebookCells = searchScenario.cells.map((cell, index) => ({
@@ -53,22 +50,15 @@ const fixtureHistoryEntries: HistoryEntry[] = [
   },
 ];
 
-function isGetHistoryRequest(
-  request: unknown,
-): request is Extract<NotebookRequest, { type: "get_history" }> {
-  return (
-    typeof request === "object" &&
-    request !== null &&
-    "type" in request &&
-    request.type === "get_history"
-  );
-}
-
 function filterHistoryEntries({
   pattern,
   n,
   unique,
-}: Extract<NotebookRequest, { type: "get_history" }>) {
+}: {
+  pattern?: string | null;
+  n: number;
+  unique: boolean;
+}) {
   const needle = pattern?.split("*").join("").trim().toLowerCase() ?? "";
   const filtered = needle
     ? fixtureHistoryEntries.filter((entry) => entry.source.toLowerCase().includes(needle))
@@ -84,19 +74,6 @@ function filterHistoryEntries({
   return entries.slice(0, n);
 }
 
-const historyFixtureHost = createFixtureNotebookHost({
-  name: "elements-history-fixture",
-  transport: {
-    sendRequest: async (request): Promise<NotebookResponse> => {
-      if (isGetHistoryRequest(request)) {
-        return { result: "history_result", entries: filterHistoryEntries(request) };
-      }
-
-      throw new Error("Search fixture host only handles get_history requests.");
-    },
-  },
-});
-
 const searchBoundaryRows = [
   {
     boundary: "Find state projection",
@@ -107,10 +84,10 @@ const searchBoundaryRows = [
   },
   {
     boundary: "History transport",
-    catalogPath: "createFixtureNotebookHost(get_history)",
+    catalogPath: "HistorySearchDialogView props + fixture history state",
     productionBoundary: "NotebookHost -> runtimed history request",
     detail:
-      "HistorySearchDialog stays on the real hook path. The docs host answers only typed get_history requests and never opens a daemon or kernel session.",
+      "The shared dialog view receives entries and search callbacks directly. The notebook app wrapper owns the history hook and typed runtimed request path.",
   },
   {
     boundary: "Selection handoff",
@@ -180,6 +157,8 @@ export function SearchSurfacesExample() {
   const [query, setQuery] = useState("features");
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySearchValue, setHistorySearchValue] = useState(query);
+  const [historyEntries, setHistoryEntries] = useState(fixtureHistoryEntries);
   const [selectedHistorySource, setSelectedHistorySource] = useState(
     fixtureHistoryEntries[0].source,
   );
@@ -194,6 +173,19 @@ export function SearchSurfacesExample() {
       setCurrentMatchIndex(0);
     }
   }, [currentMatchIndex, matchCount]);
+
+  const openHistorySearch = () => {
+    setHistorySearchValue(query);
+    setHistoryEntries(filterHistoryEntries({ pattern: query, n: 100, unique: true }));
+    setHistoryOpen(true);
+  };
+
+  const handleHistorySearchValueChange = (value: string) => {
+    setHistorySearchValue(value);
+    setHistoryEntries(
+      filterHistoryEntries({ pattern: value.trim() || null, n: 100, unique: true }),
+    );
+  };
 
   return (
     <div className="not-prose space-y-5" data-elements-slot="search-surfaces">
@@ -272,21 +264,26 @@ export function SearchSurfacesExample() {
               <h2 className="text-sm font-semibold text-fd-foreground">HistorySearchDialog</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              Rendered from the notebook app under a fixture host whose transport only answers typed
-              `get_history` requests.
+              Rendered through the shared dialog view with fixture history state. The notebook app
+              wraps this view with the real runtimed history hook.
             </p>
           </div>
-          <NotebookHostProvider host={historyFixtureHost}>
-            <Button size="sm" onClick={() => setHistoryOpen(true)}>
-              Open history search
-            </Button>
-            <HistorySearchDialog
-              open={historyOpen}
-              onOpenChange={setHistoryOpen}
-              onSelect={setSelectedHistorySource}
-              initialQuery={query}
-            />
-          </NotebookHostProvider>
+          <Button size="sm" onClick={openHistorySearch}>
+            Open history search
+          </Button>
+          <HistorySearchDialogView
+            open={historyOpen}
+            onOpenChange={setHistoryOpen}
+            entries={historyEntries}
+            isLoading={false}
+            error={null}
+            searchValue={historySearchValue}
+            onSearchValueChange={handleHistorySearchValueChange}
+            onSelectEntry={(entry) => {
+              setSelectedHistorySource(entry.source);
+              setHistoryOpen(false);
+            }}
+          />
         </div>
         <div className="grid gap-4 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
           <div className="flex items-start gap-2 text-fd-muted-foreground">

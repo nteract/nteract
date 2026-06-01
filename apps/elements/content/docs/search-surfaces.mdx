@@ -7,16 +7,16 @@ import { SearchSurfacesExample } from "@/components/search-surfaces-example";
 
 Notebook search is a notebook-level surface, not a generic command palette.
 This page catalogs the current global notebook find bar and IPython history
-dialog with static notebook text and a docs-local host adapter.
+dialog with static notebook text and docs-local fixture history state.
 
 <SearchSurfacesExample />
 
 ## Adapter notes
 
-`GlobalFindBar` renders directly from fixture search state. `HistorySearchDialog`
-still uses the real `useHistorySearch` hook, but the docs app supplies a
-`NotebookHost` transport that only answers `get_history` requests with static
-entries. The catalog does not start a daemon, sync a notebook, or import
+`GlobalFindBar` renders directly from fixture search state. The history search
+surface renders through the shared dialog view with static entries, while the
+notebook app keeps the real `useHistorySearch` hook and runtimed request path in
+its app adapter. The catalog does not start a daemon, sync a notebook, or import
 generated WASM to render these search surfaces. The rendered boundary map keeps
 the live search projection, history transport, selection handoff, and match
 navigation responsibilities visible before any future adapter wiring moves them

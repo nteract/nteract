@@ -26,6 +26,8 @@
       "@/components/outputs/*": ["../../src/components/outputs/*"],
       "@/components/rail": ["../../src/components/rail/index.ts"],
       "@/components/rail/*": ["../../src/components/rail/*"],
+      "@/components/search": ["../../src/components/search/index.ts"],
+      "@/components/search/*": ["../../src/components/search/*"],
       "@/components/ui/*": ["../../src/components/ui/*"],
       "@/components/widgets/*": ["../../src/components/widgets/*"],
       "@/hooks/*": ["../../src/hooks/*"],
