@@ -114,7 +114,7 @@ async function main() {
 
     await timed("alice_connected", () => waitForPresence(alice.page, "editing"));
     await timed("bob_connected", () => waitForPresence(bob.page, "editing"));
-    await timed("anonymous_connected", () => waitForPresence(anonymous.page, "viewing"));
+    await timed("anonymous_connected", () => waitForPresence(anonymous.page, "view only"));
     checks.push("browser_alice_connected", "browser_bob_connected", "anonymous_viewer_connected");
 
     await waitForEditableMarkdown(alice.page);
@@ -221,7 +221,7 @@ ${bobMarker}
       }),
     );
     contexts.push(charlie.context);
-    await timed("charlie_downgraded", () => waitForPresence(charlie.page, "viewing"));
+    await timed("charlie_downgraded", () => waitForPresence(charlie.page, "view only"));
     await assertNoEditableMarkdown(charlie.page);
     checks.push("ungranted_editor_downgraded_to_viewer");
 
