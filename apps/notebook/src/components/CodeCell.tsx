@@ -78,6 +78,10 @@ interface CodeCellProps {
   onExpandHiddenGroup?: () => void;
   /** Cell IDs in this hidden group (for executing indicator) */
   hiddenGroupCellIds?: string[];
+  /** Compact previews for cells in a hidden group. */
+  hiddenGroupItems?: HiddenGroupCellSummary[];
+  /** Callback to reveal one cell from a hidden group. */
+  onExpandHiddenGroupCell?: (cellId: string) => void;
   /** Number of error outputs across all cells in a hidden group */
   hiddenGroupErrorCount?: number;
   /** Content for the right gutter (e.g., delete button, input toggle) */
@@ -85,6 +89,13 @@ interface CodeCellProps {
   readOnly?: boolean;
   canExecute?: boolean;
   outputHostContext?: NteractEmbedHostContextPatch;
+}
+
+export interface HiddenGroupCellSummary {
+  id: string;
+  preview: string;
+  outputCount: number;
+  hasError: boolean;
 }
 
 function historyQueryFromEditor(view: EditorView | null, fallbackSource: string): string {
@@ -153,6 +164,94 @@ function HiddenCellDisclosure({
       {alert ? <span className="shrink-0 font-medium text-destructive">{alert}</span> : null}
       <ChevronRight className="size-3 shrink-0 text-muted-foreground/35 transition-colors group-hover/reveal:text-muted-foreground/70" />
     </button>
+  );
+}
+
+function HiddenGroupDisclosure({
+  count,
+  items,
+  alert,
+  disabled,
+  pulsing,
+  onRevealAll,
+  onRevealCell,
+}: {
+  count: number;
+  items: readonly HiddenGroupCellSummary[];
+  alert?: string;
+  disabled?: boolean;
+  pulsing?: boolean;
+  onRevealAll: () => void;
+  onRevealCell?: (cellId: string) => void;
+}) {
+  const visibleItems = items.slice(0, 4);
+  const hiddenItemCount = Math.max(0, count - visibleItems.length);
+
+  return (
+    <div className={cn("group/reveal w-full min-w-0 py-1 text-xs", pulsing && "animate-pulse")}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onRevealAll}
+        className={cn(
+          "flex w-full min-w-0 items-center gap-2 text-left leading-none",
+          "text-muted-foreground/70 transition-colors hover:text-foreground",
+          disabled && "cursor-default hover:text-muted-foreground/70",
+        )}
+        title={`Show all ${count} hidden cells`}
+      >
+        <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/45 transition-colors group-hover/reveal:text-muted-foreground/70">
+          <Code2 className="size-3.5" />
+        </span>
+        <span className="shrink-0 font-medium">{count} cells hidden</span>
+        <span
+          className="h-px min-w-4 flex-1 rounded-full bg-border/15 transition-colors group-hover/reveal:bg-border/30"
+          aria-hidden="true"
+        />
+        {alert ? <span className="shrink-0 font-medium text-destructive">{alert}</span> : null}
+        <span className="shrink-0 font-medium text-muted-foreground/50 transition-colors group-hover/reveal:text-muted-foreground/80">
+          Show all
+        </span>
+        <ChevronRight className="size-3 shrink-0 text-muted-foreground/35 transition-colors group-hover/reveal:text-muted-foreground/70" />
+      </button>
+      {visibleItems.length > 0 ? (
+        <div className="mt-1.5 ml-6 space-y-0.5 border-l border-border/20 pl-2">
+          {visibleItems.map((item, index) => (
+            <button
+              key={item.id}
+              type="button"
+              disabled={disabled || !onRevealCell}
+              onClick={() => onRevealCell?.(item.id)}
+              className={cn(
+                "grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-sm py-1 text-left",
+                "text-muted-foreground/60 transition-colors hover:text-foreground",
+                "disabled:cursor-default disabled:hover:text-muted-foreground/60",
+              )}
+              title={`Show hidden cell ${index + 1}: ${item.preview}`}
+            >
+              <span className="min-w-0 flex-1 truncate font-mono">{item.preview}</span>
+              {item.hasError || item.outputCount > 0 ? (
+                <span
+                  className={cn(
+                    "shrink-0 text-[10px] tabular-nums text-muted-foreground/45",
+                    item.hasError && "font-medium text-destructive/80",
+                  )}
+                >
+                  {item.hasError
+                    ? "error"
+                    : `${item.outputCount} ${item.outputCount === 1 ? "output" : "outputs"}`}
+                </span>
+              ) : null}
+            </button>
+          ))}
+          {hiddenItemCount > 0 ? (
+            <div className="py-1 text-[10px] text-muted-foreground/45">
+              + {hiddenItemCount} more hidden
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -225,6 +324,8 @@ export const CodeCell = memo(function CodeCell({
   hiddenGroupCount,
   onExpandHiddenGroup,
   hiddenGroupCellIds,
+  hiddenGroupItems,
+  onExpandHiddenGroupCell,
   hiddenGroupErrorCount,
   rightGutterContent,
   readOnly = false,
@@ -527,37 +628,58 @@ export const CodeCell = memo(function CodeCell({
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
               <div className="mt-0.5">
-                <HiddenCellDisclosure
-                  icon={Code2}
-                  disabled={readOnly}
-                  pulsing={isExecuting || isGroupExecuting}
-                  onClick={() => {
-                    if (readOnly) return;
-                    if (onExpandHiddenGroup) {
-                      onExpandHiddenGroup();
-                    } else {
+                {hiddenGroupCount && hiddenGroupCount > 1 ? (
+                  <HiddenGroupDisclosure
+                    count={hiddenGroupCount}
+                    items={hiddenGroupItems ?? []}
+                    disabled={readOnly}
+                    pulsing={isExecuting || isGroupExecuting}
+                    onRevealAll={() => {
+                      if (readOnly) return;
+                      if (onExpandHiddenGroup) {
+                        onExpandHiddenGroup();
+                      } else {
+                        onToggleSourceHidden?.(false);
+                        onToggleOutputsHidden?.(false);
+                      }
+                    }}
+                    onRevealCell={
+                      onExpandHiddenGroupCell
+                        ? (cellId) => {
+                            if (readOnly) return;
+                            onExpandHiddenGroupCell(cellId);
+                          }
+                        : undefined
+                    }
+                    alert={
+                      hiddenGroupErrorCount
+                        ? hiddenGroupErrorCount === 1
+                          ? "1 error"
+                          : `${hiddenGroupErrorCount} errors`
+                        : undefined
+                    }
+                  />
+                ) : (
+                  <HiddenCellDisclosure
+                    icon={Code2}
+                    disabled={readOnly}
+                    pulsing={isExecuting || isGroupExecuting}
+                    onClick={() => {
+                      if (readOnly) return;
                       onToggleSourceHidden?.(false);
                       onToggleOutputsHidden?.(false);
+                    }}
+                    title="Show cell"
+                    label="Cell hidden"
+                    alert={
+                      hiddenGroupErrorCount
+                        ? hiddenGroupErrorCount === 1
+                          ? "1 error"
+                          : `${hiddenGroupErrorCount} errors`
+                        : undefined
                     }
-                  }}
-                  title={
-                    hiddenGroupCount && hiddenGroupCount > 1
-                      ? `Show ${hiddenGroupCount} cells`
-                      : "Show cell"
-                  }
-                  label={
-                    hiddenGroupCount && hiddenGroupCount > 1
-                      ? `${hiddenGroupCount} cells hidden`
-                      : "Cell hidden"
-                  }
-                  alert={
-                    hiddenGroupErrorCount
-                      ? hiddenGroupErrorCount === 1
-                        ? "1 error"
-                        : `${hiddenGroupErrorCount} errors`
-                      : undefined
-                  }
-                />
+                  />
+                )}
               </div>
             ) : isSourceHidden ? (
               <>

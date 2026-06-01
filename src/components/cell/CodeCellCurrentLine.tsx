@@ -20,6 +20,8 @@ type RunningSignalPhase = "resting" | "building" | "active" | "settling";
 
 const RUNNING_SIGNAL_DELAY_MS = 120;
 const RUNNING_SIGNAL_SETTLE_MS = 320;
+const RUNNING_SIGNAL_WAVE_PATH =
+  "M-120 6 C-115 1 -110 1 -105 6 S-95 11 -90 6 S-80 1 -75 6 S-65 11 -60 6 S-50 1 -45 6 S-35 11 -30 6 S-20 1 -15 6 S-5 11 0 6 S10 1 15 6 S25 11 30 6 S40 1 45 6 S55 11 60 6 S70 1 75 6 S85 11 90 6 S100 1 105 6 S115 11 120 6 S130 1 135 6 S145 11 150 6 S160 1 165 6 S175 11 180 6 S190 1 195 6 S205 11 210 6 S220 1 225 6 S235 11 240 6 S250 1 255 6 S265 11 270 6 S280 1 285 6 S295 11 300 6 S310 1 315 6 S325 11 330 6 S340 1 345 6 S355 11 360 6";
 
 function formatExecutionCount(count: number): string {
   return count > 999 ? "999+" : String(count);
@@ -195,12 +197,12 @@ function ExecutionBoundaryRule({
             aria-hidden="true"
           >
             <svg
-              className="absolute inset-y-0 left-0 h-full w-[200%] animate-exec-signal-wave"
-              viewBox="0 0 240 12"
+              className="absolute inset-y-0 left-0 h-full w-[300%] animate-exec-signal-wave"
+              viewBox="0 0 360 12"
               preserveAspectRatio="none"
             >
               <path
-                d="M0 6 C5 1 10 1 15 6 S25 11 30 6 S40 1 45 6 S55 11 60 6 S70 1 75 6 S85 11 90 6 S100 1 105 6 S115 11 120 6 S130 1 135 6 S145 11 150 6 S160 1 165 6 S175 11 180 6 S190 1 195 6 S205 11 210 6 S220 1 225 6 S235 11 240 6"
+                d={RUNNING_SIGNAL_WAVE_PATH}
                 fill="none"
                 stroke="currentColor"
                 strokeLinecap="round"
