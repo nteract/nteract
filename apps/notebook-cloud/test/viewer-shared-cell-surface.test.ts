@@ -74,6 +74,29 @@ test("cloud identity chrome renders through the shared actor projection surface"
   assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*actor=\{actor\}/);
 });
 
+test("cloud presence chrome renders through the shared shell component", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const sharedPresencePath = new URL(
+    "../../../src/components/notebook-shell/NotebookPresenceStatus.tsx",
+    import.meta.url,
+  );
+  const sharedPresenceText = readFileSync(sharedPresencePath, "utf8");
+  const hostedSmokePath = new URL("../scripts/hosted-render-smoke.mjs", import.meta.url);
+  const hostedSmokeText = readFileSync(hostedSmokePath, "utf8");
+  const collabSmokePath = new URL("../scripts/hosted-collab-smoke.mjs", import.meta.url);
+  const collabSmokeText = readFileSync(collabSmokePath, "utf8");
+
+  assert.match(sourceText, /NotebookPresenceStatus/);
+  assert.match(sourceText, /<NotebookPresenceStatus[\s\S]*label=\{presenceDisplay\.label\}/);
+  assert.match(sharedPresenceText, /data-slot="notebook-presence-status"/);
+  assert.match(hostedSmokeText, /\[data-slot='notebook-presence-status'\]/);
+  assert.match(collabSmokeText, /\[data-slot='notebook-presence-status'\]/);
+  assert.doesNotMatch(sourceText, /className="cloud-presence"/);
+  assert.doesNotMatch(hostedSmokeText, /cloud-presence/);
+  assert.doesNotMatch(collabSmokeText, /cloud-presence/);
+});
+
 test("cloud rail binds through the shared document rail adapter", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

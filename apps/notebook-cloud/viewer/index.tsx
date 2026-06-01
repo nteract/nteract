@@ -23,7 +23,6 @@ import {
   Share2,
   Trash2,
   UserRound,
-  UsersRound,
 } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
@@ -34,6 +33,7 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookIdentityBadge,
+  NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
   notebookActorIdentityFromAccess,
   type NotebookShellCapabilities,
@@ -1946,16 +1946,12 @@ function CloudPresenceStatus({
         : null;
 
   return (
-    <div
-      className="cloud-presence"
-      data-connected={String(presenceDisplay.connected)}
-      title={scopeLabel ? `${presenceDisplay.title}; ${scopeLabel}` : presenceDisplay.title}
-      aria-label={presenceDisplay.title}
-      aria-live="polite"
-    >
-      <UsersRound aria-hidden="true" />
-      <span>{scopeLabel ? `${presenceDisplay.label} · ${scopeLabel}` : presenceDisplay.label}</span>
-    </div>
+    <NotebookPresenceStatus
+      connected={presenceDisplay.connected}
+      label={presenceDisplay.label}
+      modeLabel={scopeLabel}
+      title={presenceDisplay.title}
+    />
   );
 }
 

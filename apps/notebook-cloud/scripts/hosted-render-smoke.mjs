@@ -341,7 +341,10 @@ async function main() {
     }
     if (expectedPresenceText) {
       await page.waitForFunction(
-        (expected) => document.querySelector(".cloud-presence")?.textContent?.includes(expected),
+        (expected) =>
+          document
+            .querySelector("[data-slot='notebook-presence-status']")
+            ?.textContent?.includes(expected),
         expectedPresenceText,
         { timeout: timeoutMs },
       );
@@ -417,7 +420,7 @@ async function main() {
       .locator("[data-slot='cell-container'], [data-cell-id]")
       .count();
     const presenceText = await page
-      .locator(".cloud-presence")
+      .locator("[data-slot='notebook-presence-status']")
       .textContent({ timeout: 1_000 })
       .catch(() => null);
     viewerMilestones = summarizeViewerMilestones(await collectViewerLoadMarks(page));

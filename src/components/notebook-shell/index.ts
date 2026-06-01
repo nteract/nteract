@@ -37,6 +37,7 @@ export {
   type NotebookIdentityBadgeProps,
   type NotebookIdentityGroupProps,
 } from "./NotebookIdentity";
+export { NotebookPresenceStatus, type NotebookPresenceStatusProps } from "./NotebookPresenceStatus";
 export {
   NotebookEnvironmentSummary,
   type NotebookEnvironmentSummaryProps,
