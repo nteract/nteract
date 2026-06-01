@@ -1,21 +1,12 @@
 "use client";
 
-import {
-  BadgeCheck,
-  CircleDot,
-  Laptop,
-  PanelTop,
-  PlayCircle,
-  TimerReset,
-  UserRound,
-} from "lucide-react";
+import { BadgeCheck, CircleDot, PanelTop, PlayCircle, TimerReset } from "lucide-react";
 import {
   NotebookCommandToolbar,
   NotebookEditModeButton,
-  NotebookIdentityBadge,
   NotebookPresenceStatus,
-  notebookActorIdentityFromProjection,
-  type NotebookActorIdentity,
+  NotebookToolbarIdentity,
+  notebookToolbarActors,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarProps,
 } from "@/components/notebook-shell";
@@ -79,7 +70,7 @@ function toolbarProps(
 }
 
 function presenceLabel(scenario: ElementsNotebookScenario): string {
-  const actorCount = Math.max(1, toolbarActors(scenario).length);
+  const actorCount = Math.max(1, notebookToolbarActors(scenario.capabilities).length);
   return actorCount === 1 ? "1 actor here" : `${actorCount} actors here`;
 }
 
@@ -398,7 +389,6 @@ export function NotebookToolbarSurfacesExample() {
 }
 
 function ToolbarIdentityControls({ scenario }: { scenario: ElementsNotebookScenario }) {
-  const actors = toolbarActors(scenario);
   const interaction = scenario.capabilities.interaction;
 
   return (
@@ -412,40 +402,9 @@ function ToolbarIdentityControls({ scenario }: { scenario: ElementsNotebookScena
           className="h-7 text-xs"
         />
       ) : null}
-      {actors.slice(0, 2).map((actor) => (
-        <NotebookIdentityBadge key={actor.id} actor={actor} size="sm" showDetail={false} />
-      ))}
-      {actors.length === 0 ? (
-        <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border bg-background px-2 text-xs text-muted-foreground">
-          {scenario.capabilities.access.source === "local" ? (
-            <Laptop className="size-3.5" aria-hidden="true" />
-          ) : (
-            <UserRound className="size-3.5" aria-hidden="true" />
-          )}
-          anonymous
-        </span>
-      ) : null}
+      <NotebookToolbarIdentity capabilities={scenario.capabilities} />
     </div>
   );
-}
-
-function toolbarActors(scenario: ElementsNotebookScenario): NotebookActorIdentity[] {
-  const accessActor = scenario.capabilities.access.actor;
-  const runtimeActor = scenario.capabilities.runtime.actor;
-  const candidates = [
-    accessActor ? notebookActorIdentityFromProjection(accessActor) : null,
-    runtimeActor ? notebookActorIdentityFromProjection(runtimeActor) : null,
-  ].filter((actor): actor is NonNullable<typeof actor> => Boolean(actor));
-  const actors: NotebookActorIdentity[] = [];
-  const actorIds = new Set<string>();
-
-  for (const actor of candidates) {
-    if (actorIds.has(actor.id)) continue;
-    actorIds.add(actor.id);
-    actors.push(actor);
-  }
-
-  return actors;
 }
 
 function ScenarioPill({ label }: { label: string }) {

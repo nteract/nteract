@@ -35,6 +35,7 @@ import {
   NotebookIdentityBadge,
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
+  NotebookToolbarIdentity,
   createNotebookEnvironmentSurface,
   notebookActorIdentityFromAccess,
   type NotebookCommandRuntimeState,
@@ -1301,14 +1302,7 @@ function NotebookViewer({
             interaction={shellCapabilities.interaction ?? null}
             onAuthStateChange={refreshAuthState}
           />
-          <NotebookIdentityBadge
-            actor={notebookActorIdentityFromAccess(
-              shellCapabilities.access,
-              shellCapabilities.auth,
-            )}
-            size="sm"
-            showDetail={false}
-          />
+          <NotebookToolbarIdentity capabilities={shellCapabilities} />
         </>
       }
     />
