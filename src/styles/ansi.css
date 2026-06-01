@@ -9,28 +9,28 @@
 @layer base {
   :root {
     --ansi-black: #4b5563;
-    --ansi-red: #dc2626;
-    --ansi-green: #15803d;
-    --ansi-yellow: #a16207;
-    --ansi-blue: #1d4ed8;
-    --ansi-magenta: #9333ea;
-    --ansi-cyan: #0e7490;
+    --ansi-red: #cf222e;
+    --ansi-green: #1a7f37;
+    --ansi-yellow: #b45309;
+    --ansi-blue: #0969da;
+    --ansi-magenta: #8250df;
+    --ansi-cyan: #087990;
     --ansi-white: #6b7280;
     --ansi-bright-black: #6b7280;
-    --ansi-bright-red: #dc2626;
-    --ansi-bright-green: #15803d;
-    --ansi-bright-yellow: #a16207;
+    --ansi-bright-red: #cf222e;
+    --ansi-bright-green: #1a7f37;
+    --ansi-bright-yellow: #b45309;
     --ansi-bright-blue: #2563eb;
-    --ansi-bright-magenta: #9333ea;
-    --ansi-bright-cyan: #0e7490;
+    --ansi-bright-magenta: #8250df;
+    --ansi-bright-cyan: #087990;
     --ansi-bright-white: #111827;
     --ansi-black-bg: #4b5563;
-    --ansi-red-bg: #dc2626;
-    --ansi-green-bg: #15803d;
-    --ansi-yellow-bg: #a16207;
-    --ansi-blue-bg: #1d4ed8;
-    --ansi-magenta-bg: #9333ea;
-    --ansi-cyan-bg: #0e7490;
+    --ansi-red-bg: #cf222e;
+    --ansi-green-bg: #1a7f37;
+    --ansi-yellow-bg: #b45309;
+    --ansi-blue-bg: #0969da;
+    --ansi-magenta-bg: #8250df;
+    --ansi-cyan-bg: #087990;
     --ansi-white-bg: #6b7280;
   }
 
