@@ -146,7 +146,7 @@ describe("NotebookRail", () => {
   });
 
   it("exposes a stable panel slot for host shell layout adapters", () => {
-    render(
+    const { container } = render(
       <NotebookRail
         activePanelId="outline"
         collapsed={false}
@@ -160,6 +160,10 @@ describe("NotebookRail", () => {
     expect(
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
+    expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
+      "w-[clamp(20rem,26vw,24rem)]",
+      "max-[600px]:w-[calc(100vw-3rem)]",
+    );
   });
 
   it("lets the host handle anchor navigation without browser default navigation", () => {
