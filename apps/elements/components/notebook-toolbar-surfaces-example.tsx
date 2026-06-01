@@ -15,6 +15,7 @@ import {
   NotebookIdentityBadge,
   NotebookPresenceStatus,
   notebookActorIdentityFromProjection,
+  type NotebookActorIdentity,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarProps,
 } from "@/components/notebook-shell";
@@ -78,8 +79,7 @@ function toolbarProps(
 }
 
 function presenceLabel(scenario: ElementsNotebookScenario): string {
-  const actorCount =
-    scenario.capabilities.runtime.actor && scenario.capabilities.access.actor?.actorLabel ? 2 : 1;
+  const actorCount = Math.max(1, toolbarActors(scenario).length);
   return actorCount === 1 ? "1 actor here" : `${actorCount} actors here`;
 }
 
@@ -398,12 +398,7 @@ export function NotebookToolbarSurfacesExample() {
 }
 
 function ToolbarIdentityControls({ scenario }: { scenario: ElementsNotebookScenario }) {
-  const accessActor = scenario.capabilities.access.actor;
-  const runtimeActor = scenario.capabilities.runtime.actor;
-  const actors = [
-    accessActor ? notebookActorIdentityFromProjection(accessActor) : null,
-    runtimeActor ? notebookActorIdentityFromProjection(runtimeActor) : null,
-  ].filter((actor): actor is NonNullable<typeof actor> => Boolean(actor));
+  const actors = toolbarActors(scenario);
   const interaction = scenario.capabilities.interaction;
 
   return (
@@ -432,6 +427,25 @@ function ToolbarIdentityControls({ scenario }: { scenario: ElementsNotebookScena
       ) : null}
     </div>
   );
+}
+
+function toolbarActors(scenario: ElementsNotebookScenario): NotebookActorIdentity[] {
+  const accessActor = scenario.capabilities.access.actor;
+  const runtimeActor = scenario.capabilities.runtime.actor;
+  const candidates = [
+    accessActor ? notebookActorIdentityFromProjection(accessActor) : null,
+    runtimeActor ? notebookActorIdentityFromProjection(runtimeActor) : null,
+  ].filter((actor): actor is NonNullable<typeof actor> => Boolean(actor));
+  const actors: NotebookActorIdentity[] = [];
+  const actorIds = new Set<string>();
+
+  for (const actor of candidates) {
+    if (actorIds.has(actor.id)) continue;
+    actorIds.add(actor.id);
+    actors.push(actor);
+  }
+
+  return actors;
 }
 
 function ScenarioPill({ label }: { label: string }) {
