@@ -191,18 +191,15 @@ export function TracebackOutput({
   onNavigateToCell,
 }: Props) {
   const payload = toPayload(data);
-  if (!payload) {
-    return <RawJsonFallback data={data} className={className} />;
-  }
-  const frames = payload.frames ?? [];
+  const frames = payload?.frames ?? [];
   const clusters = clusterFrames(frames);
-  const language = payload.language ?? "python";
+  const language = payload?.language ?? "python";
   // Inline `ename: evalue` on one line when the evalue fits. Multi-line
   // evalues (pytest diffs, chained SQL errors) fall through to the
   // two-line layout. Independent of frame count — a short evalue next
   // to the ename reads better whether we show frames below or not.
-  const inlineEvalue = Boolean(payload.evalue) && !payload.evalue.includes("\n");
-  const currentExecutionId = payload.execution?.execution_id;
+  const inlineEvalue = Boolean(payload?.evalue && !payload.evalue.includes("\n"));
+  const currentExecutionId = payload?.execution?.execution_id;
   const defaultSelectedFrame = useMemo(() => preferredFrameIndex(clusters), [clusters]);
   const [selectedFrame, setSelectedFrame] = useState(defaultSelectedFrame);
 
@@ -211,6 +208,10 @@ export function TracebackOutput({
   }, [defaultSelectedFrame]);
 
   const selectedCluster = clusters[selectedFrame] ?? clusters[defaultSelectedFrame] ?? null;
+
+  if (!payload) {
+    return <RawJsonFallback data={data} className={className} />;
+  }
 
   return (
     <div

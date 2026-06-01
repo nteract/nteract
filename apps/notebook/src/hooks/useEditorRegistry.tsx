@@ -36,9 +36,11 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
       // Find CodeMirror's content element inside the cell
       const cmContent = cellElement.querySelector(".cm-content");
       if (!cmContent) {
-        const focusTarget = cellElement.querySelector<HTMLElement>("[data-cell-focus-target]");
-        if (focusTarget) {
-          focusTarget.focus({ preventScroll: true });
+        const fallbackFocusElement = cellElement.querySelector<HTMLElement>(
+          "[data-cell-focus-target]",
+        );
+        if (fallbackFocusElement) {
+          fallbackFocusElement.focus({ preventScroll: true });
           return;
         }
 
