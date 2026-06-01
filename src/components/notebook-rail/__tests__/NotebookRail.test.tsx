@@ -48,7 +48,10 @@ describe("NotebookRail", () => {
       "aria-current",
       "location",
     );
-    expect(screen.getByRole("link", { name: "Load data" })).toHaveClass("bg-primary/8");
+    expect(screen.getByRole("link", { name: "Load data" })).toHaveClass(
+      "font-medium",
+      "before:bg-primary",
+    );
     expect(screen.queryByText("2 items")).not.toBeInTheDocument();
     expect(screen.queryByText("1 item")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Load data" })).toHaveAttribute(

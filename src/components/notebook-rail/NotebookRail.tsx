@@ -260,7 +260,7 @@ function NotebookOutlineNode({
     "cursor-pointer select-none touch-manipulation [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
     "before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-0.5 before:rounded-full before:bg-transparent before:transition-colors",
     selected
-      ? "bg-primary/8 text-foreground before:bg-primary"
+      ? "font-medium text-foreground before:bg-primary"
       : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
   );
   const content = (
@@ -273,7 +273,7 @@ function NotebookOutlineNode({
           data-slot="notebook-outline-item-meta"
           className={cn(
             "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
-            selected ? "bg-primary/10 text-foreground/70" : "bg-muted text-muted-foreground",
+            selected ? "bg-muted text-foreground/70" : "bg-muted text-muted-foreground",
           )}
         >
           {item.statusLabel}
@@ -283,7 +283,7 @@ function NotebookOutlineNode({
           data-slot="notebook-outline-item-meta"
           className={cn(
             "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
-            selected ? "bg-primary/10 text-foreground/70" : "bg-muted text-muted-foreground",
+            selected ? "bg-muted text-foreground/70" : "bg-muted text-muted-foreground",
           )}
         >
           {item.detail}
