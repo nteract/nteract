@@ -291,10 +291,21 @@ function CloudHeader({
   people: readonly NotebookActorIdentity[];
   scenario: ReturnType<typeof getElementsNotebookScenario>;
 }) {
+  if (compact) {
+    return (
+      <CloudHeaderStrip
+        actor={actor}
+        connection={connection}
+        mode={mode}
+        people={people}
+        scenario={scenario}
+      />
+    );
+  }
+
   return (
     <NotebookDocumentHeader
       capabilities={scenario.capabilities}
-      className={cn(compact && "gap-2")}
       presence={<CloudPresence people={people} mode={mode} compact={compact} />}
       utilityControls={<CloudConnectionPill state={connection} compact={compact} />}
       runtimeControls={<CloudRuntimePill compact={compact} />}
@@ -302,6 +313,41 @@ function CloudHeader({
       editControls={<CloudModeButton mode={mode} compact={compact} />}
       authControls={<CloudAccountButton actor={actor} compact={compact} />}
     />
+  );
+}
+
+function CloudHeaderStrip({
+  actor,
+  connection,
+  mode,
+  people,
+  scenario,
+}: {
+  actor: NotebookActorIdentity;
+  connection: CloudConnectionState;
+  mode: CloudModeState;
+  people: readonly NotebookActorIdentity[];
+  scenario: ReturnType<typeof getElementsNotebookScenario>;
+}) {
+  return (
+    <div
+      className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"
+      data-slot="cloud-notebook-header-strip"
+      role="toolbar"
+      aria-label="Cloud notebook state"
+    >
+      <CloudPresence people={people} mode={mode} compact />
+      <span className="h-4 w-px bg-border/70" aria-hidden="true" />
+      <CloudConnectionPill state={connection} compact />
+      <CloudRuntimePill compact />
+      {scenario.capabilities.canManageSharing ? <CloudShareButton compact /> : null}
+      {scenario.capabilities.canRequestEdit ? <CloudModeButton mode={mode} compact /> : null}
+      {scenario.capabilities.auth.canSignIn ||
+      scenario.capabilities.auth.canUseAuthenticatedIdentity ||
+      scenario.capabilities.auth.needsAttention ? (
+        <CloudAccountButton actor={actor} compact />
+      ) : null}
+    </div>
   );
 }
 
@@ -422,7 +468,7 @@ function CloudAccountButton({
         className="inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70"
       >
         <LogIn className="size-3.5" aria-hidden="true" />
-        {compact ? null : <span>Sign in</span>}
+        <span className={cn(compact && "sr-only")}>Sign in</span>
       </button>
     );
   }
@@ -433,11 +479,8 @@ function CloudAccountButton({
       className="inline-flex h-8 max-w-[min(14rem,34vw)] items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70"
       title={actor.detail ?? actor.label}
     >
-      <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
-        <span className="size-3.5 rounded-sm border border-border bg-muted" />
-        <span className="absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full bg-emerald-500" />
-      </span>
-      {compact ? null : <span className="min-w-0 truncate">{actor.label}</span>}
+      <span className="size-2 rounded-full bg-emerald-500" aria-hidden="true" />
+      <span className={cn("min-w-0 truncate", compact && "max-w-16")}>{actor.label}</span>
     </button>
   );
 }
