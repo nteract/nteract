@@ -45,6 +45,7 @@ describe("CellInsertionRibbon", () => {
     const adder = container.querySelector('[data-slot="cell-adder"]');
     const continuation = container.querySelector('[data-slot="cell-adder-ribbon-continuation"]');
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
+    const glyph = container.querySelector('[data-slot="cell-adder-primary-glyph"]');
 
     fireEvent.pointerEnter(adder!);
 
@@ -52,7 +53,8 @@ describe("CellInsertionRibbon", () => {
     expect(adder).not.toHaveAttribute("data-active-type");
     expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toBeNull();
     expect(continuation).toHaveClass("bg-gray-300/70");
-    expect(hitTarget).toHaveClass("bg-muted/20");
+    expect(hitTarget).toHaveClass("bg-transparent");
+    expect(glyph).toHaveClass("opacity-0");
   });
 
   it("keeps explicit actions out of the tab order until the row is awake", () => {

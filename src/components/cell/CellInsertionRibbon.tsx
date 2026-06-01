@@ -161,7 +161,7 @@ export function CellInsertionRibbon({
           visualActiveType
             ? insertionChannelIntentClasses[visualActiveType]
             : isOpen
-              ? "bg-muted/20 text-muted-foreground/45 hover:bg-muted/30 hover:text-muted-foreground/70"
+              ? "bg-transparent text-muted-foreground/35 hover:bg-muted/20 hover:text-muted-foreground/65"
               : "text-muted-foreground/0 hover:bg-muted/20",
           terminal && "h-7",
         )}
@@ -170,7 +170,7 @@ export function CellInsertionRibbon({
           data-slot="cell-adder-primary-glyph"
           className={cn(
             "size-3 transition-opacity duration-150",
-            isOpen || visualActiveType === "code" ? "opacity-100" : "opacity-0",
+            visualActiveType ? "opacity-100" : "opacity-0",
           )}
           aria-hidden="true"
         />
