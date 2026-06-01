@@ -52,4 +52,21 @@ describe("NotebookEditModeButton", () => {
 
     expect(onModeChange).toHaveBeenCalledWith("edit");
   });
+
+  it("does not reapply the already selected segmented mode", () => {
+    const onModeChange = vi.fn();
+
+    render(
+      <NotebookEditModeButton
+        mode="view"
+        state="viewing"
+        variant="segmented"
+        onModeChange={onModeChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Viewing" }));
+
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
 });

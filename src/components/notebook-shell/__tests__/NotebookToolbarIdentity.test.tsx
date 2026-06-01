@@ -141,4 +141,28 @@ describe("NotebookToolbarIdentity", () => {
       "inline",
     );
   });
+
+  it("uses a compact label for inline email identities", () => {
+    render(
+      <NotebookToolbarIdentity
+        variant="inline"
+        capabilities={capabilities({
+          access: {
+            level: "owner",
+            source: "cloud",
+            isPublic: false,
+            actorLabel: "user:anaconda:alice/browser:tab",
+            identityLabel: "alice@example.com",
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("alice")).toBeVisible();
+    expect(screen.queryByText("alice@example.com")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-slot='notebook-identity-badge']")).toHaveAttribute(
+      "title",
+      "alice@example.com - Owner",
+    );
+  });
 });

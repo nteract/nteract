@@ -54,7 +54,11 @@ export function NotebookEditModeButton({
           )}
           disabled={disabled}
           title="View notebook"
-          onClick={() => onModeChange("view")}
+          onClick={() => {
+            if (mode !== "view") {
+              onModeChange("view");
+            }
+          }}
         >
           <BookOpen className="size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 truncate leading-none">Viewing</span>
@@ -68,7 +72,11 @@ export function NotebookEditModeButton({
           )}
           disabled={disabled}
           title={state === "editing" ? "Editing notebook" : "Request edit access"}
-          onClick={() => onModeChange("edit")}
+          onClick={() => {
+            if (mode !== "edit") {
+              onModeChange("edit");
+            }
+          }}
         >
           <Pencil className="size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 truncate leading-none">Editing</span>

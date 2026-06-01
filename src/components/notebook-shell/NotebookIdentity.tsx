@@ -48,6 +48,7 @@ export function NotebookIdentityBadge({
   const Icon = actorIcon(actor.kind);
   const avatarSize = size === "sm" ? "sm" : "default";
   const inline = variant === "inline";
+  const label = inline ? compactPublicIdentityLabel(actor.label) : actor.label;
 
   return (
     <div
@@ -80,7 +81,7 @@ export function NotebookIdentityBadge({
             inline ? "text-sm" : size === "sm" ? "text-xs" : "text-sm",
           )}
         >
-          {actor.label}
+          {label}
         </span>
         {showDetail && actor.detail ? (
           <span className="block truncate text-[11px] leading-tight text-muted-foreground">
@@ -90,6 +91,15 @@ export function NotebookIdentityBadge({
       </span>
     </div>
   );
+}
+
+function compactPublicIdentityLabel(label: string): string {
+  const trimmed = label.trim();
+  const emailMatch = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/.exec(trimmed);
+  if (emailMatch?.[1]) {
+    return emailMatch[1];
+  }
+  return trimmed;
 }
 
 export function NotebookIdentityGroup({
