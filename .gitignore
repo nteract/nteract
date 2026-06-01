@@ -72,8 +72,8 @@ python/nteract/src/nteract/_widget.html
 # isolated-renderer) are LFS-tracked — see `.gitattributes`.
 /apps/notebook/src/renderer-plugins/sift.js
 /apps/notebook/src/renderer-plugins/sift.css
-# wasm-pack outputs, rebuilt on every `cargo xtask build` via xtask's
-# volatile-wasm force-rebuild path.
+# wasm-pack outputs, rebuilt by `cargo xtask wasm`. xtask build/dev commands
+# verify these outputs with source fingerprints and rebuild when stale.
 /apps/notebook/src/wasm/runtimed-wasm/
 /crates/sift-wasm/pkg/
 

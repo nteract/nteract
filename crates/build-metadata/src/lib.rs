@@ -18,19 +18,15 @@ pub fn emit_git_rerun_hints() {
     println!("cargo:rerun-if-env-changed={GIT_HASH_ENV}");
     println!("cargo:rerun-if-env-changed={GIT_DATE_ENV}");
 
-    if let Some(path) = git_path("HEAD") {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
+    emit_git_path_rerun_hint("HEAD");
 
     if let Some(ref_name) = git_output(&["rev-parse", "--symbolic-full-name", "HEAD"]) {
         if ref_name != "HEAD" {
-            if let Some(path) = git_path(&ref_name) {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
+            emit_git_path_rerun_hint(&ref_name);
         }
     }
 
-    if let Some(path) = git_path("packed-refs") {
+    if let Some(path) = git_path("packed-refs").filter(|path| path.exists()) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 }
@@ -103,6 +99,12 @@ fn git_date() -> String {
 
 fn git_path(path: &str) -> Option<PathBuf> {
     git_output(&["rev-parse", "--path-format=absolute", "--git-path", path]).map(PathBuf::from)
+}
+
+fn emit_git_path_rerun_hint(path: &str) {
+    if let Some(path) = git_path(path).filter(|path| path.exists()) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
 }
 
 fn git_output(args: &[&str]) -> Option<String> {

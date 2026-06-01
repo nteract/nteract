@@ -578,27 +578,19 @@ fn run_cargo_build_daemon(project_root: &Path) -> bool {
     }
 }
 
-/// Rebuild `runtimed-wasm` so the frontend bundle matches the daemon's
-/// runtime-state schema. Skipping this on rebuild produces a fresh daemon
-/// against a stale `.wasm`; the two then disagree on the schema seed and
-/// every notebook's runtime-state doc gets stuck behind a duplicate-seq-1
-/// rejection from automerge. Always run on rebuild=true.
+/// Ensure `runtimed-wasm` matches the daemon's runtime-state schema and source
+/// inputs. Skipping this on rebuild can produce a fresh daemon against a stale
+/// `.wasm`; the two then disagree on the schema seed and every notebook's
+/// runtime-state doc gets stuck behind a duplicate-seq-1 rejection from
+/// automerge.
 ///
-/// We invoke `cargo xtask wasm runtimed --skip-renderer-plugins` so the
-/// build path matches what `cargo xtask build` and `cargo xtask dev-daemon`
-/// already do, and so the renderer-plugin glue (sift) isn't pulled in.
-fn run_xtask_wasm_runtimed(project_root: &Path) -> bool {
-    info!("Rebuilding runtimed-wasm (cargo xtask wasm runtimed --skip-renderer-plugins)...");
+/// We invoke `cargo xtask wasm-ensure` so normal rebuilds use the same
+/// fingerprint guard as `cargo xtask build` without pulling in sift renderer
+/// plugin glue or touching wasm-pack outputs when they are already current.
+fn run_xtask_wasm_ensure(project_root: &Path) -> bool {
+    info!("Ensuring runtimed-wasm is current (cargo xtask wasm-ensure)...");
     let status = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "--package",
-            "xtask",
-            "--",
-            "wasm",
-            "runtimed",
-            "--skip-renderer-plugins",
-        ])
+        .args(["run", "--package", "xtask", "--", "wasm-ensure"])
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -606,15 +598,15 @@ fn run_xtask_wasm_runtimed(project_root: &Path) -> bool {
 
     match status {
         Ok(s) if s.success() => {
-            info!("cargo xtask wasm runtimed succeeded");
+            info!("cargo xtask wasm-ensure succeeded");
             true
         }
         Ok(s) => {
-            error!("cargo xtask wasm runtimed failed with {s}");
+            error!("cargo xtask wasm-ensure failed with {s}");
             false
         }
         Err(e) => {
-            error!("Failed to run cargo xtask wasm runtimed: {e}");
+            error!("Failed to run cargo xtask wasm-ensure: {e}");
             false
         }
     }
@@ -1495,14 +1487,14 @@ impl Supervisor {
             // same well-known schema actor, and any divergence in the
             // scaffolded ops produces a `(actor, seq)` collision that
             // automerge rejects on receive. Stale wasm leaves the frontend
-            // stuck on "Initializing" with no surfaced error. Always rebuild.
-            if !run_xtask_wasm_runtimed(&project_root) {
+            // stuck on "Initializing" with no surfaced error.
+            if !run_xtask_wasm_ensure(&project_root) {
                 return Ok(CallToolResult::success(vec![Content::text(
-                    "up: cargo xtask wasm runtimed failed. Daemon was rebuilt; \
+                    "up: cargo xtask wasm-ensure failed. Daemon was rebuilt; \
                      the frontend wasm bundle may be stale. See the supervisor logs.",
                 )]));
             }
-            report.push("rebuild: runtimed-wasm rebuilt".into());
+            report.push("rebuild: runtimed-wasm current".into());
         }
 
         // Step 3: sweep zombie vites
@@ -2212,13 +2204,13 @@ impl ServerHandler for Supervisor {
                     info!("Skipping maturin develop (SKIP_MATURIN=1)");
                 }
 
-                // 3. Rebuild runtimed-wasm so the frontend bundle stays in
-                // lockstep with the daemon's runtime-state schema. See
-                // `run_xtask_wasm_runtimed` for why a stale wasm here ends
-                // in stuck "Initializing" via duplicate-seq-1.
-                if !run_xtask_wasm_runtimed(&project_root) {
+                // 3. Ensure runtimed-wasm stays in lockstep with the daemon's
+                // runtime-state schema. See `run_xtask_wasm_ensure` for why a
+                // stale wasm here ends in stuck "Initializing" via
+                // duplicate-seq-1.
+                if !run_xtask_wasm_ensure(&project_root) {
                     return Ok(CallToolResult::success(vec![Content::text(
-                        "cargo xtask wasm runtimed failed — check the supervisor logs for details\n\
+                        "cargo xtask wasm-ensure failed — check the supervisor logs for details\n\
                          (daemon binary was rebuilt successfully; the frontend wasm bundle may be stale)",
                     )]));
                 }
