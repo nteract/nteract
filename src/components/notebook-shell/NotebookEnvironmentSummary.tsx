@@ -12,6 +12,7 @@ export interface NotebookEnvironmentSummaryProps {
   packageSourceLabel?: string | null;
   syncLabel?: string | null;
   trustLabel?: string | null;
+  showPackageDetails?: boolean;
   className?: string;
 }
 
@@ -22,6 +23,7 @@ export function NotebookEnvironmentSummary({
   packageSourceLabel = null,
   syncLabel = null,
   trustLabel = null,
+  showPackageDetails = true,
   className,
 }: NotebookEnvironmentSummaryProps) {
   const packageAccessLabel = capabilities.canManagePackages
@@ -83,8 +85,8 @@ export function NotebookEnvironmentSummary({
         <SummaryFact
           icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
           label="Sync"
-          value={syncLabel ?? packageAccessLabel}
-          muted={!capabilities.canManagePackages}
+          value={syncLabel ?? "Sync status not reported"}
+          muted={!syncLabel}
         />
         <SummaryFact
           icon={
@@ -99,38 +101,43 @@ export function NotebookEnvironmentSummary({
         />
       </div>
 
-      <div className="border-t border-border px-4 py-3">
-        {packages.sections.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No package manager metadata available.</p>
-        ) : (
-          <div className="space-y-3">
-            {packages.sections.map((section) => (
-              <div key={section.manager} className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold">{section.label}</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {section.dependencies.length === 1
-                      ? "1 dependency"
-                      : `${section.dependencies.length} dependencies`}
-                  </span>
+      {showPackageDetails ? (
+        <div className="border-t border-border px-4 py-3">
+          {packages.sections.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No package manager metadata available.</p>
+          ) : (
+            <div className="space-y-3">
+              {packages.sections.map((section) => (
+                <div key={section.manager} className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold">{section.label}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {section.dependencies.length === 1
+                        ? "1 dependency"
+                        : `${section.dependencies.length} dependencies`}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      ...section.dependencies,
+                      ...section.details.flatMap((detail) => detail.values),
+                    ]
+                      .slice(0, 8)
+                      .map((value, index) => (
+                        <code
+                          key={`${section.manager}:${value}:${index}`}
+                          className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                        >
+                          {value}
+                        </code>
+                      ))}
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {[...section.dependencies, ...section.details.flatMap((detail) => detail.values)]
-                    .slice(0, 8)
-                    .map((value, index) => (
-                      <code
-                        key={`${section.manager}:${value}:${index}`}
-                        className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
-                      >
-                        {value}
-                      </code>
-                    ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }

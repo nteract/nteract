@@ -31,6 +31,7 @@ import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookEnvironmentSummary,
   NotebookIdentityBadge,
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
@@ -1155,6 +1156,17 @@ function NotebookViewer({
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
           readOnly={!shellCapabilities.canManagePackages}
+          header={
+            <NotebookEnvironmentSummary
+              capabilities={shellCapabilities}
+              packages={notebookViewModel.packages}
+              runtimeLabel={connectionScope === "runtime_peer" ? "Runtime peer connected" : null}
+              syncLabel={connectionScope ? "Live sync connected" : "Live sync unavailable"}
+              trustLabel="Trust state not required"
+              showPackageDetails={false}
+              className="shadow-none"
+            />
+          }
         />
       }
       onActivePanelChange={setActiveRailPanel}

@@ -27,6 +27,18 @@ describe("NotebookPackageSummaryPanel", () => {
     expect(screen.getByText("Read only")).toBeVisible();
   });
 
+  it("renders a shared host summary above package details", () => {
+    render(
+      <NotebookPackageSummaryPanel
+        packages={{ summary: "uv - 1 package", sections: [] }}
+        header={<p>Cloud viewer environment</p>}
+      />,
+    );
+
+    expect(screen.getByText("Cloud viewer environment")).toBeVisible();
+    expect(screen.getByText("No package metadata in this notebook.")).toBeVisible();
+  });
+
   it("shows an empty package metadata state", () => {
     render(<NotebookPackageSummaryPanel packages={{ summary: null, sections: [] }} />);
 

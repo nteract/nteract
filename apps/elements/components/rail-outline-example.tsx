@@ -14,6 +14,8 @@ import {
   NotebookDocumentHeader,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookEnvironmentSummary,
+  NotebookPackageSummaryPanel,
   type NotebookViewCell,
 } from "@/components/notebook-shell";
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
@@ -42,6 +44,8 @@ const scenarioIds: ElementsNotebookScenarioId[] = [
   "cloud-editor",
   "cloud-owner",
   "agent-on-behalf",
+  "runtime-peer",
+  "system-schema",
   "runtime-unavailable",
 ];
 
@@ -161,9 +165,27 @@ export function RailOutlineExample() {
           selectedOutlineCellId={focusedCellId}
           packagesSummary={scenario.packageSummary}
           packagesPanel={
-            <NotebookPackagesPanel readOnly={!scenario.capabilities.canManagePackages}>
-              <PackagePanelContent scenario={scenario} />
-            </NotebookPackagesPanel>
+            scenario.capabilities.canManagePackages ? (
+              <NotebookPackagesPanel>
+                <PackagePanelContent scenario={scenario} />
+              </NotebookPackagesPanel>
+            ) : (
+              <NotebookPackageSummaryPanel
+                packages={viewModel.packages}
+                readOnly
+                header={
+                  <NotebookEnvironmentSummary
+                    capabilities={scenario.capabilities}
+                    packages={viewModel.packages}
+                    runtimeLabel={scenario.runtimeLabel}
+                    syncLabel={packageSyncLabel(scenario.packageState.syncState.status)}
+                    trustLabel={trustStatusLabel(scenario.trustState.trustInfo.status)}
+                    showPackageDetails={false}
+                    className="shadow-none"
+                  />
+                }
+              />
+            )
           }
           onActivePanelChange={setActivePanel}
           onCollapsedChange={setRailCollapsed}
@@ -205,6 +227,30 @@ export function RailOutlineExample() {
       />
     </NotebookDocumentShell>
   );
+}
+
+function trustStatusLabel(status: ElementsNotebookScenario["trustState"]["trustInfo"]["status"]) {
+  switch (status) {
+    case "trusted":
+      return "Trusted";
+    case "untrusted":
+      return "Untrusted dependencies";
+    case "no_dependencies":
+      return "No dependency trust review needed";
+  }
+}
+
+function packageSyncLabel(status: ElementsNotebookScenario["packageState"]["syncState"]["status"]) {
+  switch (status) {
+    case "dirty":
+      return "Package metadata has pending changes";
+    case "not_running":
+      return "Runtime is not running";
+    case "not_uv_managed":
+      return "Package metadata is outside uv";
+    case "synced":
+      return "Package metadata synced";
+  }
 }
 
 function ScenarioNotice({
