@@ -209,12 +209,13 @@ describe("NotebookRail", () => {
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(13rem,18vw,16rem)]",
+      "w-[clamp(15rem,20vw,18rem)]",
+      "min-w-60",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
   });
 
-  it("keeps package details compact until the rail owns the viewport", () => {
+  it("gives package details enough room until the rail owns the viewport", () => {
     const { container } = render(
       <NotebookRail
         activePanelId="packages"
@@ -227,8 +228,8 @@ describe("NotebookRail", () => {
     );
 
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(12.5rem,17vw,14rem)]",
-      "min-w-[12.5rem]",
+      "w-[clamp(15rem,20vw,17rem)]",
+      "min-w-60",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
   });

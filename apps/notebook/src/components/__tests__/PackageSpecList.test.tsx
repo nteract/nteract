@@ -22,7 +22,7 @@ describe("PackageSpecList", () => {
     expect(screen.getAllByText("numpy")).toHaveLength(2);
   });
 
-  it("quiets read-only package rows without dropping tone", () => {
+  it("quiets read-only package rows without redundant markers", () => {
     const { container } = render(
       <PackageSpecList
         values={["nteract", "gremlin ; sys_platform == 'darwin'"]}
@@ -33,7 +33,10 @@ describe("PackageSpecList", () => {
     );
 
     expect(container.querySelector("svg")).not.toBeInTheDocument();
-    expect(container.querySelector(".bg-uv\\/60")).toBeInTheDocument();
+    expect(container.querySelector(".bg-uv\\/60")).not.toBeInTheDocument();
+    expect(screen.getByText("nteract").parentElement).toHaveClass(
+      "grid-cols-[minmax(0,1fr)_auto_auto]",
+    );
     expect(screen.getByText("nteract")).toBeVisible();
     expect(screen.getByText("gremlin")).toHaveAttribute("title", "gremlin");
     expect(screen.getByText("sys_platform == 'darwin'")).toBeVisible();
@@ -43,6 +46,7 @@ describe("PackageSpecList", () => {
     );
     expect(screen.getByText("sys_platform == 'darwin'")).not.toHaveClass("truncate");
     expect(screen.getByText("sys_platform == 'darwin'")).toHaveClass("whitespace-normal");
+    expect(screen.getByText("sys_platform == 'darwin'")).toHaveClass("col-start-1");
   });
 
   it("keeps full package specs available when rail text truncates", () => {

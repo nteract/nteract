@@ -20,13 +20,6 @@ const toneClasses: Record<PackageSpecTone, string> = {
   neutral: "text-muted-foreground bg-muted/70 ring-border/60",
 };
 
-const toneDotClasses: Record<PackageSpecTone, string> = {
-  uv: "bg-uv/60",
-  conda: "bg-emerald-500/60",
-  pixi: "bg-amber-500/60",
-  neutral: "bg-muted-foreground/50",
-};
-
 const markerStartPattern =
   /^(?:python_version|python_full_version|os_name|sys_platform|platform_release|platform_system|platform_version|platform_machine|platform_python_implementation|implementation_name|implementation_version|extra)\b/;
 
@@ -56,7 +49,6 @@ export function PackageSpecList({
         const parsed = parsePackageSpec(value);
         const hasEnvironmentMarker = findEnvironmentMarkerStart(value.trim()) > 0;
         const showIcon = framed || Boolean(onRemove);
-        const showDot = !showIcon;
         return (
           <div
             key={`${index}-${value}`}
@@ -65,7 +57,7 @@ export function PackageSpecList({
               "grid items-center gap-x-2 gap-y-0.5 border-b px-2.5 py-1.5 text-xs last:border-b-0",
               showIcon
                 ? "min-h-9 grid-cols-[auto_minmax(0,1fr)_auto_auto]"
-                : "min-h-8 grid-cols-[auto_minmax(0,1fr)_auto_auto]",
+                : "min-h-8 grid-cols-[minmax(0,1fr)_auto_auto]",
               !framed && "px-0",
             )}
           >
@@ -81,22 +73,15 @@ export function PackageSpecList({
                 <Package className="size-3" />
               </span>
             )}
-            {showDot && (
-              <span
-                className={cn(
-                  "mt-1.5 size-1.5 self-start rounded-full",
-                  hasEnvironmentMarker && parsed.spec && "row-span-2",
-                  toneDotClasses[tone],
-                )}
-                aria-hidden="true"
-              />
-            )}
             <span className="min-w-0 flex-1 truncate font-mono text-foreground" title={parsed.name}>
               {parsed.name}
             </span>
             {parsed.spec && hasEnvironmentMarker ? (
               <span
-                className="col-span-3 col-start-2 min-w-0 whitespace-normal break-words text-[11px] leading-snug text-muted-foreground"
+                className={cn(
+                  "min-w-0 whitespace-normal break-words text-[11px] leading-snug text-muted-foreground",
+                  showIcon ? "col-span-3 col-start-2" : "col-span-3 col-start-1",
+                )}
                 title={parsed.spec}
               >
                 {parsed.spec}

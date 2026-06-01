@@ -14,6 +14,8 @@ export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
 export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = "max-[599.98px]:hidden";
 export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES =
   "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none";
+const NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,18rem)] min-w-60";
+const NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,17rem)] min-w-60";
 
 export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
@@ -99,8 +101,8 @@ export function NotebookRail({
           className={cn(
             "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col bg-background",
             activePanelId === "packages"
-              ? "w-[clamp(12.5rem,17vw,14rem)] min-w-[12.5rem]"
-              : "w-[clamp(13rem,18vw,16rem)] min-w-52",
+              ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
+              : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME,
             NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
           )}
           data-slot="notebook-rail-panel"
