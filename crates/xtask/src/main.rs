@@ -846,19 +846,14 @@ fn cmd_build(rust_only: bool) {
 
     // Phase 0: Ensure the gitignored wasm + renderer-plugin outputs exist.
     // `runtimed`'s build.rs `include_bytes!`-embeds them; the frontend
-    // virtual modules need them too. On a fresh clone this triggers a one-
-    // time `cargo xtask wasm`; on warm trees it's a free file-existence
-    // check.
+    // virtual modules need them too. On a fresh clone or stale workspace this
+    // triggers the needed rebuilds; on warm trees it is a fingerprint check.
     ensure_build_artifacts();
 
     // Phase 0a: Install workspace pnpm deps up front. This was previously
-    // kicked off as a background thread alongside cargo build (which made
-    // sense when the MCP widget step below didn't also shell out to pnpm),
-    // but `build_mcp_widget` runs `pnpm --filter <pkg> install` which
-    // assumes the workspace is already initialized. On a fresh clone with
-    // no `node_modules`, that filtered install would spin up the root
-    // install itself — redundant at best, flaky at worst. Do it once,
-    // here, before anyone else touches pnpm.
+    // kicked off as a background thread alongside cargo build. Keep it
+    // centralized at the workspace root so build steps use the same install
+    // state instead of materializing package-local dependencies ad hoc.
     if !rust_only {
         ensure_pnpm_install();
     }
@@ -2838,13 +2833,11 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 ///
 /// Two tiers, matching each artifact's churn profile:
 ///
-/// - **Volatile wasm** (`runtimed-wasm`, `sift-wasm`) is rebuilt unconditionally
-///   via `ensure_volatile_wasm_built()`. TypeScript bindings and wasm-bindgen
-///   glue change every week, and a file-existence probe can't catch "the
-///   .wasm file exists but was built from an older HEAD" - the failure mode
-///   from the day a `git pull` added `has_cells_map`/`clear_outputs` to
-///   runtimed-wasm but the pre-existing `.d.ts` made the frontend TS build
-///   fail. Cargo's own fingerprinting makes a source-unchanged rebuild cheap.
+/// - **Volatile wasm** (`runtimed-wasm`, `sift-wasm`) is fingerprinted against
+///   its workspace source inputs and required wasm-pack outputs. We rebuild
+///   when outputs are missing, invalid, or stale, but skip source-unchanged
+///   runs so wasm-pack does not rewrite generated files and invalidate
+///   `runtimed` / `notebook` build scripts.
 ///
 /// - **Renderer plugin bundles** (`plotly.js`, `vega.js`, `markdown.*`,
 ///   `leaflet.*`, `isolated-renderer.*`) change rarely and are LFS-tracked, so
@@ -2862,7 +2855,7 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 /// constantly re-emitted the LFS-tracked `isolated-renderer.{js,css}`
 /// and surfaced as phantom git dirt.
 fn ensure_build_artifacts() {
-    ensure_volatile_wasm_built();
+    let sift_wasm_rebuilt = ensure_volatile_wasm_current();
 
     let notebook_plugin_dir = Path::new("apps/notebook/src/renderer-plugins");
     let stable_probes = [
@@ -2896,7 +2889,7 @@ fn ensure_build_artifacts() {
         _ => false,
     };
 
-    if !missing_stable.is_empty() || sift_missing || sift_source_changed {
+    if !missing_stable.is_empty() || sift_missing || sift_source_changed || sift_wasm_rebuilt {
         if !missing_stable.is_empty() {
             println!("Stable renderer plugin bundles missing; rebuilding:");
             for p in &missing_stable {
@@ -2911,6 +2904,10 @@ fn ensure_build_artifacts() {
             println!(
                 "[xtask] sift-wasm source changed; rebuilding sift renderer plugin so sift.js re-embeds the fresh __wbg_* names"
             );
+        } else if sift_wasm_rebuilt {
+            println!(
+                "[xtask] sift-wasm rebuilt; rebuilding sift renderer plugin so sift.js re-embeds the fresh __wbg_* names"
+            );
         }
         if !missing_stable.is_empty() {
             cmd_renderer_plugins(&[]);
@@ -2922,6 +2919,246 @@ fn ensure_build_artifacts() {
     if let Some(fp) = sift_source_fingerprint {
         write_renderer_plugins_fingerprint(&fp);
     }
+}
+
+const RUNTIMED_WASM_OUTPUTS: &[&str] = &[
+    "apps/notebook/src/wasm/runtimed-wasm/package.json",
+    "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.d.ts",
+    "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
+    "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
+];
+
+const RUNTIMED_WASM_INPUTS: &[&str] = &[
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/runtimed-wasm/Cargo.toml",
+    "crates/runtimed-wasm/src",
+    "crates/automerge-recovery/Cargo.toml",
+    "crates/automerge-recovery/src",
+    "crates/automunge/Cargo.toml",
+    "crates/automunge/src",
+    "crates/notebook-doc/Cargo.toml",
+    "crates/notebook-doc/assets",
+    "crates/notebook-doc/src",
+    "crates/notebook-wire/Cargo.toml",
+    "crates/notebook-wire/src",
+    "crates/nteract-identity/Cargo.toml",
+    "crates/nteract-identity/src",
+    "crates/runtime-doc/Cargo.toml",
+    "crates/runtime-doc/assets",
+    "crates/runtime-doc/src",
+];
+
+const SIFT_WASM_OUTPUTS: &[&str] = &[
+    "crates/sift-wasm/pkg/package.json",
+    "crates/sift-wasm/pkg/sift_wasm.d.ts",
+    "crates/sift-wasm/pkg/sift_wasm.js",
+    "crates/sift-wasm/pkg/sift_wasm_bg.wasm",
+    "packages/sift/public/wasm/package.json",
+    "packages/sift/public/wasm/sift_wasm.d.ts",
+    "packages/sift/public/wasm/sift_wasm.js",
+    "packages/sift/public/wasm/sift_wasm_bg.wasm",
+];
+
+const SIFT_WASM_INPUTS: &[&str] = &[
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/sift-wasm/Cargo.toml",
+    "crates/sift-wasm/src",
+    "crates/nteract-predicate/Cargo.toml",
+    "crates/nteract-predicate/src",
+];
+
+/// Ensure gitignored wasm-pack outputs are current enough for regular
+/// build/dev commands without rewriting them on every run.
+///
+/// Explicit `cargo xtask wasm` remains the full rebuild command. This guard is
+/// for hot iteration paths, where no-op wasm-pack runs touch generated files
+/// and force `runtimed`/`notebook` recompiles through build-script inputs.
+fn ensure_volatile_wasm_current() -> bool {
+    ensure_workspace_root_cwd();
+    require_tool("wasm-pack", WASM_PACK_INSTALL);
+
+    ensure_wasm_package_current(
+        "runtimed-wasm",
+        RUNTIMED_WASM_OUTPUTS,
+        RUNTIMED_WASM_INPUTS,
+        Path::new("target/xtask/runtimed-wasm.fingerprint"),
+        || {
+            if genesis_seeds_embedded(false) {
+                None
+            } else {
+                Some("genesis seeds changed")
+            }
+        },
+        || cmd_wasm(Some("runtimed"), true),
+    );
+
+    ensure_wasm_package_current(
+        "sift-wasm",
+        SIFT_WASM_OUTPUTS,
+        SIFT_WASM_INPUTS,
+        Path::new("target/xtask/sift-wasm.fingerprint"),
+        || None,
+        || cmd_wasm(Some("sift"), true),
+    )
+}
+
+fn ensure_wasm_package_current(
+    label: &str,
+    outputs: &[&str],
+    inputs: &[&str],
+    fingerprint_path: &Path,
+    extra_reason: impl FnOnce() -> Option<&'static str>,
+    rebuild: impl FnOnce(),
+) -> bool {
+    let current_fingerprint = wasm_input_fingerprint(inputs);
+    let reason = wasm_package_rebuild_reason(
+        label,
+        outputs,
+        inputs,
+        fingerprint_path,
+        current_fingerprint.as_deref(),
+        extra_reason,
+    );
+
+    if let Some(reason) = reason {
+        println!("[xtask] rebuilding {label} ({reason})");
+        rebuild();
+        if let Some(fingerprint) = current_fingerprint {
+            write_fingerprint(fingerprint_path, &fingerprint);
+        }
+        true
+    } else {
+        if let Some(fingerprint) = current_fingerprint {
+            write_fingerprint(fingerprint_path, &fingerprint);
+        }
+        println!("[xtask] skipping {label} rebuild (outputs are up to date)");
+        false
+    }
+}
+
+fn wasm_package_rebuild_reason(
+    label: &str,
+    outputs: &[&str],
+    inputs: &[&str],
+    fingerprint_path: &Path,
+    current_fingerprint: Option<&str>,
+    extra_reason: impl FnOnce() -> Option<&'static str>,
+) -> Option<&'static str> {
+    for output in outputs {
+        if !Path::new(output).exists() {
+            return Some("output file missing");
+        }
+    }
+
+    for output in outputs.iter().filter(|output| output.ends_with(".wasm")) {
+        match fs::read(output) {
+            Ok(bytes) if bytes.starts_with(b"\0asm") => {}
+            Ok(_) => return Some("wasm output is not a WebAssembly binary"),
+            Err(_) => return Some("could not read wasm output"),
+        }
+    }
+
+    if let Some(reason) = extra_reason() {
+        return Some(reason);
+    }
+
+    let Some(current_fingerprint) = current_fingerprint else {
+        return Some("could not fingerprint input files");
+    };
+
+    if let Some(previous) = read_fingerprint(fingerprint_path) {
+        if previous == current_fingerprint {
+            return None;
+        }
+        return Some("input files changed");
+    }
+
+    match inputs_newer_than_outputs(inputs, outputs) {
+        Some(true) => Some("input files are newer than outputs"),
+        Some(false) => None,
+        None => {
+            eprintln!("[xtask] warning: could not compare {label} input/output timestamps");
+            Some("could not compare input/output timestamps")
+        }
+    }
+}
+
+fn wasm_input_fingerprint(paths: &[&str]) -> Option<String> {
+    let mut files = Vec::new();
+    for path in paths {
+        let path = Path::new(path);
+        if path.is_dir() {
+            collect_files_recursive(path, &mut files);
+        } else if path.is_file() {
+            files.push(path.to_path_buf());
+        } else {
+            return None;
+        }
+    }
+    files.sort();
+
+    let mut hasher = DefaultHasher::new();
+    for path in &files {
+        path.to_string_lossy().hash(&mut hasher);
+        fs::read(path).ok()?.hash(&mut hasher);
+    }
+    Some(format!("{:016x}", hasher.finish()))
+}
+
+fn collect_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_recursive(&path, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
+}
+
+fn inputs_newer_than_outputs(inputs: &[&str], outputs: &[&str]) -> Option<bool> {
+    let oldest_output = outputs
+        .iter()
+        .filter_map(|output| modified_time(Path::new(output)))
+        .min()?;
+
+    let mut input_files = Vec::new();
+    for input in inputs {
+        let path = Path::new(input);
+        if path.is_dir() {
+            collect_files_recursive(path, &mut input_files);
+        } else if path.is_file() {
+            input_files.push(path.to_path_buf());
+        } else {
+            return None;
+        }
+    }
+
+    for input in input_files {
+        if modified_time(&input)? > oldest_output {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+fn read_fingerprint(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_fingerprint(path: &Path, fingerprint: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, fingerprint);
 }
 
 /// Hash every `.rs` file under `crates/sift-wasm/src/` plus its `Cargo.toml`
@@ -2981,24 +3218,6 @@ fn write_renderer_plugins_fingerprint(fingerprint: &str) {
         let _ = fs::create_dir_all(parent);
     }
     let _ = fs::write(&path, fingerprint);
-}
-
-/// Always (re)build runtimed-wasm and sift-wasm before the build pulls in
-/// their outputs via TS / Vite. wasm-pack delegates to cargo, which uses its
-/// own fingerprint; a no-source-change rebuild is cheap.
-///
-/// Exists because the old "file exists → skip" probe couldn't detect a stale
-/// `.d.ts`: the .wasm on disk was fine, but the TypeScript bindings didn't
-/// include types for methods added to the Rust source since the last build.
-/// Forcing wasm-pack every time closes that window.
-fn ensure_volatile_wasm_built() {
-    ensure_workspace_root_cwd();
-    require_tool("wasm-pack", WASM_PACK_INSTALL);
-
-    println!("[xtask] rebuilding runtimed-wasm (refreshes .d.ts bindings)");
-    cmd_wasm(Some("runtimed"), true);
-    println!("[xtask] rebuilding sift-wasm");
-    cmd_wasm(Some("sift"), true);
 }
 
 /// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
@@ -3083,7 +3302,8 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
 fn build_mcp_widget() {
     if let Some(reason) = mcp_widget_needs_rebuild() {
         println!("Building MCP Apps widget ({reason})...");
-        run_cmd("pnpm", &["--filter", "nteract-mcp-app", "install"]);
+        require_pnpm();
+        ensure_pnpm_install();
         run_cmd("vp", &["run", "nteract-mcp-app#build"]);
         let dest = Path::new("python/nteract/src/nteract/_widget.html");
         if !dest.exists() {
@@ -3758,8 +3978,8 @@ fn cmd_check_dep_budget() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::time::UNIX_EPOCH;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_dev_options_reads_flags_and_path() {
@@ -3803,6 +4023,113 @@ mod tests {
                 "isolated-renderer".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn wasm_package_rebuild_reason_rejects_missing_or_invalid_outputs() {
+        let dir = test_temp_dir("wasm-missing-invalid");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let input = dir.join("input.rs");
+        let output = dir.join("out.wasm");
+        let stamp = dir.join("stamp");
+        fs::write(&input, "fn main() {}").expect("write input");
+
+        let inputs = [input.to_string_lossy().to_string()];
+        let outputs = [output.to_string_lossy().to_string()];
+        let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let output_refs: Vec<&str> = outputs.iter().map(String::as_str).collect();
+
+        assert_eq!(
+            wasm_package_rebuild_reason(
+                "test-wasm",
+                &output_refs,
+                &input_refs,
+                &stamp,
+                wasm_input_fingerprint(&input_refs).as_deref(),
+                || None,
+            ),
+            Some("output file missing")
+        );
+
+        fs::write(&output, "not wasm").expect("write invalid wasm");
+        assert_eq!(
+            wasm_package_rebuild_reason(
+                "test-wasm",
+                &output_refs,
+                &input_refs,
+                &stamp,
+                wasm_input_fingerprint(&input_refs).as_deref(),
+                || None,
+            ),
+            Some("wasm output is not a WebAssembly binary")
+        );
+
+        fs::remove_dir_all(dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn wasm_package_rebuild_reason_uses_input_fingerprint() {
+        let dir = test_temp_dir("wasm-fingerprint");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let input = dir.join("input.rs");
+        let output = dir.join("out.wasm");
+        let stamp = dir.join("stamp");
+        fs::write(&input, "pub fn exported() {}").expect("write input");
+        fs::write(&output, b"\0asmcurrent").expect("write wasm");
+
+        let inputs = [input.to_string_lossy().to_string()];
+        let outputs = [output.to_string_lossy().to_string()];
+        let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let output_refs: Vec<&str> = outputs.iter().map(String::as_str).collect();
+        let fingerprint = wasm_input_fingerprint(&input_refs).expect("fingerprint input");
+
+        assert_eq!(
+            wasm_package_rebuild_reason(
+                "test-wasm",
+                &output_refs,
+                &input_refs,
+                &stamp,
+                Some(&fingerprint),
+                || None,
+            ),
+            None
+        );
+
+        fs::write(&stamp, "stale").expect("write stale stamp");
+        assert_eq!(
+            wasm_package_rebuild_reason(
+                "test-wasm",
+                &output_refs,
+                &input_refs,
+                &stamp,
+                Some(&fingerprint),
+                || None,
+            ),
+            Some("input files changed")
+        );
+
+        fs::write(&stamp, &fingerprint).expect("write current stamp");
+        assert_eq!(
+            wasm_package_rebuild_reason(
+                "test-wasm",
+                &output_refs,
+                &input_refs,
+                &stamp,
+                Some(&fingerprint),
+                || None,
+            ),
+            None
+        );
+
+        fs::remove_dir_all(dir).expect("remove temp dir");
+    }
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()))
     }
 
     #[test]
