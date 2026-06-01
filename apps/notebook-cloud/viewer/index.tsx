@@ -39,6 +39,7 @@ import {
   notebookActorIdentityFromAccess,
   type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
+  type NotebookInteractionModeProjection,
   type NotebookPackageSection,
   type NotebookShellCapabilities,
 } from "@/components/notebook-shell";
@@ -65,6 +66,7 @@ import {
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
+import { createCloudNotebookCellId } from "./cloud-cell-id";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
@@ -1129,7 +1131,7 @@ function NotebookViewer({
       if (!shellCapabilities.canEditStructure) return null;
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime) return null;
-      const cellId = crypto.randomUUID ? crypto.randomUUID() : `cell-${Date.now()}`;
+      const cellId = createCloudNotebookCellId();
       try {
         liveRuntime.handle.add_cell_after(cellId, type, afterCellId ?? null);
         liveRuntime.engine.scheduleFlush();
@@ -1296,7 +1298,7 @@ function NotebookViewer({
           />
           <CloudNotebookEditModeButton
             authState={authState}
-            connectionScope={connectionScope}
+            interaction={shellCapabilities.interaction ?? null}
             onAuthStateChange={refreshAuthState}
           />
           <NotebookIdentityBadge
@@ -1794,26 +1796,24 @@ function CloudSharingControls({
 
 function CloudNotebookEditModeButton({
   authState,
-  connectionScope,
+  interaction,
   onAuthStateChange,
 }: {
   authState: CloudPrototypeAuthState;
-  connectionScope: string | null;
+  interaction: NotebookInteractionModeProjection | null;
   onAuthStateChange: () => void;
 }) {
-  if (authState.mode !== "oidc") {
+  if (
+    authState.mode !== "oidc" ||
+    (!interaction?.canRequestEdit && interaction?.activeMode !== "edit")
+  ) {
     return null;
   }
 
-  const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
-  const requestingEdit = requestedScope === "editor" || requestedScope === "owner";
-  const editing = connectionScope === "editor" || connectionScope === "owner";
-  const state = editing ? "editing" : requestingEdit ? "requested" : "viewing";
-
   return (
     <NotebookEditModeButton
-      mode={requestingEdit ? "edit" : "view"}
-      state={state}
+      mode={interaction.selectedMode}
+      state={interaction.state}
       onModeChange={(mode) => {
         storeCloudRequestedScope(
           window.localStorage,

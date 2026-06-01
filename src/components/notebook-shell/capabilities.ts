@@ -1,3 +1,5 @@
+import type { NotebookInteractionModeProjection } from "./interaction-mode";
+
 export type NotebookShellAccessLevel = "none" | "viewer" | "editor" | "owner";
 
 export type NotebookShellAccessSource = "cloud" | "local" | "fixture" | "unknown";
@@ -103,6 +105,7 @@ export interface NotebookShellCapabilities {
   canViewPackages: boolean;
   canManagePackages: boolean;
   canManageSharing: boolean;
+  interaction?: NotebookInteractionModeProjection | null;
   access: NotebookShellAccessCapabilities;
   auth: NotebookShellAuthCapabilities;
   runtime: NotebookShellRuntimeCapabilities;
@@ -119,6 +122,15 @@ export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = {
   canViewPackages: true,
   canManagePackages: false,
   canManageSharing: false,
+  interaction: {
+    selectedMode: "view",
+    activeMode: "view",
+    state: "viewing",
+    canRequestEdit: false,
+    canEditMarkdown: false,
+    canEditCells: false,
+    canEditStructure: false,
+  },
   access: {
     level: "viewer",
     source: "unknown",
