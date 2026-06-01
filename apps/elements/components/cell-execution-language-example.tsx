@@ -1,399 +1,230 @@
 "use client";
 
-import { Check, Clock3, Play, Sparkles, X } from "lucide-react";
-import type { CSSProperties, ReactNode } from "react";
+import { CheckCircle2, FileCode2, Rows3 } from "lucide-react";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { notebookCellLayoutVars } from "@/components/cell/cell-layout";
 import { cn } from "@/lib/utils";
 
-type ExecutionState = "ready" | "queued" | "running" | "completed" | "failed";
-type Variant = "production" | "quiet" | "sentence" | "signal";
-
-const states: Array<{
-  state: ExecutionState;
+type ExecutionState = {
+  id: string;
   label: string;
   detail: string;
   count: number | null;
   elapsedMs?: number | null;
-}> = [
-  { state: "ready", label: "Ready", detail: "waiting for first run", count: null },
-  { state: "queued", label: "Queued", detail: "next in line", count: null },
-  { state: "running", label: "Running", detail: "building signal", count: null },
-  { state: "completed", label: "Completed", detail: "Run 12 in 180ms", count: 12, elapsedMs: 180 },
-  { state: "failed", label: "Failed", detail: "Run 13 stopped", count: 13 },
+  isExecuting?: boolean;
+  isQueued?: boolean;
+  queuePriority?: number;
+  isErrored?: boolean;
+  submittedByActorLabel?: string | null;
+};
+
+const executionStates: ExecutionState[] = [
+  {
+    id: "ready",
+    label: "Ready",
+    detail: "Never-run cells keep the state lane quiet until hover, focus, or keyboard access.",
+    count: null,
+  },
+  {
+    id: "focused-ready",
+    label: "Focused ready",
+    detail: "Notebook focus makes the run affordance available without adding status copy.",
+    count: null,
+  },
+  {
+    id: "queued",
+    label: "Queued",
+    detail: "Queued cells use the production queue pulse and keep the interrupt action disabled.",
+    count: 12,
+    isQueued: true,
+    queuePriority: 0.7,
+    submittedByActorLabel: "Kyle Kelley",
+  },
+  {
+    id: "running",
+    label: "Running",
+    detail: "Active execution moves through the compact stop button and current-line signal.",
+    count: 12,
+    isExecuting: true,
+    submittedByActorLabel: "Kyle Kelley",
+  },
+  {
+    id: "completed",
+    label: "Completed",
+    detail: "Finished runs collapse to the production run count and elapsed-time boundary.",
+    count: 12,
+    elapsedMs: 180,
+  },
+  {
+    id: "failed",
+    label: "Failed",
+    detail: "Errors keep the retry affordance in the state lane and mark the boundary as failed.",
+    count: 13,
+    isErrored: true,
+  },
 ];
 
-const variants: Array<{
-  variant: Variant;
-  label: string;
-  body: string;
-}> = [
+const componentRows = [
   {
-    variant: "production",
-    label: "Production grammar",
-    body: "Quiet cells rest as punctuation: completed cells show only the run marker, ready cells stay visually silent, and full language context returns on approach.",
+    component: "CompactExecutionButton",
+    path: "src/components/cell/CompactExecutionButton.tsx",
+    role: "Run, queued, running, error, and disabled execution affordance in the cell state lane.",
   },
   {
-    variant: "quiet",
-    label: "Quiet unless focused",
-    body: "An earlier sketch kept language visible at rest and bloomed the run metadata later; useful, but louder than the production direction.",
+    component: "CodeCellCurrentLine",
+    path: "src/components/cell/CodeCellCurrentLine.tsx",
+    role: "Source/result boundary with language context, count, elapsed time, queue pulse, and running signal.",
   },
   {
-    variant: "sentence",
-    label: "Short sentence",
-    body: "Treat the metadata as one compact phrase after the signal: Python, run 12 in 180ms.",
-  },
-  {
-    variant: "signal",
-    label: "Signal-led",
-    body: "Let the rule own state. Text becomes a soft caption instead of the primary visual event.",
+    component: "notebookCellLayoutVars",
+    path: "src/components/cell/cell-layout.ts",
+    role: "Shared cell column geometry so catalog previews line up with the notebook app.",
   },
 ];
 
 export function CellExecutionLanguageExample() {
   return (
     <div className="not-prose space-y-6">
-      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-        <div className="border-b border-fd-border p-4">
-          <h2 className="text-sm font-semibold">Run line direction set</h2>
-          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            The target is a cell boundary that usually reads as punctuation in the notebook rhythm.
-            Active states get words; quiet states keep their context available but tucked away.
-          </p>
-        </div>
-        <div className="divide-y divide-fd-border bg-background">
-          {variants.map((variant) => (
-            <div key={variant.label} className="grid gap-4 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-              <div>
-                <h3 className="text-sm font-semibold">{variant.label}</h3>
-                <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{variant.body}</p>
-              </div>
-              <NotebookPreview variant={variant.variant} />
-            </div>
-          ))}
+      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-900 dark:text-emerald-100">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="mt-0.5 size-4 flex-none" aria-hidden="true" />
+          <div>
+            <h2 className="text-sm font-semibold">Production execution language only</h2>
+            <p className="mt-1 text-xs leading-5">
+              This page renders the current cell execution components directly. It no longer keeps
+              alternate execution-line variants beside the production line, so catalog review stays
+              focused on the UI the notebook app actually ships.
+            </p>
+          </div>
         </div>
       </section>
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="border-b border-fd-border p-4">
-          <h2 className="text-sm font-semibold">State vocabulary</h2>
+          <div className="flex items-center gap-2">
+            <FileCode2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+            <h2 className="text-sm font-semibold">Run lane in context</h2>
+          </div>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            The same line should carry ready, queued, running, completed, and failed states while
-            making quiet cells feel like document structure, not a status table.
+            The preview below is fixture code around production execution controls. The buttons,
+            boundary lines, labels, animation hooks, and accessibility text come from shared
+            components.
+          </p>
+        </div>
+        <div className={cn("divide-y divide-border bg-background", notebookCellLayoutVars)}>
+          <PreviewCell
+            state={executionStates[4]}
+            source="features = orders.assign(month=orders.date.dt.month)"
+          />
+          <PreviewCell state={executionStates[3]} source="model.fit(features[columns], target)" />
+          <PreviewCell
+            state={executionStates[2]}
+            source="predictions = model.predict(features_holdout)"
+          />
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+        <div className="border-b border-fd-border p-4">
+          <div className="flex items-center gap-2">
+            <Rows3 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+            <h2 className="text-sm font-semibold">Execution state matrix</h2>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            Each state is a production `CompactExecutionButton` paired with a production
+            `CodeCellCurrentLine`.
           </p>
         </div>
         <div className="grid gap-3 bg-background p-4 md:grid-cols-2">
-          {states.map((state) => (
-            <StateSample key={state.state} {...state} />
+          {executionStates.map((state) => (
+            <StateSample key={state.id} state={state} />
           ))}
         </div>
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-3">
+        {componentRows.map((row) => (
+          <article
+            key={row.component}
+            className="rounded-lg border border-fd-border bg-fd-card p-4"
+          >
+            <h3 className="text-sm font-semibold">{row.component}</h3>
+            <p className="mt-2 break-words font-mono text-[11px] leading-5 text-fd-muted-foreground">
+              {row.path}
+            </p>
+            <p className="mt-3 text-xs leading-5 text-fd-muted-foreground">{row.role}</p>
+          </article>
+        ))}
       </section>
     </div>
   );
 }
 
-function NotebookPreview({ variant }: { variant: Variant }) {
+function PreviewCell({ state, source }: { state: ExecutionState; source: string }) {
   return (
-    <div
-      className={cn(
-        "min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background",
-        notebookCellLayoutVars,
-      )}
-    >
-      <PreviewCell
-        variant={variant}
-        state="completed"
-        count={12}
-        elapsedMs={180}
-        source={<CodeSample tokens={["total", " = ", "sum", "(", "values", ")"]} />}
-        output="42"
-      />
-      <PreviewCell
-        variant={variant}
-        state="running"
-        count={null}
-        source={<CodeSample tokens={["fit", "(", "model", ", ", "frame", ")"]} />}
-      />
-    </div>
-  );
-}
-
-function PreviewCell({
-  variant,
-  state,
-  count,
-  elapsedMs,
-  source,
-  output,
-}: {
-  variant: Variant;
-  state: ExecutionState;
-  count: number | null;
-  elapsedMs?: number | null;
-  source: ReactNode;
-  output?: string;
-}) {
-  const isRunning = state === "running";
-  const isQueued = state === "queued";
-  const isFailed = state === "failed";
-
-  return (
-    <div data-preview-state={state} className="cell-container group flex bg-background/95">
-      <div
-        className={cn(
-          "w-1 shrink-0 transition-colors",
-          state === "failed" ? "bg-red-400" : state === "running" ? "bg-emerald-400" : "bg-sky-400",
-        )}
-      />
-      <div className="min-w-0 flex-1 py-3 pl-[var(--cell-content-column-inset,3.25rem)] pr-5">
-        <div className="relative min-h-10">
-          <div className="absolute left-[calc(-1*var(--cell-content-column-inset,3.25rem)+0.4rem)] top-1">
-            <CompactExecutionButton
-              count={count}
-              isExecuting={isRunning}
-              isQueued={isQueued}
-              isErrored={isFailed}
-              isCellFocused
-            />
-          </div>
-          <div className="font-mono text-[15px] leading-7 tracking-normal text-foreground">
-            {source}
-          </div>
-          {variant === "production" ? (
-            <CodeCellCurrentLine
-              languageLabel="Python"
-              count={count}
-              elapsedMs={elapsedMs}
-              isExecuting={isRunning}
-              isQueued={isQueued}
-              isErrored={isFailed}
-              isFocused
-            />
-          ) : (
-            <ExecutionLanguageLine
-              variant={variant}
-              state={state}
-              count={count}
-              elapsedMs={elapsedMs}
-            />
-          )}
+    <div className="cell-container group flex bg-background/95">
+      <div className="w-1 shrink-0 bg-sky-400 transition-colors dark:bg-sky-600" />
+      <div className="relative min-w-0 flex-1 py-3 pl-[var(--cell-content-column-inset,3.25rem)] pr-5">
+        <div className="absolute left-2 top-3.5">
+          <CompactExecutionButton
+            count={state.count}
+            isExecuting={state.isExecuting}
+            isQueued={state.isQueued}
+            isErrored={state.isErrored}
+            submittedByActorLabel={state.submittedByActorLabel}
+            isCellFocused
+          />
         </div>
-        {output ? (
-          <div className="mt-5 font-mono text-[15px] leading-6 text-foreground">{output}</div>
-        ) : null}
+        <pre className="m-0 overflow-x-auto whitespace-pre font-mono text-[13px] leading-6 text-foreground">
+          {source}
+        </pre>
+        <CodeCellCurrentLine
+          languageLabel="Python"
+          count={state.count}
+          elapsedMs={state.elapsedMs}
+          isExecuting={state.isExecuting}
+          isQueued={state.isQueued}
+          queuePriority={state.queuePriority}
+          isErrored={state.isErrored}
+          isFocused
+        />
       </div>
     </div>
   );
 }
 
-function ExecutionLanguageLine({
-  variant,
-  state,
-  count,
-  elapsedMs,
-}: {
-  variant: Exclude<Variant, "production">;
-  state: ExecutionState;
-  count: number | null;
-  elapsedMs?: number | null;
-}) {
-  const copy = executionCopy(state, count, elapsedMs);
-
-  if (variant === "quiet") {
-    return (
-      <div className="mt-1.5 flex min-h-4 items-center gap-1.5 text-[11px] font-medium leading-none text-muted-foreground/55">
-        <LanguagePill state={state} />
-        <div className="h-px w-8 rounded-full bg-border/20 transition-all group-hover:w-12 group-hover:bg-border/35" />
-        <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-[max-width,opacity] duration-150 group-hover:max-w-48 group-hover:opacity-100 group-focus-within:max-w-48 group-focus-within:opacity-100">
-          {copy.short}
-        </span>
-        <SignalRule state={state} quiet />
-      </div>
-    );
-  }
-
-  if (variant === "sentence") {
-    return (
-      <div className="mt-1.5 flex min-h-4 items-center gap-1.5 text-[11px] font-medium leading-none text-muted-foreground/60">
-        <StateGlyph state={state} />
-        <span className="whitespace-nowrap">
-          <span className="text-foreground/65">Python</span>
-          <span className="px-1 text-muted-foreground/35">/</span>
-          <span className={stateTone(state)}>{copy.short}</span>
-        </span>
-        <SignalRule state={state} />
-      </div>
-    );
-  }
+function StateSample({ state }: { state: ExecutionState }) {
+  const focused = state.id === "focused-ready" || state.isExecuting || state.isQueued;
 
   return (
-    <div className="mt-1.5 grid min-h-4 grid-cols-[auto_minmax(3rem,1fr)_auto] items-center gap-2 text-[11px] font-medium leading-none text-muted-foreground/55">
-      <StateGlyph state={state} />
-      <SignalRule state={state} strong />
-      <span className="whitespace-nowrap">
-        <span className="text-foreground/65">Python</span>
-        <span className="px-1 text-muted-foreground/35">/</span>
-        <span className={stateTone(state)}>{copy.tiny}</span>
-      </span>
-    </div>
-  );
-}
-
-function StateSample({
-  state,
-  label,
-  detail,
-  count,
-  elapsedMs,
-}: {
-  state: ExecutionState;
-  label: string;
-  detail: string;
-  count: number | null;
-  elapsedMs?: number | null;
-}) {
-  return (
-    <div className="rounded-md border border-fd-border bg-fd-background p-3">
-      <div className="flex items-center gap-2 text-xs font-semibold">
-        <StateGlyph state={state} />
-        <span>{label}</span>
+    <article className="group rounded-md border border-fd-border bg-fd-background p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">{state.label}</h3>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">{state.detail}</p>
+        </div>
+        <CompactExecutionButton
+          count={state.count}
+          isExecuting={state.isExecuting}
+          isQueued={state.isQueued}
+          isErrored={state.isErrored}
+          submittedByActorLabel={state.submittedByActorLabel}
+          isCellFocused={focused}
+        />
       </div>
       <div className="mt-4">
-        <ExecutionLanguageLine variant="signal" state={state} count={count} elapsedMs={elapsedMs} />
+        <CodeCellCurrentLine
+          languageLabel="Python"
+          count={state.count}
+          elapsedMs={state.elapsedMs}
+          isExecuting={state.isExecuting}
+          isQueued={state.isQueued}
+          queuePriority={state.queuePriority}
+          isErrored={state.isErrored}
+          isFocused={focused}
+        />
       </div>
-      <p className="mt-3 text-xs leading-5 text-fd-muted-foreground">{detail}</p>
-    </div>
-  );
-}
-
-function LanguagePill({ state }: { state: ExecutionState }) {
-  return (
-    <span
-      className={cn(
-        "rounded-sm px-1 py-0.5 transition-colors",
-        state === "running" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-        state === "queued" && "bg-sky-500/10 text-sky-700 dark:text-sky-300",
-        state === "failed" && "bg-red-500/10 text-red-700 dark:text-red-300",
-        (state === "ready" || state === "completed") && "bg-muted/45 text-foreground/65",
-      )}
-    >
-      Python
-    </span>
-  );
-}
-
-function StateGlyph({ state }: { state: ExecutionState }) {
-  const className = cn(
-    "size-3 shrink-0",
-    state === "running" && "text-emerald-600 dark:text-emerald-300",
-    state === "queued" && "text-sky-600 dark:text-sky-300",
-    state === "failed" && "text-red-600 dark:text-red-300",
-    state === "completed" && "text-muted-foreground/55",
-    state === "ready" && "text-muted-foreground/35",
-  );
-
-  if (state === "running") return <Sparkles className={className} aria-hidden="true" />;
-  if (state === "queued") return <Clock3 className={className} aria-hidden="true" />;
-  if (state === "failed") return <X className={className} aria-hidden="true" />;
-  if (state === "completed") return <Check className={className} aria-hidden="true" />;
-  return <Play className={cn(className, "fill-current")} aria-hidden="true" />;
-}
-
-function SignalRule({
-  state,
-  quiet = false,
-  strong = false,
-}: {
-  state: ExecutionState;
-  quiet?: boolean;
-  strong?: boolean;
-}) {
-  if (state === "running") {
-    return (
-      <span className="relative h-3 min-w-12 flex-1 overflow-hidden text-emerald-500/65 [mask-image:linear-gradient(to_right,transparent,black_0.5rem,black_calc(100%-0.5rem),transparent)]">
-        <svg
-          className="absolute inset-y-0 left-0 h-full w-[200%] animate-exec-signal-wave"
-          viewBox="0 0 240 12"
-          preserveAspectRatio="none"
-        >
-          <path
-            d="M0 6 C5 1 10 1 15 6 S25 11 30 6 S40 1 45 6 S55 11 60 6 S70 1 75 6 S85 11 90 6 S100 1 105 6 S115 11 120 6 S130 1 135 6 S145 11 150 6 S160 1 165 6 S175 11 180 6 S190 1 195 6 S205 11 210 6 S220 1 225 6 S235 11 240 6"
-            fill="none"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeWidth={strong ? "1.5" : "1.2"}
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
-      </span>
-    );
-  }
-
-  if (state === "queued") {
-    return (
-      <span
-        className={cn(
-          "h-px min-w-12 flex-1 rounded-full bg-sky-400/45 animate-queue-boundary-pulse",
-          strong && "bg-sky-400/60",
-        )}
-        style={{ "--queue-pulse-duration": "2s" } as CSSProperties}
-      />
-    );
-  }
-
-  if (state === "failed") {
-    return (
-      <span className="h-px min-w-12 flex-1 bg-[repeating-linear-gradient(to_right,rgb(248_113_113/.7)_0_0.35rem,transparent_0.35rem_0.6rem)]" />
-    );
-  }
-
-  return (
-    <span
-      className={cn(
-        "h-px min-w-8 flex-1 rounded-full",
-        quiet ? "bg-border/15" : "bg-border/25",
-        strong && "bg-border/35",
-      )}
-    />
-  );
-}
-
-function executionCopy(state: ExecutionState, count: number | null, elapsedMs?: number | null) {
-  if (state === "running") return { short: "running", tiny: "running" };
-  if (state === "queued") return { short: "queued", tiny: "queued" };
-  if (state === "failed")
-    return { short: count === null ? "failed" : `run ${count} failed`, tiny: "failed" };
-  if (state === "completed") {
-    const run = count === null ? "run" : `run ${count}`;
-    const elapsed = typeof elapsedMs === "number" ? ` in ${formatElapsed(elapsedMs)}` : "";
-    return { short: `${run}${elapsed}`, tiny: count === null ? "done" : `run ${count}` };
-  }
-  return { short: "ready", tiny: "ready" };
-}
-
-function stateTone(state: ExecutionState) {
-  if (state === "running") return "text-emerald-700 dark:text-emerald-300";
-  if (state === "queued") return "text-sky-700 dark:text-sky-300";
-  if (state === "failed") return "text-red-700 dark:text-red-300";
-  return "text-muted-foreground/70";
-}
-
-function formatElapsed(ms: number) {
-  if (ms < 1_000) return `${Math.max(1, Math.round(ms))}ms`;
-  const seconds = ms / 1_000;
-  return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
-}
-
-function CodeSample({ tokens }: { tokens: string[] }) {
-  return (
-    <>
-      <span className="text-blue-600">{tokens[0]}</span>
-      <span className="text-muted-foreground">{tokens[1]}</span>
-      <span className="text-purple-600">{tokens[2]}</span>
-      <span className="text-muted-foreground">{tokens[3]}</span>
-      <span className="text-blue-600">{tokens[4]}</span>
-      <span className="text-muted-foreground">{tokens[5]}</span>
-    </>
+    </article>
   );
 }

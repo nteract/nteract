@@ -22,12 +22,11 @@ repo-level `docs/` tree.
 
 ## Current direction
 
-Keep the production-backed notebook surfaces ahead of design-only exploration.
-The catalog should render shared shell, rail, toolbar, identity, package, cell,
-output, and widget components from deterministic fixtures without importing the
-desktop runtime, sync engine, Cloudflare host, or generated runtimed WASM
-bindings. Renderer-specific assets like Sift WASM should stay explicit,
-docs-served adapters.
+Keep the catalog production-backed. It should render shared shell, rail,
+toolbar, identity, package, cell, output, and widget components from
+deterministic fixtures without importing the desktop runtime, sync engine,
+Cloudflare host, or generated runtimed WASM bindings. Renderer-specific assets
+like Sift WASM should stay explicit, docs-served adapters.
 
 ## Production-backed catalog
 
@@ -40,6 +39,8 @@ concepts and which boundaries still need a notebook-semantic wrapper.
 - [Notebook outline rail](/docs/notebook-outline)
 - [Package manager surfaces](/docs/package-manager-surfaces)
 - [Cell anatomy](/docs/cell-anatomy)
+- [Cell execution language](/docs/cell-execution-language)
+- [Cell insertion affordances](/docs/cell-insertion-affordances)
 - [Editor surfaces](/docs/editor-surfaces)
 - [Runtime surfaces](/docs/runtime-surfaces)
 - [Search surfaces](/docs/search-surfaces)
@@ -48,11 +49,3 @@ concepts and which boundaries still need a notebook-semantic wrapper.
 - [Read-only notebook surfaces](/docs/read-only-notebook-surfaces)
 - [Theme surfaces](/docs/theme-surfaces)
 - [Widget surfaces](/docs/widget-surfaces)
-
-## Design explorations
-
-These pages are still useful, but they are product-language studios until the
-corresponding shared component surface is ready:
-
-- [Cell execution language](/docs/cell-execution-language)
-- [Cell insertion affordances](/docs/cell-insertion-affordances)
