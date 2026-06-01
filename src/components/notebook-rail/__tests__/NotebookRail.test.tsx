@@ -182,7 +182,7 @@ describe("NotebookRail", () => {
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
       "w-[clamp(14rem,20vw,17rem)]",
-      "max-[37.5rem]:w-[calc(100vw-3rem)]",
+      "max-[40rem]:w-[calc(100vw-3rem)]",
     );
   });
 
