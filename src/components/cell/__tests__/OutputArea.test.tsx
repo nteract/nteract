@@ -709,43 +709,20 @@ describe("OutputArea iframe theme sync", () => {
     expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
   });
 
-  it("keeps one collapse control while splitting Sift into its own boundary", () => {
+  it("splits Sift into its own boundary without output collapse controls", () => {
     const outputs: JupyterOutput[] = [
       ...makeStreamOutput("stdout one\n"),
       makeWidgetOutput("widget-progress-1", "model-progress-1"),
       ...makeParquetOutput(),
     ];
 
-    render(<OutputArea outputs={outputs} onToggleCollapse={vi.fn()} />);
+    render(<OutputArea outputs={outputs} />);
 
-    expect(screen.getAllByRole("button", { name: "Hide outputs" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /outputs/i })).toBeNull();
     const frames = screen.getAllByTestId("isolated-frame");
     expect(frames).toHaveLength(2);
     expect(frames[0].parentElement?.getAttribute("data-sift-output")).toBeNull();
     expect(frames[1].parentElement?.getAttribute("data-sift-output")).toBe("true");
-  });
-
-  it("reports the full collapsed output count for segmented Sift boundaries", () => {
-    const outputs: JupyterOutput[] = [
-      ...makeStreamOutput("stdout one\n"),
-      makeWidgetOutput("widget-progress-1", "model-progress-1"),
-      ...makeParquetOutput(),
-    ];
-
-    render(<OutputArea outputs={outputs} collapsed onToggleCollapse={vi.fn()} />);
-
-    expect(screen.getAllByRole("button", { name: "Show 3 outputs" })).toHaveLength(1);
-    expect(screen.queryByTestId("isolated-frame")).toBeNull();
-  });
-
-  it("preserves collapsed state for non-segmented mixed outputs", () => {
-    render(
-      <OutputArea outputs={makeMixedDocumentOutputs()} collapsed onToggleCollapse={vi.fn()} />,
-    );
-
-    expect(screen.getAllByRole("button", { name: "Show 3 outputs" })).toHaveLength(1);
-    expect(screen.queryByText("stream before")).toBeNull();
-    expect(screen.queryByTestId("isolated-frame")).toBeNull();
   });
 
   it("keeps forced-isolated non-Sift mixed outputs together", async () => {

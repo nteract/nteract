@@ -253,13 +253,13 @@ test.describe("cloud renderer parity harness", () => {
       { timeout: 90_000 },
     );
 
-    const collapsible = page.getByTestId("collapsible-sift-boundary");
-    await expect(collapsible.getByRole("button", { name: "Hide outputs" })).toHaveCount(1);
-    await expect(collapsible).toContainText(cloudOutputParityExpectedMarkers.boundaryStream);
-    await expect(collapsible.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(2, {
+    const boundary = page.getByTestId("sift-boundary");
+    await expect(boundary.getByRole("button", { name: /outputs/i })).toHaveCount(0);
+    await expect(boundary).toContainText(cloudOutputParityExpectedMarkers.boundaryStream);
+    await expect(boundary.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(2, {
       timeout: 60_000,
     });
-    await expect(collapsible.locator('[data-sift-output="true"]')).toHaveCount(1);
+    await expect(boundary.locator('[data-sift-output="true"]')).toHaveCount(1);
   });
 
   test("locks wheel scroll inside engaged Sift frames at table boundaries", async ({ page }) => {

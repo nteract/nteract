@@ -872,7 +872,6 @@ export function OutputRenderersExample() {
   const [siftManifestLoadMilestones, setSiftManifestLoadMilestones] = useState<SiftLoadMilestone[]>(
     [],
   );
-  const [outputAreaCollapsed, setOutputAreaCollapsed] = useState(false);
   const [outputAreaMatchCount, setOutputAreaMatchCount] = useState(0);
   const handleSiftUrlLoadMilestone = useCallback((milestone: SiftLoadMilestone) => {
     setSiftUrlLoadMilestones((current) => [...current.slice(-7), milestone]);
@@ -1047,13 +1046,10 @@ export function OutputRenderersExample() {
               <div className="mt-2 font-mono text-xs text-fd-foreground">
                 query=fold · matches={outputAreaMatchCount}
               </div>
-              <button
-                type="button"
-                className="mt-3 rounded-md border border-fd-border px-2 py-1 text-xs font-medium text-fd-foreground transition-colors hover:bg-fd-muted"
-                onClick={() => setOutputAreaCollapsed((value) => !value)}
-              >
-                {outputAreaCollapsed ? "Show outputs" : "Collapse outputs"}
-              </button>
+              <div className="mt-3 text-xs leading-5 text-fd-muted-foreground">
+                Output hiding is a notebook-cell metadata state. The shared output lane stays
+                expanded so renderer boundaries and search counts remain stable.
+              </div>
             </div>
           </div>
           <div className="rounded-md border border-fd-border bg-background py-3">
@@ -1061,8 +1057,6 @@ export function OutputRenderersExample() {
               outputs={[...outputFixtures.outputAreaOutputs]}
               cellId="elements-output-area"
               executionCount={12}
-              collapsed={outputAreaCollapsed}
-              onToggleCollapse={() => setOutputAreaCollapsed((value) => !value)}
               searchQuery="fold"
               onSearchMatchCount={setOutputAreaMatchCount}
               hostContext={{
