@@ -1,6 +1,6 @@
 ---
 name: frontend-dev
-description: Frontend development with hot reload, dev daemon setup, MCP server workflow, and TypeScript bindings generation via ts-rs.
+description: Frontend development, design exploration for UI and Elements surfaces, hot reload, dev daemon setup, MCP server workflow, and TypeScript bindings generation via ts-rs.
 ---
 
 # Frontend Development
@@ -20,6 +20,45 @@ description: Frontend development with hot reload, dev daemon setup, MCP server 
 | Lint/format | `cargo xtask lint --fix` |
 | nteract-dev MCP server | `cargo xtask run-mcp` |
 | Regenerate TS bindings | `cargo test` |
+
+## Design Exploration Mode
+
+Use this mode when the user asks to iterate on UI, including notebook UI,
+Elements docs, rail/sidebar surfaces, toolbar chrome, cell affordances, runtime
+state language, or says the goal is to make the design "very fluid with a
+natural language."
+
+### Working Shape
+
+- Start a task branch early and treat it as an exploratory design branch.
+- Bring up the dev daemon and Vite unless the user only wants discussion.
+- Prefer real fixture notebooks and existing Elements scenarios over synthetic empty states.
+- If the production app is hard to drive, prototype the visual language in `apps/elements`,
+  then pull only the durable parts back into the main app.
+- Commit each promising design state as a separate conventional commit so the user can
+  review, cherry-pick, or backtrack.
+- Do not rush to PR until there is a tangible visual direction the user likes.
+
+### Design Bias
+
+- Make UI feel like it belongs to the document, not like legacy app chrome bolted around it.
+- Use color as subtle state and focus language, not decoration.
+- Favor fluid separators, ribbons, inline controls, and calm state vocabulary over raised
+  pills, bubbles, boxed badges, or noisy status text.
+- Avoid duplicating identity/mode/status labels when another nearby control already carries
+  that meaning.
+- Keep desktop-local identity quiet; reserve explicit auth/account chrome for cloud surfaces.
+- For cloud, separate app-level controls from notebook-level controls:
+  presence, connection, sharing, auth, and view/edit mode belong in cloud/app chrome;
+  execution, runtime/package language, and cell insertion belong in notebook chrome.
+
+### Visual Verification
+
+- Check desktop and narrow widths before calling the design done.
+- Use Playwright or Browser screenshots for at least one wide and one constrained viewport.
+- Inspect common states: ready, queued, running, completed, failed, hidden input/output,
+  markdown-heavy notebooks, and package/outline rail panels.
+- If motion is involved, verify fast-path behavior so short executions do not flicker.
 
 ## Hot Reload
 
