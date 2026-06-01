@@ -25,18 +25,20 @@ const SCREENSHOT_FAILURES_DIR = path.join(SCREENSHOT_DIR, "failures");
 // Ensure screenshot directories exist
 fs.mkdirSync(SCREENSHOT_FAILURES_DIR, { recursive: true });
 
-// Fixture specs require special setup (NOTEBOOK_PATH or working directory) and are excluded
-// from the default run. Use ./e2e/dev.sh test-fixture or test-untitled-pyproject to run them.
-const FIXTURE_SPECS = [
-  "cell-visibility.spec.js", // Requires fixture notebook with pre-existing outputs
+// Native WebDriver default runs should stay small and Tauri-specific. Most
+// notebook behavior coverage lives in apps/notebook/e2e Playwright specs.
+// These specs remain available via E2E_SPEC for targeted native debugging.
+const NON_DEFAULT_NATIVE_SPECS = [
+  "tab-completion.spec.js", // Covered by apps/notebook/e2e/tab-completion.spec.ts
+  "cell-visibility.spec.js", // Covered by apps/notebook/e2e/cell-visibility.spec.ts
   "conda-inline.spec.js",
-  "deno.spec.js",
+  "deno.spec.js", // Covered by apps/notebook/e2e/environment-kernels.spec.ts
   "dx-bootstrap-repr-llm.spec.js", // Requires nteract launcher before daemon startup
-  "prewarmed-uv.spec.js",
+  "prewarmed-uv.spec.js", // Covered by apps/notebook/e2e/environment-kernels.spec.ts
   "trust-dialog-dismiss.spec.js",
   "untitled-pyproject.spec.js", // Requires working dir to be pyproject fixture directory
   "uv-inline.spec.js",
-  "uv-pyproject.spec.js",
+  "uv-pyproject.spec.js", // Covered by apps/notebook/e2e/environment-kernels.spec.ts
   "widget-slider-stall.spec.js", // Requires fixture notebook with ipywidgets slider
 ];
 
@@ -76,10 +78,10 @@ export const config = {
     ? [path.resolve(process.env.E2E_SPEC)]
     : [path.join(__dirname, "specs", "*.spec.js")],
 
-  // Exclude fixture specs from default run (they require NOTEBOOK_PATH)
+  // Exclude migrated and long-tail specs from the default native smoke run.
   exclude: process.env.E2E_SPEC
     ? []
-    : FIXTURE_SPECS.map((spec) => path.join(__dirname, "specs", spec)),
+    : NON_DEFAULT_NATIVE_SPECS.map((spec) => path.join(__dirname, "specs", spec)),
 
   // Don't run tests in parallel - we have one app instance
   maxInstances: 1,

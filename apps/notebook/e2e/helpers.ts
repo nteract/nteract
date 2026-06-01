@@ -21,6 +21,17 @@ export async function openNotebookRoom(page: Page, notebookId: string) {
   await waitForNotebookReady(page, `/?${params.toString()}`);
 }
 
+export async function openNotebookPath(
+  page: Page,
+  notebookPath: string,
+  options: { environmentMode?: "auto" | "project" | "notebook"; runtime?: string } = {},
+) {
+  const params = new URLSearchParams({ path: notebookPath });
+  if (options.environmentMode) params.set("environment_mode", options.environmentMode);
+  if (options.runtime) params.set("runtime", options.runtime);
+  await waitForNotebookReady(page, `/?${params.toString()}`);
+}
+
 export async function waitForKernelStatus(page: Page, status: string, timeout = 60_000) {
   await expect(page.getByTestId("kernel-status")).toHaveAttribute("data-kernel-status", status, {
     timeout,
@@ -56,6 +67,7 @@ export async function setCellSource(cell: Locator, source: string) {
         view?: {
           state: { doc: { length: number } };
           dispatch: (transaction: unknown) => void;
+          focus: () => void;
         };
       };
     };
@@ -67,7 +79,9 @@ export async function setCellSource(cell: Locator, source: string) {
         to: editor.state.doc.length,
         insert: text,
       },
+      selection: { anchor: text.length },
     });
+    editor.focus();
   }, source);
 }
 
@@ -114,5 +128,15 @@ export async function executeCell(cell: Locator) {
 export async function waitForOutputContaining(cell: Locator, text: string, timeout = 60_000) {
   const output = cell.locator('[data-slot="ansi-stream-output"]');
   await expect(output).toContainText(text, { timeout });
+  return output;
+}
+
+export async function waitForOutputMatching(cell: Locator, matcher: RegExp, timeout = 60_000) {
+  const output = cell.locator('[data-slot="ansi-stream-output"]');
+  await expect
+    .poll(async () => ((await output.count()) > 0 ? output.innerText() : ""), {
+      timeout,
+    })
+    .toMatch(matcher);
   return output;
 }

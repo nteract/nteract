@@ -9,7 +9,8 @@ description: Run tests, verify changes, and collect diagnostics. Use when runnin
 
 | Type | Location | Command | Framework |
 |------|----------|---------|-----------|
-| E2E | `e2e/specs/` | `cargo xtask e2e test` | WebdriverIO + Mocha |
+| Browser E2E | `apps/notebook/e2e/` | `pnpm --filter notebook-ui test:e2e:browser` | Playwright |
+| Native E2E | `e2e/specs/` | `cargo xtask e2e test` | WebdriverIO + Mocha |
 | Frontend unit | `src/**/__tests__/`, `apps/notebook/src/**/__tests__/` | `pnpm test` | Vitest + jsdom |
 | Rust unit | inline `#[cfg(test)]` | `cargo test` | built-in |
 | CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone |
@@ -101,14 +102,30 @@ SKIP_INTEGRATION_TESTS=1 pytest python/runtimed/tests/ -v     # Skip integration
 RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v  # CI mode (spawns daemon)
 ```
 
-## E2E Tests
+## Browser E2E Tests
+
+Playwright tests in `apps/notebook/e2e/` are the preferred E2E surface for
+notebook UI, runtime, fixture, and renderer behavior. They use the Vite browser
+relay plus the dev daemon, avoiding the slower Tauri WebDriver app build.
+
+```bash
+pnpm --filter notebook-ui test:e2e:browser -- --project=chromium
+pnpm --filter notebook-ui test:e2e:browser -- --project=chromium apps/notebook/e2e/execute-cell-output.spec.ts
+pnpm --filter notebook-ui test:e2e:browser:portless -- --project=chromium
+```
+
+## Native E2E Tests
+
+Native WebDriverIO tests should stay focused on Tauri-specific setup: app shell
+boot, cwd-derived untitled notebook behavior, launcher/bootstrap behavior, and
+other issues that require the real Tauri process.
 
 ### Running
 
 ```bash
 cargo xtask e2e build       # Build with WebDriver support (required first)
-cargo xtask e2e test        # Smoke/default run
-cargo xtask e2e test-all    # Full suite including fixtures
+cargo xtask e2e test        # Native smoke/default run
+cargo xtask e2e test-all    # Native smoke plus long-tail Tauri fixtures
 cargo xtask e2e test-fixture <notebook> <spec>  # Single fixture test
 ```
 
