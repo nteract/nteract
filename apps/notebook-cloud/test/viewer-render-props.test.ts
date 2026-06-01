@@ -63,15 +63,18 @@ test("cloud viewer keeps theme resolution out of first-class notebook chrome", (
   assert.doesNotMatch(sourceText, /className="cloud-theme-toggle"/);
 });
 
-test("cloud viewer routes notebook header controls through the shared shell header", () => {
+test("cloud viewer routes notebook header controls through the shared command toolbar", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /NotebookDocumentHeader,/);
-  assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
-  assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
-  assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
-  assert.match(sourceText, /codeControls=\{null\}/);
+  assert.match(sourceText, /NotebookCommandToolbar,/);
+  assert.match(
+    sourceText,
+    /<NotebookCommandToolbar[\s\S]*canEditStructure=\{shellCapabilities\.canEditStructure\}/,
+  );
+  assert.match(sourceText, /trailingControls=\{[\s\S]*<CloudSharingControls/);
+  assert.match(sourceText, /trailingControls=\{[\s\S]*<CloudNotebookEditModeButton/);
+  assert.match(sourceText, /leadingControls=\{[\s\S]*<CloudPresenceStatus/);
   assert.doesNotMatch(sourceText, /className="cloud-code-toggle"/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canManageSharing \? \(/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canToggleCode \? \(/);

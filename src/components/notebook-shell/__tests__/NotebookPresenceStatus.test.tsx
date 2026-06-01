@@ -7,17 +7,20 @@ describe("NotebookPresenceStatus", () => {
     const { container } = render(
       <NotebookPresenceStatus
         connected
-        label="2 viewing"
-        modeLabel="editing"
-        title="2 connected viewers"
+        label="2 here now"
+        modeLabel="editing is allowed"
+        title="2 participants are in this notebook"
       />,
     );
 
-    expect(screen.getByText("2 viewing · editing")).toBeVisible();
-    expect(screen.getByLabelText("2 connected viewers")).toHaveAttribute("data-connected", "true");
+    expect(screen.getByText("2 here now, editing is allowed")).toBeVisible();
+    expect(screen.getByLabelText("2 participants are in this notebook")).toHaveAttribute(
+      "data-connected",
+      "true",
+    );
     expect(container.querySelector("[data-slot='notebook-presence-status']")).toHaveAttribute(
       "title",
-      "2 connected viewers; editing",
+      "2 participants are in this notebook. editing is allowed",
     );
   });
 

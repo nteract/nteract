@@ -37,6 +37,8 @@ import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookIdentityBadge,
+  notebookActorIdentityFromAccess,
 } from "@/components/notebook-shell";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
@@ -1962,6 +1964,16 @@ function AppContent() {
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
+          trailingControls={
+            <NotebookIdentityBadge
+              actor={notebookActorIdentityFromAccess(
+                shellCapabilities.access,
+                shellCapabilities.auth,
+              )}
+              size="sm"
+              showDetail={false}
+            />
+          }
         />
         {globalFind.isOpen && (
           <GlobalFindBar

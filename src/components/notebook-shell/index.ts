@@ -32,6 +32,14 @@ export {
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export {
+  NotebookCommandToolbar,
+  type NotebookCommandRuntimeState,
+  type NotebookCommandToolbarProps,
+  type NotebookCommandToolbarStatus,
+  type NotebookCommandToolbarUpdateAction,
+  type NotebookEnvironmentManager,
+} from "./NotebookCommandToolbar";
+export {
   NotebookIdentityBadge,
   NotebookIdentityGroup,
   type NotebookIdentityBadgeProps,
