@@ -22,6 +22,22 @@ describe("PackageSpecList", () => {
     expect(screen.getAllByText("numpy")).toHaveLength(2);
   });
 
+  it("quiets read-only package rows without dropping tone", () => {
+    const { container } = render(
+      <PackageSpecList
+        values={["nteract", "gremlin ; sys_platform == 'darwin'"]}
+        tone="uv"
+        emptyLabel="No dependencies"
+        framed={false}
+      />,
+    );
+
+    expect(container.querySelector("svg")).not.toBeInTheDocument();
+    expect(container.querySelector(".bg-uv\\/60")).toBeInTheDocument();
+    expect(screen.getByText("nteract")).toBeVisible();
+    expect(screen.getByText("sys_platform == 'darwin'")).toBeVisible();
+  });
+
   it("exposes row remove actions when mutation is available", () => {
     const onRemove = vi.fn();
 

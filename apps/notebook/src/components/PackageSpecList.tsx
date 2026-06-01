@@ -89,12 +89,7 @@ export function PackageSpecList({
             )}
             <span className="min-w-0 flex-1 truncate font-mono text-foreground">{parsed.name}</span>
             {parsed.spec && hasEnvironmentMarker ? (
-              <span
-                className={cn(
-                  "min-w-0 truncate font-mono text-[11px] text-muted-foreground",
-                  showIcon || showDot ? "col-span-3 col-start-2" : "col-span-3 col-start-1",
-                )}
-              >
+              <span className="col-span-3 col-start-2 min-w-0 truncate font-mono text-[11px] text-muted-foreground">
                 {parsed.spec}
               </span>
             ) : parsed.spec ? (

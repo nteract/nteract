@@ -299,6 +299,8 @@ describe("CodeCellCurrentLine", () => {
     const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
 
     expect(detail).toHaveClass("max-w-64");
+    expect(detail).toHaveClass("group-hover:max-w-64");
+    expect(detail).not.toHaveClass("group-hover:max-w-40");
     expect(detail).toHaveClass("opacity-100");
   });
 

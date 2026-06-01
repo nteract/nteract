@@ -392,7 +392,9 @@ export function CodeCellCurrentLine({
               : "max-w-64 opacity-100",
             isCompletedRunDetail &&
               "max-w-0 overflow-hidden opacity-0 group-hover:max-w-40 group-hover:opacity-100 group-focus-within:max-w-40 group-focus-within:opacity-100",
-            isCompletedRunDetail && isFocused && "max-w-64 opacity-100",
+            isCompletedRunDetail &&
+              isFocused &&
+              "max-w-64 opacity-100 group-hover:max-w-64 group-focus-within:max-w-64",
             visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
             isQueued && "font-semibold text-sky-700 dark:text-sky-300",
             isErrored && "font-semibold text-destructive/80",
