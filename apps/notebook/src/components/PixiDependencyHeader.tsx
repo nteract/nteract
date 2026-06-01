@@ -249,7 +249,7 @@ export function PixiDependencyHeader({
                 onChange={(e) => setNewDep(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Add conda package..."
-                className="flex-1 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
+                className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
               />
               <button
                 type="button"

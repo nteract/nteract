@@ -119,6 +119,22 @@ describe("PackageSpecList", () => {
 });
 
 describe("DependencyHeader rail package copy", () => {
+  it("keeps the package add row shrinkable inside the rail", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={["pandas"]}
+        requiresPython=">=3.12"
+        loading={false}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+      />,
+    );
+
+    expect(screen.getByTestId("deps-add-input")).toHaveClass("min-w-0");
+  });
+
   it("splits project environment copy into fact and action lines", () => {
     render(
       <DependencyHeader
