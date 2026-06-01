@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff } from "lucide-react";
+import { ChevronRight, Code2, Eye, EyeOff, type LucideIcon } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { cellOutputInnerInset } from "@/components/cell/cell-layout";
@@ -98,6 +98,62 @@ function historyQueryFromEditor(view: EditorView | null, fallbackSource: string)
   }
 
   return fallbackSource.trim();
+}
+
+interface HiddenCellDisclosureProps {
+  icon: LucideIcon;
+  label: string;
+  detail?: string;
+  alert?: string;
+  disabled?: boolean;
+  pulsing?: boolean;
+  onClick: () => void;
+  title: string;
+  className?: string;
+}
+
+function HiddenCellDisclosure({
+  icon: Icon,
+  label,
+  detail,
+  alert,
+  disabled,
+  pulsing,
+  onClick,
+  title,
+  className,
+}: HiddenCellDisclosureProps) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "group/reveal flex w-full min-w-0 items-center gap-2 py-1 text-left text-xs leading-none",
+        "text-muted-foreground/70 transition-colors hover:text-foreground",
+        disabled && "cursor-default hover:text-muted-foreground/70",
+        pulsing && "animate-pulse",
+        className,
+      )}
+      title={title}
+    >
+      <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/45 transition-colors group-hover/reveal:text-muted-foreground/70">
+        <Icon className="size-3.5" />
+      </span>
+      <span className="shrink-0 font-medium">{label}</span>
+      {detail ? (
+        <span className="min-w-0 truncate font-mono text-muted-foreground/55 transition-colors group-hover/reveal:text-muted-foreground/70">
+          {detail}
+        </span>
+      ) : null}
+      <span
+        className="h-px min-w-4 flex-1 rounded-full bg-border/15 transition-colors group-hover/reveal:bg-border/30"
+        aria-hidden="true"
+      />
+      {alert ? <span className="shrink-0 font-medium text-destructive">{alert}</span> : null}
+      <ChevronRight className="size-3 shrink-0 text-muted-foreground/35 transition-colors group-hover/reveal:text-muted-foreground/70" />
+    </button>
+  );
 }
 
 function normalizeOutputText(text: string | string[]): string {
@@ -203,6 +259,7 @@ export const CodeCell = memo(function CodeCell({
     language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
   const isSourceEmpty = cell.source.trim().length === 0;
   const showOutputChrome = useMemo(() => needsOutputChrome(outputs), [outputs]);
+  const sourcePreview = cell.source.split("\n")[0]?.trim() || "source";
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -432,31 +489,40 @@ export const CodeCell = memo(function CodeCell({
         outputDimmed={outputDimmed}
         onFocus={onFocus}
         gutterContent={
-          !bothHidden ? (
-            <CompactExecutionButton
-              count={executionCount}
-              isExecuting={isExecuting}
-              isQueued={isQueued}
-              isErrored={isExecutionErrored}
-              submittedByActorLabel={submittedByActorLabel}
-              isCellFocused={isFocused}
-              canExecute={canExecute}
-              onExecute={handleExecute}
-              onInterrupt={onInterrupt}
-            />
-          ) : undefined
+          <CompactExecutionButton
+            count={executionCount}
+            isExecuting={isExecuting || isGroupExecuting}
+            isQueued={isQueued}
+            isErrored={isExecutionErrored}
+            submittedByActorLabel={submittedByActorLabel}
+            isCellFocused={isFocused}
+            canExecute={canExecute}
+            onExecute={handleExecute}
+            onInterrupt={onInterrupt}
+            className={cn(
+              bothHidden &&
+                !isFocused &&
+                !isExecuting &&
+                !isGroupExecuting &&
+                !isQueued &&
+                !isExecutionErrored &&
+                "opacity-0 group-hover:opacity-70",
+            )}
+          />
         }
         rightGutterContent={rightGutterContent}
+        stateLaneClassName={isSourceHidden ? "pt-2 sm:pt-2" : undefined}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}
         codeContent={
           <>
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
-              <div className="flex items-center justify-start mt-0.5">
-                <button
-                  type="button"
+              <div className="mt-0.5">
+                <HiddenCellDisclosure
+                  icon={Code2}
                   disabled={readOnly}
+                  pulsing={isExecuting || isGroupExecuting}
                   onClick={() => {
                     if (readOnly) return;
                     if (onExpandHiddenGroup) {
@@ -466,51 +532,36 @@ export const CodeCell = memo(function CodeCell({
                       onToggleOutputsHidden?.(false);
                     }
                   }}
-                  className={cn(
-                    "inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
-                    (isExecuting || isGroupExecuting) && "animate-pulse",
-                    readOnly &&
-                      "cursor-default opacity-70 hover:bg-muted/50 hover:text-muted-foreground",
-                  )}
                   title={
                     hiddenGroupCount && hiddenGroupCount > 1
                       ? `Show ${hiddenGroupCount} cells`
                       : "Show cell"
                   }
-                >
-                  <span>
-                    {hiddenGroupCount && hiddenGroupCount > 1
+                  label={
+                    hiddenGroupCount && hiddenGroupCount > 1
                       ? `${hiddenGroupCount} cells hidden`
-                      : "Cell hidden"}
-                  </span>
-                  {hiddenGroupErrorCount ? (
-                    <span className="text-destructive font-medium">
-                      {hiddenGroupErrorCount === 1 ? "1 error" : `${hiddenGroupErrorCount} errors`}
-                    </span>
-                  ) : null}
-                  <ChevronRight className="h-3 w-3" />
-                </button>
+                      : "Cell hidden"
+                  }
+                  alert={
+                    hiddenGroupErrorCount
+                      ? hiddenGroupErrorCount === 1
+                        ? "1 error"
+                        : `${hiddenGroupErrorCount} errors`
+                      : undefined
+                  }
+                />
               </div>
             ) : isSourceHidden ? (
               <>
-                <div className="flex items-center justify-start mt-0.5">
-                  <button
-                    type="button"
+                <div className="mt-0.5">
+                  <HiddenCellDisclosure
+                    icon={Code2}
                     disabled={readOnly}
                     onClick={() => onToggleSourceHidden?.(false)}
-                    className={cn(
-                      "inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
-                      readOnly &&
-                        "cursor-default opacity-70 hover:bg-muted/50 hover:text-muted-foreground",
-                    )}
-                    title="Show source"
-                  >
-                    <Code2 className="h-3 w-3" />
-                    <span className="font-mono truncate max-w-48">
-                      {cell.source.split("\n")[0] || "source"}
-                    </span>
-                    <ChevronRight className="h-3 w-3" />
-                  </button>
+                    title="Show input"
+                    label="Input hidden"
+                    detail={sourcePreview}
+                  />
                 </div>
                 {currentLine}
               </>
@@ -533,24 +584,15 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && outputs.length > 0 ? (
-            <div className={cn("flex items-center justify-start mt-0.5", cellOutputInnerInset)}>
-              <button
-                type="button"
+            <div className={cn("mt-0.5", cellOutputInnerInset)}>
+              <HiddenCellDisclosure
+                icon={Eye}
                 disabled={readOnly}
                 onClick={() => onToggleOutputsHidden?.(false)}
-                className={cn(
-                  "inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
-                  readOnly &&
-                    "cursor-default opacity-70 hover:bg-muted/50 hover:text-muted-foreground",
-                )}
                 title="Show outputs"
-              >
-                <span>
-                  {outputs.length} output
-                  {outputs.length !== 1 ? "s" : ""}
-                </span>
-                <ChevronRight className="h-3 w-3" />
-              </button>
+                label={outputs.length === 1 ? "Output hidden" : "Outputs hidden"}
+                detail={outputs.length > 1 ? `${outputs.length} outputs` : undefined}
+              />
             </div>
           ) : (
             <OutputArea

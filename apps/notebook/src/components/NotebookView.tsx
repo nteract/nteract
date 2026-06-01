@@ -773,7 +773,7 @@ function NotebookViewContent({
                     "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
                     isSourceHidden ? "text-muted-foreground/70" : "text-muted-foreground/40",
                   )}
-                  title={isSourceHidden ? "Show source" : "Hide source"}
+                  title={isSourceHidden ? "Show input" : "Hide input"}
                 >
                   <Code2 className="h-3.5 w-3.5" />
                 </button>
@@ -788,6 +788,17 @@ function NotebookViewContent({
       if (cell.cell_type === "code") {
         // Use TypeScript for Deno, IPython otherwise (for magic/shell highlighting)
         const language = runtime === "deno" ? "typescript" : "ipython";
+        const hiddenGroup = hiddenGroupsRef.current.get(cell.id);
+        const executeCellOrHiddenGroup = () => {
+          if (hiddenGroup && hiddenGroup.count > 1) {
+            for (const hiddenCellId of hiddenGroup.groupCellIds) {
+              onExecuteCell(hiddenCellId);
+            }
+          } else {
+            onExecuteCell(cell.id);
+          }
+        };
+
         return (
           <CodeCell
             key={cell.id}
@@ -805,7 +816,7 @@ function NotebookViewContent({
             outputFocused={outputFocusedCellId === cell.id}
             outputDimmed={outputFocusedCellId !== null && outputFocusedCellId !== cell.id}
             onOutputFocusChange={(focused) => handleOutputFocusChange(cell.id, focused)}
-            onExecute={() => onExecuteCell(cell.id)}
+            onExecute={executeCellOrHiddenGroup}
             onInterrupt={onInterruptKernel}
             onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}
@@ -829,9 +840,9 @@ function NotebookViewContent({
                 ? (hidden: boolean) => onSetCellOutputsHidden(cell.id, hidden)
                 : undefined
             }
-            hiddenGroupCount={hiddenGroupsRef.current.get(cell.id)?.count}
-            hiddenGroupErrorCount={hiddenGroupsRef.current.get(cell.id)?.errorCount}
-            hiddenGroupCellIds={hiddenGroupsRef.current.get(cell.id)?.groupCellIds}
+            hiddenGroupCount={hiddenGroup?.count}
+            hiddenGroupErrorCount={hiddenGroup?.errorCount}
+            hiddenGroupCellIds={hiddenGroup?.groupCellIds}
             onExpandHiddenGroup={
               hiddenGroupsRef.current.has(cell.id) &&
               canMutateCells &&

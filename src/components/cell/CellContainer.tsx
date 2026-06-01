@@ -19,6 +19,8 @@ interface CellContainerProps {
   children?: ReactNode;
   /** Content to render in the left state lane (e.g., play button, execution marker) */
   gutterContent?: ReactNode;
+  /** Optional layout override for the left state lane. */
+  stateLaneClassName?: string;
   /** Content to render in the right margin aligned with code row (e.g., cell controls) */
   rightGutterContent?: ReactNode;
   /** Content to render in the right margin aligned with output row (e.g., output controls) */
@@ -90,6 +92,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       hideOutput,
       children,
       gutterContent,
+      stateLaneClassName,
       rightGutterContent,
       outputRightGutterContent,
       presenceIndicators,
@@ -138,7 +141,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {/* Optional state lane - lives inside the source inset so clipped scroll containers do not hide it. */}
         <div
           data-slot="cell-state-lane"
-          className="absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-[1.125rem] select-none sm:pt-3.5"
+          className={cn(
+            "absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-[1.125rem] select-none sm:pt-3.5",
+            stateLaneClassName,
+          )}
           onMouseDown={onFocus}
         >
           {gutterContent}
