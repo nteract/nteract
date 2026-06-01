@@ -27,6 +27,7 @@ import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget
 import { WidgetUpdateManager, type ContentRef } from "@/components/widgets/widget-update-manager";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
+import { cn } from "@/lib/utils";
 
 type FixtureModel = {
   id: string;
@@ -1008,6 +1009,63 @@ const adapterBoundaries = [
   },
 ];
 
+const widgetSurfaceLanguage = [
+  {
+    label: "Live surface",
+    state: "interactive fixture",
+    icon: SlidersHorizontal,
+    tone: "emerald",
+    body: "Controls render through WidgetView and update the same WidgetStore contract used by live comm state.",
+  },
+  {
+    label: "Saved surface",
+    state: "snapshot",
+    icon: PackageOpen,
+    tone: "sky",
+    body: "Static widget state keeps notebooks readable when a comm is gone, stale, or intentionally unavailable.",
+  },
+  {
+    label: "Adapter seam",
+    state: "host owned",
+    icon: Cable,
+    tone: "amber",
+    body: "Sync, iframe transport, blob signing, and kernel-originated assets stay named instead of leaking into the catalog.",
+  },
+  {
+    label: "Runtime gap",
+    state: "next fixture",
+    icon: CircleDotDashed,
+    tone: "neutral",
+    body: "Unmodeled behavior gets a fixture target before it becomes production UI language.",
+  },
+] as const;
+
+const widgetSurfaceToneClasses: Record<
+  (typeof widgetSurfaceLanguage)[number]["tone"],
+  { bar: string; badge: string; icon: string }
+> = {
+  emerald: {
+    bar: "bg-emerald-400",
+    badge: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    icon: "text-emerald-600 dark:text-emerald-300",
+  },
+  sky: {
+    bar: "bg-sky-400",
+    badge: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+    icon: "text-sky-600 dark:text-sky-300",
+  },
+  amber: {
+    bar: "bg-amber-400",
+    badge: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    icon: "text-amber-600 dark:text-amber-300",
+  },
+  neutral: {
+    bar: "bg-fd-muted-foreground/35",
+    badge: "bg-fd-muted text-fd-muted-foreground",
+    icon: "text-fd-muted-foreground",
+  },
+};
+
 const widgetBoundaryRows = [
   {
     surface: "Saved widget state",
@@ -1637,22 +1695,58 @@ function WidgetInventory() {
   );
 }
 
+function WidgetSurfaceGrammar() {
+  return (
+    <section
+      className="overflow-hidden rounded-lg border border-fd-border bg-fd-card"
+      data-testid="widget-surface-grammar"
+    >
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <Boxes className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Widget surface grammar</h2>
+        </div>
+        <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+          The catalog should read like a notebook boundary: live where fixtures can honestly behave,
+          quiet when state is only saved, and explicit where the host still owns the seam.
+        </p>
+      </div>
+      <div className="divide-y divide-fd-border bg-background">
+        {widgetSurfaceLanguage.map((item) => {
+          const tone = widgetSurfaceToneClasses[item.tone];
+          return (
+            <div key={item.label} className="grid gap-3 p-4 sm:grid-cols-[8px_160px_1fr]">
+              <div
+                className={cn("hidden h-full min-h-12 rounded-full sm:block", tone.bar)}
+                aria-hidden="true"
+              />
+              <div className="flex items-start gap-2">
+                <item.icon className={cn("mt-0.5 size-4 shrink-0", tone.icon)} aria-hidden="true" />
+                <div>
+                  <h3 className="text-sm font-semibold">{item.label}</h3>
+                  <div
+                    className={cn(
+                      "mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium leading-none",
+                      tone.badge,
+                    )}
+                  >
+                    {item.state}
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs leading-5 text-fd-muted-foreground">{item.body}</p>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function WidgetSurfacesExample() {
   return (
     <div className="not-prose space-y-6" data-testid="widget-surfaces-example">
-      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-900 dark:text-emerald-100">
-        <div className="flex items-start gap-3">
-          <SlidersHorizontal className="mt-0.5 size-4 flex-none" aria-hidden="true" />
-          <div>
-            <h2 className="text-sm font-semibold">Widget fixtures use the real widget path</h2>
-            <p className="mt-1 text-xs leading-5">
-              This page imports current widget store, registry, WidgetView, and selected built-in
-              controls. Runtime sync, iframe transport, generated WASM, and kernel comms stay behind
-              explicit adapters.
-            </p>
-          </div>
-        </div>
-      </section>
+      <WidgetSurfaceGrammar />
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="border-b border-fd-border p-4">
