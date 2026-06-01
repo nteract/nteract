@@ -40,13 +40,19 @@ const runningIdleLifecycle: RuntimeLifecycle = {
 
 const scenarioIds: ElementsNotebookScenarioId[] = [
   "desktop-local-owner",
+  "desktop-read-only",
+  "desktop-remote-room",
   "cloud-public-viewer",
   "cloud-editor",
   "cloud-owner",
   "agent-on-behalf",
+  "credential-attention",
+  "multi-operator",
+  "mixed-idp-room",
   "runtime-peer",
   "system-schema",
   "runtime-unavailable",
+  "untrusted-dependencies",
 ];
 
 const executingCellId = "cell-model-code";
@@ -177,9 +183,7 @@ export function RailOutlineExample() {
                   <NotebookEnvironmentSummary
                     capabilities={scenario.capabilities}
                     packages={viewModel.packages}
-                    runtimeLabel={scenario.runtimeLabel}
-                    syncLabel={packageSyncLabel(scenario.packageState.syncState.status)}
-                    trustLabel={trustStatusLabel(scenario.trustState.trustInfo.status)}
+                    environment={scenario.environment}
                     showPackageDetails={false}
                     className="shadow-none"
                   />
@@ -227,30 +231,6 @@ export function RailOutlineExample() {
       />
     </NotebookDocumentShell>
   );
-}
-
-function trustStatusLabel(status: ElementsNotebookScenario["trustState"]["trustInfo"]["status"]) {
-  switch (status) {
-    case "trusted":
-      return "Trusted";
-    case "untrusted":
-      return "Untrusted dependencies";
-    case "no_dependencies":
-      return "No dependency trust review needed";
-  }
-}
-
-function packageSyncLabel(status: ElementsNotebookScenario["packageState"]["syncState"]["status"]) {
-  switch (status) {
-    case "dirty":
-      return "Package metadata has pending changes";
-    case "not_running":
-      return "Runtime is not running";
-    case "not_uv_managed":
-      return "Package metadata is outside uv";
-    case "synced":
-      return "Package metadata synced";
-  }
 }
 
 function ScenarioNotice({

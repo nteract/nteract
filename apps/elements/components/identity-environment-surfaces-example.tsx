@@ -20,13 +20,19 @@ import {
 
 const identityScenarioIds: ElementsNotebookScenarioId[] = [
   "desktop-local-owner",
+  "desktop-read-only",
+  "desktop-remote-room",
   "cloud-public-viewer",
   "cloud-editor",
   "cloud-owner",
   "agent-on-behalf",
+  "credential-attention",
+  "multi-operator",
+  "mixed-idp-room",
   "runtime-peer",
   "system-schema",
   "runtime-unavailable",
+  "untrusted-dependencies",
 ];
 
 const remainingNotebookSurfaces = [
@@ -145,10 +151,7 @@ export function IdentityEnvironmentSurfacesExample() {
         <NotebookEnvironmentSummary
           capabilities={desktopOwner.capabilities}
           packages={desktopOwner.viewModel.packages}
-          runtimeLabel={desktopOwner.runtimeLabel}
-          packageSourceLabel={desktopOwner.packageState.pyprojectInfo.relative_path}
-          syncLabel={syncLabel(desktopOwner)}
-          trustLabel="Untrusted - review package changes"
+          environment={desktopOwner.environment}
         />
       </section>
 
@@ -156,18 +159,12 @@ export function IdentityEnvironmentSurfacesExample() {
         <NotebookEnvironmentSummary
           capabilities={agentScenario.capabilities}
           packages={agentScenario.viewModel.packages}
-          runtimeLabel={agentScenario.runtimeLabel}
-          packageSourceLabel="cloud runtime snapshot"
-          syncLabel="managed by owner"
-          trustLabel="Trusted by Kyle"
+          environment={agentScenario.environment}
         />
         <NotebookEnvironmentSummary
           capabilities={getElementsNotebookScenario("runtime-unavailable").capabilities}
           packages={getElementsNotebookScenario("runtime-unavailable").viewModel.packages}
-          runtimeLabel={getElementsNotebookScenario("runtime-unavailable").runtimeLabel}
-          packageSourceLabel="pyproject.toml"
-          syncLabel="package edits disabled"
-          trustLabel="Needs attention"
+          environment={getElementsNotebookScenario("runtime-unavailable").environment}
         />
       </section>
 
@@ -261,15 +258,4 @@ function Fact({ label, value }: { label: string; value: string }) {
 
 function scenarioActor(scenario: ElementsNotebookScenario): NotebookActorIdentity {
   return notebookActorIdentityFromAccess(scenario.capabilities.access, scenario.capabilities.auth);
-}
-
-function syncLabel(scenario: ElementsNotebookScenario): string {
-  const state = scenario.packageState.syncState;
-  if (state.status === "synced") return "synced";
-  if (state.status === "dirty") {
-    const added = "added" in state && Array.isArray(state.added) ? state.added.length : 0;
-    const removed = "removed" in state && Array.isArray(state.removed) ? state.removed.length : 0;
-    return `dirty - ${added + removed} pending changes`;
-  }
-  return state.status;
 }

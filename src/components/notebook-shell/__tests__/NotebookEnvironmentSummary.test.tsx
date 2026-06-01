@@ -118,4 +118,51 @@ describe("NotebookEnvironmentSummary", () => {
     expect(screen.getByText("Package metadata read only")).toBeVisible();
     expect(screen.queryByText("pandas>=2")).toBeNull();
   });
+
+  it("can render from a typed environment surface projection", () => {
+    render(
+      <NotebookEnvironmentSummary
+        capabilities={capabilities}
+        packages={packages}
+        environment={{
+          access: {
+            level: "owner",
+            source: "local",
+            label: "Owner",
+            sourceLabel: "desktop host",
+            visibilityLabel: "Private",
+            isPublic: false,
+          },
+          runtime: {
+            status: "launching",
+            label: "Runtime launching",
+            detail: "Queued by Desktop",
+            muted: false,
+          },
+          packages: {
+            summary: "uv - 2 packages",
+            sourceLabel: "pyproject.toml",
+            accessLabel: "Package edits available",
+            muted: false,
+          },
+          sync: {
+            status: "dirty",
+            label: "Package metadata has pending changes",
+            muted: false,
+          },
+          trust: {
+            status: "untrusted",
+            label: "Untrusted dependencies",
+            attention: true,
+          },
+        }}
+        showPackageDetails={false}
+      />,
+    );
+
+    expect(screen.getByText("Owner access through desktop host")).toBeVisible();
+    expect(screen.getByText("Runtime launching")).toBeVisible();
+    expect(screen.getByText("Package metadata has pending changes")).toBeVisible();
+    expect(screen.getByText("Untrusted dependencies")).toBeVisible();
+  });
 });

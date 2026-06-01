@@ -43,6 +43,16 @@ export {
   type NotebookEnvironmentSummaryProps,
 } from "./NotebookEnvironmentSummary";
 export {
+  accessLevelLabel,
+  accessSourceLabel,
+  createNotebookEnvironmentSurface,
+  type CreateNotebookEnvironmentSurfaceOptions,
+  type NotebookEnvironmentSurface,
+  type NotebookPackageSyncStatus,
+  type NotebookRuntimeStatus,
+  type NotebookTrustStatus,
+} from "./environment-surface";
+export {
   NotebookEditModeButton,
   type NotebookEditMode,
   type NotebookEditModeButtonProps,

@@ -1,13 +1,17 @@
 import { CheckCircle2, Lock, Package, RefreshCw, Server, ShieldAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { notebookActorIdentityFromRuntime } from "./actor-projection";
 import type { NotebookShellCapabilities } from "./capabilities";
+import {
+  createNotebookEnvironmentSurface,
+  type NotebookEnvironmentSurface,
+} from "./environment-surface";
 import type { NotebookPackageViewModel } from "./view-model";
 
 export interface NotebookEnvironmentSummaryProps {
   capabilities: NotebookShellCapabilities;
   packages: NotebookPackageViewModel;
+  environment?: NotebookEnvironmentSurface;
   runtimeLabel?: string | null;
   packageSourceLabel?: string | null;
   syncLabel?: string | null;
@@ -18,6 +22,7 @@ export interface NotebookEnvironmentSummaryProps {
 
 export function NotebookEnvironmentSummary({
   capabilities,
+  environment,
   packages,
   runtimeLabel = null,
   packageSourceLabel = null,
@@ -26,19 +31,16 @@ export function NotebookEnvironmentSummary({
   showPackageDetails = true,
   className,
 }: NotebookEnvironmentSummaryProps) {
-  const packageAccessLabel = capabilities.canManagePackages
-    ? "Package edits available"
-    : capabilities.canViewPackages
-      ? "Package metadata read only"
-      : "Package metadata hidden";
-  const runtimeStateLabel =
-    runtimeLabel ?? (capabilities.canExecute ? "Runtime ready" : "No runtime");
-  const runtimeActor = notebookActorIdentityFromRuntime(capabilities.runtime, capabilities.auth);
-  const runtimeDetail = capabilities.runtime.canWriteRuntimeState
-    ? `Runtime author: ${runtimeActor?.label ?? "connected runtime"}`
-    : capabilities.runtime.connected
-      ? `Runtime connected through ${accessSourceLabel(capabilities.runtime.source)}`
-      : null;
+  const surface =
+    environment ??
+    createNotebookEnvironmentSurface({
+      capabilities,
+      packages,
+      runtimeLabel,
+      packageSourceLabel,
+      syncLabel,
+      trustLabel,
+    });
 
   return (
     <section
@@ -58,12 +60,11 @@ export function NotebookEnvironmentSummary({
             <h3 className="truncate text-sm font-semibold">Notebook environment</h3>
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {accessLevelLabel(capabilities.access.level)} access through{" "}
-            {accessSourceLabel(capabilities.access.source)}
+            {surface.access.label} access through {surface.access.sourceLabel}
           </p>
         </div>
         <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">
-          {capabilities.access.isPublic ? "Public" : "Private"}
+          {surface.access.visibilityLabel}
         </span>
       </div>
 
@@ -71,33 +72,33 @@ export function NotebookEnvironmentSummary({
         <SummaryFact
           icon={<Server className="size-3.5" aria-hidden="true" />}
           label="Runtime"
-          value={runtimeStateLabel}
-          detail={runtimeDetail}
-          muted={!capabilities.canExecute && !capabilities.runtime.connected}
+          value={surface.runtime.label}
+          detail={surface.runtime.detail}
+          muted={surface.runtime.muted}
         />
         <SummaryFact
           icon={<Package className="size-3.5" aria-hidden="true" />}
           label="Packages"
-          value={packages.summary ?? "No package metadata"}
-          detail={packageSourceLabel ?? packageAccessLabel}
-          muted={!capabilities.canViewPackages}
+          value={surface.packages.summary}
+          detail={surface.packages.sourceLabel}
+          muted={surface.packages.muted}
         />
         <SummaryFact
           icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
           label="Sync"
-          value={syncLabel ?? "Sync status not reported"}
-          muted={!syncLabel}
+          value={surface.sync.label}
+          muted={surface.sync.muted}
         />
         <SummaryFact
           icon={
-            trustLabel?.toLowerCase().includes("untrusted") ? (
+            surface.trust.attention ? (
               <ShieldAlert className="size-3.5" aria-hidden="true" />
             ) : (
               <CheckCircle2 className="size-3.5" aria-hidden="true" />
             )
           }
           label="Trust"
-          value={trustLabel ?? "Trust state not required"}
+          value={surface.trust.label}
         />
       </div>
 
@@ -170,30 +171,4 @@ function SummaryFact({
       {detail ? <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div> : null}
     </div>
   );
-}
-
-function accessLevelLabel(level: NotebookShellCapabilities["access"]["level"]): string {
-  switch (level) {
-    case "none":
-      return "No";
-    case "viewer":
-      return "Viewer";
-    case "editor":
-      return "Editor";
-    case "owner":
-      return "Owner";
-  }
-}
-
-function accessSourceLabel(source: NotebookShellCapabilities["access"]["source"]): string {
-  switch (source) {
-    case "cloud":
-      return "cloud";
-    case "local":
-      return "local";
-    case "fixture":
-      return "fixture";
-    case "unknown":
-      return "unknown host";
-  }
 }

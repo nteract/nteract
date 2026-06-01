@@ -10,22 +10,23 @@ are acting within. This page catalogs notebook-semantic composites, not raw
 primitive components.
 
 `NotebookIdentityBadge` and `NotebookIdentityGroup` wrap the shared Avatar
-primitive with notebook actor/access facts. `NotebookEnvironmentSummary` wraps
-the shared package view model and shell capabilities into a compact runtime and
-dependency state surface.
+primitive with notebook actor/access facts. `NotebookEnvironmentSummary` renders
+the shared typed environment projection for access, runtime, package, sync, and
+trust state.
 
-The fixtures come from `ElementsNotebookScenario`: local owner, public viewer,
-cloud editor, cloud owner, agent-on-behalf-of-user, runtime peer, system actor,
-and runtime-unavailable states. Desktop and cloud should feed the same
-production components from their host adapters.
+The fixtures come from `ElementsNotebookScenario`: desktop owner/read-only/
+remote-room, public viewer, cloud editor/owner, credential-attention,
+multi-operator, mixed-IdP, agent-on-behalf-of-user, runtime peer, system actor,
+runtime-unavailable, and untrusted-dependency states. Desktop and cloud should
+feed the same production components from their host adapters.
 
 <IdentityEnvironmentSurfacesExample />
 
 ## Boundary
 
 - Raw shadcn primitives stay implementation details.
-- Actor labels, access state, auth state, runtime labels, and package summaries
-  come from notebook shell projections.
+- Actor labels, access state, auth state, runtime, package, sync, and trust
+  facts come from notebook shell projections.
 - Agent attribution is represented as notebook identity, not as a generic model
   selector.
 - Package info is notebook environment context, not an npm-style package profile.
