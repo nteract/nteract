@@ -61,7 +61,7 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
       const line = typeof focusTarget.line === "number" ? focusTarget.line : null;
       const pos =
         line !== null && Number.isFinite(line) && line > 0
-          ? doc.line(Math.min(Math.floor(line), doc.lines)).from
+          ? doc.line(Math.max(1, Math.min(Math.floor(line), doc.lines))).from
           : focusTarget.cursorPosition === "end"
             ? doc.length
             : 0;

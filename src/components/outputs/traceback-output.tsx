@@ -12,7 +12,7 @@
  */
 
 import { Check, Copy, LocateFixed, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { highlight } from "@/components/editor/static-highlight";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
@@ -200,7 +200,7 @@ export function TracebackOutput({
   // to the ename reads better whether we show frames below or not.
   const inlineEvalue = Boolean(payload?.evalue && !payload.evalue.includes("\n"));
   const currentExecutionId = payload?.execution?.execution_id;
-  const defaultSelectedFrame = useMemo(() => preferredFrameIndex(clusters), [clusters]);
+  const defaultSelectedFrame = preferredFrameIndex(clusters);
   const [selectedFrame, setSelectedFrame] = useState(defaultSelectedFrame);
 
   useEffect(() => {
