@@ -10,6 +10,13 @@ import { cn } from "@/lib/utils";
 
 export type NotebookRailPanelId = "outline" | "packages";
 
+export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
+export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = "max-[599.98px]:hidden";
+export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES =
+  "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none";
+const NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,18rem)] min-w-60";
+const NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,17rem)] min-w-60";
+
 export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
   collapsed: boolean;
@@ -94,25 +101,30 @@ export function NotebookRail({
           className={cn(
             "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col bg-background",
             activePanelId === "packages"
-              ? "w-[clamp(14rem,21vw,18rem)] min-w-56"
-              : "w-[clamp(14rem,20vw,17rem)] min-w-56",
-            "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none",
+              ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
+              : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME,
+            NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
           )}
           data-slot="notebook-rail-panel"
         >
           <div className="border-b px-4 py-3">
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-1.5">
               <div className="min-w-0">
                 <p className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
                   Notebook
                 </p>
-                <h2 className="mt-1 text-sm font-semibold text-foreground">{title}</h2>
               </div>
-              {summary && (
-                <span className="w-fit max-w-full truncate rounded-full border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                  {summary}
-                </span>
-              )}
+              <div
+                className="flex min-w-0 flex-wrap items-center justify-between gap-2"
+                data-slot="notebook-rail-panel-title-row"
+              >
+                <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+                {summary && (
+                  <span className="w-fit max-w-full truncate rounded-full border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+                    {summary}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-3">

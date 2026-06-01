@@ -109,16 +109,18 @@ export function DependencyHeader({
           className={cn(
             "mb-2 flex items-center gap-2",
             isRail &&
-              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+              "mb-3 flex-wrap justify-between gap-x-2 gap-y-1 rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
           )}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className={cn("flex min-w-0 items-center gap-2", isRail && "shrink-0")}>
             <span className="rounded bg-uv/20 px-1.5 py-0.5 text-xs font-medium text-uv">uv</span>
-            {isRail && <span className="truncate text-xs text-muted-foreground">Python</span>}
+            {isRail && (
+              <span className="whitespace-nowrap text-xs text-muted-foreground">Python</span>
+            )}
           </div>
-          {isRail && (
+          {isRail && isUsingProjectEnv && (
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {isUsingProjectEnv ? "Project env" : packageCountLabel(dependencies.length)}
+              Project env
             </span>
           )}
         </div>
@@ -143,22 +145,7 @@ export function DependencyHeader({
           >
             <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                Re-initialize the environment to use{" "}
-                {syncState.added.length > 0 && (
-                  <span>
-                    {syncState.added.length} new package
-                    {syncState.added.length > 1 ? "s" : ""}
-                  </span>
-                )}
-                {syncState.added.length > 0 && syncState.removed.length > 0 && " and remove "}
-                {syncState.removed.length > 0 && (
-                  <span>
-                    {syncState.removed.length} package
-                    {syncState.removed.length > 1 ? "s" : ""}
-                  </span>
-                )}
-              </span>
+              <span>Re-initialize the environment to apply dependency changes.</span>
             </div>
             <button
               type="button"
@@ -178,8 +165,13 @@ export function DependencyHeader({
 
         {/* pyproject.toml detected banner */}
         {hasPyprojectDependencies && !isUsingProjectEnv && (
-          <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
-            <div className={cn("flex items-center justify-between", isRail && "items-start gap-3")}>
+          <div
+            className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground"
+            data-slot="deps-pyproject-banner"
+          >
+            <div
+              className={cn(isRail ? "flex flex-col gap-2" : "flex items-center justify-between")}
+            >
               <div className="flex min-w-0 items-start gap-2">
                 <FileText className="h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0">
@@ -191,7 +183,10 @@ export function DependencyHeader({
                   )}
                 </span>
               </div>
-              <div className={cn("flex items-center gap-2", isRail && "flex-wrap justify-end")}>
+              <div
+                data-slot="deps-pyproject-actions"
+                className={cn("flex items-center gap-2", isRail && "flex-wrap justify-start pl-5")}
+              >
                 {onUseProjectEnv && !isUsingProjectEnv && (
                   <button
                     type="button"
@@ -364,7 +359,7 @@ export function DependencyHeader({
               onKeyDown={handleKeyDown}
               placeholder="package or package>=version"
               data-testid="deps-add-input"
-              className="flex-1 rounded border bg-background px-2 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
               disabled={loading}
               autoComplete="off"
               spellCheck={false}
@@ -384,8 +379,4 @@ export function DependencyHeader({
       </div>
     </div>
   );
-}
-
-function packageCountLabel(count: number): string {
-  return count === 1 ? "1 package" : `${count} packages`;
 }

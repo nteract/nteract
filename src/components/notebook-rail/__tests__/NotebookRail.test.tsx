@@ -1,6 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { NotebookPackagesPanel, NotebookRail } from "../NotebookRail";
+import {
+  NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
+  NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES,
+  NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+  NotebookPackagesPanel,
+  NotebookRail,
+} from "../NotebookRail";
 
 const outlineItems = [
   {
@@ -102,6 +108,11 @@ describe("NotebookRail", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
+    expect(
+      screen
+        .getByText("../pyproject.toml · 25 packages")
+        .closest('[data-slot="notebook-rail-panel-title-row"]'),
+    ).toHaveClass("flex-wrap", "justify-between");
     expect(screen.getByText("../pyproject.toml · 25 packages")).toHaveClass("w-fit", "max-w-full");
   });
 
@@ -198,12 +209,13 @@ describe("NotebookRail", () => {
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(14rem,20vw,17rem)]",
-      "max-[599.98px]:w-[calc(100vw-3rem)]",
+      "w-[clamp(15rem,20vw,18rem)]",
+      "min-w-60",
+      ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
   });
 
-  it("gives package details a wider rail than outline navigation", () => {
+  it("gives package details enough room until the rail owns the viewport", () => {
     const { container } = render(
       <NotebookRail
         activePanelId="packages"
@@ -216,8 +228,17 @@ describe("NotebookRail", () => {
     );
 
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(14rem,21vw,18rem)]",
-      "min-w-56",
+      "w-[clamp(15rem,20vw,17rem)]",
+      "min-w-60",
+      ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
+    );
+  });
+
+  it("keeps the stage and panel takeover breakpoint in one rail contract", () => {
+    expect(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY).toBe("(max-width: 599.98px)");
+    expect(NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME).toBe("max-[599.98px]:hidden");
+    expect(NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES).toContain(
+      "max-[599.98px]:w-[calc(100vw-3rem)]",
     );
   });
 

@@ -75,21 +75,26 @@ export function PixiDependencyHeader({
           className={cn(
             "mb-2 flex items-center gap-2",
             isRail &&
-              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+              "mb-3 flex-wrap justify-between gap-x-2 gap-y-1 rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
           )}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className={cn("flex min-w-0 items-center gap-2", isRail && "shrink-0")}>
             <span className="flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
               <PixiIcon className="h-2.5 w-2.5" />
               Pixi
             </span>
-            <span className="truncate text-xs text-muted-foreground">
+            <span
+              className={cn(
+                "text-xs text-muted-foreground",
+                isRail ? "whitespace-nowrap" : "truncate",
+              )}
+            >
               {isInlineMode ? "Dependencies" : "Environment"}
             </span>
           </div>
-          {isRail && (
+          {isRail && !isInlineMode && (
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {isInlineMode ? packageCountLabel(pixiDeps?.dependencies.length ?? 0) : "Project"}
+              Project
             </span>
           )}
         </div>
@@ -114,11 +119,7 @@ export function PixiDependencyHeader({
           >
             <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                Dependencies changed
-                {syncState.added.length > 0 && ` — ${syncState.added.length} added`}
-                {syncState.removed.length > 0 && ` — ${syncState.removed.length} removed`}
-              </span>
+              <span>Dependencies changed.</span>
             </div>
             <button
               type="button"
@@ -249,7 +250,7 @@ export function PixiDependencyHeader({
                 onChange={(e) => setNewDep(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Add conda package..."
-                className="flex-1 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
+                className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
               />
               <button
                 type="button"
@@ -289,8 +290,4 @@ export function PixiDependencyHeader({
       </div>
     </div>
   );
-}
-
-function packageCountLabel(count: number): string {
-  return count === 1 ? "1 package" : `${count} packages`;
 }

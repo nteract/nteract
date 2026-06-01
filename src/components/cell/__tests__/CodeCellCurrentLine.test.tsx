@@ -320,7 +320,7 @@ describe("CodeCellCurrentLine", () => {
 
     expect(footer).toHaveTextContent("Kyle");
     expect(activity).toHaveClass("max-w-0");
-    expect(activity?.compareDocumentPosition(status as Element)).toBe(
+    expect(status?.compareDocumentPosition(activity as Element)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(screen.getByTestId("peer-activity")).toBeInTheDocument();

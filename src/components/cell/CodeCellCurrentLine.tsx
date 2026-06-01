@@ -331,19 +331,6 @@ export function CodeCellCurrentLine({
           isFocused={isFocused}
         />
       ) : null}
-      {!isCompactIdle && activityContent ? (
-        <div
-          data-slot="code-cell-current-line-activity"
-          className={cn(
-            "flex min-w-0 shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-150",
-            isQuietResting
-              ? "max-w-0 opacity-0 group-hover:max-w-24 group-hover:opacity-100 group-focus-within:max-w-24 group-focus-within:opacity-100"
-              : "max-w-24 opacity-100",
-          )}
-        >
-          {activityContent}
-        </div>
-      ) : null}
       <span
         data-slot="code-cell-current-line-status"
         aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
@@ -404,6 +391,19 @@ export function CodeCellCurrentLine({
           {detailLabel}
         </span>
       </span>
+      {!isCompactIdle && activityContent ? (
+        <div
+          data-slot="code-cell-current-line-activity"
+          className={cn(
+            "flex min-w-0 shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-150",
+            isQuietResting
+              ? "max-w-0 opacity-0 group-hover:max-w-24 group-hover:opacity-100 group-focus-within:max-w-24 group-focus-within:opacity-100"
+              : "max-w-24 opacity-100",
+          )}
+        >
+          {activityContent}
+        </div>
+      ) : null}
     </div>
   );
 }

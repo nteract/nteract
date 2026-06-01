@@ -22,7 +22,7 @@ describe("PackageSpecList", () => {
     expect(screen.getAllByText("numpy")).toHaveLength(2);
   });
 
-  it("quiets read-only package rows without dropping tone", () => {
+  it("quiets read-only package rows without redundant markers", () => {
     const { container } = render(
       <PackageSpecList
         values={["nteract", "gremlin ; sys_platform == 'darwin'"]}
@@ -33,7 +33,10 @@ describe("PackageSpecList", () => {
     );
 
     expect(container.querySelector("svg")).not.toBeInTheDocument();
-    expect(container.querySelector(".bg-uv\\/60")).toBeInTheDocument();
+    expect(container.querySelector(".bg-uv\\/60")).not.toBeInTheDocument();
+    expect(screen.getByText("nteract").parentElement).toHaveClass(
+      "grid-cols-[minmax(0,1fr)_auto_auto]",
+    );
     expect(screen.getByText("nteract")).toBeVisible();
     expect(screen.getByText("gremlin")).toHaveAttribute("title", "gremlin");
     expect(screen.getByText("sys_platform == 'darwin'")).toBeVisible();
@@ -43,6 +46,7 @@ describe("PackageSpecList", () => {
     );
     expect(screen.getByText("sys_platform == 'darwin'")).not.toHaveClass("truncate");
     expect(screen.getByText("sys_platform == 'darwin'")).toHaveClass("whitespace-normal");
+    expect(screen.getByText("sys_platform == 'darwin'")).toHaveClass("col-start-1");
   });
 
   it("keeps full package specs available when rail text truncates", () => {
@@ -119,6 +123,105 @@ describe("PackageSpecList", () => {
 });
 
 describe("DependencyHeader rail package copy", () => {
+  it("keeps the package add row shrinkable inside the rail", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={["pandas"]}
+        requiresPython=">=3.12"
+        loading={false}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+      />,
+    );
+
+    expect(screen.getByTestId("deps-add-input")).toHaveClass("min-w-0");
+  });
+
+  it("leaves package counts to the rail title summary", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={["pandas", "polars"]}
+        requiresPython=">=3.12"
+        loading={false}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+      />,
+    );
+
+    expect(screen.queryByText("2 packages")).not.toBeInTheDocument();
+  });
+
+  it("describes dirty dependencies without overstating all packages as new", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={[
+          "pandas",
+          "polars",
+          "matplotlib",
+          "plotly",
+          "altair",
+          "vega_datasets",
+          "kyle",
+        ]}
+        requiresPython=">=3.13"
+        loading={false}
+        syncState={{
+          status: "dirty",
+          added: ["pandas", "polars", "matplotlib", "plotly", "altair", "vega_datasets", "kyle"],
+          removed: [],
+        }}
+        onSyncNow={async () => true}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+      />,
+    );
+
+    expect(
+      screen.getByText("Re-initialize the environment to apply dependency changes."),
+    ).toBeVisible();
+    expect(screen.queryByText(/7 new packages/)).not.toBeInTheDocument();
+  });
+
+  it("stacks pyproject actions under the file label in the rail", () => {
+    const { container } = render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={["pandas"]}
+        requiresPython=">=3.12"
+        loading={false}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+        onImportFromPyproject={async () => undefined}
+        onUseProjectEnv={async () => undefined}
+        pyprojectInfo={{
+          path: "/work/pyproject.toml",
+          relative_path: "pyproject.toml",
+          has_dependencies: true,
+          has_dev_dependencies: false,
+          dependency_count: 1,
+          project_name: "analysis",
+          requires_python: ">=3.12",
+          has_venv: false,
+        }}
+      />,
+    );
+
+    const banner = container.querySelector('[data-slot="deps-pyproject-banner"]');
+    const actions = container.querySelector('[data-slot="deps-pyproject-actions"]');
+
+    expect(banner?.firstElementChild).toHaveClass("flex-col");
+    expect(actions).toHaveClass("pl-5");
+    expect(actions).toHaveTextContent("Use project env");
+    expect(actions).toHaveTextContent("Copy to notebook");
+  });
+
   it("splits project environment copy into fact and action lines", () => {
     render(
       <DependencyHeader
@@ -189,6 +292,7 @@ describe("file-backed package rail variants", () => {
     );
 
     expect(screen.getByText("environment.yaml")).toBeVisible();
+    expect(screen.queryByText("0 packages")).not.toBeInTheDocument();
     expect(screen.getByText("python")).toBeVisible();
     expect(screen.getByText("=3.13")).toBeVisible();
     expect(screen.getByText("scipy")).toBeVisible();
@@ -219,6 +323,8 @@ describe("file-backed package rail variants", () => {
     );
 
     expect(screen.getByText("pixi.toml")).toBeVisible();
+    expect(screen.getByText("Project")).toBeVisible();
+    expect(screen.queryByText("0 packages")).not.toBeInTheDocument();
     expect(screen.getByText("python")).toBeVisible();
     expect(screen.getAllByText(">=3.13").length).toBeGreaterThan(0);
     expect(screen.getByText("numpy")).toBeVisible();

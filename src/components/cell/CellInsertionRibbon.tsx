@@ -150,8 +150,8 @@ export function CellInsertionRibbon({
       <button
         type="button"
         data-slot="cell-adder-primary-hit-target"
-        title="Add code cell from insertion margin"
-        aria-label="Add code cell from insertion margin"
+        title="Add code cell here"
+        aria-label="Add code cell here"
         onPointerEnter={() => setActiveType("code")}
         onFocus={() => setActiveType("code")}
         onClick={() => onInsert("code")}
@@ -174,7 +174,7 @@ export function CellInsertionRibbon({
           )}
           aria-hidden="true"
         />
-        <span className="sr-only">Add code cell</span>
+        <span className="sr-only">Add code cell here</span>
       </button>
       <div
         data-slot="cell-adder-actions"
