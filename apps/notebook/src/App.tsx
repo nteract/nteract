@@ -891,22 +891,21 @@ function AppContent() {
     if (envType === "conda") {
       if (environmentYmlInfo) {
         const count = environmentYmlPackageCount(environmentYmlDeps, environmentYmlInfo);
-        return `${environmentYmlInfo.relative_path} · ${packageCountLabel(count)}`;
+        return packageCountLabel(count);
       }
       return `conda · ${packageCountLabel(condaDependencies?.dependencies.length ?? 0)}`;
     }
     if (envType === "pixi") {
       if (pixiInfo) {
         const pixiCount = pixiPackageCount(pixiInfo);
-        return `${pixiInfo.relative_path} · ${packageCountLabel(pixiCount)}`;
+        return packageCountLabel(pixiCount);
       }
       const pixiCount = pixiInlinePackageCount(pixiDeps);
       return `pixi · ${packageCountLabel(pixiCount)}`;
     }
     if (envSource === "uv:pyproject" || pyprojectInfo?.has_dependencies) {
-      const source = pyprojectInfo?.relative_path ?? "pyproject.toml";
       const count = pyprojectPackageCount(pyprojectDeps, pyprojectInfo?.dependency_count);
-      return count === null ? source : `${source} · ${packageCountLabel(count)}`;
+      return count === null ? "Project env" : packageCountLabel(count);
     }
     return `uv · ${packageCountLabel(dependencies?.dependencies.length ?? 0)}`;
   }, [
