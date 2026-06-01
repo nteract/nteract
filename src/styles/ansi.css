@@ -2,65 +2,117 @@
  * ANSI Terminal Color Theme
  *
  * Theme-aware CSS variables and classes for ANSI colors.
- * Standard 16 colors adapt to light/dark mode via CSS variables.
- *
- * This file is managed by shadcn - run `npx shadcn@latest add @nteract/ansi-output`
- * to update the ansi-output component and this CSS.
+ * Standard 16 colors adapt to light/dark mode and notebook color theme via
+ * CSS variables while 256-color and truecolor ANSI values remain literal.
  */
 
 @layer base {
   :root {
-    --ansi-black: #3c3c3c;
-    --ansi-red: #c23621;
-    --ansi-green: #25bc24;
-    --ansi-yellow: #adad27;
-    --ansi-blue: #492ee1;
-    --ansi-magenta: #d338d3;
-    --ansi-cyan: #33bbc8;
-    --ansi-white: #cbcccd;
-    --ansi-bright-black: #818383;
-    --ansi-bright-red: #fc391f;
-    --ansi-bright-green: #31e722;
-    --ansi-bright-yellow: #eaec23;
-    --ansi-bright-blue: #5833ff;
-    --ansi-bright-magenta: #f935f8;
-    --ansi-bright-cyan: #14f0f0;
-    --ansi-bright-white: #e9ebeb;
-    --ansi-black-bg: #3c3c3c;
-    --ansi-red-bg: #c23621;
-    --ansi-green-bg: #25bc24;
-    --ansi-yellow-bg: #adad27;
-    --ansi-blue-bg: #492ee1;
-    --ansi-magenta-bg: #d338d3;
-    --ansi-cyan-bg: #33bbc8;
-    --ansi-white-bg: #cbcccd;
+    --ansi-black: #4b5563;
+    --ansi-red: #dc2626;
+    --ansi-green: #15803d;
+    --ansi-yellow: #a16207;
+    --ansi-blue: #1d4ed8;
+    --ansi-magenta: #9333ea;
+    --ansi-cyan: #0e7490;
+    --ansi-white: #6b7280;
+    --ansi-bright-black: #6b7280;
+    --ansi-bright-red: #dc2626;
+    --ansi-bright-green: #15803d;
+    --ansi-bright-yellow: #a16207;
+    --ansi-bright-blue: #2563eb;
+    --ansi-bright-magenta: #9333ea;
+    --ansi-bright-cyan: #0e7490;
+    --ansi-bright-white: #111827;
+    --ansi-black-bg: #4b5563;
+    --ansi-red-bg: #dc2626;
+    --ansi-green-bg: #15803d;
+    --ansi-yellow-bg: #a16207;
+    --ansi-blue-bg: #1d4ed8;
+    --ansi-magenta-bg: #9333ea;
+    --ansi-cyan-bg: #0e7490;
+    --ansi-white-bg: #6b7280;
   }
 
   .dark {
-    --ansi-black: #6e7681;
-    --ansi-red: #f97583;
-    --ansi-green: #85e89d;
-    --ansi-yellow: #ffea7f;
-    --ansi-blue: #79b8ff;
-    --ansi-magenta: #f692ce;
+    --ansi-black: #8b949e;
+    --ansi-red: #ff7b72;
+    --ansi-green: #7ee787;
+    --ansi-yellow: #d29922;
+    --ansi-blue: #79c0ff;
+    --ansi-magenta: #d2a8ff;
     --ansi-cyan: #56d4dd;
-    --ansi-white: #fafbfc;
-    --ansi-bright-black: #959da5;
-    --ansi-bright-red: #fdaeb7;
-    --ansi-bright-green: #bef5cb;
-    --ansi-bright-yellow: #fff5b1;
-    --ansi-bright-blue: #c8e1ff;
-    --ansi-bright-magenta: #fedbf0;
-    --ansi-bright-cyan: #a9f1f7;
+    --ansi-white: #f0f6fc;
+    --ansi-bright-black: #b1bac4;
+    --ansi-bright-red: #ffa198;
+    --ansi-bright-green: #aff5b4;
+    --ansi-bright-yellow: #eac55f;
+    --ansi-bright-blue: #a5d6ff;
+    --ansi-bright-magenta: #e2c5ff;
+    --ansi-bright-cyan: #9be9f0;
     --ansi-bright-white: #ffffff;
-    --ansi-black-bg: #484f58;
+    --ansi-black-bg: #6e7681;
     --ansi-red-bg: #b31d28;
     --ansi-green-bg: #176f2c;
-    --ansi-yellow-bg: #b5a000;
+    --ansi-yellow-bg: #9e6a03;
     --ansi-blue-bg: #1158c7;
     --ansi-magenta-bg: #5a32a3;
     --ansi-cyan-bg: #0e7481;
     --ansi-white-bg: #959da5;
+  }
+
+  [data-color-theme="cream"] {
+    --ansi-black: #6e655f;
+    --ansi-red: #b01d17;
+    --ansi-green: #3f7150;
+    --ansi-yellow: #8a580e;
+    --ansi-blue: #3f5878;
+    --ansi-magenta: #9a5474;
+    --ansi-cyan: #3f7150;
+    --ansi-white: #6e655f;
+    --ansi-bright-black: #5f574f;
+    --ansi-bright-red: #cc241d;
+    --ansi-bright-green: #3f7150;
+    --ansi-bright-yellow: #955f3b;
+    --ansi-bright-blue: #4e6a8e;
+    --ansi-bright-magenta: #9a5474;
+    --ansi-bright-cyan: #3f7150;
+    --ansi-bright-white: #1e1a18;
+    --ansi-black-bg: #6e655f;
+    --ansi-red-bg: #b01d17;
+    --ansi-green-bg: #3f7150;
+    --ansi-yellow-bg: #8a580e;
+    --ansi-blue-bg: #3f5878;
+    --ansi-magenta-bg: #9a5474;
+    --ansi-cyan-bg: #3f7150;
+    --ansi-white-bg: #6e655f;
+  }
+
+  [data-color-theme="cream"].dark {
+    --ansi-black: #9a918a;
+    --ansi-red: #fb4934;
+    --ansi-green: #8ec07c;
+    --ansi-yellow: #fabd2f;
+    --ansi-blue: #7a96b6;
+    --ansi-magenta: #d3869b;
+    --ansi-cyan: #83a598;
+    --ansi-white: #e8e2dc;
+    --ansi-bright-black: #b8afa7;
+    --ansi-bright-red: #fc6e5c;
+    --ansi-bright-green: #a3cf94;
+    --ansi-bright-yellow: #ffd866;
+    --ansi-bright-blue: #96adc8;
+    --ansi-bright-magenta: #de9caf;
+    --ansi-bright-cyan: #9fb7aa;
+    --ansi-bright-white: #fffdf9;
+    --ansi-black-bg: #6e655f;
+    --ansi-red-bg: #a83226;
+    --ansi-green-bg: #4a8558;
+    --ansi-yellow-bg: #b57614;
+    --ansi-blue-bg: #3f5878;
+    --ansi-magenta-bg: #8f3f71;
+    --ansi-cyan-bg: #5f7f75;
+    --ansi-white-bg: #9a918a;
   }
 
   /* ANSI foreground color classes */
