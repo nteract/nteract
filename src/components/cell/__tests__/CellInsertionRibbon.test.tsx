@@ -24,6 +24,8 @@ describe("CellInsertionRibbon", () => {
     const { container } = render(<CellInsertionRibbon onInsert={onInsert} />);
 
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
+    expect(hitTarget).toHaveAttribute("aria-label", "Add code cell here");
+    expect(hitTarget).toHaveAttribute("title", "Add code cell here");
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
 
     fireEvent.pointerEnter(hitTarget!);
