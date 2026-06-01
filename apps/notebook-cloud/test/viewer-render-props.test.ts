@@ -68,8 +68,13 @@ test("cloud viewer routes notebook header controls through the shared command to
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NotebookCommandToolbar,/);
+  assert.match(sourceText, /NotebookDocumentHeader,/);
   assert.match(sourceText, /NotebookToolbarFrame,/);
-  assert.match(sourceText, /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookCommandToolbar/);
+  assert.match(
+    sourceText,
+    /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookDocumentHeader[\s\S]*<NotebookCommandToolbar/,
+  );
+  assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /<NotebookCommandToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
@@ -78,8 +83,10 @@ test("cloud viewer routes notebook header controls through the shared command to
   assert.match(sourceText, /identityControls=\{[\s\S]*<NotebookToolbarIdentity/);
   assert.match(
     sourceText,
-    /presenceControls=\{[\s\S]*<CloudPresenceStatus[\s\S]*interaction=\{shellCapabilities\.interaction \?\? null\}/,
+    /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*interaction=\{shellCapabilities\.interaction \?\? null\}/,
   );
+  assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
+  assert.doesNotMatch(sourceText, /label: "live"/);
   assert.doesNotMatch(sourceText, /<CloudPresenceStatus[^>]*connectionScope=\{connectionScope\}/);
   assert.doesNotMatch(sourceText, /className="cloud-code-toggle"/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canManageSharing \? \(/);

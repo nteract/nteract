@@ -27,6 +27,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   NotebookCommandToolbar,
+  NotebookDocumentHeader,
   NotebookEditModeButton,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
@@ -40,7 +41,6 @@ import {
   createNotebookEnvironmentSurface,
   notebookInteractionPresenceLabel,
   notebookActorIdentityFromAccess,
-  type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
   type NotebookInteractionModeProjection,
   type NotebookPackageSection,
@@ -1125,7 +1125,6 @@ function NotebookViewer({
   const packageEnvironmentManager = cloudNotebookEnvironmentManager(
     notebookViewModel.packages.sections,
   );
-  const runtimeStatus = cloudNotebookRuntimeStatus(connectionScope, connectionError);
   const requestCloudMaterialization = useCallback((liveRuntime: CloudSyncRuntime) => {
     materializeLiveRuntimeRef.current?.(liveRuntime);
   }, []);
@@ -1278,16 +1277,10 @@ function NotebookViewer({
 
   const toolbar = (
     <NotebookToolbarFrame className="z-20">
-      <NotebookCommandToolbar
+      <NotebookDocumentHeader
         capabilities={shellCapabilities}
-        runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-        environmentManager={packageEnvironmentManager}
-        environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
-        runtimeStatus={runtimeStatus}
-        addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
-        onAddCell={handleCloudAddCell}
-        onTogglePackages={handleTogglePackagesRail}
-        presenceControls={
+        className="cloud-room-toolbar"
+        presence={
           <CloudPresenceStatus
             presence={presence}
             interaction={shellCapabilities.interaction ?? null}
@@ -1309,6 +1302,15 @@ function NotebookViewer({
           />
         }
         identityControls={<NotebookToolbarIdentity capabilities={shellCapabilities} />}
+      />
+      <NotebookCommandToolbar
+        capabilities={shellCapabilities}
+        runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+        environmentManager={packageEnvironmentManager}
+        environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
+        addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
+        onAddCell={handleCloudAddCell}
+        onTogglePackages={handleTogglePackagesRail}
       />
     </NotebookToolbarFrame>
   );
@@ -1423,39 +1425,6 @@ function cloudNotebookEnvironmentManager(
     }
   }
   return null;
-}
-
-function cloudNotebookRuntimeStatus(
-  connectionScope: string | null,
-  connectionError: string | null,
-): {
-  state: NotebookCommandRuntimeState;
-  label: ReactNode;
-  ariaLabel: string;
-  title: string;
-} {
-  if (connectionError) {
-    return {
-      state: "error",
-      label: "offline",
-      ariaLabel: "Live room: offline",
-      title: connectionError,
-    };
-  }
-  if (connectionScope) {
-    return {
-      state: "idle",
-      label: "live",
-      ariaLabel: `Live room: ${connectionScope}`,
-      title: `Connected as ${connectionScope}`,
-    };
-  }
-  return {
-    state: "starting",
-    label: "connecting",
-    ariaLabel: "Live room: connecting",
-    title: "Connecting to live room",
-  };
 }
 
 function CloudSharingControls({

@@ -109,4 +109,21 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
     expect(screen.getByTestId("kernel-status")).toHaveAttribute("data-kernel-status", "idle");
   });
+
+  it("can render notebook commands without a runtime status surface", () => {
+    render(
+      <NotebookCommandToolbar
+        capabilities={{
+          ...editableToolbarCapabilities,
+          canExecute: false,
+        }}
+        runtime="python"
+        onTogglePackages={() => {}}
+      />,
+    );
+
+    expect(screen.getByTestId("deps-toggle")).toBeVisible();
+    expect(screen.queryByTestId("kernel-status")).toBeNull();
+    expect(screen.queryByTestId("run-all-button")).toBeNull();
+  });
 });

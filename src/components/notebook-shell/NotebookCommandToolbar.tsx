@@ -50,7 +50,7 @@ export interface NotebookCommandToolbarProps {
   environmentManager?: NotebookEnvironmentManager | null;
   environmentPanelOpen?: boolean;
   environmentOutOfSync?: boolean;
-  runtimeStatus: NotebookCommandToolbarStatus;
+  runtimeStatus?: NotebookCommandToolbarStatus | null;
   startDisabled?: boolean;
   addAfterCellId?: string | null;
   onAddCell?: (type: "code" | "markdown", afterCellId?: string | null) => unknown;
@@ -101,15 +101,20 @@ export function NotebookCommandToolbar({
 }: NotebookCommandToolbarProps) {
   const { auth, canEditStructure, canExecute, canManageSharing, canRequestEdit, canViewPackages } =
     capabilities;
+  const hasRuntimeStatus = Boolean(runtimeStatus);
   const isRuntimeRunning =
-    runtimeStatus.state === "idle" ||
-    runtimeStatus.state === "busy" ||
-    runtimeStatus.state === "starting";
+    runtimeStatus?.state === "idle" ||
+    runtimeStatus?.state === "busy" ||
+    runtimeStatus?.state === "starting";
   const showAddCellControls = canEditStructure && Boolean(onAddCell);
-  const showRuntimeStart = canExecute && !isRuntimeRunning && Boolean(onStartRuntime);
+  const showRuntimeStart =
+    hasRuntimeStatus && canExecute && !isRuntimeRunning && Boolean(onStartRuntime);
   const showRuntimeActions =
-    canExecute && Boolean(onRunAllCells && onRestartRuntime && onRestartAndRunAll);
-  const showInterrupt = canExecute && isRuntimeRunning && Boolean(onInterruptRuntime);
+    hasRuntimeStatus &&
+    canExecute &&
+    Boolean(onRunAllCells && onRestartRuntime && onRestartAndRunAll);
+  const showInterrupt =
+    hasRuntimeStatus && canExecute && isRuntimeRunning && Boolean(onInterruptRuntime);
   const showPackageToggle = Boolean(runtime && canViewPackages && onTogglePackages);
   const showAuthControls =
     Boolean(authControls) &&
@@ -221,7 +226,7 @@ export function NotebookCommandToolbar({
           onClick={onInterruptRuntime}
           className={cn(
             "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs transition-colors",
-            runtimeStatus.state === "busy"
+            runtimeStatus?.state === "busy"
               ? "text-destructive hover:bg-destructive/10"
               : "text-foreground hover:bg-muted",
           )}
@@ -231,7 +236,7 @@ export function NotebookCommandToolbar({
         >
           <Square
             className="h-3 w-3"
-            fill={runtimeStatus.state === "busy" ? "currentColor" : "none"}
+            fill={runtimeStatus?.state === "busy" ? "currentColor" : "none"}
           />
           <span className="hidden @[40rem]:inline">Interrupt</span>
         </button>
@@ -305,30 +310,32 @@ export function NotebookCommandToolbar({
         </button>
       ) : null}
 
-      <div
-        className="flex items-center gap-1.5 whitespace-nowrap"
-        role="status"
-        aria-label={runtimeStatus.ariaLabel}
-        title={runtimeStatus.error ? undefined : runtimeStatus.title}
-        data-testid="kernel-status"
-        data-kernel-status={runtimeStatus.state}
-      >
+      {runtimeStatus ? (
         <div
-          className={cn(
-            "h-2 w-2 shrink-0 rounded-full",
-            runtimeStatus.state === "idle" && "bg-green-500",
-            runtimeStatus.state === "busy" && "bg-amber-500",
-            (runtimeStatus.state === "starting" || runtimeStatus.state === "not_started") &&
-              "bg-blue-500 animate-pulse",
-            runtimeStatus.state === "shutdown" && "bg-gray-400 dark:bg-gray-500",
-            runtimeStatus.state === "error" && "bg-red-500",
-            runtimeStatus.state === "unknown" && "bg-muted-foreground",
-          )}
-        />
-        <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {runtimeStatus.error ?? runtimeStatus.label}
-        </span>
-      </div>
+          className="flex items-center gap-1.5 whitespace-nowrap"
+          role="status"
+          aria-label={runtimeStatus.ariaLabel}
+          title={runtimeStatus.error ? undefined : runtimeStatus.title}
+          data-testid="kernel-status"
+          data-kernel-status={runtimeStatus.state}
+        >
+          <div
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              runtimeStatus.state === "idle" && "bg-green-500",
+              runtimeStatus.state === "busy" && "bg-amber-500",
+              (runtimeStatus.state === "starting" || runtimeStatus.state === "not_started") &&
+                "bg-blue-500 animate-pulse",
+              runtimeStatus.state === "shutdown" && "bg-gray-400 dark:bg-gray-500",
+              runtimeStatus.state === "error" && "bg-red-500",
+              runtimeStatus.state === "unknown" && "bg-muted-foreground",
+            )}
+          />
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            {runtimeStatus.error ?? runtimeStatus.label}
+          </span>
+        </div>
+      ) : null}
 
       {canManageSharing ? sharingControls : null}
       {canRequestEdit ? editControls : null}

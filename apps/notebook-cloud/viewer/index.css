@@ -42,6 +42,12 @@ body {
   margin-inline: clamp(0.75rem, 4vw, 2rem) clamp(0.5rem, 2vw, 1rem);
 }
 
+.cloud-room-toolbar {
+  min-height: 3rem;
+  border-bottom: 1px solid var(--border);
+  padding-inline: clamp(0.75rem, 4vw, 2rem) clamp(0.5rem, 2vw, 1rem);
+}
+
 .cloud-rail-panel-note {
   border: 1px dashed color-mix(in srgb, var(--foreground) 16%, transparent);
   border-radius: 8px;
