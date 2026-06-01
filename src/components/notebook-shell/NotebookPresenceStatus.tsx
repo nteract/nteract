@@ -16,8 +16,8 @@ export function NotebookPresenceStatus({
   modeLabel = null,
   title,
 }: NotebookPresenceStatusProps) {
-  const displayLabel = modeLabel ? `${label} · ${modeLabel}` : label;
-  const displayTitle = modeLabel ? `${title}; ${modeLabel}` : title;
+  const displayLabel = modeLabel ? `${label}, ${modeLabel}` : label;
+  const displayTitle = modeLabel ? `${title}. ${modeLabel}` : title;
 
   return (
     <div

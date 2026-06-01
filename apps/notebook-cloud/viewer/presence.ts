@@ -79,7 +79,7 @@ export function cloudViewerPresenceDisplay(
 
   if (state.connection === "connecting" || state.roomPeerCount === null) {
     return {
-      label: "Connecting",
+      label: "Joining room",
       title: "Connecting to the notebook room",
       connected: false,
     };
@@ -88,11 +88,11 @@ export function cloudViewerPresenceDisplay(
   const count = Math.max(1, state.roomPeerCount);
   const readerTitle =
     count === 1
-      ? "1 reader connected to this notebook room"
-      : `${count} readers connected to this notebook room`;
+      ? "1 participant is in this notebook"
+      : `${count} participants are in this notebook`;
   const selfTitle = state.ownPeerLabel ? `You are ${state.ownPeerLabel}` : null;
   return {
-    label: `${count} viewing`,
+    label: count === 1 ? "1 here now" : `${count} here now`,
     title: selfTitle ? `${readerTitle}; ${selfTitle}` : readerTitle,
     connected: true,
   };

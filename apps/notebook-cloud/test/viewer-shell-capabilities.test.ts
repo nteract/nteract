@@ -79,7 +79,7 @@ test("cloud shell capabilities keep user-selected view mode read-only even with 
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
-test("cloud shell capabilities reserve code-cell source edits for owners", () => {
+test("cloud shell capabilities reserve code-cell and structure edits for owners", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner"),
     connectionScope: "owner",
@@ -88,7 +88,7 @@ test("cloud shell capabilities reserve code-cell source edits for owners", () =>
 
   assert.equal(capabilities.canEditMarkdown, true);
   assert.equal(capabilities.canEditCells, true);
-  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.canEditStructure, true);
   assert.equal(capabilities.canExecute, false);
   assert.equal(capabilities.canManagePackages, false);
   assert.equal(capabilities.canManageSharing, true);

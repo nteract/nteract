@@ -24,6 +24,7 @@ export function cloudNotebookShellCapabilities({
   const activeEditLevel = userSelectedViewMode ? "viewer" : accessLevel;
   const canEditMarkdown = activeEditLevel === "editor" || activeEditLevel === "owner";
   const canEditCells = activeEditLevel === "owner";
+  const canEditStructure = activeEditLevel === "owner";
   const authenticated = authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
   const auth = {
@@ -50,7 +51,7 @@ export function cloudNotebookShellCapabilities({
     canRead: true,
     canEditMarkdown,
     canEditCells,
-    canEditStructure: false,
+    canEditStructure,
     canRequestEdit: authState.mode === "oidc",
     canExecute: false,
     canToggleCode: hasCodeCells,

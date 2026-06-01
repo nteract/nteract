@@ -39,7 +39,7 @@ describe("cloud viewer presence", () => {
         roomPeerCount: 1,
       },
     );
-    assert.equal(cloudViewerPresenceDisplay(state).label, "1 viewing");
+    assert.equal(cloudViewerPresenceDisplay(state).label, "1 here now");
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_joined",
@@ -50,7 +50,7 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:01.000Z",
     });
     assert.equal(state.roomPeerCount, 2);
-    assert.equal(cloudViewerPresenceDisplay(state).label, "2 viewing");
+    assert.equal(cloudViewerPresenceDisplay(state).label, "2 here now");
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_left",
@@ -61,7 +61,7 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:02.000Z",
     });
     assert.equal(state.roomPeerCount, 1);
-    assert.equal(cloudViewerPresenceDisplay(state).label, "1 viewing");
+    assert.equal(cloudViewerPresenceDisplay(state).label, "1 here now");
   });
 
   it("surfaces disconnected state without losing the last room count", () => {
@@ -102,8 +102,8 @@ describe("cloud viewer presence", () => {
 
     assert.equal(state.ownPeerLabel, "Alice Demo");
     assert.deepEqual(cloudViewerPresenceDisplay(state), {
-      label: "2 viewing",
-      title: "2 readers connected to this notebook room; You are Alice Demo",
+      label: "2 here now",
+      title: "2 participants are in this notebook; You are Alice Demo",
       connected: true,
     });
   });
