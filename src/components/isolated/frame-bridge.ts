@@ -356,6 +356,7 @@ export interface TracebackNavigateMessage {
     target: {
       cellId: string;
       label?: string;
+      line?: number;
     };
   };
 }
