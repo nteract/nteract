@@ -93,4 +93,29 @@ describe("NotebookEnvironmentSummary", () => {
     expect(screen.getByText("No package metadata")).toBeVisible();
     expect(screen.getByText("No package manager metadata available.")).toBeVisible();
   });
+
+  it("can render only environment facts when package details are shown elsewhere", () => {
+    render(
+      <NotebookEnvironmentSummary
+        capabilities={{
+          ...capabilities,
+          canManagePackages: false,
+          access: {
+            ...capabilities.access,
+            level: "viewer",
+            source: "cloud",
+            isPublic: true,
+          },
+        }}
+        packages={packages}
+        syncLabel="Live sync connected"
+        showPackageDetails={false}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Notebook environment" })).toBeVisible();
+    expect(screen.getByText("Live sync connected")).toBeVisible();
+    expect(screen.getByText("Package metadata read only")).toBeVisible();
+    expect(screen.queryByText("pandas>=2")).toBeNull();
+  });
 });

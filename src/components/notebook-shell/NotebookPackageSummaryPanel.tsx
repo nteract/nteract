@@ -1,21 +1,25 @@
 import { NotebookPackagesPanel } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
+import type { ReactNode } from "react";
 import type { NotebookPackageViewModel } from "./view-model";
 
 export interface NotebookPackageSummaryPanelProps {
   packages: NotebookPackageViewModel;
   readOnly?: boolean;
+  header?: ReactNode;
   className?: string;
 }
 
 export function NotebookPackageSummaryPanel({
   packages,
   readOnly = true,
+  header = null,
   className,
 }: NotebookPackageSummaryPanelProps) {
   return (
     <NotebookPackagesPanel readOnly={readOnly}>
       <div className={cn("space-y-3", className)} data-slot="notebook-package-summary-panel">
+        {header}
         {packages.sections.length === 0 ? (
           <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
             No package metadata in this notebook.
