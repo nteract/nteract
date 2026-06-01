@@ -250,6 +250,35 @@ describe("NotebookRail", () => {
     expect(fireEvent.dragStart(outlineTitle!)).toBe(false);
   });
 
+  it("lets outline titles wrap as document language in the rail", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          {
+            id: "cell-a:heading:0",
+            cellId: "cell-a",
+            title: "Recent Download Activity Across the Last Thirty Days",
+            level: 1,
+            kind: "heading" as const,
+            cellAnchorId: "notebook-cell-cell-a",
+            headingAnchorId: "notebook-cell-cell-a-heading-recent-download-activity",
+            href: "#notebook-cell-cell-a",
+            anchor: "recent-download-activity",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    const outlineTitle = container.querySelector('[data-slot="notebook-outline-item-title"]');
+    expect(outlineTitle).toHaveClass("line-clamp-2");
+    expect(outlineTitle).not.toHaveClass("truncate");
+  });
+
   it("marks only the first outline item for a focused cell when no item is pinned", () => {
     render(
       <NotebookRail

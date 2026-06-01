@@ -256,7 +256,7 @@ function NotebookOutlineNode({
   const selected = selectedItemId === item.id;
   const itemHref = getItemHref?.(item) ?? item.href ?? null;
   const className = cn(
-    "relative flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 pl-3 pr-2 text-left text-sm transition-colors",
+    "relative flex min-h-8 w-full items-start gap-2 rounded-md py-1.5 pl-3 pr-2 text-left text-sm transition-colors",
     "cursor-pointer select-none touch-manipulation [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
     "before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-0.5 before:rounded-full before:bg-transparent before:transition-colors",
     selected
@@ -265,14 +265,17 @@ function NotebookOutlineNode({
   );
   const content = (
     <>
-      <span data-slot="notebook-outline-item-title" className="min-w-0 flex-1 truncate">
+      <span
+        data-slot="notebook-outline-item-title"
+        className="line-clamp-2 min-w-0 flex-1 break-words leading-snug [overflow-wrap:anywhere]"
+      >
         {item.title}
       </span>
       {item.statusLabel ? (
         <span
           data-slot="notebook-outline-item-meta"
           className={cn(
-            "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
+            "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
             selected ? "bg-muted text-foreground/70" : "bg-muted text-muted-foreground",
           )}
         >
@@ -282,7 +285,7 @@ function NotebookOutlineNode({
         <span
           data-slot="notebook-outline-item-meta"
           className={cn(
-            "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
+            "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
             selected ? "bg-muted text-foreground/70" : "bg-muted text-muted-foreground",
           )}
         >
