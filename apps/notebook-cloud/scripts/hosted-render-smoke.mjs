@@ -46,7 +46,7 @@ const expectedSourceText =
   process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "from datasets import load_dataset";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
-const expectedPresenceText = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TEXT ?? "viewing";
+const expectedPresenceText = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TEXT ?? "view only";
 const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", []);
 const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS", [
   "MathNet topic visualization",
