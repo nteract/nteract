@@ -145,58 +145,6 @@ const currentLineStateFixtures = [
   },
 ];
 
-const currentLineConceptFixtures = [
-  {
-    label: "Production",
-    detail: "Default reading mode keeps completed metadata collapsed into the boundary line.",
-    line: (
-      <CodeCellCurrentLine
-        languageLabel="Python"
-        count={26}
-        elapsedMs={1476}
-        activityContent={<StaticPresenceActivity />}
-      />
-    ),
-  },
-  {
-    label: "Timed signal",
-    detail:
-      "Speculative: start time plus recent durations could turn the running wave into rough progress.",
-    line: <TimedExecutionSignalConcept />,
-  },
-  {
-    label: "Run state chip",
-    detail: "Keeps completion as compact metadata instead of sentence copy.",
-    line: (
-      <CurrentLineConcept>
-        <span className="rounded-sm bg-muted/60 px-1.5 py-0.5 font-medium text-foreground/70">
-          Python
-        </span>
-        <span className="rounded-full border border-border bg-background px-2 py-0.5 font-medium tabular-nums text-foreground/65">
-          Run 26
-        </span>
-        <span className="text-muted-foreground/55">1.5s</span>
-        <StaticPresenceDots />
-      </CurrentLineConcept>
-    ),
-  },
-  {
-    label: "Activity edge",
-    detail: "Lets peer activity live at the edge of the rule instead of the left lane.",
-    line: (
-      <CurrentLineConcept>
-        <span className="rounded-sm bg-muted/60 px-1.5 py-0.5 font-medium text-foreground/70">
-          Python
-        </span>
-        <span className="font-medium tabular-nums text-foreground/65">Run 26</span>
-        <span className="text-muted-foreground/45">1.5s</span>
-        <div className="h-px min-w-8 flex-1 rounded-full bg-border/45" />
-        <StaticPresenceDots />
-      </CurrentLineConcept>
-    ),
-  },
-];
-
 const contracts = [
   "Catalog examples import current components before adding fixture-only wrappers.",
   "Fixture content may stand in for runtime/editor/output systems until an adapter exists.",
@@ -581,30 +529,6 @@ export function CellAnatomyExample() {
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="border-b border-fd-border p-4">
-          <h2 className="text-sm font-semibold">Current Line Studio</h2>
-          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            These are low-risk composition sketches for the source/result boundary. They keep the
-            production boundary nearby while letting activity, completion copy, and future timing
-            affordances move around.
-          </p>
-        </div>
-        <div className="divide-y divide-fd-border bg-background">
-          {currentLineConceptFixtures.map((concept) => (
-            <div key={concept.label} className="grid gap-3 p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-              <div>
-                <h3 className="text-sm font-semibold">{concept.label}</h3>
-                <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{concept.detail}</p>
-              </div>
-              <div className="group min-w-0 rounded-md border border-fd-border bg-fd-card px-3 py-4">
-                {concept.line}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-        <div className="border-b border-fd-border p-4">
           <h2 className="text-sm font-semibold">Hidden Boundaries</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
             The current line belongs to the source/result boundary. It remains when either side is
@@ -704,48 +628,5 @@ function StaticPresenceActivity() {
       </span>
       <StaticPresenceDots />
     </>
-  );
-}
-
-function CurrentLineConcept({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex min-h-[1.125rem] min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground/70">
-      {children}
-    </div>
-  );
-}
-
-function TimedExecutionSignalConcept() {
-  return (
-    <div className="flex min-h-5 min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground/70">
-      <span className="rounded-sm bg-primary/10 px-1 py-0.5 font-medium text-primary">Python</span>
-      <span className="text-muted-foreground/35" aria-hidden="true">
-        ·
-      </span>
-      <span className="font-medium tabular-nums text-primary">Run 32</span>
-      <span className="text-muted-foreground/45 tabular-nums">2.1s / ~4s</span>
-      <div className="relative h-3 min-w-24 flex-1 overflow-hidden rounded-full text-emerald-500/65 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]">
-        <div className="absolute inset-y-1 left-0 w-[54%] rounded-full bg-emerald-400/10 animate-exec-signal-tail" />
-        <svg
-          className="absolute inset-y-0 left-0 h-full w-[200%] animate-exec-signal-wave"
-          viewBox="0 0 240 12"
-          preserveAspectRatio="none"
-          aria-hidden="true"
-        >
-          <path
-            d="M0 6 C5 1 10 1 15 6 S25 11 30 6 S40 1 45 6 S55 11 60 6 S70 1 75 6 S85 11 90 6 S100 1 105 6 S115 11 120 6 S130 1 135 6 S145 11 150 6 S160 1 165 6 S175 11 180 6 S190 1 195 6 S205 11 210 6 S220 1 225 6 S235 11 240 6"
-            fill="none"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeWidth="1.4"
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
-        <span
-          className="absolute left-[54%] top-1/2 h-2 w-8 -translate-y-1/2 rounded-full bg-gradient-to-r from-transparent via-emerald-500/60 to-transparent blur-[0.5px]"
-          aria-hidden="true"
-        />
-      </div>
-    </div>
   );
 }

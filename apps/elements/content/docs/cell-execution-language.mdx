@@ -1,16 +1,17 @@
 ---
 title: Cell execution language
-description: Visual language sketches for the code cell run line and execution signal.
+description: Production CodeCellCurrentLine and CompactExecutionButton states.
 ---
 
 import { CellExecutionLanguageExample } from "@/components/cell-execution-language-example";
 
 The code cell run line should feel like notebook punctuation first and status
-copy second. Quiet states should carry just enough evidence to orient the
-reader, while active states can speak with color, motion, and explicit words.
+copy second. This page renders the current production execution components
+directly: `CompactExecutionButton` for the state lane and
+`CodeCellCurrentLine` for the source/result boundary.
 
-The production line now follows that grammar: completed cells rest as a small
-run marker, ready cells stay visually quiet, and the full language context
-returns when the reader approaches the cell.
+Fixture state drives the examples, but there are no alternate catalog-only
+execution-line components here. If the visual language changes, it should
+change in `src/components/cell` first.
 
 <CellExecutionLanguageExample />

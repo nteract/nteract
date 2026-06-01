@@ -1,19 +1,16 @@
 ---
 title: Cell insertion affordances
-description: Fixture-backed sketches for making add-cell rows feel connected to the notebook spine.
+description: Production CellInsertionRibbon states for notebook add-cell rows.
 ---
 
 import { CellInsertionAffordancesExample } from "@/components/cell-insertion-affordances-example";
 
-The add-cell row now follows the same line language as the current execution
-line: the ribbon remains part of the document spine, the choices attach to a
-quiet rule, and color appears only once the reader targets a concrete cell
-type.
+The add-cell row follows the same line language as the current execution line:
+the ribbon remains part of the document spine, the choices attach to a quiet
+rule, and color appears only once the reader targets a concrete cell type.
 
-The production row now treats proximity as neutral document intent. Code and
-markdown color arrive only when a concrete target is hovered or focused, then
-fade back into the document rule instead of becoming a floating control surface.
-The left channel remains clickable, but it stays visually quiet until the reader
-actually points at code or markdown.
+This page renders `CellInsertionRibbon` directly with fixture state. There are
+no alternate docs-local insertion controls here; changes should land in
+`src/components/cell/CellInsertionRibbon.tsx` first.
 
 <CellInsertionAffordancesExample />
