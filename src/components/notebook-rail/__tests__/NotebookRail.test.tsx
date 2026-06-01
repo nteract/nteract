@@ -85,6 +85,23 @@ describe("NotebookRail", () => {
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });
 
+  it("keeps the active panel title primary when package metadata is present", () => {
+    render(
+      <NotebookRail
+        activePanelId="packages"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesSummary="../pyproject.toml · 25 packages"
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
+    expect(screen.getByText("../pyproject.toml · 25 packages")).toHaveClass("w-fit", "max-w-full");
+  });
+
   it("collapses the rail when clicking the active expanded panel button", () => {
     const onActivePanelChange = vi.fn();
     const onCollapsedChange = vi.fn();

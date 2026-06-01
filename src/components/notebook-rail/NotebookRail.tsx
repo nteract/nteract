@@ -97,15 +97,15 @@ export function NotebookRail({
           data-slot="notebook-rail-panel"
         >
           <div className="border-b px-4 py-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+            <div className="flex flex-col gap-2">
               <div className="min-w-0">
                 <p className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
                   Notebook
                 </p>
-                <h2 className="mt-1 truncate text-sm font-semibold text-foreground">{title}</h2>
+                <h2 className="mt-1 text-sm font-semibold text-foreground">{title}</h2>
               </div>
               {summary && (
-                <span className="max-w-full self-start truncate rounded-full border bg-muted px-2 py-1 text-[11px] text-muted-foreground sm:shrink-0">
+                <span className="w-fit max-w-full truncate rounded-full border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
                   {summary}
                 </span>
               )}
