@@ -59,18 +59,3 @@ export function createNotebookInteractionModeProjection({
       activeMode === "edit" && permission.canEditStructure && hostSupport.canEditStructure,
   };
 }
-
-export function notebookInteractionPresenceLabel(
-  interaction: NotebookInteractionModeProjection | null | undefined,
-): string | null {
-  if (!interaction) return null;
-
-  switch (interaction.state) {
-    case "editing":
-      return "editing";
-    case "requested":
-      return "waiting for edit access";
-    case "viewing":
-      return interaction.canRequestEdit ? "viewing" : "view only";
-  }
-}
