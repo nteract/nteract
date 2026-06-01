@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState, type ReactElement, type ReactNode } f
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   NotebookCommandToolbar,
+  NotebookNotice,
+  NotebookNoticeAction,
   NotebookToolbarFrame,
   type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
@@ -191,19 +193,18 @@ export function NotebookToolbar({
     <>
       {/* Deno install prompt */}
       {runtime === "deno" && kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage && (
-        <div className="border-t px-3 py-2">
-          <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              <span className="font-medium">Deno not available.</span> Auto-install failed. Install
-              manually with{" "}
-              <code className="rounded bg-amber-500/20 px-1">
-                curl -fsSL https://deno.land/install.sh | sh
-              </code>{" "}
-              and restart.
-            </span>
-          </div>
-        </div>
+        <NotebookNotice
+          tone="warning"
+          icon={<Info className="h-3.5 w-3.5" />}
+          title="Deno not available."
+          className="border-t border-b-0"
+        >
+          Auto-install failed. Install manually with{" "}
+          <code className="rounded bg-amber-500/20 px-1">
+            curl -fsSL https://deno.land/install.sh | sh
+          </code>{" "}
+          and restart.
+        </NotebookNotice>
       )}
       {/* ipykernel install prompt — only when daemon signals missing_ipykernel.
           Pixi and uv/conda inline envs reach this state through different
@@ -428,27 +429,26 @@ function CondaEnvYmlMissingBanner({
   onCopyCommand: () => void;
 }): ReactElement {
   return (
-    <div className="border-t px-3 py-2" data-testid="conda-env-yml-missing-banner">
-      <div className="flex items-start justify-between gap-3 text-xs text-amber-800 dark:text-amber-300">
-        <div className="flex min-w-0 items-start gap-2">
-          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-          <span className="min-w-0">
-            <span className="font-medium">Conda environment not built.</span> <span>{details}</span>
-          </span>
-        </div>
-        {command && (
-          <button
-            type="button"
+    <NotebookNotice
+      tone="warning"
+      icon={<Info className="h-3.5 w-3.5" />}
+      title="Conda environment not built."
+      className="border-t border-b-0"
+      data-testid="conda-env-yml-missing-banner"
+      actions={
+        command ? (
+          <NotebookNoticeAction
             onClick={onCopyCommand}
-            className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-500/20 dark:text-amber-200"
+            icon={<Copy className="h-3 w-3" />}
             data-testid="copy-conda-env-command"
           >
-            <Copy className="h-3 w-3" />
             {copied ? "Copied" : "Copy command"}
-          </button>
-        )}
-      </div>
-    </div>
+          </NotebookNoticeAction>
+        ) : null
+      }
+    >
+      {details}
+    </NotebookNotice>
   );
 }
 
@@ -464,27 +464,31 @@ function RuntimeErrorBanner({
   details?: string | null;
 }): ReactElement {
   return (
-    <div className="border-t px-3 py-2">
-      <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-        <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-        <div className="min-w-0 space-y-1">
-          <div>
-            <span className="font-medium">{headline}</span> {instruction}
-          </div>
-          {contextItems.length > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-amber-800/80 dark:text-amber-300/80">
-              {contextItems.map((item) => (
-                <span key={item}>{item}</span>
-              ))}
-            </div>
-          )}
-          {details && (
-            <pre className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words rounded bg-amber-500/10 px-2 py-1 font-mono text-[11px] leading-relaxed text-amber-900 dark:text-amber-100">
-              {details}
-            </pre>
-          )}
-        </div>
-      </div>
-    </div>
+    <NotebookNotice
+      tone="warning"
+      icon={<Info className="h-3.5 w-3.5" />}
+      title={headline}
+      className="border-t border-b-0"
+      details={
+        contextItems.length > 0 || details ? (
+          <>
+            {contextItems.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] opacity-80">
+                {contextItems.map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+              </div>
+            )}
+            {details && (
+              <pre className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words rounded bg-amber-500/10 px-2 py-1 font-mono text-[11px] leading-relaxed">
+                {details}
+              </pre>
+            )}
+          </>
+        ) : null
+      }
+    >
+      {instruction}
+    </NotebookNotice>
   );
 }

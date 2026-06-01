@@ -1,4 +1,5 @@
-import { AlertTriangle, Loader2, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { NotebookNotice, NotebookNoticeAction } from "@/components/notebook/NotebookNotice";
 
 /**
  * Status of the daemon during startup or operation.
@@ -37,39 +38,22 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
   // Failed state - amber banner with error message and retry button
   if (status.status === "failed") {
     return (
-      <div className="flex flex-col gap-1 bg-amber-600/90 px-3 py-2 text-xs text-white">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-            <span className="font-medium flex-shrink-0">Runtime unavailable</span>
-            <span className="text-amber-200 flex-shrink-0">—</span>
-            <span className="text-amber-100 truncate">{status.error}</span>
-          </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            {onRetry && (
-              <button
-                type="button"
-                onClick={onRetry}
-                className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-amber-500/50 transition-colors"
-              >
-                <RefreshCw className="h-3 w-3" />
-                <span>Retry</span>
-              </button>
-            )}
-            {onDismiss && (
-              <button
-                type="button"
-                onClick={onDismiss}
-                className="rounded p-0.5 hover:bg-amber-500/50 transition-colors"
-                aria-label="Dismiss"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-        </div>
-        {status.guidance && <div className="text-amber-100 pl-5">{status.guidance}</div>}
-      </div>
+      <NotebookNotice
+        tone="warning"
+        icon={<AlertTriangle className="h-3 w-3" />}
+        title="Runtime unavailable"
+        onDismiss={onDismiss}
+        actions={
+          onRetry ? (
+            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw className="h-3 w-3" />}>
+              Retry
+            </NotebookNoticeAction>
+          ) : null
+        }
+        details={status.guidance ? <div>{status.guidance}</div> : null}
+      >
+        <span>{status.error}</span>
+      </NotebookNotice>
     );
   }
 
@@ -77,10 +61,13 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
   const message = getProgressMessage(status);
 
   return (
-    <div className="flex items-center gap-2 bg-sky-600/90 px-3 py-1 text-xs text-white">
-      <Loader2 className="h-3 w-3 animate-spin flex-shrink-0" />
-      <span>{message}</span>
-    </div>
+    <NotebookNotice
+      tone="info"
+      icon={<Loader2 className="h-3 w-3 animate-spin" />}
+      className="py-1"
+    >
+      {message}
+    </NotebookNotice>
   );
 }
 
