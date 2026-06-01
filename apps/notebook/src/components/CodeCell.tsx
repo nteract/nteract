@@ -12,6 +12,7 @@ import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
@@ -61,7 +62,7 @@ interface CodeCellProps {
   onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
-  onNavigateToCell?: (cellId: string) => void;
+  onNavigateToCell?: (target: TracebackCellTarget) => void;
   onInsertCellAfter?: () => void;
   isLastCell?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
@@ -584,8 +585,8 @@ export const CodeCell = memo(function CodeCell({
     return cellId ? { cellId } : null;
   }, []);
   const handleTracebackCellNavigate = useCallback(
-    (target: { cellId: string }) => {
-      onNavigateToCell?.(target.cellId);
+    (target: TracebackCellTarget) => {
+      onNavigateToCell?.(target);
     },
     [onNavigateToCell],
   );

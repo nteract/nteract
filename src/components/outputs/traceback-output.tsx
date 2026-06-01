@@ -11,8 +11,8 @@
  * no persistence, no plugin build step — main-DOM React all the way.
  */
 
-import { Check, ChevronRight, Copy, LocateFixed, OctagonAlert } from "lucide-react";
-import { useState } from "react";
+import { Check, Copy, LocateFixed, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { highlight } from "@/components/editor/static-highlight";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
@@ -134,6 +134,7 @@ interface Props {
 export interface TracebackCellTarget {
   cellId: string;
   label?: string;
+  line?: number;
 }
 
 export type TracebackExecutionResolver = (
@@ -142,6 +143,13 @@ export type TracebackExecutionResolver = (
 ) => TracebackCellTarget | null | undefined;
 
 export type TracebackCellNavigator = (target: TracebackCellTarget) => void;
+
+export interface ClassicTracebackInput {
+  ename?: string;
+  evalue?: string;
+  traceback?: string[] | string;
+  language?: string;
+}
 
 /** A single frame, or a run of consecutive identical frames (recursion). */
 interface Cluster {
@@ -183,39 +191,34 @@ export function TracebackOutput({
   onNavigateToCell,
 }: Props) {
   const payload = toPayload(data);
-  if (!payload) {
-    return <RawJsonFallback data={data} className={className} />;
-  }
-  const frames = payload.frames ?? [];
+  const frames = payload?.frames ?? [];
   const clusters = clusterFrames(frames);
-  const language = payload.language ?? "python";
-  // Expand user frames by default, collapse library frames. Matches how
-  // humans read tracebacks: their own code first, stdlib noise tucked
-  // away. Two extra rules:
-  //   - Recursion clusters (count > 1) stay collapsed; they're noise.
-  //   - If everything is library code, open the innermost so something
-  //     useful is visible.
-  const everythingIsLibrary = clusters.length > 0 && clusters.every((c) => c.frame.library);
-  const innermost = clusters.length - 1;
-  const shouldOpen = (c: Cluster, i: number): boolean => {
-    if (c.count > 1) return false;
-    if (everythingIsLibrary) return i === innermost;
-    return !c.frame.library;
-  };
-
+  const language = payload?.language ?? "python";
   // Inline `ename: evalue` on one line when the evalue fits. Multi-line
   // evalues (pytest diffs, chained SQL errors) fall through to the
   // two-line layout. Independent of frame count — a short evalue next
   // to the ename reads better whether we show frames below or not.
-  const inlineEvalue = Boolean(payload.evalue) && !payload.evalue.includes("\n");
-  const currentExecutionId = payload.execution?.execution_id;
+  const inlineEvalue = Boolean(payload?.evalue && !payload.evalue.includes("\n"));
+  const currentExecutionId = payload?.execution?.execution_id;
+  const defaultSelectedFrame = preferredFrameIndex(clusters);
+  const [selectedFrame, setSelectedFrame] = useState(defaultSelectedFrame);
+
+  useEffect(() => {
+    setSelectedFrame(defaultSelectedFrame);
+  }, [defaultSelectedFrame]);
+
+  const selectedCluster = clusters[selectedFrame] ?? clusters[defaultSelectedFrame] ?? null;
+
+  if (!payload) {
+    return <RawJsonFallback data={data} className={className} />;
+  }
 
   return (
     <div
       data-slot="traceback"
       className={cn(
-        "border-l-2 border-destructive/45 bg-destructive/[0.03] pl-2",
-        "text-sm",
+        "my-1 rounded-md border border-destructive/15 bg-destructive/[0.018]",
+        "px-2 py-1.5 text-sm shadow-[0_1px_0_rgba(0,0,0,0.02)]",
         className,
       )}
     >
@@ -240,23 +243,45 @@ export function TracebackOutput({
         />
       ) : (
         clusters.length > 0 && (
-          <ol className="divide-y divide-destructive/10">
-            {clusters.map((cluster, i) => (
-              <FrameRow
-                key={`${cluster.frame.filename}:${cluster.frame.lineno}:${cluster.firstIndex}`}
-                cluster={cluster}
-                defaultOpen={shouldOpen(cluster, i)}
+          <div className="space-y-1.5 px-1 pb-1">
+            <ol
+              aria-label="Traceback frames"
+              className="flex flex-wrap items-center gap-x-1 gap-y-1"
+            >
+              {clusters.map((cluster, i) => (
+                <FrameStep
+                  key={`${cluster.frame.filename}:${cluster.frame.lineno}:${cluster.firstIndex}`}
+                  cluster={cluster}
+                  index={i}
+                  active={i === selectedFrame}
+                  currentExecutionId={currentExecutionId}
+                  resolveExecutionTarget={resolveExecutionTarget}
+                  onSelect={() => setSelectedFrame(i)}
+                />
+              ))}
+            </ol>
+            {selectedCluster && (
+              <SelectedFrame
+                cluster={selectedCluster}
                 language={language}
                 currentExecutionId={currentExecutionId}
                 resolveExecutionTarget={resolveExecutionTarget}
                 onNavigateToCell={onNavigateToCell}
               />
-            ))}
-          </ol>
+            )}
+          </div>
         )
       )}
     </div>
   );
+}
+
+function preferredFrameIndex(clusters: readonly Cluster[]): number {
+  for (let i = clusters.length - 1; i >= 0; i--) {
+    const frame = clusters[i]?.frame;
+    if (frame && !frame.library) return i;
+  }
+  return Math.max(0, clusters.length - 1);
 }
 
 // ─── Pieces ────────────────────────────────────────────────────────────
@@ -284,30 +309,23 @@ function Header({
   // disagree on edge cases.
   const canInline = inlineEvalue && Boolean(evalue);
   return (
-    <div className="flex items-start gap-2 px-2 py-2 font-mono">
-      <OctagonAlert
-        aria-hidden="true"
-        className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
-        strokeWidth={2.5}
-      />
-      <div className="min-w-0 flex-1">
+    <div className="flex items-center gap-2 px-1 py-1.5 font-mono">
+      <X aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" strokeWidth={2.5} />
+      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
         {canInline ? (
-          <div>
-            <span className="font-semibold text-destructive">{ename}</span>
+          <>
+            <span className="shrink-0 font-semibold text-destructive">{ename}</span>
             <span className="text-destructive/80">: </span>
-            <span className="whitespace-pre-wrap break-words text-foreground/85">{evalue}</span>
-          </div>
+            <span className="min-w-0 truncate text-foreground/80">{evalue}</span>
+          </>
         ) : (
           <>
-            <div className="font-semibold text-destructive">{ename}</div>
-            {evalue && (
-              <div className="mt-0.5 whitespace-pre-wrap break-words text-foreground/85">
-                {evalue}
-              </div>
-            )}
+            <div className="shrink-0 font-semibold text-destructive">{ename}</div>
+            {evalue && <div className="min-w-0 truncate text-foreground/80">{evalue}</div>}
           </>
         )}
       </div>
+      <div className="hidden h-px min-w-0 basis-24 shrink grow-0 bg-destructive/10 sm:block" />
       <CopyButton payload={payload} resolveExecutionTarget={resolveExecutionTarget} />
     </div>
   );
@@ -446,39 +464,70 @@ function CopyButton({
   );
 }
 
-function FrameRow({
+function FrameStep({
   cluster,
-  defaultOpen,
+  index,
+  active,
+  currentExecutionId,
+  resolveExecutionTarget,
+  onSelect,
+}: {
+  cluster: Cluster;
+  index: number;
+  active: boolean;
+  currentExecutionId?: string;
+  resolveExecutionTarget?: TracebackExecutionResolver;
+  onSelect: () => void;
+}) {
+  const { frame, count } = cluster;
+  const location = sourceLocation(frame, currentExecutionId, resolveExecutionTarget);
+  return (
+    <li className="flex min-w-0 items-center gap-1">
+      {index > 0 && (
+        <span aria-hidden="true" className="text-muted-foreground/30">
+          /
+        </span>
+      )}
+      <div className="group/frame flex min-w-0 items-center gap-1 font-mono text-xs">
+        <button
+          type="button"
+          onClick={onSelect}
+          className={cn(
+            "inline-flex min-w-0 items-baseline gap-1 rounded-sm px-1.5 py-0.5",
+            "transition-colors",
+            active
+              ? "text-destructive hover:bg-destructive/[0.035]"
+              : "border-transparent text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground",
+            frame.library && !active && "opacity-65",
+          )}
+          aria-current={active ? "step" : undefined}
+          aria-label={`Show source frame ${index + 1}`}
+        >
+          <FrameLabel location={location} line={frame.lineno} name={frame.name} count={count} />
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function SelectedFrame({
+  cluster,
   language,
   currentExecutionId,
   resolveExecutionTarget,
   onNavigateToCell,
 }: {
   cluster: Cluster;
-  defaultOpen: boolean;
   language: string;
   currentExecutionId?: string;
   resolveExecutionTarget?: TracebackExecutionResolver;
   onNavigateToCell?: TracebackCellNavigator;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
   const { frame, count } = cluster;
   const location = sourceLocation(frame, currentExecutionId, resolveExecutionTarget);
   return (
-    <li className={cn("px-2 py-1.5", frame.library && "opacity-60")}>
-      <div className="flex w-full items-center gap-2 font-mono text-xs">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-          aria-expanded={open}
-          aria-label={open ? "Collapse traceback frame" : "Expand traceback frame"}
-        >
-          <ChevronRight
-            aria-hidden="true"
-            className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")}
-          />
-        </button>
+    <div className={cn("rounded-sm bg-background/55 px-2 py-1.5", frame.library && "opacity-70")}>
+      <div className="flex min-w-0 items-center gap-1.5 font-mono text-xs">
         <LocationLabel
           location={location}
           line={frame.lineno}
@@ -489,18 +538,18 @@ function FrameRow({
           <span
             className={cn(
               "ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] tabular-nums",
-              "bg-destructive/15 text-destructive",
+              "bg-destructive/10 text-destructive",
             )}
             title={`${count} consecutive identical frames (collapsed)`}
           >
-            ×{count.toLocaleString()}
+            x{count.toLocaleString()}
           </span>
         )}
       </div>
-      {open && frame.lines && frame.lines.length > 0 && (
+      {frame.lines && frame.lines.length > 0 && (
         <SourceBlock lines={frame.lines} language={language} />
       )}
-    </li>
+    </div>
   );
 }
 
@@ -525,14 +574,29 @@ function LocationLabel({
   onNavigateToCell?: TracebackCellNavigator;
 }) {
   const displayName = typeof name === "string" ? name : undefined;
-  const showName = Boolean(displayName && displayName !== "<module>");
-  const target = location.target && onNavigateToCell ? location.target : undefined;
+  const showName =
+    location.kind !== "notebook" && Boolean(displayName && displayName !== "<module>");
+  const visibleLocation = notebookFrameSourceLabel(location, name);
+  const navigationLabel = notebookFrameNavigationLabel(location, name);
+  const target =
+    location.target && onNavigateToCell
+      ? targetWithLine(location.target, line, visibleLocation)
+      : undefined;
   return (
-    <span className="flex min-w-0 items-center gap-1.5" title={location.title}>
-      <span className="shrink-0 text-muted-foreground">Line</span>
-      <span className="shrink-0 tabular-nums text-muted-foreground">{line}</span>
-      <span className="shrink-0 text-muted-foreground">in</span>
-      {target ? (
+    <span className="flex min-w-0 flex-1 items-center gap-1.5" title={location.title}>
+      <span className="min-w-0 truncate text-muted-foreground">
+        <span>Line </span>
+        <span className="tabular-nums">{line}</span>
+        <span> in </span>
+        <span>{visibleLocation}</span>
+        {showName && (
+          <>
+            <span> in </span>
+            <span className="text-foreground">{displayName}</span>
+          </>
+        )}
+      </span>
+      {target && (
         <button
           type="button"
           onClick={(event) => {
@@ -540,26 +604,86 @@ function LocationLabel({
             onNavigateToCell?.(target);
           }}
           className={cn(
-            "inline-flex min-w-0 items-center gap-1 rounded-sm px-1 py-0.5",
-            "text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive",
+            "inline-flex size-6 shrink-0 items-center justify-center rounded-sm",
+            "text-muted-foreground/65 transition-colors hover:bg-destructive/10 hover:text-destructive",
           )}
-          aria-label={`Go to cell ${target.cellId}`}
-          title={`Go to cell ${target.cellId}`}
+          aria-label={`Go to ${navigationLabel}, line ${line}`}
+          title={`Go to ${navigationLabel}, line ${line}`}
         >
-          <LocateFixed aria-hidden="true" className="h-3 w-3 shrink-0" />
-          <span className="truncate">{location.label}</span>
+          <LocateFixed aria-hidden="true" className="h-3.5 w-3.5" />
         </button>
-      ) : (
-        <span className="truncate text-muted-foreground">{location.label}</span>
-      )}
-      {showName && (
-        <>
-          <span className="shrink-0 text-muted-foreground">in</span>
-          <span className="truncate">{displayName}</span>
-        </>
       )}
     </span>
   );
+}
+
+function FrameLabel({
+  location,
+  line,
+  name,
+  count,
+}: {
+  location: SourceLocation;
+  line: number;
+  name?: string;
+  count: number;
+}) {
+  const displayName = typeof name === "string" && name !== "<module>" ? name : undefined;
+  const visibleLocation = notebookFramePathLabel(location, name);
+  return (
+    <span className="min-w-0 truncate">
+      <span className="font-medium">{visibleLocation}</span>
+      <span className="text-muted-foreground/65"> · line {line}</span>
+      {location.kind !== "notebook" && displayName && (
+        <span className="text-muted-foreground/65"> / {displayName}</span>
+      )}
+      {count > 1 && <span className="text-muted-foreground/65"> / x{count.toLocaleString()}</span>}
+    </span>
+  );
+}
+
+function notebookFramePathLabel(location: SourceLocation, name?: string): string {
+  if (location.kind !== "notebook") {
+    return location.label;
+  }
+
+  if (name && name !== "<module>") {
+    return name;
+  }
+
+  return location.label === "Current Cell" ? "current cell" : "cell input";
+}
+
+function notebookFrameSourceLabel(location: SourceLocation, name?: string): string {
+  if (location.kind !== "notebook") {
+    return location.label;
+  }
+
+  if (name && name !== "<module>") {
+    return `cell defining ${name}`;
+  }
+
+  return location.label === "Current Cell" ? "current cell" : "source cell";
+}
+
+function notebookFrameNavigationLabel(location: SourceLocation, name?: string): string {
+  if (location.kind !== "notebook") {
+    return location.label;
+  }
+
+  if (name && name !== "<module>") {
+    return `cell that defines ${name}`;
+  }
+
+  return location.label === "Current Cell" ? "current cell" : "source cell";
+}
+
+function targetWithLine(
+  target: TracebackCellTarget,
+  line: number,
+  fallbackLabel?: string,
+): TracebackCellTarget {
+  return { ...target, label: target.label ?? fallbackLabel, line };
 }
 
 function sourceLocation(
@@ -577,6 +701,12 @@ function sourceLocation(
   const cellId = asOptionalString(sourceRef?.cell_id) ?? asOptionalString(source.cell_id);
   const sourceHash =
     asOptionalString(sourceRef?.source_hash) ?? asOptionalString(source.source_hash);
+  const executionCount =
+    typeof sourceRef?.execution_count === "number"
+      ? sourceRef.execution_count
+      : typeof source.execution_count === "number"
+        ? source.execution_count
+        : undefined;
   const compiledFilename = asOptionalString(sourceRef?.compiled_filename) ?? filename;
   const titleParts = [];
   if (executionId) titleParts.push(`Execution: ${executionId}`);
@@ -584,7 +714,9 @@ function sourceLocation(
   if (compiledFilename) titleParts.push(`Compiled file: ${compiledFilename}`);
 
   const isNotebookSource =
-    sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(filename);
+    Boolean(cellId) ||
+    sourceRef?.kind === "notebook_execution" ||
+    isSyntheticNotebookFilename(filename);
   const target =
     (executionId ? (resolveExecutionTarget?.(executionId, sourceHash) ?? null) : null) ??
     (cellId ? { cellId } : null);
@@ -602,7 +734,11 @@ function sourceLocation(
   if (target) {
     const label =
       target.label ??
-      (executionId === currentExecutionId ? "Current Cell" : `Cell ${shortCellId(target.cellId)}`);
+      (executionId === currentExecutionId
+        ? "Current Cell"
+        : typeof executionCount === "number"
+          ? `run ${executionCount}`
+          : `Cell ${shortCellId(target.cellId)}`);
     return {
       kind: "notebook",
       label,
@@ -746,7 +882,14 @@ function copyLocationLine(
 function isNotebookSource(source: Pick<Frame | SyntaxInfo, "filename" | "source_ref">): boolean {
   const sourceRef = isObjectRecord(source.source_ref) ? source.source_ref : undefined;
   const filename = asOptionalString(source.filename) ?? "";
-  return sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(filename);
+  const cellId =
+    asOptionalString(sourceRef?.cell_id) ??
+    asOptionalString((source as { cell_id?: unknown }).cell_id);
+  return (
+    Boolean(cellId) ||
+    sourceRef?.kind === "notebook_execution" ||
+    isSyntheticNotebookFilename(filename)
+  );
 }
 
 function asOptionalString(value: unknown): string | undefined {
@@ -892,4 +1035,106 @@ function safeStringify(x: unknown): string {
   } catch {
     return String(x);
   }
+}
+
+export function classicTracebackToPayload({
+  ename,
+  evalue,
+  traceback,
+  language = "python",
+}: ClassicTracebackInput): unknown | null {
+  const lines = Array.isArray(traceback)
+    ? traceback
+    : typeof traceback === "string"
+      ? traceback.split("\n")
+      : [];
+  if (lines.length === 0 || !lines.some((line) => line.includes("Traceback"))) {
+    return null;
+  }
+
+  const frames: Frame[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const frame = parseClassicFrame(lines[index]);
+    if (!frame) continue;
+
+    const sourceLine = classicFrameSourceLine(lines, index + 1);
+    if (sourceLine) {
+      frame.lines = [{ lineno: frame.lineno, source: sourceLine, highlight: true }];
+    }
+    frames.push(frame);
+  }
+
+  if (frames.length === 0) return null;
+
+  return {
+    ename: ename ?? "Error",
+    evalue: evalue ?? "",
+    language,
+    frames,
+    text: lines.join("\n"),
+  };
+}
+
+function parseClassicFrame(line: string): Frame | null {
+  const match = line.match(/^\s*Line\s+(\d+)\s+in\s+(.+?)(?:\s+\((.*?)\))?(?:,\s+in\s+(.+))?\s*$/);
+  if (!match) return null;
+
+  const lineno = Number.parseInt(match[1] ?? "", 10);
+  if (!Number.isFinite(lineno)) return null;
+
+  const label = (match[2] ?? "Notebook Cell").trim();
+  const detail = match[3] ?? "";
+  const name = (match[4] ?? "<module>").trim();
+  const details = Object.fromEntries(
+    detail
+      .split(",")
+      .map((part) => part.trim())
+      .map((part) => {
+        const separator = part.indexOf("=");
+        if (separator === -1) return null;
+        return [part.slice(0, separator).trim(), part.slice(separator + 1).trim()] as const;
+      })
+      .filter((part): part is readonly [string, string] => part !== null),
+  );
+  const cellId = details.cell_id ?? classicCellIdFromLabel(label);
+  const executionId = details.execution_id;
+  const sourceHash = details.source_hash;
+  const frame: Frame = {
+    filename: cellId ? `cell://${cellId}` : label,
+    lineno,
+    name,
+    cell_id: cellId,
+    execution_id: executionId,
+    source_hash: sourceHash,
+  };
+
+  if (cellId || executionId || sourceHash) {
+    frame.source_ref = {
+      kind: "notebook_execution",
+      cell_id: cellId,
+      execution_id: executionId,
+      source_hash: sourceHash,
+      compiled_filename: frame.filename,
+    };
+  }
+
+  return frame;
+}
+
+function classicCellIdFromLabel(label: string): string | undefined {
+  const match = label.match(/^Cell\s+(\S+)$/);
+  return match?.[1];
+}
+
+function classicFrameSourceLine(lines: readonly string[], startIndex: number): string | null {
+  for (let index = startIndex; index < lines.length; index++) {
+    const line = lines[index];
+    if (!line) continue;
+    if (/^\s*Line\s+\d+\s+in\s+/.test(line)) return null;
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (/^\w+(?:Error|Exception|Warning)\b/.test(trimmed)) return null;
+    return trimmed;
+  }
+  return null;
 }

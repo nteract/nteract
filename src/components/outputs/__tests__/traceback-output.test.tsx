@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { TracebackOutput } from "../traceback-output";
+import { classicTracebackToPayload, TracebackOutput } from "../traceback-output";
 
 const payload = {
   ename: "AttributeError",
@@ -67,8 +67,8 @@ describe("TracebackOutput", () => {
       <TracebackOutput data={payload} resolveExecutionTarget={resolveExecutionTarget} />,
     );
 
-    expect(container.textContent).toContain("Line1inCurrent Cell");
-    expect(container.textContent).toContain("Line5inCell cell-defing");
+    expect(container.textContent).toContain("current cell · line 1");
+    expect(container.textContent).toContain("g · line 5");
     expect(container.textContent).not.toContain("In[");
     expect(container.textContent).not.toContain("/var/folders/x/T/ipykernel_39879");
   });
@@ -94,7 +94,7 @@ describe("TracebackOutput", () => {
       />,
     );
 
-    expect(container.textContent).toContain("Line2630in.../polars/lazyframe/frame.pyincollect");
+    expect(container.textContent).toContain(".../polars/lazyframe/frame.py · line 2630 / collect");
     expect(container.textContent).not.toContain("/Users/kylekelley/Library/Caches");
   });
 
@@ -120,7 +120,7 @@ describe("TracebackOutput", () => {
     );
 
     expect(container.textContent).toContain(
-      "Line7in/Users/kyle/project/site-packages/example/runtime/frame.jlinload",
+      "/Users/kyle/project/site-packages/example/runtime/frame.jl · line 7 / load",
     );
     expect(container.textContent).not.toContain(".../example/runtime/frame.jl");
   });
@@ -145,7 +145,7 @@ describe("TracebackOutput", () => {
       />,
     );
 
-    expect(container.textContent).toContain("Line7inUnknown sourceinload");
+    expect(container.textContent).toContain("Unknown source · line 7 / load");
   });
 
   it("navigates to a resolved traceback cell", () => {
@@ -158,9 +158,13 @@ describe("TracebackOutput", () => {
         onNavigateToCell={onNavigateToCell}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Go to cell cell-def" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go to cell that defines g, line 5" }));
 
-    expect(onNavigateToCell).toHaveBeenCalledWith({ cellId: "cell-def" });
+    expect(onNavigateToCell).toHaveBeenCalledWith({
+      cellId: "cell-def",
+      line: 5,
+      label: "cell defining g",
+    });
   });
 
   it("uses structured cell ids when execution lookup is unavailable", () => {
@@ -191,9 +195,17 @@ describe("TracebackOutput", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Go to cell cell-helper" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Go to cell that defines image_scatter_records, line 12",
+      }),
+    );
 
-    expect(onNavigateToCell).toHaveBeenCalledWith({ cellId: "cell-helper" });
+    expect(onNavigateToCell).toHaveBeenCalledWith({
+      cellId: "cell-helper",
+      line: 12,
+      label: "cell defining image_scatter_records",
+    });
   });
 
   it("copies the sanitized traceback text", async () => {
@@ -209,10 +221,39 @@ describe("TracebackOutput", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const copied = writeText.mock.calls[0][0] as string;
     expect(copied).toContain("Line 1 in Current Cell (cell_id=cell-run, execution_id=exec-run)");
-    expect(copied).toContain(
-      "Line 5 in Cell cell-def (cell_id=cell-def, execution_id=exec-def), in g",
-    );
+    expect(copied).toContain("Line 5 in run 2 (cell_id=cell-def, execution_id=exec-def), in g");
     expect(copied).not.toContain("In[");
     expect(copied).not.toContain("/var/folders/x/T/ipykernel_39879");
+  });
+
+  it("normalizes classic notebook traceback preview lines into rich frame data", () => {
+    const normalized = classicTracebackToPayload({
+      ename: "AttributeError",
+      evalue: "'NoneType' object has no attribute 'strip'",
+      traceback: [
+        "Traceback (most recent call last):",
+        "  Line 2 in Cell cell-run (cell_id=cell-run, execution_id=exec-run, source_hash=sha256:abc)",
+        "    summarize(records)",
+        "  Line 2 in Cell cell-helper (cell_id=cell-helper, execution_id=exec-helper, source_hash=sha256:def), in summarize",
+        "        return [normalize(record) for record in records]",
+        "AttributeError: 'NoneType' object has no attribute 'strip'",
+      ],
+    });
+
+    render(
+      <TracebackOutput
+        data={normalized}
+        resolveExecutionTarget={(executionId) =>
+          executionId === "exec-helper" ? { cellId: "cell-helper", label: "run 2" } : null
+        }
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Show source frame 1" })).toHaveTextContent(
+      "cell input · line 2",
+    );
+    expect(screen.getByRole("button", { name: "Show source frame 2" })).toHaveTextContent(
+      "summarize · line 2",
+    );
   });
 });

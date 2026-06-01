@@ -2,55 +2,77 @@ import { EditorView } from "@codemirror/view";
 import { createContext, type ReactNode, useCallback, useContext } from "react";
 import { logger } from "../lib/logger";
 
+type CellCursorPosition = "start" | "end";
+export interface CellFocusTarget {
+  cursorPosition?: CellCursorPosition;
+  line?: number;
+}
+
 interface EditorRegistryContextType {
-  focusCell: (cellId: string, cursorPosition: "start" | "end") => void;
+  focusCell: (cellId: string, target?: CellCursorPosition | CellFocusTarget) => void;
 }
 
 const EditorRegistryContext = createContext<EditorRegistryContextType | null>(null);
 
 export function EditorRegistryProvider({ children }: { children: ReactNode }) {
   // Focus a cell's editor using DOM lookup - bypasses registration timing issues
-  const focusCell = useCallback((cellId: string, cursorPosition: "start" | "end") => {
-    // Find the cell element by data attribute
-    const cellElement = document.querySelector(`[data-cell-id="${CSS.escape(cellId)}"]`);
-    if (!cellElement) {
-      logger.warn(`[cell-nav] Cell element not found: ${cellId.slice(0, 8)}`);
-      return;
-    }
+  const focusCell = useCallback(
+    (cellId: string, target: CellCursorPosition | CellFocusTarget = "start") => {
+      const focusTarget =
+        typeof target === "string"
+          ? { cursorPosition: target }
+          : { cursorPosition: "start" as const, ...target };
 
-    // Scroll the cell container into the notebook viewport
-    cellElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
-
-    // Find CodeMirror's content element inside the cell
-    const cmContent = cellElement.querySelector(".cm-content");
-    if (!cmContent) {
-      const focusTarget = cellElement.querySelector<HTMLElement>("[data-cell-focus-target]");
-      if (focusTarget) {
-        focusTarget.focus({ preventScroll: true });
+      // Find the cell element by data attribute
+      const cellElement = document.querySelector(`[data-cell-id="${CSS.escape(cellId)}"]`);
+      if (!cellElement) {
+        logger.warn(`[cell-nav] Cell element not found: ${cellId.slice(0, 8)}`);
         return;
       }
 
-      // Might be a markdown preview or hidden cell with no explicit fallback.
-      logger.debug(`[cell-nav] No focus target in cell: ${cellId.slice(0, 8)}`);
-      return;
-    }
+      // Scroll the cell container into the notebook viewport
+      cellElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
 
-    // Use CodeMirror's API to find the EditorView from DOM
-    const view = EditorView.findFromDOM(cmContent as HTMLElement);
-    if (!view) {
-      logger.warn(`[cell-nav] EditorView not found for: ${cellId.slice(0, 8)}`);
-      return;
-    }
+      // Find CodeMirror's content element inside the cell
+      const cmContent = cellElement.querySelector(".cm-content");
+      if (!cmContent) {
+        const fallbackFocusElement = cellElement.querySelector<HTMLElement>(
+          "[data-cell-focus-target]",
+        );
+        if (fallbackFocusElement) {
+          fallbackFocusElement.focus({ preventScroll: true });
+          return;
+        }
 
-    // Set cursor position and focus
-    const doc = view.state.doc;
-    const pos = cursorPosition === "start" ? 0 : doc.length;
-    view.dispatch({
-      selection: { anchor: pos, head: pos },
-      scrollIntoView: true,
-    });
-    view.focus();
-  }, []);
+        // Might be a markdown preview or hidden cell with no explicit fallback.
+        logger.debug(`[cell-nav] No focus target in cell: ${cellId.slice(0, 8)}`);
+        return;
+      }
+
+      // Use CodeMirror's API to find the EditorView from DOM
+      const view = EditorView.findFromDOM(cmContent as HTMLElement);
+      if (!view) {
+        logger.warn(`[cell-nav] EditorView not found for: ${cellId.slice(0, 8)}`);
+        return;
+      }
+
+      // Set cursor position and focus
+      const doc = view.state.doc;
+      const line = typeof focusTarget.line === "number" ? focusTarget.line : null;
+      const pos =
+        line !== null && Number.isFinite(line) && line > 0
+          ? doc.line(Math.max(1, Math.min(Math.floor(line), doc.lines))).from
+          : focusTarget.cursorPosition === "end"
+            ? doc.length
+            : 0;
+      view.dispatch({
+        selection: { anchor: pos, head: pos },
+        scrollIntoView: true,
+      });
+      view.focus();
+    },
+    [],
+  );
 
   return (
     <EditorRegistryContext.Provider value={{ focusCell }}>
