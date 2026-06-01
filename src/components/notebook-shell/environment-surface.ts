@@ -1,5 +1,6 @@
 import { notebookActorIdentityFromRuntime } from "./actor-projection";
 import type {
+  NotebookActorIdentity,
   NotebookShellAccessLevel,
   NotebookShellAccessSource,
   NotebookShellCapabilities,
@@ -81,7 +82,7 @@ export function createNotebookEnvironmentSurface({
     runtimeLabel ?? (capabilities.canExecute ? "Runtime ready" : "No runtime");
   const runtimeActor = notebookActorIdentityFromRuntime(capabilities.runtime, capabilities.auth);
   const runtimeDetail = capabilities.runtime.canWriteRuntimeState
-    ? `${runtimeActor?.label ?? "Connected runtime"} authors runtime state`
+    ? runtimeAuthorshipDetail(runtimeActor)
     : capabilities.runtime.connected
       ? `Runtime connected through ${accessSourceLabel(capabilities.runtime.source)}`
       : null;
@@ -159,4 +160,12 @@ export function accessSourceLabel(source: NotebookShellAccessSource): string {
     case "unknown":
       return "unknown host";
   }
+}
+
+function runtimeAuthorshipDetail(actor: NotebookActorIdentity | null): string {
+  if (!actor) return "Connected runtime authors runtime state";
+  if (actor.operatorLabel && actor.principalLabel && actor.operatorLabel !== actor.principalLabel) {
+    return `${actor.operatorLabel} authors runtime state for ${actor.principalLabel}`;
+  }
+  return `${actor.label} authors runtime state`;
 }

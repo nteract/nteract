@@ -63,7 +63,8 @@ describe("NotebookToolbarIdentity", () => {
     );
 
     expect(actors).toHaveLength(1);
-    expect(actors[0]?.label).toBe("JupyterHub");
+    expect(actors[0]?.label).toBe("JupyterHub for Alice");
+    expect(actors[0]?.detail).toBe("Runtime peer");
   });
 
   it("keeps desktop access, agent, and runtime actors distinct", () => {
@@ -87,7 +88,8 @@ describe("NotebookToolbarIdentity", () => {
     );
 
     expect(actors.map((actor) => actor.kind)).toEqual(["agent", "runtime"]);
-    expect(actors.map((actor) => actor.label)).toEqual(["Codex", "Python"]);
+    expect(actors.map((actor) => actor.label)).toEqual(["Codex for Kyle", "Python for Kyle"]);
+    expect(actors.map((actor) => actor.detail)).toEqual(["Editor", "Runtime peer"]);
   });
 
   it("renders the shared toolbar actor badges", () => {
@@ -114,6 +116,6 @@ describe("NotebookToolbarIdentity", () => {
 
     expect(screen.getByLabelText("Notebook actors")).toBeVisible();
     expect(screen.getByText("Kyle")).toBeVisible();
-    expect(screen.getByText("JupyterHub")).toBeVisible();
+    expect(screen.getByText("JupyterHub for Kyle")).toBeVisible();
   });
 });

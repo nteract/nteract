@@ -88,7 +88,7 @@ export function notebookActorIdentityFromProjection(
   actor: NotebookActorProjection,
 ): NotebookActorIdentity {
   const kind = actorKindFromProjection(actor);
-  const detail = actorDetailFromProjection(actor, kind);
+  const detail = actorDetailFromProjection(actor);
 
   return {
     id: actor.actorLabel,
@@ -218,22 +218,35 @@ function actorKindFromProjection(actor: NotebookActorProjection): NotebookActorK
 
 function actorLabelFromProjection(actor: NotebookActorProjection, kind: NotebookActorKind): string {
   if (kind === "agent" || kind === "runtime" || kind === "system") {
-    return actor.operator.label;
+    return operatorActorLabel(actor);
   }
   return actor.principal.label;
 }
 
-function actorDetailFromProjection(
-  actor: NotebookActorProjection,
-  kind: NotebookActorKind,
-): string | null {
-  if (kind === "agent" || kind === "runtime" || kind === "system") {
-    const principalLabel = actor.principal.label;
-    return kind === "system" && actor.principal.id === "system"
-      ? accessScopeLabel(actor.scope)
-      : `for ${principalLabel}`;
-  }
+function actorDetailFromProjection(actor: NotebookActorProjection): string | null {
   return accessScopeLabel(actor.scope);
+}
+
+function operatorActorLabel(actor: NotebookActorProjection): string {
+  const principalLabel = actor.principal.label.trim();
+  if (
+    principalLabel &&
+    principalLabel !== actor.operator.label &&
+    !isGenericPrincipalLabel(principalLabel)
+  ) {
+    return `${actor.operator.label} for ${principalLabel}`;
+  }
+  return actor.operator.label;
+}
+
+function isGenericPrincipalLabel(label: string): boolean {
+  return (
+    label === "Runtime principal" ||
+    label === "Unknown viewer" ||
+    label === "Public viewer" ||
+    label === "System" ||
+    label === "Peer"
+  );
 }
 
 function accessScopeLabel(scope: NotebookActorProjection["scope"]): string | null {
