@@ -1277,9 +1277,7 @@ function NotebookViewer({
 
   const toolbar = (
     <NotebookCommandToolbar
-      canEditStructure={shellCapabilities.canEditStructure}
-      canExecute={shellCapabilities.canExecute}
-      canViewPackages={shellCapabilities.canViewPackages}
+      capabilities={shellCapabilities}
       runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
       environmentManager={packageEnvironmentManager}
       environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}

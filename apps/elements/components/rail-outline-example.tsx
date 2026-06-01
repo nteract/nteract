@@ -101,9 +101,7 @@ export function RailOutlineExample() {
               runtime="python"
               focusedCellId={focusedCellId}
               lastCellId="cell-findings"
-              canEditStructure={scenario.capabilities.canEditStructure}
-              canExecute={scenario.capabilities.canExecute}
-              canViewPackages={scenario.capabilities.canViewPackages}
+              capabilities={scenario.capabilities}
               onStartKernel={noop}
               onInterruptKernel={noop}
               onRestartKernel={noop}

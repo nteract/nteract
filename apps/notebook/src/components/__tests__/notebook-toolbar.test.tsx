@@ -69,6 +69,11 @@ const baseProps = {
   onRestartAndRunAll: vi.fn(),
   onAddCell: vi.fn(),
   onToggleDependencies: vi.fn(),
+  capabilities: {
+    canEditStructure: true,
+    canExecute: true,
+    canViewPackages: true,
+  },
 };
 
 describe("NotebookToolbar", () => {

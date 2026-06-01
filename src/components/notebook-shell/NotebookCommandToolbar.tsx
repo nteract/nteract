@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import type { NotebookShellCapabilities } from "./capabilities";
 
 export type NotebookCommandRuntimeState =
   | "not_started"
@@ -36,9 +37,10 @@ export interface NotebookCommandToolbarUpdateAction {
 }
 
 export interface NotebookCommandToolbarProps {
-  canEditStructure: boolean;
-  canExecute: boolean;
-  canViewPackages: boolean;
+  capabilities: Pick<
+    NotebookShellCapabilities,
+    "canEditStructure" | "canExecute" | "canViewPackages"
+  >;
   runtime?: string | null;
   environmentManager?: NotebookEnvironmentManager | null;
   environmentPanelOpen?: boolean;
@@ -60,9 +62,7 @@ export interface NotebookCommandToolbarProps {
 }
 
 export function NotebookCommandToolbar({
-  canEditStructure,
-  canExecute,
-  canViewPackages,
+  capabilities,
   runtime = null,
   environmentManager = null,
   environmentPanelOpen = false,
@@ -82,6 +82,7 @@ export function NotebookCommandToolbar({
   trailingControls,
   className,
 }: NotebookCommandToolbarProps) {
+  const { canEditStructure, canExecute, canViewPackages } = capabilities;
   const isRuntimeRunning =
     runtimeStatus.state === "idle" ||
     runtimeStatus.state === "busy" ||
