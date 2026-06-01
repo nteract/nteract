@@ -612,7 +612,8 @@ impl RoomHostHandle {
             let actors = extract_change_actor_hashes(preview.doc_mut(), &heads_before);
             validate_room_notebook_change_actors(principal, actors.iter())?;
             if !can_write_all_notebook_changes {
-                validate_markdown_source_only_changes(&mut preview, &heads_before, actors.iter())?;
+                validate_editor_notebook_changes(&mut preview, &heads_before, actors.iter())
+                    .map_err(|e| JsError::new(&e))?;
             }
         }
 
@@ -897,11 +898,20 @@ fn validate_room_notebook_change_actors_inner<'a>(
     Ok(())
 }
 
-fn validate_markdown_source_only_changes<'a>(
+/// Validate that an editor-scope peer's NotebookDoc changes stay within the
+/// collaborative cell-editing surface.
+///
+/// Editors may add, remove, reorder, and edit cells of any type. Notebook-level
+/// metadata (kernelspec, trust, environment, path, project) stays owner-authored
+/// and is rejected here. Owners skip this check entirely via
+/// `can_write_all_notebook_changes`. Canonical schema-seed changes are folded
+/// into `heads_before` so a fresh room's genesis maps are not read as metadata
+/// edits.
+fn validate_editor_notebook_changes<'a>(
     preview: &mut NotebookDoc,
     heads_before: &[automerge::ChangeHash],
     allowed_changes: impl IntoIterator<Item = &'a ChangeActor>,
-) -> Result<(), JsError> {
+) -> Result<(), String> {
     let mut effective_heads_before = heads_before.to_vec();
     for change in allowed_changes {
         if NotebookDoc::is_canonical_schema_seed_change(&change.actor_label, &change.hash)
@@ -914,26 +924,9 @@ fn validate_markdown_source_only_changes<'a>(
     let heads_after = preview.get_heads();
     let changeset = diff_doc(preview.doc_mut(), &effective_heads_before, &heads_after);
     if changeset.metadata_changed {
-        return Err(JsError::new(
-            "editor scope cannot change notebook metadata in hosted markdown-only mode",
-        ));
-    }
-    if changeset.cells.is_structural() {
-        return Err(JsError::new(
-            "editor scope cannot add, remove, or reorder cells in hosted markdown-only mode",
-        ));
-    }
-    for changed in &changeset.cells.changed {
-        if !changed.fields.is_source_only() {
-            return Err(JsError::new(
-                "editor scope can only edit markdown source in hosted markdown-only mode",
-            ));
-        }
-        if preview.get_cell_type(&changed.cell_id).as_deref() != Some("markdown") {
-            return Err(JsError::new(
-                "editor scope cannot edit code or raw cells in hosted markdown-only mode",
-            ));
-        }
+        return Err(
+            "editor scope cannot change notebook metadata; metadata is owner-authored".to_string(),
+        );
     }
     Ok(())
 }
@@ -3105,7 +3098,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_only_policy_ignores_canonical_schema_seed_maps() {
+    fn editor_policy_ignores_canonical_schema_seed_maps() {
         let seed_hash = NotebookDoc::canonical_schema_seed_change_hashes()
             .into_iter()
             .next()
@@ -3115,7 +3108,7 @@ mod tests {
             "user:dev:alice/desktop:a",
         );
 
-        validate_markdown_source_only_changes(
+        validate_editor_notebook_changes(
             &mut preview,
             &[],
             [ChangeActor {
@@ -3125,6 +3118,69 @@ mod tests {
             .iter(),
         )
         .expect("canonical schema seed maps are not editor metadata edits");
+    }
+
+    #[test]
+    fn editor_changes_allow_adding_cells() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        let heads_before = preview.get_heads();
+        preview
+            .add_cell_after("cell-1", "code", None)
+            .expect("add cell");
+
+        validate_editor_notebook_changes(
+            &mut preview,
+            &heads_before,
+            std::iter::empty::<&ChangeActor>(),
+        )
+        .expect("editor scope may add cells");
+    }
+
+    #[test]
+    fn editor_changes_allow_editing_code_cell_source() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        preview
+            .add_cell_after("cell-1", "code", None)
+            .expect("add cell");
+        let heads_before = preview.get_heads();
+        preview
+            .update_source("cell-1", "print(1)")
+            .expect("edit source");
+
+        validate_editor_notebook_changes(
+            &mut preview,
+            &heads_before,
+            std::iter::empty::<&ChangeActor>(),
+        )
+        .expect("editor scope may edit code cell source");
+    }
+
+    #[test]
+    fn editor_changes_reject_notebook_metadata_edits() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        let heads_before = preview.get_heads();
+        preview
+            .set_metadata("trust", "tampered")
+            .expect("set metadata");
+
+        assert!(
+            validate_editor_notebook_changes(
+                &mut preview,
+                &heads_before,
+                std::iter::empty::<&ChangeActor>(),
+            )
+            .is_err(),
+            "editor scope cannot change notebook metadata",
+        );
     }
 
     #[test]

@@ -33,9 +33,13 @@ export function cloudNotebookShellCapabilities({
   const interaction = createNotebookInteractionModeProjection({
     selectedMode,
     permission: {
+      // Editors get full collaborative cell editing (markdown/code/raw source +
+      // add/delete/move). This mirrors the room host's editor write surface; the
+      // server still rejects notebook-level metadata edits from non-owners
+      // (validate_editor_notebook_changes in runtimed-wasm).
       canEditMarkdown: accessLevel === "editor" || accessLevel === "owner",
-      canEditCells: accessLevel === "owner",
-      canEditStructure: accessLevel === "owner",
+      canEditCells: accessLevel === "editor" || accessLevel === "owner",
+      canEditStructure: accessLevel === "editor" || accessLevel === "owner",
     },
     hostSupport: {
       canEditMarkdown: true,
