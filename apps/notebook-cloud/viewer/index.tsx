@@ -10,7 +10,6 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  BookOpen,
   Copy,
   Globe2,
   KeyRound,
@@ -18,22 +17,22 @@ import {
   LogIn,
   LogOut,
   Mail,
-  Pencil,
   RotateCcw,
   Share2,
   Trash2,
   UserRound,
-  UsersRound,
 } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   NotebookDocumentHeader,
+  NotebookEditModeButton,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookIdentityBadge,
+  NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
   notebookActorIdentityFromAccess,
   type NotebookShellCapabilities,
@@ -72,6 +71,7 @@ import {
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import { flushCellUIState, setFocusedCellId } from "../../notebook/src/lib/cell-ui-state";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
+import { setLoggerHost } from "../../notebook/src/lib/logger";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 import { useNotebookViewModel } from "../../notebook/src/lib/notebook-view-model";
 import {
@@ -125,6 +125,13 @@ import {
   projectCloudWidgetComms,
 } from "./widget-runtime";
 import "./index.css";
+
+setLoggerHost({
+  debug: () => {},
+  info: () => {},
+  warn: (message: string, ...args: unknown[]) => console.warn(message, ...args),
+  error: (message: string, ...args: unknown[]) => console.error(message, ...args),
+});
 
 interface CloudViewerConfig {
   notebookId: string;
@@ -1628,31 +1635,20 @@ function CloudNotebookEditModeButton({
   const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
   const requestingEdit = requestedScope === "editor" || requestedScope === "owner";
   const editing = connectionScope === "editor" || connectionScope === "owner";
-  const label = requestingEdit ? "View" : "Edit";
-  const title = requestingEdit
-    ? editing
-      ? "Return to read-only viewing"
-      : "Stop requesting edit access"
-    : "Request edit access";
+  const state = editing ? "editing" : requestingEdit ? "requested" : "viewing";
 
   return (
-    <button
-      type="button"
-      className="cloud-scope-toggle-button"
-      aria-pressed={requestingEdit}
-      data-state={editing ? "editing" : requestingEdit ? "requested" : "viewing"}
-      title={title}
-      onClick={() => {
+    <NotebookEditModeButton
+      mode={requestingEdit ? "edit" : "view"}
+      state={state}
+      onModeChange={(mode) => {
         storeCloudRequestedScope(
           window.localStorage,
-          requestingEdit ? NOTEBOOK_CLOUD_DEFAULT_SCOPE : "editor",
+          mode === "edit" ? "editor" : NOTEBOOK_CLOUD_DEFAULT_SCOPE,
         );
         onAuthStateChange();
       }}
-    >
-      {requestingEdit ? <BookOpen aria-hidden="true" /> : <Pencil aria-hidden="true" />}
-      <span>{label}</span>
-    </button>
+    />
   );
 }
 
@@ -1938,16 +1934,12 @@ function CloudPresenceStatus({
         : null;
 
   return (
-    <div
-      className="cloud-presence"
-      data-connected={String(presenceDisplay.connected)}
-      title={scopeLabel ? `${presenceDisplay.title}; ${scopeLabel}` : presenceDisplay.title}
-      aria-label={presenceDisplay.title}
-      aria-live="polite"
-    >
-      <UsersRound aria-hidden="true" />
-      <span>{scopeLabel ? `${presenceDisplay.label} · ${scopeLabel}` : presenceDisplay.label}</span>
-    </div>
+    <NotebookPresenceStatus
+      connected={presenceDisplay.connected}
+      label={presenceDisplay.label}
+      modeLabel={scopeLabel}
+      title={presenceDisplay.title}
+    />
   );
 }
 

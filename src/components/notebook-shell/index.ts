@@ -37,10 +37,17 @@ export {
   type NotebookIdentityBadgeProps,
   type NotebookIdentityGroupProps,
 } from "./NotebookIdentity";
+export { NotebookPresenceStatus, type NotebookPresenceStatusProps } from "./NotebookPresenceStatus";
 export {
   NotebookEnvironmentSummary,
   type NotebookEnvironmentSummaryProps,
 } from "./NotebookEnvironmentSummary";
+export {
+  NotebookEditModeButton,
+  type NotebookEditMode,
+  type NotebookEditModeButtonProps,
+  type NotebookEditModeState,
+} from "./NotebookEditModeButton";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
   NotebookPackageSummaryPanel,

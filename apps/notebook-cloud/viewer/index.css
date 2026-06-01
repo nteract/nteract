@@ -205,43 +205,6 @@ body {
   pointer-events: none;
 }
 
-.cloud-presence {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
-  max-width: min(16rem, 52vw);
-  height: 2rem;
-  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
-  border-radius: 999px;
-  padding-inline: 0.75rem;
-  color: color-mix(in srgb, var(--foreground) 72%, transparent);
-  background: color-mix(in srgb, var(--background) 90%, transparent);
-  box-shadow: 0 1px 8px color-mix(in srgb, #000 6%, transparent);
-  backdrop-filter: blur(8px);
-  pointer-events: auto;
-}
-
-.cloud-presence[data-connected="true"] {
-  border-color: color-mix(in srgb, #0f766e 28%, transparent);
-  color: color-mix(in srgb, var(--foreground) 82%, #0f766e 18%);
-}
-
-.cloud-presence svg {
-  width: 1rem;
-  height: 1rem;
-  flex: 0 0 auto;
-}
-
-.cloud-presence span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
-  line-height: 1;
-}
-
 .cloud-auth-menu {
   position: relative;
 }
@@ -252,7 +215,6 @@ body {
 
 .cloud-share-menu summary,
 .cloud-auth-menu summary,
-.cloud-scope-toggle-button,
 .cloud-sign-in-button {
   display: inline-flex;
   align-items: center;
@@ -297,22 +259,19 @@ body {
 }
 
 .cloud-share-menu summary:hover,
-.cloud-auth-menu summary:hover,
-.cloud-scope-toggle-button:hover {
+.cloud-auth-menu summary:hover {
   color: var(--foreground);
   background: color-mix(in srgb, var(--background) 82%, var(--foreground) 8%);
 }
 
 .cloud-share-menu summary:focus-visible,
-.cloud-auth-menu summary:focus-visible,
-.cloud-scope-toggle-button:focus-visible {
+.cloud-auth-menu summary:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
   outline-offset: 2px;
 }
 
 .cloud-share-menu svg,
 .cloud-auth-menu svg,
-.cloud-scope-toggle-button svg,
 .cloud-sign-in-button svg,
 .cloud-auth-state svg {
   width: 1rem;
@@ -322,7 +281,6 @@ body {
 
 .cloud-share-menu summary span,
 .cloud-auth-menu summary span,
-.cloud-scope-toggle-button span,
 .cloud-sign-in-button span {
   min-width: 0;
   overflow: hidden;
@@ -334,15 +292,6 @@ body {
 
 .cloud-sign-in-button {
   cursor: pointer;
-}
-
-.cloud-scope-toggle-button[data-state="editing"] {
-  border-color: color-mix(in srgb, #16a34a 52%, transparent);
-  color: color-mix(in srgb, #16a34a 80%, var(--foreground) 20%);
-}
-
-.cloud-scope-toggle-button[data-state="requested"] {
-  border-color: color-mix(in srgb, var(--ring) 48%, transparent);
 }
 
 .cloud-sign-in-button:hover {

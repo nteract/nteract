@@ -476,7 +476,10 @@ async function ensureEditableMarkdown(page) {
 
 async function waitForPresence(page, expectedText) {
   await page.waitForFunction(
-    (expected) => document.querySelector(".cloud-presence")?.textContent?.includes(expected),
+    (expected) =>
+      document
+        .querySelector("[data-slot='notebook-presence-status']")
+        ?.textContent?.includes(expected),
     expectedText,
     { timeout: timeoutMs },
   );
