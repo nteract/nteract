@@ -37,8 +37,8 @@ export function PackageSpecList({
     <div
       className={cn(
         framed
-          ? "overflow-hidden rounded-md border bg-background shadow-sm shadow-black/[0.02]"
-          : "overflow-hidden rounded-md bg-transparent",
+          ? "w-full overflow-hidden rounded-md border bg-background shadow-sm shadow-black/[0.02]"
+          : "w-full overflow-hidden rounded-md bg-transparent",
         className,
       )}
     >

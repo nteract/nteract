@@ -90,7 +90,12 @@ export function NotebookRail({
 
       {!collapsed && (
         <div
-          className="flex min-h-0 w-80 max-w-[34vw] min-w-64 flex-col bg-background max-sm:w-[calc(100vw-3rem)] max-sm:min-w-0 max-sm:max-w-none"
+          className={cn(
+            "flex min-h-0 w-80 max-w-[34vw] min-w-64 flex-col bg-background",
+            "max-sm:w-[calc(100vw-3rem)] max-sm:min-w-0 max-sm:max-w-none",
+            activePanelId === "packages" &&
+              "max-[1400px]:w-[calc(100vw-3rem)] max-[1400px]:min-w-0 max-[1400px]:max-w-none",
+          )}
           data-slot="notebook-rail-panel"
         >
           <div className="border-b px-4 py-3">
