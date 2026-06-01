@@ -20,7 +20,7 @@ until a host-authenticated flow is active.
 
 - `ReadOnlyNotebook` and `ReadOnlyNotebookCell` come from `src/components/cell`
   for static report and embed use cases, not as a separate cloud notebook app.
-- `CellSkeleton` comes from the notebook app loading state.
+- `CellSkeleton` comes from the shared cell loading state.
 - The examples exercise `OutputArea` through static outputs, not a kernel,
   daemon, CRDT handle, live room, or generated WASM binding.
 - Markdown output uses the docs app isolated-frame adapter so the production
