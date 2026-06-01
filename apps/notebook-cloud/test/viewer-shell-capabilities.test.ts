@@ -91,6 +91,16 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(withRuntime.runtime.executionAvailable, true);
   assert.equal(withRuntime.canExecute, true);
+
+  // A live runtime is visible to viewers, but viewing is not execution authority.
+  const viewerWithRuntime = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "viewer"),
+    connectionScope: "viewer",
+    hasCodeCells: true,
+    runtimeAvailable: true,
+  });
+  assert.equal(viewerWithRuntime.runtime.executionAvailable, true);
+  assert.equal(viewerWithRuntime.canExecute, false);
 });
 
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {

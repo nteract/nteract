@@ -20,6 +20,17 @@ describe("desktopNotebookShellCapabilities", () => {
     });
     expect(notReady.runtime.executionAvailable).toBe(false);
     expect(notReady.canExecute).toBe(false);
+
+    // A ready runtime is available even when the document is not writable, but
+    // execution still requires write authority.
+    const readyReadOnly = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: false,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+    });
+    expect(readyReadOnly.runtime.executionAvailable).toBe(true);
+    expect(readyReadOnly.canExecute).toBe(false);
   });
 
   it("maps local notebooks to owner-level writable shell access", () => {
