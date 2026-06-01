@@ -37,6 +37,7 @@ import {
   NotebookPackageSummaryPanel,
   NotebookToolbarIdentity,
   createNotebookEnvironmentSurface,
+  notebookInteractionPresenceLabel,
   notebookActorIdentityFromAccess,
   type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
@@ -1287,7 +1288,10 @@ function NotebookViewer({
       onAddCell={handleCloudAddCell}
       onTogglePackages={handleTogglePackagesRail}
       leadingControls={
-        <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
+        <CloudPresenceStatus
+          presence={presence}
+          interaction={shellCapabilities.interaction ?? null}
+        />
       }
       trailingControls={
         <>
@@ -2087,18 +2091,13 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
 
 function CloudPresenceStatus({
   presence,
-  connectionScope,
+  interaction,
 }: {
   presence: CloudViewerPresenceState;
-  connectionScope: string | null;
+  interaction: NotebookInteractionModeProjection | null;
 }) {
   const presenceDisplay = cloudViewerPresenceDisplay(presence);
-  const scopeLabel =
-    connectionScope === "editor" || connectionScope === "owner"
-      ? "editing is allowed"
-      : connectionScope === "viewer"
-        ? "view only"
-        : null;
+  const scopeLabel = notebookInteractionPresenceLabel(interaction);
 
   return (
     <NotebookPresenceStatus
