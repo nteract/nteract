@@ -150,7 +150,7 @@ const capabilityRows: {
     key: "canManagePackages",
     label: "Manage packages",
     icon: Package,
-    component: "DependencyHeader, package rail controls",
+    component: "Environment dependency panels, package rail controls",
     meaning: "Package edits, sync actions, and rebuild decisions are available.",
   },
   {

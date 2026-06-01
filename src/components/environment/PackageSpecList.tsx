@@ -1,0 +1,159 @@
+import { Package, X } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+export type PackageSpecTone = "uv" | "conda" | "pixi" | "neutral";
+
+export interface PackageSpecListProps {
+  values: readonly string[];
+  tone?: PackageSpecTone;
+  emptyLabel: string;
+  loading?: boolean;
+  onRemove?: (value: string) => void;
+  className?: string;
+  framed?: boolean;
+}
+
+const toneClasses: Record<PackageSpecTone, string> = {
+  uv: "text-uv bg-uv/10 ring-uv/15",
+  conda: "text-emerald-700 bg-emerald-500/10 ring-emerald-500/15 dark:text-emerald-300",
+  pixi: "text-amber-700 bg-amber-500/10 ring-amber-500/15 dark:text-amber-300",
+  neutral: "text-muted-foreground bg-muted/70 ring-border/60",
+};
+
+const markerStartPattern =
+  /^(?:python_version|python_full_version|os_name|sys_platform|platform_release|platform_system|platform_version|platform_machine|platform_python_implementation|implementation_name|implementation_version|extra)\b/;
+
+export function PackageSpecList({
+  values,
+  tone = "neutral",
+  emptyLabel,
+  loading = false,
+  onRemove,
+  className,
+  framed = true,
+}: PackageSpecListProps) {
+  if (values.length === 0) {
+    return <div className={cn("text-xs text-muted-foreground", className)}>{emptyLabel}</div>;
+  }
+
+  return (
+    <div
+      className={cn(
+        framed
+          ? "w-full overflow-hidden rounded-md border bg-background shadow-sm shadow-black/[0.02]"
+          : "w-full overflow-hidden rounded-md bg-transparent",
+        className,
+      )}
+    >
+      {values.map((value, index) => {
+        const parsed = parsePackageSpec(value);
+        const hasEnvironmentMarker = findEnvironmentMarkerStart(value.trim()) > 0;
+        const showIcon = framed || Boolean(onRemove);
+        return (
+          <div
+            key={`${index}-${value}`}
+            title={value}
+            className={cn(
+              "grid items-center gap-x-2 gap-y-0.5 border-b px-2.5 py-1.5 text-xs last:border-b-0",
+              showIcon
+                ? "min-h-9 grid-cols-[auto_minmax(0,1fr)_auto_auto]"
+                : "min-h-8 grid-cols-[minmax(0,1fr)_auto_auto]",
+              !framed && "px-0",
+            )}
+          >
+            {showIcon && (
+              <span
+                className={cn(
+                  "flex size-5 shrink-0 items-center justify-center rounded-full ring-1",
+                  hasEnvironmentMarker && parsed.spec && "row-span-2 self-start",
+                  toneClasses[tone],
+                )}
+                aria-hidden="true"
+              >
+                <Package className="size-3" />
+              </span>
+            )}
+            <span className="min-w-0 flex-1 truncate font-mono text-foreground" title={parsed.name}>
+              {parsed.name}
+            </span>
+            {parsed.spec && hasEnvironmentMarker ? (
+              <span
+                className={cn(
+                  "min-w-0 whitespace-normal break-words text-[11px] leading-snug text-muted-foreground",
+                  showIcon ? "col-span-3 col-start-2" : "col-span-3 col-start-1",
+                )}
+                title={parsed.spec}
+              >
+                {parsed.spec}
+              </span>
+            ) : parsed.spec ? (
+              <span
+                className="max-w-[8rem] truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                title={parsed.spec}
+              >
+                {parsed.spec}
+              </span>
+            ) : null}
+            {onRemove ? (
+              <button
+                type="button"
+                onClick={() => onRemove(value)}
+                className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={loading}
+                title={`Remove ${value}`}
+                aria-label={`Remove ${value}`}
+              >
+                <X className="size-3" />
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function parsePackageSpec(value: string): { name: string; spec: string | null } {
+  const trimmed = value.trim();
+  const markerStart = findEnvironmentMarkerStart(trimmed);
+  if (markerStart > 0) {
+    const packagePart = trimmed.slice(0, markerStart).trim();
+    const markerPart = trimmed.slice(markerStart + 1).trim();
+    const parsedPackage = parsePackageSpec(packagePart);
+    return {
+      name: parsedPackage.name,
+      spec: [parsedPackage.spec, markerPart].filter(Boolean).join(" · ") || null,
+    };
+  }
+
+  const urlDependencyStart = trimmed.indexOf(" @ ");
+  if (urlDependencyStart > 0) {
+    return {
+      name: trimmed.slice(0, urlDependencyStart).trim(),
+      spec: trimmed.slice(urlDependencyStart).trim() || null,
+    };
+  }
+
+  const specStart = trimmed.search(/[<>=!~]/);
+  if (specStart <= 0) return { name: trimmed, spec: null };
+  return {
+    name: trimmed.slice(0, specStart).trim(),
+    spec: trimmed.slice(specStart).trim() || null,
+  };
+}
+
+function findEnvironmentMarkerStart(value: string): number {
+  let searchStart = 0;
+
+  while (searchStart < value.length) {
+    const markerStart = value.indexOf(";", searchStart);
+    if (markerStart === -1) return -1;
+
+    const markerCandidate = value.slice(markerStart + 1).trimStart();
+    if (markerStartPattern.test(markerCandidate)) return markerStart;
+
+    searchStart = markerStart + 1;
+  }
+
+  return -1;
+}

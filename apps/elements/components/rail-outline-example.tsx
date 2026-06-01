@@ -20,7 +20,7 @@ import {
 } from "@/components/notebook-shell";
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
-import { DependencyHeader } from "@/notebook-components/DependencyHeader";
+import { UvDependencyPanel } from "@/components/environment";
 import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
 import {
   getElementsNotebookScenario,
@@ -324,7 +324,7 @@ function PackagePanelContent({ scenario }: { scenario: ElementsNotebookScenario 
         facts and inert callbacks.
       </div>
       <div className="overflow-hidden rounded-md border border-fd-border bg-fd-card">
-        <DependencyHeader
+        <UvDependencyPanel
           dependencies={[...scenario.packageState.dependencies]}
           requiresPython={scenario.packageState.requiresPython}
           loading={false}
