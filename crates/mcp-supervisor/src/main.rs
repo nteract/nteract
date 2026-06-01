@@ -117,12 +117,7 @@ fn cargo_binary(project_root: &Path, name: &str) -> std::path::PathBuf {
     } else {
         "debug"
     };
-    let bin_name = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    project_root.join("target").join(profile).join(bin_name)
+    runt_workspace::cargo_binary_path_for_workspace(project_root, profile, name)
 }
 
 /// Check if the dev daemon for `workspace_path` is running and get its socket path.
@@ -1132,8 +1127,11 @@ impl Supervisor {
     ) -> Result<CallToolResult, McpError> {
         let state = self.state.read().await;
 
-        let binary_name = format!("notebook{}", std::env::consts::EXE_SUFFIX);
-        let binary = state.project_root.join("target/debug").join(&binary_name);
+        let binary = runt_workspace::cargo_binary_path_for_workspace(
+            &state.project_root,
+            "debug",
+            "notebook",
+        );
         if !binary.exists() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No notebook binary found. Run `cargo build -p notebook --no-default-features` first.",

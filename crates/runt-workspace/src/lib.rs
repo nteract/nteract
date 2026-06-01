@@ -6,11 +6,13 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
-#[cfg(any(target_os = "macos", test))]
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 pub mod recent;
 
@@ -204,6 +206,96 @@ pub fn daemon_unavailable_guidance() -> String {
 }
 
 // ============================================================================
+// Cargo Target Directory Resolution
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    target_directory: PathBuf,
+}
+
+static CARGO_TARGET_DIR_CACHE: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
+
+fn target_dir_from_env_value(workspace: &Path, value: Option<OsString>) -> Option<PathBuf> {
+    let value = value?;
+    if value.as_os_str().is_empty() {
+        return None;
+    }
+
+    let path = PathBuf::from(value);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    })
+}
+
+fn target_dir_from_env(workspace: &Path) -> Option<PathBuf> {
+    target_dir_from_env_value(workspace, std::env::var_os("CARGO_TARGET_DIR"))
+}
+
+fn metadata_target_dir(workspace: &Path) -> Option<PathBuf> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version=1", "--no-deps"])
+        .current_dir(workspace)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice::<CargoMetadata>(&output.stdout)
+        .ok()
+        .map(|metadata| metadata.target_directory)
+}
+
+/// Resolve Cargo's target directory for a workspace.
+///
+/// Honors `CARGO_TARGET_DIR` first, then asks `cargo metadata` for Cargo's
+/// configured `target_directory` so local `build.target-dir` settings are
+/// respected. Falls back to `<workspace>/target` if Cargo metadata is
+/// unavailable.
+pub fn cargo_target_dir_for_workspace(workspace: &Path) -> PathBuf {
+    if let Some(path) = target_dir_from_env(workspace) {
+        return path;
+    }
+
+    let key = workspace.to_path_buf();
+    let cache = CARGO_TARGET_DIR_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(path) = guard.get(&key) {
+            return path.clone();
+        }
+    }
+
+    let path = metadata_target_dir(workspace).unwrap_or_else(|| workspace.join("target"));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, path.clone());
+    }
+    path
+}
+
+/// Resolve a Cargo profile directory such as `debug` or `release`.
+pub fn cargo_profile_dir_for_workspace(workspace: &Path, profile: &str) -> PathBuf {
+    cargo_target_dir_for_workspace(workspace).join(profile)
+}
+
+/// Resolve a Cargo-built binary path for the workspace/profile.
+pub fn cargo_binary_path_for_workspace(
+    workspace: &Path,
+    profile: &str,
+    binary_name: &str,
+) -> PathBuf {
+    let binary_name = format!("{binary_name}{}", std::env::consts::EXE_SUFFIX);
+    cargo_profile_dir_for_workspace(workspace, profile).join(binary_name)
+}
+
+/// Marker written by `cargo xtask build` after producing a standalone debug
+/// notebook binary.
+pub fn notebook_bundled_marker_for_workspace(workspace: &Path) -> PathBuf {
+    cargo_profile_dir_for_workspace(workspace, "debug").join(".notebook-bundled")
+}
+
+// ============================================================================
 // Desktop App Launching
 // ============================================================================
 
@@ -355,9 +447,8 @@ pub fn open_notebook_app(path: Option<&Path>, extra_args: &[&str]) -> Result<(),
 
 fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
     let workspace = get_workspace_path().ok_or("Dev mode active but no workspace path found")?;
-    let binary_name = format!("notebook{}", std::env::consts::EXE_SUFFIX);
-    let binary = workspace.join("target/debug").join(&binary_name);
-    let marker = workspace.join("target/debug/.notebook-bundled");
+    let binary = cargo_binary_path_for_workspace(&workspace, "debug", "notebook");
+    let marker = notebook_bundled_marker_for_workspace(&workspace);
 
     if !binary.exists() {
         return Err(format!(
@@ -1223,6 +1314,37 @@ mod tests {
         assert_eq!(
             bundle_identifier_for(BuildChannel::Nightly),
             "org.nteract.desktop.nightly"
+        );
+    }
+
+    #[test]
+    fn test_target_dir_env_empty_is_ignored() {
+        let workspace = Path::new("/workspace");
+        assert_eq!(target_dir_from_env_value(workspace, None), None);
+        assert_eq!(
+            target_dir_from_env_value(workspace, Some(std::ffi::OsString::from(""))),
+            None
+        );
+    }
+
+    #[test]
+    fn test_target_dir_env_relative_is_workspace_relative() {
+        let workspace = Path::new("/workspace");
+        assert_eq!(
+            target_dir_from_env_value(workspace, Some(std::ffi::OsString::from("shared-target"))),
+            Some(PathBuf::from("/workspace/shared-target"))
+        );
+    }
+
+    #[test]
+    fn test_target_dir_env_absolute_is_preserved() {
+        let target = tempfile::tempdir().unwrap().path().join("target");
+        assert_eq!(
+            target_dir_from_env_value(
+                Path::new("/workspace"),
+                Some(target.clone().into_os_string())
+            ),
+            Some(target)
         );
     }
 
