@@ -5,4 +5,4 @@ export {
   PythonIcon,
   UvIcon,
   type EnvironmentIconProps,
-} from "@/components/environment";
+} from "./icons";

@@ -10,6 +10,8 @@
       "@/bindings": ["../../src/bindings/index.ts"],
       "@/bindings/*": ["../../src/bindings/*"],
       "@/components/editor/*": ["../../src/components/editor/*"],
+      "@/components/environment": ["../../src/components/environment/index.ts"],
+      "@/components/environment/*": ["../../src/components/environment/*"],
       "@/components/isolated": ["./components/isolated/index.tsx"],
       "@/components/isolated/iframe-libraries": [
         "./components/isolated/iframe-libraries.ts"

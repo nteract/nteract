@@ -12,7 +12,9 @@ primitive components.
 `NotebookIdentityBadge` and `NotebookIdentityGroup` wrap the shared Avatar
 primitive with notebook actor/access facts. `NotebookEnvironmentSummary` renders
 the shared typed environment projection for access, runtime, package details,
-sync, and trust state.
+sync, and trust state. Environment runtime and package-manager icons live in
+`src/components/environment` so notebook, settings, onboarding, and Elements use
+one canonical set.
 
 The fixtures come from `ElementsNotebookScenario`: desktop owner/read-only/
 remote-room, public viewer, cloud editor/owner, credential-attention,
@@ -27,6 +29,8 @@ feed the same production components from their host adapters.
 - Raw shadcn primitives stay implementation details.
 - Actor labels, access state, auth state, runtime, package, sync, and trust
   facts come from notebook shell projections.
+- Runtime and package-manager icons are shared environment primitives, not
+  app-local notebook assets.
 - Agent attribution is represented as notebook identity, not as a generic model
   selector.
 - Package info is notebook environment context, not an npm-style package profile.
