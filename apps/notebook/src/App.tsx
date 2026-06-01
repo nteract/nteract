@@ -105,7 +105,7 @@ export type MimeBundle = Record<string, unknown>;
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
 
-const RAIL_TAKEOVER_MEDIA_QUERY = "(width < 600px)";
+const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599px)";
 
 function focusRailCollapseButtonWhenStageIsHidden(railCollapsed: boolean): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
