@@ -264,7 +264,7 @@ export function DependencyHeader({
         {isUsingProjectEnv && (
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <div className="min-w-0 space-y-1 leading-5">
+            <div className="min-w-0 flex-1 space-y-1 leading-5">
               <div>
                 Using <code className="rounded bg-muted px-1">{pyprojectPath}</code>
               </div>

@@ -253,6 +253,9 @@ describe("CodeCell output focus", () => {
     expect(footer?.textContent).not.toContain("In [12]");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
+    expect(container.querySelector('[data-slot="code-cell-current-line-detail"]')).toHaveClass(
+      "max-w-0",
+    );
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
     expect(rule).toHaveClass("flex-1");
   });

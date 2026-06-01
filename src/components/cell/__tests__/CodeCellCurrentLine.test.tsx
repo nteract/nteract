@@ -264,6 +264,7 @@ describe("CodeCellCurrentLine", () => {
     expect(footer).not.toHaveTextContent("In [12]");
     expect(status).toHaveClass("max-w-64");
     expect(languageContext).toHaveClass("max-w-0");
+    expect(languageContext).toHaveClass("group-hover:max-w-20");
     expect(detail).toHaveClass("max-w-64");
   });
 
@@ -283,10 +284,24 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
     expect(languageContext).toHaveClass("max-w-0");
     expect(languageContext).toHaveClass("group-hover:max-w-20");
-    expect(detail).toHaveClass("max-w-64");
-    expect(detail).toHaveClass("opacity-100");
+    expect(detail).toHaveClass("max-w-0");
+    expect(detail).toHaveClass("opacity-0");
+    expect(detail).toHaveClass("group-hover:max-w-40");
     expect(rule).toHaveClass("flex-1");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("shows completed metadata immediately for the focused cell", () => {
+    const { container } = render(
+      <CodeCellCurrentLine languageLabel="Python" count={12} isFocused />,
+    );
+
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
+
+    expect(detail).toHaveClass("max-w-64");
+    expect(detail).toHaveClass("group-hover:max-w-64");
+    expect(detail).not.toHaveClass("group-hover:max-w-40");
+    expect(detail).toHaveClass("opacity-100");
   });
 
   it("can carry activity context after the run state", () => {

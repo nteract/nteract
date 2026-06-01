@@ -22,6 +22,46 @@ describe("PackageSpecList", () => {
     expect(screen.getAllByText("numpy")).toHaveLength(2);
   });
 
+  it("quiets read-only package rows without dropping tone", () => {
+    const { container } = render(
+      <PackageSpecList
+        values={["nteract", "gremlin ; sys_platform == 'darwin'"]}
+        tone="uv"
+        emptyLabel="No dependencies"
+        framed={false}
+      />,
+    );
+
+    expect(container.querySelector("svg")).not.toBeInTheDocument();
+    expect(container.querySelector(".bg-uv\\/60")).toBeInTheDocument();
+    expect(screen.getByText("nteract")).toBeVisible();
+    expect(screen.getByText("gremlin")).toHaveAttribute("title", "gremlin");
+    expect(screen.getByText("sys_platform == 'darwin'")).toBeVisible();
+    expect(screen.getByText("sys_platform == 'darwin'")).toHaveAttribute(
+      "title",
+      "sys_platform == 'darwin'",
+    );
+    expect(screen.getByText("sys_platform == 'darwin'")).not.toHaveClass("truncate");
+    expect(screen.getByText("sys_platform == 'darwin'")).toHaveClass("whitespace-normal");
+  });
+
+  it("keeps full package specs available when rail text truncates", () => {
+    render(
+      <PackageSpecList
+        values={["nteract-kernel-launcher>=1.2.3"]}
+        tone="uv"
+        emptyLabel="No dependencies"
+        framed={false}
+      />,
+    );
+
+    expect(screen.getByText("nteract-kernel-launcher")).toHaveAttribute(
+      "title",
+      "nteract-kernel-launcher",
+    );
+    expect(screen.getByText(">=1.2.3")).toHaveAttribute("title", ">=1.2.3");
+  });
+
   it("exposes row remove actions when mutation is available", () => {
     const onRemove = vi.fn();
 
@@ -38,7 +78,43 @@ describe("PackageSpecList", () => {
       name: "scikit-learn",
       spec: ">=1.5",
     });
+    expect(parsePackageSpec("gremlin ; sys_platform == 'darwin'")).toEqual({
+      name: "gremlin",
+      spec: "sys_platform == 'darwin'",
+    });
+    expect(parsePackageSpec("pyzmq>=26 ; python_version >= '3.11'")).toEqual({
+      name: "pyzmq",
+      spec: ">=26 · python_version >= '3.11'",
+    });
+    expect(
+      parsePackageSpec(
+        "example @ https://packages.example.test/example;download=1 ; python_version >= '3.11'",
+      ),
+    ).toEqual({
+      name: "example",
+      spec: "@ https://packages.example.test/example;download=1 · python_version >= '3.11'",
+    });
+    expect(parsePackageSpec("example @ https://packages.example.test/example;download=1")).toEqual({
+      name: "example",
+      spec: "@ https://packages.example.test/example;download=1",
+    });
     expect(parsePackageSpec("numpy")).toEqual({ name: "numpy", spec: null });
+  });
+
+  it("does not render URL semicolons as environment-marker rows", () => {
+    render(
+      <PackageSpecList
+        values={["example @ https://packages.example.test/example;download=1"]}
+        tone="uv"
+        emptyLabel="No dependencies"
+        framed={false}
+      />,
+    );
+
+    const urlSpec = screen.getByText("@ https://packages.example.test/example;download=1");
+    expect(urlSpec).toBeVisible();
+    expect(urlSpec).not.toHaveClass("whitespace-normal");
+    expect(urlSpec).toHaveClass("font-mono");
   });
 });
 

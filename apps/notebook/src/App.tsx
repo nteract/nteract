@@ -32,6 +32,7 @@ import { type BlobUploader, WidgetUpdateManager } from "@/components/widgets/wid
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { cn } from "@/lib/utils";
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   navigateNotebookOutlineItem,
@@ -103,6 +104,32 @@ export type MimeBundle = Record<string, unknown>;
  * Set by AppContent when daemon kernel is initialized.
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
+
+const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
+
+function focusRailCollapseButtonWhenStageIsHidden(
+  railCollapsed: boolean,
+  stageHadFocusBeforeTakeover: boolean,
+): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+
+  const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
+  if (!takeoverQuery?.matches || railCollapsed) return;
+
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLElement)) return;
+
+  const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+  const focusWasInStage = stage?.contains(activeElement);
+  const focusWasClearedFromHiddenStage =
+    stageHadFocusBeforeTakeover && activeElement === document.body;
+  if (!focusWasInStage && !focusWasClearedFromHiddenStage) return;
+
+  const collapseButton = document.querySelector<HTMLButtonElement>(
+    '[data-slot="notebook-rail-collapse-button"]',
+  );
+  requestAnimationFrame(() => collapseButton?.focus());
+}
 
 function isLaunchErrorHandledByRuntimeBanner(error: string): boolean {
   return (
@@ -384,6 +411,7 @@ function AppContent() {
 
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(true);
+  const stageHadFocusBeforeRailTakeoverRef = useRef(false);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
@@ -402,6 +430,44 @@ function AppContent() {
   // whenever the kernel transitions out of Error (so the next failure
   // shows the banner fresh) or a different details string arrives.
   const [dismissedLaunchError, setDismissedLaunchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+      stageHadFocusBeforeRailTakeoverRef.current = Boolean(
+        event.target instanceof Node && stage?.contains(event.target),
+      );
+    };
+
+    document.addEventListener("focusin", handleFocusIn);
+    return () => {
+      document.removeEventListener("focusin", handleFocusIn);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const takeoverQuery = window.matchMedia?.(RAIL_TAKEOVER_MEDIA_QUERY);
+    if (!takeoverQuery) return;
+
+    const handleTakeoverChange = () => {
+      focusRailCollapseButtonWhenStageIsHidden(
+        railCollapsed,
+        stageHadFocusBeforeRailTakeoverRef.current,
+      );
+    };
+
+    handleTakeoverChange();
+    takeoverQuery.addEventListener("change", handleTakeoverChange);
+    window.addEventListener("resize", handleTakeoverChange);
+    return () => {
+      takeoverQuery.removeEventListener("change", handleTakeoverChange);
+      window.removeEventListener("resize", handleTakeoverChange);
+    };
+  }, [railCollapsed]);
 
   // Daemon startup status (installing, starting, failed, etc.)
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
@@ -890,22 +956,21 @@ function AppContent() {
     if (envType === "conda") {
       if (environmentYmlInfo) {
         const count = environmentYmlPackageCount(environmentYmlDeps, environmentYmlInfo);
-        return `${environmentYmlInfo.relative_path} · ${packageCountLabel(count)}`;
+        return packageCountLabel(count);
       }
       return `conda · ${packageCountLabel(condaDependencies?.dependencies.length ?? 0)}`;
     }
     if (envType === "pixi") {
       if (pixiInfo) {
         const pixiCount = pixiPackageCount(pixiInfo);
-        return `${pixiInfo.relative_path} · ${packageCountLabel(pixiCount)}`;
+        return packageCountLabel(pixiCount);
       }
       const pixiCount = pixiInlinePackageCount(pixiDeps);
       return `pixi · ${packageCountLabel(pixiCount)}`;
     }
     if (envSource === "uv:pyproject" || pyprojectInfo?.has_dependencies) {
-      const source = pyprojectInfo?.relative_path ?? "pyproject.toml";
       const count = pyprojectPackageCount(pyprojectDeps, pyprojectInfo?.dependency_count);
-      return count === null ? source : `${source} · ${packageCountLabel(count)}`;
+      return count === null ? "Project env" : packageCountLabel(count);
     }
     return `uv · ${packageCountLabel(dependencies?.dependencies.length ?? 0)}`;
   }, [
@@ -919,7 +984,6 @@ function AppContent() {
     pyprojectDeps,
     pyprojectInfo?.dependency_count,
     pyprojectInfo?.has_dependencies,
-    pyprojectInfo?.relative_path,
     pixiDeps,
     pixiInfo,
     runtime,
@@ -2000,7 +2064,7 @@ function AppContent() {
         <NotebookDocumentShell
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
-          stageClassName="flex-row min-w-0 flex-1"
+          stageClassName={cn("flex-row min-w-0 flex-1", !railCollapsed && "max-[599.98px]:hidden")}
           rail={
             <NotebookDocumentRail
               viewModel={notebookViewModel}

@@ -300,6 +300,7 @@ export function CodeCellCurrentLine({
     isErrored,
   });
   const isIdleReadyDetail = boundaryState === "idle" && detailLabel === "ready";
+  const isCompletedRunDetail = boundaryState === "ran" && count !== null;
   const isQuietContextualState = boundaryState === "idle" || boundaryState === "ran";
   const accessibleDetailLabel = accessibleExecutionDetail({
     count,
@@ -389,6 +390,11 @@ export function CodeCellCurrentLine({
             isIdleReadyDetail
               ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-16 group-hover:opacity-100 group-focus-within:max-w-16 group-focus-within:opacity-100"
               : "max-w-64 opacity-100",
+            isCompletedRunDetail &&
+              "max-w-0 overflow-hidden opacity-0 group-hover:max-w-40 group-hover:opacity-100 group-focus-within:max-w-40 group-focus-within:opacity-100",
+            isCompletedRunDetail &&
+              isFocused &&
+              "max-w-64 opacity-100 group-hover:max-w-64 group-focus-within:max-w-64",
             visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
             isQueued && "font-semibold text-sky-700 dark:text-sky-300",
             isErrored && "font-semibold text-destructive/80",
