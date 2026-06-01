@@ -79,7 +79,7 @@ export function RailOutlineExample() {
 
   return (
     <NotebookDocumentShell
-      className="not-prose min-h-[560px] overflow-hidden rounded-lg border border-fd-border bg-fd-card text-fd-card-foreground shadow-sm md:min-h-[700px] max-md:[&_[data-slot=notebook-document-stage]]:hidden max-md:[&_[data-slot=notebook-rail-panel]]:min-w-0 max-md:[&_[data-slot=notebook-rail-panel]]:max-w-none max-md:[&_[data-slot=notebook-rail-panel]]:flex-1 max-md:[&_[data-testid=notebook-rail]]:w-full"
+      className="not-prose min-h-[560px] overflow-hidden rounded-lg border border-fd-border bg-fd-card text-fd-card-foreground shadow-sm md:min-h-[700px] max-[599.98px]:[&_[data-slot=notebook-document-stage]]:hidden max-[599.98px]:[&_[data-slot=notebook-rail-panel]]:min-w-0 max-[599.98px]:[&_[data-slot=notebook-rail-panel]]:max-w-none max-[599.98px]:[&_[data-slot=notebook-rail-panel]]:flex-1 max-[599.98px]:[&_[data-testid=notebook-rail]]:w-full"
       stageClassName="min-w-[320px] bg-fd-muted/20"
       toolbarClassName="border-b border-fd-border"
       toolbarLabel="Notebook fixture toolbar"
