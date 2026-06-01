@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { CondaDependencyHeader } from "../CondaDependencyHeader";
+import { DenoDependencyHeader } from "../DenoDependencyHeader";
 import { DependencyHeader } from "../DependencyHeader";
 import { PackageSpecList, parsePackageSpec } from "../PackageSpecList";
 import { PixiDependencyHeader } from "../PixiDependencyHeader";
@@ -249,6 +250,113 @@ describe("DependencyHeader rail package copy", () => {
     expect(screen.getByText("Using")).toBeVisible();
     expect(screen.getAllByText("pyproject.toml").length).toBeGreaterThan(0);
     expect(screen.getByText("Re-initialize after dependency changes.")).toBeVisible();
+  });
+
+  it("keeps uv package details visible while read-only", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={["pandas>=2"]}
+        requiresPython=">=3.12"
+        loading={false}
+        readOnly
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+        syncState={{ status: "dirty", added: ["pandas"], removed: [] }}
+        onSyncNow={async () => true}
+        pyprojectInfo={{
+          path: "/work/pyproject.toml",
+          relative_path: "pyproject.toml",
+          has_dependencies: true,
+          has_dev_dependencies: false,
+          dependency_count: 1,
+          project_name: "analysis",
+          requires_python: ">=3.12",
+          has_venv: false,
+        }}
+        onImportFromPyproject={async () => undefined}
+        onUseProjectEnv={async () => undefined}
+      />,
+    );
+
+    expect(screen.getByText("pandas")).toBeVisible();
+    expect(screen.getByText(">=2")).toBeVisible();
+    expect(screen.getByText("Python:")).toBeVisible();
+    expect(screen.queryByTestId("uv-python-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("deps-add-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("deps-restart-button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /remove pandas/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /use project env/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /copy to notebook/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("read-only package rails", () => {
+  it("keeps conda package details visible without mutation controls", () => {
+    render(
+      <CondaDependencyHeader
+        variant="rail"
+        dependencies={["scipy"]}
+        channels={["conda-forge"]}
+        python="3.12"
+        loading={false}
+        readOnly
+        envSource="conda:inline"
+        syncState={{ status: "dirty", added: ["scipy"], removed: [] }}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetChannels={async () => undefined}
+        onSetPython={async () => undefined}
+        onSyncNow={async () => true}
+      />,
+    );
+
+    expect(screen.getByText("scipy")).toBeVisible();
+    expect(screen.getByText("conda-forge")).toBeVisible();
+    expect(screen.getByText("Python:")).toBeVisible();
+    expect(screen.queryByTestId("conda-deps-add-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("deps-restart-button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /remove scipy/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /remove conda-forge/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^channel$/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps Deno package guidance visible but makes settings read-only", () => {
+    const onSetFlexibleNpmImports = vi.fn();
+    render(
+      <DenoDependencyHeader
+        variant="rail"
+        denoConfigInfo={null}
+        flexibleNpmImports
+        onSetFlexibleNpmImports={onSetFlexibleNpmImports}
+        readOnly
+        syncState={{ status: "dirty" }}
+        syncing={false}
+        onSyncNow={async () => true}
+      />,
+    );
+
+    expect(screen.getByText("Import modules directly in your code:")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /auto-install npm packages/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /restart/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps inline Pixi details visible while read-only", () => {
+    render(
+      <PixiDependencyHeader
+        variant="rail"
+        envSource="pixi:inline"
+        pixiInfo={null}
+        readOnly
+        syncState={{ status: "dirty", added: ["numpy"], removed: [] }}
+        onSyncNow={async () => true}
+      />,
+    );
+
+    expect(screen.getByText("No Pixi dependencies yet.")).toBeVisible();
+    expect(screen.queryByPlaceholderText("Add conda package...")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /restart/i })).not.toBeInTheDocument();
   });
 });
 

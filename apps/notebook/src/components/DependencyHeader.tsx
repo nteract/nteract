@@ -11,6 +11,7 @@ interface DependencyHeaderProps {
   requiresPython: string | null;
   loading: boolean;
   variant?: DependencyPanelVariant;
+  readOnly?: boolean;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
   onSetRequiresPython: (version: string | null) => Promise<void>;
@@ -35,6 +36,7 @@ export function DependencyHeader({
   requiresPython,
   loading,
   variant = "header",
+  readOnly = false,
   onAdd,
   onRemove,
   onSetRequiresPython,
@@ -64,11 +66,11 @@ export function DependencyHeader({
   }, [requiresPython]);
 
   const handleAdd = useCallback(async () => {
-    if (newDep.trim()) {
+    if (!readOnly && newDep.trim()) {
       await onAdd(newDep.trim());
       setNewDep("");
     }
-  }, [newDep, onAdd]);
+  }, [newDep, onAdd, readOnly]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -83,9 +85,10 @@ export function DependencyHeader({
   const commitPythonSpec = useCallback(async () => {
     const next = pythonSpec.trim();
     const current = requiresPython ?? "";
+    if (readOnly) return;
     if (next === current) return;
     await onSetRequiresPython(next || null);
-  }, [onSetRequiresPython, pythonSpec, requiresPython]);
+  }, [onSetRequiresPython, pythonSpec, readOnly, requiresPython]);
 
   const handlePythonKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -134,7 +137,7 @@ export function DependencyHeader({
         )}
 
         {/* Environment drift notice - kernel restart needed */}
-        {syncState?.status === "dirty" && onSyncNow && (
+        {!readOnly && syncState?.status === "dirty" && onSyncNow && (
           <div
             className={cn(
               "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
@@ -187,7 +190,7 @@ export function DependencyHeader({
                 data-slot="deps-pyproject-actions"
                 className={cn("flex items-center gap-2", isRail && "flex-wrap justify-start pl-5")}
               >
-                {onUseProjectEnv && !isUsingProjectEnv && (
+                {!readOnly && onUseProjectEnv && !isUsingProjectEnv && (
                   <button
                     type="button"
                     onClick={onUseProjectEnv}
@@ -203,7 +206,7 @@ export function DependencyHeader({
                     Active
                   </span>
                 )}
-                {onImportFromPyproject && (
+                {!readOnly && onImportFromPyproject && (
                   <button
                     type="button"
                     onClick={onImportFromPyproject}
@@ -285,6 +288,12 @@ export function DependencyHeader({
               Python: <span className="font-mono">{requiresPython}</span>
             </div>
           )
+        ) : readOnly ? (
+          requiresPython ? (
+            <div className="mb-2 text-xs text-muted-foreground">
+              Python: <span className="font-mono">{requiresPython}</span>
+            </div>
+          ) : null
         ) : (
           <label
             className={cn(
@@ -320,7 +329,7 @@ export function DependencyHeader({
               tone="uv"
               emptyLabel="No inline dependencies. Add packages to create an isolated environment."
               loading={loading}
-              onRemove={onRemove}
+              onRemove={readOnly ? undefined : onRemove}
               className="mb-3"
             />
           ) : dependencies.length > 0 ? (
@@ -331,15 +340,17 @@ export function DependencyHeader({
                   className="flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 text-xs"
                 >
                   <span className="min-w-0 truncate font-mono">{dep}</span>
-                  <button
-                    type="button"
-                    onClick={() => onRemove(dep)}
-                    className="text-muted-foreground hover:text-foreground transition-colors"
-                    disabled={loading}
-                    title={`Remove ${dep}`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={() => onRemove(dep)}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      disabled={loading}
+                      title={`Remove ${dep}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -350,7 +361,7 @@ export function DependencyHeader({
           ))}
 
         {/* Add dependency input (hidden when using project env) */}
-        {!isUsingProjectEnv && (
+        {!readOnly && !isUsingProjectEnv && (
           <div className="flex gap-2">
             <input
               type="text"
