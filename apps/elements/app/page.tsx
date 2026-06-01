@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   ArrowRight,
+  BookOpen,
   Boxes,
   Cloud,
   FileCode2,
@@ -29,6 +30,12 @@ const entries = [
     description: "Runtime-state matrix for the current notebook toolbar.",
     href: "/docs/notebook-toolbar-surfaces",
     icon: PanelTop,
+  },
+  {
+    title: "Cloud notebook shell",
+    description: "Presence, sync, mode, sharing, and auth composed around the shared shell.",
+    href: "/docs/cloud-notebook-shell",
+    icon: Cloud,
   },
   {
     title: "Package managers",
@@ -76,7 +83,7 @@ const entries = [
     title: "Read-only notebooks",
     description: "Hosted and cloud notebook cells rendered through shared components.",
     href: "/docs/read-only-notebook-surfaces",
-    icon: Cloud,
+    icon: BookOpen,
   },
   {
     title: "Runtime surfaces",
