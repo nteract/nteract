@@ -9,6 +9,7 @@ interface DenoDependencyHeaderProps {
   flexibleNpmImports: boolean;
   onSetFlexibleNpmImports: (enabled: boolean) => void;
   variant?: "header" | "rail";
+  readOnly?: boolean;
   // Sync state props - shows banner when config drifts from running kernel
   syncState?: { status: "synced" | "dirty" } | null;
   syncing?: boolean;
@@ -22,6 +23,7 @@ export function DenoDependencyHeader({
   flexibleNpmImports,
   onSetFlexibleNpmImports,
   variant = "header",
+  readOnly = false,
   syncState,
   syncing,
   onSyncNow,
@@ -65,7 +67,7 @@ export function DenoDependencyHeader({
         )}
 
         {/* Config drift notice - kernel restart needed */}
-        {syncState?.status === "dirty" && onSyncNow && (
+        {!readOnly && syncState?.status === "dirty" && onSyncNow && (
           <div
             className={cn(
               "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
@@ -139,12 +141,18 @@ export function DenoDependencyHeader({
           <Checkbox
             id="flexible-npm-imports"
             checked={flexibleNpmImports}
-            onCheckedChange={(checked) => onSetFlexibleNpmImports(checked === true)}
+            onCheckedChange={(checked) => {
+              if (!readOnly) onSetFlexibleNpmImports(checked === true);
+            }}
             className="mt-0.5"
+            disabled={readOnly}
           />
           <Label
             htmlFor="flexible-npm-imports"
-            className="flex-1 flex-col items-start gap-1 cursor-pointer"
+            className={cn(
+              "flex-1 flex-col items-start gap-1",
+              readOnly ? "cursor-default" : "cursor-pointer",
+            )}
           >
             <span className="text-xs font-medium text-foreground">Auto-install npm packages</span>
             <p className="text-xs text-muted-foreground font-normal">

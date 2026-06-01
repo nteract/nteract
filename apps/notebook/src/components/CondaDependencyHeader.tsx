@@ -17,6 +17,7 @@ interface CondaDependencyHeaderProps {
   loading: boolean;
   envSource?: string | null;
   variant?: "header" | "rail";
+  readOnly?: boolean;
   syncState: CondaSyncState | null;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
@@ -43,6 +44,7 @@ export function CondaDependencyHeader({
   loading,
   envSource,
   variant = "header",
+  readOnly = false,
   syncState,
   onAdd,
   onRemove,
@@ -68,11 +70,11 @@ export function CondaDependencyHeader({
   const environmentYmlPython = environmentYmlDeps?.python ?? environmentYmlInfo?.python ?? null;
 
   const handleAdd = useCallback(async () => {
-    if (newDep.trim()) {
+    if (!readOnly && newDep.trim()) {
       await onAdd(newDep.trim());
       setNewDep("");
     }
-  }, [newDep, onAdd]);
+  }, [newDep, onAdd, readOnly]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -85,7 +87,7 @@ export function CondaDependencyHeader({
   );
 
   const handleAddChannel = useCallback(async () => {
-    if (newChannel.trim()) {
+    if (!readOnly && newChannel.trim()) {
       const trimmed = newChannel.trim();
       let updated: string[];
       if (channels.length === 0 && trimmed !== "conda-forge") {
@@ -99,23 +101,25 @@ export function CondaDependencyHeader({
       setNewChannel("");
       setShowChannelInput(false);
     }
-  }, [newChannel, channels, onSetChannels, onResetProgress]);
+  }, [newChannel, channels, onSetChannels, onResetProgress, readOnly]);
 
   const handleRemoveChannel = useCallback(
     async (channel: string) => {
+      if (readOnly) return;
       const updated = channels.filter((c) => c !== channel);
       onResetProgress?.();
       await onSetChannels(updated);
     },
-    [channels, onSetChannels, onResetProgress],
+    [channels, onSetChannels, onResetProgress, readOnly],
   );
 
   const handlePythonChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (readOnly) return;
       const value = e.target.value.trim();
       await onSetPython(value || null);
     },
-    [onSetPython],
+    [onSetPython, readOnly],
   );
 
   // Default channels if none specified
@@ -188,35 +192,39 @@ export function CondaDependencyHeader({
                 <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] opacity-80 overflow-x-auto">
                   {envProgress.error}
                 </pre>
-                <div className="mt-2 text-[11px] text-red-600/80 dark:text-red-400/80">
-                  Fix channels or dependencies above, then retry.
-                </div>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  disabled={loading}
-                  onClick={() => {
-                    onResetProgress?.();
-                    (onRetryLaunch ?? onSyncNow)();
-                  }}
-                  className="flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Retry environment creation"
-                >
-                  <RefreshCw className="h-3 w-3" />
-                  Retry
-                </button>
-                {onResetProgress && (
-                  <button
-                    type="button"
-                    onClick={onResetProgress}
-                    className="text-red-500 hover:text-red-700 dark:hover:text-red-300"
-                    title="Dismiss"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                {!readOnly && (
+                  <div className="mt-2 text-[11px] text-red-600/80 dark:text-red-400/80">
+                    Fix channels or dependencies above, then retry.
+                  </div>
                 )}
               </div>
+              {!readOnly && (
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => {
+                      onResetProgress?.();
+                      (onRetryLaunch ?? onSyncNow)();
+                    }}
+                    className="flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Retry environment creation"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Retry
+                  </button>
+                  {onResetProgress && (
+                    <button
+                      type="button"
+                      onClick={onResetProgress}
+                      className="text-red-500 hover:text-red-700 dark:hover:text-red-300"
+                      title="Dismiss"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -300,7 +308,7 @@ export function CondaDependencyHeader({
         )}
 
         {/* Environment drift notice - kernel restart needed */}
-        {syncState?.status === "dirty" && (
+        {!readOnly && syncState?.status === "dirty" && (
           <div
             className={cn(
               "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
@@ -344,7 +352,7 @@ export function CondaDependencyHeader({
                     {isUsingDefault && (
                       <span className="text-[10px] text-muted-foreground ml-0.5">(default)</span>
                     )}
-                    {channels.length > 0 && (
+                    {!readOnly && channels.length > 0 && (
                       <button
                         type="button"
                         onClick={() => handleRemoveChannel(channel)}
@@ -357,7 +365,7 @@ export function CondaDependencyHeader({
                     )}
                   </div>
                 ))}
-                {showChannelInput ? (
+                {!readOnly && showChannelInput ? (
                   <div className="flex gap-1">
                     <input
                       type="text"
@@ -388,7 +396,7 @@ export function CondaDependencyHeader({
                       Add
                     </button>
                   </div>
-                ) : (
+                ) : !readOnly ? (
                   <button
                     type="button"
                     onClick={() => setShowChannelInput(true)}
@@ -398,32 +406,40 @@ export function CondaDependencyHeader({
                     <Plus className="h-3 w-3" />
                     channel
                   </button>
-                )}
+                ) : null}
               </div>
             </div>
 
             {/* Python version */}
-            <label
-              className={cn(
-                "mb-2 flex items-center gap-2",
-                isRail && "flex-col items-stretch gap-1.5",
-              )}
-            >
-              <span className="text-xs font-medium text-muted-foreground">Python</span>
-              <input
-                type="text"
-                value={python ?? ""}
-                onChange={handlePythonChange}
-                placeholder="3.11"
+            {readOnly ? (
+              python ? (
+                <div className="mb-2 text-xs text-muted-foreground">
+                  Python: <span className="font-mono">{python}</span>
+                </div>
+              ) : null
+            ) : (
+              <label
                 className={cn(
-                  "rounded border bg-background px-1.5 py-0.5 font-mono text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary",
-                  isRail ? "w-full" : "w-20",
+                  "mb-2 flex items-center gap-2",
+                  isRail && "flex-col items-stretch gap-1.5",
                 )}
-                disabled={loading}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </label>
+              >
+                <span className="text-xs font-medium text-muted-foreground">Python</span>
+                <input
+                  type="text"
+                  value={python ?? ""}
+                  onChange={handlePythonChange}
+                  placeholder="3.11"
+                  className={cn(
+                    "rounded border bg-background px-1.5 py-0.5 font-mono text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary",
+                    isRail ? "w-full" : "w-20",
+                  )}
+                  disabled={loading}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+            )}
 
             {/* Dependencies list */}
             {isRail ? (
@@ -432,7 +448,7 @@ export function CondaDependencyHeader({
                 tone="conda"
                 emptyLabel="No dependencies. Add conda packages to create an isolated environment."
                 loading={loading}
-                onRemove={onRemove}
+                onRemove={readOnly ? undefined : onRemove}
                 className="mb-3"
               />
             ) : dependencies.length > 0 ? (
@@ -443,15 +459,17 @@ export function CondaDependencyHeader({
                     className="flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 text-xs"
                   >
                     <span className="min-w-0 truncate font-mono">{dep}</span>
-                    <button
-                      type="button"
-                      onClick={() => onRemove(dep)}
-                      className="text-muted-foreground hover:text-foreground transition-colors"
-                      disabled={loading}
-                      title={`Remove ${dep}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => onRemove(dep)}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        disabled={loading}
+                        title={`Remove ${dep}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -462,30 +480,32 @@ export function CondaDependencyHeader({
             )}
 
             {/* Add dependency input */}
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newDep}
-                onChange={(e) => setNewDep(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="package or package>=version"
-                data-testid="conda-deps-add-input"
-                className="flex-1 rounded border bg-background px-2 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                disabled={loading}
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <button
-                type="button"
-                onClick={handleAdd}
-                disabled={loading || !newDep.trim()}
-                data-testid="conda-deps-add-button"
-                className="flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-xs text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
-              >
-                <Plus className="h-3 w-3" />
-                Add
-              </button>
-            </div>
+            {!readOnly && (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newDep}
+                  onChange={(e) => setNewDep(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="package or package>=version"
+                  data-testid="conda-deps-add-input"
+                  className="flex-1 rounded border bg-background px-2 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  disabled={loading}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  disabled={loading || !newDep.trim()}
+                  data-testid="conda-deps-add-button"
+                  className="flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-xs text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>

@@ -11,6 +11,7 @@ interface PixiDependencyHeaderProps {
   pixiInfo: PixiInfo | null;
   envSource: string | null;
   variant?: "header" | "rail";
+  readOnly?: boolean;
   syncState?: EnvSyncState | null;
   onSyncNow?: () => Promise<boolean>;
   justSynced?: boolean;
@@ -20,6 +21,7 @@ export function PixiDependencyHeader({
   pixiInfo,
   envSource,
   variant = "header",
+  readOnly = false,
   syncState,
   onSyncNow,
   justSynced,
@@ -34,7 +36,7 @@ export function PixiDependencyHeader({
     : [];
 
   const handleAdd = useCallback(async () => {
-    if (newDep.trim()) {
+    if (!readOnly && newDep.trim()) {
       setLoading(true);
       try {
         await addPixiDependency(newDep.trim());
@@ -43,7 +45,7 @@ export function PixiDependencyHeader({
       }
       setNewDep("");
     }
-  }, [newDep]);
+  }, [newDep, readOnly]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -55,14 +57,18 @@ export function PixiDependencyHeader({
     [handleAdd],
   );
 
-  const handleRemove = useCallback(async (pkg: string) => {
-    setLoading(true);
-    try {
-      await removePixiDependency(pkg);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const handleRemove = useCallback(
+    async (pkg: string) => {
+      if (readOnly) return;
+      setLoading(true);
+      try {
+        await removePixiDependency(pkg);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [readOnly],
+  );
 
   return (
     <div
@@ -103,7 +109,7 @@ export function PixiDependencyHeader({
         )}
 
         {/* Sync state drift banner */}
-        {syncState?.status === "dirty" && onSyncNow && (
+        {!readOnly && syncState?.status === "dirty" && onSyncNow && (
           <div
             className={cn(
               "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
@@ -217,7 +223,7 @@ export function PixiDependencyHeader({
                 tone="pixi"
                 emptyLabel="No Pixi dependencies yet."
                 loading={loading}
-                onRemove={handleRemove}
+                onRemove={readOnly ? undefined : handleRemove}
                 className="mb-2"
               />
             ) : pixiDeps && pixiDeps.dependencies.length > 0 ? (
@@ -228,39 +234,43 @@ export function PixiDependencyHeader({
                     className="flex max-w-full items-center gap-1 rounded border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs dark:border-amber-800 dark:bg-amber-900/30"
                   >
                     <span className="min-w-0 truncate">{dep}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemove(dep)}
-                      disabled={loading}
-                      className="text-amber-500/50 hover:text-amber-700 dark:hover:text-amber-300 transition-colors disabled:opacity-50"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemove(dep)}
+                        disabled={loading}
+                        className="text-amber-500/50 hover:text-amber-700 dark:hover:text-amber-300 transition-colors disabled:opacity-50"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
             ) : null}
 
             {/* Add dep input */}
-            <div className="mb-3 flex gap-1.5">
-              <input
-                type="text"
-                value={newDep}
-                onChange={(e) => setNewDep(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Add conda package..."
-                className="flex-1 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
-              />
-              <button
-                type="button"
-                onClick={handleAdd}
-                disabled={loading || !newDep.trim()}
-                className="flex items-center gap-1 rounded bg-amber-500/20 px-2 py-1 text-xs text-amber-600 dark:text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-50"
-              >
-                <Plus className="h-3 w-3" />
-                Add
-              </button>
-            </div>
+            {!readOnly && (
+              <div className="mb-3 flex gap-1.5">
+                <input
+                  type="text"
+                  value={newDep}
+                  onChange={(e) => setNewDep(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Add conda package..."
+                  className="flex-1 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  disabled={loading || !newDep.trim()}
+                  className="flex items-center gap-1 rounded bg-amber-500/20 px-2 py-1 text-xs text-amber-600 dark:text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-50"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add
+                </button>
+              </div>
+            )}
           </>
         )}
 
