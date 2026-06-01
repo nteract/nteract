@@ -60,7 +60,7 @@ export function NotebookEnvironmentSummary({
             <h3 className="truncate text-sm font-semibold">Notebook environment</h3>
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {surface.access.label} access through {surface.access.sourceLabel}
+            {surface.access.label} access from {surface.access.sourceLabel}.
           </p>
         </div>
         <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">
@@ -105,7 +105,7 @@ export function NotebookEnvironmentSummary({
       {showPackageDetails ? (
         <div className="border-t border-border px-4 py-3">
           {packages.sections.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No package manager metadata available.</p>
+            <p className="text-xs text-muted-foreground">No package manager details yet.</p>
           ) : (
             <div className="space-y-3">
               {packages.sections.map((section) => (
@@ -163,7 +163,7 @@ function SummaryFact({
         muted && "bg-muted/40 text-muted-foreground",
       )}
     >
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase text-muted-foreground">
+      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
         {muted ? <Lock className="size-3.5" aria-hidden="true" /> : icon}
         <span>{label}</span>
       </div>
