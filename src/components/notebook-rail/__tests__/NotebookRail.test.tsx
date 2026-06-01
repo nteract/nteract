@@ -161,8 +161,8 @@ describe("NotebookRail", () => {
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(20rem,26vw,24rem)]",
-      "max-[600px]:w-[calc(100vw-3rem)]",
+      "w-[clamp(18rem,24vw,22rem)]",
+      "max-[44rem]:w-[calc(100vw-3rem)]",
     );
   });
 
