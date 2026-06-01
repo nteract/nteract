@@ -47,11 +47,13 @@ describe("NotebookDocumentHeader", () => {
         capabilities={capabilities()}
         presence={<span>1 viewing</span>}
         utilityControls={<button type="button">Theme</button>}
+        identityControls={<button type="button">Kyle</button>}
       />,
     );
 
     expect(screen.getByText("1 viewing")).toBeVisible();
     expect(screen.getByRole("button", { name: "Theme" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Kyle" })).toBeVisible();
   });
 
   it("gates document controls through shared shell capabilities", () => {
@@ -63,6 +65,7 @@ describe("NotebookDocumentHeader", () => {
         sharingControls={<button type="button">Share</button>}
         editControls={<button type="button">Edit</button>}
         authControls={<button type="button">Sign in</button>}
+        identityControls={<button type="button">Anonymous viewer</button>}
       />,
     );
 
@@ -71,6 +74,7 @@ describe("NotebookDocumentHeader", () => {
     expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.getByRole("button", { name: "Sign in" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Anonymous viewer" })).toBeVisible();
   });
 
   it("exposes all controls when the host grants those capabilities", () => {
@@ -101,6 +105,7 @@ describe("NotebookDocumentHeader", () => {
         sharingControls={<button type="button">Share</button>}
         editControls={<button type="button">Edit</button>}
         authControls={<button type="button">Identity</button>}
+        identityControls={<button type="button">Alice</button>}
       />,
     );
 
@@ -109,6 +114,7 @@ describe("NotebookDocumentHeader", () => {
     expect(screen.getByRole("button", { name: "Share" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Edit" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Identity" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Alice" })).toBeVisible();
     expect(container.querySelector("[data-slot='notebook-document-header']")).toHaveAttribute(
       "data-can-request-edit",
       "true",

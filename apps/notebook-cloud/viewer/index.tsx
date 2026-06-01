@@ -26,17 +26,21 @@ import { IsolatedRendererProvider } from "@/components/isolated/isolated-rendere
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
+  NotebookCommandToolbar,
   NotebookDocumentHeader,
   NotebookEditModeButton,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
-  NotebookEnvironmentSummary,
   NotebookIdentityBadge,
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
-  createNotebookEnvironmentSurface,
+  NotebookToolbarIdentity,
+  NotebookToolbarFrame,
   notebookActorIdentityFromAccess,
+  type NotebookEnvironmentManager,
+  type NotebookInteractionModeProjection,
+  type NotebookPackageSection,
   type NotebookShellCapabilities,
 } from "@/components/notebook-shell";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -62,6 +66,7 @@ import {
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
+import { createCloudNotebookCellId } from "./cloud-cell-id";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
@@ -76,6 +81,7 @@ import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { setLoggerHost } from "../../notebook/src/lib/logger";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 import { useNotebookViewModel } from "../../notebook/src/lib/notebook-view-model";
+import type { NotebookCell } from "../../notebook/src/types";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudViewStoreProjection,
@@ -620,6 +626,7 @@ function NotebookViewer({
   const cellsByIdRef = useRef(new Map<string, ResolvedCell>());
   const notebookLanguageRef = useRef("python");
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
+  const materializeLiveRuntimeRef = useRef<((runtime: CloudSyncRuntime) => void) | null>(null);
   const liveMaterializedRef = useRef(false);
   const snapshotResolvedRef = useRef(false);
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
@@ -965,6 +972,7 @@ function NotebookViewer({
         console.warn("[notebook-cloud] live room materialization failed", error);
       });
     };
+    materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
     setPresence(initialCloudViewerPresence());
     setConnectionError(null);
@@ -1052,6 +1060,7 @@ function NotebookViewer({
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
       }
+      materializeLiveRuntimeRef.current = null;
       disposeCurrentRuntime();
       resetCloudViewStoreProjection();
       livePresenceStore = null;
@@ -1090,6 +1099,14 @@ function NotebookViewer({
     setSelectedOutlineItemId(item.id);
     return navigateNotebookOutlineItem(item, href);
   }, []);
+  const handleTogglePackagesRail = useCallback(() => {
+    if (activeRailPanel === "packages" && !railCollapsed) {
+      setActiveRailPanel("outline");
+      return;
+    }
+    setRailCollapsed(false);
+    setActiveRailPanel("packages");
+  }, [activeRailPanel, railCollapsed]);
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
@@ -1102,6 +1119,72 @@ function NotebookViewer({
   );
   const canEditMarkdown = shellCapabilities.canEditMarkdown;
   const notebookCellIds = notebookViewModel.cellIds;
+  const packageEnvironmentManager = cloudNotebookEnvironmentManager(
+    notebookViewModel.packages.sections,
+  );
+  const requestCloudMaterialization = useCallback((liveRuntime: CloudSyncRuntime) => {
+    materializeLiveRuntimeRef.current?.(liveRuntime);
+  }, []);
+  const handleCloudAddCell = useCallback(
+    (type: "code" | "markdown", afterCellId?: string | null): NotebookCell | null => {
+      if (!shellCapabilities.canEditStructure) return null;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime) return null;
+      const cellId = createCloudNotebookCellId();
+      try {
+        liveRuntime.handle.add_cell_after(cellId, type, afterCellId ?? null);
+        liveRuntime.engine.scheduleFlush();
+        requestCloudMaterialization(liveRuntime);
+      } catch (error) {
+        console.warn("[notebook-cloud] add cell failed", error);
+        return null;
+      }
+      const fallback: NotebookCell =
+        type === "markdown"
+          ? { cell_type: "markdown", id: cellId, source: "", metadata: {} }
+          : {
+              cell_type: "code",
+              id: cellId,
+              source: "",
+              execution_count: null,
+              outputs: [],
+              metadata: {},
+            };
+      return fallback;
+    },
+    [requestCloudMaterialization, shellCapabilities.canEditStructure],
+  );
+  const handleCloudDeleteCell = useCallback(
+    (cellId: string) => {
+      if (!shellCapabilities.canEditStructure) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime || liveRuntime.handle.cell_count() <= 1) return;
+      try {
+        if (liveRuntime.handle.delete_cell(cellId)) {
+          liveRuntime.engine.scheduleFlush();
+          requestCloudMaterialization(liveRuntime);
+        }
+      } catch (error) {
+        console.warn("[notebook-cloud] delete cell failed", error);
+      }
+    },
+    [requestCloudMaterialization, shellCapabilities.canEditStructure],
+  );
+  const handleCloudMoveCell = useCallback(
+    (cellId: string, afterCellId?: string | null) => {
+      if (!shellCapabilities.canEditStructure) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime) return;
+      try {
+        liveRuntime.handle.move_cell(cellId, afterCellId ?? null);
+        liveRuntime.engine.scheduleFlush();
+        requestCloudMaterialization(liveRuntime);
+      } catch (error) {
+        console.warn("[notebook-cloud] move cell failed", error);
+      }
+    },
+    [requestCloudMaterialization, shellCapabilities.canEditStructure],
+  );
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
   const cloudPresenceContext = useMemo<PresenceContextValue | null>(
     () =>
@@ -1146,20 +1229,6 @@ function NotebookViewer({
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
   }, [refreshAuthState]);
-  const environmentSurface = useMemo(
-    () =>
-      createNotebookEnvironmentSurface({
-        capabilities: shellCapabilities,
-        packages: notebookViewModel.packages,
-        runtimeLabel: connectionScope === "runtime_peer" ? "Runtime peer connected" : null,
-        syncLabel: connectionScope ? "Live sync connected" : "Live sync unavailable",
-        syncStatus: connectionScope ? "synced" : "unavailable",
-        trustLabel: "Trust state not required",
-        trustStatus: "not_required",
-      }),
-    [connectionScope, notebookViewModel.packages, shellCapabilities],
-  );
-
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
@@ -1170,15 +1239,6 @@ function NotebookViewer({
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
           readOnly={!shellCapabilities.canManagePackages}
-          header={
-            <NotebookEnvironmentSummary
-              capabilities={shellCapabilities}
-              environment={environmentSurface}
-              packages={notebookViewModel.packages}
-              showPackageDetails={false}
-              className="shadow-none"
-            />
-          }
         />
       }
       onActivePanelChange={setActiveRailPanel}
@@ -1190,41 +1250,58 @@ function NotebookViewer({
   );
 
   const toolbar = (
-    <NotebookDocumentHeader
-      capabilities={shellCapabilities}
-      presence={<CloudPresenceStatus presence={presence} connectionScope={connectionScope} />}
-      utilityControls={null}
-      sharingControls={
-        <CloudSharingControls
-          aclEndpoint={config.aclEndpoint}
-          invitesEndpoint={config.invitesEndpoint}
-          authState={authState}
-        />
-      }
-      authControls={
-        <>
-          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-          <CloudAuthControls
-            authConfig={authConfig}
+    <NotebookToolbarFrame className="z-20">
+      <NotebookDocumentHeader
+        capabilities={shellCapabilities}
+        className="cloud-room-toolbar"
+        presence={<CloudPresenceStatus presence={presence} />}
+        authControls={<CloudNotebookSignInButton authConfig={authConfig} authState={authState} />}
+        sharingControls={
+          <CloudSharingControls
+            aclEndpoint={config.aclEndpoint}
+            invitesEndpoint={config.invitesEndpoint}
             authState={authState}
-            capabilities={shellCapabilities}
-            connectionActorLabel={connectionActorLabel}
-            connectionError={connectionError}
-            connectionScope={connectionScope}
+          />
+        }
+        editControls={
+          <CloudNotebookEditModeButton
+            authState={authState}
+            interaction={shellCapabilities.interaction ?? null}
             onAuthStateChange={refreshAuthState}
           />
-        </>
-      }
-      editControls={
-        <CloudNotebookEditModeButton
-          authState={authState}
-          connectionScope={connectionScope}
-          onAuthStateChange={refreshAuthState}
-        />
-      }
-      codeControls={null}
-    />
+        }
+        identityControls={
+          <NotebookToolbarIdentity capabilities={shellCapabilities} variant="inline" />
+        }
+      />
+      <NotebookCommandToolbar
+        capabilities={shellCapabilities}
+        runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+        environmentManager={packageEnvironmentManager}
+        environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
+        addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
+        onAddCell={handleCloudAddCell}
+        onTogglePackages={handleTogglePackagesRail}
+      />
+    </NotebookToolbarFrame>
   );
+  const authDiagnostics = shouldShowPrototypeDevControls({
+    oidcConfigured: Boolean(authConfig.oidc),
+    hostname: window.location.hostname,
+    search: window.location.search,
+  }) ? (
+    <div className="cloud-state cloud-auth-diagnostics-state" data-kind="loading">
+      <CloudAuthControls
+        authConfig={authConfig}
+        authState={authState}
+        capabilities={shellCapabilities}
+        connectionActorLabel={connectionActorLabel}
+        connectionError={connectionError}
+        connectionScope={connectionScope}
+        onAuthStateChange={refreshAuthState}
+      />
+    </div>
+  ) : null;
 
   return (
     <NotebookDocumentShell
@@ -1232,7 +1309,6 @@ function NotebookViewer({
       className="cloud-notebook-shell"
       stageClassName="cloud-notebook-stage"
       toolbar={toolbar}
-      toolbarClassName="cloud-report-toolbar"
       toolbarLabel="Notebook view status and controls"
       capabilities={shellCapabilities}
       rail={rail}
@@ -1275,6 +1351,8 @@ function NotebookViewer({
         </div>
       ) : null}
 
+      {authDiagnostics}
+
       {status.kind === "ready" ? null : (
         <div className="cloud-state" data-kind={status.kind}>
           {status.message}
@@ -1297,9 +1375,9 @@ function NotebookViewer({
             onFocusCell={setFocusedCellId}
             onExecuteCell={() => {}}
             onInterruptKernel={() => {}}
-            onDeleteCell={() => {}}
-            onAddCell={() => null}
-            onMoveCell={() => {}}
+            onDeleteCell={handleCloudDeleteCell}
+            onAddCell={handleCloudAddCell}
+            onMoveCell={handleCloudMoveCell}
             markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
             outputHostContext={outputHostContext}
           />
@@ -1307,6 +1385,17 @@ function NotebookViewer({
       </PresenceValueProvider>
     </NotebookDocumentShell>
   );
+}
+
+function cloudNotebookEnvironmentManager(
+  sections: readonly NotebookPackageSection[],
+): NotebookEnvironmentManager | null {
+  for (const section of sections) {
+    if (section.manager === "uv" || section.manager === "conda" || section.manager === "pixi") {
+      return section.manager;
+    }
+  }
+  return null;
 }
 
 function CloudSharingControls({
@@ -1645,26 +1734,25 @@ function CloudSharingControls({
 
 function CloudNotebookEditModeButton({
   authState,
-  connectionScope,
+  interaction,
   onAuthStateChange,
 }: {
   authState: CloudPrototypeAuthState;
-  connectionScope: string | null;
+  interaction: NotebookInteractionModeProjection | null;
   onAuthStateChange: () => void;
 }) {
-  if (authState.mode !== "oidc") {
+  if (
+    authState.mode !== "oidc" ||
+    (!interaction?.canRequestEdit && interaction?.activeMode !== "edit")
+  ) {
     return null;
   }
 
-  const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
-  const requestingEdit = requestedScope === "editor" || requestedScope === "owner";
-  const editing = connectionScope === "editor" || connectionScope === "owner";
-  const state = editing ? "editing" : requestingEdit ? "requested" : "viewing";
-
   return (
     <NotebookEditModeButton
-      mode={requestingEdit ? "edit" : "view"}
-      state={state}
+      mode={interaction.selectedMode}
+      state={interaction.state}
+      variant="segmented"
       onModeChange={(mode) => {
         storeCloudRequestedScope(
           window.localStorage,
@@ -1942,27 +2030,15 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.handle.free();
 }
 
-function CloudPresenceStatus({
-  presence,
-  connectionScope,
-}: {
-  presence: CloudViewerPresenceState;
-  connectionScope: string | null;
-}) {
+function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState }) {
   const presenceDisplay = cloudViewerPresenceDisplay(presence);
-  const scopeLabel =
-    connectionScope === "editor" || connectionScope === "owner"
-      ? "editing"
-      : connectionScope === "viewer"
-        ? "viewing"
-        : null;
 
   return (
     <NotebookPresenceStatus
       connected={presenceDisplay.connected}
       label={presenceDisplay.label}
-      modeLabel={scopeLabel}
       title={presenceDisplay.title}
+      variant="inline"
     />
   );
 }

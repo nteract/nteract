@@ -27,6 +27,7 @@ export interface NotebookIdentityBadgeProps {
   actor: NotebookActorIdentity;
   size?: "sm" | "default";
   showDetail?: boolean;
+  variant?: "badge" | "inline";
   className?: string;
 }
 
@@ -41,32 +42,46 @@ export function NotebookIdentityBadge({
   actor,
   size = "default",
   showDetail = true,
+  variant = "badge",
   className,
 }: NotebookIdentityBadgeProps) {
   const Icon = actorIcon(actor.kind);
   const avatarSize = size === "sm" ? "sm" : "default";
+  const inline = variant === "inline";
+  const label = inline ? compactPublicIdentityLabel(actor.label) : actor.label;
 
   return (
     <div
       className={cn(
-        "inline-flex min-w-0 items-center gap-2 rounded-full border border-border bg-background px-2 py-1 text-foreground shadow-sm",
-        size === "sm" && "gap-1.5 px-1.5 py-0.5",
+        "inline-flex min-w-0 items-center text-foreground",
+        inline
+          ? "gap-2"
+          : "gap-2 rounded-full border border-border bg-background px-2 py-1 shadow-sm",
+        size === "sm" && !inline && "gap-1.5 px-1.5 py-0.5",
         className,
       )}
       data-slot="notebook-identity-badge"
       data-actor-kind={actor.kind}
       data-actor-status={actor.status ?? "active"}
+      data-variant={variant}
       title={actor.detail ? `${actor.label} - ${actor.detail}` : actor.label}
     >
-      <NotebookActorAvatar actor={actor} icon={Icon} size={avatarSize} />
+      {inline ? (
+        <span
+          className={cn("size-2 shrink-0 rounded-full", statusTone(actor.status ?? "active"))}
+          aria-hidden="true"
+        />
+      ) : (
+        <NotebookActorAvatar actor={actor} icon={Icon} size={avatarSize} />
+      )}
       <span className="min-w-0">
         <span
           className={cn(
             "block truncate font-medium leading-tight",
-            size === "sm" ? "text-xs" : "text-sm",
+            inline ? "text-sm" : size === "sm" ? "text-xs" : "text-sm",
           )}
         >
-          {actor.label}
+          {label}
         </span>
         {showDetail && actor.detail ? (
           <span className="block truncate text-[11px] leading-tight text-muted-foreground">
@@ -76,6 +91,15 @@ export function NotebookIdentityBadge({
       </span>
     </div>
   );
+}
+
+function compactPublicIdentityLabel(label: string): string {
+  const trimmed = label.trim();
+  const emailMatch = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/.exec(trimmed);
+  if (emailMatch?.[1]) {
+    return emailMatch[1];
+  }
+  return trimmed;
 }
 
 export function NotebookIdentityGroup({

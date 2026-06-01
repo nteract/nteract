@@ -30,4 +30,43 @@ describe("NotebookEditModeButton", () => {
 
     expect(onModeChange).toHaveBeenCalledWith("view");
   });
+
+  it("can render a segmented mode control", () => {
+    const onModeChange = vi.fn();
+
+    render(
+      <NotebookEditModeButton
+        mode="view"
+        state="viewing"
+        variant="segmented"
+        onModeChange={onModeChange}
+      />,
+    );
+
+    const group = screen.getByRole("group", { name: "Notebook interaction mode" });
+    expect(group).toHaveAttribute("data-slot", "notebook-edit-mode-button");
+    expect(group).toHaveAttribute("data-variant", "segmented");
+    expect(screen.getByRole("button", { name: "Viewing" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Editing" }));
+
+    expect(onModeChange).toHaveBeenCalledWith("edit");
+  });
+
+  it("does not reapply the already selected segmented mode", () => {
+    const onModeChange = vi.fn();
+
+    render(
+      <NotebookEditModeButton
+        mode="view"
+        state="viewing"
+        variant="segmented"
+        onModeChange={onModeChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Viewing" }));
+
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
 });

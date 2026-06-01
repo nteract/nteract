@@ -21,6 +21,15 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(capabilities.canExecute).toBe(true);
     expect(capabilities.canManagePackages).toBe(true);
     expect(capabilities.canManageSharing).toBe(false);
+    expect(capabilities.interaction).toMatchObject({
+      selectedMode: "edit",
+      activeMode: "edit",
+      state: "editing",
+      canEditMarkdown: true,
+      canEditCells: true,
+      canEditStructure: true,
+      canRequestEdit: false,
+    });
     expect(capabilities.runtime).toMatchObject({
       canWriteRuntimeState: true,
       connected: true,
@@ -61,6 +70,14 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(capabilities.canRequestEdit).toBe(false);
     expect(capabilities.canExecute).toBe(false);
     expect(capabilities.canManagePackages).toBe(false);
+    expect(capabilities.interaction).toMatchObject({
+      selectedMode: "view",
+      activeMode: "view",
+      state: "viewing",
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+    });
     expect(capabilities.runtime).toMatchObject({
       canWriteRuntimeState: false,
       connected: false,
@@ -91,6 +108,14 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(capabilities.canEditStructure).toBe(false);
     expect(capabilities.canExecute).toBe(false);
     expect(capabilities.runtime.canWriteRuntimeState).toBe(false);
+    expect(capabilities.interaction).toMatchObject({
+      selectedMode: "edit",
+      activeMode: "view",
+      state: "requested",
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+    });
   });
 
   it("maps local read-only files to viewer access without cloud source", () => {
@@ -118,6 +143,14 @@ describe("desktopNotebookShellCapabilities", () => {
       source: "local",
       actorLabel: null,
     });
+    expect(capabilities.interaction).toMatchObject({
+      selectedMode: "view",
+      activeMode: "view",
+      state: "viewing",
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+    });
   });
 
   it("keeps runtime peer authority separate from document editing access", () => {
@@ -143,6 +176,40 @@ describe("desktopNotebookShellCapabilities", () => {
       principal: { label: "Alice" },
       operator: { kind: "runtime", label: "JupyterHub" },
       scope: "runtime_peer",
+    });
+    expect(capabilities.interaction).toMatchObject({
+      selectedMode: "view",
+      activeMode: "view",
+      state: "viewing",
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+    });
+  });
+
+  it("projects desktop agent actors without treating desktop as a single human", () => {
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:kyle%40example.com/agent:codex:s1",
+      connectionScope: "editor",
+    });
+
+    expect(capabilities.access.level).toBe("editor");
+    expect(capabilities.canEditMarkdown).toBe(true);
+    expect(capabilities.interaction).toMatchObject({
+      selectedMode: "edit",
+      activeMode: "edit",
+      state: "editing",
+    });
+    expect(capabilities.access.actor).toMatchObject({
+      actorLabel: "user:anaconda:kyle%40example.com/agent:codex:s1",
+      principal: {
+        label: "kyle@example.com",
+        source: { provider: "anaconda", namespace: "anaconda" },
+      },
+      operator: { kind: "agent", label: "Codex" },
+      scope: "editor",
     });
   });
 });

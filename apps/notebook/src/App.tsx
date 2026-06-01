@@ -43,6 +43,7 @@ import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookToolbarIdentity,
 } from "@/components/notebook-shell";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
@@ -2022,13 +2023,12 @@ function AppContent() {
           onAddCell={handleAddCell}
           onToggleDependencies={handleTogglePackagesRail}
           isDepsOpen={packagesRailOpen}
-          canEditStructure={shellCapabilities.canEditStructure}
-          canExecute={shellCapabilities.canExecute}
-          canViewPackages={shellCapabilities.canViewPackages}
+          capabilities={shellCapabilities}
           depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
+          trailingControls={<NotebookToolbarIdentity capabilities={shellCapabilities} />}
         />
         {globalFind.isOpen && (
           <GlobalFindBar
@@ -2086,7 +2086,7 @@ function AppContent() {
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
               packagesPanel={
-                <NotebookPackagesPanel>
+                <NotebookPackagesPanel readOnly={!shellCapabilities.canManagePackages}>
                   {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
                     <div className="rounded-md border border-amber-300 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
                       <div className="mb-2 flex items-center gap-2 font-medium">
@@ -2095,7 +2095,7 @@ function AppContent() {
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         <button
-                          disabled={clearingDeps}
+                          disabled={clearingDeps || !shellCapabilities.canManagePackages}
                           onClick={async () => {
                             setClearingDeps(true);
                             try {
@@ -2111,7 +2111,7 @@ function AppContent() {
                           )
                         </button>
                         <button
-                          disabled={clearingDeps}
+                          disabled={clearingDeps || !shellCapabilities.canManagePackages}
                           onClick={async () => {
                             setClearingDeps(true);
                             try {
@@ -2137,6 +2137,7 @@ function AppContent() {
                       denoConfigInfo={denoConfigInfo}
                       flexibleNpmImports={flexibleNpmImports}
                       onSetFlexibleNpmImports={setFlexibleNpmImports}
+                      readOnly={!shellCapabilities.canManagePackages}
                       syncState={denoDerivedSyncState}
                       syncing={kernelStatus === KERNEL_STATUS.STARTING}
                       onSyncNow={handleSyncDeps}
@@ -2151,6 +2152,7 @@ function AppContent() {
                       python={condaDependencies?.python ?? null}
                       loading={condaDepsLoading}
                       envSource={envSource}
+                      readOnly={!shellCapabilities.canManagePackages}
                       syncState={condaDerivedSyncState}
                       onAdd={addCondaDependency}
                       onRemove={removeCondaDependency}
@@ -2170,6 +2172,7 @@ function AppContent() {
                       variant="rail"
                       pixiInfo={pixiInfo}
                       envSource={envSource}
+                      readOnly={!shellCapabilities.canManagePackages}
                       syncState={pixiDerivedSyncState}
                       onSyncNow={handleSyncDeps}
                       justSynced={justSynced}
@@ -2181,6 +2184,7 @@ function AppContent() {
                       dependencies={dependencies?.dependencies ?? []}
                       requiresPython={dependencies?.requires_python ?? null}
                       loading={depsLoading}
+                      readOnly={!shellCapabilities.canManagePackages}
                       onAdd={addDependency}
                       onRemove={removeDependency}
                       onSetRequiresPython={setRequiresPython}

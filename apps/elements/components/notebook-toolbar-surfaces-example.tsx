@@ -1,210 +1,218 @@
 "use client";
 
 import { BadgeCheck, CircleDot, PanelTop, PlayCircle, TimerReset } from "lucide-react";
-import type { ComponentProps } from "react";
 import {
-  KERNEL_ERROR_REASON,
-  KERNEL_STATUS,
-  RUNTIME_STATUS,
-  type EnvProgressState,
-} from "runtimed";
+  NotebookCommandToolbar,
+  NotebookEditModeButton,
+  NotebookPresenceStatus,
+  NotebookToolbarIdentity,
+  notebookToolbarActors,
+  type NotebookCommandRuntimeState,
+  type NotebookCommandToolbarProps,
+} from "@/components/notebook-shell";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
   type ElementsNotebookScenarioId,
 } from "@/components/notebook-scenarios";
-import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
-
-type ToolbarProps = ComponentProps<typeof NotebookToolbar>;
 
 const noop = () => {};
-
-const runningIdle = { lifecycle: "Running", activity: "Idle" } as const;
-const runningBusy = { lifecycle: "Running", activity: "Busy" } as const;
-const errorLifecycle = { lifecycle: "Error" } as const;
-
-const condaProgress: EnvProgressState = {
-  isActive: true,
-  phase: "link_progress",
-  envType: "conda",
-  error: null,
-  statusText: "Installing 17/24 scikit-learn",
-  elapsedMs: 18_400,
-  progress: { completed: 17, total: 24 },
-  bytesPerSecond: null,
-  currentPackage: "scikit-learn",
-};
-
-const condaEnvMissingDetails =
-  "environment.yml declares conda env 'analysis', which is not built on this machine. Run: conda env create -f /work/notebooks/environment.yml";
 
 interface ToolbarSurface {
   title: string;
   source: string;
   role: string;
   scenario: ElementsNotebookScenario;
-  props: ToolbarProps;
-}
-
-function toolbarProps(
-  scenario: ElementsNotebookScenario,
-  overrides: Partial<ToolbarProps> = {},
-): ToolbarProps {
-  const firstRunnableCell = scenario.cells.find((cell) => cell.cellType === "code");
-  const cellIds = scenario.viewModel.cellIds;
-
-  return {
-    kernelStatus: KERNEL_STATUS.IDLE,
-    statusKey: RUNTIME_STATUS.RUNNING_IDLE,
-    lifecycle: runningIdle,
-    errorReason: null,
-    kernelErrorMessage: null,
-    envSource: "uv:inline",
-    envTypeHint: "uv",
-    envProgress: null,
-    runtime: "python",
-    focusedCellId: firstRunnableCell?.id ?? cellIds[0] ?? null,
-    lastCellId: cellIds[cellIds.length - 1] ?? null,
-    canEditStructure: scenario.capabilities.canEditStructure,
-    canExecute: scenario.capabilities.canExecute,
-    canViewPackages: scenario.capabilities.canViewPackages,
-    onStartKernel: noop,
-    onInterruptKernel: noop,
-    onRestartKernel: noop,
-    onRunAllCells: noop,
-    onRestartAndRunAll: noop,
-    onAddCell: noop,
-    onToggleDependencies: noop,
-    ...overrides,
-  };
+  props: NotebookCommandToolbarProps;
 }
 
 function scenario(id: ElementsNotebookScenarioId) {
   return getElementsNotebookScenario(id);
 }
 
+function toolbarProps(
+  scenario: ElementsNotebookScenario,
+  overrides: Partial<NotebookCommandToolbarProps> = {},
+): NotebookCommandToolbarProps {
+  const firstRunnableCell = scenario.cells.find((cell) => cell.cellType === "code");
+  const cellIds = scenario.viewModel.cellIds;
+  const interaction = scenario.capabilities.interaction;
+
+  return {
+    capabilities: scenario.capabilities,
+    runtime: "python",
+    environmentManager: "uv",
+    environmentPanelOpen: false,
+    environmentOutOfSync: scenario.packageState.syncState.status === "dirty",
+    runtimeStatus: runtimeStatus("idle", scenario.runtimeLabel),
+    addAfterCellId: firstRunnableCell?.id ?? cellIds[cellIds.length - 1] ?? null,
+    onAddCell: noop,
+    onStartRuntime: noop,
+    onInterruptRuntime: noop,
+    onRestartRuntime: noop,
+    onRunAllCells: noop,
+    onRestartAndRunAll: noop,
+    onTogglePackages: noop,
+    presenceControls: (
+      <NotebookPresenceStatus
+        connected={scenario.capabilities.runtime.connected || scenario.capabilities.canRead}
+        label={presenceLabel(scenario)}
+        modeLabel={interaction?.state === "editing" ? "editing" : "view only"}
+        title={`${scenario.title}: actor presence and interaction state`}
+        className="h-7 text-xs"
+      />
+    ),
+    identityControls: <ToolbarIdentityControls scenario={scenario} />,
+    ...overrides,
+  };
+}
+
+function presenceLabel(scenario: ElementsNotebookScenario): string {
+  const actorCount = Math.max(1, notebookToolbarActors(scenario.capabilities).length);
+  return actorCount === 1 ? "1 participant here" : `${actorCount} participants here`;
+}
+
+function runtimeStatus(
+  state: NotebookCommandRuntimeState,
+  label: string,
+  error?: string,
+): NotebookCommandToolbarProps["runtimeStatus"] {
+  return {
+    state,
+    label: (
+      <span className={state === "error" ? "text-red-600 dark:text-red-400" : ""}>{label}</span>
+    ),
+    ariaLabel: `Runtime: ${label}`,
+    title: label,
+    error: error ? (
+      <span className="text-red-600 underline decoration-dotted underline-offset-2 dark:text-red-400">
+        {error}
+      </span>
+    ) : null,
+  };
+}
+
 function createStatusSurfaces(): ToolbarSurface[] {
   const desktopOwner = scenario("desktop-local-owner");
+  const desktopReadOnly = scenario("desktop-read-only");
+  const desktopRemote = scenario("desktop-remote-room");
   const cloudViewer = scenario("cloud-public-viewer");
   const cloudEditor = scenario("cloud-editor");
+  const cloudOwner = scenario("cloud-owner");
+  const agent = scenario("agent-on-behalf");
+  const runtimePeer = scenario("runtime-peer");
   const runtimeUnavailable = scenario("runtime-unavailable");
 
   return [
     {
-      title: "Idle Python notebook",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      title: "Desktop owner",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
       scenario: desktopOwner,
-      role: `${desktopOwner.runtimeLabel}; normal editing state with uv package details and running kernel controls.`,
+      role: "Local desktop host can edit structure, execute, and inspect package state through the same command toolbar contract.",
       props: toolbarProps(desktopOwner),
     },
     {
-      title: "Busy with package restart",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
-      scenario: desktopOwner,
-      role: `Execution state from ${desktopOwner.title}; restart-and-run-all is marked by ${desktopOwner.packageState.syncState.status} package details.`,
-      props: toolbarProps(desktopOwner, {
-        kernelStatus: KERNEL_STATUS.BUSY,
-        statusKey: RUNTIME_STATUS.RUNNING_BUSY,
-        lifecycle: runningBusy,
-        envSource: "conda:inline",
-        depsOutOfSync: desktopOwner.packageState.syncState.status === "dirty",
-        isDepsOpen: desktopOwner.capabilities.canViewPackages,
+      title: "Desktop read-only file",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      scenario: desktopReadOnly,
+      role: "Filesystem or host permissions disable mutation controls while package details remain visible.",
+      props: toolbarProps(desktopReadOnly, {
+        runtimeStatus: runtimeStatus("shutdown", desktopReadOnly.runtimeLabel),
       }),
     },
     {
-      title: "Environment preparation",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
-      scenario: cloudEditor,
-      role: `${cloudEditor.title} can edit markdown, but this preview keeps execution detached while Conda solve progress renders.`,
-      props: toolbarProps(cloudEditor, {
-        kernelStatus: KERNEL_STATUS.STARTING,
-        statusKey: RUNTIME_STATUS.PREPARING_ENV,
-        lifecycle: { lifecycle: "PreparingEnv" },
-        envSource: null,
-        envTypeHint: "conda",
-        envProgress: condaProgress,
+      title: "Desktop remote room",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      scenario: desktopRemote,
+      role: "Desktop can be a remote notebook host: local app and daemon identity project into the same access model as cloud.",
+      props: toolbarProps(desktopRemote, {
+        runtimeStatus: runtimeStatus("unknown", desktopRemote.runtimeLabel),
       }),
     },
     {
-      title: "Awaiting trust approval",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
-      scenario: runtimeUnavailable,
-      role: `${runtimeUnavailable.title} reuses the shared trust fixture before launch instead of opening a live runtime.`,
-      props: toolbarProps(runtimeUnavailable, {
-        kernelStatus: KERNEL_STATUS.STARTING,
-        statusKey: RUNTIME_STATUS.AWAITING_TRUST,
-        lifecycle: { lifecycle: "AwaitingTrust" },
-        envSource: null,
-        envTypeHint: "uv",
-      }),
-    },
-    {
-      title: "Published viewer with no kernel",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      title: "Cloud public viewer",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
       scenario: cloudViewer,
-      role: `${cloudViewer.title} uses the same notebook IDs while exposing view-only, published access context.`,
+      role: "Anonymous read access keeps the notebook shell readable and package-aware without edit, execution, or sharing controls.",
       props: toolbarProps(cloudViewer, {
-        kernelStatus: KERNEL_STATUS.ERROR,
-        statusKey: RUNTIME_STATUS.ERROR,
-        lifecycle: errorLifecycle,
-        envSource: null,
-        envTypeHint: null,
-        kernelErrorMessage: cloudViewer.runtimeLabel,
+        runtime: null,
+        environmentManager: null,
+        runtimeStatus: runtimeStatus("unknown", cloudViewer.runtimeLabel),
       }),
     },
     {
-      title: "Deno runtime unavailable",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      title: "Cloud editor",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      scenario: cloudEditor,
+      role: "Cloud edit permission and selected edit mode are separate from host support; active controls are their intersection.",
+      props: toolbarProps(cloudEditor, {
+        runtimeStatus: runtimeStatus("unknown", cloudEditor.runtimeLabel),
+      }),
+    },
+    {
+      title: "Cloud owner",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      scenario: cloudOwner,
+      role: "Owner access can expose sharing identity chrome without inventing a second notebook toolbar.",
+      props: toolbarProps(cloudOwner, {
+        runtimeStatus: runtimeStatus("unknown", cloudOwner.runtimeLabel),
+      }),
+    },
+    {
+      title: "Codex or Claude operator",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      scenario: agent,
+      role: "Desktop and cloud both have non-human operators. The toolbar uses actor-neutral presence and projected identity labels.",
+      props: toolbarProps(agent, {
+        runtimeStatus: runtimeStatus("unknown", agent.runtimeLabel),
+      }),
+    },
+    {
+      title: "Runtime peer",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      scenario: runtimePeer,
+      role: "Runtime authorship is present without notebook edit access, so execution authors do not become structure editors.",
+      props: toolbarProps(runtimePeer, {
+        runtimeStatus: runtimeStatus("busy", runtimePeer.runtimeLabel),
+      }),
+    },
+    {
+      title: "Preparing environment",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      scenario: cloudEditor,
+      role: "Hosted and desktop hosts can show environment progress while keeping the work owned by their runtime adapter.",
+      props: toolbarProps(cloudEditor, {
+        runtimeStatus: runtimeStatus("starting", "Installing 17/24 scikit-learn"),
+        environmentManager: "conda",
+        environmentOutOfSync: true,
+      }),
+    },
+    {
+      title: "Runtime unavailable",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
       scenario: runtimeUnavailable,
-      role: "Deno install remediation banner driven by fixture error text and inert callbacks.",
+      role: "Runtime and trust remediation can surface through shared status while host-specific fixes stay outside the command toolbar.",
       props: toolbarProps(runtimeUnavailable, {
-        kernelStatus: KERNEL_STATUS.ERROR,
-        statusKey: RUNTIME_STATUS.ERROR,
-        lifecycle: errorLifecycle,
+        runtimeStatus: runtimeStatus(
+          "error",
+          "Deno runtime unavailable",
+          "deno executable not found",
+        ),
         runtime: "deno",
-        envSource: "deno:imports",
-        envTypeHint: null,
-        kernelErrorMessage: "deno executable not found on PATH",
-      }),
-    },
-    {
-      title: "Pixi missing ipykernel",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
-      scenario: runtimeUnavailable,
-      role: "Python runtime error branch for pixi.toml notebooks that need an explicit ipykernel package.",
-      props: toolbarProps(runtimeUnavailable, {
-        kernelStatus: KERNEL_STATUS.ERROR,
-        statusKey: RUNTIME_STATUS.ERROR,
-        lifecycle: errorLifecycle,
-        errorReason: KERNEL_ERROR_REASON.MISSING_IPYKERNEL,
-        envSource: "pixi:toml",
-        envTypeHint: "pixi",
-      }),
-    },
-    {
-      title: "Conda environment.yml missing",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
-      scenario: runtimeUnavailable,
-      role: "Copyable environment creation hint surfaced by the toolbar when the declared conda env is absent.",
-      props: toolbarProps(runtimeUnavailable, {
-        kernelStatus: KERNEL_STATUS.ERROR,
-        statusKey: RUNTIME_STATUS.ERROR,
-        lifecycle: errorLifecycle,
-        errorReason: KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING,
-        envSource: "conda:env_yml",
-        envTypeHint: "conda",
-        kernelErrorMessage: condaEnvMissingDetails,
+        environmentManager: null,
       }),
     },
     {
       title: "Update ready",
-      source: "apps/notebook/src/components/NotebookToolbar.tsx",
+      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
       scenario: desktopOwner,
-      role: "Desktop update action rendered beside runtime status while the notebook remains idle.",
+      role: "Desktop update actions remain a host slot on the shared command toolbar.",
       props: toolbarProps(desktopOwner, {
-        updateStatus: "available",
-        updateVersion: "2.5.3",
-        onRestartToUpdate: noop,
+        updateAction: {
+          label: "Update 2.5.3",
+          title: "Prepare to update to v2.5.3",
+          onClick: noop,
+        },
       }),
     },
   ];
@@ -213,56 +221,56 @@ function createStatusSurfaces(): ToolbarSurface[] {
 const contractItems = [
   {
     icon: BadgeCheck,
-    title: "Current source",
-    body: "Every preview imports NotebookToolbar from the notebook app and starts from a shared Elements scenario.",
+    title: "Shared source",
+    body: "Every preview renders NotebookCommandToolbar from the host-neutral notebook shell.",
   },
   {
     icon: PlayCircle,
-    title: "Runtime-free",
-    body: "Kernel actions, package toggles, update clicks, and cell insertion callbacks are inert.",
+    title: "Adapter-owned actions",
+    body: "Kernel, package, update, and cell insertion callbacks are inert fixtures here and host-owned in production.",
   },
   {
     icon: TimerReset,
-    title: "Status vocabulary",
-    body: "Fixtures cover idle, busy, preparing, trust, error, and update states from the real runtime labels.",
+    title: "Actor-neutral chrome",
+    body: "Presence and mode copy works for humans, agents, runtime peers, and system operators.",
   },
 ];
 
 const toolbarBoundaryRows = [
   {
-    boundary: "Runtime status projection",
-    catalogPath: "ElementsNotebookScenario -> toolbarProps(status overrides)",
-    productionBoundary: "RuntimeStateDoc + kernel lifecycle",
+    boundary: "Shared command toolbar",
+    catalogPath: "NotebookCommandToolbar + ElementsNotebookScenario",
+    productionBoundary: "Desktop NotebookToolbar wrapper and cloud host adapter",
     detail:
-      "The catalog starts with deterministic scenario facts, then applies runtime status overrides. Production derives those fields from runtime state, kernel lifecycle, environment progress, and launch errors.",
+      "The catalog renders the shared command toolbar directly. Desktop and cloud wrappers may add host-specific status projection, but not duplicate command chrome.",
   },
   {
-    boundary: "Kernel actions",
-    catalogPath: "inert callbacks",
-    productionBoundary: "Notebook action handlers",
+    boundary: "Interaction mode",
+    catalogPath: "scenario.capabilities.interaction",
+    productionBoundary: "ACL/local permission + selected host mode",
     detail:
-      "Start, interrupt, restart, run-all, and restart-and-run-all buttons render here without side effects. The notebook app wires them to execution and runtime control paths.",
+      "View/edit state is a projection of permission, selected mode, and host support. The toolbar reads that projection instead of inferring editability from auth alone.",
+  },
+  {
+    boundary: "Actor identity",
+    catalogPath: "NotebookActorProjection -> NotebookActorIdentity",
+    productionBoundary: "Host/backend structured actor projection",
+    detail:
+      "Raw durable actor labels remain attribution data. User-facing toolbar labels come from structured principal/operator projections when available.",
+  },
+  {
+    boundary: "Runtime status projection",
+    catalogPath: "static runtimeStatus fixtures",
+    productionBoundary: "RuntimeStateDoc + kernel lifecycle",
+    detail:
+      "The command toolbar accepts a small runtime status shape. Hosts own the richer lifecycle, environment progress, launch errors, and remediation details.",
   },
   {
     boundary: "Package panel",
     catalogPath: "scenario.packageState + inert toggle",
     productionBoundary: "Package rail and project writes",
     detail:
-      "The preview reads package sync state from the shared scenario and toggles visual package state only. The notebook opens package UI, writes project files, and coordinates environment rebuild decisions.",
-  },
-  {
-    boundary: "Cell insertion",
-    catalogPath: "scenario.viewModel.cellIds",
-    productionBoundary: "NotebookView focus and document changes",
-    detail:
-      "The add-cell affordance receives stable IDs from the shared scenario projection. Production inserts new cells through the notebook document and restores editor focus.",
-  },
-  {
-    boundary: "Desktop update restart",
-    catalogPath: "updateStatus + onRestartToUpdate",
-    productionBoundary: "Tauri updater host action",
-    detail:
-      "The update-ready surface renders with a no-op restart callback. Desktop builds still own update installation and app restart behavior outside the docs runtime.",
+      "Read-only scenarios still expose package details. Package management remains gated separately from package viewing.",
   },
 ];
 
@@ -306,12 +314,17 @@ export function NotebookToolbarSurfacesExample() {
                   />
                   <ScenarioPill
                     label={
-                      surface.scenario.capabilities.canExecute
-                        ? "execution available"
-                        : "execution disabled"
+                      surface.scenario.capabilities.interaction?.state ??
+                      (surface.scenario.capabilities.canEditMarkdown ? "editing" : "viewing")
                     }
                   />
-                  <ScenarioPill label={`${surface.scenario.viewModel.codeCellCount} code cells`} />
+                  <ScenarioPill
+                    label={
+                      surface.scenario.capabilities.runtime.actor
+                        ? "runtime actor"
+                        : "no runtime actor"
+                    }
+                  />
                 </div>
               </div>
               <div className="break-words font-mono text-[11px] leading-5 text-fd-muted-foreground [overflow-wrap:anywhere] md:max-w-72 md:text-right">
@@ -319,8 +332,8 @@ export function NotebookToolbarSurfacesExample() {
               </div>
             </div>
             <div className="overflow-hidden bg-fd-background">
-              <div className="min-w-[760px]">
-                <NotebookToolbar {...surface.props} />
+              <div className="min-w-[860px]">
+                <NotebookCommandToolbar {...surface.props} />
               </div>
             </div>
           </article>
@@ -330,12 +343,12 @@ export function NotebookToolbarSurfacesExample() {
       <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
         <div className="mb-3 flex items-center gap-2">
           <CircleDot className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h2 className="text-sm font-semibold">Live work stays with the notebook</h2>
+          <h2 className="text-sm font-semibold">Live work stays with the host</h2>
         </div>
         <p className="text-xs leading-5 text-fd-muted-foreground">
-          NotebookToolbar renders from the production component, but this page owns only static
-          status props and inert callbacks. Runtime state, kernel controls, package writes, cell
-          insertion, and desktop update restarts stay with the notebook app.
+          NotebookCommandToolbar is shared notebook chrome. This page owns only fixture props and
+          inert callbacks; desktop and cloud remain responsible for transport, CRDT writes,
+          execution, package mutation, credentials, and deployment-specific behavior.
         </p>
         <div className="mt-4 grid gap-2">
           {toolbarBoundaryRows.map((row) => (
@@ -356,7 +369,7 @@ export function NotebookToolbarSurfacesExample() {
                   </div>
                   <div>
                     <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
-                      Notebook owns
+                      Host owns
                     </div>
                     <div className="mt-1 break-words font-mono text-[11px] leading-4 text-amber-700 dark:text-amber-300">
                       {row.productionBoundary}
@@ -369,6 +382,25 @@ export function NotebookToolbarSurfacesExample() {
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+function ToolbarIdentityControls({ scenario }: { scenario: ElementsNotebookScenario }) {
+  const interaction = scenario.capabilities.interaction;
+
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      {interaction ? (
+        <NotebookEditModeButton
+          mode={interaction.selectedMode}
+          state={interaction.state}
+          disabled={!interaction.canRequestEdit && interaction.activeMode !== "edit"}
+          onModeChange={noop}
+          className="h-7 text-xs"
+        />
+      ) : null}
+      <NotebookToolbarIdentity capabilities={scenario.capabilities} />
     </div>
   );
 }

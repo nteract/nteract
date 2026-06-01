@@ -7,17 +7,20 @@ describe("NotebookPresenceStatus", () => {
     const { container } = render(
       <NotebookPresenceStatus
         connected
-        label="2 viewing"
+        label="2 here now"
         modeLabel="editing"
-        title="2 connected viewers"
+        title="2 participants are in this notebook"
       />,
     );
 
-    expect(screen.getByText("2 viewing · editing")).toBeVisible();
-    expect(screen.getByLabelText("2 connected viewers")).toHaveAttribute("data-connected", "true");
+    expect(screen.getByText("2 here now, editing")).toBeVisible();
+    expect(screen.getByLabelText("2 participants are in this notebook. editing")).toHaveAttribute(
+      "data-connected",
+      "true",
+    );
     expect(container.querySelector("[data-slot='notebook-presence-status']")).toHaveAttribute(
       "title",
-      "2 connected viewers; editing",
+      "2 participants are in this notebook. editing",
     );
   });
 
@@ -29,5 +32,20 @@ describe("NotebookPresenceStatus", () => {
       "data-connected",
       "false",
     );
+  });
+
+  it("can render as inline app chrome", () => {
+    render(
+      <NotebookPresenceStatus
+        connected
+        label="2 here now"
+        title="2 participants are in this notebook"
+        variant="inline"
+      />,
+    );
+
+    const status = screen.getByLabelText("2 participants are in this notebook");
+    expect(status).toHaveAttribute("data-variant", "inline");
+    expect(screen.getByText("2 here now")).toBeVisible();
   });
 });

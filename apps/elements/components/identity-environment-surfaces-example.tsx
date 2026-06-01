@@ -105,12 +105,13 @@ export function IdentityEnvironmentSurfacesExample() {
           <NotebookDocumentHeader
             capabilities={cloudOwner.capabilities}
             presence={<NotebookIdentityBadge actor={scenarioActor(cloudOwner)} />}
-            utilityControls={<NotebookIdentityGroup actors={activeActors} />}
+            utilityControls={<HeaderPill icon={<Cloud className="size-3.5" />} label="Cloud" />}
             runtimeControls={
               <HeaderPill icon={<Package className="size-3.5" />} label="Packages" />
             }
             codeControls={<HeaderPill icon={<UserRound className="size-3.5" />} label="Source" />}
             sharingControls={<HeaderPill icon={<KeyRound className="size-3.5" />} label="Share" />}
+            identityControls={<NotebookIdentityGroup actors={activeActors} />}
           />
         </div>
       </section>

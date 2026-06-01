@@ -32,12 +32,26 @@ export {
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";
 export {
+  NotebookCommandToolbar,
+  type NotebookCommandRuntimeState,
+  type NotebookCommandToolbarProps,
+  type NotebookCommandToolbarStatus,
+  type NotebookCommandToolbarUpdateAction,
+  type NotebookEnvironmentManager,
+} from "./NotebookCommandToolbar";
+export { NotebookToolbarFrame, type NotebookToolbarFrameProps } from "./NotebookToolbarFrame";
+export {
   NotebookIdentityBadge,
   NotebookIdentityGroup,
   type NotebookIdentityBadgeProps,
   type NotebookIdentityGroupProps,
 } from "./NotebookIdentity";
 export { NotebookPresenceStatus, type NotebookPresenceStatusProps } from "./NotebookPresenceStatus";
+export {
+  NotebookToolbarIdentity,
+  notebookToolbarActors,
+  type NotebookToolbarIdentityProps,
+} from "./NotebookToolbarIdentity";
 export {
   NotebookEnvironmentSummary,
   type NotebookEnvironmentSummaryProps,
@@ -58,6 +72,15 @@ export {
   type NotebookEditModeButtonProps,
   type NotebookEditModeState,
 } from "./NotebookEditModeButton";
+export {
+  createNotebookInteractionModeProjection,
+  type CreateNotebookInteractionModeProjectionOptions,
+  type NotebookInteractionHostSupport,
+  type NotebookInteractionMode,
+  type NotebookInteractionModeProjection,
+  type NotebookInteractionPermission,
+  type NotebookInteractionState,
+} from "./interaction-mode";
 export { NotebookCellList, type NotebookCellListProps } from "./NotebookCellList";
 export {
   NotebookPackageSummaryPanel,

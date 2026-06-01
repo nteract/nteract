@@ -11,6 +11,7 @@ export interface NotebookDocumentHeaderProps {
   sharingControls?: ReactNode;
   editControls?: ReactNode;
   authControls?: ReactNode;
+  identityControls?: ReactNode;
   className?: string;
 }
 
@@ -23,6 +24,7 @@ export function NotebookDocumentHeader({
   sharingControls,
   editControls,
   authControls,
+  identityControls,
   className,
 }: NotebookDocumentHeaderProps) {
   const showCodeControls = capabilities.canToggleCode && Boolean(codeControls);
@@ -83,6 +85,11 @@ export function NotebookDocumentHeader({
         {showAuthControls ? (
           <div className="contents" data-slot="notebook-document-header-auth-controls">
             {authControls}
+          </div>
+        ) : null}
+        {identityControls ? (
+          <div className="contents" data-slot="notebook-document-header-identity-controls">
+            {identityControls}
           </div>
         ) : null}
       </div>

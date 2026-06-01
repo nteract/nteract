@@ -35,6 +35,11 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     constructor(notebookId: string);
     static create_bootstrap(actorLabel: string): NotebookHandle;
     static load_snapshot(notebookBytes: Uint8Array, runtimeStateBytes: Uint8Array): NotebookHandle;
+    add_cell_after(
+      cellId: string,
+      cellType: "code" | "markdown" | "raw",
+      afterCellId?: string | null,
+    ): string;
     cell_count(): number;
     cancel_last_flush(): void;
     cancel_last_pool_state_flush(): void;
@@ -50,6 +55,8 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     get_metadata_snapshot_json(): string | undefined;
     get_runtime_state_doc_id(): string | undefined;
     get_runtime_state(): unknown;
+    move_cell(cellId: string, afterCellId?: string | null): string;
+    delete_cell(cellId: string): boolean;
     get_runtime_state_heads_hex(): string[];
     receive_frame(frameBytes: Uint8Array): unknown;
     reset_sync_state(): void;

@@ -36,8 +36,8 @@ describe("NotebookIdentity", () => {
 
     render(<NotebookIdentityBadge actor={actor} />);
 
-    expect(screen.getByText("Codex")).toBeVisible();
-    expect(screen.getByText("for Kyle")).toBeVisible();
+    expect(screen.getByText("Codex for Kyle")).toBeVisible();
+    expect(screen.getByText("Editor")).toBeVisible();
   });
 
   it("projects durable principal/operator labels for delegated agents", () => {
@@ -53,8 +53,26 @@ describe("NotebookIdentity", () => {
 
     render(<NotebookIdentityBadge actor={actor} />);
 
-    expect(screen.getByText("Codex")).toBeVisible();
-    expect(screen.getByText("for kyle@example.com")).toBeVisible();
+    expect(screen.getByText("Codex for kyle@example.com")).toBeVisible();
+    expect(screen.getByText("Editor")).toBeVisible();
+  });
+
+  it("keeps delegated agent attribution when access scope is absent", () => {
+    const actor = notebookActorIdentityFromAccess({
+      level: "none",
+      source: "local",
+      isPublic: false,
+      actorLabel: "user:local:kyle/agent:claude:s1",
+      identityLabel: "Kyle",
+    });
+
+    expect(actor.kind).toBe("agent");
+    expect(actor.detail).toBeNull();
+
+    render(<NotebookIdentityBadge actor={actor} />);
+
+    expect(screen.getByText("Claude for Kyle")).toBeVisible();
+    expect(screen.getByTitle("Claude for Kyle")).toBeVisible();
   });
 
   it("prefers structured actor projections over durable label fallback", () => {
@@ -114,8 +132,8 @@ describe("NotebookIdentity", () => {
 
     render(<NotebookIdentityBadge actor={actor} />);
 
-    expect(screen.getByText("Codex")).toBeVisible();
-    expect(screen.getByText("for Alice Appleseed")).toBeVisible();
+    expect(screen.getByText("Codex for Alice Appleseed")).toBeVisible();
+    expect(screen.getByText("Editor")).toBeVisible();
     expect(screen.queryByText("Legacy")).toBeNull();
     expect(screen.queryByText("for Someone Else")).toBeNull();
   });
@@ -133,8 +151,8 @@ describe("NotebookIdentity", () => {
 
     render(<NotebookIdentityBadge actor={actor} />);
 
-    expect(screen.getByText("JupyterHub")).toBeVisible();
-    expect(screen.getByText("for Alice")).toBeVisible();
+    expect(screen.getByText("JupyterHub for Alice")).toBeVisible();
+    expect(screen.getByText("Viewer")).toBeVisible();
   });
 
   it("projects durable system operators separately from human identity", () => {

@@ -63,15 +63,29 @@ test("cloud viewer keeps theme resolution out of first-class notebook chrome", (
   assert.doesNotMatch(sourceText, /className="cloud-theme-toggle"/);
 });
 
-test("cloud viewer routes notebook header controls through the shared shell header", () => {
+test("cloud viewer routes notebook header controls through the shared command toolbar", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
+  assert.match(sourceText, /NotebookCommandToolbar,/);
   assert.match(sourceText, /NotebookDocumentHeader,/);
+  assert.match(sourceText, /NotebookToolbarFrame,/);
+  assert.match(
+    sourceText,
+    /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookDocumentHeader[\s\S]*<NotebookCommandToolbar/,
+  );
   assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.match(sourceText, /<NotebookCommandToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
-  assert.match(sourceText, /codeControls=\{null\}/);
+  assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
+  assert.match(sourceText, /identityControls=\{[\s\S]*<NotebookToolbarIdentity/);
+  assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
+  assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
+  assert.doesNotMatch(sourceText, /label: "live"/);
+  assert.doesNotMatch(sourceText, /<CloudPresenceStatus[^>]*connectionScope=\{connectionScope\}/);
+  assert.doesNotMatch(sourceText, /<CloudPresenceStatus[^>]*interaction=\{/);
   assert.doesNotMatch(sourceText, /className="cloud-code-toggle"/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canManageSharing \? \(/);
   assert.doesNotMatch(sourceText, /shellCapabilities\.canToggleCode \? \(/);
