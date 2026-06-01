@@ -5,25 +5,26 @@ description: Fixture-backed uv, Conda, Pixi, and Deno package panels from the no
 
 import { PackageManagerSurfacesExample } from "@/components/package-manager-surfaces-example";
 
-Package management is notebook UI. These surfaces are the real dependency
-headers used by the notebook app, rendered with static fixture metadata so the
-catalog can inspect package panels without a live daemon, Automerge document, or
-environment solve.
-Package viewing and package mutation are separate shell capabilities; hosted
-viewer, editor, and owner fixtures can inspect package state while package
-management remains disabled.
+Package management is notebook UI. The rail should let people read package
+details at a glance, then manage the source only when the host grants that
+affordance. This page renders the real uv, Conda, Pixi, and Deno headers with
+fixture facts so the catalog can inspect package panels without a live daemon,
+Automerge document, or environment solve.
+Package viewing and package management are separate shell capabilities; hosted
+viewer, editor, and owner fixtures can inspect package state while write actions
+remain disabled.
 
 <PackageManagerSurfacesExample />
 
 ## Rail intent
 
-- `NotebookDocumentRail` is the notebook home for package viewing. It can render
-  the shared `NotebookPackageSummaryPanel` for host-neutral read-only state, or
-  host manager-specific panels when mutation is available.
-- Manager headers remain app-adapter surfaces because they can trigger metadata
-  writes, trust approvals, sync, and rebuild decisions.
+- `NotebookDocumentRail` is the notebook home for package details. It can render
+  the shared `NotebookPackageSummaryPanel` for host-neutral view-only state, or
+  host manager-specific panels when management is available.
+- Manager headers remain app-adapter surfaces because they can write project
+  files, approve trust, sync packages, and start rebuild decisions.
 - The catalog should keep using existing notebook components, not parallel
   package-manager replicas.
-- Live metadata mutation, trust re-signing, daemon sync, and environment rebuilds
+- Live package writes, trust re-signing, daemon sync, and environment rebuilds
   stay behind app adapters. The rendered boundary map names those splits so new
   package surfaces can enter through fixtures before runtime wiring.

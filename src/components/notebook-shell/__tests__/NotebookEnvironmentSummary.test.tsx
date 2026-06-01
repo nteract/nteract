@@ -70,7 +70,7 @@ describe("NotebookEnvironmentSummary", () => {
     expect(screen.getByText("pandas>=2")).toBeVisible();
   });
 
-  it("shows read-only environment state when package mutation is unavailable", () => {
+  it("shows view-only environment state when package management is unavailable", () => {
     render(
       <NotebookEnvironmentSummary
         capabilities={{
@@ -90,7 +90,7 @@ describe("NotebookEnvironmentSummary", () => {
 
     expect(screen.getByText("Public")).toBeVisible();
     expect(screen.getByText("No runtime")).toBeVisible();
-    expect(screen.getByText("No package metadata")).toBeVisible();
+    expect(screen.getByText("No package details")).toBeVisible();
     expect(screen.getByText("No package manager details yet.")).toBeVisible();
   });
 

@@ -4,7 +4,7 @@ import { NotebookPackageSummaryPanel } from "../NotebookPackageSummaryPanel";
 import type { NotebookPackageViewModel } from "../view-model";
 
 describe("NotebookPackageSummaryPanel", () => {
-  it("renders package metadata in a read-only shared rail panel", () => {
+  it("renders package details in a view-only shared rail panel", () => {
     const packages: NotebookPackageViewModel = {
       summary: "uv · 2 packages",
       sections: [

@@ -108,7 +108,7 @@ export function createNotebookEnvironmentSurface({
       muted: !capabilities.canExecute && !capabilities.runtime.connected,
     },
     packages: {
-      summary: packages.summary ?? "No package metadata",
+      summary: packages.summary ?? "No package details",
       sourceLabel: packageSourceLabel ?? packageAccessLabel,
       accessLabel: packageAccessLabel,
       muted: !capabilities.canViewPackages,
