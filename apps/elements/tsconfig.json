@@ -22,6 +22,8 @@
       "@/components/notebook-rail": ["../../src/components/notebook-rail/index.ts"],
       "@/components/notebook-rail/*": ["../../src/components/notebook-rail/*"],
       "@/components/outputs/*": ["../../src/components/outputs/*"],
+      "@/components/rail": ["../../src/components/rail/index.ts"],
+      "@/components/rail/*": ["../../src/components/rail/*"],
       "@/components/ui/*": ["../../src/components/ui/*"],
       "@/components/widgets/*": ["../../src/components/widgets/*"],
       "@/hooks/*": ["../../src/hooks/*"],
