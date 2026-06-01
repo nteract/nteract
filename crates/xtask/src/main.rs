@@ -278,8 +278,12 @@ fn cmd_integration(filter: Option<String>) {
     });
 
     // 4. Build pytest args
-    let binary = std::fs::canonicalize("target/debug/runtimed").unwrap_or_else(|e| {
-        eprintln!("Failed to resolve runtimed binary: {e}");
+    let binary_path = cargo_debug_binary_path("runtimed");
+    let binary = std::fs::canonicalize(&binary_path).unwrap_or_else(|e| {
+        eprintln!(
+            "Failed to resolve runtimed binary at {}: {e}",
+            binary_path.display()
+        );
         exit(1);
     });
 
@@ -507,7 +511,7 @@ fn cmd_notebook(notebook: Option<&str>, attach: bool) {
 
 fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bool) -> ExitStatus {
     // Delete bundled marker since we're building a dev binary
-    let marker = Path::new("./target/debug/.notebook-bundled");
+    let marker = notebook_bundled_marker_path();
     let _ = fs::remove_file(marker);
 
     let vite_port = resolve_vite_port(force_dev_mode);
@@ -948,20 +952,23 @@ fn cmd_build(rust_only: bool, skip_tauri: bool) {
     );
 
     // Write marker file to indicate this is a bundled build
-    let marker = Path::new("./target/debug/.notebook-bundled");
-    fs::write(marker, "bundled").unwrap_or_else(|e| {
+    let marker = notebook_bundled_marker_path();
+    fs::write(&marker, "bundled").unwrap_or_else(|e| {
         eprintln!("Warning: Could not write bundled marker: {e}");
     });
 
-    println!("Build complete: ./target/debug/notebook");
+    println!(
+        "Build complete: {}",
+        cargo_debug_binary_path("notebook").display()
+    );
 }
 
 fn cmd_run(notebook: Option<&str>) {
-    let binary = Path::new("./target/debug/notebook");
-    let marker = Path::new("./target/debug/.notebook-bundled");
+    let binary = cargo_debug_binary_path("notebook");
+    let marker = notebook_bundled_marker_path();
 
     if !binary.exists() {
-        eprintln!("Error: No binary found at ./target/debug/notebook");
+        eprintln!("Error: No binary found at {}", binary.display());
         eprintln!("Run `cargo xtask build` first.");
         exit(1);
     }
@@ -974,8 +981,8 @@ fn cmd_run(notebook: Option<&str>) {
 
     println!("Running notebook app...");
     match notebook {
-        Some(path) => run_cmd("./target/debug/notebook", &[path]),
-        None => run_cmd("./target/debug/notebook", &[]),
+        Some(path) => run_cmd(binary.to_string_lossy().as_ref(), &[path]),
+        None => run_cmd(binary.to_string_lossy().as_ref(), &[]),
     }
 }
 
@@ -1043,7 +1050,10 @@ fn cmd_e2e_build() {
         ],
     );
 
-    println!("Build complete: ./target/debug/notebook");
+    println!(
+        "Build complete: {}",
+        cargo_debug_binary_path("notebook").display()
+    );
     println!("The app embeds a WebDriver server on port 4445 (tauri-plugin-webdriver).");
 }
 
@@ -1057,7 +1067,7 @@ fn run_e2e_session(
     workspace_dir: Option<&str>,
 ) -> i32 {
     // Ensure e2e binary exists
-    if !Path::new("./target/debug/notebook").exists() {
+    if !cargo_debug_binary_path("notebook").exists() {
         cmd_e2e_build();
     }
 
@@ -1092,7 +1102,7 @@ fn run_e2e_session(
     };
 
     // Start the notebook app (embeds WebDriver on port 4445)
-    let mut app_cmd = Command::new("./target/debug/notebook");
+    let mut app_cmd = Command::new(cargo_debug_binary_path("notebook"));
     if let Some(path) = notebook_path {
         app_cmd.arg(path);
     }
@@ -2022,13 +2032,12 @@ fn cmd_mcp(print_config: bool, release: bool) {
         // Build the supervisor, then run it with --print-config
         // For now, print the config pointing at the binary
         run_cmd("cargo", &["build", "-p", "mcp-supervisor"]);
-        let binary = if cfg!(windows) {
-            "target/debug/mcp-supervisor.exe"
-        } else {
-            "target/debug/mcp-supervisor"
-        };
-        let binary_path = fs::canonicalize(binary).unwrap_or_else(|e| {
-            eprintln!("Failed to resolve supervisor binary path: {e}");
+        let binary = cargo_debug_binary_path("mcp-supervisor");
+        let binary_path = fs::canonicalize(&binary).unwrap_or_else(|e| {
+            eprintln!(
+                "Failed to resolve supervisor binary path at {}: {e}",
+                binary.display()
+            );
             exit(1);
         });
         let mut env_map = serde_json::Map::new();
@@ -2059,13 +2068,9 @@ fn cmd_mcp(print_config: bool, release: bool) {
 
     // Build and exec the supervisor binary
     run_cmd("cargo", &["build", "-p", "mcp-supervisor"]);
-    let binary = if cfg!(windows) {
-        "target/debug/mcp-supervisor.exe"
-    } else {
-        "target/debug/mcp-supervisor"
-    };
+    let binary = cargo_debug_binary_path("mcp-supervisor");
 
-    let mut command = Command::new(binary);
+    let mut command = Command::new(&binary);
     apply_worktree_env(&mut command, true);
     if release {
         command.env("RUNTIMED_RELEASE", "1");
@@ -2250,6 +2255,32 @@ fn canonical_path(path: impl AsRef<Path>) -> PathBuf {
     })
 }
 
+fn workspace_root_or_exit() -> PathBuf {
+    find_workspace_root().unwrap_or_else(|| {
+        eprintln!("Error: could not resolve current Cargo workspace.");
+        exit(1);
+    })
+}
+
+fn cargo_profile_dir(profile: &str) -> PathBuf {
+    let workspace = workspace_root_or_exit();
+    runt_workspace::cargo_profile_dir_for_workspace(&workspace, profile)
+}
+
+fn cargo_binary_path(profile: &str, binary_name: &str) -> PathBuf {
+    let workspace = workspace_root_or_exit();
+    runt_workspace::cargo_binary_path_for_workspace(&workspace, profile, binary_name)
+}
+
+fn cargo_debug_binary_path(binary_name: &str) -> PathBuf {
+    cargo_binary_path("debug", binary_name)
+}
+
+fn notebook_bundled_marker_path() -> PathBuf {
+    let workspace = workspace_root_or_exit();
+    runt_workspace::notebook_bundled_marker_for_workspace(&workspace)
+}
+
 fn dev_socket_path() -> PathBuf {
     let workspace = runt_workspace::get_workspace_path().unwrap_or_else(|| {
         eprintln!("Error: could not resolve current git worktree.");
@@ -2279,20 +2310,13 @@ fn cmd_dev_daemon(release: bool) {
         run_cmd("cargo", &["build", "-p", "runtimed"]);
     }
 
-    let binary = if cfg!(windows) {
-        if release {
-            "target/release/runtimed.exe"
-        } else {
-            "target/debug/runtimed.exe"
-        }
-    } else if release {
-        "target/release/runtimed"
-    } else {
-        "target/debug/runtimed"
-    };
+    let binary = dev_daemon_binary(release);
 
-    if !Path::new(binary).exists() {
-        eprintln!("Build succeeded but binary not found at {binary}");
+    if !binary.exists() {
+        eprintln!(
+            "Build succeeded but binary not found at {}",
+            binary.display()
+        );
         exit(1);
     }
 
@@ -2312,7 +2336,7 @@ fn cmd_dev_daemon(release: bool) {
     println!("Press Ctrl+C to stop.");
     println!();
 
-    let mut cmd = Command::new(binary);
+    let mut cmd = Command::new(&binary);
     cmd.args(["--dev", "run"]);
     apply_worktree_env(&mut cmd, true);
     let status = cmd.status().unwrap_or_else(|e| {
@@ -2470,26 +2494,12 @@ fn process_is_running(pid: u64) -> bool {
     }
 }
 
-fn dev_daemon_binary(release: bool) -> &'static str {
-    if cfg!(windows) {
-        if release {
-            "target/release/runtimed.exe"
-        } else {
-            "target/debug/runtimed.exe"
-        }
-    } else if release {
-        "target/release/runtimed"
-    } else {
-        "target/debug/runtimed"
-    }
+fn dev_daemon_binary(release: bool) -> PathBuf {
+    cargo_binary_path(if release { "release" } else { "debug" }, "runtimed")
 }
 
-fn dev_runt_cli_binary() -> &'static str {
-    if cfg!(windows) {
-        "target/debug/runt.exe"
-    } else {
-        "target/debug/runt"
-    }
+fn dev_runt_cli_binary() -> PathBuf {
+    cargo_debug_binary_path("runt")
 }
 
 fn relay_child_output<R>(label: &'static str, stream: Option<R>)
@@ -2718,19 +2728,11 @@ fn build_external_binary(package: &str, binary_name: &str, release: bool) {
 
 /// Copy an already-built binary to the sidecar locations for Tauri bundling.
 /// Copies to both `crates/notebook/binaries/` (for bundle builds) and
-/// `target/{debug,release}/binaries/` (for no-bundle dev builds).
+/// the resolved debug profile's `binaries/` dir (for no-bundle dev builds).
 fn copy_sidecar_binary(binary_name: &str, release: bool) {
     let target = get_host_target();
-    let target_dir = if release {
-        "target/release"
-    } else {
-        "target/debug"
-    };
-    let source = if cfg!(windows) {
-        format!("{target_dir}/{binary_name}.exe")
-    } else {
-        format!("{target_dir}/{binary_name}")
-    };
+    let profile = if release { "release" } else { "debug" };
+    let source = cargo_binary_path(profile, binary_name);
 
     let dest_name = if cfg!(windows) {
         format!("{binary_name}-{target}.exe")
@@ -2742,15 +2744,18 @@ fn copy_sidecar_binary(binary_name: &str, release: bool) {
     let binaries_dir = Path::new("crates/notebook/binaries");
     let dest = binaries_dir.join(&dest_name);
     fs::copy(&source, &dest).unwrap_or_else(|e| {
-        eprintln!("Failed to copy {binary_name} binary: {e}");
+        eprintln!(
+            "Failed to copy {binary_name} binary from {}: {e}",
+            source.display()
+        );
         exit(1);
     });
     println!("{binary_name} ready: {}", dest.display());
 
-    // Also copy to target/debug/binaries/ for development (no-bundle builds)
+    // Also copy to the debug profile's binaries/ for development (no-bundle builds)
     // Tauri's externalBin only copies to app bundle, not for --no-bundle
-    let dev_binaries_dir = Path::new("target/debug/binaries");
-    fs::create_dir_all(dev_binaries_dir).ok();
+    let dev_binaries_dir = cargo_profile_dir("debug").join("binaries");
+    fs::create_dir_all(&dev_binaries_dir).ok();
     let dev_dest = dev_binaries_dir.join(&dest_name);
     fs::copy(&source, &dev_dest).unwrap_or_else(|e| {
         eprintln!("Failed to copy {binary_name} to dev binaries: {e}");
@@ -3756,7 +3761,7 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
     } else {
         "nteract-mcp"
     };
-    let built_binary = Path::new("target/release").join(binary_name);
+    let built_binary = cargo_binary_path("release", "nteract-mcp");
     if !built_binary.exists() {
         eprintln!("Built binary not found at {}", built_binary.display());
         let _ = fs::remove_dir_all(&staging_dir);
@@ -3886,8 +3891,8 @@ fn cmd_sync_tool_cache(check: bool) {
     run_cmd("cargo", &["build", "--release", "-p", "runt"]);
 
     eprintln!("Dumping tool list from runt mcp...");
-    let runt_bin = Path::new("target/release/runt");
-    let tools_json = dump_mcp_tools(runt_bin);
+    let runt_bin = cargo_binary_path("release", "runt");
+    let tools_json = dump_mcp_tools(&runt_bin);
 
     // 3. Parse and compute description bytes
     let tools: serde_json::Value = serde_json::from_str(&tools_json)
