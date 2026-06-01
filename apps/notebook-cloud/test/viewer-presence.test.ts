@@ -133,5 +133,11 @@ describe("cloud viewer presence", () => {
       }),
       "alice@example.com",
     );
+    assert.equal(
+      cloudFriendlyPeerLabel({
+        actorLabel: "user:anaconda:kyle/agent:codex:s1",
+      }),
+      "Codex for Kyle",
+    );
   });
 });
