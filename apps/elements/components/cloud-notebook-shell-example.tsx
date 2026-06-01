@@ -19,7 +19,6 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookEditModeButton,
-  NotebookEnvironmentSummary,
   NotebookIdentityBadge,
   NotebookPackageSummaryPanel,
   NotebookPresenceStatus,
@@ -29,6 +28,7 @@ import {
   type NotebookInteractionModeProjection,
   type NotebookShellCapabilities,
 } from "@/components/notebook";
+import { EnvironmentSummary } from "@/components/environment";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import {
@@ -151,7 +151,7 @@ export function CloudNotebookShellExample() {
           packages={scenario.viewModel.packages}
           readOnly
           header={
-            <NotebookEnvironmentSummary
+            <EnvironmentSummary
               capabilities={shellCapabilities}
               packages={scenario.viewModel.packages}
               environment={scenario.environment}

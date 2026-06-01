@@ -1,31 +1,17 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
-import { NotebookEnvironmentSummary } from "../NotebookEnvironmentSummary";
-import type { NotebookShellCapabilities } from "../capabilities";
-import type { NotebookPackageViewModel } from "../view-model";
+import { EnvironmentSummary } from "../EnvironmentSummary";
+import type { EnvironmentSurfaceCapabilities } from "../environment-surface";
+import type { NotebookPackageViewModel } from "../package-view-model";
 
-const capabilities: NotebookShellCapabilities = {
-  canRead: true,
-  canEditMarkdown: true,
-  canEditCells: true,
-  canEditStructure: true,
-  canRequestEdit: false,
+const capabilities: EnvironmentSurfaceCapabilities = {
   canExecute: true,
-  canToggleCode: true,
   canViewPackages: true,
   canManagePackages: true,
-  canManageSharing: false,
   access: {
     level: "owner",
     source: "local",
     isPublic: false,
-    actorLabel: "local:kyle",
-    identityLabel: "Kyle",
-  },
-  auth: {
-    canSignIn: false,
-    canUseAuthenticatedIdentity: true,
-    needsAttention: false,
   },
   runtime: {
     canWriteRuntimeState: true,
@@ -48,10 +34,10 @@ const packages: NotebookPackageViewModel = {
   ],
 };
 
-describe("NotebookEnvironmentSummary", () => {
+describe("EnvironmentSummary", () => {
   it("renders runtime, package, sync, and trust facts", () => {
     render(
-      <NotebookEnvironmentSummary
+      <EnvironmentSummary
         capabilities={capabilities}
         packages={packages}
         runtimeLabel="Python - local runtime ready"
@@ -72,7 +58,7 @@ describe("NotebookEnvironmentSummary", () => {
 
   it("shows view-only environment state when package management is unavailable", () => {
     render(
-      <NotebookEnvironmentSummary
+      <EnvironmentSummary
         capabilities={{
           ...capabilities,
           canExecute: false,
@@ -96,7 +82,7 @@ describe("NotebookEnvironmentSummary", () => {
 
   it("can render only environment facts when package details are shown elsewhere", () => {
     render(
-      <NotebookEnvironmentSummary
+      <EnvironmentSummary
         capabilities={{
           ...capabilities,
           canManagePackages: false,
@@ -121,7 +107,7 @@ describe("NotebookEnvironmentSummary", () => {
 
   it("can render from a typed environment surface projection", () => {
     render(
-      <NotebookEnvironmentSummary
+      <EnvironmentSummary
         capabilities={capabilities}
         packages={packages}
         environment={{

@@ -3,9 +3,15 @@
 import { Bot, CheckCircle2, Cloud, KeyRound, Package, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
-import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
 import {
-  NotebookEnvironmentSummary,
+  CondaIcon,
+  DenoIcon,
+  EnvironmentSummary,
+  PixiIcon,
+  PythonIcon,
+  UvIcon,
+} from "@/components/environment";
+import {
   NotebookIdentityBadge,
   NotebookIdentityGroup,
   NotebookDocumentHeader,
@@ -220,7 +226,7 @@ export function IdentityEnvironmentSurfacesExample() {
           </div>
         </div>
 
-        <NotebookEnvironmentSummary
+        <EnvironmentSummary
           capabilities={desktopOwner.capabilities}
           packages={desktopOwner.viewModel.packages}
           environment={desktopOwner.environment}
@@ -228,12 +234,12 @@ export function IdentityEnvironmentSurfacesExample() {
       </section>
 
       <section className="grid gap-4 lg:grid-cols-2">
-        <NotebookEnvironmentSummary
+        <EnvironmentSummary
           capabilities={agentScenario.capabilities}
           packages={agentScenario.viewModel.packages}
           environment={agentScenario.environment}
         />
-        <NotebookEnvironmentSummary
+        <EnvironmentSummary
           capabilities={getElementsNotebookScenario("runtime-unavailable").capabilities}
           packages={getElementsNotebookScenario("runtime-unavailable").viewModel.packages}
           environment={getElementsNotebookScenario("runtime-unavailable").environment}

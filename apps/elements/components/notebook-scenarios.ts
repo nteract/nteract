@@ -1,15 +1,17 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import {
-  createNotebookViewModel,
   createNotebookEnvironmentSurface,
+  type NotebookEnvironmentSurface,
+  type NotebookPackageSyncStatus,
+  type NotebookTrustStatus,
+} from "@/components/environment";
+import {
+  createNotebookViewModel,
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
   type NotebookActorProjection,
-  type NotebookEnvironmentSurface,
-  type NotebookPackageSyncStatus,
   type NotebookShellCapabilities,
-  type NotebookTrustStatus,
   type NotebookViewCell,
   type NotebookViewModel,
 } from "@/components/notebook";

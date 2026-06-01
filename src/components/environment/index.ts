@@ -10,6 +10,12 @@ export {
   EnvironmentPackageSummaryPanel,
   type EnvironmentPackageSummaryPanelProps,
 } from "./EnvironmentPackageSummaryPanel";
+export {
+  EnvironmentSummary,
+  NotebookEnvironmentSummary,
+  type EnvironmentSummaryProps,
+  type NotebookEnvironmentSummaryProps,
+} from "./EnvironmentSummary";
 export { CondaDependencyPanel, type CondaDependencyPanelProps } from "./CondaDependencyPanel";
 export {
   DenoDependencyPanel,
@@ -31,3 +37,22 @@ export {
   type NotebookPackageSection,
   type NotebookPackageViewModel,
 } from "./package-view-model";
+export {
+  accessLevelLabel,
+  accessSourceLabel,
+  createEnvironmentSurface,
+  createNotebookEnvironmentSurface,
+  type CreateEnvironmentSurfaceOptions,
+  type CreateNotebookEnvironmentSurfaceOptions,
+  type EnvironmentAccessLevel,
+  type EnvironmentAccessSource,
+  type EnvironmentPackageSyncStatus,
+  type EnvironmentRuntimeStatus,
+  type EnvironmentSurface,
+  type EnvironmentSurfaceCapabilities,
+  type EnvironmentTrustStatus,
+  type NotebookEnvironmentSurface,
+  type NotebookPackageSyncStatus,
+  type NotebookRuntimeStatus,
+  type NotebookTrustStatus,
+} from "./environment-surface";
