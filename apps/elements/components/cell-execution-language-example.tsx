@@ -39,7 +39,7 @@ const executionStates: ExecutionState[] = [
     count: 12,
     isQueued: true,
     queuePriority: 0.7,
-    submittedByActorLabel: "Kyle Kelley",
+    submittedByActorLabel: "user:anaconda:kyle/browser:cloud",
   },
   {
     id: "running",
@@ -47,7 +47,7 @@ const executionStates: ExecutionState[] = [
     detail: "Active execution moves through the compact stop button and current-line signal.",
     count: 12,
     isExecuting: true,
-    submittedByActorLabel: "Kyle Kelley",
+    submittedByActorLabel: "user:anaconda:kyle/agent:codex:s1",
   },
   {
     id: "completed",
