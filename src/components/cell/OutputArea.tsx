@@ -1,6 +1,5 @@
 import { SiftScrollHandoffCue } from "@nteract/sift/handoff";
 import "@nteract/sift/handoff.css";
-import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -198,19 +197,6 @@ interface OutputAreaProps {
    * meaningful instead of a stack of identical `localhost` rows.
    */
   executionCount?: number | null;
-  /**
-   * Whether the output area is collapsed.
-   */
-  collapsed?: boolean;
-  /**
-   * Callback when collapse state is toggled.
-   */
-  onToggleCollapse?: () => void;
-  /**
-   * Total output count to report when a segmented output area shares one
-   * collapse control across multiple rendered lanes.
-   */
-  collapseOutputCount?: number;
   /**
    * Maximum height before scrolling. Set to enable scroll behavior.
    */
@@ -513,36 +499,20 @@ function withTracebackExecutionTargets(
  * OutputArea renders multiple Jupyter outputs with proper layout.
  *
  * Handles all Jupyter output types: execute_result, display_data, stream, and error.
- * Supports collapsible state. Outputs render in natural document flow by
- * default; callers opt into wrapper scrolling with `maxHeight` or by marking
- * an isolated output as focused.
- *
- * @example
- * ```tsx
- * <OutputArea
- *   outputs={cell.outputs}
- *   collapsed={outputsCollapsed}
- *   onToggleCollapse={() => setOutputsCollapsed(!outputsCollapsed)}
- * />
- * ```
+ * Outputs render in natural document flow by default; callers opt into wrapper
+ * scrolling with `maxHeight` or by marking an isolated output as focused.
  */
 export function OutputArea({
   outputs,
   isolated = "auto",
-  onToggleCollapse,
   priority = DEFAULT_PRIORITY,
   ...props
 }: OutputAreaProps) {
-  const {
-    onSearchMatchCount,
-    preloadIframe = false,
-    collapsed = false,
-    ...passthroughProps
-  } = props;
+  const { onSearchMatchCount, preloadIframe = false, ...passthroughProps } = props;
   const segmentedSearchMatchCountsRef = useRef(new Map<string, number>());
   const outputSegments = segmentedOutputLanes(outputs, {
     isolated,
-    hasCollapseControl: onToggleCollapse !== undefined,
+    hasCollapseControl: false,
     priority,
   });
   const outputSegmentKeys = outputSegments.map(outputSegmentKey);
@@ -551,14 +521,11 @@ export function OutputArea({
     return (
       <>
         {outputSegments.map((segment, index) => {
-          if (collapsed && index > 0) return null;
           const segmentKey = outputSegmentKeys[index] ?? outputSegmentKey(segment, index);
           return (
             <OutputAreaSingle
               key={segmentKey}
               {...passthroughProps}
-              collapsed={collapsed}
-              collapseOutputCount={outputs.length}
               outputs={segment.outputs}
               isolated="auto"
               onSearchMatchCount={
@@ -578,7 +545,6 @@ export function OutputArea({
                     }
                   : undefined
               }
-              onToggleCollapse={index === 0 ? onToggleCollapse : undefined}
               preloadIframe={segment.lane === "dom" ? false : preloadIframe}
               priority={priority}
             />
@@ -591,11 +557,9 @@ export function OutputArea({
   return (
     <OutputAreaSingle
       {...passthroughProps}
-      collapsed={collapsed}
       outputs={outputs}
       isolated={isolated}
       onSearchMatchCount={onSearchMatchCount}
-      onToggleCollapse={onToggleCollapse}
       preloadIframe={preloadIframe}
       priority={priority}
     />
@@ -606,9 +570,6 @@ function OutputAreaSingle({
   outputs,
   cellId,
   executionCount,
-  collapsed = false,
-  collapseOutputCount = outputs.length,
-  onToggleCollapse,
   maxHeight,
   focused = false,
   useOutputWell = true,
@@ -677,9 +638,9 @@ function OutputAreaSingle({
 
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
-  const showPreloadedIframe = preloadIframe && !collapsed;
+  const showPreloadedIframe = preloadIframe;
   const shouldDeferIsolatedFrame =
-    deferIsolatedFrameUntilVisible && shouldIsolate && !showPreloadedIframe && !collapsed;
+    deferIsolatedFrameUntilVisible && shouldIsolate && !showPreloadedIframe;
   const deferredIsolatedFrame = useDeferredIsolatedFrame({
     enabled: shouldDeferIsolatedFrame,
     rootMargin: deferredIsolatedFrameRootMargin,
@@ -741,8 +702,6 @@ function OutputAreaSingle({
         minHeight: `${hasSiftOutputs ? MIN_OUTPUT_WELL_HEIGHT : DEFERRED_OUTPUT_PLACEHOLDER_HEIGHT}px`,
       }
     : undefined;
-
-  const hasCollapseControl = onToggleCollapse !== undefined;
 
   useEffect(() => {
     if (!shouldUseScrollPassthroughFrame && staticFrameInteractionActive) {
@@ -1036,143 +995,123 @@ function OutputAreaSingle({
         className,
       )}
     >
-      {/* Collapse toggle */}
-      {hasCollapseControl && (
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          aria-expanded={!collapsed}
-          aria-controls={id}
-        >
-          {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          <span>
-            {collapsed
-              ? `Show ${collapseOutputCount} output${collapseOutputCount > 1 ? "s" : ""}`
-              : "Hide outputs"}
-          </span>
-        </button>
-      )}
-
       {/* Output content */}
-      {!collapsed && (
-        <div
-          id={id}
-          className={cn(
-            "space-y-2",
-            !shouldIsolate && inDomMaxHeight !== null && "overflow-y-auto",
-            shouldConstrainIsolatedOutput && "overflow-y-auto",
-          )}
-          style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
-        >
-          {/* Preloaded or active isolated frame */}
-          {(shouldIsolate || showPreloadedIframe) && (
-            <div
-              ref={setStaticFrameInteractionNode}
-              className={cn(
-                shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
-                hasWheelOwningOutputs && "group/sift rounded-md overflow-hidden",
-                hasWheelOwningOutputs &&
-                  shouldUseScrollPassthroughFrame &&
-                  !staticFrameInteractionActive &&
-                  "hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
-                hasWheelOwningOutputs && staticFrameInteractionActive && "bg-background",
-              )}
-              style={interactionFrameStyle}
-              data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
-              data-sift-output={hasSiftOutputs ? "true" : undefined}
-              tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
-              onPointerDown={
-                shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
-              }
-              onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
-            >
-              {shouldMountIsolatedFrame ? (
-                <IsolatedFrame
-                  ref={setIsolatedFrameHandle}
-                  name={frameName}
-                  darkMode={darkMode}
-                  colorTheme={colorTheme}
-                  minHeight={24}
-                  maxHeight={isolatedOutputWellMaxHeight}
-                  autoHeight={shouldIsolate && !focused}
-                  allowWheelBoundaryScroll={allowWheelBoundaryScroll}
-                  scrollPassthrough={shouldScrollPassthroughFrame}
-                  onReady={handleIsolatedFrameReady}
-                  onLinkClick={onLinkClick}
-                  onMouseDown={activateStaticFrameInteraction}
-                  onWidgetUpdate={onWidgetUpdate}
-                  onMessage={handleIframeMessage}
-                  onError={handleIframeError}
-                  onDiagnostic={onDiagnostic}
-                  hostContext={hostContext}
-                  outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
+      <div
+        id={id}
+        className={cn(
+          "space-y-2",
+          !shouldIsolate && inDomMaxHeight !== null && "overflow-y-auto",
+          shouldConstrainIsolatedOutput && "overflow-y-auto",
+        )}
+        style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
+      >
+        {/* Preloaded or active isolated frame */}
+        {(shouldIsolate || showPreloadedIframe) && (
+          <div
+            ref={setStaticFrameInteractionNode}
+            className={cn(
+              shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
+              hasWheelOwningOutputs && "group/sift rounded-md overflow-hidden",
+              hasWheelOwningOutputs &&
+                shouldUseScrollPassthroughFrame &&
+                !staticFrameInteractionActive &&
+                "hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
+              hasWheelOwningOutputs && staticFrameInteractionActive && "bg-background",
+            )}
+            style={interactionFrameStyle}
+            data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
+            data-sift-output={hasSiftOutputs ? "true" : undefined}
+            tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
+            onPointerDown={
+              shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
+            }
+            onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
+          >
+            {shouldMountIsolatedFrame ? (
+              <IsolatedFrame
+                ref={setIsolatedFrameHandle}
+                name={frameName}
+                darkMode={darkMode}
+                colorTheme={colorTheme}
+                minHeight={24}
+                maxHeight={isolatedOutputWellMaxHeight}
+                autoHeight={shouldIsolate && !focused}
+                allowWheelBoundaryScroll={allowWheelBoundaryScroll}
+                scrollPassthrough={shouldScrollPassthroughFrame}
+                onReady={handleIsolatedFrameReady}
+                onLinkClick={onLinkClick}
+                onMouseDown={activateStaticFrameInteraction}
+                onWidgetUpdate={onWidgetUpdate}
+                onMessage={handleIframeMessage}
+                onError={handleIframeError}
+                onDiagnostic={onDiagnostic}
+                hostContext={hostContext}
+                outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
+              />
+            ) : (
+              <div
+                aria-hidden="true"
+                className="rounded-md"
+                data-slot="isolated-frame-deferred"
+                style={deferredIsolatedFramePlaceholderStyle}
+              />
+            )}
+            {showSiftInteractionCue && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
+                <SiftScrollHandoffCue
+                  className="pointer-events-auto"
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    activateStaticFrameInteraction();
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    activateStaticFrameInteraction();
+                  }}
                 />
-              ) : (
-                <div
-                  aria-hidden="true"
-                  className="rounded-md"
-                  data-slot="isolated-frame-deferred"
-                  style={deferredIsolatedFramePlaceholderStyle}
-                />
-              )}
-              {showSiftInteractionCue && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
-                  <SiftScrollHandoffCue
-                    className="pointer-events-auto"
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                      activateStaticFrameInteraction();
-                    }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      activateStaticFrameInteraction();
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          )}
+              </div>
+            )}
+          </div>
+        )}
 
-          {/* In-DOM outputs (when not using isolation) */}
-          {!shouldIsolate && (
-            <div ref={inDomOutputRef}>
-              {outputs.map((output, index) => {
-                // Prefer daemon-stamped output_id for stable React keys so a
-                // stream append doesn't re-mount sibling outputs. Fall back
-                // to positional when a render path skipped the id.
-                const key = output.output_id ?? `output-${index}`;
-                return (
-                  <div key={key} data-slot="output-item" data-output-index={index}>
-                    <ErrorBoundary
-                      resetKeys={[output]}
-                      fallback={(error, reset) => (
-                        <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
-                      )}
-                      onError={(error, errorInfo) => {
-                        console.error(
-                          `[OutputArea] Error rendering output ${index}:`,
-                          error,
-                          errorInfo.componentStack,
-                        );
-                      }}
-                    >
-                      {renderOutput(
-                        output,
-                        index,
-                        renderers,
-                        priority,
-                        resolveTracebackExecutionTarget,
-                        onNavigateToTracebackCell,
-                      )}
-                    </ErrorBoundary>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
+        {/* In-DOM outputs (when not using isolation) */}
+        {!shouldIsolate && (
+          <div ref={inDomOutputRef}>
+            {outputs.map((output, index) => {
+              // Prefer daemon-stamped output_id for stable React keys so a
+              // stream append doesn't re-mount sibling outputs. Fall back
+              // to positional when a render path skipped the id.
+              const key = output.output_id ?? `output-${index}`;
+              return (
+                <div key={key} data-slot="output-item" data-output-index={index}>
+                  <ErrorBoundary
+                    resetKeys={[output]}
+                    fallback={(error, reset) => (
+                      <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
+                    )}
+                    onError={(error, errorInfo) => {
+                      console.error(
+                        `[OutputArea] Error rendering output ${index}:`,
+                        error,
+                        errorInfo.componentStack,
+                      );
+                    }}
+                  >
+                    {renderOutput(
+                      output,
+                      index,
+                      renderers,
+                      priority,
+                      resolveTracebackExecutionTarget,
+                      onNavigateToTracebackCell,
+                    )}
+                  </ErrorBoundary>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

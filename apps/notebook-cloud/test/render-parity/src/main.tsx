@@ -30,7 +30,6 @@ function CloudRendererParityHarness() {
   const { store: widgetStore } = useWidgetStoreRequired();
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const [cells, setCells] = useState<Awaited<ReturnType<typeof resolveCloudOutputParityCells>>>([]);
-  const [boundaryCollapsed, setBoundaryCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hostContext = useMemo(() => cloudOutputParityHostContext(), []);
   const boundaryOutputs = useMemo(
@@ -115,13 +114,11 @@ function CloudRendererParityHarness() {
                   hostContext={hostContext}
                 />
               </div>
-              <div data-testid="collapsible-sift-boundary">
-                <h2>Collapsible Sift boundary</h2>
+              <div data-testid="sift-boundary">
+                <h2>Sift boundary</h2>
                 <OutputArea
-                  cellId="collapsible-sift-boundary"
+                  cellId="sift-boundary"
                   outputs={boundaryOutputs}
-                  collapsed={boundaryCollapsed}
-                  onToggleCollapse={() => setBoundaryCollapsed((value) => !value)}
                   priority={CLOUD_VIEWER_PRIORITY}
                   hostContext={hostContext}
                 />
