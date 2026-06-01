@@ -8,19 +8,19 @@ describe("NotebookPresenceStatus", () => {
       <NotebookPresenceStatus
         connected
         label="2 here now"
-        modeLabel="editing is allowed"
+        modeLabel="editing"
         title="2 participants are in this notebook"
       />,
     );
 
-    expect(screen.getByText("2 here now, editing is allowed")).toBeVisible();
+    expect(screen.getByText("2 here now, editing")).toBeVisible();
     expect(screen.getByLabelText("2 participants are in this notebook")).toHaveAttribute(
       "data-connected",
       "true",
     );
     expect(container.querySelector("[data-slot='notebook-presence-status']")).toHaveAttribute(
       "title",
-      "2 participants are in this notebook. editing is allowed",
+      "2 participants are in this notebook. editing",
     );
   });
 

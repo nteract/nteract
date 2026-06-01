@@ -73,6 +73,7 @@ export {
 } from "./NotebookEditModeButton";
 export {
   createNotebookInteractionModeProjection,
+  notebookInteractionPresenceLabel,
   type CreateNotebookInteractionModeProjectionOptions,
   type NotebookInteractionHostSupport,
   type NotebookInteractionMode,
