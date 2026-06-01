@@ -6,8 +6,11 @@ description: Visual language sketches for the code cell run line and execution s
 import { CellExecutionLanguageExample } from "@/components/cell-execution-language-example";
 
 The code cell run line should feel like notebook punctuation first and status
-copy second. This studio compares the current production line against quieter
-directions where the execution signal carries more of the meaning and text
-appears only when it earns the space.
+copy second. Quiet states should carry just enough evidence to orient the
+reader, while active states can speak with color, motion, and explicit words.
+
+The production line now follows that grammar: completed cells rest as a small
+run marker, ready cells stay visually quiet, and the full language context
+returns when the reader approaches the cell.
 
 <CellExecutionLanguageExample />

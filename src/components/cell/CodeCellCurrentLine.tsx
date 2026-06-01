@@ -92,6 +92,10 @@ function executionCountLabel(count: number | null): string | null {
   return count === null ? null : `Execution ${formatExecutionCount(count)}`;
 }
 
+function quietBoundaryState(count: number | null): ExecutionBoundaryState {
+  return count === null ? "idle" : "ran";
+}
+
 function executionLineClass({ isFocused }: { isFocused: boolean }) {
   if (isFocused) {
     return "bg-border/30";
@@ -164,7 +168,7 @@ function ExecutionBoundaryRule({
   queuePriority: number;
   isFocused: boolean;
 }) {
-  if (state === "running" || runningSignalPhase === "settling") {
+  if (state === "running") {
     const showSignal = runningSignalPhase === "active" || runningSignalPhase === "settling";
 
     return (
@@ -275,15 +279,28 @@ export function CodeCellCurrentLine({
         : count !== null
           ? "ran"
           : "idle";
-  const isCompactIdle = compactIdle && state === "idle";
-  const isQuietResting = state === "idle" || state === "ran";
+  const hasRunningSignal =
+    !isErrored &&
+    !isQueued &&
+    ((state === "running" && runningSignalPhase === "active") || runningSignalPhase === "settling");
+  const boundaryState =
+    state === "running" && !hasRunningSignal
+      ? quietBoundaryState(count)
+      : hasRunningSignal
+        ? "running"
+        : state;
+  const visualIsExecuting = state === "running" && runningSignalPhase === "active";
+  const isCompactIdle = compactIdle && boundaryState === "idle";
+  const isQuietResting = boundaryState === "idle" || boundaryState === "ran";
   const detailLabel = visualExecutionDetail({
     count,
     elapsedMs,
-    isExecuting,
+    isExecuting: visualIsExecuting,
     isQueued,
     isErrored,
   });
+  const isIdleReadyDetail = boundaryState === "idle" && detailLabel === "ready";
+  const isQuietContextualState = boundaryState === "idle" || boundaryState === "ran";
   const accessibleDetailLabel = accessibleExecutionDetail({
     count,
     elapsedMs,
@@ -296,6 +313,7 @@ export function CodeCellCurrentLine({
     <div
       data-slot="code-cell-current-line"
       data-execution-state={state}
+      data-execution-visual-state={boundaryState}
       data-execution-count={count ?? undefined}
       data-execution-label={countLabel ?? undefined}
       className={cn(
@@ -306,7 +324,7 @@ export function CodeCellCurrentLine({
     >
       {!isCompactIdle ? (
         <ExecutionBoundaryRule
-          state={state}
+          state={boundaryState}
           runningSignalPhase={runningSignalPhase}
           queuePriority={queuePriority}
           isFocused={isFocused}
@@ -330,35 +348,51 @@ export function CodeCellCurrentLine({
         aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
         aria-live={isExecuting || isQueued || isErrored ? "polite" : undefined}
         className={cn(
-          "flex min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap font-medium transition-[color,opacity,max-width] duration-150",
+          "flex min-w-0 shrink-0 items-center whitespace-nowrap font-medium transition-[color,opacity,max-width,gap] duration-150",
           isCompactIdle ? "max-w-0 overflow-hidden opacity-0" : "max-w-64 opacity-100",
+          isQuietContextualState
+            ? "gap-0 group-hover:gap-1.5 group-focus-within:gap-1.5"
+            : "gap-1.5",
           isFocused && "text-foreground/70",
         )}
       >
         <span
-          data-slot="code-cell-current-line-language"
+          data-slot="code-cell-current-line-language-context"
           className={cn(
-            "text-foreground/60 transition-colors duration-150",
-            isFocused && "text-foreground/70",
+            "flex shrink-0 items-center gap-1.5 overflow-hidden transition-[color,opacity,max-width] duration-150",
+            isQuietContextualState
+              ? "max-w-0 opacity-0 group-hover:max-w-20 group-hover:opacity-100 group-focus-within:max-w-20 group-focus-within:opacity-100"
+              : "max-w-20 opacity-100",
           )}
         >
-          {languageLabel}
-        </span>
-        <span
-          className={cn("text-muted-foreground/35", isCompactIdle && "sr-only")}
-          aria-hidden="true"
-        >
-          /
+          <span
+            data-slot="code-cell-current-line-language"
+            className={cn(
+              "text-foreground/60 transition-colors duration-150",
+              isFocused && "text-foreground/70",
+            )}
+          >
+            {languageLabel}
+          </span>
+          <span
+            className={cn("text-muted-foreground/35", isCompactIdle && "sr-only")}
+            aria-hidden="true"
+          >
+            /
+          </span>
         </span>
         <span
           data-slot="code-cell-current-line-detail"
           className={cn(
-            "tabular-nums",
+            "shrink-0 tabular-nums transition-[max-width,opacity] duration-150",
             isCompactIdle && "sr-only",
-            isExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
+            isIdleReadyDetail
+              ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-16 group-hover:opacity-100 group-focus-within:max-w-16 group-focus-within:opacity-100"
+              : "max-w-64 opacity-100",
+            visualIsExecuting && "font-semibold text-emerald-700 dark:text-emerald-300",
             isQueued && "font-semibold text-sky-700 dark:text-sky-300",
             isErrored && "font-semibold text-destructive/80",
-            !isExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
+            !visualIsExecuting && !isQueued && !isErrored && "text-muted-foreground/70",
           )}
         >
           {detailLabel}

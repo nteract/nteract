@@ -9,13 +9,13 @@ type Intent = "code" | "markdown";
 
 const concepts = [
   {
-    label: "Production row",
-    body: "The row wakes in a neutral insertion state; color appears only when code or markdown is targeted.",
+    label: "Threaded production row",
+    body: "Actions attach directly to the document rule; the selected intent fades back into the page instead of forming a floating palette.",
     render: <ProductionInsertionPreview />,
   },
   {
-    label: "Threaded line",
-    body: "Actions attach directly to the document rule, reducing the floating-button feeling.",
+    label: "Connected group study",
+    body: "A more bordered variation keeps the actions grouped, but adds more chrome than the production row needs.",
     render: <ThreadedLinePreview />,
   },
   {
@@ -32,8 +32,8 @@ export function CellInsertionAffordancesExample() {
         <div className="border-b border-fd-border p-4">
           <h2 className="text-sm font-semibold">Between-cell direction set</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            These sketches keep the same rail-gripped ribbon and document column, but change how
-            much chrome the code and markdown choices carry.
+            These sketches keep the same rail-gripped ribbon and document column. The production row
+            now uses the threaded direction; the remaining sketches document the tradeoffs.
           </p>
         </div>
         <div className="divide-y divide-fd-border bg-background">
@@ -89,7 +89,7 @@ function ThreadedLinePreview() {
         <div className="h-px w-6 bg-border/70" />
         <ThreadedAction intent="code" muted />
         <ThreadedAction intent="markdown" />
-        <div className="h-px min-w-8 flex-1 bg-border/70" />
+        <div className="h-px min-w-8 flex-1 bg-gradient-to-r from-emerald-400/25 via-border/45 to-transparent" />
       </div>
     </div>
   );

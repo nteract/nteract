@@ -257,7 +257,7 @@ describe("CodeCell output focus", () => {
     expect(rule).toHaveClass("flex-1");
   });
 
-  it("keeps running status active while the stop control carries danger", () => {
+  it("keeps fast running status visually quiet while the stop control carries danger", () => {
     mockOutputs = [];
     mockExecution = { execution_count: null, submitted_by_actor_label: null };
     mockIsExecuting = true;
@@ -279,12 +279,15 @@ describe("CodeCell output focus", () => {
     const stopButton = getByTestId("execute-button");
 
     expect(footer?.getAttribute("data-execution-state")).toBe("running");
-    expect(status?.textContent).toBe("Python/running");
-    expect(detail).toHaveClass("text-emerald-700");
+    expect(footer?.getAttribute("data-execution-visual-state")).toBe("idle");
+    expect(status?.textContent).toBe("Python/ready");
+    expect(status).toHaveAttribute("aria-label", "Python: Running");
+    expect(detail).toHaveClass("text-muted-foreground/70");
+    expect(detail).not.toHaveClass("text-emerald-700");
     expect(status).not.toHaveClass("text-destructive/80");
-    expect(rule).toHaveClass("text-emerald-500/65");
+    expect(rule).toHaveClass("bg-border/15");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(rule).toHaveAttribute("data-execution-signal", "building");
+    expect(rule).not.toHaveAttribute("data-execution-signal");
     expect(rule?.querySelector("svg")).toBeNull();
     expect(stopButton).toHaveClass("text-destructive");
   });

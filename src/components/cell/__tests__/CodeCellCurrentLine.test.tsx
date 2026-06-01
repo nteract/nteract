@@ -8,6 +8,10 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
+    );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "idle");
@@ -15,6 +19,12 @@ describe("CodeCellCurrentLine", () => {
     expect(status).toHaveTextContent("Python/ready");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(languageContext).toHaveClass("opacity-0");
+    expect(languageContext).toHaveClass("group-hover:max-w-20");
+    expect(detail).toHaveClass("max-w-0");
+    expect(detail).toHaveClass("opacity-0");
+    expect(detail).toHaveClass("group-hover:max-w-16");
     expect(rule).toHaveClass("bg-border/15");
     expect(rule).toHaveClass("flex-1");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -34,19 +44,29 @@ describe("CodeCellCurrentLine", () => {
     expect(rule).toBeNull();
   });
 
-  it("keeps focused idle language pinned to the same readout slot", () => {
+  it("keeps focused idle language pinned while ready stays a quiet caption", () => {
     const { container } = render(
       <CodeCellCurrentLine languageLabel="Python" count={null} isFocused />,
     );
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
+    );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
 
     expect(status).toHaveTextContent("Python/ready");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(languageContext).toHaveClass("opacity-0");
+    expect(languageContext).toHaveClass("group-focus-within:max-w-20");
+    expect(detail).toHaveClass("max-w-0");
+    expect(detail).toHaveClass("opacity-0");
+    expect(detail).toHaveClass("group-focus-within:max-w-16");
   });
 
-  it("separates active running status from the execution control lane", () => {
+  it("keeps initial running state visually quiet while execution settles", () => {
     const { container } = render(
       <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
     );
@@ -57,16 +77,16 @@ describe("CodeCellCurrentLine", () => {
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(footer).toHaveAttribute("data-execution-state", "running");
-    expect(status).toHaveTextContent("Python/running");
+    expect(footer).toHaveAttribute("data-execution-visual-state", "ran");
+    expect(footer).toHaveClass("min-h-4");
+    expect(status).toHaveTextContent("Python/run 12");
     expect(status).toHaveAttribute("aria-label", "Python: Running");
     expect(status).toHaveAttribute("aria-live", "polite");
-    expect(detail).toHaveClass("text-emerald-700");
-    expect(rule).toHaveClass("text-emerald-500/65");
+    expect(detail).toHaveClass("text-muted-foreground/70");
+    expect(detail).not.toHaveClass("text-emerald-700");
+    expect(rule).toHaveClass("bg-border/15");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(rule).toHaveAttribute("data-execution-signal", "building");
-    expect(
-      rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
-    ).toBeInTheDocument();
+    expect(rule).not.toHaveAttribute("data-execution-signal");
     expect(rule?.querySelector("svg")).toBeNull();
   });
 
@@ -82,6 +102,9 @@ describe("CodeCellCurrentLine", () => {
         vi.advanceTimersByTime(119);
       });
 
+      expect(
+        container.querySelector('[data-slot="code-cell-current-line-status"]'),
+      ).toHaveTextContent("Python/run 12");
       expect(container.querySelector('[data-slot="code-cell-current-line-rule"] svg')).toBeNull();
 
       rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
@@ -106,9 +129,13 @@ describe("CodeCellCurrentLine", () => {
         vi.advanceTimersByTime(120);
       });
 
+      const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+      const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
       let rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
       let signal = container.querySelector('[data-slot="code-cell-current-line-signal"]');
 
+      expect(footer).toHaveAttribute("data-execution-visual-state", "running");
+      expect(status).toHaveTextContent("Python/running");
       expect(rule).toHaveAttribute("data-execution-signal", "active");
       expect(signal).toHaveClass("animate-exec-signal-build");
       expect(
@@ -132,6 +159,35 @@ describe("CodeCellCurrentLine", () => {
       });
 
       rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      expect(rule).not.toHaveAttribute("data-execution-signal");
+      expect(rule?.querySelector("svg")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets failed state interrupt the running settle affordance", () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container, rerender } = render(
+        <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(120);
+      });
+
+      rerender(<CodeCellCurrentLine languageLabel="Python" count={13} isErrored />);
+
+      const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+      const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+      const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+      expect(footer).toHaveAttribute("data-execution-state", "error");
+      expect(footer).toHaveAttribute("data-execution-visual-state", "error");
+      expect(status).toHaveTextContent("Python/failed");
+      expect(rule).toHaveClass("text-destructive/60");
       expect(rule).not.toHaveAttribute("data-execution-signal");
       expect(rule?.querySelector("svg")).toBeNull();
     } finally {
@@ -198,23 +254,37 @@ describe("CodeCellCurrentLine", () => {
 
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
+    );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
 
     expect(footer).toHaveAttribute("data-execution-label", "Execution 12");
     expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python/run12·1.5s");
     expect(footer).not.toHaveTextContent("In [12]");
     expect(status).toHaveClass("max-w-64");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(detail).toHaveClass("max-w-64");
   });
 
   it("keeps completed metadata in the same right readout slot", () => {
     const { container } = render(<CodeCellCurrentLine languageLabel="Python" count={12} />);
 
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const languageContext = container.querySelector(
+      '[data-slot="code-cell-current-line-language-context"]',
+    );
+    const detail = container.querySelector('[data-slot="code-cell-current-line-detail"]');
     const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
 
     expect(status).toHaveTextContent("Python/run 12");
     expect(status).toHaveClass("max-w-64");
     expect(status).toHaveClass("opacity-100");
     expect(status).toHaveAttribute("aria-label", "Python: Run 12 completed");
+    expect(languageContext).toHaveClass("max-w-0");
+    expect(languageContext).toHaveClass("group-hover:max-w-20");
+    expect(detail).toHaveClass("max-w-64");
+    expect(detail).toHaveClass("opacity-100");
     expect(rule).toHaveClass("flex-1");
     expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });

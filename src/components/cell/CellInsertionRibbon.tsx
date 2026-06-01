@@ -31,6 +31,22 @@ const actionButtonIntentClasses: Record<CellInsertionType, string> = {
     "bg-emerald-500/12 text-emerald-700 ring-emerald-500/20 hover:bg-emerald-500/16 dark:text-emerald-300",
 };
 
+const insertionRuleIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-400/50 dark:bg-sky-300/40",
+  markdown: "bg-emerald-400/50 dark:bg-emerald-300/40",
+};
+
+const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-gradient-to-r from-sky-400/35 via-border/35 to-transparent dark:from-sky-300/30 dark:via-border/30",
+  markdown:
+    "bg-gradient-to-r from-emerald-400/35 via-border/35 to-transparent dark:from-emerald-300/30 dark:via-border/30",
+};
+
+const insertionChannelIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-500/6 text-sky-700 dark:text-sky-300",
+  markdown: "bg-emerald-500/6 text-emerald-700 dark:text-emerald-300",
+};
+
 export function CellInsertionRibbon({
   terminal = false,
   activeType,
@@ -46,6 +62,7 @@ export function CellInsertionRibbon({
   const resolvedActiveType = activeType === undefined ? uncontrolledActiveType : activeType;
   const visualActiveType = resolvedActiveType ?? null;
   const isOpen = interactionActive || forceActionsVisible;
+  const actionTabIndex = isOpen ? 0 : -1;
   const ribbonClass = visualActiveType
     ? terminal
       ? terminalInsertionRibbonClasses[visualActiveType]
@@ -65,8 +82,17 @@ export function CellInsertionRibbon({
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
       visualActiveType === type
         ? actionButtonIntentClasses[type]
-        : "hover:bg-muted/60 hover:text-foreground",
+        : "hover:bg-muted/45 hover:text-foreground",
     );
+
+  const leadingInsertionRuleClass = cn(
+    "h-px rounded-full transition-colors duration-150",
+    visualActiveType ? insertionRuleIntentClasses[visualActiveType] : "bg-border/45",
+  );
+  const trailingInsertionRuleClass = cn(
+    "h-px rounded-full transition-colors duration-150",
+    visualActiveType ? insertionTrailingRuleIntentClasses[visualActiveType] : "bg-border/45",
+  );
 
   return (
     <div
@@ -132,8 +158,8 @@ export function CellInsertionRibbon({
         className={cn(
           "flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
-          visualActiveType === "code"
-            ? "bg-sky-500/6 text-sky-700 dark:text-sky-300"
+          visualActiveType
+            ? insertionChannelIntentClasses[visualActiveType]
             : isOpen
               ? "bg-muted/20 text-muted-foreground/45 hover:bg-muted/30 hover:text-muted-foreground/70"
               : "text-muted-foreground/0 hover:bg-muted/20",
@@ -152,22 +178,29 @@ export function CellInsertionRibbon({
       </button>
       <div
         data-slot="cell-adder-actions"
+        aria-hidden={isOpen ? undefined : true}
         className={cn(
-          "flex items-center transition-opacity duration-150",
+          "flex min-w-0 flex-1 items-center transition-opacity duration-150",
           terminal && "pt-0.5",
           forceActionsVisible
             ? "opacity-100"
             : "opacity-0 group-hover/adder:opacity-100 group-hover/adder:delay-75 group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
         )}
       >
+        <span
+          data-slot="cell-adder-leading-rule"
+          className={cn("w-2 shrink-0", leadingInsertionRuleClass)}
+          aria-hidden="true"
+        />
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 items-center gap-1 rounded-full bg-background/80 px-1 shadow-sm shadow-black/[0.04] ring-1 ring-border/45 backdrop-blur-sm"
+          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1"
         >
           <button
             type="button"
             title="Add code cell"
             aria-label="Add code cell"
+            tabIndex={actionTabIndex}
             onPointerEnter={() => setActiveType("code")}
             onFocus={() => setActiveType("code")}
             onClick={() => onInsert("code")}
@@ -181,6 +214,7 @@ export function CellInsertionRibbon({
             type="button"
             title="Add markdown cell"
             aria-label="Add markdown cell"
+            tabIndex={actionTabIndex}
             onPointerEnter={() => setActiveType("markdown")}
             onFocus={() => setActiveType("markdown")}
             onClick={() => onInsert("markdown")}
@@ -191,8 +225,12 @@ export function CellInsertionRibbon({
             <span>Markdown</span>
           </button>
         </div>
+        <span
+          data-slot="cell-adder-trailing-rule"
+          className={cn("min-w-8 flex-1", trailingInsertionRuleClass)}
+          aria-hidden="true"
+        />
       </div>
-      <div className="flex-1" />
     </div>
   );
 }

@@ -31,13 +31,13 @@ const variants: Array<{
 }> = [
   {
     variant: "production",
-    label: "Production line",
-    body: "The current shape keeps the signal lane flexible and pins the language/state readout to the right, so running, queued, failed, and completed states share one grammar.",
+    label: "Production grammar",
+    body: "Quiet cells rest as punctuation: completed cells show only the run marker, ready cells stay visually silent, and full language context returns on approach.",
   },
   {
     variant: "quiet",
     label: "Quiet unless focused",
-    body: "Keep only the run affordance and language at rest. The run count and duration bloom on focus or hover.",
+    body: "An earlier sketch kept language visible at rest and bloomed the run metadata later; useful, but louder than the production direction.",
   },
   {
     variant: "sentence",
@@ -58,8 +58,8 @@ export function CellExecutionLanguageExample() {
         <div className="border-b border-fd-border p-4">
           <h2 className="text-sm font-semibold">Run line direction set</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            The target is a cell boundary that can speak when needed, but usually reads as
-            punctuation in the notebook rhythm.
+            The target is a cell boundary that usually reads as punctuation in the notebook rhythm.
+            Active states get words; quiet states keep their context available but tucked away.
           </p>
         </div>
         <div className="divide-y divide-fd-border bg-background">
@@ -79,8 +79,8 @@ export function CellExecutionLanguageExample() {
         <div className="border-b border-fd-border p-4">
           <h2 className="text-sm font-semibold">State vocabulary</h2>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            The same line should carry ready, queued, running, completed, and failed states without
-            making every cell feel like a status table.
+            The same line should carry ready, queued, running, completed, and failed states while
+            making quiet cells feel like document structure, not a status table.
           </p>
         </div>
         <div className="grid gap-3 bg-background p-4 md:grid-cols-2">
