@@ -54,9 +54,7 @@ export function NotebookIdentityBadge({
     <div
       className={cn(
         "inline-flex min-w-0 items-center text-foreground",
-        inline
-          ? "gap-2"
-          : "gap-2 rounded-full border border-border bg-background px-2 py-1 shadow-sm",
+        inline ? "gap-2" : "gap-2 rounded-md border border-border/70 bg-muted/35 px-2 py-1",
         size === "sm" && !inline && "gap-1.5 px-1.5 py-0.5",
         className,
       )}

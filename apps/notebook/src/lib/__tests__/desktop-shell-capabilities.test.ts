@@ -21,6 +21,7 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(capabilities.canExecute).toBe(true);
     expect(capabilities.canManagePackages).toBe(true);
     expect(capabilities.canManageSharing).toBe(false);
+    expect(capabilities.auth.canUseAuthenticatedIdentity).toBe(false);
     expect(capabilities.interaction).toMatchObject({
       selectedMode: "edit",
       activeMode: "edit",
@@ -70,6 +71,7 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(capabilities.canRequestEdit).toBe(false);
     expect(capabilities.canExecute).toBe(false);
     expect(capabilities.canManagePackages).toBe(false);
+    expect(capabilities.auth.canUseAuthenticatedIdentity).toBe(true);
     expect(capabilities.interaction).toMatchObject({
       selectedMode: "view",
       activeMode: "view",
