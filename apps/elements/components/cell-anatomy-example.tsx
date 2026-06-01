@@ -150,7 +150,7 @@ const contracts = [
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",
   "The rail owns notebook navigation; the ribbon owns type, focus, insertion intent, and document continuity.",
   "The code-cell current line owns the source/result boundary and run state.",
-  "Hidden source keeps the current line when output remains visible; fully hidden cells collapse to one reveal affordance.",
+  "Hidden input keeps the current line when output remains visible; fully hidden cells collapse to one reveal affordance.",
 ];
 
 const insertionRibbonRows = [

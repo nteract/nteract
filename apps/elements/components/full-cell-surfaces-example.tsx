@@ -56,16 +56,16 @@ const codeCell: CodeCellType = scenarioCodeCellToStandaloneCodeCell(
 const hiddenCodeCellRows = [
   hiddenCodeCellFixture({
     id: "elements-hidden-source-cell",
-    label: "Source hidden",
-    detail: "Production CodeCell renders the source reveal while outputs remain visible.",
+    label: "Input hidden",
+    detail: "Production CodeCell renders a quiet input reveal line while outputs remain visible.",
     sourceHidden: true,
     outputsHidden: false,
   }),
   hiddenCodeCellFixture({
     id: "elements-hidden-output-cell",
-    label: "Outputs hidden",
+    label: "Output hidden",
     detail:
-      "Production CodeCell keeps the source and current line visible while output reveal owns the output row.",
+      "Production CodeCell keeps the input and current line visible while the output reveal owns the result row.",
     sourceHidden: false,
     outputsHidden: true,
   }),
@@ -112,7 +112,7 @@ const fullCellRows = [
     label: "CodeCell",
     source: "apps/notebook/src/components/CodeCell.tsx",
     detail:
-      "Rendered with seeded execution and output stores, ribbon-first CellContainer, code-cell current line, OutputArea, and hidden source/output states.",
+      "Rendered with seeded execution and output stores, ribbon-first CellContainer, code-cell current line, OutputArea, and hidden input/output states.",
   },
   {
     label: "MarkdownCell",
@@ -144,7 +144,7 @@ const fullCellBoundaryRows = [
       "Scenario code cells seed the same execution pointer and output ID stores as production, but queueing, kernel lifecycle, and output mutation still stay outside the docs runtime.",
   },
   {
-    surface: "Hidden source/output state",
+    surface: "Hidden input/output state",
     catalogPath: "fixture metadata.jupyter flags",
     productionBoundary: "NotebookView source/output visibility mutations",
     detail:
@@ -437,9 +437,9 @@ export function FullCellSurfacesExample() {
               <h2 className="text-sm font-semibold">CodeCell hidden states</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              Source-hidden, output-hidden, and fully-hidden affordances are owned by the production
+              Input-hidden, output-hidden, and fully-hidden affordances are owned by the production
               `CodeCell`. The catalog seeds metadata and output stores, then supplies inert toggle
-              callbacks.
+              callbacks so the rows can be evaluated as document boundary language.
             </p>
           </div>
           <div className="divide-y divide-border bg-background">
