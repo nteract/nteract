@@ -8,23 +8,16 @@ import {
   RefreshCw,
   TerminalSquare,
 } from "lucide-react";
-import dynamic from "next/dynamic";
 import type { EnvProgressState } from "runtimed";
 import type { ReactNode } from "react";
-import { CondaDependencyHeader } from "@/notebook-components/CondaDependencyHeader";
-import { DenoDependencyHeader } from "@/notebook-components/DenoDependencyHeader";
-import { DependencyHeader } from "@/notebook-components/DependencyHeader";
-import { EnvironmentPackageSummaryPanel } from "@/components/environment";
+import {
+  CondaDependencyPanel,
+  DenoDependencyPanel,
+  EnvironmentPackageSummaryPanel,
+  PixiDependencyPanel,
+  UvDependencyPanel,
+} from "@/components/environment";
 import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
-
-const PixiDependencyHeader = dynamic(
-  () =>
-    import("@/notebook-components/PixiDependencyHeader").then((mod) => mod.PixiDependencyHeader),
-  {
-    ssr: false,
-    loading: () => <DependencySurfaceSkeleton label="PixiDependencyHeader" />,
-  },
-);
 
 const asyncNoop = async () => {};
 const asyncTrue = async () => true;
@@ -50,26 +43,26 @@ const packageSurfaces = [
     role: "Host-neutral package summary projection for rails, cloud views, and read-only embeds.",
   },
   {
-    name: "DependencyHeader",
-    source: "apps/notebook/src/components/DependencyHeader.tsx",
+    name: "UvDependencyPanel",
+    source: "src/components/environment/UvDependencyPanel.tsx",
     manager: "uv",
     role: "Inline uv dependencies, project pyproject.toml details, and sync prompts.",
   },
   {
-    name: "CondaDependencyHeader",
-    source: "apps/notebook/src/components/CondaDependencyHeader.tsx",
+    name: "CondaDependencyPanel",
+    source: "src/components/environment/CondaDependencyPanel.tsx",
     manager: "conda",
     role: "Conda packages, channels, environment.yml details, and solve progress.",
   },
   {
-    name: "PixiDependencyHeader",
-    source: "apps/notebook/src/components/PixiDependencyHeader.tsx",
+    name: "PixiDependencyPanel",
+    source: "src/components/environment/PixiDependencyPanel.tsx",
     manager: "pixi",
     role: "pixi.toml details, Conda and PyPI dependency display, and restart prompts.",
   },
   {
-    name: "DenoDependencyHeader",
-    source: "apps/notebook/src/components/DenoDependencyHeader.tsx",
+    name: "DenoDependencyPanel",
+    source: "src/components/environment/DenoDependencyPanel.tsx",
     manager: "deno",
     role: "deno.json details, npm import behavior, and Deno import examples.",
   },
@@ -142,7 +135,7 @@ export function PackageManagerSurfacesExample() {
           title="uv inline and project"
           detail="Fixture package details plus detected pyproject.toml project-env state."
         >
-          <DependencyHeader
+          <UvDependencyPanel
             dependencies={[...scenario.packageState.dependencies]}
             requiresPython={scenario.packageState.requiresPython}
             loading={false}
@@ -166,7 +159,7 @@ export function PackageManagerSurfacesExample() {
           title="Conda environment"
           detail="Fixture channels, environment.yml imports, and solve progress."
         >
-          <CondaDependencyHeader
+          <CondaDependencyPanel
             dependencies={["python=3.13", "scikit-learn", "seaborn"]}
             channels={["conda-forge", "nvidia"]}
             python="3.13"
@@ -211,7 +204,7 @@ export function PackageManagerSurfacesExample() {
           title="Pixi project"
           detail="Fixture pixi.toml project details with Conda and PyPI dependencies."
         >
-          <PixiDependencyHeader
+          <PixiDependencyPanel
             pixiInfo={{
               path: "/Users/kyle/notebooks/pixi.toml",
               relative_path: "pixi.toml",
@@ -238,7 +231,7 @@ export function PackageManagerSurfacesExample() {
           title="Deno imports"
           detail="Fixture deno.json imports and the flexible npm toggle."
         >
-          <DenoDependencyHeader
+          <DenoDependencyPanel
             denoConfigInfo={{
               path: "/Users/kyle/notebooks/deno.json",
               relative_path: "deno.json",
@@ -335,18 +328,5 @@ function SurfaceFrame({
       </div>
       {children}
     </section>
-  );
-}
-
-function DependencySurfaceSkeleton({ label }: { label: string }) {
-  return (
-    <div className="border-b bg-fd-muted/30 px-3 py-3">
-      <div className="mb-2 h-5 w-20 rounded bg-fd-muted" />
-      <div className="rounded border border-fd-border bg-fd-background p-3">
-        <div className="mb-2 h-4 w-44 rounded bg-fd-muted" />
-        <div className="h-3 w-64 max-w-full rounded bg-fd-muted" />
-      </div>
-      <div className="mt-3 text-xs text-fd-muted-foreground">{label} loads on the client.</div>
-    </div>
   );
 }

@@ -20,7 +20,7 @@ import {
 } from "@/components/fixture-notebook-host";
 import { DaemonStatusBanner } from "@/notebook-components/DaemonStatusBanner";
 import { DebugBanner } from "@/notebook-components/DebugBanner";
-import { DependencyHeader } from "@/notebook-components/DependencyHeader";
+import { UvDependencyPanel } from "@/components/environment";
 import { EnvBuildDecisionDialog } from "@/notebook-components/EnvBuildDecisionDialog";
 import { KernelLaunchErrorBanner } from "@/notebook-components/KernelLaunchErrorBanner";
 import { PoolErrorBanner } from "@/notebook-components/PoolErrorBanner";
@@ -52,8 +52,8 @@ const runtimePieces = [
     status: "rendered",
   },
   {
-    name: "DependencyHeader",
-    source: "apps/notebook/src/components/DependencyHeader.tsx",
+    name: "UvDependencyPanel",
+    source: "src/components/environment/UvDependencyPanel.tsx",
     role: "Notebook package panel for uv package details, pyproject state, and sync prompts.",
     status: "rendered",
   },
@@ -217,7 +217,7 @@ function DependencyHeaderFixture({ scenario }: { scenario: ElementsNotebookScena
       data-elements-slot="dependency-header-fixture"
     >
       <div className="border-b border-fd-border p-4">
-        <h2 className="text-sm font-semibold">DependencyHeader</h2>
+        <h2 className="text-sm font-semibold">UvDependencyPanel</h2>
         <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
           Rendered from the notebook app in the same rail-sized package surface used by the notebook
           shell.
@@ -225,7 +225,7 @@ function DependencyHeaderFixture({ scenario }: { scenario: ElementsNotebookScena
       </div>
       <div className="bg-fd-muted/20 p-4">
         <div className="mx-auto w-[clamp(15rem,20vw,17rem)] max-w-full">
-          <DependencyHeader
+          <UvDependencyPanel
             dependencies={[...scenario.packageState.dependencies]}
             requiresPython={scenario.packageState.requiresPython}
             loading={false}

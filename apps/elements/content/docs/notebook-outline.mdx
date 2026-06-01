@@ -15,7 +15,7 @@ reordering becomes a real workflow.
 
 This fixture renders the shared `NotebookDocumentRail` and current notebook
 toolbar with scenario state from the [notebook shell capabilities](/docs/notebook-shell-capabilities)
-fixtures. The package panel hosts the current `DependencyHeader` in its rail
+fixtures. The package panel hosts the shared `UvDependencyPanel` in its rail
 variant instead of adding docs-only chrome inside the rail.
 
 <RailOutlineExample />
@@ -31,8 +31,8 @@ variant instead of adding docs-only chrome inside the rail.
   uses `NotebookPackagesPanel` from `src/components/notebook-rail`.
   Docs own active panel, collapsed state, outline selection, and inert
   navigation callbacks.
-- The package panel imports `DependencyHeader` from the notebook app with
-  fixture package and sync state.
+- The package panel imports `UvDependencyPanel` from `src/components/environment`
+  with fixture package and sync state.
 - The outline starts from `createNotebookViewModel` over fixture cells, matching
   the production projection path from materialized markdown headings.
 - Contextual selection depends on `outlineCellIds`: a focused code cell inside a

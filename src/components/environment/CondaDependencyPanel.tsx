@@ -1,0 +1,507 @@
+import { AlertCircle, Check, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
+import { type KeyboardEvent, useCallback, useState } from "react";
+import type { EnvProgressState, EnvironmentYmlDeps, EnvironmentYmlInfo } from "runtimed";
+import { cn } from "@/lib/utils";
+import { Progress } from "@/components/ui/progress";
+import type { DependencyPanelVariant, EnvironmentSyncState } from "./dependency-panel-types";
+import { PackageSpecList } from "./PackageSpecList";
+
+export interface CondaDependencyPanelProps {
+  dependencies: string[];
+  channels: string[];
+  python: string | null;
+  loading: boolean;
+  envSource?: string | null;
+  variant?: DependencyPanelVariant;
+  readOnly?: boolean;
+  syncState: EnvironmentSyncState | null;
+  onAdd: (pkg: string) => Promise<void>;
+  onRemove: (pkg: string) => Promise<void>;
+  onSetChannels: (channels: string[]) => Promise<void>;
+  onSetPython: (python: string | null) => Promise<void>;
+  onSyncNow: () => Promise<boolean>;
+  /** Re-launch kernel (used for retry after env creation failure) */
+  onRetryLaunch?: () => Promise<boolean>;
+  /** Environment preparation progress state */
+  envProgress?: EnvProgressState | null;
+  /** Callback to reset/dismiss error state */
+  onResetProgress?: () => void;
+  // environment.yml support
+  environmentYmlInfo?: EnvironmentYmlInfo | null;
+  environmentYmlDeps?: EnvironmentYmlDeps | null;
+  /** Show success feedback after sync completed */
+  justSynced?: boolean;
+}
+
+export function CondaDependencyPanel({
+  dependencies,
+  channels,
+  python,
+  loading,
+  envSource,
+  variant = "header",
+  readOnly = false,
+  syncState,
+  onAdd,
+  onRemove,
+  onSetChannels,
+  onSetPython,
+  onSyncNow,
+  onRetryLaunch,
+  envProgress,
+  onResetProgress,
+  environmentYmlInfo,
+  environmentYmlDeps,
+  justSynced,
+}: CondaDependencyPanelProps) {
+  const [newDep, setNewDep] = useState("");
+  const [newChannel, setNewChannel] = useState("");
+  const [showChannelInput, setShowChannelInput] = useState(false);
+  const isRail = variant === "rail";
+  const isEnvironmentYmlMode = envSource === "conda:env_yml" || Boolean(environmentYmlInfo);
+  const environmentYmlDependencyValues = environmentYmlDeps
+    ? [...environmentYmlDeps.dependencies, ...environmentYmlDeps.pip_dependencies]
+    : [];
+  const environmentYmlChannels = environmentYmlDeps?.channels ?? environmentYmlInfo?.channels ?? [];
+  const environmentYmlPython = environmentYmlDeps?.python ?? environmentYmlInfo?.python ?? null;
+
+  const handleAdd = useCallback(async () => {
+    if (!readOnly && newDep.trim()) {
+      await onAdd(newDep.trim());
+      setNewDep("");
+    }
+  }, [newDep, onAdd, readOnly]);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleAdd();
+      }
+    },
+    [handleAdd],
+  );
+
+  const handleAddChannel = useCallback(async () => {
+    if (!readOnly && newChannel.trim()) {
+      const trimmed = newChannel.trim();
+      let updated: string[];
+      if (channels.length === 0 && trimmed !== "conda-forge") {
+        // Preserve the implicit conda-forge default as an explicit channel
+        updated = ["conda-forge", trimmed];
+      } else {
+        updated = [...channels, trimmed];
+      }
+      onResetProgress?.();
+      await onSetChannels(updated);
+      setNewChannel("");
+      setShowChannelInput(false);
+    }
+  }, [newChannel, channels, onSetChannels, onResetProgress, readOnly]);
+
+  const handleRemoveChannel = useCallback(
+    async (channel: string) => {
+      if (readOnly) return;
+      const updated = channels.filter((c) => c !== channel);
+      onResetProgress?.();
+      await onSetChannels(updated);
+    },
+    [channels, onSetChannels, onResetProgress, readOnly],
+  );
+
+  const handlePythonChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (readOnly) return;
+      const value = e.target.value.trim();
+      await onSetPython(value || null);
+    },
+    [onSetPython, readOnly],
+  );
+
+  // Default channels if none specified
+  const displayChannels = channels.length > 0 ? channels : ["conda-forge"];
+  const isUsingDefault = channels.length === 0;
+
+  // Calculate progress percentage
+  const progressPercent =
+    envProgress?.progress && envProgress.progress.total > 0
+      ? (envProgress.progress.completed / envProgress.progress.total) * 100
+      : 0;
+
+  return (
+    <div
+      className={cn(isRail ? "space-y-3" : "border-b bg-emerald-50/30 dark:bg-emerald-950/10")}
+      data-testid="conda-deps-panel"
+      data-variant={variant}
+    >
+      <div className={cn(!isRail && "px-3 py-3")}>
+        {/* Conda badge */}
+        <div
+          className={cn(
+            "mb-2 flex items-center gap-2",
+            isRail &&
+              "mb-3 flex-wrap justify-between gap-x-2 gap-y-1 rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+          )}
+        >
+          <div className={cn("flex min-w-0 items-center gap-2", isRail && "shrink-0")}>
+            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+              conda
+            </span>
+            {isRail && (
+              <span className="whitespace-nowrap text-xs text-muted-foreground">Environment</span>
+            )}
+          </div>
+        </div>
+
+        {/* Environment preparation progress */}
+        {envProgress?.isActive && (
+          <div className="mb-3 rounded bg-muted/80 px-2 py-2">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-muted-foreground truncate">
+                {envProgress.statusText}
+              </span>
+              {envProgress.progress && (
+                <span className="text-xs text-emerald-600 dark:text-emerald-500 ml-2 shrink-0">
+                  {envProgress.progress.completed}/{envProgress.progress.total}
+                </span>
+              )}
+            </div>
+            {envProgress.progress && (
+              <Progress
+                value={progressPercent}
+                className="h-1.5 bg-emerald-200 dark:bg-emerald-900"
+              />
+            )}
+          </div>
+        )}
+
+        {/* Error banner - persists until dismissed */}
+        {envProgress?.error && (
+          <div className="mb-3 rounded bg-red-500/10 border border-red-200 dark:border-red-900 px-2 py-2">
+            <div className="flex items-start gap-2 text-xs text-red-700 dark:text-red-400">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium">Environment creation failed</div>
+                <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] opacity-80 overflow-x-auto">
+                  {envProgress.error}
+                </pre>
+                {!readOnly && (
+                  <div className="mt-2 text-[11px] text-red-600/80 dark:text-red-400/80">
+                    Fix channels or dependencies above, then retry.
+                  </div>
+                )}
+              </div>
+              {!readOnly && (
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => {
+                      onResetProgress?.();
+                      (onRetryLaunch ?? onSyncNow)();
+                    }}
+                    className="flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Retry environment creation"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Retry
+                  </button>
+                  {onResetProgress && (
+                    <button
+                      type="button"
+                      onClick={onResetProgress}
+                      className="text-red-500 hover:text-red-700 dark:hover:text-red-300"
+                      title="Dismiss"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Success feedback after sync completed */}
+        {justSynced && (
+          <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+            <Check className="h-3.5 w-3.5 shrink-0" />
+            <span>Environment synced — dependencies are ready to use</span>
+          </div>
+        )}
+
+        {/* environment.yml detected banner */}
+        {environmentYmlInfo && (
+          <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <FileText className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                Using{" "}
+                <code className="rounded bg-muted px-1">{environmentYmlInfo.relative_path}</code>
+                {environmentYmlInfo.name && (
+                  <span className="text-muted-foreground ml-1">({environmentYmlInfo.name})</span>
+                )}
+              </span>
+            </div>
+            {environmentYmlDeps &&
+              (environmentYmlDeps.dependencies.length > 0 ||
+                environmentYmlDeps.pip_dependencies.length > 0) &&
+              (isRail ? (
+                <PackageSpecList
+                  values={environmentYmlDependencyValues}
+                  tone="conda"
+                  emptyLabel="No dependencies listed in environment.yml."
+                  loading={loading}
+                  framed={false}
+                  className="mt-2"
+                />
+              ) : (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {environmentYmlDeps.dependencies.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1">
+                      {environmentYmlDeps.dependencies.map((dep) => (
+                        <span key={dep} className="rounded bg-muted px-1.5 py-0.5 font-mono">
+                          {dep}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {environmentYmlDeps.pip_dependencies.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      <span className="text-muted-foreground">pip:</span>
+                      {environmentYmlDeps.pip_dependencies.map((dep) => (
+                        <span key={dep} className="rounded bg-muted px-1.5 py-0.5 font-mono">
+                          {dep}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            {isRail && (environmentYmlPython || environmentYmlChannels.length > 0) && (
+              <div className="mt-2 space-y-1 border-t border-border/60 pt-2 text-xs text-muted-foreground">
+                {environmentYmlPython && (
+                  <div>
+                    Python <span className="font-mono">{environmentYmlPython}</span>
+                  </div>
+                )}
+                {environmentYmlChannels.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    <span>Channels</span>
+                    {environmentYmlChannels.map((channel) => (
+                      <span key={channel} className="rounded bg-muted px-1.5 py-0.5 font-mono">
+                        {channel}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Environment drift notice - kernel restart needed */}
+        {!readOnly && syncState?.status === "dirty" && (
+          <div
+            className={cn(
+              "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
+              isRail
+                ? "flex flex-col gap-2 px-3 py-2"
+                : "flex items-center justify-between px-2 py-1.5",
+            )}
+          >
+            <div className="flex items-start gap-2">
+              <Info className="h-3.5 w-3.5 shrink-0" />
+              <span>Dependencies changed — re-initialize environment to apply</span>
+            </div>
+            <button
+              type="button"
+              onClick={onSyncNow}
+              disabled={loading}
+              data-testid="deps-restart-button"
+              className={cn(
+                "flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50",
+                isRail && "self-start py-1",
+              )}
+            >
+              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+              Re-initialize
+            </button>
+          </div>
+        )}
+
+        {!isEnvironmentYmlMode && (
+          <>
+            {/* Channels */}
+            <div className="mb-2">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">Channels</div>
+              <div className="flex flex-wrap gap-1.5 items-center">
+                {displayChannels.map((channel) => (
+                  <div
+                    key={channel}
+                    className="flex max-w-full items-center gap-1 rounded border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-xs dark:border-emerald-800 dark:bg-emerald-900/30"
+                  >
+                    <span className="min-w-0 truncate font-mono">{channel}</span>
+                    {isUsingDefault && (
+                      <span className="text-[10px] text-muted-foreground ml-0.5">(default)</span>
+                    )}
+                    {!readOnly && channels.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveChannel(channel)}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        disabled={loading}
+                        title={`Remove ${channel}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {!readOnly && showChannelInput ? (
+                  <div className="flex gap-1">
+                    <input
+                      type="text"
+                      value={newChannel}
+                      onChange={(e) => setNewChannel(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddChannel();
+                        } else if (e.key === "Escape") {
+                          setShowChannelInput(false);
+                          setNewChannel("");
+                        }
+                      }}
+                      placeholder="channel name"
+                      className="w-32 rounded border bg-background px-1.5 py-0.5 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                      autoFocus
+                      disabled={loading}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddChannel}
+                      disabled={loading || !newChannel.trim()}
+                      className="rounded bg-emerald-500 px-1.5 py-0.5 text-xs text-white hover:bg-emerald-600 disabled:opacity-50"
+                    >
+                      Add
+                    </button>
+                  </div>
+                ) : !readOnly ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowChannelInput(true)}
+                    className="flex items-center gap-0.5 rounded bg-background px-1.5 py-0.5 text-xs border hover:bg-muted transition-colors"
+                    disabled={loading}
+                  >
+                    <Plus className="h-3 w-3" />
+                    channel
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Python version */}
+            {readOnly ? (
+              python ? (
+                <div className="mb-2 text-xs text-muted-foreground">
+                  Python: <span className="font-mono">{python}</span>
+                </div>
+              ) : null
+            ) : (
+              <label
+                className={cn(
+                  "mb-2 flex items-center gap-2",
+                  isRail && "flex-col items-stretch gap-1.5",
+                )}
+              >
+                <span className="text-xs font-medium text-muted-foreground">Python</span>
+                <input
+                  type="text"
+                  value={python ?? ""}
+                  onChange={handlePythonChange}
+                  placeholder="3.11"
+                  className={cn(
+                    "rounded border bg-background px-1.5 py-0.5 font-mono text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary",
+                    isRail ? "w-full" : "w-20",
+                  )}
+                  disabled={loading}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+            )}
+
+            {/* Dependencies list */}
+            {isRail ? (
+              <PackageSpecList
+                values={dependencies}
+                tone="conda"
+                emptyLabel="No dependencies. Add conda packages to create an isolated environment."
+                loading={loading}
+                onRemove={readOnly ? undefined : onRemove}
+                className="mb-3"
+              />
+            ) : dependencies.length > 0 ? (
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {dependencies.map((dep) => (
+                  <div
+                    key={dep}
+                    className="flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 text-xs"
+                  >
+                    <span className="min-w-0 truncate font-mono">{dep}</span>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => onRemove(dep)}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        disabled={loading}
+                        title={`Remove ${dep}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mb-3 text-xs text-muted-foreground">
+                No dependencies. Add conda packages to create an isolated environment.
+              </div>
+            )}
+
+            {/* Add dependency input */}
+            {!readOnly && (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newDep}
+                  onChange={(e) => setNewDep(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="package or package>=version"
+                  data-testid="conda-deps-add-input"
+                  className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  disabled={loading}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  disabled={loading || !newDep.trim()}
+                  data-testid="conda-deps-add-button"
+                  className="flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-xs text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
