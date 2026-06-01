@@ -1287,28 +1287,28 @@ function NotebookViewer({
         addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
         onAddCell={handleCloudAddCell}
         onTogglePackages={handleTogglePackagesRail}
-        leadingControls={
+        presenceControls={
           <CloudPresenceStatus
             presence={presence}
             interaction={shellCapabilities.interaction ?? null}
           />
         }
-        trailingControls={
-          <>
-            <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-            <CloudSharingControls
-              aclEndpoint={config.aclEndpoint}
-              invitesEndpoint={config.invitesEndpoint}
-              authState={authState}
-            />
-            <CloudNotebookEditModeButton
-              authState={authState}
-              interaction={shellCapabilities.interaction ?? null}
-              onAuthStateChange={refreshAuthState}
-            />
-            <NotebookToolbarIdentity capabilities={shellCapabilities} />
-          </>
+        authControls={<CloudNotebookSignInButton authConfig={authConfig} authState={authState} />}
+        sharingControls={
+          <CloudSharingControls
+            aclEndpoint={config.aclEndpoint}
+            invitesEndpoint={config.invitesEndpoint}
+            authState={authState}
+          />
         }
+        editControls={
+          <CloudNotebookEditModeButton
+            authState={authState}
+            interaction={shellCapabilities.interaction ?? null}
+            onAuthStateChange={refreshAuthState}
+          />
+        }
+        identityControls={<NotebookToolbarIdentity capabilities={shellCapabilities} />}
       />
     </NotebookToolbarFrame>
   );

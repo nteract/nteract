@@ -72,11 +72,13 @@ test("cloud viewer routes notebook header controls through the shared command to
   assert.match(sourceText, /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookCommandToolbar/);
   assert.match(sourceText, /<NotebookCommandToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
-  assert.match(sourceText, /trailingControls=\{[\s\S]*<CloudSharingControls/);
-  assert.match(sourceText, /trailingControls=\{[\s\S]*<CloudNotebookEditModeButton/);
+  assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
+  assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
+  assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
+  assert.match(sourceText, /identityControls=\{[\s\S]*<NotebookToolbarIdentity/);
   assert.match(
     sourceText,
-    /leadingControls=\{[\s\S]*<CloudPresenceStatus[\s\S]*interaction=\{shellCapabilities\.interaction \?\? null\}/,
+    /presenceControls=\{[\s\S]*<CloudPresenceStatus[\s\S]*interaction=\{shellCapabilities\.interaction \?\? null\}/,
   );
   assert.doesNotMatch(sourceText, /<CloudPresenceStatus[^>]*connectionScope=\{connectionScope\}/);
   assert.doesNotMatch(sourceText, /className="cloud-code-toggle"/);

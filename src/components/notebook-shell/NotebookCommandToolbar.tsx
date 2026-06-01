@@ -39,7 +39,12 @@ export interface NotebookCommandToolbarUpdateAction {
 export interface NotebookCommandToolbarProps {
   capabilities: Pick<
     NotebookShellCapabilities,
-    "canEditStructure" | "canExecute" | "canViewPackages"
+    | "canEditStructure"
+    | "canExecute"
+    | "canViewPackages"
+    | "canManageSharing"
+    | "canRequestEdit"
+    | "auth"
   >;
   runtime?: string | null;
   environmentManager?: NotebookEnvironmentManager | null;
@@ -56,6 +61,12 @@ export interface NotebookCommandToolbarProps {
   onRestartAndRunAll?: () => void;
   onTogglePackages?: () => void;
   updateAction?: NotebookCommandToolbarUpdateAction | null;
+  presenceControls?: ReactNode;
+  utilityControls?: ReactNode;
+  sharingControls?: ReactNode;
+  editControls?: ReactNode;
+  authControls?: ReactNode;
+  identityControls?: ReactNode;
   leadingControls?: ReactNode;
   trailingControls?: ReactNode;
   className?: string;
@@ -78,11 +89,18 @@ export function NotebookCommandToolbar({
   onRestartAndRunAll,
   onTogglePackages,
   updateAction = null,
+  presenceControls,
+  utilityControls,
+  sharingControls,
+  editControls,
+  authControls,
+  identityControls,
   leadingControls,
   trailingControls,
   className,
 }: NotebookCommandToolbarProps) {
-  const { canEditStructure, canExecute, canViewPackages } = capabilities;
+  const { auth, canEditStructure, canExecute, canManageSharing, canRequestEdit, canViewPackages } =
+    capabilities;
   const isRuntimeRunning =
     runtimeStatus.state === "idle" ||
     runtimeStatus.state === "busy" ||
@@ -93,6 +111,9 @@ export function NotebookCommandToolbar({
     canExecute && Boolean(onRunAllCells && onRestartRuntime && onRestartAndRunAll);
   const showInterrupt = canExecute && isRuntimeRunning && Boolean(onInterruptRuntime);
   const showPackageToggle = Boolean(runtime && canViewPackages && onTogglePackages);
+  const showAuthControls =
+    Boolean(authControls) &&
+    (auth.canSignIn || auth.canUseAuthenticatedIdentity || auth.needsAttention);
 
   return (
     <div
@@ -100,7 +121,7 @@ export function NotebookCommandToolbar({
       data-slot="notebook-command-toolbar"
       className={cn("@container flex h-10 min-w-0 items-center gap-2 px-3 select-none", className)}
     >
-      {leadingControls}
+      {presenceControls ?? leadingControls}
 
       {showAddCellControls ? (
         <>
@@ -218,6 +239,8 @@ export function NotebookCommandToolbar({
 
       <div className="flex-1" />
 
+      {utilityControls}
+
       {updateAction ? (
         <button
           type="button"
@@ -307,6 +330,10 @@ export function NotebookCommandToolbar({
         </span>
       </div>
 
+      {canManageSharing ? sharingControls : null}
+      {canRequestEdit ? editControls : null}
+      {showAuthControls ? authControls : null}
+      {identityControls}
       {trailingControls}
     </div>
   );

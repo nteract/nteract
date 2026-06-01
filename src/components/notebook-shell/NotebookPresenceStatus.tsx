@@ -29,7 +29,7 @@ export function NotebookPresenceStatus({
       data-slot="notebook-presence-status"
       data-connected={String(connected)}
       title={displayTitle}
-      aria-label={title}
+      aria-label={displayTitle}
       aria-live="polite"
     >
       <UsersRound className="size-4 shrink-0" aria-hidden="true" />
