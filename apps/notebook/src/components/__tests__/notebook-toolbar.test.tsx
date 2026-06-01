@@ -91,6 +91,8 @@ describe("NotebookToolbar", () => {
     it("shows start button when kernel is not started", () => {
       render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.NOT_STARTED)} />);
       expect(screen.getByTestId("start-kernel-button")).toBeInTheDocument();
+      expect(screen.getByText("Start kernel")).toBeInTheDocument();
+      expect(screen.queryByText("Start Kernel")).not.toBeInTheDocument();
     });
 
     it("shows start button when kernel is shut down", () => {
@@ -254,6 +256,8 @@ describe("NotebookToolbar", () => {
       expect(status.dataset.kernelStatus).toBe("idle");
       expect(screen.getByText("idle")).toBeInTheDocument();
       expect(screen.queryByText("Idle")).not.toBeInTheDocument();
+      expect(screen.getByText("Run all")).toBeInTheDocument();
+      expect(screen.queryByText("Run All")).not.toBeInTheDocument();
     });
 
     it("shows env progress status text when active", () => {

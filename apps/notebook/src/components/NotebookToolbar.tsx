@@ -221,7 +221,7 @@ export function NotebookToolbar({
             data-testid="start-kernel-button"
           >
             <Play className="h-3 w-3" fill="currentColor" />
-            <span className="hidden @[40rem]:inline">Start Kernel</span>
+            <span className="hidden @[40rem]:inline">Start kernel</span>
           </button>
         )}
         {canExecute && (
@@ -235,7 +235,7 @@ export function NotebookToolbar({
               data-testid="run-all-button"
             >
               <ChevronsRight className="h-3.5 w-3.5" />
-              <span className="hidden @[40rem]:inline">Run All</span>
+              <span className="hidden @[40rem]:inline">Run all</span>
             </button>
             <button
               type="button"
