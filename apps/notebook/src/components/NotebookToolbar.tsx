@@ -401,7 +401,6 @@ export function NotebookToolbar({
             ) : (
               <span
                 className={cn(
-                  "capitalize",
                   kernelStatus === KERNEL_STATUS.ERROR && "text-red-600 dark:text-red-400",
                 )}
               >

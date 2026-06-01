@@ -252,6 +252,8 @@ describe("NotebookToolbar", () => {
       render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
       const status = screen.getByTestId("kernel-status");
       expect(status.dataset.kernelStatus).toBe("idle");
+      expect(screen.getByText("idle")).toBeInTheDocument();
+      expect(screen.queryByText("Idle")).not.toBeInTheDocument();
     });
 
     it("shows env progress status text when active", () => {
