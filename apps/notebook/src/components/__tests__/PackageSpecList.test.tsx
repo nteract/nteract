@@ -35,9 +35,31 @@ describe("PackageSpecList", () => {
     expect(container.querySelector("svg")).not.toBeInTheDocument();
     expect(container.querySelector(".bg-uv\\/60")).toBeInTheDocument();
     expect(screen.getByText("nteract")).toBeVisible();
+    expect(screen.getByText("gremlin")).toHaveAttribute("title", "gremlin");
     expect(screen.getByText("sys_platform == 'darwin'")).toBeVisible();
+    expect(screen.getByText("sys_platform == 'darwin'")).toHaveAttribute(
+      "title",
+      "sys_platform == 'darwin'",
+    );
     expect(screen.getByText("sys_platform == 'darwin'")).not.toHaveClass("truncate");
     expect(screen.getByText("sys_platform == 'darwin'")).toHaveClass("whitespace-normal");
+  });
+
+  it("keeps full package specs available when rail text truncates", () => {
+    render(
+      <PackageSpecList
+        values={["nteract-kernel-launcher>=1.2.3"]}
+        tone="uv"
+        emptyLabel="No dependencies"
+        framed={false}
+      />,
+    );
+
+    expect(screen.getByText("nteract-kernel-launcher")).toHaveAttribute(
+      "title",
+      "nteract-kernel-launcher",
+    );
+    expect(screen.getByText(">=1.2.3")).toHaveAttribute("title", ">=1.2.3");
   });
 
   it("exposes row remove actions when mutation is available", () => {
