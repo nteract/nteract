@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import {
-  NotebookDocumentHeader,
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookEnvironmentSummary,
@@ -90,7 +89,7 @@ const cloudStateRows = [
   {
     surface: "Presence",
     owner: "Room session",
-    language: "2 here now, Kyle editing",
+    language: "2 here now, editing",
     reason: "People are peers on the document, not kernel state.",
   },
   {
@@ -107,8 +106,8 @@ const cloudStateRows = [
   },
   {
     surface: "Runtime",
-    owner: "Notebook capability",
-    language: "Python, runtime detached",
+    owner: "Notebook toolbar",
+    language: "Python / detached",
     reason: "Cloud previews can show language context without implying local execution.",
   },
   {
@@ -181,7 +180,7 @@ export function CloudNotebookShellExample() {
           className="h-[720px] bg-background text-foreground"
           stageClassName="bg-background"
           toolbar={
-            <CloudHeader
+            <CloudNotebookChrome
               actor={actor}
               connection="live"
               mode="edit"
@@ -189,7 +188,7 @@ export function CloudNotebookShellExample() {
               scenario={scenario}
             />
           }
-          toolbarClassName="border-b bg-background/95 px-3 py-2 backdrop-blur"
+          toolbarClassName="border-b bg-background/95 backdrop-blur"
           toolbarLabel="Cloud notebook session"
           rail={rail}
           capabilities={scenario.capabilities}
@@ -216,14 +215,13 @@ export function CloudNotebookShellExample() {
                   {state.description}
                 </p>
               </div>
-              <div className="bg-background p-3 text-foreground">
-                <CloudHeader
+              <div className="bg-background text-foreground">
+                <CloudStatePreview
                   actor={stateActor}
                   connection={state.connection}
                   mode={state.mode}
                   people={state.people}
                   scenario={stateScenario}
-                  compact
                 />
               </div>
             </article>
@@ -276,47 +274,34 @@ function BrowserFrame() {
   );
 }
 
-function CloudHeader({
+function CloudNotebookChrome({
   actor,
-  compact = false,
   connection,
   mode,
   people,
   scenario,
 }: {
   actor: NotebookActorIdentity;
-  compact?: boolean;
   connection: CloudConnectionState;
   mode: CloudModeState;
   people: readonly NotebookActorIdentity[];
   scenario: ReturnType<typeof getElementsNotebookScenario>;
 }) {
-  if (compact) {
-    return (
-      <CloudHeaderStrip
+  return (
+    <div className="flex min-w-0 flex-col" data-slot="cloud-notebook-chrome">
+      <CloudAppToolbar
         actor={actor}
         connection={connection}
         mode={mode}
         people={people}
         scenario={scenario}
       />
-    );
-  }
-
-  return (
-    <NotebookDocumentHeader
-      capabilities={scenario.capabilities}
-      presence={<CloudPresence people={people} mode={mode} compact={compact} />}
-      utilityControls={<CloudConnectionPill state={connection} compact={compact} />}
-      runtimeControls={<CloudRuntimePill compact={compact} />}
-      sharingControls={<CloudShareButton compact={compact} />}
-      editControls={<CloudModeButton mode={mode} compact={compact} />}
-      authControls={<CloudAccountButton actor={actor} compact={compact} />}
-    />
+      <CloudNotebookToolbar scenario={scenario} />
+    </div>
   );
 }
 
-function CloudHeaderStrip({
+function CloudAppToolbar({
   actor,
   connection,
   mode,
@@ -331,22 +316,83 @@ function CloudHeaderStrip({
 }) {
   return (
     <div
-      className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"
-      data-slot="cloud-notebook-header-strip"
+      className="flex min-h-14 min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border/70 px-4 py-2"
+      data-slot="cloud-app-toolbar"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <CloudPresence people={people} mode={mode} compact={false} />
+        <CloudConnectionPill state={connection} compact={false} />
+      </div>
+      <div className="flex shrink-0 items-center gap-3">
+        {scenario.capabilities.canManageSharing ? <CloudShareButton compact={false} /> : null}
+        {scenario.capabilities.canRequestEdit ? (
+          <CloudModeButton mode={mode} compact={false} />
+        ) : null}
+        {scenario.capabilities.auth.canSignIn ||
+        scenario.capabilities.auth.canUseAuthenticatedIdentity ||
+        scenario.capabilities.auth.needsAttention ? (
+          <CloudAccountButton actor={actor} compact={false} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CloudNotebookToolbar({
+  scenario,
+}: {
+  scenario: ReturnType<typeof getElementsNotebookScenario>;
+}) {
+  const canShowRuntime =
+    scenario.capabilities.canExecute ||
+    scenario.capabilities.canViewPackages ||
+    scenario.capabilities.canManagePackages;
+
+  return (
+    <div
+      className="flex min-h-12 min-w-0 items-center justify-end gap-3 px-4 py-2"
+      data-slot="cloud-notebook-toolbar"
+    >
+      {canShowRuntime ? <CloudRuntimePill compact={false} /> : null}
+    </div>
+  );
+}
+
+function CloudStatePreview({
+  actor,
+  connection,
+  mode,
+  people,
+  scenario,
+}: {
+  actor: NotebookActorIdentity;
+  connection: CloudConnectionState;
+  mode: CloudModeState;
+  people: readonly NotebookActorIdentity[];
+  scenario: ReturnType<typeof getElementsNotebookScenario>;
+}) {
+  return (
+    <div
+      className="divide-y divide-border/70"
+      data-slot="cloud-state-preview"
       role="toolbar"
       aria-label="Cloud notebook state"
     >
-      <CloudPresence people={people} mode={mode} compact />
-      <span className="h-4 w-px bg-border/70" aria-hidden="true" />
-      <CloudConnectionPill state={connection} compact />
-      <CloudRuntimePill compact />
-      {scenario.capabilities.canManageSharing ? <CloudShareButton compact /> : null}
-      {scenario.capabilities.canRequestEdit ? <CloudModeButton mode={mode} compact /> : null}
-      {scenario.capabilities.auth.canSignIn ||
-      scenario.capabilities.auth.canUseAuthenticatedIdentity ||
-      scenario.capabilities.auth.needsAttention ? (
-        <CloudAccountButton actor={actor} compact />
-      ) : null}
+      <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5">
+        <CloudPresence people={people} mode={mode} compact />
+        <span className="h-4 w-px bg-border/70" aria-hidden="true" />
+        <CloudConnectionPill state={connection} compact />
+        {scenario.capabilities.canManageSharing ? <CloudShareButton compact /> : null}
+        {scenario.capabilities.canRequestEdit ? <CloudModeButton mode={mode} compact /> : null}
+        {scenario.capabilities.auth.canSignIn ||
+        scenario.capabilities.auth.canUseAuthenticatedIdentity ||
+        scenario.capabilities.auth.needsAttention ? (
+          <CloudAccountButton actor={actor} compact />
+        ) : null}
+      </div>
+      <div className="flex min-h-9 items-center justify-end px-3 py-1">
+        <CloudRuntimePill compact />
+      </div>
     </div>
   );
 }
@@ -360,30 +406,54 @@ function CloudPresence({
   mode: CloudModeState;
   people: readonly NotebookActorIdentity[];
 }) {
-  const connectedCount = Math.max(1, people.length);
-  const modeLabel = mode === "edit" ? "editing" : "viewing";
-  const label = compact ? `${connectedCount} here` : `${connectedCount} here now`;
+  const summary = presenceSummary(people, mode, compact);
+  const hasPeers = people.length > 0;
 
   return (
     <div
       className={cn(
-        "inline-flex h-8 max-w-[min(18rem,54vw)] items-center gap-2 px-1 text-sm text-foreground",
-        people.length === 0 && "text-muted-foreground",
+        "inline-flex h-8 min-w-0 items-center gap-2 px-1 text-sm text-foreground",
+        compact ? "max-w-[min(18rem,54vw)]" : "max-w-[min(16rem,28vw)]",
+        !hasPeers && "text-muted-foreground",
       )}
-      title={`${label}, ${modeLabel}`}
+      title={summary.title}
     >
       <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
         <UsersRound className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        {people.length > 0 ? (
+        {hasPeers ? (
           <span className="absolute bottom-0 right-0 size-1.5 rounded-full bg-emerald-500" />
         ) : null}
       </span>
-      <span className="min-w-0 truncate">
-        {label}
-        <span className="text-muted-foreground">, {modeLabel}</span>
-      </span>
+      <span className="min-w-0 truncate">{summary.label}</span>
     </div>
   );
+}
+
+function presenceSummary(
+  people: readonly NotebookActorIdentity[],
+  mode: CloudModeState,
+  compact: boolean,
+): { label: string; title: string } {
+  const modeLabel = mode === "edit" ? "editing" : "viewing";
+
+  if (people.length === 0) {
+    return {
+      label: compact ? "No live peers" : "No one live here",
+      title: "No live collaborators are connected",
+    };
+  }
+
+  if (compact) {
+    return {
+      label: `${people.length} here, ${modeLabel}`,
+      title: people.map((person) => `${person.label}: ${person.detail ?? "connected"}`).join(", "),
+    };
+  }
+
+  return {
+    label: `${people.length} here now, ${modeLabel}`,
+    title: people.map((person) => `${person.label}: ${person.detail ?? "connected"}`).join(", "),
+  };
 }
 
 function CloudConnectionPill({
@@ -416,8 +486,13 @@ function CloudRuntimePill({ compact }: { compact: boolean }) {
       title="Notebook language, runtime detached in cloud preview"
     >
       <Code2 className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="truncate">{compact ? "Python" : "Python"}</span>
-      {!compact ? <span className="text-blue-700/50 dark:text-blue-300/50">detached</span> : null}
+      <span className="truncate">Python</span>
+      {!compact ? (
+        <>
+          <span className="text-blue-700/45 dark:text-blue-300/45">/</span>
+          <span className="text-blue-700/60 dark:text-blue-300/60">detached</span>
+        </>
+      ) : null}
     </span>
   );
 }
