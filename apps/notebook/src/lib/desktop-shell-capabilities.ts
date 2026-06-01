@@ -1,13 +1,13 @@
 import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
-} from "@/components/notebook-shell/actor-projection";
-import { createNotebookInteractionModeProjection } from "@/components/notebook-shell/interaction-mode";
+} from "@/components/notebook/actor-projection";
+import { createNotebookInteractionModeProjection } from "@/components/notebook/interaction-mode";
 import type {
   NotebookShellAccessLevel,
   NotebookShellAccessSource,
   NotebookShellCapabilities,
-} from "@/components/notebook-shell/capabilities";
+} from "@/components/notebook/capabilities";
 
 export interface DesktopNotebookShellCapabilityInput {
   canAcceptCellMutations: boolean;

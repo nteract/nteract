@@ -9,7 +9,7 @@ import {
   notebookToolbarActors,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarProps,
-} from "@/components/notebook-shell";
+} from "@/components/notebook";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
@@ -106,14 +106,14 @@ function createStatusSurfaces(): ToolbarSurface[] {
   return [
     {
       title: "Desktop owner",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: desktopOwner,
       role: "Local desktop host can edit structure, execute, and inspect package state through the same command toolbar contract.",
       props: toolbarProps(desktopOwner),
     },
     {
       title: "Desktop read-only file",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: desktopReadOnly,
       role: "Filesystem or host permissions disable mutation controls while package details remain visible.",
       props: toolbarProps(desktopReadOnly, {
@@ -122,7 +122,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Desktop remote room",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: desktopRemote,
       role: "Desktop can be a remote notebook host: local app and daemon identity project into the same access model as cloud.",
       props: toolbarProps(desktopRemote, {
@@ -131,7 +131,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Cloud public viewer",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: cloudViewer,
       role: "Anonymous read access keeps the notebook shell readable and package-aware without edit, execution, or sharing controls.",
       props: toolbarProps(cloudViewer, {
@@ -142,7 +142,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Cloud editor",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: cloudEditor,
       role: "Cloud edit permission and selected edit mode are separate from host support; active controls are their intersection.",
       props: toolbarProps(cloudEditor, {
@@ -151,7 +151,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Cloud owner",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: cloudOwner,
       role: "Owner access can expose sharing identity chrome without inventing a second notebook toolbar.",
       props: toolbarProps(cloudOwner, {
@@ -160,7 +160,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Codex or Claude operator",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: agent,
       role: "Desktop and cloud both have non-human operators. The toolbar uses actor-neutral presence and projected identity labels.",
       props: toolbarProps(agent, {
@@ -169,7 +169,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Runtime peer",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: runtimePeer,
       role: "Runtime authorship is present without notebook edit access, so execution authors do not become structure editors.",
       props: toolbarProps(runtimePeer, {
@@ -178,7 +178,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Preparing environment",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: cloudEditor,
       role: "Hosted and desktop hosts can show environment progress while keeping the work owned by their runtime adapter.",
       props: toolbarProps(cloudEditor, {
@@ -189,7 +189,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Runtime unavailable",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: runtimeUnavailable,
       role: "Runtime and trust remediation can surface through shared status while host-specific fixes stay outside the command toolbar.",
       props: toolbarProps(runtimeUnavailable, {
@@ -204,7 +204,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
     },
     {
       title: "Update ready",
-      source: "src/components/notebook-shell/NotebookCommandToolbar.tsx",
+      source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: desktopOwner,
       role: "Desktop update actions remain a host slot on the shared command toolbar.",
       props: toolbarProps(desktopOwner, {

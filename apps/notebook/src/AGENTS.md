@@ -11,6 +11,7 @@ src/                          ← Shared components (path alias @/)
 │   ├── cell/                 ← Cell container, controls, execution count
 │   ├── editor/               ← CodeMirror wrappers, extensions, themes
 │   ├── isolated/             ← Iframe security isolation (see src/components/isolated/AGENTS.md)
+│   ├── notebook/             ← Shared notebook chrome, capabilities, view-model projections
 │   ├── outputs/              ← Output renderers (MediaRouter, AnsiOutput, etc.)
 │   ├── widgets/              ← ipywidgets and anywidget (see src/components/widgets/AGENTS.md)
 │   └── ui/                   ← shadcn components (see src/components/ui/AGENTS.md)

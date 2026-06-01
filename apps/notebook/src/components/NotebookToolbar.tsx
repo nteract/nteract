@@ -7,7 +7,7 @@ import {
   type NotebookCommandRuntimeState,
   type NotebookEnvironmentManager,
   type NotebookShellCapabilities,
-} from "@/components/notebook-shell";
+} from "@/components/notebook";
 import type { UpdateStatus } from "../hooks/useUpdater";
 import { KERNEL_ERROR_REASON, type EnvProgressState, type ProjectContext } from "runtimed";
 import {

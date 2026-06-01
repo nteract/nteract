@@ -2,7 +2,7 @@ import { Play, Square } from "lucide-react";
 import {
   notebookActorIdentityFromProjection,
   notebookActorProjectionFromLabel,
-} from "@/components/notebook-shell/actor-projection";
+} from "@/components/notebook/actor-projection";
 import { cn } from "@/lib/utils";
 
 interface CompactExecutionButtonProps {

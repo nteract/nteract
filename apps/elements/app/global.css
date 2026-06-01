@@ -11,7 +11,7 @@
 @source "../../../src/components/editor/**/*.{ts,tsx}";
 @source "../../../src/components/isolated/**/*.{ts,tsx}";
 @source "../../../src/components/notebook-rail/**/*.{ts,tsx}";
-@source "../../../src/components/notebook-shell/**/*.{ts,tsx}";
+@source "../../../src/components/notebook/**/*.{ts,tsx}";
 @source "../../../src/components/outputs/**/*.{ts,tsx}";
 @source "../../../src/components/rail/**/*.{ts,tsx}";
 @source "../../../src/components/ui/**/*.{ts,tsx}";

@@ -17,7 +17,7 @@ import {
   NotebookEnvironmentSummary,
   NotebookPackageSummaryPanel,
   type NotebookViewCell,
-} from "@/components/notebook-shell";
+} from "@/components/notebook";
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import { UvDependencyPanel } from "@/components/environment";

@@ -43,7 +43,7 @@ import {
   type NotebookInteractionModeProjection,
   type NotebookPackageSection,
   type NotebookShellCapabilities,
-} from "@/components/notebook-shell";
+} from "@/components/notebook";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
