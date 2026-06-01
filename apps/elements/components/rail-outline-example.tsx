@@ -14,13 +14,12 @@ import {
   NotebookDocumentHeader,
   NotebookDocumentRail,
   NotebookDocumentShell,
-  NotebookEnvironmentSummary,
   NotebookPackageSummaryPanel,
   type NotebookViewCell,
 } from "@/components/notebook";
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
-import { UvDependencyPanel } from "@/components/environment";
+import { EnvironmentSummary, UvDependencyPanel } from "@/components/environment";
 import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
 import {
   getElementsNotebookScenario,
@@ -135,7 +134,7 @@ export function RailOutlineExample() {
                 packages={viewModel.packages}
                 readOnly
                 header={
-                  <NotebookEnvironmentSummary
+                  <EnvironmentSummary
                     capabilities={scenario.capabilities}
                     packages={viewModel.packages}
                     environment={scenario.environment}

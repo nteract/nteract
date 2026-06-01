@@ -10,9 +10,9 @@ are acting within. This page catalogs notebook-semantic composites, not raw
 primitive components.
 
 `NotebookIdentityBadge` and `NotebookIdentityGroup` wrap the shared Avatar
-primitive with notebook actor/access facts. `NotebookEnvironmentSummary` renders
-the shared typed environment projection for access, runtime, package details,
-sync, and trust state. Environment runtime and package-manager icons live in
+primitive with notebook actor/access facts. `EnvironmentSummary` renders the
+shared typed environment projection for access, runtime, package details, sync,
+and trust state. Environment runtime and package-manager icons live in
 `src/components/environment` so notebook, settings, onboarding, and Elements use
 one canonical set.
 
@@ -27,8 +27,8 @@ feed the same production components from their host adapters.
 ## Boundary
 
 - Raw shadcn primitives stay implementation details.
-- Actor labels, access state, auth state, runtime, package, sync, and trust
-  facts come from notebook shell projections.
+- Actor labels come from notebook identity projections; access, runtime,
+  package, sync, and trust facts feed the shared environment projection.
 - Runtime and package-manager icons are shared environment primitives, not
   app-local notebook assets.
 - Agent attribution is represented as notebook identity, not as a generic model
