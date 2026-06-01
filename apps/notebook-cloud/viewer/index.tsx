@@ -1318,20 +1318,15 @@ function NotebookViewer({
       />
     </div>
   ) : null;
-
-  return (
-    <NotebookDocumentShell
-      rootElement="main"
-      className="cloud-notebook-shell"
-      stageClassName="cloud-notebook-stage"
-      toolbar={toolbar}
-      toolbarLabel="Notebook view status and controls"
-      capabilities={shellCapabilities}
-      rail={rail}
-      stageLabel="Hosted notebook"
-    >
-      <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
-
+  const hasNotices =
+    authState.mode === "invalid" ||
+    authState.mode === "oidc_expired" ||
+    authRenewal.kind !== "idle" ||
+    Boolean(connectionError) ||
+    Boolean(authDiagnostics) ||
+    status.kind !== "ready";
+  const notices = hasNotices ? (
+    <>
       {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
         <div className="cloud-state cloud-auth-state" data-kind="error">
           <span>{prototypeAuthSummary(authState)}</span>
@@ -1374,6 +1369,23 @@ function NotebookViewer({
           {status.message}
         </div>
       )}
+    </>
+  ) : null;
+
+  return (
+    <NotebookDocumentShell
+      rootElement="main"
+      className="cloud-notebook-shell"
+      stageClassName="cloud-notebook-stage"
+      toolbar={toolbar}
+      toolbarLabel="Notebook view status and controls"
+      notices={notices}
+      noticesClassName="cloud-notebook-notices"
+      capabilities={shellCapabilities}
+      rail={rail}
+      stageLabel="Hosted notebook"
+    >
+      <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
       <PresenceValueProvider value={cloudPresenceContext}>
         <CrdtBridgeProvider
