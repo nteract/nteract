@@ -423,7 +423,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-linux-clippy
+          shared-key: ubuntu-clippy
 
       # Build wasm + renderer plugins (gitignored; runtimed embeds them)
       - uses: ./.github/actions/build-runtime-artifacts
@@ -458,7 +458,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-linux-tests
+          shared-key: ubuntu-clippy
 
       # Build wasm + renderer plugins (gitignored; runtimed embeds them)
       - uses: ./.github/actions/build-runtime-artifacts
@@ -484,7 +484,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-runtimed-node
+          shared-key: ubuntu-clippy
 
       # Build wasm + renderer plugins (gitignored; runtimed embeds them)
       - uses: ./.github/actions/build-runtime-artifacts
