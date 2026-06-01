@@ -120,6 +120,7 @@ interface HiddenCellDisclosureProps {
   pulsing?: boolean;
   onClick: () => void;
   title: string;
+  focusTarget?: boolean;
   className?: string;
 }
 
@@ -132,6 +133,7 @@ function HiddenCellDisclosure({
   pulsing,
   onClick,
   title,
+  focusTarget,
   className,
 }: HiddenCellDisclosureProps) {
   return (
@@ -139,6 +141,7 @@ function HiddenCellDisclosure({
       type="button"
       disabled={disabled}
       onClick={onClick}
+      data-cell-focus-target={focusTarget ? "" : undefined}
       className={cn(
         "group/reveal flex w-full min-w-0 items-center gap-2 py-1 text-left text-xs leading-none",
         "text-muted-foreground/70 transition-colors hover:text-foreground",
@@ -193,6 +196,7 @@ function HiddenGroupDisclosure({
         type="button"
         disabled={disabled}
         onClick={onRevealAll}
+        data-cell-focus-target=""
         className={cn(
           "flex w-full min-w-0 items-center gap-2 text-left leading-none",
           "text-muted-foreground/70 transition-colors hover:text-foreground",
@@ -459,6 +463,28 @@ export const CodeCell = memo(function CodeCell({
     onExecute();
   }, [canExecute, onExecute]);
 
+  const handleHiddenDisclosureKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (
+        !(event.target instanceof HTMLElement) ||
+        !event.target.hasAttribute("data-cell-focus-target")
+      ) {
+        return;
+      }
+
+      if (event.key === "ArrowDown") {
+        onFocusNext?.("start");
+        event.preventDefault();
+        event.stopPropagation();
+      } else if (event.key === "ArrowUp") {
+        onFocusPrevious?.("end");
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [onFocusNext, onFocusPrevious],
+  );
+
   // Get keyboard navigation bindings
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
@@ -627,7 +653,7 @@ export const CodeCell = memo(function CodeCell({
           <>
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
-              <div className="mt-0.5">
+              <div className="mt-0.5" onKeyDown={handleHiddenDisclosureKeyDown}>
                 {hiddenGroupCount && hiddenGroupCount > 1 ? (
                   <HiddenGroupDisclosure
                     count={hiddenGroupCount}
@@ -671,6 +697,7 @@ export const CodeCell = memo(function CodeCell({
                     }}
                     title="Show cell"
                     label="Cell hidden"
+                    focusTarget
                     alert={
                       hiddenGroupErrorCount
                         ? hiddenGroupErrorCount === 1
@@ -683,7 +710,7 @@ export const CodeCell = memo(function CodeCell({
               </div>
             ) : isSourceHidden ? (
               <>
-                <div className="mt-0.5">
+                <div className="mt-0.5" onKeyDown={handleHiddenDisclosureKeyDown}>
                   <HiddenCellDisclosure
                     icon={Code2}
                     disabled={readOnly}
@@ -691,6 +718,7 @@ export const CodeCell = memo(function CodeCell({
                     title="Show input"
                     label="Input hidden"
                     detail={sourcePreview}
+                    focusTarget
                   />
                 </div>
                 {currentLine}

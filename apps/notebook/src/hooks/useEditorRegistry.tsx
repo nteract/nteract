@@ -24,8 +24,14 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
     // Find CodeMirror's content element inside the cell
     const cmContent = cellElement.querySelector(".cm-content");
     if (!cmContent) {
-      // Might be a markdown cell in view mode - no editor to focus
-      logger.debug(`[cell-nav] No CM content in cell (markdown?): ${cellId.slice(0, 8)}`);
+      const focusTarget = cellElement.querySelector<HTMLElement>("[data-cell-focus-target]");
+      if (focusTarget) {
+        focusTarget.focus({ preventScroll: true });
+        return;
+      }
+
+      // Might be a markdown preview or hidden cell with no explicit fallback.
+      logger.debug(`[cell-nav] No focus target in cell: ${cellId.slice(0, 8)}`);
       return;
     }
 
