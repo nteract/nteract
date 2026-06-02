@@ -426,7 +426,9 @@ function ElementsFixtureEnvironmentCard() {
           </div>
           <ol className="mt-3 min-h-20 space-y-1 font-mono text-[11px] text-fd-muted-foreground">
             {environment.actions.eventLog.length ? (
-              environment.actions.eventLog.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)
+              environment.actions.eventLog.map((item, index) => (
+                <li key={`${item}-${index}`}>{item}</li>
+              ))
             ) : (
               <li>No events recorded</li>
             )}

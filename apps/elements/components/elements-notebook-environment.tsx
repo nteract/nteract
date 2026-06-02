@@ -44,8 +44,9 @@ export interface ElementsNotebookEnvironmentModel {
   };
 }
 
-const ElementsNotebookEnvironmentContext =
-  createContext<ElementsNotebookEnvironmentModel | null>(null);
+const ElementsNotebookEnvironmentContext = createContext<ElementsNotebookEnvironmentModel | null>(
+  null,
+);
 
 export interface ElementsNotebookEnvironmentProps {
   children: ReactNode;
@@ -136,7 +137,9 @@ export function ElementsNotebookEnvironment({
 export function useElementsNotebookEnvironment() {
   const environment = useContext(ElementsNotebookEnvironmentContext);
   if (!environment) {
-    throw new Error("useElementsNotebookEnvironment must be used within ElementsNotebookEnvironment.");
+    throw new Error(
+      "useElementsNotebookEnvironment must be used within ElementsNotebookEnvironment.",
+    );
   }
   return environment;
 }
