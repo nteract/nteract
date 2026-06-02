@@ -221,10 +221,7 @@ export function useIsNextCellFromFocused(cellId: string): boolean {
  */
 export function useSearchActiveOffset(cellId: string): number {
   const subscribe = useMemo(() => subscribeSearchMatchFor(cellId), [cellId]);
-  const getSnapshot = useMemo(
-    () => getSearchActiveOffsetSnapshot(cellId),
-    [cellId],
-  );
+  const getSnapshot = useMemo(() => getSearchActiveOffsetSnapshot(cellId), [cellId]);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
@@ -232,14 +229,9 @@ export function useSearchActiveOffset(cellId: string): number {
  * Returns true if any cell in the given group is executing.
  * Re-renders when executing state changes.
  */
-export function useIsGroupExecuting(
-  groupCellIds: string[] | undefined,
-): boolean {
+export function useIsGroupExecuting(groupCellIds: string[] | undefined): boolean {
   const subscribe = useMemo(() => subscribeExecutingForGroup(), []);
-  const getSnapshot = useMemo(
-    () => getIsGroupExecutingSnapshot(groupCellIds),
-    [groupCellIds],
-  );
+  const getSnapshot = useMemo(() => getIsGroupExecutingSnapshot(groupCellIds), [groupCellIds]);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
@@ -312,17 +304,13 @@ function getIsNextSnapshot(cellId: string): () => boolean {
     const ids = getCellIdsSnapshot();
     const focusedIndex = ids.indexOf(_focusedCellId);
     const next =
-      focusedIndex >= 0 &&
-      focusedIndex < ids.length - 1 &&
-      ids[focusedIndex + 1] === cellId;
+      focusedIndex >= 0 && focusedIndex < ids.length - 1 && ids[focusedIndex + 1] === cellId;
     if (next !== prev) prev = next;
     return prev;
   };
 }
 
-function subscribeExecutingFor(
-  _cellId: string,
-): (cb: () => void) => () => void {
+function subscribeExecutingFor(_cellId: string): (cb: () => void) => () => void {
   return (cb: () => void) => {
     _executingSubscribers.add(cb);
     return () => _executingSubscribers.delete(cb);
@@ -345,9 +333,7 @@ function subscribeExecutingForGroup(): (cb: () => void) => () => void {
   };
 }
 
-function getIsGroupExecutingSnapshot(
-  groupCellIds: string[] | undefined,
-): () => boolean {
+function getIsGroupExecutingSnapshot(groupCellIds: string[] | undefined): () => boolean {
   let prev = false;
   return () => {
     const next = groupCellIds?.some((id) => _executingCellIds.has(id)) ?? false;
@@ -399,9 +385,7 @@ function getSearchMatchSnapshot(): NotebookFindMatch | null {
   return _searchCurrentMatch;
 }
 
-function subscribeSearchMatchFor(
-  _cellId: string,
-): (cb: () => void) => () => void {
+function subscribeSearchMatchFor(_cellId: string): (cb: () => void) => () => void {
   return (cb: () => void) => {
     _searchMatchSubscribers.add(cb);
     return () => _searchMatchSubscribers.delete(cb);
@@ -412,8 +396,7 @@ function getSearchActiveOffsetSnapshot(cellId: string): () => number {
   let prev = -1;
   return () => {
     const m = _searchCurrentMatch;
-    const next =
-      m && m.cellId === cellId && m.type === "source" ? m.offset : -1;
+    const next = m && m.cellId === cellId && m.type === "source" ? m.offset : -1;
     if (next !== prev) prev = next;
     return prev;
   };

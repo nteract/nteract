@@ -307,8 +307,7 @@ export function updateCellById(
 export function replaceNotebookCells(cells: NotebookStoreCell[]): void {
   const newIds = cells.map((c) => c.id);
   const idsChanged =
-    newIds.length !== _cellIds.length ||
-    newIds.some((id, i) => id !== _cellIds[i]);
+    newIds.length !== _cellIds.length || newIds.some((id, i) => id !== _cellIds[i]);
 
   const oldIds = _cellIds;
   const newMap = new Map<string, NotebookStoreCell>();
@@ -388,8 +387,7 @@ export function updateNotebookCells(
 
   const newIds = newCells.map((c) => c.id);
   const idsChanged =
-    newIds.length !== _cellIds.length ||
-    newIds.some((id, i) => id !== _cellIds[i]);
+    newIds.length !== _cellIds.length || newIds.some((id, i) => id !== _cellIds[i]);
 
   _cellMap = new Map(newCells.map((c) => [c.id, c]));
   const materializedChromeChanged =
