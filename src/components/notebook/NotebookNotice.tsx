@@ -47,7 +47,7 @@ export function NotebookNoticeStack({
 }: NotebookNoticeStackProps) {
   return (
     <div
-      className={cn("flex flex-col", className)}
+      className={cn("flex flex-col gap-1", className)}
       data-slot="notebook-notice-stack"
       data-testid={dataTestId}
     >

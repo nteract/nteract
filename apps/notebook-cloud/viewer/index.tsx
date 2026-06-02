@@ -111,6 +111,7 @@ import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
+import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   buildCloudShareAccessRows,
@@ -172,17 +173,6 @@ interface CloudNotebookCatalogRevision {
 interface CloudNotebookCatalog {
   revisions?: CloudNotebookCatalogRevision[];
 }
-
-type CloudAuthRenewalState =
-  | { kind: "idle"; message: null }
-  | { kind: "refreshing"; message: string }
-  | { kind: "failed"; message: string };
-
-type ViewerStatus =
-  | { kind: "loading"; message: string }
-  | { kind: "empty"; message: string }
-  | { kind: "ready"; message: string }
-  | { kind: "error"; message: string };
 
 interface ViewerRuntime {
   config: CloudViewerConfig;

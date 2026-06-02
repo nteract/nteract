@@ -6,23 +6,13 @@ import {
   NotebookNoticeStack,
 } from "@/components/notebook/NotebookNotice";
 import { prototypeAuthSummary, type CloudPrototypeAuthState } from "./collaborator-auth";
-
-export type CloudAuthRenewalNoticeState =
-  | { kind: "idle"; message: null }
-  | { kind: "refreshing"; message: string }
-  | { kind: "failed"; message: string };
-
-export type CloudViewerNoticeStatus =
-  | { kind: "loading"; message: string }
-  | { kind: "empty"; message: string }
-  | { kind: "ready"; message: string }
-  | { kind: "error"; message: string };
+import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
 export interface CloudNotebookNoticesProps {
   authState: CloudPrototypeAuthState;
-  authRenewal: CloudAuthRenewalNoticeState;
+  authRenewal: CloudAuthRenewalState;
   connectionError: string | null;
-  status: CloudViewerNoticeStatus;
+  status: ViewerStatus;
   diagnostics?: ReactNode;
   onResetAuth: () => void;
 }
