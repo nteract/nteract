@@ -225,6 +225,30 @@ where
     false
 }
 
+async fn remove_daemon_seed_cell(handle: &notebook_sync::DocHandle, context: &str) {
+    assert_session_ready(handle, context).await;
+    let cells = handle.get_cells();
+    assert_eq!(
+        cells.len(),
+        1,
+        "{context} should start with exactly the daemon seed cell, got: {:?}",
+        cells
+    );
+    let seed = &cells[0];
+    assert_eq!(seed.cell_type, "code", "{context} seed cell should be code");
+    assert!(
+        seed.source.is_empty(),
+        "{context} seed cell should be empty"
+    );
+    handle
+        .delete_cell(&seed.id)
+        .expect("test should be able to remove daemon seed cell");
+    handle
+        .confirm_sync()
+        .await
+        .expect("seed deletion should sync");
+}
+
 async fn wait_for_presence_update_actor_label(
     frame_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
     peer_label: &str,
@@ -862,7 +886,7 @@ async fn test_notebook_sync_via_unified_socket() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    // Create first notebook via connect_create — should get empty notebook
+    // Create first notebook via connect_create — daemon seeds one starter cell.
     let result1 = connect::connect_create(
         socket_path.clone(),
         "python",
@@ -882,8 +906,7 @@ async fn test_notebook_sync_via_unified_socket() {
         "client1 should reach session-ready state within 2s"
     );
 
-    let cells = client1.get_cells();
-    assert!(cells.is_empty(), "new notebook should have no cells");
+    remove_daemon_seed_cell(&client1, "client1").await;
 
     // Add a cell from client1
     client1.add_cell_after("cell-1", "code", None).unwrap();
@@ -926,7 +949,13 @@ async fn test_notebook_sync_via_unified_socket() {
     );
 
     let cells = client3.get_cells();
-    assert!(cells.is_empty(), "different notebook should have no cells");
+    assert_eq!(
+        cells.len(),
+        1,
+        "different notebook should have its own daemon seed cell"
+    );
+    assert_eq!(cells[0].cell_type, "code");
+    assert!(cells[0].source.is_empty());
 
     // Shutdown
     pool_client.shutdown().await.ok();
@@ -1530,6 +1559,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
             wait_for_session_ready(&client1, SESSION_READY_TIMEOUT).await,
             "client1 should reach session-ready state within 2s"
         );
+        remove_daemon_seed_cell(&client1, "untitled persistence client").await;
 
         client1.add_cell_after("c1", "code", None).unwrap();
         client1.update_source("c1", "persisted = True").unwrap();
@@ -1665,6 +1695,7 @@ async fn test_eviction_flushes_before_reconnect() {
             wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await,
             "client should reach session-ready state within 2s"
         );
+        remove_daemon_seed_cell(&client, "eviction flush client").await;
 
         client.add_cell_after("c1", "code", None).unwrap();
         client.update_source("c1", "race_test = 1").unwrap();
@@ -1760,6 +1791,7 @@ async fn test_kernel_teardown_keeps_room_resident() {
             wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await,
             "client should reach session-ready state"
         );
+        remove_daemon_seed_cell(&client, "kernel teardown client").await;
 
         client.add_cell_after("c1", "code", None).unwrap();
         client.update_source("c1", "resident = True").unwrap();
@@ -2460,6 +2492,7 @@ async fn test_notebook_cell_delete_propagation() {
         wait_for_session_ready(&client1, SESSION_READY_TIMEOUT).await,
         "client1 should reach session-ready state within 2s"
     );
+    remove_daemon_seed_cell(&client1, "delete propagation client").await;
 
     client1.add_cell_after("keep-1", "code", None).unwrap();
     client1
@@ -2605,6 +2638,9 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         "gamma notebook should reach session-ready state within {:?}",
         SESSION_READY_TIMEOUT
     );
+    remove_daemon_seed_cell(&nb_a, "alpha notebook").await;
+    remove_daemon_seed_cell(&nb_b, "beta notebook").await;
+    remove_daemon_seed_cell(&nb_c, "gamma notebook").await;
 
     // Add cells to each notebook
     nb_a.add_cell_after("alpha-1", "code", None).unwrap();

@@ -1011,7 +1011,7 @@ fn durable_or_synthetic_execution(
     }
 }
 
-/// Create a new notebook with metadata and a single initial code cell.
+/// Create a new notebook with metadata.
 ///
 /// Called by daemon-owned notebook creation (`CreateNotebook` handshake).
 /// Uses the provided env_id or generates a new one, and populates the doc
@@ -1046,13 +1046,25 @@ pub fn create_empty_notebook(
 
     doc.set_metadata_snapshot(&metadata_snapshot)
         .map_err(|e| format!("Failed to set metadata: {}", e))?;
-    if doc.cell_count() == 0 {
-        let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
-        doc.add_cell_after(&cell_id, "code", None)
-            .map_err(|e| format!("Failed to add initial cell: {}", e))?;
-    }
 
     Ok(env_id)
+}
+
+/// Seed a starter code cell when a daemon authority creates a brand-new
+/// user-facing notebook.
+///
+/// Keep this separate from `create_empty_notebook`: reconnect/restore paths and
+/// test fixture setup also need metadata-only documents.
+pub fn seed_initial_code_cell_if_empty(doc: &mut NotebookDoc) -> Result<Option<String>, String> {
+    if doc.cell_count() > 0 {
+        return Ok(None);
+    }
+
+    let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
+    doc.add_cell_after(&cell_id, "code", None)
+        .map_err(|e| format!("Failed to add initial cell: {}", e))?;
+
+    Ok(Some(cell_id))
 }
 
 /// Build default metadata for a new notebook based on runtime.

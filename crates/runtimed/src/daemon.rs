@@ -2949,9 +2949,22 @@ impl Daemon {
                         None,
                         &[],
                     ) {
-                        Ok(_cell_id) => {
-                            info!("[runtimed] Created new notebook at {}", path);
-                            created_new_at_path = true;
+                        Ok(_) => {
+                            match crate::notebook_sync_server::seed_initial_code_cell_if_empty(
+                                &mut doc,
+                            ) {
+                                Ok(_) => {
+                                    info!("[runtimed] Created new notebook at {}", path);
+                                    created_new_at_path = true;
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "[runtimed] Failed to seed initial cell at {}: {}",
+                                        path, e
+                                    );
+                                    create_error = Some(e);
+                                }
+                            }
                         }
                         Err(e) => {
                             error!(
@@ -3143,7 +3156,15 @@ impl Daemon {
                     &dependencies,
                 ) {
                     Ok(_) => {
-                        fresh = true;
+                        match crate::notebook_sync_server::seed_initial_code_cell_if_empty(&mut doc)
+                        {
+                            Ok(_) => {
+                                fresh = true;
+                            }
+                            Err(e) => {
+                                err = Some(e);
+                            }
+                        }
                     }
                     Err(e) => {
                         err = Some(e);

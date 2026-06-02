@@ -1566,9 +1566,11 @@ class TestDenoKernel:
         assert ks["display_name"] == "Deno"
         assert ks.get("language") == "typescript"
 
-        # Has zero cells (frontend creates the first cell locally)
+        # Daemon-owned creation seeds the initial document structure.
         cells = await deno_session.get_cells()
-        assert len(cells) == 0
+        assert len(cells) == 1
+        assert cells[0].cell_type == "code"
+        assert cells[0].source == ""
 
         # Verify the kernel is actually Deno by executing TypeScript
         result = await deno_session.execute_cell(
@@ -2512,6 +2514,7 @@ class TestExecutionIdScoping:
         """notebook.queue_all() returns execution handles for each queued cell."""
         await notebook.start()
 
+        await notebook.cells.get_by_index(0).delete()
         first = await notebook.cells.create("print('first')")
         second = await notebook.cells.create("print('second')")
         await asyncio.sleep(0.5)
@@ -2834,23 +2837,25 @@ class TestCreateNotebook:
     """Test Client.create_notebook() - daemon-owned creation."""
 
     async def test_create_python_notebook(self, client):
-        """Creating Python notebook returns session with zero cells."""
+        """Creating Python notebook returns session with a daemon seed cell."""
         session = await client.create_notebook(runtime="python")
         assert await session.is_connected()
 
         # notebook_id is UUID (not a path)
         assert len(session.notebook_id) == 36  # UUID format
 
-        # Has zero cells (frontend creates the first cell locally)
+        # Daemon-owned creation seeds the initial document structure.
         cells = await session.get_cells()
-        assert len(cells) == 0
+        assert len(cells) == 1
+        assert cells[0].cell_type == "code"
+        assert cells[0].source == ""
 
     async def test_create_notebook_returns_connection_info(self, client):
         """NotebookConnectionInfo is available for created notebooks."""
         session = await client.create_notebook(runtime="python")
         info = await session.connection_info()
         assert info is not None
-        assert info.cell_count == 0
+        assert info.cell_count == 1
         assert info.notebook_id == session.notebook_id
         # New notebooks don't need trust approval
         assert info.needs_trust_approval is False

@@ -3860,8 +3860,19 @@ fn test_create_empty_notebook_python() {
     let env_id = result.unwrap();
     assert!(!env_id.is_empty(), "Should generate an env_id");
 
-    // Daemon-owned notebook creation seeds the initial document structure.
+    // Metadata creation stays separate from daemon-owned starter cell seeding.
+    assert_eq!(doc.cell_count(), 0);
+    let seeded = seed_initial_code_cell_if_empty(&mut doc).unwrap();
+    assert!(
+        seeded.is_some(),
+        "empty notebook should receive a starter cell"
+    );
     assert_eq!(doc.cell_count(), 1);
+    let second_seed = seed_initial_code_cell_if_empty(&mut doc).unwrap();
+    assert!(
+        second_seed.is_none(),
+        "starter cell seeding should be idempotent"
+    );
 }
 
 #[test]
@@ -3877,6 +3888,8 @@ fn test_create_empty_notebook_deno() {
     );
 
     assert!(result.is_ok());
+    assert_eq!(doc.cell_count(), 0);
+    assert!(seed_initial_code_cell_if_empty(&mut doc).unwrap().is_some());
     assert_eq!(doc.cell_count(), 1);
 
     // Check metadata was set correctly
