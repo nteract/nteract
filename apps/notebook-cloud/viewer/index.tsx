@@ -1324,15 +1324,19 @@ function NotebookViewer({
       />
     </div>
   ) : null;
+  const notebookHasReadableSnapshot =
+    notebookCellIds.length > 0 || (snapshotResolvedRef.current && status.kind === "ready");
   const hasNotices = cloudNotebookHasNotices({
     authState,
     authRenewal,
     connectionError,
+    hasReadableSnapshot: notebookHasReadableSnapshot,
     status,
     diagnostics: authDiagnostics,
   });
   const notebookViewIsLoading =
     status.kind === "loading" ||
+    (Boolean(connectionError) && !notebookHasReadableSnapshot) ||
     (shellCapabilities.canEditStructure &&
       notebookCellIds.length === 0 &&
       !liveMaterializedRef.current);
@@ -1341,6 +1345,7 @@ function NotebookViewer({
       authState={authState}
       authRenewal={authRenewal}
       connectionError={connectionError}
+      hasReadableSnapshot={notebookHasReadableSnapshot}
       status={status}
       diagnostics={authDiagnostics}
       onResetAuth={resetPrototypeAuth}

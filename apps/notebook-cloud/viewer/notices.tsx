@@ -12,6 +12,7 @@ export interface CloudNotebookNoticesProps {
   authState: CloudPrototypeAuthState;
   authRenewal: CloudAuthRenewalState;
   connectionError: string | null;
+  hasReadableSnapshot?: boolean;
   status: ViewerStatus;
   diagnostics?: ReactNode;
   onResetAuth: () => void;
@@ -21,10 +22,13 @@ export function cloudNotebookHasNotices({
   authState,
   authRenewal,
   connectionError,
+  hasReadableSnapshot = false,
   status,
   diagnostics,
 }: Omit<CloudNotebookNoticesProps, "onResetAuth">): boolean {
-  const connectionNotice = connectionError ? cloudConnectionNoticeDisplay(connectionError) : null;
+  const connectionNotice = connectionError
+    ? cloudConnectionNoticeDisplay(connectionError, hasReadableSnapshot)
+    : null;
   const shouldShowStatusNotice =
     status.kind !== "ready" && !isStatusDerivedFromConnectionError(status, connectionError);
 
@@ -42,6 +46,7 @@ export function CloudNotebookNotices({
   authState,
   authRenewal,
   connectionError,
+  hasReadableSnapshot = false,
   status,
   diagnostics,
   onResetAuth,
@@ -51,6 +56,7 @@ export function CloudNotebookNotices({
       authState,
       authRenewal,
       connectionError,
+      hasReadableSnapshot,
       status,
       diagnostics,
     })
@@ -58,7 +64,9 @@ export function CloudNotebookNotices({
     return null;
   }
 
-  const connectionNotice = connectionError ? cloudConnectionNoticeDisplay(connectionError) : null;
+  const connectionNotice = connectionError
+    ? cloudConnectionNoticeDisplay(connectionError, hasReadableSnapshot)
+    : null;
   const shouldShowStatusNotice =
     status.kind !== "ready" && !isStatusDerivedFromConnectionError(status, connectionError);
 
@@ -153,12 +161,22 @@ function isStatusDerivedFromConnectionError(
   );
 }
 
-function cloudConnectionNoticeDisplay(error: string): {
+function cloudConnectionNoticeDisplay(
+  error: string,
+  hasReadableSnapshot: boolean,
+): {
   title: string;
   message: string;
   tone: "warning";
 } {
   if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
+    if (!hasReadableSnapshot) {
+      return {
+        title: "Live room unavailable.",
+        message: "The notebook will load once the account or connection is refreshed.",
+        tone: "warning",
+      };
+    }
     return {
       title: "Live room reconnecting.",
       message: "The notebook stays readable while the account or connection is refreshed.",

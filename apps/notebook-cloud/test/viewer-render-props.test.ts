@@ -116,11 +116,22 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /const connectionNotice = connectionError/);
-  assert.match(sourceText, /cloudConnectionNoticeDisplay\(connectionError\)/);
+  assert.match(sourceText, /const notebookHasReadableSnapshot =/);
+  assert.match(
+    sourceText,
+    /notebookCellIds\.length > 0 \|\| \(snapshotResolvedRef\.current && status\.kind === "ready"\)/,
+  );
+  assert.match(
+    sourceText,
+    /cloudConnectionNoticeDisplay\(connectionError, notebookHasReadableSnapshot\)/,
+  );
   assert.match(sourceText, /const shouldShowStatusNotice =/);
   assert.match(sourceText, /isStatusDerivedFromConnectionError\(status, connectionError\)/);
   assert.match(sourceText, /function isStatusDerivedFromConnectionError/);
   assert.match(sourceText, /function cloudConnectionNoticeDisplay/);
+  assert.match(sourceText, /hasReadableSnapshot: boolean/);
+  assert.match(sourceText, /Live room unavailable\./);
+  assert.match(sourceText, /The notebook will load once the account or connection is refreshed\./);
   assert.match(sourceText, /tone=\{connectionNotice\.tone\}/);
   assert.match(sourceText, /Live room reconnecting\./);
   assert.match(sourceText, /tone: "warning"/);
