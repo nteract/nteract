@@ -1793,23 +1793,25 @@ function CloudSharingControls({
                     <strong>{row.label}</strong>
                     <span>{row.detail}</span>
                   </div>
-                  <span className="cloud-share-badge">{row.badge}</span>
-                  {row.stateLabel ? (
-                    <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
-                      {row.stateLabel}
-                    </span>
-                  ) : null}
-                  {row.removable ? (
-                    <button
-                      type="button"
-                      aria-label={`Remove ${row.label}`}
-                      title={`Remove ${row.label}`}
-                      disabled={busyAction === row.id}
-                      onClick={() => void removeAccessRow(row)}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  ) : null}
+                  <div className="cloud-share-row-actions">
+                    <span className="cloud-share-badge">{row.badge}</span>
+                    {row.stateLabel ? (
+                      <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
+                        {row.stateLabel}
+                      </span>
+                    ) : null}
+                    {row.removable ? (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${row.label}`}
+                        title={`Remove ${row.label}`}
+                        disabled={busyAction === row.id}
+                        onClick={() => void removeAccessRow(row)}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </div>
                 </li>
               ))}
             </ul>

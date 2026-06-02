@@ -158,6 +158,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /const accessSummary = useMemo\(\(\) => cloudShareAccessSummary\(accessRows\)/,
   );
   assert.match(sourceText, /<div className="cloud-share-current-heading">/);
+  assert.match(sourceText, /<div className="cloud-share-row-actions">/);
   assert.match(
     sourceText,
     /<span className="cloud-share-state" data-tone=\{row\.stateTone \?\? undefined\}>/,
@@ -213,7 +214,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     cssText,
-    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto auto auto;/,
+    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\);[\s\S]*cloud-share-row-actions[\s\S]*grid-column: 2;/,
   );
   assert.match(
     cssText,

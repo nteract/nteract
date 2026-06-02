@@ -830,7 +830,7 @@ main.flex > .cloud-report-toolbar {
 
 .cloud-share-current li {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.5rem;
   align-items: center;
   min-width: 0;
@@ -848,6 +848,14 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-share-current li > div {
+  min-width: 0;
+}
+
+.cloud-share-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
   min-width: 0;
 }
 
@@ -1175,11 +1183,14 @@ main.flex > .cloud-report-toolbar {
   }
 
   .cloud-share-current li {
-    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
   }
 
-  .cloud-share-badge {
-    justify-self: end;
+  .cloud-share-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    gap: 0.625rem;
   }
 
   .cloud-share-copy-label-full {
