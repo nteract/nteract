@@ -70,7 +70,7 @@ serve the notebook UI and Python/MCP compatibility surfaces.
 - Do not design a complete REST API in this PR.
 - Do not migrate to Automerge Repo in this PR.
 - Do not require v1 runtime-state compatibility for bundled desktop deployment.
-- Do not update `docs/architecture/web-sync-engine-architecture.md` as part of
+- Do not update `docs/adr/web-sync-engine-architecture.md` as part of
   this proposal.
 
 ## Design Principle

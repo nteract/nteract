@@ -22,15 +22,15 @@ Object hosts the live document and persists snapshots.
 
 Neighbors:
 
-- `docs/architecture/identity-and-trust.md` - principal/operator labels,
+- `docs/adr/identity-and-trust.md` - principal/operator labels,
   connection scopes, provider validation, and actor-principal enforcement.
-- `docs/architecture/hosted-credential-transport.md` - direct OIDC, JupyterHub,
+- `docs/adr/hosted-credential-transport.md` - direct OIDC, JupyterHub,
   browser WebSocket credential transports, and origin policy.
-- `docs/architecture/hosted-notebook-artifacts.md` - R2 snapshot pair and
+- `docs/adr/hosted-notebook-artifacts.md` - R2 snapshot pair and
   render-cache layout.
-- `docs/architecture/blob-storage-and-content-addressing.md` - BlobResolver
+- `docs/adr/blob-storage-and-content-addressing.md` - BlobResolver
   and renderer asset origin separation.
-- `docs/architecture/frontend-sync-bridge.md` - why hosted editing should reuse
+- `docs/adr/frontend-sync-bridge.md` - why hosted editing should reuse
   the same WASM/sync/viewer surfaces rather than introduce a second notebook UI
   stack.
 

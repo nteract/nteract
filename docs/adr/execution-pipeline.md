@@ -16,11 +16,11 @@ This ADR captures the load-bearing decisions that make those facts work. Most of
 
 Neighbors:
 
-- `docs/architecture/three-document-split.md` — why execution state lives in `RuntimeStateDoc` and not `NotebookDoc`, and why there are two writer paths into it.
-- `docs/architecture/typed-frame-v4-wire-protocol.md` — the framing the pipeline rides on; `Request`/`Response` correlation, `SessionControl` readiness phases.
-- `docs/architecture/blob-storage-and-content-addressing.md` — where stream and display outputs actually land once a manifest is committed.
-- `docs/architecture/identity-and-trust.md` — who can `ExecuteCell`, who can read outputs.
-- `docs/architecture/cleanup-punchlist.md` — open gaps in pipeline invariants.
+- `docs/adr/three-document-split.md` — why execution state lives in `RuntimeStateDoc` and not `NotebookDoc`, and why there are two writer paths into it.
+- `docs/adr/typed-frame-v4-wire-protocol.md` — the framing the pipeline rides on; `Request`/`Response` correlation, `SessionControl` readiness phases.
+- `docs/adr/blob-storage-and-content-addressing.md` — where stream and display outputs actually land once a manifest is committed.
+- `docs/adr/identity-and-trust.md` — who can `ExecuteCell`, who can read outputs.
+- `docs/adr/cleanup-punchlist.md` — open gaps in pipeline invariants.
 
 Three projects shaped the design:
 
@@ -239,7 +239,7 @@ Execution spans two synced Automerge documents:
 The split is intentional and load-bearing:
 
 1. **Different write cadence.** NotebookDoc absorbs character-level edits from human typing. RuntimeStateDoc absorbs output streams from kernels. Combining them would tie editing latency to output churn.
-2. **Different writer authority.** NotebookDoc is frontend-authoritative for source and structure. RuntimeStateDoc is daemon-authoritative for outputs and lifecycle (except for the narrow `comms/*/state/*` widget-state surface). Keeping them separate lets the trust gate enforce different scopes at the frame layer (see `docs/architecture/identity-and-trust.md`, Decision 5).
+2. **Different writer authority.** NotebookDoc is frontend-authoritative for source and structure. RuntimeStateDoc is daemon-authoritative for outputs and lifecycle (except for the narrow `comms/*/state/*` widget-state surface). Keeping them separate lets the trust gate enforce different scopes at the frame layer (see `docs/adr/identity-and-trust.md`, Decision 5).
 3. **Different persistence shapes.** NotebookDoc serializes to `.ipynb` on autosave. RuntimeStateDoc is ephemeral and recreated on daemon restart.
 4. **Different sync streams.** Both flow over the same connection but use distinct frame types and sync states. A flood on one document's stream does not stall the other.
 
@@ -289,7 +289,7 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 
 2. **Capacity constants are picked by judgment, not measurement.** The work channel (100), `STREAM_COMMITTER_QUEUE_CAPACITY = 32`, `MAX_PENDING_DISPLAY_IDS = 128`, and `DEFAULT_OUTPUT_SYNC_GRACE = 500ms` are all empirical defaults. None is enforced by a benchmark; none has telemetry on actual drop rates or grace-window misses. We may be silently dropping more periodic stream flushes (or capacity drops on the work channel) than we expect. Punchlist EP-5.
 
-3. **What if `set_execution_done` is never written?** A panic or task drop between the final output write and `set_execution_done` leaves the execution in `running` forever. Consumers time out. There is no per-execution timeout or watchdog at the daemon side. `KernelDied` clears the queue but only fires when IOPub disconnects or a committer task panics (see `crates/runtimed/src/stream_committer.rs:227`, `display_update_committer.rs:259`). The framing of a *fix* for this — divergence detection rather than a wall-clock watchdog, since multi-hour training jobs are legitimate — is explored in `docs/architecture/execution-liveness.md`.
+3. **What if `set_execution_done` is never written?** A panic or task drop between the final output write and `set_execution_done` leaves the execution in `running` forever. Consumers time out. There is no per-execution timeout or watchdog at the daemon side. `KernelDied` clears the queue but only fires when IOPub disconnects or a committer task panics (see `crates/runtimed/src/stream_committer.rs:227`, `display_update_committer.rs:259`). The framing of a *fix* for this — divergence detection rather than a wall-clock watchdog, since multi-hour training jobs are legitimate — is explored in `docs/adr/execution-liveness.md`.
 
 4. ~~**The `is_lifecycle()` discipline is a runtime check.**~~ **Resolved by
    EP-2.** `LifecycleSignal` and `WorkCommand` are now separate types, so the

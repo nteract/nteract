@@ -4,7 +4,7 @@
 
 ## Context
 
-We already maintain a fork of Automerge at `nteract/automerge`, pinned in this workspace's `Cargo.toml`. The identity-and-trust ADR (`docs/architecture/identity-and-trust.md`) defers per-frame actor-label validation because doing it cleanly requires either an upstream Automerge contribution, a fork patch, or a throwaway-peer hack per frame. The first two are real options; the third is not. This ADR proposes the patches we want on our fork and how they relate to upstream.
+We already maintain a fork of Automerge at `nteract/automerge`, pinned in this workspace's `Cargo.toml`. The identity-and-trust ADR (`docs/adr/identity-and-trust.md`) defers per-frame actor-label validation because doing it cleanly requires either an upstream Automerge contribution, a fork patch, or a throwaway-peer hack per frame. The first two are real options; the third is not. This ADR proposes the patches we want on our fork and how they relate to upstream.
 
 Sister concern: before adding new patches we want to pull the latest upstream into our fork. Rebasing on current upstream is its own little exercise (the `filters` branch and other in-flight work shift the surface around), but it's cheap and one-time. Tracked as a sibling task, not a patch.
 

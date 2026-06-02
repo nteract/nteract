@@ -11,10 +11,10 @@ per-notebook D1 ACL.
 
 Related architecture:
 
-- `docs/architecture/hosted-credential-transport.md`
-- `docs/architecture/hosted-room-authorization.md`
-- `docs/architecture/identity-and-trust.md`
-- `docs/architecture/hosted-output-origin-isolation.md`
+- `docs/adr/hosted-credential-transport.md`
+- `docs/adr/hosted-room-authorization.md`
+- `docs/adr/identity-and-trust.md`
+- `docs/adr/hosted-output-origin-isolation.md`
 
 ## Staging Target
 

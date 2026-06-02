@@ -29,9 +29,9 @@ stack.
 Related docs:
 
 - `src/components/isolated/AGENTS.md`
-- `docs/architecture/frontend-sync-bridge.md`
-- `docs/architecture/hosted-notebook-artifacts.md`
-- `docs/architecture/hosted-output-origin-isolation.md`
+- `docs/adr/frontend-sync-bridge.md`
+- `docs/adr/hosted-notebook-artifacts.md`
+- `docs/adr/hosted-output-origin-isolation.md`
 
 ## Decision: Segment outputs by rendering lane
 

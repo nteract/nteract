@@ -4,19 +4,19 @@
 
 ## Related ADRs
 
-- `docs/architecture/typed-frame-v4-wire-protocol.md` - wire shape for sync and request frames that carry trust signals.
-- `docs/architecture/three-document-split.md` - NotebookDoc carries the dependency declaration; RuntimeStateDoc carries the resolved trust state.
-- `docs/architecture/execution-pipeline.md` - kernel launch is the gate this ADR guards.
-- `docs/architecture/blob-storage-and-content-addressing.md` - parallel content-addressed scheme for environments lives alongside the blob CAS.
-- `docs/architecture/captured-environment-lifecycle.md` - captured env identity, cache repair, launch retry, and manual reset. This ADR decides whether dependency installation is allowed; the lifecycle ADR decides how an allowed captured env is materialized and repaired.
-- `docs/architecture/identity-and-trust.md` - room-level identity and ACLs. This ADR sits underneath it: env trust decides whether a kernel can launch with a given dependency list, regardless of who is in the room.
-- `docs/architecture/cleanup-punchlist.md` - tracked follow-ups.
+- `docs/adr/typed-frame-v4-wire-protocol.md` - wire shape for sync and request frames that carry trust signals.
+- `docs/adr/three-document-split.md` - NotebookDoc carries the dependency declaration; RuntimeStateDoc carries the resolved trust state.
+- `docs/adr/execution-pipeline.md` - kernel launch is the gate this ADR guards.
+- `docs/adr/blob-storage-and-content-addressing.md` - parallel content-addressed scheme for environments lives alongside the blob CAS.
+- `docs/adr/captured-environment-lifecycle.md` - captured env identity, cache repair, launch retry, and manual reset. This ADR decides whether dependency installation is allowed; the lifecycle ADR decides how an allowed captured env is materialized and repaired.
+- `docs/adr/identity-and-trust.md` - room-level identity and ACLs. This ADR sits underneath it: env trust decides whether a kernel can launch with a given dependency list, regardless of who is in the room.
+- `docs/adr/cleanup-punchlist.md` - tracked follow-ups.
 
 ## Context
 
 A notebook can declare arbitrary package dependencies in `metadata.runt.{uv,conda,pixi}`. Opening the notebook and clicking "Run" is enough to make the daemon resolve and install those packages into a real environment, then spawn a kernel inside that environment with full OS permissions. Dependency lists are therefore a supply-chain attack surface: any notebook shared by email, pulled from GitHub, or received via MCP can ship arbitrary `pip install`-equivalent payloads inside a metadata field.
 
-The room-level identity model (`docs/architecture/identity-and-trust.md`) closes one direction of that surface: it gates *who* can edit a room and *who* can ask the daemon to launch a kernel in it. It does not gate *what packages* the daemon agrees to install. A legitimate room owner can still ask for a kernel built from a hostile dep list. Environment trust is the second gate, sitting underneath room trust, deciding whether the daemon will materialise an environment from a given declared dep set.
+The room-level identity model (`docs/adr/identity-and-trust.md`) closes one direction of that surface: it gates *who* can edit a room and *who* can ask the daemon to launch a kernel in it. It does not gate *what packages* the daemon agrees to install. A legitimate room owner can still ask for a kernel built from a hostile dep list. Environment trust is the second gate, sitting underneath room trust, deciding whether the daemon will materialise an environment from a given declared dep set.
 
 The constraints that shaped the design:
 

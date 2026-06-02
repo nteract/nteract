@@ -11,11 +11,11 @@ Cloud/Auth work can land without creating another notebook UI model.
 
 Related docs:
 
-- `docs/architecture/identity-and-trust.md`
-- `docs/architecture/hosted-room-authorization.md`
-- `docs/architecture/hosted-sharing-invites.md`
-- `docs/architecture/captured-environment-lifecycle.md`
-- `docs/architecture/notebook-host-shell-convergence.md`
+- `docs/adr/identity-and-trust.md`
+- `docs/adr/hosted-room-authorization.md`
+- `docs/adr/hosted-sharing-invites.md`
+- `docs/adr/captured-environment-lifecycle.md`
+- `docs/adr/notebook-host-shell-convergence.md`
 - `apps/elements/content/docs/identity-environment-surfaces.mdx`
 
 Prototype and shared component surfaces:

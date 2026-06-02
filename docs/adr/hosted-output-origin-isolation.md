@@ -38,11 +38,11 @@ Worker layouts, or auth shortcuts wholesale.
 Related docs:
 
 - `src/components/isolated/AGENTS.md`
-- `docs/architecture/deployment-topology.md`
-- `docs/architecture/hosted-credential-transport.md`
-- `docs/architecture/hosted-room-authorization.md`
-- `docs/architecture/hosted-notebook-artifacts.md`
-- `docs/architecture/blob-storage-and-content-addressing.md`
+- `docs/adr/deployment-topology.md`
+- `docs/adr/hosted-credential-transport.md`
+- `docs/adr/hosted-room-authorization.md`
+- `docs/adr/hosted-notebook-artifacts.md`
+- `docs/adr/blob-storage-and-content-addressing.md`
 
 ## Decision 1: Hosted deployments have three origin classes
 

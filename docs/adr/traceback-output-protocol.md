@@ -31,9 +31,9 @@ Neighbors:
   redaction before RuntimeStateDoc and blob-store writes.
 - `docs/superpowers/specs/2026-05-24-runtime-redaction-refresh-design.md` -
   follow-up design for runtime-created redaction candidates.
-- `docs/architecture/execution-pipeline.md` - output ordering and runtime
+- `docs/adr/execution-pipeline.md` - output ordering and runtime
   manifest durability.
-- `docs/architecture/frontend-sync-bridge.md` - output rendering boundaries.
+- `docs/adr/frontend-sync-bridge.md` - output rendering boundaries.
 
 ## Decision 1: The payload is structured data plus plain text fallback
 

@@ -4,10 +4,10 @@
 
 **Related:**
 
-- `docs/architecture/notebook-identity-environment-surfaces.md`
-- `docs/architecture/notebook-host-shell-convergence.md`
-- `docs/architecture/identity-and-trust.md`
-- `docs/architecture/hosted-room-authorization.md`
+- `docs/adr/notebook-identity-environment-surfaces.md`
+- `docs/adr/notebook-host-shell-convergence.md`
+- `docs/adr/identity-and-trust.md`
+- `docs/adr/hosted-room-authorization.md`
 - `apps/elements/content/docs/identity-environment-surfaces.mdx`
 - `apps/elements/content/docs/notebook-shell-capabilities.mdx`
 
@@ -17,7 +17,7 @@ environment PRD. It is intentionally an audit, not a new decision: follow-up
 PRs should use this to pick concrete slices without changing the identity,
 room ACL, or daemon-owned environment decisions.
 
-`docs/architecture/identity-and-trust.md` remains the source of truth for
+`docs/adr/identity-and-trust.md` remains the source of truth for
 durable Automerge actor labels. Those labels use the `<principal>/<operator>`
 shape: the principal is enforced by auth and room ACL, while the operator is
 used for attribution. The UI gap in this audit is not that durable labels
