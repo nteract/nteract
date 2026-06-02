@@ -165,6 +165,14 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     cssText,
     /@media \(max-width: 360px\) \{[\s\S]*cloud-room-toolbar \.cloud-connection-status[\s\S]*display: none;/,
   );
+  assert.match(
+    cssText,
+    /@media \(max-width: 520px\) \{[\s\S]*cloud-room-toolbar \.cloud-connection-status[\s\S]*width: 2rem;[\s\S]*cloud-room-toolbar \.cloud-connection-status span[\s\S]*display: none;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto auto;/,
+  );
   assert.match(cssText, /0 8px 20px color-mix\(in srgb, #000 8%, transparent\)/);
   assert.doesNotMatch(cssText, /0 12px 36px/);
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);

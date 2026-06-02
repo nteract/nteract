@@ -178,6 +178,16 @@ body {
     gap: 0.125rem 0.375rem;
   }
 
+  .cloud-room-toolbar .cloud-connection-status {
+    width: 2rem;
+    justify-content: center;
+    padding-inline: 0.375rem;
+  }
+
+  .cloud-room-toolbar .cloud-connection-status span {
+    display: none;
+  }
+
   .cloud-room-toolbar [data-slot="notebook-presence-status"],
   .cloud-share-menu summary,
   .cloud-auth-menu summary,
@@ -1075,11 +1085,7 @@ main.flex > .cloud-report-toolbar {
   }
 
   .cloud-share-current li {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .cloud-share-current li button {
-    grid-column: 3;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
   }
 
   .cloud-share-badge {
