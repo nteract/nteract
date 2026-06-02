@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildCloudShareAccessRows,
+  cloudShareAccessSummary,
   hasPublicViewerAccess,
   normalizeShareInviteEmail,
   scopeLabel,
@@ -47,14 +48,15 @@ describe("cloud viewer sharing client", () => {
     const rows = buildCloudShareAccessRows({ acl, invites });
 
     assert.deepEqual(
-      rows.map((row) => [row.kind, row.label, row.badge, row.removable]),
+      rows.map((row) => [row.kind, row.label, row.badge, row.stateLabel, row.removable]),
       [
-        ["acl", "Alice Owner", "Owner", false],
-        ["acl", "Bob Example", "Can edit", true],
-        ["acl", "Anyone with the link", "Can view", true],
-        ["invite", "carol@example.com", "Can view", true],
+        ["acl", "Alice Owner", "Owner", null, false],
+        ["acl", "Bob Example", "Can edit", null, true],
+        ["acl", "Public link", "Can view", "Enabled", true],
+        ["invite", "carol@example.com", "Can view", "Pending", true],
       ],
     );
+    assert.equal(cloudShareAccessSummary(rows), "2 people, public link, 1 invite");
   });
 
   it("detects public viewer access from explicit public ACL rows", () => {

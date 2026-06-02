@@ -119,6 +119,7 @@ import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   buildCloudShareAccessRows,
+  cloudShareAccessSummary,
   hasPublicViewerAccess,
   normalizeShareInviteEmail,
   type CloudNotebookAclRow,
@@ -1495,6 +1496,7 @@ function CloudSharingControls({
   const inviteSubmitLockRef = useRef(false);
   const publicLink = new URL(window.location.pathname, window.location.origin).href;
   const accessRows = useMemo(() => buildCloudShareAccessRows({ acl, invites }), [acl, invites]);
+  const accessSummary = useMemo(() => cloudShareAccessSummary(accessRows), [accessRows]);
   const publicEnabled = useMemo(() => hasPublicViewerAccess(acl), [acl]);
   const inviteReady = normalizeShareInviteEmail(inviteEmail) !== null;
 
@@ -1774,7 +1776,10 @@ function CloudSharingControls({
         </form>
 
         <section className="cloud-share-current" aria-label="Current notebook access">
-          <h3>Current access</h3>
+          <div className="cloud-share-current-heading">
+            <h3>Current access</h3>
+            {accessSummary ? <span>{accessSummary}</span> : null}
+          </div>
           {loadState === "loading" && accessRows.length === 0 ? (
             <div className="cloud-share-empty">Loading access...</div>
           ) : accessRows.length === 0 ? (
@@ -1789,6 +1794,11 @@ function CloudSharingControls({
                     <span>{row.detail}</span>
                   </div>
                   <span className="cloud-share-badge">{row.badge}</span>
+                  {row.stateLabel ? (
+                    <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
+                      {row.stateLabel}
+                    </span>
+                  ) : null}
                   {row.removable ? (
                     <button
                       type="button"

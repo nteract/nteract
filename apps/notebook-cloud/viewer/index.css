@@ -802,6 +802,25 @@ main.flex > .cloud-report-toolbar {
   padding: 0.875rem 1rem;
 }
 
+.cloud-share-current-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.cloud-share-current-heading > span {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.75rem;
+  line-height: 1.25;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cloud-share-current ul {
   display: grid;
   margin: 0;
@@ -811,7 +830,7 @@ main.flex > .cloud-report-toolbar {
 
 .cloud-share-current li {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   gap: 0.5rem;
   align-items: center;
   min-width: 0;
@@ -838,6 +857,22 @@ main.flex > .cloud-report-toolbar {
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
+}
+
+.cloud-share-state {
+  color: color-mix(in srgb, var(--foreground) 55%, transparent);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.cloud-share-state[data-tone="success"] {
+  color: #047857;
+}
+
+.cloud-share-state[data-tone="pending"] {
+  color: #b45309;
 }
 
 .cloud-share-current li button {
@@ -1140,7 +1175,7 @@ main.flex > .cloud-report-toolbar {
   }
 
   .cloud-share-current li {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   }
 
   .cloud-share-badge {

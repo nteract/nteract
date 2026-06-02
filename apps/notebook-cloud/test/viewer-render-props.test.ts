@@ -153,6 +153,15 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
   assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
+  assert.match(
+    sourceText,
+    /const accessSummary = useMemo\(\(\) => cloudShareAccessSummary\(accessRows\)/,
+  );
+  assert.match(sourceText, /<div className="cloud-share-current-heading">/);
+  assert.match(
+    sourceText,
+    /<span className="cloud-share-state" data-tone=\{row\.stateTone \?\? undefined\}>/,
+  );
   assert.match(sourceText, /Can view this notebook without signing in/);
   assert.match(sourceText, /Only invited people can open this notebook/);
   assert.match(sourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
@@ -204,7 +213,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     cssText,
-    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto auto;/,
+    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto auto auto;/,
   );
   assert.match(
     cssText,
