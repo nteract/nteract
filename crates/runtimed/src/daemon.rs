@@ -2543,7 +2543,9 @@ impl Daemon {
                 // reaper could remove the resumed room and a new room
                 // would replace it, losing the in-memory doc and outputs
                 // the resident-room cache is meant to preserve.
-                let (room, _room_guard) = if let Ok(parsed) = uuid::Uuid::parse_str(&notebook_id) {
+                let parsed_notebook_id = uuid::Uuid::parse_str(&notebook_id).ok();
+                let is_uuid_notebook_id = parsed_notebook_id.is_some();
+                let (room, _room_guard) = if let Some(parsed) = parsed_notebook_id {
                     crate::notebook_sync_server::get_or_create_room_result(
                         &self.notebook_rooms,
                         parsed,
@@ -2596,6 +2598,40 @@ impl Daemon {
                 let settings = self.settings.read().await.get_all();
                 let default_runtime = settings.default_runtime;
                 let default_python_env = settings.default_python_env;
+                if is_uuid_notebook_id {
+                    let mut seed_error = None;
+                    let mut seeded = false;
+                    {
+                        let mut doc = room.doc.write().await;
+                        if crate::notebook_sync_server::is_uninitialized_notebook_doc(&doc) {
+                            match crate::notebook_sync_server::create_empty_notebook(
+                                &mut doc,
+                                &default_runtime.to_string(),
+                                default_python_env.clone(),
+                                Some(&notebook_id),
+                                None,
+                                &[],
+                            ) {
+                                Ok(_) => {
+                                    seeded = true;
+                                }
+                                Err(e) => {
+                                    seed_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(e) = seed_error {
+                        return Err(anyhow::anyhow!(
+                            "Failed to initialize notebook '{}': {}",
+                            notebook_id,
+                            e
+                        ));
+                    }
+                    if seeded {
+                        info!("[runtimed] Initialized fresh notebook room {}", notebook_id);
+                    }
+                }
                 // Convert working_dir String to PathBuf
                 let working_dir_path = working_dir.map(std::path::PathBuf::from);
                 let connection_identity =
@@ -2940,7 +2976,7 @@ impl Daemon {
             let mut create_error = None;
             let count = {
                 let mut doc = room.doc.write().await;
-                if doc.cell_count() == 0 {
+                if crate::notebook_sync_server::is_uninitialized_notebook_doc(&doc) {
                     match crate::notebook_sync_server::create_empty_notebook(
                         &mut doc,
                         &default_runtime.to_string(),
@@ -3058,7 +3094,8 @@ impl Daemon {
 
     /// Handle a CreateNotebook connection.
     ///
-    /// Daemon creates empty room with zero cells, generates env_id as notebook_id.
+    /// Daemon creates a room, seeds fresh notebooks with default metadata and
+    /// one starter cell, and generates env_id as notebook_id.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
     #[allow(clippy::too_many_arguments)]
     async fn handle_create_notebook<S>(
@@ -3119,17 +3156,18 @@ impl Daemon {
         .await?;
         self.mark_rooms_ever_seen();
 
-        // Populate the room's doc with the empty notebook content — but only if the
-        // room is empty. If a persisted doc was loaded (session restore with notebook_id
-        // hint), the room already has cells and we skip creation.
+        // Populate the room's doc with new-notebook content only when the
+        // daemon owns a genuinely fresh document. If a persisted doc was
+        // loaded (including one the user intentionally emptied), metadata is
+        // already present and we skip seeding.
         let (cell_count, create_error, freshly_created) = {
             let mut doc = room.doc.write().await;
             let mut err = None;
             let mut fresh = false;
-            if doc.cell_count() > 0 {
-                // Room already has content (loaded from persisted doc)
+            if !crate::notebook_sync_server::is_uninitialized_notebook_doc(&doc) {
+                // Room already has content or initialized metadata.
                 info!(
-                    "[runtimed] Room {} already has {} cells (restored from persisted doc)",
+                    "[runtimed] Room {} already initialized with {} cells",
                     notebook_id,
                     doc.cell_count()
                 );

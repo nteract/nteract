@@ -83,6 +83,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     remove_peer(peerId: string): void;
     save_notebook(): Uint8Array;
     save_runtime_state_doc(): Uint8Array;
+    seed_initial_code_cell_if_empty(cellId: string): boolean;
     sync_peer(
       peerId: string,
       connectionScope: "viewer" | "editor" | "runtime_peer" | "owner",

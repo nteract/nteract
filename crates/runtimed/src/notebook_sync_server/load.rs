@@ -1011,11 +1011,13 @@ fn durable_or_synthetic_execution(
     }
 }
 
-/// Create a new empty notebook with a single code cell.
+/// Create a new notebook with daemon-owned default metadata and one code cell.
 ///
 /// Called by daemon-owned notebook creation (`CreateNotebook` handshake).
 /// Uses the provided env_id or generates a new one, and populates the doc
-/// with default metadata for the specified runtime.
+/// with default metadata for the specified runtime. Fresh notebook structure
+/// is seeded here so clients never need to infer "new notebook" from a
+/// transient zero-cell sync state.
 ///
 /// Returns the env_id used on success.
 pub fn create_empty_notebook(
@@ -1046,8 +1048,20 @@ pub fn create_empty_notebook(
 
     doc.set_metadata_snapshot(&metadata_snapshot)
         .map_err(|e| format!("Failed to set metadata: {}", e))?;
+    doc.add_cell(0, &uuid::Uuid::new_v4().to_string(), "code")
+        .map_err(|e| format!("Failed to seed first cell: {}", e))?;
 
     Ok(env_id)
+}
+
+/// Return true when a notebook document has not yet been initialized by any
+/// host authority.
+///
+/// A document with metadata but zero cells is still initialized: users may have
+/// intentionally deleted every cell, and reconnecting clients must not recreate
+/// structure from that state.
+pub fn is_uninitialized_notebook_doc(doc: &NotebookDoc) -> bool {
+    doc.cell_count() == 0 && doc.get_metadata_snapshot().is_none()
 }
 
 /// Build default metadata for a new notebook based on runtime.
