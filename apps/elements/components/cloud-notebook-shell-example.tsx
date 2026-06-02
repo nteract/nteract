@@ -10,6 +10,7 @@ import {
   FilePenLine,
   Globe2,
   KeyRound,
+  Loader2,
   LogIn,
   Mail,
   Play,
@@ -214,6 +215,8 @@ export function CloudNotebookShellExample() {
       </section>
 
       <CloudEntrySurface />
+
+      <CloudAuthHandoffSurface />
 
       <CloudPermissionsSurface />
 
@@ -609,6 +612,103 @@ function CloudEntrySurface() {
       <div className="border-t border-fd-border px-4 py-3 text-xs leading-5 text-fd-muted-foreground">
         Local development identity stays in the account panel after a notebook opens, where it can
         act like host auth instead of document content.
+      </div>
+    </section>
+  );
+}
+
+const authHandoffStates = [
+  {
+    label: "Completing sign-in",
+    detail: "The browser is finishing the account handoff.",
+    icon: Loader2,
+    tone: "live",
+    spin: true,
+  },
+  {
+    label: "Signed in",
+    detail: "Access is renewed and the notebook can resume write actions.",
+    icon: UserRound,
+    tone: "live",
+  },
+  {
+    label: "Nothing to finish",
+    detail: "The user can return to cloud notebooks without changing document state.",
+    icon: KeyRound,
+    tone: "default",
+  },
+  {
+    label: "Sign-in needs attention",
+    detail: "The notebook stays readable while account recovery remains host-level.",
+    icon: X,
+    tone: "attention",
+  },
+] satisfies Array<{
+  label: string;
+  detail: string;
+  icon: LucideIcon;
+  tone: "default" | "live" | "attention";
+  spin?: boolean;
+}>;
+
+function CloudAuthHandoffSurface() {
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Account handoff</h2>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+          The OIDC callback should feel like the cloud entry surface, not a separate auth app.
+          Account recovery stays host-level while the notebook remains readable.
+        </p>
+      </div>
+
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.9fr)]">
+        <div className="grid content-start gap-3">
+          <p className="m-0 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+            Cloud sign-in
+          </p>
+          <h3 className="m-0 max-w-[18ch] text-4xl font-bold leading-none text-foreground">
+            Returning to the notebook.
+          </h3>
+          <p className="m-0 max-w-xl text-sm leading-6 text-muted-foreground">
+            The browser finishes account work without introducing document chrome. Public reading
+            remains calm while edit, share, and invite actions wait for identity.
+          </p>
+        </div>
+
+        <div className="grid content-start gap-0 border-y border-border bg-muted/30 text-foreground">
+          {authHandoffStates.map((state) => {
+            const Icon = state.icon;
+            return (
+              <div
+                key={state.label}
+                className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 border-t border-border/70 px-4 py-3 first:border-t-0"
+              >
+                <Icon
+                  className={cn(
+                    "mt-0.5 size-5 text-muted-foreground",
+                    state.tone === "live" && "text-emerald-700 dark:text-emerald-300",
+                    state.tone === "attention" && "text-red-600",
+                    state.spin && "motion-safe:animate-spin",
+                  )}
+                  aria-hidden="true"
+                />
+                <div className="min-w-0">
+                  <h3 className="m-0 truncate text-base font-semibold">{state.label}</h3>
+                  <p className="m-0 mt-1 text-xs leading-5 text-muted-foreground">{state.detail}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="border-t border-fd-border px-4 py-3 text-xs leading-5 text-fd-muted-foreground">
+        Callback routes can reuse the entry panel directly; open notebooks should keep account
+        controls in cloud chrome and avoid adding auth badges to the document body.
       </div>
     </section>
   );
