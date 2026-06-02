@@ -87,8 +87,14 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /identityControls=\{[\s\S]*<CloudAuthControls/);
   assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*showStatus=\{false\}/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
+  assert.match(sourceText, /cloudViewerPresenceDisplay,/);
+  assert.match(
+    sourceText,
+    /function CloudPresenceStatus[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);[\s\S]*if \(!presenceDisplay\.connected\) \{[\s\S]*return null;/,
+  );
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
   assert.doesNotMatch(sourceText, /label: "live"/);
+  assert.doesNotMatch(sourceText, /label: "Room"/);
   assert.doesNotMatch(sourceText, /<CloudPresenceStatus[^>]*connectionScope=\{connectionScope\}/);
   assert.doesNotMatch(sourceText, /<CloudPresenceStatus[^>]*interaction=\{/);
   assert.doesNotMatch(sourceText, /className="cloud-code-toggle"/);

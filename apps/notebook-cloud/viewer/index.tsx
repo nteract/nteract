@@ -104,6 +104,7 @@ import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
   type CloudViewerPresenceConnection,
   type CloudViewerPresenceState,
+  cloudViewerPresenceDisplay,
   initialCloudViewerPresence,
   reduceCloudViewerConnection,
   reduceCloudViewerPresenceMessage,
@@ -2214,7 +2215,11 @@ function CloudConnectionStatus({
 }
 
 function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState }) {
-  const presenceDisplay = cloudViewerRoomPresenceDisplay(presence);
+  const presenceDisplay = cloudViewerPresenceDisplay(presence);
+
+  if (!presenceDisplay.connected) {
+    return null;
+  }
 
   return (
     <NotebookPresenceStatus
@@ -2224,33 +2229,6 @@ function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState 
       variant="inline"
     />
   );
-}
-
-function cloudViewerRoomPresenceDisplay(state: CloudViewerPresenceState): {
-  label: string;
-  title: string;
-  connected: boolean;
-} {
-  if (state.roomPeerCount === null) {
-    return {
-      label: "Room",
-      title: "Room participants will appear after connection",
-      connected: false,
-    };
-  }
-
-  const count = Math.max(1, state.roomPeerCount);
-  const readerTitle =
-    count === 1
-      ? "1 participant is in this notebook"
-      : `${count} participants are in this notebook`;
-  const selfTitle = state.ownPeerLabel ? `You are ${state.ownPeerLabel}` : null;
-
-  return {
-    label: count === 1 ? "1 here now" : `${count} here now`,
-    title: selfTitle ? `${readerTitle}; ${selfTitle}` : readerTitle,
-    connected: state.connection === "connected",
-  };
 }
 
 function appendEndpointPathSegment(endpoint: string, segment: string): string {
