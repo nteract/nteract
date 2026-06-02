@@ -184,24 +184,6 @@ export function CloudNotebookShellExample() {
 
   return (
     <div className="not-prose space-y-6" data-elements-slot="cloud-notebook-shell">
-      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-fd-foreground">
-        <div className="flex items-start gap-3">
-          <Cloud
-            className="mt-0.5 size-4 flex-none text-emerald-700 dark:text-emerald-300"
-            aria-hidden="true"
-          />
-          <div>
-            <h2 className="text-sm font-semibold">Cloud shell direction</h2>
-            <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              The cloud layer should compose around the shared notebook shell. Presence, document
-              connection, edit mode, sharing, and account controls are host state. Runtime remains a
-              notebook capability so the chrome does not imply that online/offline is a kernel
-              status.
-            </p>
-          </div>
-        </div>
-      </section>
-
       <section className="overflow-hidden rounded-xl border border-fd-border bg-fd-card shadow-sm">
         <BrowserFrame />
         <NotebookDocumentShell
@@ -554,13 +536,14 @@ function CloudPermissionsSurface() {
       <div className="border-b border-fd-border p-4">
         <div className="flex items-center gap-2">
           <ShieldCheck className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h2 className="text-sm font-semibold">Permissions and sharing language</h2>
+          <h2 className="text-sm font-semibold">Sharing and access</h2>
         </div>
         <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-          Sharing should feel like document access. Use compact rows, inline state, and restrained
-          color so owners can scan who can view, who can edit, and what still needs attention.
+          Owners should see link access, people, requests, and session health in one calm pass.
+          Viewers and editors get quieter paths that match what they can actually do.
         </p>
       </div>
+      <CloudAccessLedger />
       <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(20rem,0.7fr)]">
         <div className="min-w-0">
           <CloudSharePanel variant="owner" />
@@ -572,6 +555,73 @@ function CloudPermissionsSurface() {
       </div>
       <CloudAccessPathways />
     </section>
+  );
+}
+
+const accessLedgerRows = [
+  {
+    icon: Globe2,
+    label: "Link access",
+    value: "Anyone can view",
+    detail: "public, read-only",
+    tone: "live",
+  },
+  {
+    icon: UserRound,
+    label: "People",
+    value: "4 people",
+    detail: "owner, editor, public, invite",
+    tone: "default",
+  },
+  {
+    icon: Clock3,
+    label: "Requests",
+    value: "1 pending",
+    detail: "waiting on owner",
+    tone: "pending",
+  },
+  {
+    icon: KeyRound,
+    label: "Session",
+    value: "Kyle can share",
+    detail: "cloud account is live",
+    tone: "live",
+  },
+] satisfies Array<{
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  detail: string;
+  tone: "default" | "live" | "pending";
+}>;
+
+function CloudAccessLedger() {
+  return (
+    <div className="grid border-b border-fd-border bg-background/60 text-foreground sm:grid-cols-2 xl:grid-cols-4">
+      {accessLedgerRows.map((row) => {
+        const Icon = row.icon;
+        return (
+          <div
+            key={row.label}
+            className="grid grid-cols-[auto_minmax(0,1fr)] gap-2 border-t border-border/70 px-4 py-3 first:border-t-0 sm:[&:nth-child(-n+2)]:border-t-0 xl:border-t-0 xl:border-l xl:first:border-l-0"
+          >
+            <Icon
+              className={cn(
+                "mt-0.5 size-4 text-muted-foreground",
+                row.tone === "live" && "text-emerald-700 dark:text-emerald-300",
+                row.tone === "pending" && "text-amber-700 dark:text-amber-300",
+              )}
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-muted-foreground">{row.label}</div>
+              <div className="truncate text-sm font-semibold">{row.value}</div>
+              <div className="truncate text-xs text-muted-foreground">{row.detail}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -784,7 +834,7 @@ function CloudAccessPathways() {
     <section className="border-t border-fd-border px-4 py-3" aria-label="Cloud access pathways">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-          Access pathways
+          What each role sees
         </h3>
         <span className="text-xs text-muted-foreground">
           sharing appears only where the role can act
@@ -914,11 +964,11 @@ function CloudAccountSurface() {
       <div className="border-b border-fd-border p-4">
         <div className="flex items-center gap-2">
           <UserRound className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-          <h2 className="text-sm font-semibold">Account and session language</h2>
+          <h2 className="text-sm font-semibold">Account and session</h2>
         </div>
         <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-          Account controls should explain who the browser is acting as and what recovery is
-          available. They should not repeat presence, collaborator roles, or runtime state.
+          The account surface explains who the browser is acting as, what document access that
+          identity has, and how to recover without repeating presence or runtime state.
         </p>
       </div>
       <div className="grid gap-4 p-4 xl:grid-cols-3">

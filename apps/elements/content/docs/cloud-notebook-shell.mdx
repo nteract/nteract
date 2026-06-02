@@ -6,16 +6,11 @@ description: A fluid cloud notebook chrome mockup for presence, access, sync, mo
 import { CloudNotebookShellExample } from "@/components/cloud-notebook-shell-example";
 
 Cloud notebooks reuse the document shell, rail, cells, and output language from
-desktop, but the host adds a few top-level concerns: room presence, document
-sync health, view/edit mode, sharing, and account controls.
+desktop. The host adds the cloud concerns: who is here, whether the document is
+connected, who can share, which mode I am in, and which account is active.
 
-This mockup separates those concerns from runtime state. A cloud notebook can be
-live, reconnecting, signed out, public, shared, or edit-requested without making
-the Python runtime chip carry those meanings.
-
-The first toolbar row is app-level cloud chrome. It answers "who is here, is the
-document connected, can I share, am I viewing or editing, and which account is
-active?" The second row is notebook chrome. It should continue to use the shared
+This mockup keeps those concerns out of runtime state. The app row carries room,
+sync, access, mode, and account context; the notebook row keeps the shared
 `NotebookCommandToolbar` for cell insertion, package/runtime language, and
 execution controls.
 
