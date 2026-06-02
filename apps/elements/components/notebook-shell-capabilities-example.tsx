@@ -503,10 +503,8 @@ function CapabilityState({ enabled }: { enabled: boolean }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium",
-        enabled
-          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-          : "border-fd-border bg-fd-muted text-fd-muted-foreground",
+        "inline-flex items-center gap-1.5 text-[11px] font-medium",
+        enabled ? "text-emerald-700 dark:text-emerald-300" : "text-fd-muted-foreground",
       )}
     >
       {enabled ? (
@@ -537,27 +535,33 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
         : "local fixture";
 
   return (
-    <article className="rounded-lg border border-fd-border bg-fd-card p-3 text-xs leading-5">
+    <article className="rounded-lg border border-fd-border bg-fd-card text-xs leading-5">
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0 px-3 pt-3">
           <div className="font-semibold text-fd-foreground">{scenario.title}</div>
           <div className="mt-1 text-[11px] text-fd-muted-foreground">{scenario.eyebrow}</div>
         </div>
-        <span className="shrink-0 rounded-full border border-fd-border bg-fd-background px-2 py-0.5 text-[10px] text-fd-muted-foreground">
-          {scenario.capabilities.access.source}:{scenario.capabilities.access.level}
+        <span className="shrink-0 px-3 pt-3 text-[10px] font-medium text-fd-muted-foreground">
+          {scenario.capabilities.access.source} / {scenario.capabilities.access.level}
         </span>
       </div>
-      <p className="mt-2 text-fd-muted-foreground">{scenario.summary}</p>
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        <ScenarioPill label={authLabel} />
-        <ScenarioPill label={scenario.runtimeLabel} />
-        <ScenarioPill label={scenario.packageSummary} />
-        <ScenarioPill label={`${scenario.notices.length} notices`} />
-        <ScenarioPill
-          label={enabledLabels.length ? `can change: ${enabledLabels.join(", ")}` : "view only"}
+      <p className="px-3 pt-2 text-fd-muted-foreground">{scenario.summary}</p>
+      <div className="mt-3 divide-y divide-fd-border/70 border-y border-fd-border/70">
+        <ScenarioSignal label="Auth" value={authLabel} />
+        <ScenarioSignal
+          label="Runtime"
+          value={`${scenario.runtimeLabel} / ${scenario.packageSummary}`}
+        />
+        <ScenarioSignal
+          label="Notices"
+          value={scenario.notices.length ? `${scenario.notices.length} projected` : "none"}
+        />
+        <ScenarioSignal
+          label="Changes"
+          value={enabledLabels.length ? enabledLabels.join(", ") : "view only"}
         />
       </div>
-      <dl className="mt-3 grid gap-2">
+      <dl className="grid gap-2 px-3 pt-3">
         {scenario.sourceFacts.map((fact) => (
           <div key={fact.label}>
             <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
@@ -568,7 +572,7 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
         ))}
       </dl>
       {scenario.notices.length ? (
-        <div className="mt-3 border-t border-fd-border pt-3">
+        <div className="mt-3 border-t border-fd-border px-3 pt-3">
           <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
             Projected notices
           </div>
@@ -582,7 +586,7 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
           </ul>
         </div>
       ) : null}
-      <div className="mt-3 border-t border-fd-border pt-3">
+      <div className="mt-3 border-t border-fd-border px-3 py-3">
         <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
           Host boundary
         </div>
@@ -613,10 +617,13 @@ function NoticeIcon({ tone }: { tone: NotebookNoticeTone }) {
   }
 }
 
-function ScenarioPill({ label }: { label: string }) {
+function ScenarioSignal({ label, value }: { label: string; value: string }) {
   return (
-    <span className="rounded-full border border-fd-border bg-fd-background px-2 py-0.5 text-[10px] text-fd-muted-foreground">
-      {label}
-    </span>
+    <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 py-1.5">
+      <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+        {label}
+      </div>
+      <div className="min-w-0 text-[11px] text-fd-foreground">{value}</div>
+    </div>
   );
 }
