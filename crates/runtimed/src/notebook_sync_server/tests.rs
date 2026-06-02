@@ -3918,6 +3918,48 @@ fn test_create_empty_notebook_with_provided_env_id() {
     );
 }
 
+#[test]
+fn test_is_uninitialized_notebook_doc() {
+    // A brand-new doc has no cells and no metadata snapshot — uninitialized,
+    // so the host is free to seed starter structure.
+    let mut doc = NotebookDoc::new("test");
+    assert_eq!(doc.cell_count(), 0);
+    assert!(doc.get_metadata_snapshot().is_none());
+    assert!(
+        is_uninitialized_notebook_doc(&doc),
+        "fresh doc with no metadata and zero cells is uninitialized"
+    );
+
+    // The "user emptied it" case: metadata present, zero cells. Because
+    // `create_empty_notebook` always writes a metadata snapshot, a notebook a
+    // user deliberately emptied keeps that metadata, so the host must NOT
+    // re-seed it. Build the snapshot directly to land metadata without cells —
+    // `create_empty_notebook` seeds a starter cell, which is a different state.
+    let metadata = build_new_notebook_metadata(
+        "python",
+        "env-id",
+        crate::settings_doc::PythonEnvType::Uv,
+        None,
+        &[],
+    );
+    doc.set_metadata_snapshot(&metadata)
+        .expect("set_metadata_snapshot");
+    assert_eq!(doc.cell_count(), 0);
+    assert!(doc.get_metadata_snapshot().is_some());
+    assert!(
+        !is_uninitialized_notebook_doc(&doc),
+        "metadata present with zero cells is the user-emptied case, not uninitialized"
+    );
+
+    // Any cell present means the doc is initialized regardless of metadata.
+    doc.add_cell(0, &Uuid::new_v4().to_string(), "code")
+        .expect("add_cell");
+    assert!(
+        !is_uninitialized_notebook_doc(&doc),
+        "a doc with at least one cell is initialized"
+    );
+}
+
 /// Benchmark streaming load phases against a real notebook.
 ///
 /// Reads `/tmp/gelmanschools-bench.ipynb` and profiles:
