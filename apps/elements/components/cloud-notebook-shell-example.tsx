@@ -1113,7 +1113,7 @@ function CloudAccessRequestCard() {
 
 function CloudAuthAttentionCard() {
   return (
-    <div className="rounded-lg border border-red-500/25 bg-red-500/[0.04] p-4 text-foreground">
+    <div className="border-l-2 border-red-500 bg-gradient-to-r from-red-500/[0.08] via-red-500/[0.04] to-transparent px-4 py-3 text-foreground">
       <div className="flex items-start gap-3">
         <X className="mt-0.5 size-4 text-red-600" aria-hidden="true" />
         <div className="min-w-0 flex-1">
