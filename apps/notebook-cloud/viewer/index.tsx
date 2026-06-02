@@ -1981,6 +1981,7 @@ function CloudAuthControls({
       >
         <NotebookIdentityBadge
           actor={actor}
+          variant="inline"
           size="sm"
           showDetail={false}
           className="cloud-auth-identity-badge"

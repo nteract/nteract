@@ -10,8 +10,8 @@ desktop, but the host adds a few top-level concerns: room presence, document
 sync health, view/edit mode, sharing, and account controls.
 
 This mockup separates those concerns from runtime state. A cloud notebook can be
-live, reconnecting, signed out, public, or edit-requested without making the
-Python runtime chip carry those meanings.
+live, reconnecting, signed out, public, shared, or edit-requested without making
+the Python runtime chip carry those meanings.
 
 The first toolbar row is app-level cloud chrome. It answers "who is here, is the
 document connected, can I share, am I viewing or editing, and which account is
@@ -40,6 +40,11 @@ execution controls.
 - View/edit is a local interaction mode over host permissions. Users with edit
   permission can step into read-only viewing without requesting access again;
   denied users stay gated by the host capability projection.
+- Sharing should read as document permissions: public link state, people,
+  pending invites, and roles. Avoid generic bubbles, stacked badges, or account
+  language that makes collaborators look like runtime actors.
+- Auth controls should explain the current account and recovery path. They
+  should not duplicate presence, sharing roles, or notebook runtime state.
 - Elements scenarios should continue to model desktop and cloud differences
   through capability facts, not forked shell components.
 

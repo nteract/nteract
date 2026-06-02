@@ -2,14 +2,23 @@
 
 import {
   CheckCircle2,
+  Clock3,
   Cloud,
   CloudOff,
+  Copy,
+  Eye,
+  FilePenLine,
   Globe2,
+  KeyRound,
   LogIn,
+  Mail,
   Play,
   Radio,
   Share2,
+  ShieldCheck,
+  UserRound,
   WifiOff,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -114,6 +123,12 @@ const cloudStateRows = [
     reason: "Users with edit access can locally step out of editing without requesting access.",
   },
   {
+    surface: "Permissions",
+    owner: "Cloud ACL",
+    language: "Owner, can edit, can view, pending",
+    reason: "Sharing is document access; it should read as a quiet ledger, not generic account UI.",
+  },
+  {
     surface: "Runtime",
     owner: "Notebook toolbar",
     language: "Python / uv",
@@ -211,6 +226,8 @@ export function CloudNotebookShellExample() {
           <CloudNotebookDocument />
         </NotebookDocumentShell>
       </section>
+
+      <CloudPermissionsSurface />
 
       <section className="grid gap-3 lg:grid-cols-2">
         {shellStates.map((state) => {
@@ -347,7 +364,7 @@ function CloudAppToolbar({
         <CloudConnectionPill state={connection} compact={false} />
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
-        {scenario.capabilities.canManageSharing ? <CloudShareButton compact={false} /> : null}
+        {scenario.capabilities.canManageSharing ? <CloudShareMenu compact={false} /> : null}
         <CloudModeToggle
           compact={false}
           interaction={interaction}
@@ -425,7 +442,7 @@ function CloudStatePreview({
         <CloudPresence people={people} compact />
         <span className="h-4 w-px bg-border/70" aria-hidden="true" />
         <CloudConnectionPill state={connection} compact />
-        {scenario.capabilities.canManageSharing ? <CloudShareButton compact /> : null}
+        {scenario.capabilities.canManageSharing ? <CloudShareMenu compact /> : null}
         <CloudModeToggle compact={false} interaction={interaction} mode={mode} />
         {scenario.capabilities.auth.canSignIn ||
         scenario.capabilities.auth.canUseAuthenticatedIdentity ||
@@ -512,15 +529,264 @@ function CloudConnectionPill({
   );
 }
 
-function CloudShareButton({ compact }: { compact: boolean }) {
+function CloudShareMenu({ compact }: { compact: boolean }) {
   return (
-    <button
-      type="button"
-      className="inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70"
-    >
-      <Share2 className="size-3.5" aria-hidden="true" />
-      {compact ? null : <span>Share</span>}
-    </button>
+    <details className="group relative">
+      <summary
+        className="inline-flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden"
+        title="Share notebook"
+      >
+        <Share2 className="size-3.5" aria-hidden="true" />
+        {compact ? <span className="sr-only">Share</span> : <span>Share</span>}
+      </summary>
+      <div className="absolute right-0 top-[calc(100%+0.5rem)] z-30 hidden w-[min(34rem,calc(100vw-2rem))] group-open:block">
+        <CloudSharePanel variant="owner" />
+      </div>
+    </details>
+  );
+}
+
+function CloudPermissionsSurface() {
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Permissions and sharing language</h2>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+          Sharing should feel like document access. Use compact rows, inline state, and restrained
+          color so owners can scan who can view, who can edit, and what still needs attention.
+        </p>
+      </div>
+      <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(20rem,0.7fr)]">
+        <div className="min-w-0">
+          <CloudSharePanel variant="owner" />
+        </div>
+        <div className="grid content-start gap-4">
+          <CloudAccessRequestCard />
+          <CloudAuthAttentionCard />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type CloudSharePanelVariant = "owner" | "public";
+
+function CloudSharePanel({ variant }: { variant: CloudSharePanelVariant }) {
+  const publicEnabled = variant === "owner";
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-background text-foreground shadow-sm">
+      <div className="grid gap-1 border-b border-border/70 px-4 py-3">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold">Share notebook</h3>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              Public link, collaborators, and pending invites for this notebook.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Copy className="size-3.5" aria-hidden="true" />
+            Copy link
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-3 px-4 py-3">
+        <section
+          className="grid gap-3 border-l-2 border-emerald-400/80 bg-emerald-500/[0.06] py-2 pl-3 pr-2"
+          aria-label="Public link"
+        >
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-2.5">
+              <Globe2
+                className="mt-0.5 size-4 shrink-0 text-emerald-700 dark:text-emerald-300"
+                aria-hidden="true"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">Anyone with the link</div>
+                <div className="text-xs leading-5 text-muted-foreground">
+                  {publicEnabled
+                    ? "Can view this notebook without signing in."
+                    : "Only explicitly invited people can open this notebook."}
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="inline-flex h-8 shrink-0 items-center rounded-md px-2 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-500/10 dark:text-emerald-300"
+            >
+              {publicEnabled ? "Disable" : "Enable"}
+            </button>
+          </div>
+        </section>
+
+        <form className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem_auto]" aria-label="Invite">
+          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+            Invite by email
+            <input
+              className="h-9 min-w-0 rounded-md border border-border bg-background px-3 text-sm font-normal text-foreground"
+              placeholder="name@example.com"
+              type="email"
+            />
+          </label>
+          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+            Access
+            <select className="h-9 rounded-md border border-border bg-background px-2 text-sm font-normal text-foreground">
+              <option>Can view</option>
+              <option>Can edit</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="inline-flex h-9 items-center justify-center gap-1.5 self-end rounded-md bg-foreground px-3 text-sm font-medium text-background"
+          >
+            <Mail className="size-3.5" aria-hidden="true" />
+            Invite
+          </button>
+        </form>
+      </div>
+
+      <section className="border-t border-border/70 px-4 py-3" aria-label="Current access">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            Current access
+          </h4>
+          <span className="text-xs text-muted-foreground">4 people, 1 invite</span>
+        </div>
+        <div className="divide-y divide-border/70">
+          {shareRows.map((row) => (
+            <CloudShareAccessRow key={row.label} row={row} />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const shareRows = [
+  {
+    icon: UserRound,
+    label: "Kyle",
+    detail: "kyle@notebook.local",
+    access: "Owner",
+    state: "Signed in",
+    tone: "default",
+  },
+  {
+    icon: FilePenLine,
+    label: "Morgan",
+    detail: "morgan@example.com",
+    access: "Can edit",
+    state: "Live now",
+    tone: "success",
+  },
+  {
+    icon: Eye,
+    label: "Public link",
+    detail: "Anyone with the link",
+    access: "Can view",
+    state: "Enabled",
+    tone: "success",
+  },
+  {
+    icon: Clock3,
+    label: "riley@example.com",
+    detail: "Invited by Kyle",
+    access: "Can edit",
+    state: "Pending",
+    tone: "pending",
+  },
+] satisfies Array<{
+  icon: LucideIcon;
+  label: string;
+  detail: string;
+  access: string;
+  state: string;
+  tone: "default" | "success" | "pending";
+}>;
+
+function CloudShareAccessRow({ row }: { row: (typeof shareRows)[number] }) {
+  const Icon = row.icon;
+  return (
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 py-2.5">
+      <Icon className="size-4 text-muted-foreground" aria-hidden="true" />
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium">{row.label}</div>
+        <div className="truncate text-xs text-muted-foreground">{row.detail}</div>
+      </div>
+      <div className="hidden text-sm text-muted-foreground sm:block">{row.access}</div>
+      <div
+        className={cn(
+          "text-xs font-medium",
+          row.tone === "success" && "text-emerald-700 dark:text-emerald-300",
+          row.tone === "pending" && "text-amber-700 dark:text-amber-300",
+          row.tone === "default" && "text-muted-foreground",
+        )}
+      >
+        {row.state}
+      </div>
+    </div>
+  );
+}
+
+function CloudAccessRequestCard() {
+  return (
+    <div className="rounded-lg border border-border bg-background p-4 text-foreground">
+      <div className="flex items-start gap-3">
+        <KeyRound className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">Need edit access?</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Viewers should stay in the live document and ask for edit access without changing
+            connection mode or runtime state.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-foreground px-3 text-sm font-medium text-background"
+            >
+              <FilePenLine className="size-3.5" aria-hidden="true" />
+              Request edit access
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center rounded-md px-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              Stay viewing
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CloudAuthAttentionCard() {
+  return (
+    <div className="rounded-lg border border-red-500/25 bg-red-500/[0.04] p-4 text-foreground">
+      <div className="flex items-start gap-3">
+        <X className="mt-0.5 size-4 text-red-600" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">Session needs attention</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Auth problems should sit with account controls. The notebook can remain readable while
+            cloud write actions wait for a renewed identity.
+          </p>
+          <button
+            type="button"
+            className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-500/10 dark:text-red-300"
+          >
+            <LogIn className="size-3.5" aria-hidden="true" />
+            Sign in again
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
