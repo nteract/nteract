@@ -89,6 +89,25 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
   assert.doesNotMatch(homePanelCss, /border-radius/);
 });
 
+test("cloud callback keeps sign-in handoff in the entry surface language", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssText = readFileSync(cssPath, "utf8");
+  const callbackSource = sourceText.slice(
+    sourceText.indexOf("function OidcCallbackView"),
+    sourceText.indexOf("function NotebookViewer"),
+  );
+
+  assert.match(callbackSource, /className="cloud-home"/);
+  assert.match(callbackSource, /className="cloud-home-layout"/);
+  assert.match(callbackSource, /className="cloud-home-panel"/);
+  assert.match(callbackSource, /Returning to the notebook\./);
+  assert.match(callbackSource, /data-mode=\{status\.kind\}/);
+  assert.match(cssText, /\.cloud-home-status-spinner/);
+  assert.doesNotMatch(callbackSource, /className="flex min-h-screen/);
+});
+
 test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

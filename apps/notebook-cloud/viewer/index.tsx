@@ -593,14 +593,60 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
     };
   }, [authConfig.oidc]);
 
+  const statusTitle =
+    status.kind === "ready"
+      ? "Signed in"
+      : status.kind === "error"
+        ? "Sign-in needs attention"
+        : status.kind === "empty"
+          ? "Nothing to finish"
+          : "Completing sign-in";
+  const statusIcon =
+    status.kind === "error" ? (
+      <AlertCircle aria-hidden="true" />
+    ) : status.kind === "ready" ? (
+      <UserRound aria-hidden="true" />
+    ) : status.kind === "empty" ? (
+      <KeyRound aria-hidden="true" />
+    ) : (
+      <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+    );
+
   return (
-    <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
-      <div className="cloud-report-toolbar" aria-label="Sign-in status and controls">
-        <h1 className="text-xl font-semibold tracking-normal">nteract cloud notebook</h1>
-      </div>
-      <div className="cloud-state" data-kind={status.kind}>
-        {status.message}
-      </div>
+    <main className="cloud-home">
+      <header className="cloud-report-toolbar" aria-label="Sign-in status and controls">
+        <div className="cloud-home-title">
+          <span>nteract cloud notebooks</span>
+          <small>account handoff</small>
+        </div>
+      </header>
+
+      <section className="cloud-home-layout" aria-label="Notebook cloud sign-in callback">
+        <div className="cloud-home-copy">
+          <p>Cloud sign-in</p>
+          <h1>Returning to the notebook.</h1>
+          <span>
+            The browser is finishing the account handoff. The notebook stays readable while access
+            renews.
+          </span>
+        </div>
+
+        <section className="cloud-home-panel" aria-label="Cloud sign-in status">
+          <div className="cloud-home-status" data-mode={status.kind}>
+            {statusIcon}
+            <div>
+              <h2>{statusTitle}</h2>
+              <p>{status.message}</p>
+            </div>
+          </div>
+
+          {status.kind === "error" || status.kind === "empty" ? (
+            <div className="cloud-home-actions">
+              <a href="/">Back to cloud notebooks</a>
+            </div>
+          ) : null}
+        </section>
+      </section>
     </main>
   );
 }

@@ -350,6 +350,30 @@ main.flex > .cloud-report-toolbar {
   color: #0f766e;
 }
 
+.cloud-home-status[data-mode="ready"] > svg {
+  color: #0f766e;
+}
+
+.cloud-home-status[data-mode="error"] > svg {
+  color: #b42318;
+}
+
+.cloud-home-status-spinner {
+  animation: cloud-status-spin 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-home-status-spinner {
+    animation: none;
+  }
+}
+
+@keyframes cloud-status-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
 .cloud-home-status h2,
 .cloud-home-status p {
   margin: 0;
