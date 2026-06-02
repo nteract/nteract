@@ -39,4 +39,21 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/onExecuteAndInsert:\s+canExecute && onInsertCellAfter/);
     expect(sourceText).toMatch(/canExecute=\{canExecute\}/);
   });
+
+  it("does not seed notebook structure from the shared frontend view", () => {
+    const sourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+
+    expect(sourceText).toMatch(/data-notebook-synced=\{!isLoading\}/);
+    expect(sourceText).toMatch(/Focus the first authoritative cell after initial sync/);
+    expect(sourceText).toMatch(/if \(isLoading \|\| focusedCellId !== null \|\| cellIds\.length === 0\) return/);
+    const focusAfterSyncEffect = sourceText.match(
+      /\/\/ Focus the first authoritative cell after initial sync\.[\s\S]*?\}, \[isLoading, cellIds, focusedCellId, onFocusCell\]\);/,
+    )?.[0];
+
+    expect(focusAfterSyncEffect).toBeDefined();
+    expect(focusAfterSyncEffect).not.toMatch(/onAddCell/);
+  });
 });

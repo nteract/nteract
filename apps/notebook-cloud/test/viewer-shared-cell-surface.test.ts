@@ -51,6 +51,8 @@ test("cloud notebook mutations route through the shared notebook controller", ()
   assert.doesNotMatch(sourceText, /liveRuntime\.handle\.add_cell_after/);
   assert.doesNotMatch(sourceText, /liveRuntime\.handle\.delete_cell/);
   assert.doesNotMatch(sourceText, /liveRuntime\.handle\.move_cell/);
+  assert.doesNotMatch(sourceText, /canAcceptStructure/);
+  assert.doesNotMatch(sourceText, /cell_count\(\) > 0/);
 });
 
 test("cloud projects host focus through the shared cell UI state bridge", () => {
