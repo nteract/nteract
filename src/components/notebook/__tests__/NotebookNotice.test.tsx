@@ -51,8 +51,12 @@ describe("NotebookNotice", () => {
       </NotebookNoticeStack>,
     );
 
-    const stack = screen.getByText("Runtime unavailable").closest("[data-slot='notebook-notice-stack']");
+    const stack = screen
+      .getByText("Runtime unavailable")
+      .closest("[data-slot='notebook-notice-stack']");
     expect(stack).not.toBeNull();
-    expect(stack).toContainElement(screen.getByText("Auth needs attention").closest("[data-slot='notebook-notice']"));
+    expect(stack).toContainElement(
+      screen.getByText("Auth needs attention").closest("[data-slot='notebook-notice']"),
+    );
   });
 });
