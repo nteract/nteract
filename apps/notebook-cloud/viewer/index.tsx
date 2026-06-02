@@ -2198,7 +2198,7 @@ function CloudConnectionStatus({
     : connecting
       ? "Joining the notebook room"
       : error
-        ? `Reconnecting to the notebook room: ${error}`
+        ? `Reconnecting to the notebook room: ${cloudConnectionStatusErrorTitle(error)}`
         : "Reconnecting to the notebook room";
   const Icon = connected || connecting ? Cloud : CloudOff;
 
@@ -2212,6 +2212,13 @@ function CloudConnectionStatus({
       <span>{label}</span>
     </span>
   );
+}
+
+function cloudConnectionStatusErrorTitle(error: string): string {
+  if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
+    return "unable to join the live room";
+  }
+  return sanitizeCloudConnectionError(error);
 }
 
 function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState }) {
