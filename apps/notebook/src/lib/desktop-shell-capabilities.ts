@@ -54,6 +54,9 @@ export function desktopNotebookShellCapabilities({
   const runtime = {
     canWriteRuntimeState,
     connected: sessionReady && (source === "local" || isRuntimePeer),
+    // A ready daemon session is the local execution runtime. `canExecute` below
+    // gates this further by document write authority.
+    executionAvailable: sessionReady,
     source,
     actorLabel: canWriteRuntimeState ? localActor : null,
     identityLabel: null,

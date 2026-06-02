@@ -88,6 +88,15 @@ export interface NotebookShellRuntimeCapabilities {
    */
   canWriteRuntimeState: boolean;
   connected: boolean;
+  /**
+   * Whether an execution runtime (kernel provider) is available to run cells.
+   * This is the host-neutral signal behind `canExecute`: run/restart/interrupt
+   * stay hidden when no runtime can execute, regardless of edit permission. A
+   * host with no kernel provider (the hosted prototype today) reports false; a
+   * local daemon with a ready session, or a future attached cloud runtime,
+   * reports true. Optional so fixtures need not set it.
+   */
+  executionAvailable?: boolean;
   source: NotebookShellAccessSource;
   actorLabel: string | null;
   identityLabel: string | null;
@@ -146,6 +155,7 @@ export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = {
   runtime: {
     canWriteRuntimeState: false,
     connected: false,
+    executionAvailable: false,
     source: "unknown",
     actorLabel: null,
     identityLabel: null,
