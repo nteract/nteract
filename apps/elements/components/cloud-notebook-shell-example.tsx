@@ -229,6 +229,8 @@ export function CloudNotebookShellExample() {
 
       <CloudPermissionsSurface />
 
+      <CloudAccountSurface />
+
       <section className="grid gap-3 lg:grid-cols-2">
         {shellStates.map((state) => {
           const stateScenario = getElementsNotebookScenario(state.scenarioId);
@@ -786,6 +788,152 @@ function CloudAuthAttentionCard() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CloudAccountSurface() {
+  const ownerScenario = getElementsNotebookScenario("cloud-owner");
+  const publicScenario = getElementsNotebookScenario("cloud-public-viewer");
+  const editorScenario = getElementsNotebookScenario("cloud-editor");
+  const ownerActor = notebookActorIdentityFromAccess(
+    ownerScenario.capabilities.access,
+    ownerScenario.capabilities.auth,
+  );
+  const publicActor = notebookActorIdentityFromAccess(
+    publicScenario.capabilities.access,
+    publicScenario.capabilities.auth,
+  );
+  const editorActor = notebookActorIdentityFromAccess(editorScenario.capabilities.access, {
+    ...editorScenario.capabilities.auth,
+    needsAttention: true,
+  });
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <UserRound className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Account and session language</h2>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+          Account controls should explain who the browser is acting as and what recovery is
+          available. They should not repeat presence, collaborator roles, or runtime state.
+        </p>
+      </div>
+      <div className="grid gap-4 p-4 xl:grid-cols-3">
+        <CloudAccountPanel
+          actor={ownerActor}
+          title="Signed in"
+          description="Write actions use this browser identity."
+          rows={[
+            ["Document access", "Owner"],
+            ["Session", "Live"],
+            ["Auth", "Anaconda"],
+          ]}
+          action="Sign out"
+        />
+        <CloudAccountPanel
+          actor={publicActor}
+          title="Public viewer"
+          description="The document stays live while edit requests wait for sign-in."
+          rows={[
+            ["Document access", "Can view"],
+            ["Session", "Anonymous"],
+            ["Edit path", "Sign in to request"],
+          ]}
+          action="Sign in"
+        />
+        <CloudAccountPanel
+          actor={editorActor}
+          title="Session attention"
+          description="Notebook reads remain available while cloud write actions pause."
+          tone="attention"
+          rows={[
+            ["Document access", "Can edit"],
+            ["Session", "Expired"],
+            ["Recovery", "Sign in again"],
+          ]}
+          action="Renew session"
+        />
+      </div>
+    </section>
+  );
+}
+
+function CloudAccountPanel({
+  action,
+  actor,
+  description,
+  rows,
+  title,
+  tone = "default",
+}: {
+  action: string;
+  actor: NotebookActorIdentity;
+  description: string;
+  rows: ReadonlyArray<readonly [string, string]>;
+  title: string;
+  tone?: "default" | "attention";
+}) {
+  return (
+    <div
+      className={cn(
+        "grid gap-3 rounded-lg border border-border bg-background p-4 text-foreground",
+        tone === "attention" && "border-red-500/25 bg-red-500/[0.04]",
+      )}
+    >
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">{title}</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
+        </div>
+        {tone === "attention" ? (
+          <X className="mt-0.5 size-4 shrink-0 text-red-600" aria-hidden="true" />
+        ) : (
+          <CheckCircle2
+            className="mt-0.5 size-4 shrink-0 text-emerald-700 dark:text-emerald-300"
+            aria-hidden="true"
+          />
+        )}
+      </div>
+      <NotebookIdentityBadge
+        actor={actor}
+        variant="inline"
+        showDetail={false}
+        className="justify-start"
+      />
+      <dl className="grid gap-1.5 border-l-2 border-border/80 pl-3 text-xs">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid grid-cols-[7rem_minmax(0,1fr)] gap-2">
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd
+              className={cn(
+                "min-w-0 truncate font-medium text-foreground",
+                tone === "attention" && label === "Session" && "text-red-700 dark:text-red-300",
+              )}
+            >
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <button
+        type="button"
+        className={cn(
+          "inline-flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-sm font-medium transition-colors hover:bg-muted hover:text-foreground",
+          tone === "attention"
+            ? "text-red-700 hover:bg-red-500/10 dark:text-red-300"
+            : "text-muted-foreground",
+        )}
+      >
+        {tone === "attention" ? (
+          <LogIn className="size-3.5" aria-hidden="true" />
+        ) : (
+          <KeyRound className="size-3.5" aria-hidden="true" />
+        )}
+        {action}
+      </button>
     </div>
   );
 }

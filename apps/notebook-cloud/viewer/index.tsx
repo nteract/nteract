@@ -1988,8 +1988,11 @@ function CloudAuthControls({
         />
       </summary>
       <form onSubmit={applyDevAuth}>
-        <p>{prototypeAuthSummary(authState)}</p>
-        <dl className="cloud-auth-diagnostics" aria-label="Prototype auth diagnostics">
+        <div className="cloud-auth-panel-header">
+          <h2>{summary}</h2>
+          <p>{prototypeAuthSummary(authState)}</p>
+        </div>
+        <dl className="cloud-auth-diagnostics" aria-label="Cloud account session">
           {diagnostics.rows.map((row) => (
             <div key={row.label} data-tone={row.tone ?? "default"}>
               <dt>{row.label}</dt>
@@ -1998,7 +2001,8 @@ function CloudAuthControls({
           ))}
         </dl>
         {showPrototypeDevControls ? (
-          <>
+          <section className="cloud-auth-dev-section" aria-label="Prototype identity">
+            <h3>Prototype identity</h3>
             <label>
               <span>Dev token</span>
               <input
@@ -2030,7 +2034,7 @@ function CloudAuthControls({
                 <option value="viewer">viewer</option>
               </select>
             </label>
-          </>
+          </section>
         ) : null}
         {formError ? (
           <div className="cloud-auth-form-error" role="alert">
