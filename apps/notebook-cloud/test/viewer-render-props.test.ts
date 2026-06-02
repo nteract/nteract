@@ -196,6 +196,14 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     cssText,
+    /cloud-room-toolbar \[data-slot="notebook-document-header-controls"\] \{[\s\S]*flex: 0 0 auto;[\s\S]*min-width: max-content;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 900px\) \{[\s\S]*cloud-room-toolbar[\s\S]*flex-wrap: wrap;[\s\S]*cloud-room-toolbar \[data-slot="notebook-document-header-controls"\] \{[\s\S]*min-width: 0;/,
+  );
+  assert.match(
+    cssText,
     /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto auto;/,
   );
   assert.match(
