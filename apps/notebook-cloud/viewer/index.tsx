@@ -477,7 +477,11 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
           </span>
         </div>
 
-        <section className="cloud-home-panel" aria-label="Notebook cloud sign-in">
+        <section
+          className="cloud-home-panel"
+          data-mode={authState.mode}
+          aria-label="Notebook cloud sign-in"
+        >
           <div className="cloud-home-status" data-mode={authState.mode}>
             {signedIn ? <UserRound aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
             <div>
@@ -631,7 +635,11 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
           </span>
         </div>
 
-        <section className="cloud-home-panel" aria-label="Cloud sign-in status">
+        <section
+          className="cloud-home-panel"
+          data-mode={status.kind}
+          aria-label="Cloud sign-in status"
+        >
           <div className="cloud-home-status" data-mode={status.kind}>
             {statusIcon}
             <div>

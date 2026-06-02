@@ -596,8 +596,8 @@ function CloudEntrySurface() {
             share, or renew access.
           </p>
         </div>
-        <div className="grid content-start gap-3 border-y border-border bg-muted/30 py-4">
-          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 px-4">
+        <div className="grid content-start gap-3 border-l-2 border-foreground/25 bg-gradient-to-r from-muted/35 to-transparent py-3 pl-4">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
             <KeyRound className="mt-0.5 size-5 text-muted-foreground" aria-hidden="true" />
             <div className="min-w-0">
               <h3 className="m-0 truncate text-base font-semibold">Public viewer</h3>
@@ -607,7 +607,7 @@ function CloudEntrySurface() {
               </p>
             </div>
           </div>
-          <div className="px-4">
+          <div>
             <button
               type="button"
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm transition-colors hover:bg-muted"
