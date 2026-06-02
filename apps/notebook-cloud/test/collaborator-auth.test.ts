@@ -387,6 +387,23 @@ describe("cloud collaborator auth", () => {
     assert.match(diagnostics.copyText, /Last connection error: failed to connect/);
     assert.doesNotMatch(diagnostics.copyText, /<NOTEBOOK_CLOUD_DEV_TOKEN>/);
   });
+
+  it("keeps live-room URL noise out of visible account diagnostics", () => {
+    const diagnostics = prototypeAuthDiagnostics(readCloudPrototypeAuth(new MemoryStorage()), {
+      actorLabel: null,
+      connectionError: "failed to connect ws://127.0.0.1:8793/n/demo/sync?user=Kyle&scope=owner",
+      connectionScope: null,
+    });
+    const errorRow = diagnostics.rows.find((row) => row.label === "Last connection error");
+
+    assert.equal(errorRow?.value, "Unable to join the live notebook room.");
+    assert.doesNotMatch(errorRow?.value ?? "", /ws:\/\/|user=Kyle|scope=owner/);
+    assert.match(
+      diagnostics.copyText,
+      /Last connection error: failed to connect ws:\/\/127\.0\.0\.1:8793\/n\/demo\/sync/,
+    );
+    assert.doesNotMatch(diagnostics.copyText, /user=Kyle|scope=owner/);
+  });
 });
 
 class MemoryStorage implements CloudPrototypeAuthStorage {
