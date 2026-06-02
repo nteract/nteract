@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, type KeyboardEvent } from "react";
 
 export interface GlobalFindBarProps {
@@ -51,10 +51,16 @@ export function GlobalFindBar({
       : query
         ? "No results"
         : "";
+  const hasQuery = query.length > 0;
+  const hasMatches = matchCount > 0;
 
   return (
-    <div className="flex items-center gap-1.5 border-b bg-background px-3 py-1.5 shadow-sm">
-      <div className="relative flex-1 max-w-sm">
+    <div
+      data-slot="global-find-bar"
+      className="flex items-center gap-2 border-b bg-background/95 px-3 py-1.5"
+    >
+      <div className="flex min-w-0 max-w-md flex-[1_1_24rem] items-center gap-2">
+        <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" aria-hidden="true" />
         <input
           ref={inputRef}
           type="text"
@@ -66,18 +72,28 @@ export function GlobalFindBar({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className="h-7 w-full rounded border border-input bg-transparent px-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="-mx-1 h-7 min-w-0 flex-1 rounded-sm bg-transparent px-1 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:bg-muted/55 focus-visible:outline-none"
           aria-label="Search notebook"
         />
       </div>
-      <span className="text-xs text-muted-foreground min-w-[5rem] text-center tabular-nums">
+      <span className="h-px min-w-8 flex-1 rounded-full bg-border/35" aria-hidden="true" />
+      <span
+        data-slot="global-find-match-count"
+        className={
+          hasMatches
+            ? "min-w-[4.5rem] text-center text-xs tabular-nums text-muted-foreground"
+            : hasQuery
+              ? "min-w-[4.5rem] text-center text-xs font-medium tabular-nums text-destructive/75"
+              : "min-w-[4.5rem] text-center text-xs tabular-nums text-muted-foreground/55"
+        }
+      >
         {matchLabel}
       </span>
       <button
         type="button"
         onClick={onPrevMatch}
         disabled={matchCount === 0}
-        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:pointer-events-none transition-colors"
+        className="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
         title="Previous match (Shift+Enter)"
         aria-label="Previous match"
       >
@@ -87,7 +103,7 @@ export function GlobalFindBar({
         type="button"
         onClick={onNextMatch}
         disabled={matchCount === 0}
-        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:pointer-events-none transition-colors"
+        className="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
         title="Next match (Enter)"
         aria-label="Next match"
       >
@@ -96,7 +112,7 @@ export function GlobalFindBar({
       <button
         type="button"
         onClick={onClose}
-        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        className="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         title="Close (Escape)"
         aria-label="Close find bar"
       >
