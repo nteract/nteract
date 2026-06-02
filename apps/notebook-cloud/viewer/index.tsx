@@ -2179,6 +2179,10 @@ function cloudAccountSessionDisplay({
   const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
   const connectedScope = parseCloudConnectionScope(connectionScope);
   const effectiveScope = connectedScope ?? requestedScope;
+  const accessRowLabel = connectedScope ? "Access" : "Requested";
+  const accessDescription = connectedScope
+    ? `${cloudScopeLabel(connectedScope)} access for this notebook.`
+    : `${cloudRequestedAccessLabel(requestedScope)} requested for this notebook.`;
   const liveTone = connectionError ? "warning" : connectedScope ? "success" : "default";
   const liveLabel = connectionError ? "Needs attention" : connectedScope ? "Live" : "Joining";
 
@@ -2211,9 +2215,13 @@ function cloudAccountSessionDisplay({
     const title = authState.user ?? actorLabel;
     return {
       title,
-      description: `${cloudScopeLabel(effectiveScope)} access for this notebook.`,
+      description: accessDescription,
       rows: [
-        { label: "Access", value: cloudScopeLabel(effectiveScope), tone: "success" },
+        {
+          label: accessRowLabel,
+          value: cloudScopeLabel(effectiveScope),
+          tone: connectedScope ? "success" : "default",
+        },
         { label: "Connection", value: liveLabel, tone: liveTone },
         { label: "Identity", value: "Anaconda" },
       ],
@@ -2223,9 +2231,15 @@ function cloudAccountSessionDisplay({
   const title = authState.user ?? actorLabel;
   return {
     title,
-    description: `${cloudScopeLabel(effectiveScope)} access from a local dev identity.`,
+    description: connectedScope
+      ? `${cloudScopeLabel(connectedScope)} access from a local dev identity.`
+      : `${cloudRequestedAccessLabel(requestedScope)} requested from a local dev identity.`,
     rows: [
-      { label: "Access", value: cloudScopeLabel(effectiveScope), tone: "success" },
+      {
+        label: accessRowLabel,
+        value: cloudScopeLabel(effectiveScope),
+        tone: connectedScope ? "success" : "default",
+      },
       { label: "Connection", value: liveLabel, tone: liveTone },
       { label: "Identity", value: "Local dev" },
     ],
@@ -2249,6 +2263,19 @@ function cloudScopeLabel(scope: ConnectionScope): string {
       return "Runtime peer";
     case "viewer":
       return "Can view";
+  }
+}
+
+function cloudRequestedAccessLabel(scope: ConnectionScope): string {
+  switch (scope) {
+    case "owner":
+      return "Owner access";
+    case "editor":
+      return "Edit access";
+    case "runtime_peer":
+      return "Runtime access";
+    case "viewer":
+      return "View access";
   }
 }
 
