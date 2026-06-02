@@ -420,6 +420,25 @@ main.flex > .cloud-report-toolbar {
   max-width: 100%;
 }
 
+.cloud-auth-identity-icon {
+  display: none;
+}
+
+@media (max-width: 360px) {
+  .cloud-auth-menu summary.cloud-auth-identity-summary {
+    width: 2rem;
+    padding-inline: 0.375rem;
+  }
+
+  .cloud-auth-identity-icon {
+    display: block;
+  }
+
+  .cloud-auth-identity-summary .cloud-auth-identity-badge > span {
+    display: none;
+  }
+}
+
 .cloud-share-menu summary::-webkit-details-marker {
   display: none;
 }

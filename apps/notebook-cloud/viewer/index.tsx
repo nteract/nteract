@@ -1947,6 +1947,7 @@ function CloudAuthControls({
         title={`${session.title}: ${session.description}`}
         aria-label={`Identity: ${actor.label}`}
       >
+        <UserRound className="cloud-auth-identity-icon" aria-hidden="true" />
         <NotebookIdentityBadge
           actor={actor}
           variant="inline"
