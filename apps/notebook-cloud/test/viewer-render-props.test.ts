@@ -152,6 +152,9 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /function hasExplicitPrototypeDevAuthSearch/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
+  assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
+  assert.match(sourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
+  assert.match(sourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
   assert.match(
     sourceText,
     /function CloudPresenceStatus[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);[\s\S]*if \(!presenceDisplay\.connected\) \{[\s\S]*return null;/,
@@ -172,6 +175,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(
     cssText,
     /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto auto;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-copy-label-full[\s\S]*display: none;[\s\S]*cloud-share-copy-label-compact[\s\S]*display: inline;/,
   );
   assert.match(cssText, /0 8px 20px color-mix\(in srgb, #000 8%, transparent\)/);
   assert.doesNotMatch(cssText, /0 12px 36px/);

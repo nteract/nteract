@@ -1679,6 +1679,11 @@ function CloudSharingControls({
     }
   };
 
+  const copyLinkLabel =
+    copyState === "copied" ? "Copied link" : copyState === "failed" ? "Copy failed" : "Copy link";
+  const compactCopyLinkLabel =
+    copyState === "copied" ? "Copied" : copyState === "failed" ? "Failed" : "Copy";
+
   return (
     <details
       className="cloud-share-menu"
@@ -1693,11 +1698,12 @@ function CloudSharingControls({
         <header>
           <div>
             <h2>Share notebook</h2>
-            <p>Manage public read access and collaborator invites for this cloud notebook.</p>
+            <p>Public link, collaborators, and pending invites for this notebook.</p>
           </div>
-          <button type="button" onClick={() => void copyPublicLink()}>
+          <button type="button" aria-label={copyLinkLabel} onClick={() => void copyPublicLink()}>
             <Link2 aria-hidden="true" />
-            {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
+            <span className="cloud-share-copy-label-full">{copyLinkLabel}</span>
+            <span className="cloud-share-copy-label-compact">{compactCopyLinkLabel}</span>
           </button>
         </header>
 

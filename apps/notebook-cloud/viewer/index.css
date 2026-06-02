@@ -684,6 +684,11 @@ main.flex > .cloud-report-toolbar {
   justify-content: center;
   gap: 0.375rem;
   padding-inline: 0.625rem;
+  white-space: nowrap;
+}
+
+.cloud-share-copy-label-compact {
+  display: none;
 }
 
 .cloud-share-panel button:hover:not(:disabled) {
@@ -1090,5 +1095,13 @@ main.flex > .cloud-report-toolbar {
 
   .cloud-share-badge {
     justify-self: end;
+  }
+
+  .cloud-share-copy-label-full {
+    display: none;
+  }
+
+  .cloud-share-copy-label-compact {
+    display: inline;
   }
 }
