@@ -3860,8 +3860,12 @@ fn test_create_empty_notebook_python() {
     let env_id = result.unwrap();
     assert!(!env_id.is_empty(), "Should generate an env_id");
 
-    // Should have zero cells (frontend creates the first cell locally)
-    assert_eq!(doc.cell_count(), 0);
+    // Fresh notebook structure is daemon-owned. The frontend must not infer
+    // "new notebook" from an empty sync state and create this locally.
+    assert_eq!(doc.cell_count(), 1);
+    let cells = doc.get_cells();
+    assert_eq!(cells[0].cell_type, "code");
+    assert!(cells[0].source.is_empty());
 }
 
 #[test]
@@ -3877,7 +3881,10 @@ fn test_create_empty_notebook_deno() {
     );
 
     assert!(result.is_ok());
-    assert_eq!(doc.cell_count(), 0);
+    assert_eq!(doc.cell_count(), 1);
+    let cells = doc.get_cells();
+    assert_eq!(cells[0].cell_type, "code");
+    assert!(cells[0].source.is_empty());
 
     // Check metadata was set correctly
     let metadata = doc.get_metadata_snapshot();
