@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { NotebookNoticeStack } from "./NotebookNotice";
 
 export interface NotebookToolbarFrameProps {
   children: ReactNode;
@@ -17,7 +18,7 @@ export function NotebookToolbarFrame({ children, className, notices }: NotebookT
       data-slot="notebook-toolbar-frame"
     >
       {children}
-      {notices}
+      {notices ? <NotebookNoticeStack>{notices}</NotebookNoticeStack> : null}
     </header>
   );
 }
