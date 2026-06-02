@@ -213,6 +213,8 @@ export function CloudNotebookShellExample() {
         </NotebookDocumentShell>
       </section>
 
+      <CloudEntrySurface />
+
       <CloudPermissionsSurface />
 
       <CloudAccountSurface />
@@ -553,6 +555,62 @@ function CloudShareMenu({ compact }: { compact: boolean }) {
       <Share2 className="size-3.5" aria-hidden="true" />
       {compact ? <span className="sr-only">Share</span> : <span>Share</span>}
     </button>
+  );
+}
+
+function CloudEntrySurface() {
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Cloud entry</h2>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+          The root shell should not become a role switcher. Public notebooks stay readable, and
+          account action appears only when the user needs edit or sharing power.
+        </p>
+      </div>
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,0.85fr)]">
+        <div className="grid content-start gap-3">
+          <p className="m-0 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+            Cloud notebooks
+          </p>
+          <h3 className="m-0 max-w-[18ch] text-4xl font-bold leading-none text-foreground">
+            Stay in the document.
+          </h3>
+          <p className="m-0 max-w-xl text-sm leading-6 text-muted-foreground">
+            Public notebooks open calmly. Account controls appear only when someone needs to edit,
+            share, or renew access.
+          </p>
+        </div>
+        <div className="grid content-start gap-3 border-y border-border bg-muted/30 py-4">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 px-4">
+            <KeyRound className="mt-0.5 size-5 text-muted-foreground" aria-hidden="true" />
+            <div className="min-w-0">
+              <h3 className="m-0 truncate text-base font-semibold">Public viewer</h3>
+              <p className="m-0 mt-1 text-xs leading-5 text-muted-foreground">
+                Public notebooks stay readable without an account. Sign in when edit access or
+                sharing controls are needed.
+              </p>
+            </div>
+          </div>
+          <div className="px-4">
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm transition-colors hover:bg-muted"
+            >
+              <LogIn className="size-3.5" aria-hidden="true" />
+              Sign in with Anaconda
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="border-t border-fd-border px-4 py-3 text-xs leading-5 text-fd-muted-foreground">
+        Local development identity stays in the account panel after a notebook opens, where it can
+        act like host auth instead of document content.
+      </div>
+    </section>
   );
 }
 
