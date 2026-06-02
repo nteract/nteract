@@ -135,12 +135,12 @@ vi.mock("../../lib/kernel-completion", () => ({
   kernelCompletionExtension: [],
 }));
 
-vi.mock("../../lib/notebook-executions", () => ({
+vi.mock("@/components/notebook/state/execution-store", () => ({
   useCellExecutionId: () => (mockExecution ? "execution-1" : null),
   useExecution: () => mockExecution,
 }));
 
-vi.mock("../../lib/notebook-outputs", () => ({
+vi.mock("@/components/notebook/state/output-store", () => ({
   useCellOutputs: () => mockOutputs,
 }));
 
