@@ -264,19 +264,35 @@ author.
 Editor-scope collaborators get the full collaborative cell surface: add, delete,
 reorder, and edit cells of any type (markdown, code, raw source). Creating cells
 with a collaborator is the baseline expectation for an editable notebook, so the
-editor write surface is not restricted to markdown. Notebook-level metadata
-(kernelspec, trust, environment, path, project) stays owner-authored.
+editor write surface is not restricted to markdown. Everything else at the
+document root stays owner-authored: notebook metadata (kernelspec, trust,
+environment, path, project) and the document-identity roots `schema_version`,
+`notebook_id`, and `runtime_state_doc_id`.
 
 UI-only hiding is not an authorization boundary. A malicious browser can send
 arbitrary `NotebookDoc` sync frames, so the room host enforces the editor
 surface server-side with a semantic diff validator: it clone-previews the
-incoming `NotebookDoc` message, diffs the changed cells/fields against the
-heads before the change, and rejects any change that touches notebook-level
-metadata. Owners skip the validator (they may write all notebook changes). This
-is `validate_editor_notebook_changes` in `runtimed-wasm`, reached from
+incoming `NotebookDoc` message, diffs it against the heads before the change,
+and accepts it only if every patch lands inside the `cells` map. The policy is
+an allowlist, not a metadata denylist: any other root write — notebook
+metadata, `schema_version`, `notebook_id`, `runtime_state_doc_id`, or a
+root-level replace/delete of the `cells` map itself — is rejected. Owners skip
+the validator (they may write all notebook changes). This is
+`validate_editor_notebook_changes` in `runtimed-wasm`, reached from
 `receive_notebook_sync` whenever `can_write_all_notebook_changes` is false. The
 diff-validator path stays close to the desktop sync model and preserves
 client-local editing; "only the cloud UI exposes editing" is never sufficient.
+
+Cell-level `execution_count` and `execution_id` live under `cells/{id}`, so the
+allowlist accepts editor writes to them. This is intentional. They are the
+legacy nbformat persisted fallback and a pointer into RuntimeStateDoc; the live
+execution authority is RuntimeStateDoc, which is separately gated, so a
+non-owner editor cannot fabricate live execution state. A cell's
+`execution_count` is also written as part of normal cell creation, so carving
+these fields out would mean special-casing creation. The residual exposure is a
+fabricated persisted count surfacing on `.ipynb` export, which is out of the
+current threat model. Revisit if export fidelity from a malicious editor ever
+enters scope.
 
 Execution is a separate axis from the document write surface. There is no kernel
 provider in the hosted prototype yet, so run/restart/interrupt stay hidden

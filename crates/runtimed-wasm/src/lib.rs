@@ -908,9 +908,12 @@ fn validate_room_notebook_change_actors_inner<'a>(
 /// environment, path, project), `schema_version`, `notebook_id`, and the
 /// `runtime_state_doc_id` pairing. So the policy is an allowlist over the diff —
 /// every patch must land inside the `cells` map; any other root write is
-/// rejected. Owners skip this check entirely via `can_write_all_notebook_changes`.
-/// Canonical schema-seed changes are folded into `heads_before` so a fresh room's
-/// genesis is not read as a write.
+/// rejected. Cell-level `execution_count`/`execution_id` live under `cells`, so
+/// editors may write them — the live execution authority is RuntimeStateDoc,
+/// gated separately, so this cannot fabricate live execution state. Owners skip
+/// this check entirely via `can_write_all_notebook_changes`. Canonical
+/// schema-seed changes are folded into `heads_before` so a fresh room's genesis
+/// is not read as a write.
 fn validate_editor_notebook_changes<'a>(
     preview: &mut NotebookDoc,
     heads_before: &[automerge::ChangeHash],
