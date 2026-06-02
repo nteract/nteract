@@ -259,26 +259,47 @@ materializes. Read-only viewers and editors consume the same live
 `NotebookDoc`/`RuntimeStateDoc`; scope only limits what each connection may
 author.
 
-## Decision 7: Markdown-only collaboration needs a semantic gate
+## Decision 7: Editor collaboration is full cell editing behind a semantic gate
 
-The first editable hosted slice should be markdown-only, but UI-only hiding is
-not an authorization boundary. A malicious browser can send arbitrary
-`NotebookDoc` sync frames.
+Editor-scope collaborators get the full collaborative cell surface: add, delete,
+reorder, and edit cells of any type (markdown, code, raw source). Creating cells
+with a collaborator is the baseline expectation for an editable notebook, so the
+editor write surface is not restricted to markdown. Everything else at the
+document root stays owner-authored: notebook metadata (kernelspec, trust,
+environment, path, project) and the document-identity roots `schema_version`,
+`notebook_id`, and `runtime_state_doc_id`.
 
-Before exposing editor-scope hosted markdown editing to untrusted clients, the
-room host needs one of these server-side gates:
+UI-only hiding is not an authorization boundary. A malicious browser can send
+arbitrary `NotebookDoc` sync frames, so the room host enforces the editor
+surface server-side with a semantic diff validator: it clone-previews the
+incoming `NotebookDoc` message, diffs it against the heads before the change,
+and accepts it only if every patch lands inside the `cells` map. The policy is
+an allowlist, not a metadata denylist: any other root write — notebook
+metadata, `schema_version`, `notebook_id`, `runtime_state_doc_id`, or a
+root-level replace/delete of the `cells` map itself — is rejected. Owners skip
+the validator (they may write all notebook changes). This is
+`validate_editor_notebook_changes` in `runtimed-wasm`, reached from
+`receive_notebook_sync` whenever `can_write_all_notebook_changes` is false. The
+diff-validator path stays close to the desktop sync model and preserves
+client-local editing; "only the cloud UI exposes editing" is never sufficient.
 
-1. a semantic diff validator that clone-previews the incoming `NotebookDoc`
-   message, computes the changed cells/fields, and accepts only allowed
-   markdown-cell source edits; or
-2. a scoped request API where the client asks the DO to apply a markdown-cell
-   edit and the DO authors the change under the connection's actor label.
+Cell-level `execution_count` and `execution_id` live under `cells/{id}`, so the
+allowlist accepts editor writes to them. This is intentional. They are the
+legacy nbformat persisted fallback and a pointer into RuntimeStateDoc; the live
+execution authority is RuntimeStateDoc, which is separately gated, so a
+non-owner editor cannot fabricate live execution state. A cell's
+`execution_count` is also written as part of normal cell creation, so carving
+these fields out would mean special-casing creation. The residual exposure is a
+fabricated persisted count surfacing on `.ipynb` export, which is out of the
+current threat model. Revisit if export fidelity from a malicious editor ever
+enters scope.
 
-The diff-validator path is closer to the desktop sync model and preserves
-client-local editing. The request path is easier to authorize but adds a second
-mutation API. Either is acceptable for the prototype as long as the accepted
-surface is server-enforced. "Only the cloud UI exposes markdown editing" is not
-sufficient.
+Execution is a separate axis from the document write surface. There is no kernel
+provider in the hosted prototype yet, so run/restart/interrupt stay hidden
+behind a runtime-availability capability rather than an ACL scope. When a kernel
+provider is later attached, execution authority is granted through
+`runtime_peer` scope and the kernel protocol, not by widening the editor
+document surface.
 
 The editor `RuntimeStateDoc` write surface is closed by the shared runtime-doc
 policy used by the hosted room host and daemon. Editor and owner scopes may
@@ -288,8 +309,9 @@ would be privilege escalation into runtime lifecycle, execution status, or
 fabricated outputs, so frames that touch those fields are rejected before the
 real room document mutates.
 
-Full code-cell editing is a later phase. Code cells can render read-only while
-markdown cells are editable.
+Locking the surface down further is a future owner capability, not the baseline:
+an owner-only "freeze structure" or metadata-edit grant can narrow what editors
+may do, but collaborative cell editing is on by default.
 
 ## Decision 8: Runtime peers are just another scoped connection
 
@@ -352,9 +374,10 @@ enforce equivalent access.
    existing widget comm-state values, while queue, execution, kernel,
    environment, output routing, comm topology, and schema/root writes remain
    runtime-owned.
-8. **Markdown-only edit slice.** Add the server-side semantic gate or request
-   API, then expose markdown editing for authenticated `editor`/`owner`
-   connections.
+8. **Editor cell-editing slice.** Server-side semantic gate
+   (`validate_editor_notebook_changes`) accepts full cell editing (any cell
+   type, source, and structure) from authenticated `editor`/`owner`
+   connections while rejecting notebook-level metadata edits from non-owners.
 9. **Runtime peer ingress.** Allow runtime peers to attach and update
    `RuntimeStateDoc` plus blobs without notebook edits.
 10. **Direct OIDC.** Wire real provider validation after ACL lookup is in
@@ -376,8 +399,8 @@ enforce equivalent access.
 
 1. Whether anonymous public viewers should broadcast full cursor/cell presence
    or only document-level aggregate presence.
-2. Whether markdown-only collaboration should use semantic sync validation or a
-   scoped request API.
+2. Whether editors should eventually get a scoped notebook-metadata grant
+   (kernelspec, language) or whether metadata stays owner-only.
 3. How often the DO should checkpoint live room snapshots to R2 and whether
    checkpoint rows are visible as user-facing revisions or internal autosaves.
 4. Whether provider capability bounds should be represented as a set in

@@ -8,8 +8,10 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
+use automerge::Prop;
 use notebook_doc::diff::{
     diff_doc, extract_change_actor_hashes, extract_change_actors, CellChangeset, ChangeActor,
     TextPatch,
@@ -612,7 +614,8 @@ impl RoomHostHandle {
             let actors = extract_change_actor_hashes(preview.doc_mut(), &heads_before);
             validate_room_notebook_change_actors(principal, actors.iter())?;
             if !can_write_all_notebook_changes {
-                validate_markdown_source_only_changes(&mut preview, &heads_before, actors.iter())?;
+                validate_editor_notebook_changes(&mut preview, &heads_before, actors.iter())
+                    .map_err(|e| JsError::new(&e))?;
             }
         }
 
@@ -897,11 +900,25 @@ fn validate_room_notebook_change_actors_inner<'a>(
     Ok(())
 }
 
-fn validate_markdown_source_only_changes<'a>(
+/// Validate that an editor-scope peer's NotebookDoc changes stay within the
+/// collaborative cell-editing surface.
+///
+/// Editors may add, remove, reorder, and edit cells of any type. Everything else
+/// at the document root is owner-authored: notebook metadata (kernelspec, trust,
+/// environment, path, project), `schema_version`, `notebook_id`, and the
+/// `runtime_state_doc_id` pairing. So the policy is an allowlist over the diff —
+/// every patch must land inside the `cells` map; any other root write is
+/// rejected. Cell-level `execution_count`/`execution_id` live under `cells`, so
+/// editors may write them — the live execution authority is RuntimeStateDoc,
+/// gated separately, so this cannot fabricate live execution state. Owners skip
+/// this check entirely via `can_write_all_notebook_changes`. Canonical
+/// schema-seed changes are folded into `heads_before` so a fresh room's genesis
+/// is not read as a write.
+fn validate_editor_notebook_changes<'a>(
     preview: &mut NotebookDoc,
     heads_before: &[automerge::ChangeHash],
     allowed_changes: impl IntoIterator<Item = &'a ChangeActor>,
-) -> Result<(), JsError> {
+) -> Result<(), String> {
     let mut effective_heads_before = heads_before.to_vec();
     for change in allowed_changes {
         if NotebookDoc::is_canonical_schema_seed_change(&change.actor_label, &change.hash)
@@ -912,30 +929,37 @@ fn validate_markdown_source_only_changes<'a>(
     }
 
     let heads_after = preview.get_heads();
-    let changeset = diff_doc(preview.doc_mut(), &effective_heads_before, &heads_after);
-    if changeset.metadata_changed {
-        return Err(JsError::new(
-            "editor scope cannot change notebook metadata in hosted markdown-only mode",
-        ));
-    }
-    if changeset.cells.is_structural() {
-        return Err(JsError::new(
-            "editor scope cannot add, remove, or reorder cells in hosted markdown-only mode",
-        ));
-    }
-    for changed in &changeset.cells.changed {
-        if !changed.fields.is_source_only() {
-            return Err(JsError::new(
-                "editor scope can only edit markdown source in hosted markdown-only mode",
-            ));
-        }
-        if preview.get_cell_type(&changed.cell_id).as_deref() != Some("markdown") {
-            return Err(JsError::new(
-                "editor scope cannot edit code or raw cells in hosted markdown-only mode",
+    for patch in preview
+        .doc_mut()
+        .diff(&effective_heads_before, &heads_after)
+    {
+        // A cell op modifies an object at or below `cells`, so its patch path
+        // begins with `cells`. Anything else — root metadata, schema_version,
+        // notebook_id, runtime_state_doc_id, or a root-level replace/delete of
+        // the cells map itself — is owner-authored and rejected.
+        let within_cells =
+            matches!(patch.path.first(), Some((_, Prop::Map(key))) if key == "cells");
+        if !within_cells {
+            return Err(format!(
+                "editor scope may only edit cells; change touched notebook root '{}'",
+                editor_change_root_label(&patch)
             ));
         }
     }
     Ok(())
+}
+
+/// Best-effort name of the document root a rejected editor patch touched, for
+/// error messages.
+fn editor_change_root_label(patch: &automerge::Patch) -> String {
+    match patch.path.first() {
+        Some((_, Prop::Map(key))) => key.clone(),
+        Some((_, Prop::Seq(_))) => "<root sequence>".to_string(),
+        None => match &patch.action {
+            PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => key.clone(),
+            _ => "<document root>".to_string(),
+        },
+    }
 }
 
 /// A handle to a local Automerge notebook document.
@@ -3105,7 +3129,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_only_policy_ignores_canonical_schema_seed_maps() {
+    fn editor_policy_ignores_canonical_schema_seed_maps() {
         let seed_hash = NotebookDoc::canonical_schema_seed_change_hashes()
             .into_iter()
             .next()
@@ -3115,7 +3139,7 @@ mod tests {
             "user:dev:alice/desktop:a",
         );
 
-        validate_markdown_source_only_changes(
+        validate_editor_notebook_changes(
             &mut preview,
             &[],
             [ChangeActor {
@@ -3125,6 +3149,91 @@ mod tests {
             .iter(),
         )
         .expect("canonical schema seed maps are not editor metadata edits");
+    }
+
+    #[test]
+    fn editor_changes_allow_adding_cells() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        let heads_before = preview.get_heads();
+        preview
+            .add_cell_after("cell-1", "code", None)
+            .expect("add cell");
+
+        validate_editor_notebook_changes(
+            &mut preview,
+            &heads_before,
+            std::iter::empty::<&ChangeActor>(),
+        )
+        .expect("editor scope may add cells");
+    }
+
+    #[test]
+    fn editor_changes_allow_editing_code_cell_source() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        preview
+            .add_cell_after("cell-1", "code", None)
+            .expect("add cell");
+        let heads_before = preview.get_heads();
+        preview
+            .update_source("cell-1", "print(1)")
+            .expect("edit source");
+
+        validate_editor_notebook_changes(
+            &mut preview,
+            &heads_before,
+            std::iter::empty::<&ChangeActor>(),
+        )
+        .expect("editor scope may edit code cell source");
+    }
+
+    #[test]
+    fn editor_changes_reject_notebook_metadata_edits() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        let heads_before = preview.get_heads();
+        preview
+            .set_metadata("trust", "tampered")
+            .expect("set metadata");
+
+        assert!(
+            validate_editor_notebook_changes(
+                &mut preview,
+                &heads_before,
+                std::iter::empty::<&ChangeActor>(),
+            )
+            .is_err(),
+            "editor scope cannot change notebook metadata",
+        );
+    }
+
+    #[test]
+    fn editor_changes_reject_runtime_state_doc_id_writes() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        let heads_before = preview.get_heads();
+        preview
+            .set_runtime_state_doc_id("forged-runtime-doc")
+            .expect("forge runtime_state_doc_id");
+
+        assert!(
+            validate_editor_notebook_changes(
+                &mut preview,
+                &heads_before,
+                std::iter::empty::<&ChangeActor>(),
+            )
+            .is_err(),
+            "editor scope cannot repoint runtime_state_doc_id",
+        );
     }
 
     #[test]

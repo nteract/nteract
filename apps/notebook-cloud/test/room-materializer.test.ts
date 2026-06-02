@@ -130,10 +130,11 @@ describe("RoomHostHandle", () => {
     );
   });
 
-  it("rejects editor-scoped source edits to code cells", async () => {
+  it("allows editor-scoped source edits to code cells", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:owner");
     const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
+    const viewer = NotebookHandle.create_bootstrap("user:dev:carol/desktop:viewer");
 
     syncHostWithClient(host, "peer-owner", "user:dev:alice", true, true, owner);
     owner.add_cell(0, "code-cell", "code");
@@ -142,28 +143,36 @@ describe("RoomHostHandle", () => {
 
     syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
     editor.update_source("code-cell", "x = 2\n");
-    const message = editor.flush_local_changes();
-    assert.ok(message);
+    applyClientChangesToHost(host, "peer-editor", "user:dev:bob", true, false, editor);
 
-    assert.throws(
-      () =>
-        host.receive_peer_frame(
-          "peer-editor",
-          "user:dev:bob",
-          "editor",
-          false,
-          encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
-        ),
-      /cannot edit code or raw cells/,
-    );
+    syncHostWithClient(host, "peer-viewer", "user:dev:carol", false, false, viewer);
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.equal(cells[0].id, "code-cell");
+    assert.equal(cells[0].source, "x = 2\n");
   });
 
-  it("rejects editor-scoped structural NotebookDoc changes", async () => {
+  it("allows editor-scoped structural NotebookDoc changes", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
+    const viewer = NotebookHandle.create_bootstrap("user:dev:carol/desktop:viewer");
+
+    syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
+    editor.add_cell(0, "new-markdown", "markdown");
+    editor.update_source("new-markdown", "Editor created this\n");
+    applyClientChangesToHost(host, "peer-editor", "user:dev:bob", true, false, editor);
+
+    syncHostWithClient(host, "peer-viewer", "user:dev:carol", false, false, viewer);
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.equal(cells[0].id, "new-markdown");
+    assert.equal(cells[0].source, "Editor created this\n");
+  });
+
+  it("rejects editor-scoped notebook metadata changes", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
 
     syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
-    editor.add_cell(0, "new-markdown", "markdown");
+    editor.set_metadata("trust", "tampered");
     const message = editor.flush_local_changes();
     assert.ok(message);
 
@@ -176,7 +185,29 @@ describe("RoomHostHandle", () => {
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
-      /cannot add, remove, or reorder cells/,
+      /editor scope may only edit cells/,
+    );
+  });
+
+  it("rejects editor-scoped runtime_state_doc_id repointing", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
+
+    syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
+    editor.set_runtime_state_doc_id("forged-runtime-doc");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-editor",
+          "user:dev:bob",
+          "editor",
+          false,
+          encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+        ),
+      /editor scope may only edit cells/,
     );
   });
 

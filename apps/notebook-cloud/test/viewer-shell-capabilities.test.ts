@@ -45,7 +45,7 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
-test("cloud shell capabilities grant editor markdown writes without code, structure, execute, or package management", () => {
+test("cloud shell capabilities grant editors full cell and structure editing without execute or package management", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
@@ -54,8 +54,8 @@ test("cloud shell capabilities grant editor markdown writes without code, struct
   });
 
   assert.equal(capabilities.canEditMarkdown, true);
-  assert.equal(capabilities.canEditCells, false);
-  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.canEditCells, true);
+  assert.equal(capabilities.canEditStructure, true);
   assert.equal(capabilities.canRequestEdit, true);
   assert.equal(capabilities.canExecute, false);
   assert.equal(capabilities.canToggleCode, false);
@@ -134,7 +134,7 @@ test("cloud shell capabilities keep requested edit pending until the room grants
   assert.equal(capabilities.access.level, "viewer");
 });
 
-test("cloud shell capabilities reserve code-cell and structure edits for owners", () => {
+test("cloud shell capabilities grant owners full cell, structure, and sharing control", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner"),
     connectionScope: "owner",
