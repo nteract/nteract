@@ -89,8 +89,9 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*showStatus=\{false\}/);
   assert.match(
     sourceText,
-    /function shouldShowCloudIdentityControls[\s\S]*authState\.mode === "anonymous"[\s\S]*return showPrototypeDevControls;/,
+    /function shouldShowCloudIdentityControls[\s\S]*authState\.mode === "anonymous"[\s\S]*return showPrototypeDevControls && hasExplicitPrototypeDevAuthSearch\(search\);/,
   );
+  assert.match(sourceText, /function hasExplicitPrototypeDevAuthSearch/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
   assert.match(

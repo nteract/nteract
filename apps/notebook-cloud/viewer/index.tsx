@@ -1224,6 +1224,7 @@ function NotebookViewer({
   });
   const showCloudIdentityControls = shouldShowCloudIdentityControls({
     authState,
+    search: window.location.search,
     showPrototypeDevControls,
   });
   const rail = (
@@ -2065,15 +2066,23 @@ function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolea
 
 function shouldShowCloudIdentityControls({
   authState,
+  search,
   showPrototypeDevControls,
 }: {
   authState: CloudPrototypeAuthState;
+  search: string;
   showPrototypeDevControls: boolean;
 }): boolean {
   if (authState.mode === "anonymous") {
-    return showPrototypeDevControls;
+    return showPrototypeDevControls && hasExplicitPrototypeDevAuthSearch(search);
   }
   return true;
+}
+
+function hasExplicitPrototypeDevAuthSearch(search: string): boolean {
+  const params = new URLSearchParams(search);
+  const explicit = params.get("notebook_cloud_dev_auth") ?? params.get("dev_auth");
+  return explicit === "1" || explicit === "true";
 }
 
 function cloudAccountSessionDisplay({
