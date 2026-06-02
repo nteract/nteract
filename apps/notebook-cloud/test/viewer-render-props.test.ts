@@ -63,6 +63,32 @@ test("cloud viewer keeps theme resolution out of first-class notebook chrome", (
   assert.doesNotMatch(sourceText, /className="cloud-theme-toggle"/);
 });
 
+test("cloud home keeps prototype controls out of the primary auth surface", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssText = readFileSync(cssPath, "utf8");
+  const homeSource = sourceText.slice(
+    sourceText.indexOf("function CloudHomeView"),
+    sourceText.indexOf("function OidcCallbackView"),
+  );
+  const homePanelCss = cssText.slice(
+    cssText.indexOf(".cloud-home-panel"),
+    cssText.indexOf(".cloud-home-status"),
+  );
+
+  assert.match(homeSource, /homeStatusTitle[\s\S]*"Public viewer"/);
+  assert.match(homeSource, /className="cloud-home-layout"/);
+  assert.match(homeSource, /className="cloud-home-copy"/);
+  assert.doesNotMatch(homeSource, /showPrototypeDevControls/);
+  assert.doesNotMatch(homeSource, /className="cloud-home-scope"/);
+  assert.doesNotMatch(homeSource, /<select/);
+  assert.match(cssText, /\.cloud-home-layout/);
+  assert.doesNotMatch(cssText, /\.cloud-home-scope/);
+  assert.doesNotMatch(homePanelCss, /box-shadow/);
+  assert.doesNotMatch(homePanelCss, /border-radius/);
+});
+
 test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

@@ -419,16 +419,9 @@ function CloudNotebookProviders({
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
-  const [scope, setScope] = useState<ConnectionScope>(
-    authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
-  );
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
-  const showPrototypeDevControls = shouldShowPrototypeDevControls({
-    oidcConfigured: Boolean(authConfig.oidc),
-    hostname: window.location.hostname,
-    search: window.location.search,
-  });
+  const oidcConfigured = Boolean(authConfig.oidc);
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
@@ -442,7 +435,6 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
     try {
       setAuthAction("starting");
       prepareCloudOidcViewerLogin(window.localStorage);
-      setScope(NOTEBOOK_CLOUD_DEFAULT_SCOPE);
       const url = await beginOidcLogin(authConfig.oidc, {
         currentUrl: window.location.href,
         storage: window.localStorage,
@@ -461,77 +453,94 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   };
 
   const signedIn = authState.mode === "oidc";
+  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Public viewer";
+  const homeStatusDescription = signedIn
+    ? prototypeAuthSummary(authState)
+    : "Public notebooks stay readable without an account. Sign in when you need edit access or sharing controls.";
 
   return (
     <main className="cloud-home">
-      <div className="cloud-report-toolbar" aria-label="Notebook cloud entry controls">
-        <h1>nteract cloud notebooks</h1>
-      </div>
+      <header className="cloud-report-toolbar" aria-label="Notebook cloud entry controls">
+        <div className="cloud-home-title">
+          <span>nteract cloud notebooks</span>
+          <small>live documents for shared computation</small>
+        </div>
+      </header>
 
-      <section className="cloud-home-panel" aria-label="Notebook cloud sign-in">
-        <div className="cloud-home-status" data-mode={authState.mode}>
-          <KeyRound aria-hidden="true" />
-          <div>
-            <h2>{signedIn ? (authState.user ?? "Signed in") : "Sign in"}</h2>
-            <p>{prototypeAuthSummary(authState)}</p>
-          </div>
+      <section className="cloud-home-layout" aria-label="Notebook cloud entry">
+        <div className="cloud-home-copy">
+          <p>Cloud notebooks</p>
+          <h1>Stay in the document.</h1>
+          <span>
+            Public notebooks open calmly. Account controls appear only when you need to edit, share,
+            or renew access.
+          </span>
         </div>
 
-        {showPrototypeDevControls ? (
-          <label className="cloud-home-scope">
-            <span>Scope</span>
-            <select
-              value={scope}
-              onChange={(event) => setScope(event.target.value as ConnectionScope)}
-            >
-              <option value="editor">editor</option>
-              <option value="owner">owner</option>
-              <option value="runtime_peer">runtime_peer</option>
-              <option value="viewer">viewer</option>
-            </select>
-          </label>
-        ) : null}
-
-        {formError ? (
-          <div className="cloud-auth-form-error" role="alert">
-            {formError}
+        <section className="cloud-home-panel" aria-label="Notebook cloud sign-in">
+          <div className="cloud-home-status" data-mode={authState.mode}>
+            {signedIn ? <UserRound aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
+            <div>
+              <h2>{homeStatusTitle}</h2>
+              <p>{homeStatusDescription}</p>
+            </div>
           </div>
-        ) : null}
-        {authRenewal.kind !== "idle" ? (
-          <div
-            className="cloud-auth-form-error"
-            data-kind={authRenewal.kind === "failed" ? "error" : "info"}
-            role={authRenewal.kind === "failed" ? "alert" : "status"}
-          >
-            {authRenewal.message}
-          </div>
-        ) : null}
 
-        <div className="cloud-home-actions">
-          {signedIn ? (
-            <button
-              type="button"
-              onClick={() => {
-                clearCloudPrototypeDevAuth(window.localStorage);
-                refreshAuthState();
-              }}
-            >
-              <LogOut aria-hidden="true" />
-              Sign out
-            </button>
-          ) : (
-            <button type="button" disabled={authAction === "starting"} onClick={beginOidcAuth}>
-              <LogIn aria-hidden="true" />
-              {authAction === "starting" ? "Starting sign-in" : "Sign in with Anaconda"}
-            </button>
-          )}
-          {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
-            <button type="button" onClick={resetAuth}>
-              <RotateCcw aria-hidden="true" />
-              Reset
-            </button>
+          {formError ? (
+            <div className="cloud-auth-form-error" role="alert">
+              {formError}
+            </div>
           ) : null}
-        </div>
+          {authRenewal.kind !== "idle" ? (
+            <div
+              className="cloud-auth-form-error"
+              data-kind={authRenewal.kind === "failed" ? "error" : "info"}
+              role={authRenewal.kind === "failed" ? "alert" : "status"}
+            >
+              {authRenewal.message}
+            </div>
+          ) : null}
+
+          <div className="cloud-home-actions">
+            {signedIn ? (
+              <button
+                type="button"
+                onClick={() => {
+                  clearCloudPrototypeDevAuth(window.localStorage);
+                  refreshAuthState();
+                }}
+              >
+                <LogOut aria-hidden="true" />
+                Sign out
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={authAction === "starting" || !oidcConfigured}
+                onClick={beginOidcAuth}
+              >
+                <LogIn aria-hidden="true" />
+                {authAction === "starting"
+                  ? "Starting sign-in"
+                  : oidcConfigured
+                    ? "Sign in with Anaconda"
+                    : "Sign-in unavailable"}
+              </button>
+            )}
+            {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
+              <button type="button" onClick={resetAuth}>
+                <RotateCcw aria-hidden="true" />
+                Reset
+              </button>
+            ) : null}
+          </div>
+
+          {oidcConfigured ? null : (
+            <p className="cloud-home-note">
+              This host has no sign-in provider configured. Public notebooks can still be read.
+            </p>
+          )}
+        </section>
       </section>
     </main>
   );

@@ -235,15 +235,82 @@ body {
   display: grid;
   min-height: 100vh;
   grid-template-rows: auto 1fr;
-  gap: clamp(2rem, 8vh, 5rem);
-  padding-block: 1rem clamp(2rem, 10vh, 6rem);
+  background: var(--background);
 }
 
-.cloud-home .cloud-report-toolbar h1 {
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
+.cloud-home-title {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.cloud-home-title span,
+.cloud-home-title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-home-title span {
+  color: var(--foreground);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.cloud-home-title small {
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.75rem;
   line-height: 1.2;
+}
+
+.cloud-home-layout {
+  align-self: start;
+  justify-self: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, 0.9fr);
+  gap: clamp(1.25rem, 4vw, 3rem);
+  width: min(54rem, calc(100vw - clamp(2rem, 8vw, 6rem)));
+  padding-block: clamp(2rem, 10vh, 5rem);
+}
+
+.cloud-home-copy {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.cloud-home-copy p,
+.cloud-home-copy h1,
+.cloud-home-copy span {
+  margin: 0;
+}
+
+.cloud-home-copy p {
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.cloud-home-copy h1 {
+  max-width: 18ch;
+  color: var(--foreground);
+  font-size: 2.75rem;
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.cloud-home-copy span {
+  max-width: 32rem;
+  color: color-mix(in srgb, var(--foreground) 68%, transparent);
+  font-size: 1.125rem;
+  line-height: 1.55;
 }
 
 .cloud-home > .cloud-report-toolbar,
@@ -257,16 +324,12 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-home-panel {
-  align-self: start;
-  justify-self: center;
   display: grid;
-  gap: 1rem;
-  width: min(28rem, calc(100vw - 2rem));
-  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
-  border-radius: 8px;
-  padding: clamp(1rem, 4vw, 1.5rem);
-  background: color-mix(in srgb, var(--background) 97%, var(--foreground) 3%);
-  box-shadow: 0 12px 40px color-mix(in srgb, #000 10%, transparent);
+  align-self: start;
+  gap: 0.875rem;
+  border-block: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  padding-block: 1rem;
+  background: color-mix(in srgb, var(--background) 96%, var(--foreground) 4%);
 }
 
 .cloud-home-status {
@@ -306,23 +369,6 @@ main.flex > .cloud-report-toolbar {
   line-height: 1.4;
 }
 
-.cloud-home-scope {
-  display: grid;
-  gap: 0.375rem;
-  color: color-mix(in srgb, var(--foreground) 72%, transparent);
-  font-size: 0.8125rem;
-}
-
-.cloud-home-scope select {
-  min-width: 0;
-  height: 2.25rem;
-  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
-  border-radius: 6px;
-  padding-inline: 0.625rem;
-  color: var(--foreground);
-  background: var(--background);
-}
-
 .cloud-home-actions {
   display: flex;
   flex-wrap: wrap;
@@ -358,6 +404,37 @@ main.flex > .cloud-report-toolbar {
 .cloud-home-actions svg {
   width: 1rem;
   height: 1rem;
+}
+
+.cloud-home-note {
+  margin: 0;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 760px) {
+  .cloud-home-title small {
+    display: none;
+  }
+
+  .cloud-home-layout {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+    width: min(100%, calc(100vw - 2rem));
+    padding-block: 2rem;
+  }
+
+  .cloud-home-copy h1 {
+    max-width: 18ch;
+    font-size: 2.5rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .cloud-home-copy h1 {
+    font-size: 2.25rem;
+  }
 }
 
 .cloud-report-toolbar {
