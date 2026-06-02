@@ -67,6 +67,33 @@ describe("cloud viewer sharing client", () => {
     assert.equal(hasPublicViewerAccess([aclRow({ subject: "user:anaconda:alice" })]), false);
   });
 
+  it("keeps raw principals out of rows when profile display data is not available", () => {
+    const rows = buildCloudShareAccessRows({
+      acl: [
+        aclRow({
+          subject: "user:dev:fixture",
+          scope: "owner",
+          display: {
+            kind: "principal",
+            label: "user:dev:fixture",
+            principal: "user:dev:fixture",
+            email: null,
+          },
+        }),
+        aclRow({ subject: "user:anaconda:alice%40example.com", scope: "editor" }),
+      ],
+      invites: [],
+    });
+
+    assert.deepEqual(
+      rows.map((row) => [row.label, row.detail]),
+      [
+        ["fixture", "Dev identity"],
+        ["alice@example.com", "Anaconda identity"],
+      ],
+    );
+  });
+
   it("keeps share invite email validation in the viewer before owner mutations", () => {
     assert.equal(normalizeShareInviteEmail(" Bob@Example.COM "), "bob@example.com");
     assert.equal(normalizeShareInviteEmail("not an email"), null);

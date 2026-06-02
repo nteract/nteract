@@ -146,7 +146,11 @@ function labelForAcl(row: CloudNotebookAclRow): string {
   if (row.subject_kind === "public") {
     return row.display?.label || "Anyone with the link";
   }
-  return row.display?.label || row.subject;
+  const displayLabel = row.display?.label?.trim();
+  if (displayLabel && displayLabel !== row.subject) {
+    return displayLabel;
+  }
+  return labelForPrincipalSubject(row.subject);
 }
 
 function detailForAcl(row: CloudNotebookAclRow): string {
@@ -159,9 +163,36 @@ function detailForAcl(row: CloudNotebookAclRow): string {
     if (email && email !== display.label) {
       return email;
     }
-    return display.principal;
+    if (display.principal !== row.subject) {
+      return display.principal;
+    }
   }
-  return row.subject;
+  return detailForPrincipalSubject(row.subject);
+}
+
+function labelForPrincipalSubject(subject: string): string {
+  const decoded = decodePrincipalTail(subject);
+  return decoded || subject;
+}
+
+function detailForPrincipalSubject(subject: string): string {
+  if (subject.startsWith("user:dev:")) {
+    return "Dev identity";
+  }
+  if (subject.startsWith("user:anaconda:")) {
+    return "Anaconda identity";
+  }
+  return subject;
+}
+
+function decodePrincipalTail(subject: string): string | null {
+  const tail = subject.split(":").at(-1)?.trim();
+  if (!tail) return null;
+  try {
+    return decodeURIComponent(tail) || tail;
+  } catch {
+    return tail;
+  }
 }
 
 function compareAclRows(a: CloudNotebookAclRow, b: CloudNotebookAclRow): number {

@@ -10,6 +10,8 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Cloud,
+  CloudOff,
   Copy,
   Globe2,
   KeyRound,
@@ -35,7 +37,6 @@ import {
   NotebookIdentityBadge,
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
-  NotebookToolbarIdentity,
   NotebookToolbarFrame,
   notebookActorIdentityFromAccess,
   type NotebookEnvironmentManager,
@@ -101,7 +102,7 @@ import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
-  cloudViewerPresenceDisplay,
+  type CloudViewerPresenceConnection,
   type CloudViewerPresenceState,
   initialCloudViewerPresence,
   reduceCloudViewerConnection,
@@ -1240,8 +1241,18 @@ function NotebookViewer({
       <NotebookDocumentHeader
         capabilities={shellCapabilities}
         className="cloud-room-toolbar"
-        presence={<CloudPresenceStatus presence={presence} />}
-        authControls={<CloudNotebookSignInButton authConfig={authConfig} authState={authState} />}
+        presence={<CloudNotebookTitle notebookId={config.notebookId} />}
+        utilityControls={
+          <>
+            <CloudConnectionStatus connection={presence.connection} error={connectionError} />
+            <CloudPresenceStatus presence={presence} />
+          </>
+        }
+        authControls={
+          shouldShowCloudHeaderSignIn(authState) ? (
+            <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+          ) : null
+        }
         sharingControls={
           <CloudSharingControls
             aclEndpoint={config.aclEndpoint}
@@ -1259,7 +1270,15 @@ function NotebookViewer({
           />
         }
         identityControls={
-          <NotebookToolbarIdentity capabilities={shellCapabilities} variant="inline" />
+          <CloudAuthControls
+            authConfig={authConfig}
+            authState={authState}
+            capabilities={shellCapabilities}
+            connectionActorLabel={connectionActorLabel}
+            connectionError={connectionError}
+            connectionScope={connectionScope}
+            onAuthStateChange={refreshAuthState}
+          />
         }
       />
       <NotebookCommandToolbar
@@ -2003,8 +2022,87 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.handle.free();
 }
 
+function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolean {
+  return (
+    authState.mode === "anonymous" ||
+    authState.mode === "invalid" ||
+    authState.mode === "oidc_expired"
+  );
+}
+
+function CloudNotebookTitle({ notebookId }: { notebookId: string }) {
+  const title = cloudNotebookRouteTitle(notebookId);
+
+  return (
+    <div className="cloud-notebook-title" title={title.detail ?? title.label}>
+      <span>{title.label}</span>
+      {title.detail ? <small>{title.detail}</small> : null}
+    </div>
+  );
+}
+
+function cloudNotebookRouteTitle(notebookId: string): { label: string; detail: string | null } {
+  const pathParts = window.location.pathname.split("/").filter(Boolean);
+  const routeNotebookId = pathParts[0] === "n" ? pathParts[1] : null;
+  const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
+  const decodedSlug = safeDecodeRouteSegment(routeSlug);
+  const decodedNotebookId = safeDecodeRouteSegment(routeNotebookId) ?? notebookId;
+
+  if (decodedSlug) {
+    return {
+      label: decodedSlug,
+      detail: decodedNotebookId,
+    };
+  }
+
+  return {
+    label: decodedNotebookId,
+    detail: "cloud notebook",
+  };
+}
+
+function safeDecodeRouteSegment(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value).trim() || null;
+  } catch {
+    return value.trim() || null;
+  }
+}
+
+function CloudConnectionStatus({
+  connection,
+  error,
+}: {
+  connection: CloudViewerPresenceConnection;
+  error: string | null;
+}) {
+  const connected = connection === "connected" && !error;
+  const connecting = connection === "connecting" && !error;
+  const label = connected ? "Live" : connecting ? "Joining" : "Reconnecting";
+  const title = connected
+    ? "Connected to the notebook room"
+    : connecting
+      ? "Joining the notebook room"
+      : error
+        ? `Reconnecting to the notebook room: ${error}`
+        : "Reconnecting to the notebook room";
+  const Icon = connected || connecting ? Cloud : CloudOff;
+
+  return (
+    <span
+      className="cloud-connection-status"
+      data-state={connected ? "live" : "waiting"}
+      title={title}
+    >
+      <Icon aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
 function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState }) {
-  const presenceDisplay = cloudViewerPresenceDisplay(presence);
+  const presenceDisplay = cloudViewerRoomPresenceDisplay(presence);
 
   return (
     <NotebookPresenceStatus
@@ -2014,6 +2112,33 @@ function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState 
       variant="inline"
     />
   );
+}
+
+function cloudViewerRoomPresenceDisplay(state: CloudViewerPresenceState): {
+  label: string;
+  title: string;
+  connected: boolean;
+} {
+  if (state.roomPeerCount === null) {
+    return {
+      label: "Room",
+      title: "Room participants will appear after connection",
+      connected: false,
+    };
+  }
+
+  const count = Math.max(1, state.roomPeerCount);
+  const readerTitle =
+    count === 1
+      ? "1 participant is in this notebook"
+      : `${count} participants are in this notebook`;
+  const selfTitle = state.ownPeerLabel ? `You are ${state.ownPeerLabel}` : null;
+
+  return {
+    label: count === 1 ? "1 here now" : `${count} here now`,
+    title: selfTitle ? `${readerTitle}; ${selfTitle}` : readerTitle,
+    connected: state.connection === "connected",
+  };
 }
 
 function appendEndpointPathSegment(endpoint: string, segment: string): string {

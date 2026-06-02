@@ -25,8 +25,10 @@ import { useState } from "react";
 import {
   createNotebookInteractionModeProjection,
   NotebookCommandToolbar,
+  NotebookDocumentHeader,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookToolbarFrame,
   NotebookEditModeButton,
   NotebookIdentityBadge,
   NotebookPackageSummaryPanel,
@@ -200,7 +202,7 @@ export function CloudNotebookShellExample() {
               scenario={scenario}
             />
           }
-          toolbarClassName="border-b bg-background/95 backdrop-blur"
+          toolbarClassName="bg-background/95 backdrop-blur"
           toolbarLabel="Cloud notebook session"
           rail={rail}
           capabilities={shellCapabilities}
@@ -306,7 +308,7 @@ function CloudNotebookChrome({
   scenario: ElementsNotebookScenario;
 }) {
   return (
-    <div className="flex min-w-0 flex-col" data-slot="cloud-notebook-chrome">
+    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background/95 supports-backdrop-filter:bg-background/80">
       <CloudAppToolbar
         actor={actor}
         connection={connection}
@@ -316,7 +318,7 @@ function CloudNotebookChrome({
         scenario={scenario}
       />
       <CloudNotebookToolbar mode={mode} scenario={scenario} />
-    </div>
+    </NotebookToolbarFrame>
   );
 }
 
@@ -339,28 +341,37 @@ function CloudAppToolbar({
   const effectiveCapabilities = withInteractionProjection(scenario.capabilities, interaction);
 
   return (
-    <div
-      className="flex min-h-14 min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border/70 px-4 py-2"
-      data-slot="cloud-app-toolbar"
-    >
-      <div className="flex min-w-0 flex-1 basis-56 items-center gap-3">
-        <CloudPresence people={people} compact={false} />
-        <CloudConnectionPill state={connection} compact={false} />
-      </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
-        {scenario.capabilities.canManageSharing ? <CloudShareMenu compact={false} /> : null}
+    <NotebookDocumentHeader
+      capabilities={effectiveCapabilities}
+      className="min-h-14 border-b border-border/70 px-4 py-2"
+      presence={<CloudDocumentTitle title="MathNet topic visualization" />}
+      utilityControls={
+        <>
+          <CloudConnectionPill state={connection} compact />
+          <CloudPresence people={people} compact />
+        </>
+      }
+      sharingControls={<CloudShareMenu compact={false} />}
+      editControls={
         <CloudModeToggle
           compact={false}
           interaction={interaction}
           mode={mode}
           onModeChange={onModeChange}
         />
-        {scenario.capabilities.auth.canSignIn ||
-        scenario.capabilities.auth.canUseAuthenticatedIdentity ||
-        scenario.capabilities.auth.needsAttention ? (
-          <CloudAccountButton actor={actor} capabilities={effectiveCapabilities} compact={false} />
-        ) : null}
-      </div>
+      }
+      identityControls={<CloudAccountButton actor={actor} capabilities={effectiveCapabilities} />}
+    />
+  );
+}
+
+function CloudDocumentTitle({ title }: { title: string }) {
+  return (
+    <div className="grid min-w-0 text-left" data-slot="cloud-document-title">
+      <span className="truncate text-sm font-semibold text-foreground">{title}</span>
+      <span className="hidden truncate text-[11px] leading-4 text-muted-foreground sm:block">
+        topic-viz
+      </span>
     </div>
   );
 }
@@ -393,7 +404,6 @@ function CloudNotebookToolbar({
         onRunAllCells={noop}
         onRestartAndRunAll={noop}
         onTogglePackages={noop}
-        className="h-12 px-4"
       />
     </div>
   );
@@ -422,18 +432,20 @@ function CloudStatePreview({
       role="toolbar"
       aria-label="Cloud notebook state"
     >
-      <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5">
-        <CloudPresence people={people} compact />
-        <span className="h-4 w-px bg-border/70" aria-hidden="true" />
-        <CloudConnectionPill state={connection} compact />
-        {scenario.capabilities.canManageSharing ? <CloudShareMenu compact /> : null}
-        <CloudModeToggle compact={false} interaction={interaction} mode={mode} />
-        {scenario.capabilities.auth.canSignIn ||
-        scenario.capabilities.auth.canUseAuthenticatedIdentity ||
-        scenario.capabilities.auth.needsAttention ? (
-          <CloudAccountButton actor={actor} capabilities={effectiveCapabilities} compact />
-        ) : null}
-      </div>
+      <NotebookDocumentHeader
+        capabilities={effectiveCapabilities}
+        className="min-h-11 px-3 py-1.5"
+        presence={<CloudDocumentTitle title={scenario.title} />}
+        utilityControls={
+          <>
+            <CloudConnectionPill state={connection} compact />
+            <CloudPresence people={people} compact />
+          </>
+        }
+        sharingControls={<CloudShareMenu compact />}
+        editControls={<CloudModeToggle compact interaction={interaction} mode={mode} />}
+        identityControls={<CloudAccountButton actor={actor} capabilities={effectiveCapabilities} />}
+      />
       <div className="[&_[data-slot=notebook-command-toolbar]]:h-9 [&_[data-slot=notebook-command-toolbar]]:px-3">
         <CloudNotebookToolbar mode={mode} scenario={scenario} />
       </div>
@@ -459,7 +471,7 @@ function CloudPresence({
       variant="inline"
       className={cn(
         "px-1",
-        compact ? "max-w-[min(18rem,54vw)]" : "max-w-[min(18rem,42vw)]",
+        compact ? "max-w-[min(8rem,24vw)]" : "max-w-[min(12rem,28vw)]",
         !hasPeers && "text-muted-foreground",
       )}
     />
@@ -1166,11 +1178,9 @@ function withInteractionProjection(
 function CloudAccountButton({
   actor,
   capabilities,
-  compact,
 }: {
   actor: NotebookActorIdentity;
   capabilities: NotebookShellCapabilities;
-  compact: boolean;
 }) {
   if (actor.kind === "public") {
     return (
@@ -1179,7 +1189,7 @@ function CloudAccountButton({
         className="inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70"
       >
         <LogIn className="size-3.5" aria-hidden="true" />
-        <span className={cn(compact && "sr-only")}>Sign in</span>
+        <span>Sign in</span>
       </button>
     );
   }
@@ -1194,7 +1204,7 @@ function CloudAccountButton({
         actor={actor}
         variant="inline"
         showDetail={false}
-        className={cn("max-w-full", compact && "max-w-16")}
+        className="max-w-full"
       />
       <span className="sr-only">{capabilities.access.level} account</span>
     </button>

@@ -60,7 +60,11 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.mode, "dev");
     assert.equal(auth.user, "alice");
     assert.equal(auth.requestedScope, "editor");
-    assert.deepEqual(auth.headers, { "x-notebook-cloud-dev-token": "secret" });
+    assert.deepEqual(auth.headers, {
+      "x-notebook-cloud-dev-token": "secret",
+      "X-User": "alice",
+      "X-Scope": "editor",
+    });
     assert.deepEqual(auth.protocols, ["nteract-dev-token.c2VjcmV0", "nteract.v4"]);
   });
 
@@ -95,10 +99,14 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.user, "Alice");
     assert.equal(auth.user, null);
     assert.equal(auth.requestedScope, "editor");
-    assert.deepEqual(auth.headers, { Authorization: `Bearer ${accessToken}` });
+    assert.deepEqual(auth.headers, {
+      Authorization: `Bearer ${accessToken}`,
+      "X-Scope": "editor",
+    });
     assert.deepEqual(auth.protocols, [`nteract-bearer.${base64Url(accessToken)}`, "nteract.v4"]);
     assert.deepEqual(cloudHttpHeadersFromPrototypeAuthState(state), {
       Authorization: `Bearer ${accessToken}`,
+      "X-Scope": "editor",
     });
   });
 

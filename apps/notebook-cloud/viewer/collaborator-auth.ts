@@ -196,10 +196,17 @@ export function cloudHttpHeadersFromPrototypeAuthState(
   state: CloudPrototypeAuthState,
 ): Record<string, string> {
   if (state.mode === "dev" && state.token) {
-    return { [DEV_AUTH_TOKEN_HEADER]: state.token };
+    return {
+      [DEV_AUTH_TOKEN_HEADER]: state.token,
+      "X-User": state.user ?? "browser-editor",
+      "X-Scope": state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+    };
   }
   if (state.mode === "oidc" && state.token) {
-    return { Authorization: `Bearer ${state.token}` };
+    return {
+      Authorization: `Bearer ${state.token}`,
+      "X-Scope": state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+    };
   }
   return {};
 }
