@@ -66,6 +66,8 @@ test("cloud viewer keeps theme resolution out of first-class notebook chrome", (
 test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssText = readFileSync(cssPath, "utf8");
 
   assert.match(sourceText, /NotebookCommandToolbar,/);
   assert.match(sourceText, /NotebookDocumentHeader,/);
@@ -89,6 +91,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*showStatus=\{false\}/);
   assert.match(
     sourceText,
+    /<UserRound className="cloud-auth-identity-icon" aria-hidden="true" \/>/,
+  );
+  assert.match(
+    sourceText,
     /function shouldShowCloudIdentityControls[\s\S]*authState\.mode === "anonymous"[\s\S]*return showPrototypeDevControls && hasExplicitPrototypeDevAuthSearch\(search\);/,
   );
   assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
@@ -100,6 +106,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(
     sourceText,
     /function CloudPresenceStatus[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);[\s\S]*if \(!presenceDisplay\.connected\) \{[\s\S]*return null;/,
+  );
+  assert.match(cssText, /@media \(max-width: 360px\) \{[\s\S]*cloud-auth-identity-icon/);
+  assert.match(
+    cssText,
+    /cloud-auth-identity-summary \.cloud-auth-identity-badge > span[\s\S]*display: none;/,
   );
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
   assert.doesNotMatch(sourceText, /label: "live"/);
