@@ -255,7 +255,10 @@ function buildStreamPreview(text: string): {
 } {
   const lines = splitLines(text);
   const lineCount = lines.length;
-  const isLong = lineCount > STREAM_PREVIEW_LINE_LIMIT || text.length > STREAM_PREVIEW_CHAR_LIMIT;
+  const canFoldLines = lineCount > STREAM_PREVIEW_HEAD_LINES + STREAM_PREVIEW_TAIL_LINES;
+  const isLong =
+    canFoldLines &&
+    (lineCount > STREAM_PREVIEW_LINE_LIMIT || text.length > STREAM_PREVIEW_CHAR_LIMIT);
 
   if (!isLong) {
     return { lineCount, isLong, headText: text, tailText: "", omittedLines: 0 };

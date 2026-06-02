@@ -257,6 +257,19 @@ describe("AnsiStreamOutput", () => {
     expect(screen.getByText(/vim-screen-line-119/)).toBeInTheDocument();
   });
 
+  it("does not duplicate short-line streams that exceed the character threshold", () => {
+    const text = Array.from({ length: 5 }, (_, index) => `wide-line-${index}-`.repeat(900)).join(
+      "\n",
+    );
+
+    const { container } = render(<AnsiStreamOutput text={text} streamName="stdout" />);
+
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("[data-slot='ansi-stream-fold']")).toBeNull();
+    const renderedText = container.textContent ?? "";
+    expect(renderedText.match(/wide-line-/g)?.length).toBe(5 * 900);
+  });
+
   it("collapses long stdout streams with a head and tail preview", () => {
     const text = Array.from({ length: 360 }, (_, index) => `line-${index}`).join("\n");
 
