@@ -19,7 +19,7 @@ env:
 jobs:
   changes:
     name: Detect source changes
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       source_changed: ${{ steps.filter.outputs.source }}
     steps:
@@ -61,7 +61,7 @@ jobs:
     name: Lint & Format
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -98,7 +98,7 @@ jobs:
     name: NSIS Bootstrap Syntax
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -118,7 +118,7 @@ jobs:
     name: Windows (clippy)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -153,7 +153,7 @@ jobs:
     name: WASM + Deno Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -189,7 +189,7 @@ jobs:
     name: Build shared UI artifacts
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -236,7 +236,7 @@ jobs:
     name: JS Tests & Benchmarks
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -265,7 +265,7 @@ jobs:
     name: Browser E2E (Playwright)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -413,7 +413,7 @@ jobs:
     name: Linux Rust Clippy
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -448,7 +448,7 @@ jobs:
     name: Linux Rust Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -477,7 +477,7 @@ jobs:
     name: Linux runtimed-node
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -521,7 +521,7 @@ jobs:
       - linux-rust-tests
       - linux-runtimed-node
     if: always() && needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - name: Check shard results
         run: |
@@ -900,7 +900,7 @@ jobs:
   # Python daemon integration tests — builds its own runtimed binary
   runtimed-py-integration:
     name: runtimed-py Integration Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
     steps:
@@ -1014,7 +1014,7 @@ jobs:
     name: Python Unit Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
