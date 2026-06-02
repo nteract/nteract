@@ -1163,6 +1163,10 @@ function NotebookViewer({
     setRailCollapsed(false);
     setActiveRailPanel("packages");
   }, [activeRailPanel, railCollapsed]);
+  const canAcceptCellMutations =
+    Boolean(connectionPeerId) &&
+    !connectionError &&
+    (status.kind === "ready" || status.kind === "empty");
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
@@ -1171,8 +1175,16 @@ function NotebookViewer({
         connectionActorLabel,
         hasCodeCells: codeCellCount > 0,
         selectedMode: selectedInteractionMode,
+        canAcceptCellMutations,
       }),
-    [authState, codeCellCount, connectionActorLabel, connectionScope, selectedInteractionMode],
+    [
+      authState,
+      canAcceptCellMutations,
+      codeCellCount,
+      connectionActorLabel,
+      connectionScope,
+      selectedInteractionMode,
+    ],
   );
   const canWriteCellSource = useCallback(
     (cellId: string) => {
@@ -1395,6 +1407,7 @@ function NotebookViewer({
             cellIds={notebookCellIds}
             isLoading={notebookViewIsLoading}
             capabilities={shellCapabilities}
+            canAcceptCellMutations={canAcceptCellMutations}
             runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
             sessionRuntimeState={connectionError ? "error" : "ready"}
             onFocusCell={setFocusedCellId}

@@ -16,6 +16,12 @@ export interface CloudNotebookShellCapabilityInput {
   hasCodeCells: boolean;
   selectedMode?: NotebookInteractionMode;
   /**
+   * Whether the hosted live room is connected and the NotebookDoc materialized
+   * enough to accept local cell/source mutations. Access can grant editing
+   * before the local host is ready to safely write.
+   */
+  canAcceptCellMutations?: boolean;
+  /**
    * Whether an execution runtime is attached to the room. The hosted prototype
    * has no kernel provider yet, so this defaults false and run controls stay
    * hidden. Flip it on once a runtime peer can execute the room's cells.
@@ -29,6 +35,7 @@ export function cloudNotebookShellCapabilities({
   connectionActorLabel = null,
   hasCodeCells,
   selectedMode = "view",
+  canAcceptCellMutations = true,
   runtimeAvailable = false,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = cloudConnectionAccessLevel(connectionScope);
@@ -49,9 +56,9 @@ export function cloudNotebookShellCapabilities({
       canEditStructure: accessLevel === "editor" || accessLevel === "owner",
     },
     hostSupport: {
-      canEditMarkdown: true,
-      canEditCells: true,
-      canEditStructure: true,
+      canEditMarkdown: canAcceptCellMutations,
+      canEditCells: canAcceptCellMutations,
+      canEditStructure: canAcceptCellMutations,
       canRequestEdit: authState.mode === "dev" || authState.mode === "oidc",
     },
   });
