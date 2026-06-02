@@ -55,8 +55,13 @@ function subscribeToReducedMotion(enabled: boolean, onStoreChange: () => void): 
   }
 
   const mediaQuery = window.matchMedia(REDUCED_MOTION_QUERY);
-  mediaQuery.addEventListener?.("change", onStoreChange);
-  return () => mediaQuery.removeEventListener?.("change", onStoreChange);
+  if (typeof mediaQuery.addEventListener === "function") {
+    mediaQuery.addEventListener("change", onStoreChange);
+    return () => mediaQuery.removeEventListener("change", onStoreChange);
+  }
+
+  mediaQuery.addListener?.(onStoreChange);
+  return () => mediaQuery.removeListener?.(onStoreChange);
 }
 
 function usePrefersReducedMotion(enabled: boolean): boolean {
@@ -67,36 +72,6 @@ function usePrefersReducedMotion(enabled: boolean): boolean {
   const getSnapshot = useCallback(() => readPrefersReducedMotion(enabled), [enabled]);
 
   return useSyncExternalStore(subscribe, getSnapshot, () => false);
-}
-
-function useMonotonicAnimationClock(enabled: boolean): number {
-  const prefersReducedMotion = usePrefersReducedMotion(enabled);
-  const [now, setNow] = useState(() => (enabled ? getMonotonicNow() : 0));
-
-  useEffect(() => {
-    if (!enabled) return;
-
-    setNow(getMonotonicNow());
-
-    if (
-      prefersReducedMotion ||
-      typeof window === "undefined" ||
-      typeof window.requestAnimationFrame !== "function"
-    ) {
-      return;
-    }
-
-    let frameId = 0;
-    const tick = (timestamp: number) => {
-      setNow(timestamp);
-      frameId = window.requestAnimationFrame(tick);
-    };
-
-    frameId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(frameId);
-  }, [enabled, prefersReducedMotion]);
-
-  return prefersReducedMotion ? 0 : now;
 }
 
 function runningSignalWavePath(now: number): string {
@@ -251,6 +226,55 @@ function useRunningSignalPhase(isExecuting: boolean): RunningSignalPhase {
   return phase;
 }
 
+function RunningSignalWave({ active }: { active: boolean }) {
+  const pathRef = useRef<SVGPathElement | null>(null);
+  const lastPathRef = useRef(runningSignalWavePath(getMonotonicNow()));
+  const prefersReducedMotion = usePrefersReducedMotion(active);
+
+  useEffect(() => {
+    if (!active || prefersReducedMotion) return;
+
+    const updatePath = (timestamp: number) => {
+      const nextPath = runningSignalWavePath(timestamp);
+      lastPathRef.current = nextPath;
+      pathRef.current?.setAttribute("d", nextPath);
+    };
+
+    updatePath(getMonotonicNow());
+
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      return;
+    }
+
+    let frameId = 0;
+    const tick = (timestamp: number) => {
+      updatePath(timestamp);
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [active, prefersReducedMotion]);
+
+  return (
+    <svg
+      className="absolute inset-y-0 left-0 h-full w-full"
+      viewBox={`0 0 ${RUNNING_SIGNAL_WAVE_WIDTH} ${RUNNING_SIGNAL_WAVE_HEIGHT}`}
+      preserveAspectRatio="none"
+    >
+      <path
+        ref={pathRef}
+        d={prefersReducedMotion ? runningSignalWavePath(0) : lastPathRef.current}
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.4"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
+}
+
 function ExecutionBoundaryRule({
   state,
   runningSignalPhase,
@@ -264,9 +288,6 @@ function ExecutionBoundaryRule({
 }) {
   const showRunningSignal =
     state === "running" && (runningSignalPhase === "active" || runningSignalPhase === "settling");
-  const runningSignalNow = useMonotonicAnimationClock(
-    showRunningSignal && runningSignalPhase === "active",
-  );
 
   if (state === "running") {
     return (
@@ -292,20 +313,7 @@ function ExecutionBoundaryRule({
             )}
             aria-hidden="true"
           >
-            <svg
-              className="absolute inset-y-0 left-0 h-full w-full"
-              viewBox={`0 0 ${RUNNING_SIGNAL_WAVE_WIDTH} ${RUNNING_SIGNAL_WAVE_HEIGHT}`}
-              preserveAspectRatio="none"
-            >
-              <path
-                d={runningSignalWavePath(runningSignalNow)}
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeWidth="1.4"
-                vectorEffect="non-scaling-stroke"
-              />
-            </svg>
+            <RunningSignalWave active={runningSignalPhase === "active"} />
           </span>
         ) : null}
       </div>
