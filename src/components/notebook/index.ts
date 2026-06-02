@@ -143,6 +143,35 @@ export {
   type NotebookFindMatch,
 } from "./state/cell-ui-state";
 export {
+  deleteExecutions,
+  getCellExecutionId,
+  getCellIdForExecutionId,
+  getExecutionById,
+  getNotebookQueueProjection,
+  resetNotebookExecutions,
+  setCellExecutionPointer,
+  setExecution,
+  setNotebookQueueProjection,
+  useCellExecutionId,
+  useExecution,
+  useNotebookQueueProjection,
+  type ExecutionSnapshot,
+  type NotebookQueueProjectionSnapshot,
+} from "./state/execution-store";
+export {
+  deleteOutput,
+  deleteOutputs,
+  getCellOutputsSnapshot,
+  getOutputById,
+  resetNotebookOutputs,
+  setOutput,
+  subscribeOutputsVersion,
+  useCellOutputs,
+  useOutput,
+  useOutputStructureVersion,
+  useOutputsVersion,
+} from "./state/output-store";
+export {
   createNotebookViewModelFromNotebookCells,
   notebookCellToViewCell,
   useNotebookViewModel,

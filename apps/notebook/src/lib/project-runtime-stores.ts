@@ -31,13 +31,13 @@ import {
   setCellExecutionPointer,
   setExecution,
   setNotebookQueueProjection,
-} from "./notebook-executions";
+} from "@/components/notebook/state/execution-store";
 import {
   deleteOutputs,
   getOutputById,
   resetNotebookOutputs,
   setOutput,
-} from "./notebook-outputs";
+} from "@/components/notebook/state/output-store";
 
 /**
  * Apply the cross-document execution materialized-view changeset emitted by

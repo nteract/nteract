@@ -43,7 +43,7 @@ import {
   getCellOutputsSnapshot,
   subscribeOutputsVersion,
   useOutputStructureVersion,
-} from "../lib/notebook-outputs";
+} from "@/components/notebook/state/output-store";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CodeCell, type HiddenGroupCellSummary } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";

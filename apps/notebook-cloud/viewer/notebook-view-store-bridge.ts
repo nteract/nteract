@@ -5,8 +5,8 @@ import {
   setCellExecutionPointer,
   setExecution,
   setNotebookQueueProjection,
-} from "../../notebook/src/lib/notebook-executions";
-import { deleteOutputs, setOutput } from "../../notebook/src/lib/notebook-outputs";
+} from "@/components/notebook/state/execution-store";
+import { deleteOutputs, setOutput } from "@/components/notebook/state/output-store";
 import type { JupyterOutput, NotebookCell } from "../../notebook/src/types";
 import type { ResolvedCell } from "./render-resolution";
 

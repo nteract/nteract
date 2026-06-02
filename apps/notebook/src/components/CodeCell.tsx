@@ -35,9 +35,9 @@ import {
   getCellIdForExecutionId,
   useCellExecutionId,
   useExecution,
-} from "../lib/notebook-executions";
+} from "@/components/notebook/state/execution-store";
 import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
-import { useCellOutputs } from "../lib/notebook-outputs";
+import { useCellOutputs } from "@/components/notebook/state/output-store";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { tabCompletionKeymap } from "../lib/tab-completion";

@@ -79,7 +79,7 @@ import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
-import { useNotebookQueueProjection } from "./lib/notebook-executions";
+import { useNotebookQueueProjection } from "@/components/notebook/state/execution-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
 import { useDetectRuntime, useNotebookMetadata, usePixiDeps } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
