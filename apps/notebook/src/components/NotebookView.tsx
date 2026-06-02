@@ -376,8 +376,7 @@ function NotebookViewContent({
   const tailScrollFrameRef = useRef<number | null>(null);
   const canEditCodeCellSources = capabilities?.canEditCells ?? !readOnly;
   const canEditMarkdownSources = capabilities?.canEditMarkdown ?? !readOnly;
-  const canMutateCells =
-    canAcceptCellMutations && (capabilities?.canEditStructure ?? !readOnly);
+  const canMutateCells = canAcceptCellMutations && (capabilities?.canEditStructure ?? !readOnly);
   const canExecuteCells = capabilities?.canExecute ?? !readOnly;
 
   // Read transient UI state from the store instead of props
