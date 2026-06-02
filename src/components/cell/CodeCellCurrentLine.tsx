@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { cn } from "@/lib/utils";
 
 export interface CodeCellCurrentLineProps {
@@ -33,31 +41,32 @@ function getMonotonicNow(): number {
   return typeof performance === "undefined" ? 0 : performance.now();
 }
 
+function readPrefersReducedMotion(enabled: boolean): boolean {
+  if (!enabled || typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+
+  return window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
+
+function subscribeToReducedMotion(enabled: boolean, onStoreChange: () => void): () => void {
+  if (!enabled || typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return () => {};
+  }
+
+  const mediaQuery = window.matchMedia(REDUCED_MOTION_QUERY);
+  mediaQuery.addEventListener?.("change", onStoreChange);
+  return () => mediaQuery.removeEventListener?.("change", onStoreChange);
+}
+
 function usePrefersReducedMotion(enabled: boolean): boolean {
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => {
-    if (!enabled || typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return false;
-    }
-    return window.matchMedia(REDUCED_MOTION_QUERY).matches;
-  });
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => subscribeToReducedMotion(enabled, onStoreChange),
+    [enabled],
+  );
+  const getSnapshot = useCallback(() => readPrefersReducedMotion(enabled), [enabled]);
 
-  useEffect(() => {
-    if (!enabled) {
-      setPrefersReducedMotion(false);
-      return;
-    }
-
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-
-    const mediaQuery = window.matchMedia(REDUCED_MOTION_QUERY);
-    const handleChange = () => setPrefersReducedMotion(mediaQuery.matches);
-
-    handleChange();
-    mediaQuery.addEventListener?.("change", handleChange);
-    return () => mediaQuery.removeEventListener?.("change", handleChange);
-  }, [enabled]);
-
-  return prefersReducedMotion;
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 function useMonotonicAnimationClock(enabled: boolean): number {
