@@ -110,7 +110,7 @@ import {
 import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { materializeCloudNotebookView } from "./cloud-view-model";
-import { CloudNotebookNotices } from "./notices";
+import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   buildCloudShareAccessRows,
@@ -1300,7 +1300,14 @@ function NotebookViewer({
       />
     </div>
   ) : null;
-  const notices = (
+  const hasNotices = cloudNotebookHasNotices({
+    authState,
+    authRenewal,
+    connectionError,
+    status,
+    diagnostics: authDiagnostics,
+  });
+  const notices = hasNotices ? (
     <CloudNotebookNotices
       authState={authState}
       authRenewal={authRenewal}
@@ -1309,7 +1316,7 @@ function NotebookViewer({
       diagnostics={authDiagnostics}
       onResetAuth={resetPrototypeAuth}
     />
-  );
+  ) : null;
 
   return (
     <NotebookDocumentShell

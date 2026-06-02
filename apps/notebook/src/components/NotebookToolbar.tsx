@@ -158,6 +158,15 @@ export function NotebookToolbar({
     await navigator.clipboard.writeText(condaEnvCreateCommand);
     setCondaCommandCopied(true);
   }, [condaEnvCreateCommand]);
+  const showDenoInstallNotice =
+    runtime === "deno" && kernelStatus === KERNEL_STATUS.ERROR && Boolean(kernelErrorMessage);
+  const showIpykernelErrorNotice =
+    runtime === "python" &&
+    lifecycle.lifecycle === "Error" &&
+    Boolean(envSource) &&
+    hasToolbarHandledIpykernelError;
+  const hasNotebookToolbarNotices =
+    showDenoInstallNotice || showIpykernelErrorNotice || showCondaEnvYmlMissingBanner;
 
   // Derive env manager label for the runtime pill (e.g. "uv", "conda", "pixi")
   const envManager: EnvBadgeVariant | null =
@@ -189,10 +198,10 @@ export function NotebookToolbar({
     </HoverCard>
   ) : null;
 
-  const notices = (
+  const notices = hasNotebookToolbarNotices ? (
     <>
       {/* Deno install prompt */}
-      {runtime === "deno" && kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage && (
+      {showDenoInstallNotice && kernelErrorMessage && (
         <NotebookNotice
           tone="warning"
           icon={<Info className="h-3.5 w-3.5" />}
@@ -211,10 +220,8 @@ export function NotebookToolbar({
           mechanisms (pixi.toml scan vs prepared-env scan), but the UX is the
           same shape: explain where ipykernel should go for the current env,
           then tell the user to restart. */}
-      {runtime === "python" &&
-        lifecycle.lifecycle === "Error" &&
+      {showIpykernelErrorNotice &&
         envSource &&
-        hasToolbarHandledIpykernelError &&
         renderIpykernelErrorPrompt({
           envSource,
           errorReason,
@@ -232,7 +239,7 @@ export function NotebookToolbar({
         />
       )}
     </>
-  );
+  ) : null;
 
   return (
     <NotebookToolbarFrame notices={notices}>

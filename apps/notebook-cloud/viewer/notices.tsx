@@ -27,6 +27,23 @@ export interface CloudNotebookNoticesProps {
   onResetAuth: () => void;
 }
 
+export function cloudNotebookHasNotices({
+  authState,
+  authRenewal,
+  connectionError,
+  status,
+  diagnostics,
+}: Omit<CloudNotebookNoticesProps, "onResetAuth">): boolean {
+  return (
+    authState.mode === "invalid" ||
+    authState.mode === "oidc_expired" ||
+    authRenewal.kind !== "idle" ||
+    Boolean(connectionError) ||
+    Boolean(diagnostics) ||
+    status.kind !== "ready"
+  );
+}
+
 export function CloudNotebookNotices({
   authState,
   authRenewal,
@@ -35,15 +52,15 @@ export function CloudNotebookNotices({
   diagnostics,
   onResetAuth,
 }: CloudNotebookNoticesProps) {
-  const hasNotices =
-    authState.mode === "invalid" ||
-    authState.mode === "oidc_expired" ||
-    authRenewal.kind !== "idle" ||
-    Boolean(connectionError) ||
-    Boolean(diagnostics) ||
-    status.kind !== "ready";
-
-  if (!hasNotices) {
+  if (
+    !cloudNotebookHasNotices({
+      authState,
+      authRenewal,
+      connectionError,
+      status,
+      diagnostics,
+    })
+  ) {
     return null;
   }
 

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
-import { CloudNotebookNotices } from "../viewer/notices";
+import { CloudNotebookNotices, cloudNotebookHasNotices } from "../viewer/notices";
 
 globalThis.React = React;
 
@@ -19,6 +19,16 @@ function authState(mode: CloudPrototypeAuthState["mode"]): CloudPrototypeAuthSta
 }
 
 test("cloud notebook notices render nothing for ready anonymous viewers", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      status: { kind: "ready", message: "Ready" },
+    }),
+    false,
+  );
+
   const html = renderToStaticMarkup(
     React.createElement(CloudNotebookNotices, {
       authState: authState("anonymous"),
