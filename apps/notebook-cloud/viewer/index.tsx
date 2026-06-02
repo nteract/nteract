@@ -10,6 +10,8 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AlertCircle,
+  ChevronDown,
   Cloud,
   CloudOff,
   Copy,
@@ -2041,7 +2043,10 @@ function CloudAuthControls({
           ))}
         </div>
         <details className="cloud-auth-technical">
-          <summary>Technical details</summary>
+          <summary>
+            <span>Technical details</span>
+            <ChevronDown aria-hidden="true" />
+          </summary>
           <dl className="cloud-auth-diagnostics" aria-label="Cloud account diagnostics">
             {diagnostics.rows.map((row) => (
               <div key={row.label} data-tone={row.tone ?? "default"}>

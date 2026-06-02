@@ -957,6 +957,7 @@ main.flex > .cloud-report-toolbar {
 .cloud-auth-technical > summary {
   display: inline-flex;
   align-items: center;
+  gap: 0.25rem;
   min-height: 1.75rem;
   cursor: pointer;
   color: color-mix(in srgb, var(--foreground) 58%, transparent);
@@ -967,6 +968,22 @@ main.flex > .cloud-report-toolbar {
 
 .cloud-auth-technical > summary:hover {
   color: var(--foreground);
+}
+
+.cloud-auth-technical > summary svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  transition: transform 160ms ease;
+}
+
+.cloud-auth-technical[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-auth-technical > summary svg {
+    transition: none;
+  }
 }
 
 .cloud-auth-diagnostics {
