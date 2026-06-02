@@ -2192,10 +2192,23 @@ function cloudAccountSessionDisplay({
   const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
   const connectedScope = parseCloudConnectionScope(connectionScope);
   const effectiveScope = connectedScope ?? requestedScope;
-  const accessRowLabel = connectedScope ? "Access" : "Requested";
+  const accessRow = connectedScope
+    ? { label: "Access", value: cloudScopeLabel(connectedScope), tone: "success" as const }
+    : { label: "Requested", value: cloudRequestedAccessLabel(requestedScope) };
+  const requestedAccessRow =
+    connectedScope && connectedScope !== requestedScope
+      ? {
+          label: "Requested",
+          value: cloudRequestedAccessLabel(requestedScope),
+          tone: "warning" as const,
+        }
+      : null;
   const accessDescription = connectedScope
-    ? `${cloudScopeLabel(connectedScope)} access for this notebook.`
+    ? cloudGrantedAccessDescription(connectedScope, requestedScope)
     : `${cloudRequestedAccessLabel(requestedScope)} requested for this notebook.`;
+  const localDevAccessDescription = connectedScope
+    ? cloudGrantedAccessDescription(connectedScope, requestedScope, "local dev identity")
+    : `${cloudRequestedAccessLabel(requestedScope)} requested from a local dev identity.`;
   const liveTone = connectionError ? "warning" : connectedScope ? "success" : "default";
   const liveLabel = connectionError ? "Needs attention" : connectedScope ? "Live" : "Joining";
 
@@ -2230,11 +2243,8 @@ function cloudAccountSessionDisplay({
       title,
       description: accessDescription,
       rows: [
-        {
-          label: accessRowLabel,
-          value: cloudScopeLabel(effectiveScope),
-          tone: connectedScope ? "success" : "default",
-        },
+        accessRow,
+        ...(requestedAccessRow ? [requestedAccessRow] : []),
         { label: "Connection", value: liveLabel, tone: liveTone },
         { label: "Identity", value: "Anaconda" },
       ],
@@ -2244,15 +2254,10 @@ function cloudAccountSessionDisplay({
   const title = authState.user ?? actorLabel;
   return {
     title,
-    description: connectedScope
-      ? `${cloudScopeLabel(connectedScope)} access from a local dev identity.`
-      : `${cloudRequestedAccessLabel(requestedScope)} requested from a local dev identity.`,
+    description: localDevAccessDescription,
     rows: [
-      {
-        label: accessRowLabel,
-        value: cloudScopeLabel(effectiveScope),
-        tone: connectedScope ? "success" : "default",
-      },
+      accessRow,
+      ...(requestedAccessRow ? [requestedAccessRow] : []),
       { label: "Connection", value: liveLabel, tone: liveTone },
       { label: "Identity", value: "Local dev" },
     ],
@@ -2290,6 +2295,32 @@ function cloudRequestedAccessLabel(scope: ConnectionScope): string {
     case "viewer":
       return "View access";
   }
+}
+
+function cloudGrantedAccessDescription(
+  connectedScope: ConnectionScope,
+  requestedScope: ConnectionScope,
+  source?: string,
+): string {
+  const sourceSuffix = source ? ` from a ${source}` : "";
+  const granted = (() => {
+    switch (connectedScope) {
+      case "owner":
+        return `Connected with owner access${sourceSuffix}.`;
+      case "editor":
+        return `Connected with edit access${sourceSuffix}.`;
+      case "runtime_peer":
+        return `Connected as a runtime peer${sourceSuffix}.`;
+      case "viewer":
+        return `Connected with view access${sourceSuffix}.`;
+    }
+  })();
+
+  if (connectedScope === requestedScope) {
+    return granted;
+  }
+
+  return `${granted} ${cloudRequestedAccessLabel(requestedScope)} is still requested.`;
 }
 
 function CloudNotebookTitle({ notebookId }: { notebookId: string }) {

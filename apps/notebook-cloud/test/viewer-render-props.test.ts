@@ -155,7 +155,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
   assert.match(sourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
   assert.match(sourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
-  assert.match(sourceText, /const accessRowLabel = connectedScope \? "Access" : "Requested";/);
+  assert.match(sourceText, /const accessRow = connectedScope/);
+  assert.match(
+    sourceText,
+    /const requestedAccessRow =[\s\S]*connectedScope && connectedScope !== requestedScope/,
+  );
   assert.match(sourceText, /description: accessDescription/);
   assert.match(
     sourceText,
@@ -166,6 +170,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /`\$\{cloudRequestedAccessLabel\(requestedScope\)\} requested from a local dev identity\.`/,
   );
   assert.match(sourceText, /function cloudRequestedAccessLabel/);
+  assert.match(sourceText, /function cloudGrantedAccessDescription/);
+  assert.match(
+    sourceText,
+    /`\$\{granted\} \$\{cloudRequestedAccessLabel\(requestedScope\)\} is still requested\.`/,
+  );
   assert.match(
     sourceText,
     /function CloudPresenceStatus[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);[\s\S]*if \(!presenceDisplay\.connected\) \{[\s\S]*return null;/,
