@@ -197,8 +197,8 @@ export function SearchSurfacesExample() {
               <h2 className="text-sm font-semibold text-fd-foreground">GlobalFindBar</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              Rendered from the notebook app with shared scenario notebook text and inert navigation
-              callbacks.
+              Rendered from the notebook app as a quiet notebook-level strip with shared scenario
+              text and inert navigation callbacks.
             </p>
           </div>
           <Button size="sm" variant="outline" onClick={() => setFindOpen(true)}>

@@ -245,7 +245,7 @@ describe("AnsiStreamOutput", () => {
   it("keeps short streams plain", () => {
     const { container } = render(<AnsiStreamOutput text="short\nstream" streamName="stdout" />);
     expect(container.querySelector("button")).toBeNull();
-    expect(screen.queryByText(/lines hidden/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/lines folded/)).not.toBeInTheDocument();
   });
 
   it("keeps terminal-screen-sized streams plain", () => {
@@ -257,6 +257,19 @@ describe("AnsiStreamOutput", () => {
     expect(screen.getByText(/vim-screen-line-119/)).toBeInTheDocument();
   });
 
+  it("does not duplicate short-line streams that exceed the character threshold", () => {
+    const text = Array.from({ length: 5 }, (_, index) => `wide-line-${index}-`.repeat(900)).join(
+      "\n",
+    );
+
+    const { container } = render(<AnsiStreamOutput text={text} streamName="stdout" />);
+
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("[data-slot='ansi-stream-fold']")).toBeNull();
+    const renderedText = container.textContent ?? "";
+    expect(renderedText.match(/wide-line-/g)?.length).toBe(5 * 900);
+  });
+
   it("collapses long stdout streams with a head and tail preview", () => {
     const text = Array.from({ length: 360 }, (_, index) => `line-${index}`).join("\n");
 
@@ -264,7 +277,7 @@ describe("AnsiStreamOutput", () => {
 
     expect(screen.getByText("stdout")).toBeInTheDocument();
     expect(screen.getByText(/360 lines/)).toBeInTheDocument();
-    expect(screen.getByText(/333 lines hidden/)).toBeInTheDocument();
+    expect(screen.getByText(/333 lines folded/)).toBeInTheDocument();
     expect(screen.getByText(/line-0/)).toBeInTheDocument();
     expect(screen.getByText(/line-6/)).toBeInTheDocument();
     expect(screen.queryByText(/line-7/)).not.toBeInTheDocument();

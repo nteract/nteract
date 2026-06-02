@@ -49,7 +49,7 @@ test.describe("noisy output interrupt", () => {
     await executeCell(cell);
     // Long stream output is intentionally collapsed after the flood is underway.
     // Wait for the collapsed-output sentinel so this keeps exercising the noisy path.
-    const floodOutput = await waitForOutputContaining(cell, "lines hidden", 60_000);
+    const floodOutput = await waitForOutputContaining(cell, "lines folded", 60_000);
     await expect(floodOutput.getByRole("button", { name: "Show full log" })).toBeVisible();
 
     await page.getByTestId("interrupt-kernel-button").click();
