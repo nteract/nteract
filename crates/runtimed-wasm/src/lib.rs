@@ -471,6 +471,21 @@ impl RoomHostHandle {
         })
     }
 
+    /// Seed the room with one initial code cell if the authoritative NotebookDoc is empty.
+    ///
+    /// Hosted room creation uses this after creating a brand-new room host. Sync
+    /// bootstrap handles and test fixtures can still use `create_empty` to mean
+    /// "schema only, zero cells."
+    pub fn seed_initial_code_cell_if_empty(&mut self, cell_id: &str) -> Result<bool, JsError> {
+        if self.doc.cell_count() > 0 {
+            return Ok(false);
+        }
+        self.doc
+            .add_cell_after(cell_id, "code", None)
+            .map_err(|e| JsError::new(&format!("seed initial code cell failed: {e}")))?;
+        Ok(true)
+    }
+
     /// Load a room host from persisted NotebookDoc + RuntimeStateDoc bytes.
     pub fn load_snapshot(
         notebook_bytes: &[u8],
@@ -3096,6 +3111,30 @@ mod tests {
         val: serde_json::Value,
     ) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
         resolve_comm_state_for_frontend(&val, 1234, true)
+    }
+
+    #[test]
+    fn room_host_seeds_initial_code_cell_idempotently() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        assert_eq!(host.doc.cell_count(), 0);
+
+        let seeded = host
+            .seed_initial_code_cell_if_empty("cell-initial")
+            .expect("seed initial cell");
+        assert!(seeded);
+        assert_eq!(host.doc.cell_count(), 1);
+        assert_eq!(
+            host.doc.get_cell_type("cell-initial").as_deref(),
+            Some("code")
+        );
+
+        let seeded_again = host
+            .seed_initial_code_cell_if_empty("cell-second")
+            .expect("skip second seed");
+        assert!(!seeded_again);
+        assert_eq!(host.doc.cell_count(), 1);
+        assert!(host.doc.get_cell("cell-second").is_none());
     }
 
     #[test]
