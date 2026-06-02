@@ -90,6 +90,14 @@ const shellStates = [
     people: [activePeople[1]],
   },
   {
+    title: "Requesting edit access",
+    description: "The edit segment reads as requested until the room grants write access.",
+    scenarioId: "cloud-viewer" as const,
+    connection: "live" as const,
+    mode: "edit" as const,
+    people: activePeople,
+  },
+  {
     title: "Reconnecting",
     description: "Transport state is a document concern, separate from Python or kernel state.",
     scenarioId: "cloud-editor" as const,
@@ -123,8 +131,9 @@ const cloudStateRows = [
   {
     surface: "Mode",
     owner: "Frontend affordance",
-    language: "Viewing or Editing",
-    reason: "Users with edit access can locally step out of editing without requesting access.",
+    language: "Viewing, Requested, Editing",
+    reason:
+      "Users can ask for edit access without pretending the notebook is editable before the grant lands.",
   },
   {
     surface: "Permissions",
