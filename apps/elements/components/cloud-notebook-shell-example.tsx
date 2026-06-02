@@ -46,6 +46,7 @@ import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
 } from "@/components/notebook-scenarios";
+import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 
 type CloudConnectionState = "live" | "reconnecting" | "offline";
 type CloudModeState = NotebookInteractionMode;
@@ -1262,14 +1263,15 @@ function CloudNotebookDocument() {
               <span className="pl-8 text-slate-700">"problem_length",</span>
               <br />]
             </div>
-            <div className="mt-7 flex items-center gap-3 text-sm font-sans text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                <Radio className="size-3.5 text-emerald-600" aria-hidden="true" />
-                Python
-              </span>
-              <span>/</span>
-              <span>run 8</span>
-              <span className="h-px flex-1 bg-border" />
+            <div className="group mt-7 font-sans">
+              <CodeCellCurrentLine
+                languageLabel="Python"
+                count={8}
+                elapsedMs={180}
+                activityContent={<Radio className="size-3.5 text-emerald-600" aria-hidden />}
+                isFocused
+                className="mt-0"
+              />
             </div>
           </div>
         </div>
