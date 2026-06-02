@@ -3115,9 +3115,8 @@ mod tests {
 
     #[test]
     fn room_host_seeds_initial_code_cell_idempotently() {
-        let mut host =
-            RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
-                .expect("create room host");
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
         assert_eq!(host.doc.cell_count(), 0);
 
         let seeded = host

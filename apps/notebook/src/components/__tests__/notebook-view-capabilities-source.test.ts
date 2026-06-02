@@ -36,9 +36,7 @@ describe("NotebookView shell capabilities", () => {
     );
 
     expect(sourceText).not.toContain("Auto-seed first cell");
-    expect(sourceText).not.toMatch(
-      /cellIds\.length === 0[\s\S]{0,300}onAddCell\("code"\)/,
-    );
+    expect(sourceText).not.toMatch(/cellIds\.length === 0[\s\S]{0,300}onAddCell\("code"\)/);
   });
 
   it("does not install code execution keybindings when execution is unavailable", () => {
