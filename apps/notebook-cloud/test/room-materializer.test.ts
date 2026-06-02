@@ -442,6 +442,25 @@ describe("RoomHostHandle", () => {
 });
 
 describe("RoomMaterializer", () => {
+  it("seeds a brand-new hosted room with one initial code cell", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+
+    await syncMaterializerWithClient(
+      materializer,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    assertInitialEmptyCodeCell(JSON.parse(viewer.get_cells_json()));
+  });
+
   it("persists and reloads a durable room checkpoint", async () => {
     const state = fakeState();
     const editorIdentity = authenticateDevRequest(
@@ -487,11 +506,11 @@ describe("RoomMaterializer", () => {
     );
 
     const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
-    assert.deepEqual(
-      cells.map((cell) => cell.id),
-      ["cell-1"],
-    );
+    assert.equal(cells.length, 2);
+    assert.equal(cells[0].id, "cell-1");
     assert.equal(cells[0].source, "Durable room checkpoint\n");
+    assert.match(cells[1].id, /^cell-/);
+    assert.equal(cells[1].source, "");
   });
 
   it("ignores unversioned prototype checkpoints so published snapshots can hydrate rooms", async () => {
@@ -534,7 +553,7 @@ describe("RoomMaterializer", () => {
       viewer,
     );
 
-    assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
+    assertInitialEmptyCodeCell(JSON.parse(viewer.get_cells_json()));
   });
 
   it("keeps legacy versioned checkpoints when no published snapshot is available", async () => {
@@ -784,7 +803,7 @@ describe("RoomMaterializer", () => {
       viewer,
     );
 
-    assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
+    assertInitialEmptyCodeCell(JSON.parse(viewer.get_cells_json()));
   });
 
   it("uses the latest published snapshot instead of stale revision checkpoints", async () => {
@@ -1339,6 +1358,20 @@ async function createNotebookRoomSnapshot(
     notebookHeads: Array.from(host.get_heads_hex()),
     runtimeStateHeads: Array.from(host.get_runtime_state_heads_hex()),
   };
+}
+
+function assertInitialEmptyCodeCell(cells: unknown): void {
+  assert.ok(Array.isArray(cells), "expected cells array");
+  assert.equal(cells.length, 1);
+  const [cell] = cells as Array<{
+    id?: unknown;
+    cell_type?: unknown;
+    source?: unknown;
+  }>;
+  assert.equal(typeof cell.id, "string");
+  assert.match(cell.id, /^cell-/);
+  assert.equal(cell.cell_type, "code");
+  assert.equal(cell.source, "");
 }
 
 async function syncMaterializerWithRuntimePeer(
