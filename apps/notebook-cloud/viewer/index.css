@@ -40,9 +40,23 @@ body {
 
 .cloud-notebook-notices {
   display: grid;
+  gap: 0;
   border-bottom: 1px solid var(--border);
   background: var(--background);
-  padding-inline: clamp(0.75rem, 4vw, 2rem) clamp(0.5rem, 2vw, 1rem);
+  padding: 0;
+}
+
+.cloud-notebook-notices [data-slot="notebook-notice"] {
+  border: 0;
+  border-left: 2px solid currentColor;
+  border-radius: 0;
+  padding: 0.625rem clamp(0.5rem, 2vw, 1rem) 0.625rem clamp(0.75rem, 4vw, 2rem);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, currentColor 9%, var(--background)) 0%,
+    color-mix(in srgb, currentColor 4%, var(--background)) 42%,
+    var(--background) 100%
+  );
 }
 
 .cloud-room-toolbar {
@@ -53,11 +67,161 @@ body {
 
 .cloud-room-toolbar [data-slot="notebook-document-header-presence"] {
   display: flex;
+  flex: 1 1 min(24rem, 44vw);
+  min-width: 0;
+  max-width: min(38rem, 48vw);
   align-items: center;
 }
 
 .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
-  gap: clamp(0.75rem, 2vw, 1.5rem);
+  flex: 0 0 auto;
+  min-width: max-content;
+  gap: clamp(0.5rem, 1.4vw, 1.25rem);
+}
+
+.cloud-room-toolbar [data-slot="notebook-presence-status"] {
+  max-width: min(12rem, 24vw);
+}
+
+.cloud-notebook-title {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+}
+
+.cloud-notebook-title span,
+.cloud-notebook-title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-notebook-title span {
+  color: var(--foreground);
+  font-size: 0.9375rem;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.cloud-notebook-title small {
+  margin-top: 0.125rem;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.cloud-connection-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: 6px;
+  color: #047857;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.cloud-connection-status:hover {
+  background: var(--muted);
+}
+
+.cloud-connection-status[data-state="waiting"] {
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+}
+
+.cloud-connection-status svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.cloud-connection-status span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 900px) {
+  .cloud-room-toolbar {
+    min-height: 4.75rem;
+    flex-wrap: wrap;
+    align-content: center;
+    justify-content: flex-start;
+    gap: 0.375rem 0.75rem;
+    padding-block: 0.5rem;
+  }
+
+  .cloud-room-toolbar [data-slot="notebook-document-header-presence"] {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
+    flex: 1 1 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    gap: 0.25rem 0.625rem;
+  }
+
+  .cloud-notebook-title {
+    max-width: 100%;
+  }
+
+  .cloud-notebook-title small {
+    display: none;
+  }
+
+  .cloud-room-toolbar [data-slot="notebook-presence-status"] {
+    max-width: min(12rem, 34vw);
+  }
+
+  .cloud-share-menu > summary,
+  .cloud-auth-menu > summary,
+  .cloud-sign-in-button {
+    max-width: min(12rem, 32vw);
+    padding-inline: 0.375rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
+    gap: 0.125rem 0.375rem;
+  }
+
+  .cloud-room-toolbar [data-slot="notebook-presence-status"],
+  .cloud-share-menu > summary,
+  .cloud-auth-menu > summary,
+  .cloud-sign-in-button {
+    max-width: min(9rem, 30vw);
+  }
+}
+
+@media (max-width: 599.98px) {
+  .cloud-notebook-rail[data-collapsed="false"] {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .cloud-notebook-rail[data-collapsed="false"] [data-slot="notebook-rail-panel"] {
+    min-width: 0;
+    max-width: none;
+    flex: 1;
+  }
+
+  .cloud-notebook-rail[data-collapsed="false"] + [data-slot="notebook-document-stage"] {
+    display: none;
+  }
 }
 
 .cloud-rail-panel-note {
@@ -92,15 +256,82 @@ body {
   display: grid;
   min-height: 100vh;
   grid-template-rows: auto 1fr;
-  gap: clamp(2rem, 8vh, 5rem);
-  padding-block: 1rem clamp(2rem, 10vh, 6rem);
+  background: var(--background);
 }
 
-.cloud-home .cloud-report-toolbar h1 {
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
+.cloud-home-title {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.cloud-home-title span,
+.cloud-home-title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-home-title span {
+  color: var(--foreground);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.cloud-home-title small {
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.75rem;
   line-height: 1.2;
+}
+
+.cloud-home-layout {
+  align-self: start;
+  justify-self: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, 0.9fr);
+  gap: clamp(1.25rem, 4vw, 3rem);
+  width: min(54rem, calc(100vw - clamp(2rem, 8vw, 6rem)));
+  padding-block: clamp(2rem, 10vh, 5rem);
+}
+
+.cloud-home-copy {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.cloud-home-copy p,
+.cloud-home-copy h1,
+.cloud-home-copy span {
+  margin: 0;
+}
+
+.cloud-home-copy p {
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.cloud-home-copy h1 {
+  max-width: 18ch;
+  color: var(--foreground);
+  font-size: 2.75rem;
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.cloud-home-copy span {
+  max-width: 32rem;
+  color: color-mix(in srgb, var(--foreground) 68%, transparent);
+  font-size: 1.125rem;
+  line-height: 1.55;
 }
 
 .cloud-home > .cloud-report-toolbar,
@@ -114,16 +345,32 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-home-panel {
-  align-self: start;
-  justify-self: center;
   display: grid;
-  gap: 1rem;
-  width: min(28rem, calc(100vw - 2rem));
-  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
-  border-radius: 8px;
-  padding: clamp(1rem, 4vw, 1.5rem);
-  background: color-mix(in srgb, var(--background) 97%, var(--foreground) 3%);
-  box-shadow: 0 12px 40px color-mix(in srgb, #000 10%, transparent);
+  align-self: start;
+  gap: 0.875rem;
+  --cloud-home-panel-border: color-mix(in srgb, #10b981 68%, transparent);
+  --cloud-home-panel-wash: color-mix(in srgb, #10b981 5%, var(--background));
+  border-left: 2px solid var(--cloud-home-panel-border);
+  padding: 0.75rem 0 0.75rem 1rem;
+  background: linear-gradient(
+    90deg,
+    var(--cloud-home-panel-wash) 0%,
+    color-mix(in srgb, var(--background) 98%, transparent) 72%,
+    transparent 100%
+  );
+}
+
+.cloud-home-panel[data-mode="anonymous"],
+.cloud-home-panel[data-mode="empty"] {
+  --cloud-home-panel-border: color-mix(in srgb, var(--foreground) 28%, transparent);
+  --cloud-home-panel-wash: color-mix(in srgb, var(--foreground) 2%, var(--background));
+}
+
+.cloud-home-panel[data-mode="invalid"],
+.cloud-home-panel[data-mode="oidc_expired"],
+.cloud-home-panel[data-mode="error"] {
+  --cloud-home-panel-border: color-mix(in srgb, #b42318 54%, transparent);
+  --cloud-home-panel-wash: color-mix(in srgb, #b42318 5%, var(--background));
 }
 
 .cloud-home-status {
@@ -144,6 +391,30 @@ main.flex > .cloud-report-toolbar {
   color: #0f766e;
 }
 
+.cloud-home-status[data-mode="ready"] > svg {
+  color: #0f766e;
+}
+
+.cloud-home-status[data-mode="error"] > svg {
+  color: #b42318;
+}
+
+.cloud-home-status-spinner {
+  animation: cloud-status-spin 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-home-status-spinner {
+    animation: none;
+  }
+}
+
+@keyframes cloud-status-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
 .cloud-home-status h2,
 .cloud-home-status p {
   margin: 0;
@@ -161,23 +432,6 @@ main.flex > .cloud-report-toolbar {
   color: color-mix(in srgb, var(--foreground) 66%, transparent);
   font-size: 0.875rem;
   line-height: 1.4;
-}
-
-.cloud-home-scope {
-  display: grid;
-  gap: 0.375rem;
-  color: color-mix(in srgb, var(--foreground) 72%, transparent);
-  font-size: 0.8125rem;
-}
-
-.cloud-home-scope select {
-  min-width: 0;
-  height: 2.25rem;
-  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
-  border-radius: 6px;
-  padding-inline: 0.625rem;
-  color: var(--foreground);
-  background: var(--background);
 }
 
 .cloud-home-actions {
@@ -217,6 +471,37 @@ main.flex > .cloud-report-toolbar {
   height: 1rem;
 }
 
+.cloud-home-note {
+  margin: 0;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 760px) {
+  .cloud-home-title small {
+    display: none;
+  }
+
+  .cloud-home-layout {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+    width: min(100%, calc(100vw - 2rem));
+    padding-block: 2rem;
+  }
+
+  .cloud-home-copy h1 {
+    max-width: 18ch;
+    font-size: 2.5rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .cloud-home-copy h1 {
+    font-size: 2.25rem;
+  }
+}
+
 .cloud-report-toolbar {
   position: sticky;
   top: 0;
@@ -224,10 +509,6 @@ main.flex > .cloud-report-toolbar {
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--background) 94%, transparent);
   backdrop-filter: blur(12px);
-}
-
-.cloud-auth-diagnostics-state {
-  margin-top: 0.5rem;
 }
 
 .cloud-auth-menu {
@@ -238,8 +519,8 @@ main.flex > .cloud-report-toolbar {
   position: relative;
 }
 
-.cloud-share-menu summary,
-.cloud-auth-menu summary,
+.cloud-share-menu > summary,
+.cloud-auth-menu > summary,
 .cloud-sign-in-button {
   display: inline-flex;
   align-items: center;
@@ -257,11 +538,11 @@ main.flex > .cloud-report-toolbar {
   list-style: none;
 }
 
-.cloud-auth-menu summary::-webkit-details-marker {
+.cloud-auth-menu > summary::-webkit-details-marker {
   display: none;
 }
 
-.cloud-auth-menu summary.cloud-auth-identity-summary {
+.cloud-auth-menu > summary.cloud-auth-identity-summary {
   height: 2.25rem;
   max-width: min(13rem, 34vw);
   border: 0;
@@ -277,18 +558,41 @@ main.flex > .cloud-report-toolbar {
   max-width: 100%;
 }
 
-.cloud-share-menu summary::-webkit-details-marker {
+.cloud-auth-identity-icon {
   display: none;
 }
 
-.cloud-share-menu summary:hover,
-.cloud-auth-menu summary:hover {
+@media (max-width: 360px) {
+  .cloud-room-toolbar .cloud-connection-status {
+    display: none;
+  }
+
+  .cloud-auth-menu > summary.cloud-auth-identity-summary {
+    width: 2rem;
+    padding-inline: 0.375rem;
+  }
+
+  .cloud-auth-identity-icon {
+    display: block;
+  }
+
+  .cloud-auth-identity-summary .cloud-auth-identity-badge > span {
+    display: none;
+  }
+}
+
+.cloud-share-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cloud-share-menu > summary:hover,
+.cloud-auth-menu > summary:hover {
   color: var(--foreground);
   background: color-mix(in srgb, var(--background) 88%, var(--foreground) 8%);
 }
 
-.cloud-share-menu summary:focus-visible,
-.cloud-auth-menu summary:focus-visible {
+.cloud-share-menu > summary:focus-visible,
+.cloud-auth-menu > summary:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
   outline-offset: 2px;
 }
@@ -302,8 +606,8 @@ main.flex > .cloud-report-toolbar {
   flex: 0 0 auto;
 }
 
-.cloud-share-menu summary span,
-.cloud-auth-menu summary span,
+.cloud-share-menu > summary span,
+.cloud-auth-menu > summary span,
 .cloud-sign-in-button span {
   min-width: 0;
   overflow: hidden;
@@ -351,8 +655,10 @@ main.flex > .cloud-report-toolbar {
   border-radius: 8px;
   padding: 0;
   color: var(--foreground);
-  background: var(--background);
-  box-shadow: 0 12px 36px color-mix(in srgb, #000 16%, transparent);
+  background: color-mix(in srgb, var(--background) 98%, var(--foreground) 2%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent),
+    0 8px 20px color-mix(in srgb, #000 8%, transparent);
 }
 
 .cloud-share-panel header {
@@ -409,6 +715,11 @@ main.flex > .cloud-report-toolbar {
   justify-content: center;
   gap: 0.375rem;
   padding-inline: 0.625rem;
+  white-space: nowrap;
+}
+
+.cloud-share-copy-label-compact {
+  display: none;
 }
 
 .cloud-share-panel button:hover:not(:disabled) {
@@ -489,6 +800,25 @@ main.flex > .cloud-report-toolbar {
   padding: 0.875rem 1rem;
 }
 
+.cloud-share-current-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.cloud-share-current-heading > span {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.75rem;
+  line-height: 1.25;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cloud-share-current ul {
   display: grid;
   margin: 0;
@@ -498,7 +828,7 @@ main.flex > .cloud-report-toolbar {
 
 .cloud-share-current li {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.5rem;
   align-items: center;
   min-width: 0;
@@ -519,12 +849,36 @@ main.flex > .cloud-report-toolbar {
   min-width: 0;
 }
 
+.cloud-share-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .cloud-share-badge {
   color: color-mix(in srgb, var(--foreground) 72%, transparent);
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
+}
+
+.cloud-share-state {
+  color: color-mix(in srgb, var(--foreground) 55%, transparent);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.cloud-share-state[data-tone="success"] {
+  color: #047857;
+}
+
+.cloud-share-state[data-tone="pending"] {
+  color: #b45309;
 }
 
 .cloud-share-current li button {
@@ -563,8 +917,10 @@ main.flex > .cloud-report-toolbar {
   border-radius: 8px;
   padding: 0;
   color: var(--foreground);
-  background: var(--background);
-  box-shadow: 0 12px 36px color-mix(in srgb, #000 16%, transparent);
+  background: color-mix(in srgb, var(--background) 98%, var(--foreground) 2%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent),
+    0 8px 20px color-mix(in srgb, #000 8%, transparent);
 }
 
 .cloud-auth-panel-header {
@@ -601,10 +957,93 @@ main.flex > .cloud-report-toolbar {
   line-height: 1.35;
 }
 
+.cloud-auth-session {
+  display: grid;
+  gap: 0;
+  margin: 0.75rem 1rem 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--background) 98%, var(--foreground) 2%);
+}
+
+.cloud-auth-session div {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, 0.36fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+}
+
+.cloud-auth-session div + div {
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
+}
+
+.cloud-auth-session span,
+.cloud-auth-session strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8125rem;
+  line-height: 1.25;
+}
+
+.cloud-auth-session span {
+  color: color-mix(in srgb, var(--foreground) 54%, transparent);
+  font-weight: 500;
+}
+
+.cloud-auth-session strong {
+  color: color-mix(in srgb, var(--foreground) 84%, transparent);
+  font-weight: 600;
+}
+
+.cloud-auth-session div[data-tone="success"] strong {
+  color: #047857;
+}
+
+.cloud-auth-session div[data-tone="warning"] strong {
+  color: #c2410c;
+}
+
+.cloud-auth-technical {
+  margin: 0.75rem 1rem 0;
+}
+
+.cloud-auth-technical > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 1.75rem;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.cloud-auth-technical > summary:hover {
+  color: var(--foreground);
+}
+
+.cloud-auth-technical > summary svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  transition: transform 160ms ease;
+}
+
+.cloud-auth-technical[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-auth-technical > summary svg {
+    transition: none;
+  }
+}
+
 .cloud-auth-diagnostics {
   display: grid;
   gap: 0.375rem;
-  margin: 0 1rem;
+  margin: 0.375rem 0 0;
   border-left: 2px solid color-mix(in srgb, var(--foreground) 16%, transparent);
   padding: 0.25rem 0 0.25rem 0.625rem;
 }
@@ -721,8 +1160,18 @@ main.flex > .cloud-report-toolbar {
 }
 
 @media (max-width: 640px) {
-  .cloud-share-menu summary,
-  .cloud-auth-menu summary,
+  .cloud-share-panel,
+  .cloud-auth-menu form {
+    position: fixed;
+    top: 4.75rem;
+    right: 0.75rem;
+    left: 3.5rem;
+    width: auto;
+    max-height: calc(100vh - 5.5rem);
+  }
+
+  .cloud-share-menu > summary,
+  .cloud-auth-menu > summary,
   .cloud-sign-in-button {
     max-width: min(10rem, 36vw);
   }
@@ -732,14 +1181,21 @@ main.flex > .cloud-report-toolbar {
   }
 
   .cloud-share-current li {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
   }
 
-  .cloud-share-current li button {
-    grid-column: 3;
+  .cloud-share-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    gap: 0.625rem;
   }
 
-  .cloud-share-badge {
-    justify-self: end;
+  .cloud-share-copy-label-full {
+    display: none;
+  }
+
+  .cloud-share-copy-label-compact {
+    display: inline;
   }
 }

@@ -1,4 +1,4 @@
-import { BookOpen, Pencil } from "lucide-react";
+import { BookOpen, Clock3, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { NotebookInteractionMode, NotebookInteractionState } from "./interaction-mode";
 
@@ -23,8 +23,10 @@ export function NotebookEditModeButton({
   variant = "button",
 }: NotebookEditModeButtonProps) {
   const requestingEdit = mode === "edit";
+  const requestedEdit = requestingEdit && state === "requested";
   const nextMode: NotebookEditMode = requestingEdit ? "view" : "edit";
   const label = requestingEdit ? "View" : "Edit";
+  const editSegmentLabel = requestedEdit ? "Request sent" : "Editing";
   const title = requestingEdit
     ? state === "editing"
       ? "Return to read-only viewing"
@@ -35,7 +37,7 @@ export function NotebookEditModeButton({
     return (
       <div
         className={cn(
-          "inline-flex h-9 max-w-[min(18rem,58vw)] min-w-0 items-center rounded-lg border border-border bg-background p-1 text-sm text-muted-foreground",
+          "inline-flex h-8 max-w-[min(16rem,54vw)] min-w-0 items-center rounded-md border border-border bg-background p-0.5 text-xs text-muted-foreground",
           disabled && "opacity-60",
           className,
         )}
@@ -49,7 +51,7 @@ export function NotebookEditModeButton({
           type="button"
           aria-pressed={mode === "view"}
           className={cn(
-            "inline-flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-md px-2.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed",
+            "inline-flex h-6 min-w-0 items-center justify-center gap-1 rounded px-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed",
             mode === "view" && "bg-background text-foreground shadow-sm",
           )}
           disabled={disabled}
@@ -60,26 +62,43 @@ export function NotebookEditModeButton({
             }
           }}
         >
-          <BookOpen className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 truncate leading-none">Viewing</span>
+          <BookOpen className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="sr-only sm:not-sr-only sm:min-w-0 sm:truncate sm:leading-none">
+            Viewing
+          </span>
         </button>
         <button
           type="button"
           aria-pressed={mode === "edit"}
           className={cn(
-            "inline-flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-md px-2.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed",
-            mode === "edit" && "bg-background text-emerald-700 shadow-sm dark:text-emerald-300",
+            "inline-flex h-6 min-w-0 items-center justify-center gap-1 rounded px-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed",
+            mode === "edit" &&
+              (state === "editing"
+                ? "bg-background text-emerald-700 shadow-sm dark:text-emerald-300"
+                : "bg-background text-amber-700 shadow-sm dark:text-amber-300"),
           )}
           disabled={disabled}
-          title={state === "editing" ? "Editing notebook" : "Request edit access"}
+          title={
+            state === "editing"
+              ? "Editing notebook"
+              : requestedEdit
+                ? "Edit access requested"
+                : "Request edit access"
+          }
           onClick={() => {
             if (mode !== "edit") {
               onModeChange("edit");
             }
           }}
         >
-          <Pencil className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 truncate leading-none">Editing</span>
+          {requestedEdit ? (
+            <Clock3 className="size-3.5 shrink-0" aria-hidden="true" />
+          ) : (
+            <Pencil className="size-3.5 shrink-0" aria-hidden="true" />
+          )}
+          <span className="sr-only sm:not-sr-only sm:min-w-0 sm:truncate sm:leading-none">
+            {editSegmentLabel}
+          </span>
         </button>
       </div>
     );

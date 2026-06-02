@@ -28,6 +28,7 @@ export type ElementsNotebookScenarioId =
   | "desktop-local-owner"
   | "desktop-read-only"
   | "desktop-remote-room"
+  | "cloud-viewer"
   | "cloud-public-viewer"
   | "cloud-editor"
   | "cloud-owner"
@@ -396,6 +397,18 @@ const publicViewerActor = actorProjection({
   provider: "anonymous",
   namespace: "public",
   operatorId: "browser:viewer",
+  operatorKind: "browser",
+  operatorLabel: "Browser",
+  scope: "viewer",
+});
+
+const cloudViewerActor = actorProjection({
+  actorLabel: "user:anaconda:riley/browser:cloud",
+  principalId: "user:anaconda:riley",
+  principalLabel: "Riley",
+  provider: "anaconda",
+  namespace: "anaconda",
+  operatorId: "browser:cloud",
   operatorKind: "browser",
   operatorLabel: "Browser",
   scope: "viewer",
@@ -914,19 +927,60 @@ export const elementsNotebookScenarios: Record<
       },
     },
   }),
+  "cloud-viewer": createScenario({
+    id: "cloud-viewer",
+    title: "Cloud viewer",
+    eyebrow: "hosted fixture",
+    summary:
+      "Authenticated viewer access where the notebook stays live and readable while edit access can be requested.",
+    runtimeLabel: "Cloud notebook · runtime detached",
+    packageSummary: "visible · 4 packages",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+      canRequestEdit: true,
+      canExecute: false,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: false,
+      access: {
+        level: "viewer",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: cloudViewerActor.actorLabel,
+        identityLabel: "Riley",
+        actor: cloudViewerActor,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        canWriteRuntimeState: false,
+        connected: false,
+        source: "cloud",
+        actorLabel: null,
+        identityLabel: null,
+      },
+    },
+  }),
   "cloud-editor": createScenario({
     id: "cloud-editor",
     title: "Cloud editor",
     eyebrow: "hosted fixture",
     summary:
-      "Authenticated cloud editor access where markdown can change but code cells, structure, packages, sharing, and execution stay gated.",
+      "Authenticated cloud editor access where notebook content and cell structure can change while sharing, packages, and execution stay gated.",
     runtimeLabel: "Cloud notebook · runtime detached",
     packageSummary: "visible · 4 packages",
     capabilities: {
       canRead: true,
       canEditMarkdown: true,
-      canEditCells: false,
-      canEditStructure: false,
+      canEditCells: true,
+      canEditStructure: true,
       canRequestEdit: true,
       canExecute: false,
       canToggleCode: true,
@@ -960,14 +1014,14 @@ export const elementsNotebookScenarios: Record<
     title: "Cloud owner",
     eyebrow: "hosted fixture",
     summary:
-      "Authenticated cloud owner access with markdown and code-cell source edits plus sharing, while structure, packages, and execution remain host-gated.",
+      "Authenticated cloud owner access with notebook edits, cell structure, and sharing while packages and execution remain host-gated.",
     runtimeLabel: "Cloud notebook · runtime detached",
     packageSummary: "visible · 4 packages",
     capabilities: {
       canRead: true,
       canEditMarkdown: true,
       canEditCells: true,
-      canEditStructure: false,
+      canEditStructure: true,
       canRequestEdit: true,
       canExecute: false,
       canToggleCode: true,

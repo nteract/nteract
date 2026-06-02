@@ -25,6 +25,17 @@ describe("NotebookIdentity", () => {
     expect(screen.getByText("Owner")).toBeVisible();
   });
 
+  it("can render inline account identity without actor presence status", () => {
+    const actor = notebookActorIdentityFromAccess(cloudOwnerAccess);
+
+    const { container } = render(
+      <NotebookIdentityBadge actor={actor} variant="inline" showStatus={false} />,
+    );
+
+    expect(screen.getByText("Kyle")).toBeVisible();
+    expect(container.querySelector(".rounded-full")).toBeNull();
+  });
+
   it("projects agent access as acting for an identity", () => {
     const actor = notebookActorIdentityFromAccess({
       level: "editor",

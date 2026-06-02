@@ -67,6 +67,7 @@ export interface CloudPrototypeConnectionDiagnostics {
 export interface CloudPrototypeAuthDiagnosticRow {
   label: string;
   value: string;
+  copyValue?: string;
   tone?: "default" | "warning" | "success";
 }
 
@@ -196,10 +197,17 @@ export function cloudHttpHeadersFromPrototypeAuthState(
   state: CloudPrototypeAuthState,
 ): Record<string, string> {
   if (state.mode === "dev" && state.token) {
-    return { [DEV_AUTH_TOKEN_HEADER]: state.token };
+    return {
+      [DEV_AUTH_TOKEN_HEADER]: state.token,
+      "X-User": state.user ?? "browser-editor",
+      "X-Scope": state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+    };
   }
   if (state.mode === "oidc" && state.token) {
-    return { Authorization: `Bearer ${state.token}` };
+    return {
+      Authorization: `Bearer ${state.token}`,
+      "X-Scope": state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+    };
   }
   return {};
 }
@@ -460,15 +468,34 @@ export function prototypeAuthDiagnostics(
   if (connection.connectionError) {
     rows.push({
       label: "Last connection error",
-      value: connection.connectionError,
+      value: cloudConnectionErrorSummary(connection.connectionError),
+      copyValue: sanitizeCloudConnectionDiagnostic(connection.connectionError),
       tone: "warning",
     });
   }
 
   return {
     rows,
-    copyText: rows.map((row) => `${row.label}: ${row.value}`).join("\n"),
+    copyText: rows.map((row) => `${row.label}: ${row.copyValue ?? row.value}`).join("\n"),
   };
+}
+
+function cloudConnectionErrorSummary(error: string): string {
+  if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
+    return "Unable to join the live notebook room.";
+  }
+  return sanitizeCloudConnectionDiagnostic(error);
+}
+
+function sanitizeCloudConnectionDiagnostic(error: string): string {
+  return error.replace(/\bwss?:\/\/[^\s]+/gi, (rawUrl) => {
+    try {
+      const url = new URL(rawUrl);
+      return `${url.protocol}//${url.host}${url.pathname}`;
+    } catch {
+      return rawUrl.replace(/[?#].*$/, "");
+    }
+  });
 }
 
 function anonymousAuthState(): CloudPrototypeAuthState {

@@ -10,6 +10,7 @@ import {
   FilePenLine,
   Globe2,
   KeyRound,
+  Loader2,
   LogIn,
   Mail,
   Play,
@@ -25,8 +26,10 @@ import { useState } from "react";
 import {
   createNotebookInteractionModeProjection,
   NotebookCommandToolbar,
+  NotebookDocumentHeader,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookToolbarFrame,
   NotebookEditModeButton,
   NotebookIdentityBadge,
   NotebookPackageSummaryPanel,
@@ -44,6 +47,7 @@ import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
 } from "@/components/notebook-scenarios";
+import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 
 type CloudConnectionState = "live" | "reconnecting" | "offline";
 type CloudModeState = NotebookInteractionMode;
@@ -86,6 +90,14 @@ const shellStates = [
     people: [activePeople[1]],
   },
   {
+    title: "Requesting edit access",
+    description: "The edit segment reads as sent until the room grants write access.",
+    scenarioId: "cloud-viewer" as const,
+    connection: "live" as const,
+    mode: "edit" as const,
+    people: activePeople,
+  },
+  {
     title: "Reconnecting",
     description: "Transport state is a document concern, separate from Python or kernel state.",
     scenarioId: "cloud-editor" as const,
@@ -113,14 +125,15 @@ const cloudStateRows = [
   {
     surface: "Connection",
     owner: "Document transport",
-    language: "Live, reconnecting, offline",
-    reason: "Online/offline belongs to sync health and save confidence.",
+    language: "icon in chrome, banner when blocked",
+    reason: "Sync health should not compete with the document title unless action is needed.",
   },
   {
     surface: "Mode",
     owner: "Frontend affordance",
-    language: "Viewing or Editing",
-    reason: "Users with edit access can locally step out of editing without requesting access.",
+    language: "Viewing, Request sent, Editing",
+    reason:
+      "Users can ask for edit access without pretending the notebook is editable before the grant lands.",
   },
   {
     surface: "Permissions",
@@ -129,16 +142,17 @@ const cloudStateRows = [
     reason: "Sharing is document access; it should read as a quiet ledger, not generic account UI.",
   },
   {
-    surface: "Runtime",
+    surface: "Notebook actions",
     owner: "Notebook toolbar",
-    language: "Python / uv",
-    reason: "Language and package affordances stay on the notebook command toolbar.",
+    language: "Code, Markdown, packages",
+    reason:
+      "Cell structure and package language stay notebook-local; execution controls appear only when a runtime can run cells.",
   },
   {
     surface: "Account",
     owner: "Host auth",
-    language: "Kyle, sign in, expired session",
-    reason: "Identity controls stay with the cloud host while actor badges remain shared.",
+    language: "sign in, expired session",
+    reason: "Identity diagnostics move out of the primary row unless the session needs action.",
   },
 ];
 
@@ -147,10 +161,6 @@ export function CloudNotebookShellExample() {
   const [mode, setMode] = useState<CloudModeState>("edit");
   const [activePanel, setActivePanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(true);
-  const actor = notebookActorIdentityFromAccess(
-    scenario.capabilities.access,
-    scenario.capabilities.auth,
-  );
   const shellCapabilities = withInteractionProjection(
     scenario.capabilities,
     cloudInteractionProjection(scenario, mode),
@@ -192,7 +202,6 @@ export function CloudNotebookShellExample() {
           stageClassName="bg-background"
           toolbar={
             <CloudNotebookChrome
-              actor={actor}
               connection="live"
               mode={mode}
               onModeChange={setMode}
@@ -200,7 +209,7 @@ export function CloudNotebookShellExample() {
               scenario={scenario}
             />
           }
-          toolbarClassName="border-b bg-background/95 backdrop-blur"
+          toolbarClassName="bg-background/95 backdrop-blur"
           toolbarLabel="Cloud notebook session"
           rail={rail}
           capabilities={shellCapabilities}
@@ -209,6 +218,10 @@ export function CloudNotebookShellExample() {
         </NotebookDocumentShell>
       </section>
 
+      <CloudEntrySurface />
+
+      <CloudAuthHandoffSurface />
+
       <CloudPermissionsSurface />
 
       <CloudAccountSurface />
@@ -216,10 +229,6 @@ export function CloudNotebookShellExample() {
       <section className="grid gap-3 lg:grid-cols-2">
         {shellStates.map((state) => {
           const stateScenario = getElementsNotebookScenario(state.scenarioId);
-          const stateActor = notebookActorIdentityFromAccess(
-            stateScenario.capabilities.access,
-            stateScenario.capabilities.auth,
-          );
           return (
             <article
               key={state.title}
@@ -233,7 +242,6 @@ export function CloudNotebookShellExample() {
               </div>
               <div className="bg-background text-foreground">
                 <CloudStatePreview
-                  actor={stateActor}
                   connection={state.connection}
                   mode={state.mode}
                   people={state.people}
@@ -291,14 +299,12 @@ function BrowserFrame() {
 }
 
 function CloudNotebookChrome({
-  actor,
   connection,
   mode,
   onModeChange,
   people,
   scenario,
 }: {
-  actor: NotebookActorIdentity;
   connection: CloudConnectionState;
   mode: CloudModeState;
   onModeChange: (mode: CloudModeState) => void;
@@ -306,9 +312,8 @@ function CloudNotebookChrome({
   scenario: ElementsNotebookScenario;
 }) {
   return (
-    <div className="flex min-w-0 flex-col" data-slot="cloud-notebook-chrome">
+    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background/95 supports-backdrop-filter:bg-background/80">
       <CloudAppToolbar
-        actor={actor}
         connection={connection}
         mode={mode}
         onModeChange={onModeChange}
@@ -316,19 +321,17 @@ function CloudNotebookChrome({
         scenario={scenario}
       />
       <CloudNotebookToolbar mode={mode} scenario={scenario} />
-    </div>
+    </NotebookToolbarFrame>
   );
 }
 
 function CloudAppToolbar({
-  actor,
   connection,
   mode,
   onModeChange,
   people,
   scenario,
 }: {
-  actor: NotebookActorIdentity;
   connection: CloudConnectionState;
   mode: CloudModeState;
   onModeChange?: (mode: CloudModeState) => void;
@@ -339,28 +342,41 @@ function CloudAppToolbar({
   const effectiveCapabilities = withInteractionProjection(scenario.capabilities, interaction);
 
   return (
-    <div
-      className="flex min-h-14 min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border/70 px-4 py-2"
-      data-slot="cloud-app-toolbar"
-    >
-      <div className="flex min-w-0 flex-1 basis-56 items-center gap-3">
-        <CloudPresence people={people} compact={false} />
-        <CloudConnectionPill state={connection} compact={false} />
-      </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
-        {scenario.capabilities.canManageSharing ? <CloudShareMenu compact={false} /> : null}
-        <CloudModeToggle
-          compact={false}
-          interaction={interaction}
-          mode={mode}
-          onModeChange={onModeChange}
-        />
-        {scenario.capabilities.auth.canSignIn ||
-        scenario.capabilities.auth.canUseAuthenticatedIdentity ||
-        scenario.capabilities.auth.needsAttention ? (
-          <CloudAccountButton actor={actor} capabilities={effectiveCapabilities} compact={false} />
-        ) : null}
-      </div>
+    <NotebookDocumentHeader
+      capabilities={effectiveCapabilities}
+      className={cn(
+        "min-h-14 border-b border-border/70 px-4 py-2",
+        "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(24rem,44vw)] [&_[data-slot=notebook-document-header-presence]]:max-w-[min(38rem,48vw)]",
+        "[&_[data-slot=notebook-document-header-controls]]:flex-none [&_[data-slot=notebook-document-header-controls]]:min-w-max",
+        "max-[900px]:min-h-[4.75rem] max-[900px]:flex-wrap max-[900px]:content-center max-[900px]:justify-start max-[900px]:gap-x-2 max-[900px]:gap-y-1",
+        "max-[900px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-presence]]:max-w-none",
+        "max-[900px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-controls]]:min-w-0 max-[900px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[900px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
+      )}
+      presence={<CloudDocumentTitle title="MathNet topic visualization" subtitle="by Kyle" />}
+      utilityControls={
+        <>
+          <CloudConnectionPill state={connection} compact />
+          <CloudPresence people={people} compact />
+        </>
+      }
+      sharingControls={<CloudShareMenu compact={false} />}
+      editControls={
+        <CloudModeToggle interaction={interaction} mode={mode} onModeChange={onModeChange} />
+      }
+      identityControls={null}
+    />
+  );
+}
+
+function CloudDocumentTitle({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div className="grid min-w-0 text-left" data-slot="cloud-document-title">
+      <span className="truncate text-sm font-semibold text-foreground">{title}</span>
+      {subtitle ? (
+        <span className="hidden truncate text-[11px] leading-4 text-muted-foreground sm:block">
+          {subtitle}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -376,6 +392,10 @@ function CloudNotebookToolbar({
   const cellIds = scenario.viewModel.cellIds;
   const interaction = cloudInteractionProjection(scenario, mode);
   const capabilities = withInteractionProjection(scenario.capabilities, interaction);
+
+  if (!shouldShowCloudNotebookCommandToolbar(capabilities)) {
+    return null;
+  }
 
   return (
     <div className="min-w-0 overflow-hidden" data-slot="cloud-notebook-toolbar">
@@ -393,20 +413,21 @@ function CloudNotebookToolbar({
         onRunAllCells={noop}
         onRestartAndRunAll={noop}
         onTogglePackages={noop}
-        className="h-12 px-4"
       />
     </div>
   );
 }
 
+function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabilities): boolean {
+  return capabilities.canEditStructure || capabilities.canExecute || capabilities.canManagePackages;
+}
+
 function CloudStatePreview({
-  actor,
   connection,
   mode,
   people,
   scenario,
 }: {
-  actor: NotebookActorIdentity;
   connection: CloudConnectionState;
   mode: CloudModeState;
   people: readonly NotebookActorIdentity[];
@@ -422,18 +443,27 @@ function CloudStatePreview({
       role="toolbar"
       aria-label="Cloud notebook state"
     >
-      <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5">
-        <CloudPresence people={people} compact />
-        <span className="h-4 w-px bg-border/70" aria-hidden="true" />
-        <CloudConnectionPill state={connection} compact />
-        {scenario.capabilities.canManageSharing ? <CloudShareMenu compact /> : null}
-        <CloudModeToggle compact={false} interaction={interaction} mode={mode} />
-        {scenario.capabilities.auth.canSignIn ||
-        scenario.capabilities.auth.canUseAuthenticatedIdentity ||
-        scenario.capabilities.auth.needsAttention ? (
-          <CloudAccountButton actor={actor} capabilities={effectiveCapabilities} compact />
-        ) : null}
-      </div>
+      <NotebookDocumentHeader
+        capabilities={effectiveCapabilities}
+        className={cn(
+          "min-h-11 px-3 py-1.5",
+          "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(24rem,44vw)] [&_[data-slot=notebook-document-header-presence]]:max-w-[min(38rem,48vw)]",
+          "[&_[data-slot=notebook-document-header-controls]]:flex-none [&_[data-slot=notebook-document-header-controls]]:min-w-max",
+          "max-[900px]:min-h-[4.25rem] max-[900px]:flex-wrap max-[900px]:content-center max-[900px]:justify-start max-[900px]:gap-x-2 max-[900px]:gap-y-1",
+          "max-[900px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-presence]]:max-w-none",
+          "max-[900px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-controls]]:min-w-0 max-[900px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[900px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
+        )}
+        presence={<CloudDocumentTitle title={scenario.title} subtitle="by Kyle" />}
+        utilityControls={
+          <>
+            <CloudConnectionPill state={connection} compact />
+            <CloudPresence people={people} compact />
+          </>
+        }
+        sharingControls={<CloudShareMenu compact />}
+        editControls={<CloudModeToggle interaction={interaction} mode={mode} />}
+        identityControls={null}
+      />
       <div className="[&_[data-slot=notebook-command-toolbar]]:h-9 [&_[data-slot=notebook-command-toolbar]]:px-3">
         <CloudNotebookToolbar mode={mode} scenario={scenario} />
       </div>
@@ -459,7 +489,7 @@ function CloudPresence({
       variant="inline"
       className={cn(
         "px-1",
-        compact ? "max-w-[min(18rem,54vw)]" : "max-w-[min(18rem,42vw)]",
+        compact ? "max-w-[min(8rem,24vw)]" : "max-w-[min(12rem,28vw)]",
         !hasPeers && "text-muted-foreground",
       )}
     />
@@ -502,13 +532,15 @@ function CloudConnectionPill({
   return (
     <span
       className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium transition-colors hover:bg-muted/60",
+        "inline-flex size-7 items-center justify-center rounded-md transition-colors hover:bg-muted/60",
+        compact && "max-[360px]:hidden",
         detail.className,
       )}
       title={detail.title}
+      aria-label={detail.title}
     >
       <Icon className="size-3.5 shrink-0" aria-hidden="true" />
-      <span>{compact ? detail.shortLabel : detail.label}</span>
+      <span className="sr-only">{detail.label}</span>
     </span>
   );
 }
@@ -523,6 +555,159 @@ function CloudShareMenu({ compact }: { compact: boolean }) {
       <Share2 className="size-3.5" aria-hidden="true" />
       {compact ? <span className="sr-only">Share</span> : <span>Share</span>}
     </button>
+  );
+}
+
+function CloudEntrySurface() {
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Cloud entry</h2>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+          The root shell should not become a role switcher. Public notebooks stay readable, and
+          account action appears only when the user needs edit or sharing power.
+        </p>
+      </div>
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,0.85fr)]">
+        <div className="grid content-start gap-3">
+          <p className="m-0 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+            Cloud notebooks
+          </p>
+          <h3 className="m-0 max-w-[18ch] text-4xl font-bold leading-none text-foreground">
+            Stay in the document.
+          </h3>
+          <p className="m-0 max-w-xl text-sm leading-6 text-muted-foreground">
+            Public notebooks open calmly. Account controls appear only when someone needs to edit,
+            share, or renew access.
+          </p>
+        </div>
+        <div className="grid content-start gap-3 border-l-2 border-foreground/25 bg-gradient-to-r from-muted/35 to-transparent py-3 pl-4">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
+            <KeyRound className="mt-0.5 size-5 text-muted-foreground" aria-hidden="true" />
+            <div className="min-w-0">
+              <h3 className="m-0 truncate text-base font-semibold">Public viewer</h3>
+              <p className="m-0 mt-1 text-xs leading-5 text-muted-foreground">
+                Public notebooks stay readable without an account. Sign in when edit access or
+                sharing controls are needed.
+              </p>
+            </div>
+          </div>
+          <div>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm transition-colors hover:bg-muted"
+            >
+              <LogIn className="size-3.5" aria-hidden="true" />
+              Sign in with Anaconda
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="border-t border-fd-border px-4 py-3 text-xs leading-5 text-fd-muted-foreground">
+        Local development identity stays in the account panel after a notebook opens, where it can
+        act like host auth instead of document content.
+      </div>
+    </section>
+  );
+}
+
+const authHandoffStates = [
+  {
+    label: "Completing sign-in",
+    detail: "The browser is finishing the account handoff.",
+    icon: Loader2,
+    tone: "live",
+    spin: true,
+  },
+  {
+    label: "Signed in",
+    detail: "Access is renewed and the notebook can resume write actions.",
+    icon: UserRound,
+    tone: "live",
+  },
+  {
+    label: "Nothing to finish",
+    detail: "The user can return to cloud notebooks without changing document state.",
+    icon: KeyRound,
+    tone: "default",
+  },
+  {
+    label: "Sign-in needs attention",
+    detail: "The notebook stays readable while account recovery remains host-level.",
+    icon: X,
+    tone: "attention",
+  },
+] satisfies Array<{
+  label: string;
+  detail: string;
+  icon: LucideIcon;
+  tone: "default" | "live" | "attention";
+  spin?: boolean;
+}>;
+
+function CloudAuthHandoffSurface() {
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Account handoff</h2>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+          The OIDC callback should feel like the cloud entry surface, not a separate auth app.
+          Account recovery stays host-level while the notebook remains readable.
+        </p>
+      </div>
+
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.9fr)]">
+        <div className="grid content-start gap-3">
+          <p className="m-0 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+            Cloud sign-in
+          </p>
+          <h3 className="m-0 max-w-[18ch] text-4xl font-bold leading-none text-foreground">
+            Returning to the notebook.
+          </h3>
+          <p className="m-0 max-w-xl text-sm leading-6 text-muted-foreground">
+            The browser finishes account work without introducing document chrome. Public reading
+            remains calm while edit, share, and invite actions wait for identity.
+          </p>
+        </div>
+
+        <div className="grid content-start gap-0 border-y border-border bg-muted/30 text-foreground">
+          {authHandoffStates.map((state) => {
+            const Icon = state.icon;
+            return (
+              <div
+                key={state.label}
+                className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 border-t border-border/70 px-4 py-3 first:border-t-0"
+              >
+                <Icon
+                  className={cn(
+                    "mt-0.5 size-5 text-muted-foreground",
+                    state.tone === "live" && "text-emerald-700 dark:text-emerald-300",
+                    state.tone === "attention" && "text-red-600",
+                    state.spin && "motion-safe:animate-spin",
+                  )}
+                  aria-hidden="true"
+                />
+                <div className="min-w-0">
+                  <h3 className="m-0 truncate text-base font-semibold">{state.label}</h3>
+                  <p className="m-0 mt-1 text-xs leading-5 text-muted-foreground">{state.detail}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="border-t border-fd-border px-4 py-3 text-xs leading-5 text-fd-muted-foreground">
+        Callback routes can reuse the entry panel directly; open notebooks should keep account
+        controls in cloud chrome and avoid adding auth badges to the document body.
+      </div>
+    </section>
   );
 }
 
@@ -565,8 +750,8 @@ const accessLedgerRows = [
   {
     icon: UserRound,
     label: "People",
-    value: "4 people",
-    detail: "owner, editor, public, invite",
+    value: "2 people",
+    detail: "owner and editor",
     tone: "default",
   },
   {
@@ -705,7 +890,7 @@ function CloudSharePanel({ variant }: { variant: CloudSharePanelVariant }) {
           <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             Current access
           </h4>
-          <span className="text-xs text-muted-foreground">4 people, 1 invite</span>
+          <span className="text-xs text-muted-foreground">2 people, public link, 1 invite</span>
         </div>
         <div className="divide-y divide-border/70">
           {shareRows.map((row) => (
@@ -762,22 +947,24 @@ const shareRows = [
 function CloudShareAccessRow({ row }: { row: (typeof shareRows)[number] }) {
   const Icon = row.icon;
   return (
-    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 py-2.5">
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
       <Icon className="size-4 text-muted-foreground" aria-hidden="true" />
       <div className="min-w-0">
         <div className="truncate text-sm font-medium">{row.label}</div>
         <div className="truncate text-xs text-muted-foreground">{row.detail}</div>
       </div>
-      <div className="hidden text-sm text-muted-foreground sm:block">{row.access}</div>
-      <div
-        className={cn(
-          "text-xs font-medium",
-          row.tone === "success" && "text-emerald-700 dark:text-emerald-300",
-          row.tone === "pending" && "text-amber-700 dark:text-amber-300",
-          row.tone === "default" && "text-muted-foreground",
-        )}
-      >
-        {row.state}
+      <div className="col-start-2 inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:col-start-auto sm:justify-end">
+        <span className="text-xs font-medium text-muted-foreground sm:text-sm">{row.access}</span>
+        <span
+          className={cn(
+            "text-xs font-medium",
+            row.tone === "success" && "text-emerald-700 dark:text-emerald-300",
+            row.tone === "pending" && "text-amber-700 dark:text-amber-300",
+            row.tone === "default" && "text-muted-foreground",
+          )}
+        >
+          {row.state}
+        </span>
       </div>
     </div>
   );
@@ -916,7 +1103,7 @@ function CloudAccessRequestCard() {
 
 function CloudAuthAttentionCard() {
   return (
-    <div className="rounded-lg border border-red-500/25 bg-red-500/[0.04] p-4 text-foreground">
+    <div className="border-l-2 border-red-500 bg-gradient-to-r from-red-500/[0.08] via-red-500/[0.04] to-transparent px-4 py-3 text-foreground">
       <div className="flex items-start gap-3">
         <X className="mt-0.5 size-4 text-red-600" aria-hidden="true" />
         <div className="min-w-0 flex-1">
@@ -1047,6 +1234,7 @@ function CloudAccountPanel({
         actor={actor}
         variant="inline"
         showDetail={false}
+        showStatus={false}
         className="justify-start"
       />
       <dl className="grid gap-1.5 border-l-2 border-border/80 pl-3 text-xs">
@@ -1085,12 +1273,10 @@ function CloudAccountPanel({
 }
 
 function CloudModeToggle({
-  compact,
   interaction,
   mode,
   onModeChange,
 }: {
-  compact: boolean;
   interaction: NotebookInteractionModeProjection;
   mode: CloudModeState;
   onModeChange?: (mode: CloudModeState) => void;
@@ -1102,19 +1288,8 @@ function CloudModeToggle({
         title="This notebook is view-only for the current identity"
       >
         <CheckCircle2 className="size-3.5" aria-hidden="true" />
-        {compact ? null : <span>View only</span>}
+        <span>View only</span>
       </span>
-    );
-  }
-
-  if (compact) {
-    return (
-      <NotebookEditModeButton
-        mode={mode}
-        state={interaction.state}
-        onModeChange={(nextMode) => onModeChange?.(nextMode)}
-        className="border-0 bg-transparent px-1.5 shadow-none"
-      />
     );
   }
 
@@ -1124,7 +1299,7 @@ function CloudModeToggle({
       state={interaction.state}
       onModeChange={(nextMode) => onModeChange?.(nextMode)}
       variant="segmented"
-      className="h-8 rounded-md bg-muted/35 p-0.5 text-sm"
+      className="bg-muted/35"
     />
   );
 }
@@ -1161,44 +1336,6 @@ function withInteractionProjection(
     canRequestEdit: interaction.canRequestEdit,
     interaction,
   };
-}
-
-function CloudAccountButton({
-  actor,
-  capabilities,
-  compact,
-}: {
-  actor: NotebookActorIdentity;
-  capabilities: NotebookShellCapabilities;
-  compact: boolean;
-}) {
-  if (actor.kind === "public") {
-    return (
-      <button
-        type="button"
-        className="inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70"
-      >
-        <LogIn className="size-3.5" aria-hidden="true" />
-        <span className={cn(compact && "sr-only")}>Sign in</span>
-      </button>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      className="inline-flex h-8 max-w-[min(14rem,34vw)] items-center rounded-md px-1.5 transition-colors hover:bg-muted/70"
-      title={actor.detail ?? actor.label}
-    >
-      <NotebookIdentityBadge
-        actor={actor}
-        variant="inline"
-        showDetail={false}
-        className={cn("max-w-full", compact && "max-w-16")}
-      />
-      <span className="sr-only">{capabilities.access.level} account</span>
-    </button>
-  );
 }
 
 function CloudNotebookDocument() {
@@ -1252,14 +1389,15 @@ function CloudNotebookDocument() {
               <span className="pl-8 text-slate-700">"problem_length",</span>
               <br />]
             </div>
-            <div className="mt-7 flex items-center gap-3 text-sm font-sans text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                <Radio className="size-3.5 text-emerald-600" aria-hidden="true" />
-                Python
-              </span>
-              <span>/</span>
-              <span>run 8</span>
-              <span className="h-px flex-1 bg-border" />
+            <div className="group mt-7 font-sans">
+              <CodeCellCurrentLine
+                languageLabel="Python"
+                count={8}
+                elapsedMs={180}
+                activityContent={<Radio className="size-3.5 text-emerald-600" aria-hidden />}
+                isFocused
+                className="mt-0"
+              />
             </div>
           </div>
         </div>
@@ -1271,7 +1409,6 @@ function CloudNotebookDocument() {
 function connectionDetail(state: CloudConnectionState): {
   icon: LucideIcon;
   label: string;
-  shortLabel: string;
   title: string;
   className: string;
 } {
@@ -1280,7 +1417,6 @@ function connectionDetail(state: CloudConnectionState): {
       return {
         icon: Cloud,
         label: "Live",
-        shortLabel: "Live",
         title: "Document sync is live",
         className: "text-emerald-700 dark:text-emerald-300",
       };
@@ -1288,7 +1424,6 @@ function connectionDetail(state: CloudConnectionState): {
       return {
         icon: CloudOff,
         label: "Reconnecting",
-        shortLabel: "Sync",
         title: "Trying to reconnect to the notebook room",
         className: "text-amber-700 dark:text-amber-300",
       };
@@ -1296,7 +1431,6 @@ function connectionDetail(state: CloudConnectionState): {
       return {
         icon: WifiOff,
         label: "Offline",
-        shortLabel: "Off",
         title: "Document edits are not connected",
         className: "text-muted-foreground",
       };

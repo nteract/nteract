@@ -206,6 +206,28 @@ test("cloud shell capabilities reserve sharing for owners", () => {
   );
 });
 
+test("cloud shell capabilities expose interaction mode for local dev identities", () => {
+  const owner = cloudNotebookShellCapabilities({
+    authState: authState("dev", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+  });
+  assert.equal(owner.canRequestEdit, true);
+  assert.equal(owner.interaction?.activeMode, "edit");
+  assert.equal(owner.interaction?.state, "editing");
+
+  const viewerRequest = cloudNotebookShellCapabilities({
+    authState: authState("dev", "viewer"),
+    connectionScope: "viewer",
+    hasCodeCells: true,
+    selectedMode: "edit",
+  });
+  assert.equal(viewerRequest.canRequestEdit, true);
+  assert.equal(viewerRequest.interaction?.activeMode, "view");
+  assert.equal(viewerRequest.interaction?.state, "requested");
+});
+
 test("cloud shell capabilities expose expired auth attention", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc_expired"),

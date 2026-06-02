@@ -9,10 +9,10 @@ Cloud notebooks reuse the document shell, rail, cells, and output language from
 desktop. The host adds the cloud concerns: who is here, whether the document is
 connected, who can share, which mode I am in, and which account is active.
 
-This mockup keeps those concerns out of runtime state. The app row carries room,
-sync, access, mode, and account context; the notebook row keeps the shared
-`NotebookCommandToolbar` for cell insertion, package/runtime language, and
-execution controls.
+This mockup keeps those concerns out of runtime state. The app row carries the
+document title plus room, sync, access, mode, and account context; the notebook
+row stays the shared `NotebookCommandToolbar` for cell insertion,
+package/runtime language, and execution controls.
 
 <CloudNotebookShellExample />
 
@@ -20,6 +20,11 @@ execution controls.
 
 - Cloud should own an app-level toolbar for presence, document sync, sharing,
   view/edit state, and auth.
+- The left side of that app toolbar should read as the document, not as
+  collaborator state. Presence belongs with the other action-side room controls.
+- The app toolbar should compact before status labels start truncating. The
+  document title yields first; at constrained widths the room controls move to a
+  second row; at phone widths the connection state can collapse to its icon.
 - The notebook toolbar should remain the normal notebook-level surface for cell
   insertion, package/runtime language, and execution controls.
 - The app row should compose shared primitives where possible:
@@ -30,8 +35,9 @@ execution controls.
   not from `RuntimeStateDoc`.
 - Runtime state should describe language and execution capability only; cloud
   transport should not be folded into the Python badge.
-- Presence copy should name the room population only. View/edit state already
-  has its own control, so labels like `2 here now, viewing` are redundant.
+- Presence copy should name the room population only and sit near sharing.
+  View/edit state already has its own control, so labels like
+  `2 here now, viewing` are redundant.
 - View/edit is a local interaction mode over host permissions. Users with edit
   permission can step into read-only viewing without requesting access again;
   denied users stay gated by the host capability projection.
@@ -43,6 +49,9 @@ execution controls.
   expired sessions renew before changing access.
 - Auth controls should explain the current account and recovery path. They
   should not duplicate presence, sharing roles, or notebook runtime state.
+- Open-notebook auth and connection problems should sit in the notice slot as
+  quiet document signal lines. They should not become raised permission cards
+  unless the user is being asked to make a durable access decision.
 - Account/session panels should use the same quiet ledger language as sharing:
   signed-in identity, document access, session health, and recovery actions
   without raised avatar bubbles.

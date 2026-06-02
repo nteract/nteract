@@ -1,6 +1,7 @@
 export type CloudShareScope = "viewer" | "editor" | "runtime_peer" | "owner";
 export type CloudShareInviteScope = "viewer" | "editor";
 export type CloudInviteStatus = "pending" | "accepted" | "revoked" | "expired";
+export type CloudShareAccessRowStateTone = "success" | "pending";
 
 export type CloudShareDisplay =
   | {
@@ -56,6 +57,8 @@ export type CloudShareAccessRow =
       detail: string;
       scope: CloudShareScope;
       badge: string;
+      stateLabel: string | null;
+      stateTone: CloudShareAccessRowStateTone | null;
       removable: boolean;
     }
   | {
@@ -66,6 +69,8 @@ export type CloudShareAccessRow =
       detail: string;
       scope: CloudShareInviteScope;
       badge: string;
+      stateLabel: string | null;
+      stateTone: CloudShareAccessRowStateTone | null;
       removable: boolean;
     };
 
@@ -84,6 +89,8 @@ export function buildCloudShareAccessRows(input: {
       detail: detailForAcl(acl),
       scope: acl.scope,
       badge: scopeLabel(acl.scope),
+      stateLabel: acl.subject_kind === "public" ? "Enabled" : null,
+      stateTone: acl.subject_kind === "public" ? "success" : null,
       removable: acl.subject_kind === "public" || acl.scope !== "owner",
     });
   }
@@ -99,11 +106,38 @@ export function buildCloudShareAccessRows(input: {
         : "Pending invite",
       scope: invite.scope,
       badge: scopeLabel(invite.scope),
+      stateLabel: "Pending",
+      stateTone: "pending",
       removable: true,
     });
   }
 
   return rows;
+}
+
+export function cloudShareAccessSummary(rows: CloudShareAccessRow[]): string | null {
+  if (rows.length === 0) return null;
+
+  const people = rows.filter(
+    (row) =>
+      row.kind === "acl" && row.acl.subject_kind === "principal" && row.scope !== "runtime_peer",
+  ).length;
+  const runtimes = rows.filter(
+    (row) =>
+      row.kind === "acl" && row.acl.subject_kind === "principal" && row.scope === "runtime_peer",
+  ).length;
+  const publicLinks = rows.filter(
+    (row) => row.kind === "acl" && row.acl.subject_kind === "public",
+  ).length;
+  const invites = rows.filter((row) => row.kind === "invite").length;
+
+  const parts: string[] = [];
+  if (people > 0) parts.push(pluralize(people, "person", "people"));
+  if (runtimes > 0) parts.push(pluralize(runtimes, "runtime", "runtimes"));
+  if (publicLinks > 0)
+    parts.push(publicLinks === 1 ? "public link" : `${publicLinks} public links`);
+  if (invites > 0) parts.push(pluralize(invites, "invite", "invites"));
+  return parts.join(", ") || null;
 }
 
 export function hasPublicViewerAccess(acl: CloudNotebookAclRow[]): boolean {
@@ -144,14 +178,18 @@ export function normalizeShareInviteEmail(value: string): string | null {
 
 function labelForAcl(row: CloudNotebookAclRow): string {
   if (row.subject_kind === "public") {
-    return row.display?.label || "Anyone with the link";
+    return "Public link";
   }
-  return row.display?.label || row.subject;
+  const displayLabel = row.display?.label?.trim();
+  if (displayLabel && displayLabel !== row.subject) {
+    return displayLabel;
+  }
+  return labelForPrincipalSubject(row.subject);
 }
 
 function detailForAcl(row: CloudNotebookAclRow): string {
   if (row.subject_kind === "public") {
-    return "Public read-only access";
+    return row.display?.label || "Anyone with the link";
   }
   const display = row.display;
   if (display?.kind === "principal") {
@@ -159,9 +197,40 @@ function detailForAcl(row: CloudNotebookAclRow): string {
     if (email && email !== display.label) {
       return email;
     }
-    return display.principal;
+    if (display.principal !== row.subject) {
+      return display.principal;
+    }
   }
-  return row.subject;
+  return detailForPrincipalSubject(row.subject);
+}
+
+function labelForPrincipalSubject(subject: string): string {
+  const decoded = decodePrincipalTail(subject);
+  return decoded || subject;
+}
+
+function detailForPrincipalSubject(subject: string): string {
+  if (subject.startsWith("user:dev:")) {
+    return "Dev identity";
+  }
+  if (subject.startsWith("user:anaconda:")) {
+    return "Anaconda identity";
+  }
+  return subject;
+}
+
+function decodePrincipalTail(subject: string): string | null {
+  const tail = subject.split(":").at(-1)?.trim();
+  if (!tail) return null;
+  try {
+    return decodeURIComponent(tail) || tail;
+  } catch {
+    return tail;
+  }
+}
+
+function pluralize(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function compareAclRows(a: CloudNotebookAclRow, b: CloudNotebookAclRow): number {

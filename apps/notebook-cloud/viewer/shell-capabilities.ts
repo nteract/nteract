@@ -52,7 +52,7 @@ export function cloudNotebookShellCapabilities({
       canEditMarkdown: true,
       canEditCells: true,
       canEditStructure: true,
-      canRequestEdit: authState.mode === "oidc",
+      canRequestEdit: authState.mode === "dev" || authState.mode === "oidc",
     },
   });
   const auth = {
