@@ -266,7 +266,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
@@ -289,7 +289,7 @@ jobs:
         run: pnpm --filter notebook-ui exec playwright install --with-deps chromium
 
       - name: Run browser E2E
-        run: pnpm --filter notebook-ui test:e2e:browser -- --project=chromium
+        run: pnpm --filter notebook-ui test:e2e:browser -- --project=chromium --workers=1
         env:
           NTERACT_BROWSER_E2E_READY_TIMEOUT_MS: 900000
 
@@ -903,7 +903,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
         with:
@@ -986,7 +986,7 @@ jobs:
           # timeout = 600). uv-installed bindings landed in
           # ${GITHUB_WORKSPACE}/.venv via VIRTUAL_ENV in the previous step.
           export VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv"
-          export RUNTIMED_PYTEST_WORKERS=3
+          export RUNTIMED_PYTEST_WORKERS=1
           uv run pytest \
             tests/test_daemon_integration.py \
             tests/test_dx_integration.py \
