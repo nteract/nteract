@@ -515,18 +515,14 @@ function CloudConnectionPill({
 
 function CloudShareMenu({ compact }: { compact: boolean }) {
   return (
-    <details className="group relative">
-      <summary
-        className="inline-flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden"
-        title="Share notebook"
-      >
-        <Share2 className="size-3.5" aria-hidden="true" />
-        {compact ? <span className="sr-only">Share</span> : <span>Share</span>}
-      </summary>
-      <div className="absolute right-0 top-[calc(100%+0.5rem)] z-30 hidden w-[min(34rem,calc(100vw-2rem))] group-open:block">
-        <CloudSharePanel variant="owner" />
-      </div>
-    </details>
+    <button
+      type="button"
+      className="inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+      title="Share notebook"
+    >
+      <Share2 className="size-3.5" aria-hidden="true" />
+      {compact ? <span className="sr-only">Share</span> : <span>Share</span>}
+    </button>
   );
 }
 
