@@ -10,14 +10,12 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  AlertCircle,
   Copy,
   Globe2,
   KeyRound,
   Link2,
   LogIn,
   LogOut,
-  Loader2,
   Mail,
   RotateCcw,
   Share2,
@@ -31,8 +29,6 @@ import {
   NotebookCommandToolbar,
   NotebookDocumentHeader,
   NotebookEditModeButton,
-  NotebookNotice,
-  NotebookNoticeAction,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -114,6 +110,7 @@ import {
 import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { materializeCloudNotebookView } from "./cloud-view-model";
+import { CloudNotebookNotices } from "./notices";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   buildCloudShareAccessRows,
@@ -1303,96 +1300,16 @@ function NotebookViewer({
       />
     </div>
   ) : null;
-  const hasNotices =
-    authState.mode === "invalid" ||
-    authState.mode === "oidc_expired" ||
-    authRenewal.kind !== "idle" ||
-    Boolean(connectionError) ||
-    Boolean(authDiagnostics) ||
-    status.kind !== "ready";
-  const notices = hasNotices ? (
-    <>
-      {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
-        <NotebookNotice
-          tone="error"
-          icon={<AlertCircle className="h-4 w-4" />}
-          title="Auth needs attention."
-          actions={
-            <NotebookNoticeAction
-              onClick={resetPrototypeAuth}
-              icon={<RotateCcw className="h-3 w-3" />}
-            >
-              Reset to anonymous
-            </NotebookNoticeAction>
-          }
-        >
-          {prototypeAuthSummary(authState)}
-        </NotebookNotice>
-      ) : null}
-
-      {authRenewal.kind !== "idle" ? (
-        <NotebookNotice
-          tone={authRenewal.kind === "failed" ? "error" : "info"}
-          icon={
-            authRenewal.kind === "failed" ? (
-              <AlertCircle className="h-4 w-4" />
-            ) : (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )
-          }
-          title={authRenewal.kind === "failed" ? "Sign-in refresh failed." : "Refreshing sign-in."}
-          actions={
-            authRenewal.kind === "failed" ? (
-              <NotebookNoticeAction
-                onClick={resetPrototypeAuth}
-                icon={<RotateCcw className="h-3 w-3" />}
-              >
-                Reset to anonymous
-              </NotebookNoticeAction>
-            ) : null
-          }
-        >
-          {authRenewal.message}
-        </NotebookNotice>
-      ) : null}
-
-      {connectionError ? (
-        <NotebookNotice
-          tone="error"
-          icon={<AlertCircle className="h-4 w-4" />}
-          title="Live room connection failed."
-          actions={
-            <NotebookNoticeAction
-              onClick={resetPrototypeAuth}
-              icon={<RotateCcw className="h-3 w-3" />}
-            >
-              Reset to anonymous
-            </NotebookNoticeAction>
-          }
-        >
-          {connectionError}
-        </NotebookNotice>
-      ) : null}
-
-      {authDiagnostics}
-
-      {status.kind === "ready" ? null : (
-        <NotebookNotice
-          tone={status.kind === "error" ? "error" : "info"}
-          icon={
-            status.kind === "error" ? (
-              <AlertCircle className="h-4 w-4" />
-            ) : (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )
-          }
-          title={status.kind === "error" ? "Unable to load notebook." : "Loading notebook."}
-        >
-          {status.message}
-        </NotebookNotice>
-      )}
-    </>
-  ) : null;
+  const notices = (
+    <CloudNotebookNotices
+      authState={authState}
+      authRenewal={authRenewal}
+      connectionError={connectionError}
+      status={status}
+      diagnostics={authDiagnostics}
+      onResetAuth={resetPrototypeAuth}
+    />
+  );
 
   return (
     <NotebookDocumentShell
