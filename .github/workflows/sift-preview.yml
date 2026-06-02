@@ -20,7 +20,7 @@ concurrency:
 jobs:
   deploy:
     name: Build & Deploy Sift Preview
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read

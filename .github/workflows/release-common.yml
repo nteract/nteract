@@ -55,7 +55,7 @@ env:
 jobs:
   compute-version:
     name: Compute Version
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
       timestamp: ${{ steps.version.outputs.TIMESTAMP }}
@@ -81,7 +81,7 @@ jobs:
 
   build-wasm:
     name: Build WASM artifacts
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -111,7 +111,7 @@ jobs:
 
   build-linux:
     name: Build Linux Executables
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     needs: [compute-version, build-wasm]
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -249,7 +249,7 @@ jobs:
 
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
@@ -594,7 +594,7 @@ jobs:
 
   build-notebook-windows-x64:
     name: Build Windows x64 Notebook
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-2025
     needs: [compute-version, build-wasm]
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -768,7 +768,7 @@ jobs:
 
   build-notebook-linux-x64:
     name: Build Linux x64 Notebook
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     needs: [compute-version, build-wasm]
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -892,7 +892,7 @@ jobs:
 
   smoke-fedora-appimage:
     name: Smoke Fedora AppImage
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     needs: [build-notebook-linux-x64]
     steps:
       - name: Checkout
@@ -930,16 +930,16 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: blacksmith-6vcpu-macos-15
+          - runner: macos-15
             target: aarch64-apple-darwin
             sccache: false
           - runner: macos-14
             target: x86_64-apple-darwin
             sccache: false
-          - runner: blacksmith-4vcpu-ubuntu-2404
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             sccache: true
-          - runner: blacksmith-4vcpu-windows-2025
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
             sccache: true
     steps:
@@ -1068,7 +1068,7 @@ jobs:
     # testing can opt out).
     name: Publish agent plugins
     if: inputs.publish_plugin_channel != ''
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs:
       [
         compute-version,
@@ -1169,7 +1169,7 @@ jobs:
 
   prerelease:
     name: ${{ inputs.release_title }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write
