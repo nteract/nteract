@@ -570,6 +570,7 @@ function CloudPermissionsSurface() {
           <CloudAuthAttentionCard />
         </div>
       </div>
+      <CloudAccessPathways />
     </section>
   );
 }
@@ -733,6 +734,105 @@ function CloudShareAccessRow({ row }: { row: (typeof shareRows)[number] }) {
         {row.state}
       </div>
     </div>
+  );
+}
+
+const accessPathways = [
+  {
+    icon: ShieldCheck,
+    label: "Owner",
+    state: "Share notebook",
+    detail: "Public link, invites, role changes, and removals stay owner-owned.",
+    action: "Manage access",
+    tone: "default",
+  },
+  {
+    icon: FilePenLine,
+    label: "Editor",
+    state: "Editing",
+    detail: "Editors can change notebook content without becoming sharing admins.",
+    action: "Owner shares",
+    tone: "default",
+  },
+  {
+    icon: Eye,
+    label: "Viewer",
+    state: "Viewing live",
+    detail: "The document stays connected while the viewer requests edit access.",
+    action: "Request edit",
+    tone: "request",
+  },
+  {
+    icon: X,
+    label: "Expired",
+    state: "Session paused",
+    detail: "Read access remains calm; write, share, and invite actions wait for renewal.",
+    action: "Renew session",
+    tone: "attention",
+  },
+] satisfies Array<{
+  icon: LucideIcon;
+  label: string;
+  state: string;
+  detail: string;
+  action: string;
+  tone: "default" | "request" | "attention";
+}>;
+
+function CloudAccessPathways() {
+  return (
+    <section className="border-t border-fd-border px-4 py-3" aria-label="Cloud access pathways">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+          Access pathways
+        </h3>
+        <span className="text-xs text-muted-foreground">
+          sharing appears only where the role can act
+        </span>
+      </div>
+      <div className="divide-y divide-border/70">
+        {accessPathways.map((pathway) => {
+          const Icon = pathway.icon;
+          return (
+            <div
+              key={pathway.label}
+              className="grid min-w-0 gap-2 py-3 sm:grid-cols-[auto_7rem_minmax(0,1fr)_auto]"
+            >
+              <Icon
+                className={cn(
+                  "mt-0.5 size-4 text-muted-foreground",
+                  pathway.tone === "request" && "text-emerald-700 dark:text-emerald-300",
+                  pathway.tone === "attention" && "text-red-600",
+                )}
+                aria-hidden="true"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">{pathway.label}</div>
+                <div
+                  className={cn(
+                    "text-xs font-medium text-muted-foreground",
+                    pathway.tone === "request" && "text-emerald-700 dark:text-emerald-300",
+                    pathway.tone === "attention" && "text-red-700 dark:text-red-300",
+                  )}
+                >
+                  {pathway.state}
+                </div>
+              </div>
+              <p className="m-0 text-xs leading-5 text-muted-foreground">{pathway.detail}</p>
+              <div
+                className={cn(
+                  "text-sm font-medium text-muted-foreground",
+                  pathway.tone === "request" && "text-emerald-700 dark:text-emerald-300",
+                  pathway.tone === "attention" && "text-red-700 dark:text-red-300",
+                )}
+              >
+                {pathway.action}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
