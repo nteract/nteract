@@ -28,6 +28,17 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/canMutateCells && onSetCellOutputsHidden/);
   });
 
+  it("does not create cells from a transient empty sync state", () => {
+    const sourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+
+    expect(sourceText).not.toContain("Auto-seed first cell");
+    expect(sourceText).not.toContain("didAutoSeed");
+    expect(sourceText).toMatch(/data-notebook-synced=\{!isLoading && !loadError\}/);
+  });
+
   it("does not install code execution keybindings when execution is unavailable", () => {
     const sourceText = readFileSync(
       join(process.cwd(), "apps/notebook/src/components/CodeCell.tsx"),
