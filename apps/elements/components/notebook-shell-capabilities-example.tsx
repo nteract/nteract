@@ -412,6 +412,31 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
           label={enabledLabels.length ? `can change: ${enabledLabels.join(", ")}` : "view only"}
         />
       </div>
+      <dl className="mt-3 grid gap-2">
+        {scenario.sourceFacts.map((fact) => (
+          <div key={fact.label}>
+            <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+              {fact.label}
+            </dt>
+            <dd className="mt-0.5 text-[11px] leading-4 text-fd-foreground">{fact.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-3 border-t border-fd-border pt-3">
+        <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+          Host boundary
+        </div>
+        <ul className="mt-2 space-y-2">
+          {scenario.hostBoundaries.map((boundary) => (
+            <li key={boundary.surface} className="text-[11px] leading-4">
+              <span className="font-medium text-fd-foreground">{boundary.surface}: </span>
+              <span className="text-fd-muted-foreground">{boundary.sharedSurface}</span>
+              <span className="text-fd-muted-foreground">; </span>
+              <span className="text-fd-muted-foreground">{boundary.hostAuthority}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </article>
   );
 }

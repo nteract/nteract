@@ -46,6 +46,8 @@ export interface ElementsNotebookScenario {
   title: string;
   eyebrow: string;
   summary: string;
+  sourceFacts: readonly ElementsNotebookSourceFact[];
+  hostBoundaries: readonly ElementsNotebookHostBoundary[];
   capabilities: NotebookShellCapabilities;
   environment: NotebookEnvironmentSurface;
   cells: readonly NotebookViewCell[];
@@ -57,6 +59,17 @@ export interface ElementsNotebookScenario {
   outputState: ElementsNotebookOutputState;
   variables: readonly ElementsNotebookVariable[];
   renderers: readonly ElementsNotebookRenderer[];
+}
+
+export interface ElementsNotebookSourceFact {
+  label: string;
+  value: string;
+}
+
+export interface ElementsNotebookHostBoundary {
+  surface: string;
+  sharedSurface: string;
+  hostAuthority: string;
 }
 
 export interface ElementsNotebookPackageState {
@@ -1497,6 +1510,13 @@ function createScenario({
     title,
     eyebrow,
     summary,
+    sourceFacts: scenarioSourceFacts(projectedCapabilities, {
+      packageSummary,
+      runtimeLabel,
+      syncLabel,
+      trustLabel,
+    }),
+    hostBoundaries: scenarioHostBoundaries(projectedCapabilities),
     capabilities: projectedCapabilities,
     environment,
     cells: notebookCells,
@@ -1509,6 +1529,113 @@ function createScenario({
     variables,
     renderers,
   };
+}
+
+function scenarioSourceFacts(
+  capabilities: NotebookShellCapabilities,
+  {
+    packageSummary,
+    runtimeLabel,
+    syncLabel,
+    trustLabel,
+  }: {
+    packageSummary: string;
+    runtimeLabel: string;
+    syncLabel: string | null;
+    trustLabel: string | null;
+  },
+): readonly ElementsNotebookSourceFact[] {
+  const accessActor =
+    capabilities.access.actor?.principal.label ??
+    capabilities.access.identityLabel ??
+    capabilities.access.actorLabel ??
+    "no actor";
+  const runtimeActor =
+    capabilities.runtime.actor?.operator.label ??
+    capabilities.runtime.identityLabel ??
+    capabilities.runtime.actorLabel ??
+    "no runtime actor";
+  const mutationFacts = [
+    capabilities.canEditMarkdown ? "markdown" : null,
+    capabilities.canEditCells ? "cell source" : null,
+    capabilities.canEditStructure ? "structure" : null,
+    capabilities.canExecute ? "execute" : null,
+    capabilities.canManagePackages ? "packages" : null,
+    capabilities.canManageSharing ? "sharing" : null,
+  ].filter((fact): fact is string => Boolean(fact));
+
+  return [
+    {
+      label: "Access authority",
+      value: `${capabilities.access.source}:${capabilities.access.level} for ${accessActor}`,
+    },
+    {
+      label: "Interaction mode",
+      value: capabilities.interaction
+        ? `${capabilities.interaction.selectedMode} selected, ${capabilities.interaction.activeMode} active`
+        : mutationFacts.length
+          ? "editable from capabilities"
+          : "view-only from capabilities",
+    },
+    {
+      label: "Runtime authority",
+      value: `${capabilities.runtime.source}, ${
+        capabilities.runtime.connected ? "connected" : "detached"
+      }, actor ${runtimeActor}`,
+    },
+    {
+      label: "Environment facts",
+      value: [runtimeLabel, packageSummary, syncLabel, trustLabel].filter(Boolean).join(" / "),
+    },
+    {
+      label: "Mutable affordances",
+      value: mutationFacts.length ? mutationFacts.join(", ") : "none",
+    },
+  ];
+}
+
+function scenarioHostBoundaries(
+  capabilities: NotebookShellCapabilities,
+): readonly ElementsNotebookHostBoundary[] {
+  const accessAuthority = hostAuthorityLabel(capabilities.access.source);
+  const runtimeAuthority = hostAuthorityLabel(capabilities.runtime.source);
+
+  return [
+    {
+      surface: "Notebook rendering",
+      sharedSurface: "NotebookDocumentShell, NotebookDocumentRail, NotebookView",
+      hostAuthority: `${accessAuthority} supplies document bytes, access, and routing facts.`,
+    },
+    {
+      surface: "Notebook writes",
+      sharedSurface: "NotebookShellCapabilities plus shared mutation callbacks",
+      hostAuthority: `${accessAuthority} still enforces markdown, source, structure, sharing, and package authority.`,
+    },
+    {
+      surface: "Runtime and outputs",
+      sharedSurface: "NotebookEnvironmentSurface, runtime actor projection, output frames",
+      hostAuthority: `${runtimeAuthority} owns runtime lifecycle, runtime-state authorship, and output/blob authority.`,
+    },
+    {
+      surface: "Identity display",
+      sharedSurface: "NotebookActorProjection and NotebookToolbarIdentity",
+      hostAuthority:
+        "Host adapters enrich durable actor labels with structured principal/operator profile facts.",
+    },
+  ];
+}
+
+function hostAuthorityLabel(source: NotebookShellCapabilities["access"]["source"]): string {
+  switch (source) {
+    case "cloud":
+      return "Hosted room and ACL service";
+    case "local":
+      return "Desktop daemon and local filesystem";
+    case "fixture":
+      return "Elements fixture host";
+    default:
+      return "Host adapter";
+  }
 }
 
 function actorProjection({
