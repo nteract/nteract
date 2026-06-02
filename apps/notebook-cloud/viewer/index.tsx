@@ -1316,6 +1316,11 @@ function NotebookViewer({
     status,
     diagnostics: authDiagnostics,
   });
+  const notebookViewIsLoading =
+    status.kind === "loading" ||
+    (shellCapabilities.canEditStructure &&
+      notebookCellIds.length === 0 &&
+      !liveMaterializedRef.current);
   const notices = hasNotices ? (
     <CloudNotebookNotices
       authState={authState}
@@ -1351,7 +1356,7 @@ function NotebookViewer({
         >
           <NotebookView
             cellIds={notebookCellIds}
-            isLoading={status.kind === "loading"}
+            isLoading={notebookViewIsLoading}
             capabilities={shellCapabilities}
             runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
             sessionRuntimeState={connectionError ? "error" : "ready"}
@@ -1838,20 +1843,18 @@ function CloudAuthControls({
     hostname: window.location.hostname,
     search: window.location.search,
   });
-  const summary =
-    authState.mode === "dev"
-      ? `Dev ${authState.user ?? "browser-editor"}`
-      : authState.mode === "oidc"
-        ? (authState.user ?? "Signed in")
-        : authState.mode === "invalid" || authState.mode === "oidc_expired"
-          ? "Auth needs attention"
-          : "Anonymous";
   const diagnostics = prototypeAuthDiagnostics(authState, {
     actorLabel: connectionActorLabel,
     connectionError,
     connectionScope,
   });
   const actor = notebookActorIdentityFromAccess(capabilities.access, capabilities.auth);
+  const session = cloudAccountSessionDisplay({
+    actorLabel: actor.label,
+    authState,
+    connectionError,
+    connectionScope,
+  });
   useEffect(() => {
     setCopyState("idle");
   }, [authState, connectionActorLabel, connectionError, connectionScope]);
@@ -1909,7 +1912,7 @@ function CloudAuthControls({
     <details className="cloud-auth-menu">
       <summary
         className="cloud-auth-identity-summary"
-        title={`${summary}: ${prototypeAuthSummary(authState)}`}
+        title={`${session.title}: ${session.description}`}
         aria-label={`Identity: ${actor.label}`}
       >
         <NotebookIdentityBadge
@@ -1922,20 +1925,31 @@ function CloudAuthControls({
       </summary>
       <form onSubmit={applyDevAuth}>
         <div className="cloud-auth-panel-header">
-          <h2>{summary}</h2>
-          <p>{prototypeAuthSummary(authState)}</p>
+          <h2>{session.title}</h2>
+          <p>{session.description}</p>
         </div>
-        <dl className="cloud-auth-diagnostics" aria-label="Cloud account session">
-          {diagnostics.rows.map((row) => (
+        <div className="cloud-auth-session" aria-label="Cloud account session">
+          {session.rows.map((row) => (
             <div key={row.label} data-tone={row.tone ?? "default"}>
-              <dt>{row.label}</dt>
-              <dd>{row.value}</dd>
+              <span>{row.label}</span>
+              <strong>{row.value}</strong>
             </div>
           ))}
-        </dl>
+        </div>
+        <details className="cloud-auth-technical">
+          <summary>Technical details</summary>
+          <dl className="cloud-auth-diagnostics" aria-label="Cloud account diagnostics">
+            {diagnostics.rows.map((row) => (
+              <div key={row.label} data-tone={row.tone ?? "default"}>
+                <dt>{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
         {showPrototypeDevControls ? (
-          <section className="cloud-auth-dev-section" aria-label="Prototype identity">
-            <h3>Prototype identity</h3>
+          <section className="cloud-auth-dev-section" aria-label="Local dev identity">
+            <h3>Local dev identity</h3>
             <label>
               <span>Dev token</span>
               <input
@@ -1986,7 +2000,7 @@ function CloudAuthControls({
               <LogOut aria-hidden="true" />
               Sign out
             </button>
-          ) : authConfig.oidc ? (
+          ) : authConfig.oidc && shouldShowCloudHeaderSignIn(authState) ? (
             <button type="button" disabled={authAction === "starting"} onClick={beginOidcAuth}>
               <LogIn aria-hidden="true" />
               {authAction === "starting" ? "Starting sign-in" : "Sign in"}
@@ -2008,7 +2022,7 @@ function CloudAuthControls({
           </button>
           <button type="button" onClick={resetAuth}>
             <RotateCcw aria-hidden="true" />
-            Anonymous
+            Use anonymous
           </button>
         </div>
       </form>
@@ -2028,6 +2042,97 @@ function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolea
     authState.mode === "invalid" ||
     authState.mode === "oidc_expired"
   );
+}
+
+function cloudAccountSessionDisplay({
+  actorLabel,
+  authState,
+  connectionError,
+  connectionScope,
+}: {
+  actorLabel: string;
+  authState: CloudPrototypeAuthState;
+  connectionError: string | null;
+  connectionScope: string | null;
+}): {
+  title: string;
+  description: string;
+  rows: Array<{ label: string; value: string; tone?: "default" | "success" | "warning" }>;
+} {
+  const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
+  const connectedScope = parseCloudConnectionScope(connectionScope);
+  const effectiveScope = connectedScope ?? requestedScope;
+  const liveTone = connectionError ? "warning" : connectedScope ? "success" : "default";
+  const liveLabel = connectionError ? "Needs attention" : connectedScope ? "Live" : "Joining";
+
+  if (authState.mode === "invalid" || authState.mode === "oidc_expired") {
+    return {
+      title: "Session needs attention",
+      description:
+        authState.mode === "oidc_expired"
+          ? "Sign in again to keep cloud write actions available."
+          : (authState.problem ?? "Stored collaborator credentials need to be replaced."),
+      rows: [
+        { label: "Access", value: cloudScopeLabel(effectiveScope), tone: "warning" },
+        { label: "Connection", value: liveLabel, tone: liveTone },
+      ],
+    };
+  }
+
+  if (authState.mode === "anonymous") {
+    return {
+      title: "Public viewer",
+      description: "You can stay connected and read this notebook without signing in.",
+      rows: [
+        { label: "Access", value: "Can view" },
+        { label: "Connection", value: liveLabel, tone: liveTone },
+      ],
+    };
+  }
+
+  if (authState.mode === "oidc") {
+    const title = authState.user ?? actorLabel;
+    return {
+      title,
+      description: `${cloudScopeLabel(effectiveScope)} access for this notebook.`,
+      rows: [
+        { label: "Access", value: cloudScopeLabel(effectiveScope), tone: "success" },
+        { label: "Connection", value: liveLabel, tone: liveTone },
+        { label: "Identity", value: "Anaconda" },
+      ],
+    };
+  }
+
+  const title = authState.user ?? actorLabel;
+  return {
+    title,
+    description: `${cloudScopeLabel(effectiveScope)} access from a local dev identity.`,
+    rows: [
+      { label: "Access", value: cloudScopeLabel(effectiveScope), tone: "success" },
+      { label: "Connection", value: liveLabel, tone: liveTone },
+      { label: "Identity", value: "Local dev" },
+    ],
+  };
+}
+
+function parseCloudConnectionScope(value: string | null): ConnectionScope | null {
+  if (value === "viewer" || value === "editor" || value === "owner" || value === "runtime_peer") {
+    return value;
+  }
+  return null;
+}
+
+function cloudScopeLabel(scope: ConnectionScope): string {
+  switch (scope) {
+    case "owner":
+      return "Owner";
+    case "editor":
+      return "Can edit";
+    case "runtime_peer":
+      return "Runtime peer";
+    case "viewer":
+      return "Can view";
+  }
 }
 
 function CloudNotebookTitle({ notebookId }: { notebookId: string }) {

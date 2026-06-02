@@ -9,6 +9,7 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
   assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/components\/NotebookView"/);
   assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
   assert.match(sourceText, /<NotebookView[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.match(sourceText, /<NotebookView[\s\S]*autoSeedEmptyNotebook=\{false\}/);
   assert.doesNotMatch(sourceText, /canAcceptCellMutations=\{false\}/);
   assert.doesNotMatch(sourceText, /readOnly=\{!canEditMarkdown\}/);
   assert.doesNotMatch(sourceText, /import \{ CloudLiveNotebook \}/);
