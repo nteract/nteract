@@ -83,6 +83,12 @@ test("cloud wires shared presence and cleans projected store entries", () => {
     /sendSelectionPresence\(\s+cellId,\s+anchorLine,\s+anchorCol,\s+headLine,\s+headCol,/,
   );
   assert.match(sourceText, /resetCloudViewStoreProjection\(\)/);
+  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/cell-store/);
+  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/execution-store/);
+  assert.match(bridgeSourceText, /@\/components\/notebook\/state\/output-store/);
+  assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-cells/);
+  assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-executions/);
+  assert.doesNotMatch(bridgeSourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-outputs/);
   assert.match(bridgeSourceText, /deleteOutputs\(difference\(cloudOwnedOutputIds/);
   assert.match(bridgeSourceText, /deleteExecutions\(difference\(cloudOwnedExecutionIds/);
 });

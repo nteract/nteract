@@ -13,7 +13,7 @@ import {
   useIsNextCellFromFocused,
   useIsPreviousCellFromFocused,
   useSearchQuery,
-} from "../lib/cell-ui-state";
+} from "@/components/notebook/state/cell-ui-state";
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { detectRawFormat } from "../lib/detect-raw-format";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";

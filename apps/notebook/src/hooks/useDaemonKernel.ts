@@ -25,7 +25,10 @@ import {
 } from "runtimed";
 import { refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
-import { getCellExecutionId, getCellIdForExecutionId } from "../lib/notebook-executions";
+import {
+  getCellExecutionId,
+  getCellIdForExecutionId,
+} from "@/components/notebook/state/execution-store";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
   diffExecutions,

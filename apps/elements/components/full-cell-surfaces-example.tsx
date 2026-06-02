@@ -20,14 +20,14 @@ import {
   setQueuedCellIds,
   setSearchCurrentMatch,
   setSearchQuery,
-} from "../../notebook/src/lib/cell-ui-state";
-import { replaceNotebookCells } from "../../notebook/src/lib/notebook-cells";
+} from "@/components/notebook/state/cell-ui-state";
+import { replaceNotebookCells } from "@/components/notebook/state/cell-store";
 import {
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,
-} from "../../notebook/src/lib/notebook-executions";
-import { resetNotebookOutputs, setOutput } from "../../notebook/src/lib/notebook-outputs";
+} from "@/components/notebook/state/execution-store";
+import { resetNotebookOutputs, setOutput } from "@/components/notebook/state/output-store";
 import type {
   CodeCell as CodeCellType,
   JupyterOutput,

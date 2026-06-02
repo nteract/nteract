@@ -31,19 +31,19 @@ import { cn } from "@/lib/utils";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
-import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
+import { useFocusedCellId, useSearchCurrentMatch } from "@/components/notebook/state/cell-ui-state";
 import { logger } from "../lib/logger";
 import {
   getCellById,
   getNotebookCellsSnapshot,
   useCell,
   useMaterializeVersion,
-} from "../lib/notebook-cells";
+} from "@/components/notebook/state/cell-store";
 import {
   getCellOutputsSnapshot,
   subscribeOutputsVersion,
   useOutputStructureVersion,
-} from "../lib/notebook-outputs";
+} from "@/components/notebook/state/output-store";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CodeCell, type HiddenGroupCellSummary } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";

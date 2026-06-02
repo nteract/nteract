@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { updateCellById } from "../../notebook/src/lib/notebook-cells.ts";
-import { createNotebookViewModelFromNotebookCells } from "../../notebook/src/lib/notebook-view-model.ts";
+import { updateCellById } from "@/components/notebook/state/cell-store";
+import { createNotebookViewModelFromNotebookCells } from "@/components/notebook/state/view-model-store";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudViewStoreProjection,
