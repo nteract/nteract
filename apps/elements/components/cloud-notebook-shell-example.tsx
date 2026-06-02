@@ -766,8 +766,8 @@ const accessLedgerRows = [
   {
     icon: UserRound,
     label: "People",
-    value: "4 people",
-    detail: "owner, editor, public, invite",
+    value: "2 people",
+    detail: "owner and editor",
     tone: "default",
   },
   {
@@ -906,7 +906,7 @@ function CloudSharePanel({ variant }: { variant: CloudSharePanelVariant }) {
           <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             Current access
           </h4>
-          <span className="text-xs text-muted-foreground">4 people, 1 invite</span>
+          <span className="text-xs text-muted-foreground">2 people, public link, 1 invite</span>
         </div>
         <div className="divide-y divide-border/70">
           {shareRows.map((row) => (
