@@ -8,8 +8,10 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
+use automerge::Prop;
 use notebook_doc::diff::{
     diff_doc, extract_change_actor_hashes, extract_change_actors, CellChangeset, ChangeActor,
     TextPatch,
@@ -901,12 +903,14 @@ fn validate_room_notebook_change_actors_inner<'a>(
 /// Validate that an editor-scope peer's NotebookDoc changes stay within the
 /// collaborative cell-editing surface.
 ///
-/// Editors may add, remove, reorder, and edit cells of any type. Notebook-level
-/// metadata (kernelspec, trust, environment, path, project) stays owner-authored
-/// and is rejected here. Owners skip this check entirely via
-/// `can_write_all_notebook_changes`. Canonical schema-seed changes are folded
-/// into `heads_before` so a fresh room's genesis maps are not read as metadata
-/// edits.
+/// Editors may add, remove, reorder, and edit cells of any type. Everything else
+/// at the document root is owner-authored: notebook metadata (kernelspec, trust,
+/// environment, path, project), `schema_version`, `notebook_id`, and the
+/// `runtime_state_doc_id` pairing. So the policy is an allowlist over the diff —
+/// every patch must land inside the `cells` map; any other root write is
+/// rejected. Owners skip this check entirely via `can_write_all_notebook_changes`.
+/// Canonical schema-seed changes are folded into `heads_before` so a fresh room's
+/// genesis is not read as a write.
 fn validate_editor_notebook_changes<'a>(
     preview: &mut NotebookDoc,
     heads_before: &[automerge::ChangeHash],
@@ -922,13 +926,37 @@ fn validate_editor_notebook_changes<'a>(
     }
 
     let heads_after = preview.get_heads();
-    let changeset = diff_doc(preview.doc_mut(), &effective_heads_before, &heads_after);
-    if changeset.metadata_changed {
-        return Err(
-            "editor scope cannot change notebook metadata; metadata is owner-authored".to_string(),
-        );
+    for patch in preview
+        .doc_mut()
+        .diff(&effective_heads_before, &heads_after)
+    {
+        // A cell op modifies an object at or below `cells`, so its patch path
+        // begins with `cells`. Anything else — root metadata, schema_version,
+        // notebook_id, runtime_state_doc_id, or a root-level replace/delete of
+        // the cells map itself — is owner-authored and rejected.
+        let within_cells =
+            matches!(patch.path.first(), Some((_, Prop::Map(key))) if key == "cells");
+        if !within_cells {
+            return Err(format!(
+                "editor scope may only edit cells; change touched notebook root '{}'",
+                editor_change_root_label(&patch)
+            ));
+        }
     }
     Ok(())
+}
+
+/// Best-effort name of the document root a rejected editor patch touched, for
+/// error messages.
+fn editor_change_root_label(patch: &automerge::Patch) -> String {
+    match patch.path.first() {
+        Some((_, Prop::Map(key))) => key.clone(),
+        Some((_, Prop::Seq(_))) => "<root sequence>".to_string(),
+        None => match &patch.action {
+            PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => key.clone(),
+            _ => "<document root>".to_string(),
+        },
+    }
 }
 
 /// A handle to a local Automerge notebook document.
@@ -3180,6 +3208,28 @@ mod tests {
             )
             .is_err(),
             "editor scope cannot change notebook metadata",
+        );
+    }
+
+    #[test]
+    fn editor_changes_reject_runtime_state_doc_id_writes() {
+        let mut preview = NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::UnicodeCodePoint,
+            "user:dev:alice/desktop:a",
+        );
+        let heads_before = preview.get_heads();
+        preview
+            .set_runtime_state_doc_id("forged-runtime-doc")
+            .expect("forge runtime_state_doc_id");
+
+        assert!(
+            validate_editor_notebook_changes(
+                &mut preview,
+                &heads_before,
+                std::iter::empty::<&ChangeActor>(),
+            )
+            .is_err(),
+            "editor scope cannot repoint runtime_state_doc_id",
         );
     }
 

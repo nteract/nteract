@@ -185,7 +185,29 @@ describe("RoomHostHandle", () => {
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
-      /cannot change notebook metadata/,
+      /editor scope may only edit cells/,
+    );
+  });
+
+  it("rejects editor-scoped runtime_state_doc_id repointing", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
+
+    syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
+    editor.set_runtime_state_doc_id("forged-runtime-doc");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-editor",
+          "user:dev:bob",
+          "editor",
+          false,
+          encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+        ),
+      /editor scope may only edit cells/,
     );
   });
 
