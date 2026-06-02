@@ -11,10 +11,8 @@ import {
 import { createRoot } from "react-dom/client";
 import {
   AlertCircle,
-  ChevronDown,
   Cloud,
   CloudOff,
-  Copy,
   Globe2,
   KeyRound,
   Link2,
@@ -36,11 +34,9 @@ import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
-  NotebookIdentityBadge,
   NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
   NotebookToolbarFrame,
-  notebookActorIdentityFromAccess,
   type NotebookEnvironmentManager,
   type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
@@ -62,13 +58,9 @@ import {
   cloudSyncAuthFromPrototypeAuthState,
   fetchWithCloudPrototypeAuth,
   isCloudPrototypeAuthStorageKey,
-  NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   prepareCloudOidcViewerLogin,
-  prototypeAuthDiagnostics,
   prototypeAuthSummary,
-  storeCloudPrototypeDevAuth,
   storeCloudRequestedScope,
-  validatePrototypeToken,
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
@@ -98,7 +90,6 @@ import {
   storedOidcTokenNeedsRefresh,
   type CloudOidcAuthConfig,
 } from "./oidc-auth";
-import type { ConnectionScope } from "../src/auth-shared";
 import { CloudLivePresenceStore } from "./live-presence";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
@@ -111,7 +102,6 @@ import {
   reduceCloudViewerConnection,
   reduceCloudViewerPresenceMessage,
 } from "./presence";
-import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
@@ -1283,16 +1273,6 @@ function NotebookViewer({
     setSelectedInteractionMode("edit");
     refreshAuthState();
   }, [refreshAuthState]);
-  const showPrototypeDevControls = shouldShowPrototypeDevControls({
-    oidcConfigured: Boolean(authConfig.oidc),
-    hostname: window.location.hostname,
-    search: window.location.search,
-  });
-  const showCloudIdentityControls = shouldShowCloudIdentityControls({
-    authState,
-    search: window.location.search,
-    showPrototypeDevControls,
-  });
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
@@ -1326,7 +1306,7 @@ function NotebookViewer({
           </>
         }
         authControls={
-          shouldShowCloudHeaderSignIn(authState) && !showCloudIdentityControls ? (
+          shouldShowCloudHeaderSignIn(authState) ? (
             <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
           ) : null
         }
@@ -1346,19 +1326,7 @@ function NotebookViewer({
             onRequestEditAccess={requestCloudEditAccess}
           />
         }
-        identityControls={
-          showCloudIdentityControls ? (
-            <CloudAuthControls
-              authConfig={authConfig}
-              authState={authState}
-              capabilities={shellCapabilities}
-              connectionActorLabel={connectionActorLabel}
-              connectionError={connectionError}
-              connectionScope={connectionScope}
-              onAuthStateChange={refreshAuthState}
-            />
-          ) : null
-        }
+        identityControls={null}
       />
       {shouldShowCloudNotebookCommandToolbar(shellCapabilities) ? (
         <NotebookCommandToolbar
@@ -1373,23 +1341,6 @@ function NotebookViewer({
       ) : null}
     </NotebookToolbarFrame>
   );
-  const authDiagnostics = shouldShowPrototypeDevControls({
-    oidcConfigured: Boolean(authConfig.oidc),
-    hostname: window.location.hostname,
-    search: window.location.search,
-  }) ? (
-    <div className="cloud-state cloud-auth-diagnostics-state" data-kind="loading">
-      <CloudAuthControls
-        authConfig={authConfig}
-        authState={authState}
-        capabilities={shellCapabilities}
-        connectionActorLabel={connectionActorLabel}
-        connectionError={connectionError}
-        connectionScope={connectionScope}
-        onAuthStateChange={refreshAuthState}
-      />
-    </div>
-  ) : null;
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
@@ -1399,7 +1350,6 @@ function NotebookViewer({
     connectionError,
     hasReadableSnapshot: notebookHasReadableSnapshot,
     status,
-    diagnostics: authDiagnostics,
   });
   const notebookViewIsLoading =
     status.kind === "loading" ||
@@ -1414,7 +1364,6 @@ function NotebookViewer({
       connectionError={connectionError}
       hasReadableSnapshot={notebookHasReadableSnapshot}
       status={status}
-      diagnostics={authDiagnostics}
       onResetAuth={resetPrototypeAuth}
     />
   ) : null;
@@ -1933,228 +1882,6 @@ function initialCloudRailCollapsed(): boolean {
   return window.matchMedia("(max-width: 599.98px)").matches;
 }
 
-function CloudAuthControls({
-  authConfig,
-  authState,
-  capabilities,
-  connectionActorLabel,
-  connectionError,
-  connectionScope,
-  onAuthStateChange,
-}: {
-  authConfig: CloudViewerAuthConfig;
-  authState: CloudPrototypeAuthState;
-  capabilities: NotebookShellCapabilities;
-  connectionActorLabel: string | null;
-  connectionError: string | null;
-  connectionScope: string | null;
-  onAuthStateChange: () => void;
-}) {
-  const [token, setToken] = useState("");
-  const [user, setUser] = useState(authState.user ?? "alice");
-  const [scope, setScope] = useState<ConnectionScope>(
-    authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
-  );
-  const [formError, setFormError] = useState<string | null>(null);
-  const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const showPrototypeDevControls = shouldShowPrototypeDevControls({
-    oidcConfigured: Boolean(authConfig.oidc),
-    hostname: window.location.hostname,
-    search: window.location.search,
-  });
-  const diagnostics = prototypeAuthDiagnostics(authState, {
-    actorLabel: connectionActorLabel,
-    connectionError,
-    connectionScope,
-  });
-  const actor = notebookActorIdentityFromAccess(capabilities.access, capabilities.auth);
-  const session = cloudAccountSessionDisplay({
-    actorLabel: actor.label,
-    authState,
-    connectionError,
-    connectionScope,
-  });
-  useEffect(() => {
-    setCopyState("idle");
-  }, [authState, connectionActorLabel, connectionError, connectionScope]);
-
-  const applyDevAuth = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const problem = validatePrototypeToken(token);
-    if (problem) {
-      setFormError(problem);
-      return;
-    }
-    storeCloudPrototypeDevAuth(window.localStorage, { token, user, scope });
-    setToken("");
-    setFormError(null);
-    onAuthStateChange();
-  };
-
-  const beginOidcAuth = async () => {
-    if (!authConfig.oidc) {
-      setFormError("OIDC sign-in is not configured for this host.");
-      return;
-    }
-    try {
-      setAuthAction("starting");
-      prepareCloudOidcViewerLogin(window.localStorage);
-      setScope(NOTEBOOK_CLOUD_DEFAULT_SCOPE);
-      const url = await beginOidcLogin(authConfig.oidc, {
-        currentUrl: window.location.href,
-        storage: window.localStorage,
-      });
-      window.location.assign(url.href);
-    } catch (error) {
-      setAuthAction("idle");
-      setFormError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const resetAuth = () => {
-    clearCloudPrototypeDevAuth(window.localStorage);
-    setToken("");
-    setFormError(null);
-    onAuthStateChange();
-  };
-
-  const copyDiagnostics = async () => {
-    try {
-      await navigator.clipboard.writeText(diagnostics.copyText);
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
-  };
-
-  return (
-    <details className="cloud-auth-menu">
-      <summary
-        className="cloud-auth-identity-summary"
-        title={`${session.title}: ${session.description}`}
-        aria-label={`Identity: ${actor.label}`}
-      >
-        <UserRound className="cloud-auth-identity-icon" aria-hidden="true" />
-        <NotebookIdentityBadge
-          actor={actor}
-          variant="inline"
-          size="sm"
-          showDetail={false}
-          showStatus={false}
-          className="cloud-auth-identity-badge"
-        />
-      </summary>
-      <form onSubmit={applyDevAuth}>
-        <div className="cloud-auth-panel-header">
-          <h2>{session.title}</h2>
-          <p>{session.description}</p>
-        </div>
-        <div className="cloud-auth-session" aria-label="Cloud account session">
-          {session.rows.map((row) => (
-            <div key={row.label} data-tone={row.tone ?? "default"}>
-              <span>{row.label}</span>
-              <strong>{row.value}</strong>
-            </div>
-          ))}
-        </div>
-        <details className="cloud-auth-technical">
-          <summary>
-            <span>Technical details</span>
-            <ChevronDown aria-hidden="true" />
-          </summary>
-          <dl className="cloud-auth-diagnostics" aria-label="Cloud account diagnostics">
-            {diagnostics.rows.map((row) => (
-              <div key={row.label} data-tone={row.tone ?? "default"}>
-                <dt>{row.label}</dt>
-                <dd>{row.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </details>
-        {showPrototypeDevControls ? (
-          <section className="cloud-auth-dev-section" aria-label="Local dev identity">
-            <h3>Local dev identity</h3>
-            <label>
-              <span>Dev token</span>
-              <input
-                type="password"
-                value={token}
-                placeholder="Worker dev token"
-                autoComplete="off"
-                onChange={(event) => setToken(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>User</span>
-              <input
-                type="text"
-                value={user}
-                autoComplete="off"
-                onChange={(event) => setUser(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>Scope</span>
-              <select
-                value={scope}
-                onChange={(event) => setScope(event.target.value as ConnectionScope)}
-              >
-                <option value="editor">editor</option>
-                <option value="owner">owner</option>
-                <option value="runtime_peer">runtime_peer</option>
-                <option value="viewer">viewer</option>
-              </select>
-            </label>
-          </section>
-        ) : null}
-        {formError ? (
-          <div className="cloud-auth-form-error" role="alert">
-            {formError}
-          </div>
-        ) : null}
-        <div className="cloud-auth-actions">
-          {authState.mode === "oidc" ? (
-            <button
-              type="button"
-              onClick={() => {
-                clearCloudPrototypeDevAuth(window.localStorage);
-                onAuthStateChange();
-              }}
-            >
-              <LogOut aria-hidden="true" />
-              Sign out
-            </button>
-          ) : authConfig.oidc && shouldShowCloudHeaderSignIn(authState) ? (
-            <button type="button" disabled={authAction === "starting"} onClick={beginOidcAuth}>
-              <LogIn aria-hidden="true" />
-              {authAction === "starting" ? "Starting sign-in" : "Sign in"}
-            </button>
-          ) : null}
-          {showPrototypeDevControls ? (
-            <button type="submit">
-              <KeyRound aria-hidden="true" />
-              Use dev identity
-            </button>
-          ) : null}
-          <button type="button" onClick={() => void copyDiagnostics()}>
-            <Copy aria-hidden="true" />
-            {copyState === "copied"
-              ? "Copied"
-              : copyState === "failed"
-                ? "Copy failed"
-                : "Copy diagnostics"}
-          </button>
-          <button type="button" onClick={resetAuth}>
-            <RotateCcw aria-hidden="true" />
-            Use anonymous
-          </button>
-        </div>
-      </form>
-    </details>
-  );
-}
-
 function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.engine.stop();
   liveRuntime.transport.disconnect();
@@ -2169,188 +1896,22 @@ function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolea
   );
 }
 
-function shouldShowCloudIdentityControls({
-  authState,
-  search,
-  showPrototypeDevControls,
-}: {
-  authState: CloudPrototypeAuthState;
-  search: string;
-  showPrototypeDevControls: boolean;
-}): boolean {
-  if (authState.mode === "anonymous") {
-    return showPrototypeDevControls && hasExplicitPrototypeDevAuthSearch(search);
-  }
-  return true;
-}
-
-function hasExplicitPrototypeDevAuthSearch(search: string): boolean {
-  const params = new URLSearchParams(search);
-  const explicit = params.get("notebook_cloud_dev_auth") ?? params.get("dev_auth");
-  return explicit === "1" || explicit === "true";
-}
-
-function cloudAccountSessionDisplay({
-  actorLabel,
-  authState,
-  connectionError,
-  connectionScope,
-}: {
-  actorLabel: string;
-  authState: CloudPrototypeAuthState;
-  connectionError: string | null;
-  connectionScope: string | null;
-}): {
-  title: string;
-  description: string;
-  rows: Array<{ label: string; value: string; tone?: "default" | "success" | "warning" }>;
-} {
-  const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
-  const connectedScope = parseCloudConnectionScope(connectionScope);
-  const effectiveScope = connectedScope ?? requestedScope;
-  const accessRow = connectedScope
-    ? { label: "Access", value: cloudScopeLabel(connectedScope), tone: "success" as const }
-    : { label: "Requested", value: cloudRequestedAccessLabel(requestedScope) };
-  const requestedAccessRow =
-    connectedScope && connectedScope !== requestedScope
-      ? {
-          label: "Requested",
-          value: cloudRequestedAccessLabel(requestedScope),
-          tone: "warning" as const,
-        }
-      : null;
-  const accessDescription = connectedScope
-    ? cloudGrantedAccessDescription(connectedScope, requestedScope)
-    : `${cloudRequestedAccessLabel(requestedScope)} requested for this notebook.`;
-  const localDevAccessDescription = connectedScope
-    ? cloudGrantedAccessDescription(connectedScope, requestedScope, "local dev identity")
-    : `${cloudRequestedAccessLabel(requestedScope)} requested from a local dev identity.`;
-  const liveTone = connectionError ? "warning" : connectedScope ? "success" : "default";
-  const liveLabel = connectionError ? "Needs attention" : connectedScope ? "Live" : "Joining";
-
-  if (authState.mode === "invalid" || authState.mode === "oidc_expired") {
-    return {
-      title: "Session needs attention",
-      description:
-        authState.mode === "oidc_expired"
-          ? "Sign in again to keep cloud write actions available."
-          : (authState.problem ?? "Stored collaborator credentials need to be replaced."),
-      rows: [
-        { label: "Access", value: cloudScopeLabel(effectiveScope), tone: "warning" },
-        { label: "Connection", value: liveLabel, tone: liveTone },
-      ],
-    };
-  }
-
-  if (authState.mode === "anonymous") {
-    return {
-      title: "Public viewer",
-      description: "You can stay connected and read this notebook without signing in.",
-      rows: [
-        { label: "Access", value: "Can view" },
-        { label: "Connection", value: liveLabel, tone: liveTone },
-      ],
-    };
-  }
-
-  if (authState.mode === "oidc") {
-    const title = authState.user ?? actorLabel;
-    return {
-      title,
-      description: accessDescription,
-      rows: [
-        accessRow,
-        ...(requestedAccessRow ? [requestedAccessRow] : []),
-        { label: "Connection", value: liveLabel, tone: liveTone },
-        { label: "Identity", value: "Anaconda" },
-      ],
-    };
-  }
-
-  const title = authState.user ?? actorLabel;
-  return {
-    title,
-    description: localDevAccessDescription,
-    rows: [
-      accessRow,
-      ...(requestedAccessRow ? [requestedAccessRow] : []),
-      { label: "Connection", value: liveLabel, tone: liveTone },
-      { label: "Identity", value: "Local dev" },
-    ],
-  };
-}
-
-function parseCloudConnectionScope(value: string | null): ConnectionScope | null {
-  if (value === "viewer" || value === "editor" || value === "owner" || value === "runtime_peer") {
-    return value;
-  }
-  return null;
-}
-
-function cloudScopeLabel(scope: ConnectionScope): string {
-  switch (scope) {
-    case "owner":
-      return "Owner";
-    case "editor":
-      return "Can edit";
-    case "runtime_peer":
-      return "Runtime peer";
-    case "viewer":
-      return "Can view";
-  }
-}
-
-function cloudRequestedAccessLabel(scope: ConnectionScope): string {
-  switch (scope) {
-    case "owner":
-      return "Owner access";
-    case "editor":
-      return "Edit access";
-    case "runtime_peer":
-      return "Runtime access";
-    case "viewer":
-      return "View access";
-  }
-}
-
-function cloudGrantedAccessDescription(
-  connectedScope: ConnectionScope,
-  requestedScope: ConnectionScope,
-  source?: string,
-): string {
-  const sourceSuffix = source ? ` from a ${source}` : "";
-  const granted = (() => {
-    switch (connectedScope) {
-      case "owner":
-        return `Connected with owner access${sourceSuffix}.`;
-      case "editor":
-        return `Connected with edit access${sourceSuffix}.`;
-      case "runtime_peer":
-        return `Connected as a runtime peer${sourceSuffix}.`;
-      case "viewer":
-        return `Connected with view access${sourceSuffix}.`;
-    }
-  })();
-
-  if (connectedScope === requestedScope) {
-    return granted;
-  }
-
-  return `${granted} ${cloudRequestedAccessLabel(requestedScope)} is still requested.`;
-}
-
 function CloudNotebookTitle({ notebookId }: { notebookId: string }) {
   const title = cloudNotebookRouteTitle(notebookId);
 
   return (
-    <div className="cloud-notebook-title" title={title.detail ?? title.label}>
+    <div className="cloud-notebook-title" title={title.title}>
       <span>{title.label}</span>
       {title.detail ? <small>{title.detail}</small> : null}
     </div>
   );
 }
 
-function cloudNotebookRouteTitle(notebookId: string): { label: string; detail: string | null } {
+function cloudNotebookRouteTitle(notebookId: string): {
+  label: string;
+  detail: string | null;
+  title: string;
+} {
   const pathParts = window.location.pathname.split("/").filter(Boolean);
   const routeNotebookId = pathParts[0] === "n" ? pathParts[1] : null;
   const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
@@ -2358,16 +1919,32 @@ function cloudNotebookRouteTitle(notebookId: string): { label: string; detail: s
   const decodedNotebookId = safeDecodeRouteSegment(routeNotebookId) ?? notebookId;
 
   if (decodedSlug) {
+    const label = humanizeCloudRouteTitle(decodedSlug);
     return {
-      label: decodedSlug,
-      detail: decodedNotebookId,
+      label,
+      detail: null,
+      title: `${label} (${decodedNotebookId})`,
     };
   }
 
   return {
-    label: decodedNotebookId,
-    detail: "cloud notebook",
+    label: "Cloud Notebook",
+    detail: null,
+    title: decodedNotebookId,
   };
+}
+
+function humanizeCloudRouteTitle(value: string): string {
+  return value
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map((word) => {
+      if (!word) return word;
+      return `${word[0]?.toUpperCase() ?? ""}${word.slice(1).toLowerCase()}`;
+    })
+    .join(" ");
 }
 
 function safeDecodeRouteSegment(value: string | null | undefined): string | null {
@@ -2406,7 +1983,7 @@ function CloudConnectionStatus({
       aria-label={title}
     >
       <Icon aria-hidden="true" />
-      <span>{label}</span>
+      <span className="sr-only">{label}</span>
     </span>
   );
 }

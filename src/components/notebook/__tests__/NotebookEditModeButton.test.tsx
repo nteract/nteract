@@ -70,7 +70,7 @@ describe("NotebookEditModeButton", () => {
     expect(onModeChange).not.toHaveBeenCalled();
   });
 
-  it("labels a segmented edit request as requested until edit access is active", () => {
+  it("labels a segmented edit request as sent until edit access is active", () => {
     const onModeChange = vi.fn();
 
     render(
@@ -84,11 +84,11 @@ describe("NotebookEditModeButton", () => {
 
     const group = screen.getByRole("group", { name: "Notebook interaction mode" });
     expect(group).toHaveAttribute("data-state", "requested");
-    expect(screen.getByRole("button", { name: "Requested" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Request sent" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "Requested" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Request sent" })).toHaveAttribute(
       "title",
       "Edit access requested",
     );
