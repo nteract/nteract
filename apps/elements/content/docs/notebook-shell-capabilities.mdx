@@ -36,7 +36,11 @@ ACLs, filesystem permissions, runtime authority, and storage/blob resolution.
   describe which authority still enforces the action.
 - `ElementsNotebookEnvironment` is the docs-local host adapter for shell pages:
   it supplies capabilities, rail state, document facts, outputs, runtime facts,
-  and inert callbacks without daemon, cloud, or catalog-specific side effects.
+  projected host notices, and inert callbacks without daemon, cloud, or
+  catalog-specific side effects.
+- Notice policy is host-owned data. The shared shell owns placement and renders
+  `NotebookNotice`; hosts still own credentials, diagnostics, runtime reconnect,
+  trust review, sharing, and reset actions.
 - Cloud editor access can edit notebook content when the host grants that mode;
   sharing remains owner-only, and execution/package management remain disabled
   in hosted previews for now.

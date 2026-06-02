@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   Check,
   CircleSlash2,
   Cloud,
@@ -8,6 +9,7 @@ import {
   Eye,
   FileCode2,
   GitBranch,
+  Info,
   KeyRound,
   ListTree,
   Monitor,
@@ -21,7 +23,12 @@ import {
   Workflow,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { NotebookShellCapabilities } from "@/components/notebook";
+import {
+  NotebookNotice,
+  NotebookNoticeAction,
+  type NotebookNoticeTone,
+  type NotebookShellCapabilities,
+} from "@/components/notebook";
 import { cn } from "@/lib/utils";
 import {
   ElementsNotebookEnvironment,
@@ -399,7 +406,37 @@ function ElementsFixtureEnvironmentCard() {
               label="Outputs"
               value={`${environment.outputs.outputAreaOutputs.length} outputs, ${environment.outputs.widgetOutputs.length} widget views`}
             />
+            <FixtureFact label="Notices" value={`${environment.notices.length} projected`} />
           </dl>
+          {environment.notices.length ? (
+            <div className="mt-4 space-y-2">
+              {environment.notices.slice(0, 3).map((notice) => (
+                <NotebookNotice
+                  key={`${notice.tone}-${notice.title}`}
+                  tone={notice.tone}
+                  icon={<NoticeIcon tone={notice.tone} />}
+                  title={notice.title}
+                  details={<span>{notice.details}</span>}
+                  actions={
+                    notice.actionLabel ? (
+                      <NotebookNoticeAction
+                        onClick={() =>
+                          environment.actions.recordHostAction(
+                            `notice:${notice.actionLabel?.toLowerCase()}`,
+                          )
+                        }
+                      >
+                        {notice.actionLabel}
+                      </NotebookNoticeAction>
+                    ) : null
+                  }
+                  className="rounded-md border"
+                >
+                  {notice.body}
+                </NotebookNotice>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="rounded-md border border-fd-border bg-fd-background p-3">
           <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
@@ -515,6 +552,7 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
         <ScenarioPill label={authLabel} />
         <ScenarioPill label={scenario.runtimeLabel} />
         <ScenarioPill label={scenario.packageSummary} />
+        <ScenarioPill label={`${scenario.notices.length} notices`} />
         <ScenarioPill
           label={enabledLabels.length ? `can change: ${enabledLabels.join(", ")}` : "view only"}
         />
@@ -529,6 +567,21 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
           </div>
         ))}
       </dl>
+      {scenario.notices.length ? (
+        <div className="mt-3 border-t border-fd-border pt-3">
+          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+            Projected notices
+          </div>
+          <ul className="mt-2 space-y-1.5">
+            {scenario.notices.map((notice) => (
+              <li key={`${notice.tone}-${notice.title}`} className="text-[11px] leading-4">
+                <span className="font-medium text-fd-foreground">{notice.title}</span>
+                <span className="text-fd-muted-foreground"> · {notice.body}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <div className="mt-3 border-t border-fd-border pt-3">
         <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
           Host boundary
@@ -546,6 +599,18 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
       </div>
     </article>
   );
+}
+
+function NoticeIcon({ tone }: { tone: NotebookNoticeTone }) {
+  switch (tone) {
+    case "warning":
+    case "error":
+      return <AlertTriangle className="size-3.5" />;
+    case "success":
+      return <ShieldCheck className="size-3.5" />;
+    default:
+      return <Info className="size-3.5" />;
+  }
 }
 
 function ScenarioPill({ label }: { label: string }) {

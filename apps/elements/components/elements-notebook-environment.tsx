@@ -9,6 +9,7 @@ import {
   type ElementsNotebookScenarioId,
   type ElementsNotebookVariable,
   type ElementsNotebookRenderer,
+  type ElementsNotebookNotice,
 } from "@/components/notebook-scenarios";
 
 export interface ElementsNotebookEnvironmentModel {
@@ -27,6 +28,7 @@ export interface ElementsNotebookEnvironmentModel {
     viewModel: ElementsNotebookScenario["viewModel"];
   };
   outputs: ElementsNotebookOutputState;
+  notices: readonly ElementsNotebookNotice[];
   runtime: {
     label: string;
     packageSummary: string;
@@ -92,6 +94,7 @@ export function ElementsNotebookEnvironment({
         viewModel: scenario.viewModel,
       },
       outputs: scenario.outputState,
+      notices: scenario.notices,
       runtime: {
         label: scenario.runtimeLabel,
         packageSummary: scenario.packageSummary,

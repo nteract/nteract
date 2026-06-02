@@ -11,6 +11,7 @@ import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
   type NotebookActorProjection,
+  type NotebookNoticeTone,
   type NotebookShellCapabilities,
   type NotebookViewCell,
   type NotebookViewModel,
@@ -57,6 +58,7 @@ export interface ElementsNotebookScenario {
   packageState: ElementsNotebookPackageState;
   trustState: ElementsNotebookTrustState;
   outputState: ElementsNotebookOutputState;
+  notices: readonly ElementsNotebookNotice[];
   variables: readonly ElementsNotebookVariable[];
   renderers: readonly ElementsNotebookRenderer[];
 }
@@ -70,6 +72,14 @@ export interface ElementsNotebookHostBoundary {
   surface: string;
   sharedSurface: string;
   hostAuthority: string;
+}
+
+export interface ElementsNotebookNotice {
+  tone: NotebookNoticeTone;
+  title: string;
+  body: string;
+  details: string;
+  actionLabel: string | null;
 }
 
 export interface ElementsNotebookPackageState {
@@ -1526,6 +1536,12 @@ function createScenario({
     packageState,
     trustState,
     outputState,
+    notices: scenarioNotices(projectedCapabilities, {
+      runtimeLabel,
+      syncLabel,
+      trustLabel,
+      trustStatus,
+    }),
     variables,
     renderers,
   };
@@ -1622,7 +1638,82 @@ function scenarioHostBoundaries(
       hostAuthority:
         "Host adapters enrich durable actor labels with structured principal/operator profile facts.",
     },
+    {
+      surface: "Host notices",
+      sharedSurface: "NotebookNotice in the shared shell notice slot",
+      hostAuthority:
+        "Host adapters decide notice policy, diagnostics, and actions; the shell owns placement.",
+    },
   ];
+}
+
+function scenarioNotices(
+  capabilities: NotebookShellCapabilities,
+  {
+    runtimeLabel,
+    syncLabel,
+    trustLabel,
+    trustStatus,
+  }: {
+    runtimeLabel: string;
+    syncLabel: string | null;
+    trustLabel: string | null;
+    trustStatus: NotebookTrustStatus | null;
+  },
+): readonly ElementsNotebookNotice[] {
+  const notices: ElementsNotebookNotice[] = [];
+
+  if (capabilities.auth.needsAttention) {
+    notices.push({
+      tone: "warning",
+      title: "Authentication needs attention",
+      body: "The notebook remains readable while the host refreshes or replaces credentials.",
+      details: `${hostAuthorityLabel(capabilities.access.source)} owns sign-in, token renewal, and reset actions.`,
+      actionLabel: capabilities.auth.canSignIn ? "Sign in" : null,
+    });
+  }
+
+  if (!capabilities.runtime.connected) {
+    notices.push({
+      tone: capabilities.canExecute ? "warning" : "info",
+      title: "Runtime detached",
+      body: "Notebook content, outputs, and package facts are rendered from the document projection.",
+      details: `${runtimeLabel}. Runtime lifecycle remains a host adapter responsibility.`,
+      actionLabel: capabilities.canExecute ? "Reconnect runtime" : null,
+    });
+  }
+
+  if (trustStatus === "untrusted") {
+    notices.push({
+      tone: "warning",
+      title: "Dependency trust requires review",
+      body: "Package details stay visible, but execution and package mutation remain disabled.",
+      details: trustLabel ?? "Untrusted dependencies",
+      actionLabel: capabilities.canManagePackages ? "Review trust" : null,
+    });
+  }
+
+  if (capabilities.canRead && !capabilities.canEditMarkdown && !capabilities.canEditCells) {
+    notices.push({
+      tone: "info",
+      title: "Read-only notebook",
+      body: "The shared notebook surface renders the same document projection without mutation affordances.",
+      details: syncLabel ?? `${capabilities.access.source}:${capabilities.access.level}`,
+      actionLabel: capabilities.canRequestEdit ? "Request edit" : null,
+    });
+  }
+
+  if (capabilities.canManageSharing) {
+    notices.push({
+      tone: "success",
+      title: "Owner controls available",
+      body: "Sharing actions are available because the host confirmed owner access.",
+      details: "ACL mutation stays with the hosted room authority.",
+      actionLabel: "Manage sharing",
+    });
+  }
+
+  return notices;
 }
 
 function hostAuthorityLabel(source: NotebookShellCapabilities["access"]["source"]): string {
