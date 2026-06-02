@@ -61,7 +61,9 @@ export function NotebookEditModeButton({
           }}
         >
           <BookOpen className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 truncate leading-none">Viewing</span>
+          <span className="sr-only sm:not-sr-only sm:min-w-0 sm:truncate sm:leading-none">
+            Viewing
+          </span>
         </button>
         <button
           type="button"
@@ -79,7 +81,9 @@ export function NotebookEditModeButton({
           }}
         >
           <Pencil className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 truncate leading-none">Editing</span>
+          <span className="sr-only sm:not-sr-only sm:min-w-0 sm:truncate sm:leading-none">
+            Editing
+          </span>
         </button>
       </div>
     );

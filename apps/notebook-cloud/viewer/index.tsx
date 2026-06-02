@@ -1753,8 +1753,9 @@ function CloudNotebookEditModeButton({
   onModeChange: (mode: NotebookInteractionMode) => void;
   onRequestEditAccess: () => void;
 }) {
+  const canUseEditModeControl = authState.mode === "dev" || authState.mode === "oidc";
   if (
-    authState.mode !== "oidc" ||
+    !canUseEditModeControl ||
     (!interaction?.canRequestEdit && interaction?.activeMode !== "edit")
   ) {
     return null;
