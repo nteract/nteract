@@ -615,7 +615,7 @@ function NotebookViewer({
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const cellsRef = useRef<ResolvedCell[]>([]);
   const cellsByIdRef = useRef(new Map<string, ResolvedCell>());
@@ -1830,6 +1830,13 @@ function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
 
 function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabilities): boolean {
   return capabilities.canEditStructure || capabilities.canExecute || capabilities.canManagePackages;
+}
+
+function initialCloudRailCollapsed(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia("(max-width: 599.98px)").matches;
 }
 
 function CloudAuthControls({

@@ -91,6 +91,9 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     sourceText,
     /function shouldShowCloudIdentityControls[\s\S]*authState\.mode === "anonymous"[\s\S]*return showPrototypeDevControls && hasExplicitPrototypeDevAuthSearch\(search\);/,
   );
+  assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
+  assert.match(sourceText, /function initialCloudRailCollapsed/);
+  assert.match(sourceText, /matchMedia\("\(max-width: 599\.98px\)"\)/);
   assert.match(sourceText, /function hasExplicitPrototypeDevAuthSearch/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
