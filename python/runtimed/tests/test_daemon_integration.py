@@ -2918,6 +2918,9 @@ class TestTrustApproval:
     async def test_untrusted_notebook_needs_approval(self, client, tmp_path):
         """Notebook with inline deps from unknown source needs trust."""
         import json
+        import uuid
+
+        dep_name = f"nteract-unapproved-uv-dep-{uuid.uuid4().hex}"
 
         nb_path = tmp_path / "untrusted.ipynb"
         nb_path.write_text(
@@ -2928,7 +2931,7 @@ class TestTrustApproval:
                     "metadata": {
                         "runt": {
                             "schema_version": "1",
-                            "uv": {"dependencies": ["requests"]},
+                            "uv": {"dependencies": [dep_name]},
                             # No trust_signature - untrusted
                         }
                     },
