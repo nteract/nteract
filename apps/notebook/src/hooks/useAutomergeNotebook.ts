@@ -21,7 +21,7 @@ import {
   resetNotebookCells,
   updateCellById,
   useCellIds,
-} from "../lib/notebook-cells";
+} from "@/components/notebook/state/cell-store";
 import { createNotebookController } from "../lib/notebook-controller";
 import {
   applyExecutionViewChangeset,

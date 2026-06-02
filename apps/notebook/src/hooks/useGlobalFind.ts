@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { getNotebookCellsSnapshot, useSourceVersion } from "../lib/notebook-cells";
+import { getNotebookCellsSnapshot, useSourceVersion } from "@/components/notebook/state/cell-store";
 
 /** A single search match location. */
 export interface FindMatch {

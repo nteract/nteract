@@ -24,7 +24,7 @@ import {
   remoteChangesFromTextAttributions,
 } from "../lib/crdt-editor-bridge";
 import { logger } from "../lib/logger";
-import { updateCellById } from "../lib/notebook-cells";
+import { updateCellById } from "@/components/notebook/state/cell-store";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 

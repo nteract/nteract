@@ -27,7 +27,7 @@ import {
   useIsPreviousCellFromFocused,
   useSearchActiveOffset,
   useSearchQuery,
-} from "../lib/cell-ui-state";
+} from "@/components/notebook/state/cell-ui-state";
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";

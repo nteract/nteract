@@ -109,7 +109,7 @@ vi.mock("../../hooks/useCrdtBridge", () => ({
   useCrdtBridge: () => ({ extension: [], bridge: { replaceSource: vi.fn() } }),
 }));
 
-vi.mock("../../lib/cell-ui-state", () => ({
+vi.mock("@/components/notebook/state/cell-ui-state", () => ({
   useCellQueuePriority: () => mockQueuePriority,
   useIsCellExecuting: () => mockIsExecuting,
   useIsCellFocused: () => mockIsFocused,

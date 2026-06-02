@@ -119,7 +119,7 @@ vi.mock("../../lib/blob-port", () => ({
   useBlobPort: () => null,
 }));
 
-vi.mock("../../lib/cell-ui-state", () => ({
+vi.mock("@/components/notebook/state/cell-ui-state", () => ({
   useIsCellFocused: () => mockIsFocused,
   useIsNextCellFromFocused: () => false,
   useIsPreviousCellFromFocused: () => false,
