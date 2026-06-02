@@ -963,22 +963,24 @@ const shareRows = [
 function CloudShareAccessRow({ row }: { row: (typeof shareRows)[number] }) {
   const Icon = row.icon;
   return (
-    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 py-2.5">
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
       <Icon className="size-4 text-muted-foreground" aria-hidden="true" />
       <div className="min-w-0">
         <div className="truncate text-sm font-medium">{row.label}</div>
         <div className="truncate text-xs text-muted-foreground">{row.detail}</div>
       </div>
-      <div className="hidden text-sm text-muted-foreground sm:block">{row.access}</div>
-      <div
-        className={cn(
-          "text-xs font-medium",
-          row.tone === "success" && "text-emerald-700 dark:text-emerald-300",
-          row.tone === "pending" && "text-amber-700 dark:text-amber-300",
-          row.tone === "default" && "text-muted-foreground",
-        )}
-      >
-        {row.state}
+      <div className="col-start-2 inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:col-start-auto sm:justify-end">
+        <span className="text-xs font-medium text-muted-foreground sm:text-sm">{row.access}</span>
+        <span
+          className={cn(
+            "text-xs font-medium",
+            row.tone === "success" && "text-emerald-700 dark:text-emerald-300",
+            row.tone === "pending" && "text-amber-700 dark:text-amber-300",
+            row.tone === "default" && "text-muted-foreground",
+          )}
+        >
+          {row.state}
+        </span>
       </div>
     </div>
   );
