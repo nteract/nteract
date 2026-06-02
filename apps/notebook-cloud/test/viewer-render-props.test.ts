@@ -85,6 +85,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
+  assert.match(
+    sourceText,
+    /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState\) && !showCloudIdentityControls/,
+  );
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
   assert.match(sourceText, /identityControls=\{[\s\S]*showCloudIdentityControls \? \(/);
   assert.match(sourceText, /identityControls=\{[\s\S]*<CloudAuthControls/);
@@ -111,6 +115,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(
     cssText,
     /cloud-auth-identity-summary \.cloud-auth-identity-badge > span[\s\S]*display: none;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 360px\) \{[\s\S]*cloud-room-toolbar \.cloud-connection-status[\s\S]*display: none;/,
   );
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
   assert.doesNotMatch(sourceText, /label: "live"/);

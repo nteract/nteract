@@ -1260,7 +1260,7 @@ function NotebookViewer({
           </>
         }
         authControls={
-          shouldShowCloudHeaderSignIn(authState) ? (
+          shouldShowCloudHeaderSignIn(authState) && !showCloudIdentityControls ? (
             <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
           ) : null
         }

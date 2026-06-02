@@ -184,10 +184,6 @@ body {
   .cloud-sign-in-button {
     max-width: min(9rem, 30vw);
   }
-
-  .cloud-connection-status span {
-    display: none;
-  }
 }
 
 @media (max-width: 599.98px) {
@@ -425,6 +421,10 @@ main.flex > .cloud-report-toolbar {
 }
 
 @media (max-width: 360px) {
+  .cloud-room-toolbar .cloud-connection-status {
+    display: none;
+  }
+
   .cloud-auth-menu summary.cloud-auth-identity-summary {
     width: 2rem;
     padding-inline: 0.375rem;

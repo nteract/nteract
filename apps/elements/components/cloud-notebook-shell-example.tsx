@@ -530,6 +530,7 @@ function CloudConnectionPill({
     <span
       className={cn(
         "inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium transition-colors hover:bg-muted/60",
+        compact && "max-[360px]:hidden",
         detail.className,
       )}
       title={detail.title}
