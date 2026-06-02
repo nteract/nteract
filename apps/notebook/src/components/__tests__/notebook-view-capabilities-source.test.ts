@@ -13,7 +13,7 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/capabilities\?\.canEditCells \?\? !readOnly/);
     expect(sourceText).toMatch(/capabilities\?\.canEditMarkdown \?\? !readOnly/);
     expect(sourceText).toMatch(
-      /capabilities\?\.canEditStructure \?\? \(canAcceptCellMutations && !readOnly\)/,
+      /canAcceptCellMutations && \(capabilities\?\.canEditStructure \?\? !readOnly\)/,
     );
     expect(sourceText).toMatch(/capabilities\?\.canExecute \?\? !readOnly/);
     expect(sourceText).toMatch(/<CodeCell[\s\S]*canExecute=\{canExecuteCells\}/);
