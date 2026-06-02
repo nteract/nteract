@@ -48,7 +48,9 @@ describe("NotebookView shell capabilities", () => {
 
     expect(sourceText).toMatch(/data-notebook-synced=\{!isLoading\}/);
     expect(sourceText).toMatch(/Focus the first authoritative cell after initial sync/);
-    expect(sourceText).toMatch(/if \(isLoading \|\| focusedCellId !== null \|\| cellIds\.length === 0\) return/);
+    expect(sourceText).toMatch(
+      /if \(isLoading \|\| focusedCellId !== null \|\| cellIds\.length === 0\) return/,
+    );
     const focusAfterSyncEffect = sourceText.match(
       /\/\/ Focus the first authoritative cell after initial sync\.[\s\S]*?\}, \[isLoading, cellIds, focusedCellId, onFocusCell\]\);/,
     )?.[0];
