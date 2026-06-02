@@ -29,7 +29,7 @@ env:
 jobs:
   windows-smoke:
     name: Windows (build + install + smoke)
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-latest
     timeout-minutes: 75
     # Push-to-main + manual dispatch only. The Windows leg currently runs
     # ~32 minutes (cargo build + NSIS bundling + smoke). Gating PRs on it
@@ -403,8 +403,11 @@ jobs:
 
   linux-smoke:
     name: Linux (build + smoke)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Keep this native smoke off per-commit PR CI. It still runs after merge
+    # and can be queued manually when a PR needs the extra signal.
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
         with:

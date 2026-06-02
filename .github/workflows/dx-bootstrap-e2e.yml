@@ -53,7 +53,10 @@ env:
 jobs:
   repr-llm:
     name: _repr_llm_ launcher formatter
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Native Tauri smoke coverage runs after merge or by manual dispatch. The
+    # PR Build workflow keeps browser E2E as the fast required signal.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
