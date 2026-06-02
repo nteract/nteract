@@ -535,7 +535,9 @@ function CloudConnectionPill({
       title={detail.title}
     >
       <Icon className="size-3.5 shrink-0" aria-hidden="true" />
-      <span>{compact ? detail.shortLabel : detail.label}</span>
+      <span className={compact ? "max-[360px]:sr-only" : undefined}>
+        {compact ? detail.shortLabel : detail.label}
+      </span>
     </span>
   );
 }
@@ -1200,15 +1202,16 @@ function CloudAccountButton({
   return (
     <button
       type="button"
-      className="inline-flex h-8 max-w-[min(14rem,34vw)] items-center rounded-md px-1.5 transition-colors hover:bg-muted/70"
+      className="inline-flex h-8 max-w-[min(14rem,34vw)] items-center rounded-md px-1.5 transition-colors hover:bg-muted/70 max-[360px]:w-8 max-[360px]:justify-center"
       title={actor.detail ?? actor.label}
     >
+      <UserRound className="hidden size-3.5 max-[360px]:block" aria-hidden="true" />
       <NotebookIdentityBadge
         actor={actor}
         variant="inline"
         showDetail={false}
         showStatus={false}
-        className="max-w-full"
+        className="max-w-full max-[360px]:[&>span]:hidden"
       />
       <span className="sr-only">{capabilities.access.level} account</span>
     </button>
