@@ -18,6 +18,12 @@ export interface NotebookNoticeProps {
   "data-testid"?: string;
 }
 
+export interface NotebookNoticeStackProps {
+  children: ReactNode;
+  className?: string;
+  "data-testid"?: string;
+}
+
 const toneClassName: Record<NotebookNoticeTone, string> = {
   info: "border-sky-500/25 bg-sky-500/10 text-sky-950 dark:text-sky-100",
   warning: "border-amber-500/30 bg-amber-500/10 text-amber-950 dark:text-amber-100",
@@ -33,6 +39,22 @@ const iconClassName: Record<NotebookNoticeTone, string> = {
   success: "text-emerald-600 dark:text-emerald-300",
   debug: "text-violet-600 dark:text-violet-300",
 };
+
+export function NotebookNoticeStack({
+  children,
+  className,
+  "data-testid": dataTestId,
+}: NotebookNoticeStackProps) {
+  return (
+    <div
+      className={cn("flex flex-col", className)}
+      data-slot="notebook-notice-stack"
+      data-testid={dataTestId}
+    >
+      {children}
+    </div>
+  );
+}
 
 export function NotebookNotice({
   tone = "info",

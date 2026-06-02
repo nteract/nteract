@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AlertTriangle } from "lucide-react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { NotebookNotice, NotebookNoticeAction } from "../NotebookNotice";
+import { NotebookNotice, NotebookNoticeAction, NotebookNoticeStack } from "../NotebookNotice";
 
 describe("NotebookNotice", () => {
   it("renders shared title, body, details, tone, and icon slots", () => {
@@ -41,5 +41,18 @@ describe("NotebookNotice", () => {
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(onAction).toHaveBeenCalledOnce();
     expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
+  it("renders a shared stack slot for host notices", () => {
+    render(
+      <NotebookNoticeStack>
+        <NotebookNotice title="Runtime unavailable">Reconnect the daemon.</NotebookNotice>
+        <NotebookNotice title="Auth needs attention">Sign in again.</NotebookNotice>
+      </NotebookNoticeStack>,
+    );
+
+    const stack = screen.getByText("Runtime unavailable").closest("[data-slot='notebook-notice-stack']");
+    expect(stack).not.toBeNull();
+    expect(stack).toContainElement(screen.getByText("Auth needs attention").closest("[data-slot='notebook-notice']"));
   });
 });
