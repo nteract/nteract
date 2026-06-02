@@ -1380,7 +1380,8 @@ function NotebookViewer({
     </div>
   ) : null;
   const notebookHasReadableSnapshot =
-    notebookCellIds.length > 0 || (snapshotResolvedRef.current && status.kind === "ready");
+    notebookCellIds.length > 0 ||
+    (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
   const hasNotices = cloudNotebookHasNotices({
     authState,
     authRenewal,

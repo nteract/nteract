@@ -185,7 +185,7 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(sourceText, /const notebookHasReadableSnapshot =/);
   assert.match(
     sourceText,
-    /notebookCellIds\.length > 0 \|\| \(snapshotResolvedRef\.current && status\.kind === "ready"\)/,
+    /notebookCellIds\.length > 0 \|\|[\s\S]*!\s*connectionError && snapshotResolvedRef\.current && status\.kind === "ready"/,
   );
   assert.match(
     sourceText,
