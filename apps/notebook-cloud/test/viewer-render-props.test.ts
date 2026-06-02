@@ -96,6 +96,20 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /shellCapabilities\.canToggleCode \? \(/);
 });
 
+test("cloud viewer presents live-room failures as one host notice", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /const connectionNotice = connectionError/);
+  assert.match(sourceText, /cloudConnectionNoticeDisplay\(connectionError\)/);
+  assert.match(sourceText, /const shouldShowStatusNotice =/);
+  assert.match(sourceText, /isStatusDerivedFromConnectionError\(status, connectionError\)/);
+  assert.match(sourceText, /function isStatusDerivedFromConnectionError/);
+  assert.match(sourceText, /function cloudConnectionNoticeDisplay/);
+  assert.doesNotMatch(sourceText, /title="Live room connection failed\."/);
+  assert.doesNotMatch(sourceText, />\s*\{connectionError\}\s*<\/NotebookNotice>/);
+});
+
 test("cloud viewer defers supplemental CSS loading until the notebook surface mounts", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

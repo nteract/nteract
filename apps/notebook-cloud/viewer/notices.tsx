@@ -24,13 +24,17 @@ export function cloudNotebookHasNotices({
   status,
   diagnostics,
 }: Omit<CloudNotebookNoticesProps, "onResetAuth">): boolean {
+  const connectionNotice = connectionError ? cloudConnectionNoticeDisplay(connectionError) : null;
+  const shouldShowStatusNotice =
+    status.kind !== "ready" && !isStatusDerivedFromConnectionError(status, connectionError);
+
   return (
     authState.mode === "invalid" ||
     authState.mode === "oidc_expired" ||
     authRenewal.kind !== "idle" ||
-    Boolean(connectionError) ||
+    Boolean(connectionNotice) ||
     Boolean(diagnostics) ||
-    status.kind !== "ready"
+    shouldShowStatusNotice
   );
 }
 
@@ -53,6 +57,10 @@ export function CloudNotebookNotices({
   ) {
     return null;
   }
+
+  const connectionNotice = connectionError ? cloudConnectionNoticeDisplay(connectionError) : null;
+  const shouldShowStatusNotice =
+    status.kind !== "ready" && !isStatusDerivedFromConnectionError(status, connectionError);
 
   return (
     <NotebookNoticeStack>
@@ -88,20 +96,20 @@ export function CloudNotebookNotices({
         </NotebookNotice>
       ) : null}
 
-      {connectionError ? (
+      {connectionNotice ? (
         <NotebookNotice
           tone="error"
           icon={<AlertCircle className="h-4 w-4" />}
-          title="Live room connection failed."
+          title={connectionNotice.title}
           actions={<ResetAuthNoticeAction onResetAuth={onResetAuth} />}
         >
-          {connectionError}
+          {connectionNotice.message}
         </NotebookNotice>
       ) : null}
 
       {diagnostics}
 
-      {status.kind === "ready" ? null : (
+      {shouldShowStatusNotice ? (
         <NotebookNotice
           tone={status.kind === "error" ? "error" : "info"}
           icon={
@@ -115,7 +123,7 @@ export function CloudNotebookNotices({
         >
           {status.message}
         </NotebookNotice>
-      )}
+      ) : null}
     </NotebookNoticeStack>
   );
 }
@@ -126,4 +134,41 @@ function ResetAuthNoticeAction({ onResetAuth }: { onResetAuth: () => void }) {
       Reset to anonymous
     </NotebookNoticeAction>
   );
+}
+
+function isStatusDerivedFromConnectionError(
+  status: ViewerStatus,
+  connectionError: string | null,
+): boolean {
+  return (
+    status.kind === "error" &&
+    Boolean(connectionError) &&
+    status.message.startsWith("Unable to load live notebook room:")
+  );
+}
+
+function cloudConnectionNoticeDisplay(error: string): { title: string; message: string } {
+  if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
+    return {
+      title: "Live room needs attention.",
+      message:
+        "Unable to join the live notebook room. The notebook can stay readable while the account or connection is refreshed.",
+    };
+  }
+
+  return {
+    title: "Live room needs attention.",
+    message: sanitizeCloudConnectionError(error),
+  };
+}
+
+function sanitizeCloudConnectionError(error: string): string {
+  return error.replace(/\bwss?:\/\/[^\s]+/gi, (rawUrl) => {
+    try {
+      const url = new URL(rawUrl);
+      return `${url.protocol}//${url.host}/...`;
+    } catch {
+      return "live room endpoint";
+    }
+  });
 }
