@@ -2,6 +2,37 @@ import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { CodeCellCurrentLine } from "../CodeCellCurrentLine";
 
+function mockReducedMotionPreference(matches: boolean): () => void {
+  const originalMatchMedia = window.matchMedia;
+
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+
+  return () => {
+    if (originalMatchMedia) {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: originalMatchMedia,
+      });
+    } else {
+      delete (window as Partial<Window>).matchMedia;
+    }
+  };
+}
+
 describe("CodeCellCurrentLine", () => {
   it("keeps idle language in the stable right readout slot", () => {
     const { container } = render(<CodeCellCurrentLine languageLabel="Python" count={null} />);
@@ -141,7 +172,16 @@ describe("CodeCellCurrentLine", () => {
       expect(
         rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
       ).not.toBeInTheDocument();
-      expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
+      const wave = rule?.querySelector("svg path");
+      expect(wave).toHaveAttribute("d", expect.stringMatching(/^M0\.00 /));
+      expect(rule?.querySelector("svg")).not.toHaveClass("animate-exec-signal-wave");
+      const firstWavePath = wave?.getAttribute("d");
+
+      act(() => {
+        vi.advanceTimersByTime(48);
+      });
+
+      expect(rule?.querySelector("svg path")?.getAttribute("d")).not.toEqual(firstWavePath);
 
       rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
 
@@ -162,6 +202,44 @@ describe("CodeCellCurrentLine", () => {
       expect(rule).not.toHaveAttribute("data-execution-signal");
       expect(rule?.querySelector("svg")).toBeNull();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the running signal still for reduced-motion users", () => {
+    vi.useFakeTimers();
+    const restoreMatchMedia = mockReducedMotionPreference(true);
+
+    try {
+      const { container, rerender } = render(
+        <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(120);
+      });
+
+      const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+      const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      const wave = rule?.querySelector("svg path");
+      const firstWavePath = wave?.getAttribute("d");
+
+      expect(footer).toHaveAttribute("data-execution-visual-state", "running");
+      expect(rule).toHaveAttribute("data-execution-signal", "active");
+      expect(firstWavePath).toEqual(expect.stringMatching(/^M0\.00 /));
+
+      act(() => {
+        vi.advanceTimersByTime(480);
+      });
+
+      expect(rule?.querySelector("svg path")?.getAttribute("d")).toEqual(firstWavePath);
+
+      rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
+
+      expect(rule).toHaveAttribute("data-execution-signal", "settling");
+      expect(rule?.querySelector("svg path")?.getAttribute("d")).toEqual(firstWavePath);
+    } finally {
+      restoreMatchMedia();
       vi.useRealTimers();
     }
   });

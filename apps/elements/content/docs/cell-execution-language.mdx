@@ -10,6 +10,12 @@ copy second. This page renders the current production execution components
 directly: `CompactExecutionButton` for the state lane and
 `CodeCellCurrentLine` for the source/result boundary.
 
+The running signal starts as a quiet rule, waits out fast executions, then builds
+into a green wave driven from monotonic time. That keeps long-running cells
+alive without exposing a CSS animation loop boundary.
+Reduced-motion users keep the same delayed state change, but the signal rests
+as a still line instead of advancing frame by frame.
+
 Fixture state drives the examples, but there are no alternate catalog-only
 execution-line components here. If the visual language changes, it should
 change in `src/components/cell` first.

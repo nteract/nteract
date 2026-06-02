@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { cn } from "@/lib/utils";
 
 export interface CodeCellCurrentLineProps {
@@ -20,8 +28,67 @@ type RunningSignalPhase = "resting" | "building" | "active" | "settling";
 
 const RUNNING_SIGNAL_DELAY_MS = 120;
 const RUNNING_SIGNAL_SETTLE_MS = 320;
-const RUNNING_SIGNAL_WAVE_PATH =
-  "M-120 6 C-115 1 -110 1 -105 6 S-95 11 -90 6 S-80 1 -75 6 S-65 11 -60 6 S-50 1 -45 6 S-35 11 -30 6 S-20 1 -15 6 S-5 11 0 6 S10 1 15 6 S25 11 30 6 S40 1 45 6 S55 11 60 6 S70 1 75 6 S85 11 90 6 S100 1 105 6 S115 11 120 6 S130 1 135 6 S145 11 150 6 S160 1 165 6 S175 11 180 6 S190 1 195 6 S205 11 210 6 S220 1 225 6 S235 11 240 6 S250 1 255 6 S265 11 270 6 S280 1 285 6 S295 11 300 6 S310 1 315 6 S325 11 330 6 S340 1 345 6 S355 11 360 6";
+const RUNNING_SIGNAL_WAVE_WIDTH = 360;
+const RUNNING_SIGNAL_WAVE_HEIGHT = 12;
+const RUNNING_SIGNAL_WAVE_CENTER = RUNNING_SIGNAL_WAVE_HEIGHT / 2;
+const RUNNING_SIGNAL_WAVE_AMPLITUDE = 2.2;
+const RUNNING_SIGNAL_WAVE_LENGTH = 86;
+const RUNNING_SIGNAL_WAVE_PERIOD_MS = 1_850;
+const RUNNING_SIGNAL_WAVE_SAMPLES = 64;
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+function getMonotonicNow(): number {
+  return typeof performance === "undefined" ? 0 : performance.now();
+}
+
+function readPrefersReducedMotion(enabled: boolean): boolean {
+  if (!enabled || typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+
+  return window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
+
+function subscribeToReducedMotion(enabled: boolean, onStoreChange: () => void): () => void {
+  if (!enabled || typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return () => {};
+  }
+
+  const mediaQuery = window.matchMedia(REDUCED_MOTION_QUERY);
+  if (typeof mediaQuery.addEventListener === "function") {
+    mediaQuery.addEventListener("change", onStoreChange);
+    return () => mediaQuery.removeEventListener("change", onStoreChange);
+  }
+
+  mediaQuery.addListener?.(onStoreChange);
+  return () => mediaQuery.removeListener?.(onStoreChange);
+}
+
+function usePrefersReducedMotion(enabled: boolean): boolean {
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => subscribeToReducedMotion(enabled, onStoreChange),
+    [enabled],
+  );
+  const getSnapshot = useCallback(() => readPrefersReducedMotion(enabled), [enabled]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
+}
+
+function runningSignalWavePath(now: number): string {
+  const phase = (now / RUNNING_SIGNAL_WAVE_PERIOD_MS) * Math.PI * 2;
+  const points: string[] = [];
+
+  for (let index = 0; index <= RUNNING_SIGNAL_WAVE_SAMPLES; index += 1) {
+    const x = (RUNNING_SIGNAL_WAVE_WIDTH / RUNNING_SIGNAL_WAVE_SAMPLES) * index;
+    const y =
+      RUNNING_SIGNAL_WAVE_CENTER +
+      Math.sin((x / RUNNING_SIGNAL_WAVE_LENGTH) * Math.PI * 2 - phase) *
+        RUNNING_SIGNAL_WAVE_AMPLITUDE;
+    points.push(`${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`);
+  }
+
+  return points.join(" ");
+}
 
 function formatExecutionCount(count: number): string {
   return count > 999 ? "999+" : String(count);
@@ -159,6 +226,55 @@ function useRunningSignalPhase(isExecuting: boolean): RunningSignalPhase {
   return phase;
 }
 
+function RunningSignalWave({ active }: { active: boolean }) {
+  const pathRef = useRef<SVGPathElement | null>(null);
+  const lastPathRef = useRef(runningSignalWavePath(getMonotonicNow()));
+  const prefersReducedMotion = usePrefersReducedMotion(true);
+
+  useEffect(() => {
+    if (!active || prefersReducedMotion) return;
+
+    const updatePath = (timestamp: number) => {
+      const nextPath = runningSignalWavePath(timestamp);
+      lastPathRef.current = nextPath;
+      pathRef.current?.setAttribute("d", nextPath);
+    };
+
+    updatePath(getMonotonicNow());
+
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      return;
+    }
+
+    let frameId = 0;
+    const tick = (timestamp: number) => {
+      updatePath(timestamp);
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [active, prefersReducedMotion]);
+
+  return (
+    <svg
+      className="absolute inset-y-0 left-0 h-full w-full"
+      viewBox={`0 0 ${RUNNING_SIGNAL_WAVE_WIDTH} ${RUNNING_SIGNAL_WAVE_HEIGHT}`}
+      preserveAspectRatio="none"
+    >
+      <path
+        ref={pathRef}
+        d={prefersReducedMotion ? runningSignalWavePath(0) : lastPathRef.current}
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.4"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
+}
+
 function ExecutionBoundaryRule({
   state,
   runningSignalPhase,
@@ -170,23 +286,24 @@ function ExecutionBoundaryRule({
   queuePriority: number;
   isFocused: boolean;
 }) {
-  if (state === "running") {
-    const showSignal = runningSignalPhase === "active" || runningSignalPhase === "settling";
+  const showRunningSignal =
+    state === "running" && (runningSignalPhase === "active" || runningSignalPhase === "settling");
 
+  if (state === "running") {
     return (
       <div
         data-slot="code-cell-current-line-rule"
         data-execution-signal={runningSignalPhase}
         className="relative h-3 min-w-14 flex-1 overflow-hidden text-emerald-500/65 dark:text-emerald-300/65 [mask-image:linear-gradient(to_right,transparent,black_0.75rem,black_calc(100%-0.5rem),transparent)]"
       >
-        {!showSignal ? (
+        {!showRunningSignal ? (
           <span
             data-slot="code-cell-current-line-resting-rule"
             className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 rounded-full bg-current/25"
             aria-hidden="true"
           />
         ) : null}
-        {showSignal ? (
+        {showRunningSignal ? (
           <span
             data-slot="code-cell-current-line-signal"
             className={cn(
@@ -196,20 +313,7 @@ function ExecutionBoundaryRule({
             )}
             aria-hidden="true"
           >
-            <svg
-              className="absolute inset-y-0 left-0 h-full w-[300%] animate-exec-signal-wave"
-              viewBox="0 0 360 12"
-              preserveAspectRatio="none"
-            >
-              <path
-                d={RUNNING_SIGNAL_WAVE_PATH}
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeWidth="1.4"
-                vectorEffect="non-scaling-stroke"
-              />
-            </svg>
+            <RunningSignalWave active={runningSignalPhase === "active"} />
           </span>
         ) : null}
       </div>

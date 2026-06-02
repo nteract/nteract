@@ -118,7 +118,7 @@ const currentLineStateFixtures = [
   {
     label: "Running",
     detail:
-      "Runtime work starts as a line, then earns the green wave if it stays busy long enough.",
+      "Runtime work starts as a line, then earns a monotonic green wave if it stays busy long enough.",
     line: <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
   },
   {
