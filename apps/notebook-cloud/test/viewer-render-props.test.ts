@@ -154,3 +154,19 @@ test("cloud notebook shell keeps the rail and toolbar outside the cell scroller"
     /flex-direction: column;/,
   );
 });
+
+test("cloud rail takes over constrained widths instead of pushing the stage offscreen", () => {
+  const sourcePath = new URL("../viewer/index.css", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /@media \(max-width: 599\.98px\)/);
+  assert.match(sourceText, /\.cloud-notebook-rail\[data-collapsed="false"\]\s*\{/);
+  assert.match(
+    sourceText,
+    /\.cloud-notebook-rail\[data-collapsed="false"\] \[data-slot="notebook-rail-panel"\]\s*\{/,
+  );
+  assert.match(
+    sourceText,
+    /\.cloud-notebook-rail\[data-collapsed="false"\] \+ \[data-slot="notebook-document-stage"\]\s*\{/,
+  );
+});

@@ -190,6 +190,23 @@ body {
   }
 }
 
+@media (max-width: 599.98px) {
+  .cloud-notebook-rail[data-collapsed="false"] {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .cloud-notebook-rail[data-collapsed="false"] [data-slot="notebook-rail-panel"] {
+    min-width: 0;
+    max-width: none;
+    flex: 1;
+  }
+
+  .cloud-notebook-rail[data-collapsed="false"] + [data-slot="notebook-document-stage"] {
+    display: none;
+  }
+}
+
 .cloud-rail-panel-note {
   border: 1px dashed color-mix(in srgb, var(--foreground) 16%, transparent);
   border-radius: 8px;
