@@ -902,7 +902,9 @@ jobs:
     name: runtimed-py Integration Tests
     runs-on: ubuntu-24.04
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    # This daemon-heavy lane is ~30 minutes on stock GitHub runners. Keep it
+    # on post-merge/manual runs so PR pushes do not pay that long tail.
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
