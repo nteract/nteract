@@ -122,6 +122,29 @@ It is the option that actually answers the objection - it replaces an inferred s
 
 **A is insufficient:** unifying the hosts is necessary regardless, but on its own it leaves the invariant unprincipled. Whichever of B/D we pick, the predicate moves into `notebook-doc` so both hosts share it - that absorbs A.
 
+### The predicate
+
+The implementation plan resolved B's open boundary against the pinned automerge fork. A fresh document - daemon **or** cloud - is built by `NotebookDoc::new_with_actor`, which is the frozen genesis plus exactly two ROOT puts (`notebook_id`, `runtime_state_doc_id`); the cloud room host's "schema label" argument is the actor, not a ROOT key, so both hosts produce the identical scaffold. That makes the identity allowlist exact and host-agnostic:
+
+```rust
+pub fn is_pristine(&mut self) -> bool {
+    // Sound fast path: any metadata snapshot means initialized.
+    if self.doc.get_metadata_snapshot().is_some() { return false; }
+    let seed = NotebookDoc::canonical_schema_seed_change_hashes();
+    for change in self.doc.get_changes(&[]) {
+        if seed.contains(&change.hash()) { continue; }
+        for op in change.decode().operations {
+            let identity_put = matches!(op.obj, ObjectId::Root)
+                && matches!(&op.key, Key::Map(k) if k == "notebook_id" || k == "runtime_state_doc_id");
+            if !identity_put { return false; }
+        }
+    }
+    true
+}
+```
+
+Any cell insert (op on the `cells` object) or metadata write fails the allowlist, so a notebook a user emptied - which carries add + delete history - is correctly never re-seeded, with no metadata coupling. Full task breakdown in `docs/superpowers/plans/2026-06-02-notebook-pristine-seeding.md`.
+
 ## Consequences
 
 - The pristine-check moves into `crates/notebook-doc` so `runtimed` and `runtimed-wasm` call one definition. This is the cloud-converges-on-desktop direction applied to the document model.
@@ -129,9 +152,13 @@ It is the option that actually answers the objection - it replaces an inferred s
 - `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard are removed.
 - Existing notebooks are unaffected: any notebook with content or history is non-pristine under B, so nothing gets re-seeded on upgrade.
 
-## Open questions (resolve in the implementation plan)
+## Resolved during planning
 
-1. **Exact pristine predicate for B.** Define it against `get_changes(&[])`: allow the canonical seed hashes plus a single identity-bootstrap change touching only `notebook_id` / `runtime_state_doc_id`; treat any `cells` or `metadata` op as initialized. Confirm op-batching does not split the identity puts in a way that breaks the check.
-2. **Cost.** Is the history walk acceptable on every connect, or do we short-circuit on `metadata.is_some()` first and only walk for the metadata-absent case?
-3. **Cloud parity.** `runtimed-wasm` must call the same `notebook-doc` predicate, not a reimplementation.
-4. **Test surface.** Unit-test the predicate across: fresh doc (pristine), metadata-stamped (not), one cell (not), emptied-after-content (not). Integration-test: empty a notebook, reconnect, expect zero cells (the headline behavior currently only covered indirectly).
+1. **Exact pristine predicate** - settled: canonical seed hashes plus identity puts to ROOT (`notebook_id`, `runtime_state_doc_id`); any other op is initialized. See the predicate above.
+2. **Cost** - settled: short-circuit on `metadata.is_some()` (a sound sufficient condition for non-pristine), so the history walk only runs for the rare metadata-absent case.
+3. **Cloud parity** - settled: the predicate lives in `notebook-doc`; `runtimed` and `runtimed-wasm` both call `NotebookDoc::is_pristine`, no reimplementation.
+4. **Test surface** - settled: unit tests for fresh / metadata-stamped / one-cell / emptied-after-content, plus an integration test that empties a notebook, reconnects, and expects zero cells (the headline behavior, previously only covered indirectly).
+
+## Still open
+
+- Whether matching *current* behavior (a metadata-stamped, zero-cell notebook is treated as initialized and not seeded) is the desired product semantics, or a latent question to reopen separately. The predicate preserves today's behavior either way.
