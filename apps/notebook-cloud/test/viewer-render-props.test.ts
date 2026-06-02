@@ -84,8 +84,13 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
+  assert.match(sourceText, /identityControls=\{[\s\S]*showCloudIdentityControls \? \(/);
   assert.match(sourceText, /identityControls=\{[\s\S]*<CloudAuthControls/);
   assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*showStatus=\{false\}/);
+  assert.match(
+    sourceText,
+    /function shouldShowCloudIdentityControls[\s\S]*authState\.mode === "anonymous"[\s\S]*return showPrototypeDevControls;/,
+  );
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
   assert.match(

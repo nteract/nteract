@@ -1217,6 +1217,15 @@ function NotebookViewer({
     setSelectedInteractionMode("edit");
     refreshAuthState();
   }, [refreshAuthState]);
+  const showPrototypeDevControls = shouldShowPrototypeDevControls({
+    oidcConfigured: Boolean(authConfig.oidc),
+    hostname: window.location.hostname,
+    search: window.location.search,
+  });
+  const showCloudIdentityControls = shouldShowCloudIdentityControls({
+    authState,
+    showPrototypeDevControls,
+  });
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
@@ -1271,15 +1280,17 @@ function NotebookViewer({
           />
         }
         identityControls={
-          <CloudAuthControls
-            authConfig={authConfig}
-            authState={authState}
-            capabilities={shellCapabilities}
-            connectionActorLabel={connectionActorLabel}
-            connectionError={connectionError}
-            connectionScope={connectionScope}
-            onAuthStateChange={refreshAuthState}
-          />
+          showCloudIdentityControls ? (
+            <CloudAuthControls
+              authConfig={authConfig}
+              authState={authState}
+              capabilities={shellCapabilities}
+              connectionActorLabel={connectionActorLabel}
+              connectionError={connectionError}
+              connectionScope={connectionScope}
+              onAuthStateChange={refreshAuthState}
+            />
+          ) : null
         }
       />
       {shouldShowCloudNotebookCommandToolbar(shellCapabilities) ? (
@@ -2050,6 +2061,19 @@ function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolea
     authState.mode === "invalid" ||
     authState.mode === "oidc_expired"
   );
+}
+
+function shouldShowCloudIdentityControls({
+  authState,
+  showPrototypeDevControls,
+}: {
+  authState: CloudPrototypeAuthState;
+  showPrototypeDevControls: boolean;
+}): boolean {
+  if (authState.mode === "anonymous") {
+    return showPrototypeDevControls;
+  }
+  return true;
 }
 
 function cloudAccountSessionDisplay({
