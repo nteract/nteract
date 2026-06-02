@@ -17,12 +17,12 @@ import {
   cellSnapshotsToNotebookCellsSync,
 } from "../lib/materialize-cells";
 import {
-  getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
   updateCellById,
   useCellIds,
 } from "../lib/notebook-cells";
+import { createNotebookController } from "../lib/notebook-controller";
 import {
   applyExecutionViewChangeset,
   resetRuntimeStoresProjection,
@@ -80,7 +80,7 @@ function projectExecutionViewChangeset(handle: NotebookHandle) {
  * document. The external store is derived from the doc. Sync messages
  * flow through the SyncEngine → host.transport to the daemon.
  */
-export function useAutomergeNotebook() {
+export function useNotebook() {
   const host = useNotebookHost();
   const cellIds = useCellIds();
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
@@ -197,29 +197,25 @@ export function useAutomergeNotebook() {
     [handleHost],
   );
 
-  /**
-   * Guard + commit helper for WASM mutations.
-   * After the mutation callback runs, re-materializes and syncs.
-   */
-  const commitMutation = useCallback(
-    (mutate: (handle: NotebookHandle) => boolean) => {
-      const handle = handleHost.current;
-      const engine = engineRef.current;
-      if (!handle || !engine) {
-        logger.debug("[automerge-notebook] commitMutation skipped: no handle/engine");
-        return false;
-      }
-      if (!canWriteNotebookRef.current) {
-        logger.debug("[automerge-notebook] commitMutation skipped: connection is read-only");
-        return false;
-      }
-      if (!mutate(handle)) return false;
-      rematerializeCellsSync(handle);
-      applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
-      engine.flush();
-      return true;
-    },
-    [handleHost, rematerializeCellsSync],
+  const notebookController = useMemo(
+    () =>
+      createNotebookController<NotebookHandle>({
+        getHandle: () => handleHost.current,
+        getEngine: () => engineRef.current,
+        canWriteCellSource: () => canWriteNotebookRef.current,
+        canEditStructure: () => canWriteNotebookRef.current,
+        canAcceptStructure: (handle) => handle.has_cells_map(),
+        afterMutation: (handle, kind) => {
+          rematerializeCellsSync(handle);
+          if (kind === "outputs" || kind === "visibility" || kind === "structure") {
+            applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
+          }
+        },
+        refreshCanAcceptCellMutations,
+        onFocusCell: setFocusedCellId,
+        logPrefix: "[automerge-notebook]",
+      }),
+    [handleHost, refreshCanAcceptCellMutations, rematerializeCellsSync],
   );
 
   // ── Bootstrap ──────────────────────────────────────────────────────
@@ -372,141 +368,53 @@ export function useAutomergeNotebook() {
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
-  const updateCellSource = useCallback((cellId: string, source: string) => {
-    const handle = handleHost.current;
-    const engine = engineRef.current;
-    if (!handle || !engine) return;
-    if (!canWriteNotebookRef.current) {
-      logger.debug("[automerge-notebook] updateCellSource skipped: connection is read-only");
-      return;
-    }
-
-    const updated = handle.update_source(cellId, source);
-    if (!updated) return;
-
-    updateCellById(cellId, (c) => ({ ...c, source }));
-    engine.scheduleFlush();
-  }, []);
+  const updateCellSource = useCallback(
+    (cellId: string, source: string) => {
+      notebookController.updateCellSource(cellId, source);
+    },
+    [notebookController],
+  );
 
   const addCell = useCallback(
     (cellType: "code" | "markdown" | "raw", afterCellId?: string | null): NotebookCell | null => {
-      const handle = handleHost.current;
-      const engine = engineRef.current;
-
-      if (!handle || !engine) {
-        logger.debug("[automerge-notebook] addCell skipped: no handle/engine");
-        return null;
-      }
-      if (!canWriteNotebookRef.current) {
-        logger.debug("[automerge-notebook] addCell skipped: connection is read-only");
-        return null;
-      }
-
-      if (!handle.has_cells_map()) {
-        logger.debug("[automerge-notebook] addCell skipped: cells map not synced yet");
-        setCanAcceptCellMutations(false);
-        return null;
-      }
-
-      const cellId = crypto.randomUUID();
-      try {
-        handle.add_cell_after(cellId, cellType, afterCellId ?? null);
-      } catch (error) {
-        logger.warn("[automerge-notebook] addCell failed:", error);
-        refreshCanAcceptCellMutations(handle);
-        return null;
-      }
-      rematerializeCellsSync(handle);
-      engine.flush();
-      setFocusedCellId(cellId);
-
-      const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
-      if (cell) return cell;
-      if (cellType === "code") {
-        return {
-          cell_type: "code",
-          id: cellId,
-          source: "",
-          outputs: [],
-          execution_count: null,
-          metadata: {},
-        };
-      }
-      return {
-        cell_type: cellType,
-        id: cellId,
-        source: "",
-        metadata: {},
-      };
+      return notebookController.addCell(cellType, afterCellId);
     },
-    [refreshCanAcceptCellMutations, rematerializeCellsSync],
+    [notebookController],
   );
 
   const moveCell = useCallback(
     (cellId: string, afterCellId?: string | null) => {
-      commitMutation((handle) => {
-        handle.move_cell(cellId, afterCellId ?? null);
-        return true;
-      });
+      notebookController.moveCell(cellId, afterCellId);
     },
-    [commitMutation],
+    [notebookController],
   );
 
   const deleteCell = useCallback(
     (cellId: string) => {
-      commitMutation((handle) => {
-        if (handle.cell_count() <= 1) return false;
-        return !!handle.delete_cell(cellId);
-      });
+      notebookController.deleteCell(cellId);
     },
-    [commitMutation],
+    [notebookController],
   );
 
   const clearOutputs = useCallback(
     (cellIds: string | string[]) => {
-      const ids = Array.isArray(cellIds) ? cellIds : [cellIds];
-      if (ids.length === 0) return false;
-      const handle = handleHost.current;
-      const engine = engineRef.current;
-      if (!handle || !engine) {
-        logger.debug("[automerge-notebook] clearOutputs skipped: no handle/engine");
-        return false;
-      }
-      if (!canWriteNotebookRef.current) {
-        logger.debug("[automerge-notebook] clearOutputs skipped: connection is read-only");
-        return false;
-      }
-
-      let changed = false;
-      for (const cellId of ids) {
-        changed = !!handle.clear_outputs(cellId) || changed;
-      }
-      if (!changed) return false;
-
-      rematerializeCellsSync(handle);
-      applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
-      engine.flush();
-      return true;
+      return notebookController.clearOutputs(cellIds);
     },
-    [rematerializeCellsSync],
+    [notebookController],
   );
 
   const setCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
-      commitMutation((handle) => {
-        return !!handle.set_cell_source_hidden(cellId, hidden);
-      });
+      notebookController.setCellSourceHidden(cellId, hidden);
     },
-    [commitMutation],
+    [notebookController],
   );
 
   const setCellOutputsHidden = useCallback(
     (cellId: string, hidden: boolean) => {
-      commitMutation((handle) => {
-        return !!handle.set_cell_outputs_hidden(cellId, hidden);
-      });
+      notebookController.setCellOutputsHidden(cellId, hidden);
     },
-    [commitMutation],
+    [notebookController],
   );
 
   // ── Sync flush ─────────────────────────────────────────────────────
@@ -608,3 +516,9 @@ export function useAutomergeNotebook() {
     connectionScope,
   };
 }
+
+/**
+ * @deprecated Use `useNotebook`. The hook still owns an Automerge-backed
+ * notebook handle, but the product-facing API should be host-neutral.
+ */
+export const useAutomergeNotebook = useNotebook;

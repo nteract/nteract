@@ -27,10 +27,30 @@ test("cloud projects live cells into the NotebookView stores", () => {
   );
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*canWriteSource=\{canWriteCellSource\}/);
+  assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*onSyncNeeded=\{handleSourceSyncNeeded\}/);
   assert.match(sourceText, /cell\.cellType === "markdown"/);
   assert.match(sourceText, /return shellCapabilities\.canEditMarkdown/);
   assert.match(sourceText, /return shellCapabilities\.canEditCells/);
+  assert.match(
+    sourceText,
+    /if \(!shellCapabilities\.canEditCells && !shellCapabilities\.canEditMarkdown\) return;/,
+  );
+  assert.doesNotMatch(sourceText, /handleMarkdownSyncNeeded/);
   assert.doesNotMatch(sourceText, /onSourceChanged=/);
+});
+
+test("cloud notebook mutations route through the shared notebook controller", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /createNotebookController/);
+  assert.match(sourceText, /const cloudNotebookController = useMemo/);
+  assert.match(sourceText, /cloudNotebookController\.addCell\(type, afterCellId\)/);
+  assert.match(sourceText, /cloudNotebookController\.deleteCell\(cellId\)/);
+  assert.match(sourceText, /cloudNotebookController\.moveCell\(cellId, afterCellId\)/);
+  assert.doesNotMatch(sourceText, /liveRuntime\.handle\.add_cell_after/);
+  assert.doesNotMatch(sourceText, /liveRuntime\.handle\.delete_cell/);
+  assert.doesNotMatch(sourceText, /liveRuntime\.handle\.move_cell/);
 });
 
 test("cloud projects host focus through the shared cell UI state bridge", () => {

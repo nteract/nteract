@@ -54,7 +54,7 @@ import {
 } from "./components/KernelLaunchErrorBanner";
 import { UntrustedBanner } from "./components/UntrustedBanner";
 import { PresenceProvider } from "./contexts/PresenceContext";
-import { useAutomergeNotebook } from "./hooks/useAutomergeNotebook";
+import { useNotebook } from "./hooks/useNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { CrdtBridgeProvider } from "./hooks/useCrdtBridge";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
@@ -374,7 +374,7 @@ function AppContent() {
     triggerSync,
     localActor,
     connectionScope,
-  } = useAutomergeNotebook();
+  } = useNotebook();
 
   // Daemon sync status. Drives the kernel-action gate: until the daemon
   // has confirmed the first RuntimeStateSync round-trip (`runtime_state ==
@@ -571,7 +571,7 @@ function AppContent() {
 
   // NotebookClient for sending kernel commands via transport. The host's
   // transport is the single instance shared with the SyncEngine in
-  // useAutomergeNotebook — no more separate connection per consumer.
+  // useNotebook — no more separate connection per consumer.
   const notebookClient = useMemo(
     () =>
       new NotebookClient({
