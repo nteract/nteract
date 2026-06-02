@@ -702,26 +702,12 @@ function NotebookViewContent({
     }
   }, [searchCurrentMatch]);
 
-  // ── Auto-seed first cell for empty notebooks ───────────────────────
-  // For new notebooks the daemon creates zero cells. Once sync completes
-  // (isLoading becomes false), we create the first code cell locally via
-  // the CRDT so the user gets an instant focused editor. The ref guard
-  // ensures we only seed once even if the effect re-fires before React
-  // processes the focusedCellId update from onAddCell.
-  const didAutoSeed = useRef(false);
+  // Focus the first authoritative cell after initial sync. New notebook
+  // structure is created by the host/daemon, not by this shared view.
   useEffect(() => {
-    if (isLoading || focusedCellId !== null || !canMutateCells) return;
-    if (cellIds.length === 0) {
-      if (!didAutoSeed.current) {
-        const seeded = onAddCell("code");
-        if (seeded !== null) {
-          didAutoSeed.current = true;
-        }
-      }
-    } else {
-      onFocusCell(cellIds[0]);
-    }
-  }, [isLoading, canMutateCells, cellIds, focusedCellId, onFocusCell, onAddCell]);
+    if (isLoading || focusedCellId !== null || cellIds.length === 0) return;
+    onFocusCell(cellIds[0]);
+  }, [isLoading, cellIds, focusedCellId, onFocusCell]);
 
   const renderCell = useCallback(
     (
@@ -1006,7 +992,7 @@ function NotebookViewContent({
         paddingBottom: NOTEBOOK_TAIL_SPACE,
         scrollPaddingBlock: `0rem ${NOTEBOOK_TAIL_SPACE}`,
       }}
-      data-notebook-synced={!isLoading && cellIds.length > 0}
+      data-notebook-synced={!isLoading}
       data-session-runtime-state={sessionRuntimeState ?? "unknown"}
       data-session-ready={sessionRuntimeState === "ready"}
       data-cell-count={cellIds.length}

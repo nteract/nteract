@@ -1155,7 +1155,6 @@ function NotebookViewer({
         getEngine: () => liveRuntimeRef.current?.engine ?? null,
         canWriteCellSource,
         canEditStructure: () => shellCapabilities.canEditStructure,
-        canAcceptStructure: (handle) => handle.cell_count() > 0,
         createCellId: createCloudNotebookCellId,
         syncMode: {
           structure: "scheduleFlush",

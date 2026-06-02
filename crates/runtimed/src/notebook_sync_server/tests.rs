@@ -3860,8 +3860,10 @@ fn test_create_empty_notebook_python() {
     let env_id = result.unwrap();
     assert!(!env_id.is_empty(), "Should generate an env_id");
 
-    // Should have zero cells (frontend creates the first cell locally)
-    assert_eq!(doc.cell_count(), 0);
+    assert_eq!(doc.cell_count(), 1);
+    let cells = doc.get_cells();
+    assert_eq!(cells[0].cell_type, "code");
+    assert!(cells[0].source.is_empty());
 }
 
 #[test]
@@ -3877,7 +3879,10 @@ fn test_create_empty_notebook_deno() {
     );
 
     assert!(result.is_ok());
-    assert_eq!(doc.cell_count(), 0);
+    assert_eq!(doc.cell_count(), 1);
+    let cells = doc.get_cells();
+    assert_eq!(cells[0].cell_type, "code");
+    assert!(cells[0].source.is_empty());
 
     // Check metadata was set correctly
     let metadata = doc.get_metadata_snapshot();
@@ -3909,6 +3914,29 @@ fn test_create_empty_notebook_with_provided_env_id() {
         Some(provided_id.to_string()),
         "Metadata should have provided env_id"
     );
+}
+
+#[test]
+fn test_create_empty_notebook_preserves_existing_cells() {
+    let mut doc = NotebookDoc::new("test");
+    doc.add_cell(0, "existing-cell", "markdown").unwrap();
+    doc.update_source("existing-cell", "# Existing").unwrap();
+
+    let result = create_empty_notebook(
+        &mut doc,
+        "python",
+        crate::settings_doc::PythonEnvType::Uv,
+        Some("existing-env-id"),
+        None,
+        &[],
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(doc.cell_count(), 1);
+    let cells = doc.get_cells();
+    assert_eq!(cells[0].id, "existing-cell");
+    assert_eq!(cells[0].cell_type, "markdown");
+    assert_eq!(cells[0].source, "# Existing");
 }
 
 /// Benchmark streaming load phases against a real notebook.

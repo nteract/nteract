@@ -3058,7 +3058,8 @@ impl Daemon {
 
     /// Handle a CreateNotebook connection.
     ///
-    /// Daemon creates empty room with zero cells, generates env_id as notebook_id.
+    /// Daemon creates an untitled room with one starter code cell and generates
+    /// env_id as notebook_id.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
     #[allow(clippy::too_many_arguments)]
     async fn handle_create_notebook<S>(
@@ -3119,7 +3120,7 @@ impl Daemon {
         .await?;
         self.mark_rooms_ever_seen();
 
-        // Populate the room's doc with the empty notebook content — but only if the
+        // Populate the room's doc with new-notebook content — but only if the
         // room is empty. If a persisted doc was loaded (session restore with notebook_id
         // hint), the room already has cells and we skip creation.
         let (cell_count, create_error, freshly_created) = {
