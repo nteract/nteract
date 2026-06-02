@@ -117,6 +117,9 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(sourceText, /isStatusDerivedFromConnectionError\(status, connectionError\)/);
   assert.match(sourceText, /function isStatusDerivedFromConnectionError/);
   assert.match(sourceText, /function cloudConnectionNoticeDisplay/);
+  assert.match(sourceText, /tone=\{connectionNotice\.tone\}/);
+  assert.match(sourceText, /Live room reconnecting\./);
+  assert.match(sourceText, /tone: "warning"/);
   assert.match(sourceText, /function cloudConnectionStatusErrorTitle/);
   assert.match(
     sourceText,

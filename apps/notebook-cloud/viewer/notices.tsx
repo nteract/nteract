@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertCircle, Loader2, RotateCcw } from "lucide-react";
+import { AlertCircle, CloudOff, Loader2, RotateCcw } from "lucide-react";
 import {
   NotebookNotice,
   NotebookNoticeAction,
@@ -98,10 +98,10 @@ export function CloudNotebookNotices({
 
       {connectionNotice ? (
         <NotebookNotice
-          tone="error"
-          icon={<AlertCircle className="h-4 w-4" />}
+          tone={connectionNotice.tone}
+          icon={<CloudOff className="h-4 w-4" />}
           title={connectionNotice.title}
-          actions={<ResetAuthNoticeAction onResetAuth={onResetAuth} />}
+          actions={<ResetAuthNoticeAction label="Use anonymous" onResetAuth={onResetAuth} />}
         >
           {connectionNotice.message}
         </NotebookNotice>
@@ -128,10 +128,16 @@ export function CloudNotebookNotices({
   );
 }
 
-function ResetAuthNoticeAction({ onResetAuth }: { onResetAuth: () => void }) {
+function ResetAuthNoticeAction({
+  label = "Reset to anonymous",
+  onResetAuth,
+}: {
+  label?: string;
+  onResetAuth: () => void;
+}) {
   return (
     <NotebookNoticeAction onClick={onResetAuth} icon={<RotateCcw className="h-3 w-3" />}>
-      Reset to anonymous
+      {label}
     </NotebookNoticeAction>
   );
 }
@@ -147,18 +153,23 @@ function isStatusDerivedFromConnectionError(
   );
 }
 
-function cloudConnectionNoticeDisplay(error: string): { title: string; message: string } {
+function cloudConnectionNoticeDisplay(error: string): {
+  title: string;
+  message: string;
+  tone: "warning";
+} {
   if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
     return {
-      title: "Live room needs attention.",
-      message:
-        "Unable to join the live notebook room. The notebook can stay readable while the account or connection is refreshed.",
+      title: "Live room reconnecting.",
+      message: "The notebook stays readable while the account or connection is refreshed.",
+      tone: "warning",
     };
   }
 
   return {
     title: "Live room needs attention.",
     message: sanitizeCloudConnectionError(error),
+    tone: "warning",
   };
 }
 
@@ -166,9 +177,9 @@ function sanitizeCloudConnectionError(error: string): string {
   return error.replace(/\bwss?:\/\/[^\s]+/gi, (rawUrl) => {
     try {
       const url = new URL(rawUrl);
-      return `${url.protocol}//${url.host}/...`;
+      return `${url.protocol}//${url.host}${url.pathname}`;
     } catch {
-      return "live room endpoint";
+      return rawUrl.replace(/[?#].*$/, "");
     }
   });
 }
