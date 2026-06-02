@@ -211,7 +211,7 @@ describe("CodeCellCurrentLine", () => {
     const restoreMatchMedia = mockReducedMotionPreference(true);
 
     try {
-      const { container } = render(
+      const { container, rerender } = render(
         <CodeCellCurrentLine languageLabel="Python" count={12} isExecuting />,
       );
 
@@ -232,6 +232,11 @@ describe("CodeCellCurrentLine", () => {
         vi.advanceTimersByTime(480);
       });
 
+      expect(rule?.querySelector("svg path")?.getAttribute("d")).toEqual(firstWavePath);
+
+      rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
+
+      expect(rule).toHaveAttribute("data-execution-signal", "settling");
       expect(rule?.querySelector("svg path")?.getAttribute("d")).toEqual(firstWavePath);
     } finally {
       restoreMatchMedia();

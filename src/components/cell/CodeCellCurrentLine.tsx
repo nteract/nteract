@@ -229,7 +229,7 @@ function useRunningSignalPhase(isExecuting: boolean): RunningSignalPhase {
 function RunningSignalWave({ active }: { active: boolean }) {
   const pathRef = useRef<SVGPathElement | null>(null);
   const lastPathRef = useRef(runningSignalWavePath(getMonotonicNow()));
-  const prefersReducedMotion = usePrefersReducedMotion(active);
+  const prefersReducedMotion = usePrefersReducedMotion(true);
 
   useEffect(() => {
     if (!active || prefersReducedMotion) return;
