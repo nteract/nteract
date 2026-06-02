@@ -225,6 +225,21 @@ where
     false
 }
 
+async fn clear_daemon_seeded_starter_cell(handle: &notebook_sync::DocHandle) {
+    assert!(
+        wait_for_cells_matching(handle, SESSION_READY_TIMEOUT, |cells| {
+            cells.len() == 1 && cells[0].cell_type == "code" && cells[0].source.is_empty()
+        })
+        .await,
+        "new CreateNotebook session should receive the daemon-seeded starter cell, got {:?}",
+        handle.get_cells()
+    );
+
+    let starter_id = handle.get_cells()[0].id.clone();
+    handle.delete_cell(&starter_id).unwrap();
+    handle.confirm_sync().await.unwrap();
+}
+
 async fn wait_for_presence_update_actor_label(
     frame_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
     peer_label: &str,
@@ -862,7 +877,8 @@ async fn test_notebook_sync_via_unified_socket() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    // Create first notebook via connect_create — should get empty notebook
+    // Create first notebook via connect_create — should get the daemon-owned
+    // starter cell. Clear it because this test constructs an exact fixture.
     let result1 = connect::connect_create(
         socket_path.clone(),
         "python",
@@ -882,8 +898,7 @@ async fn test_notebook_sync_via_unified_socket() {
         "client1 should reach session-ready state within 2s"
     );
 
-    let cells = client1.get_cells();
-    assert!(cells.is_empty(), "new notebook should have no cells");
+    clear_daemon_seeded_starter_cell(&client1).await;
 
     // Add a cell from client1
     client1.add_cell_after("cell-1", "code", None).unwrap();
@@ -925,8 +940,7 @@ async fn test_notebook_sync_via_unified_socket() {
         "client3 should reach session-ready state within 2s"
     );
 
-    let cells = client3.get_cells();
-    assert!(cells.is_empty(), "different notebook should have no cells");
+    clear_daemon_seeded_starter_cell(&client3).await;
 
     // Shutdown
     pool_client.shutdown().await.ok();
@@ -1531,6 +1545,8 @@ async fn test_untitled_notebook_persists_through_eviction() {
             "client1 should reach session-ready state within 2s"
         );
 
+        clear_daemon_seeded_starter_cell(&client1).await;
+
         client1.add_cell_after("c1", "code", None).unwrap();
         client1.update_source("c1", "persisted = True").unwrap();
         client1
@@ -1666,6 +1682,8 @@ async fn test_eviction_flushes_before_reconnect() {
             "client should reach session-ready state within 2s"
         );
 
+        clear_daemon_seeded_starter_cell(&client).await;
+
         client.add_cell_after("c1", "code", None).unwrap();
         client.update_source("c1", "race_test = 1").unwrap();
         client.add_cell_after("c2", "code", Some("c1")).unwrap();
@@ -1760,6 +1778,8 @@ async fn test_kernel_teardown_keeps_room_resident() {
             wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await,
             "client should reach session-ready state"
         );
+
+        clear_daemon_seeded_starter_cell(&client).await;
 
         client.add_cell_after("c1", "code", None).unwrap();
         client.update_source("c1", "resident = True").unwrap();
@@ -2461,6 +2481,8 @@ async fn test_notebook_cell_delete_propagation() {
         "client1 should reach session-ready state within 2s"
     );
 
+    clear_daemon_seeded_starter_cell(&client1).await;
+
     client1.add_cell_after("keep-1", "code", None).unwrap();
     client1
         .add_cell_after("to-delete", "code", Some("keep-1"))
@@ -2604,6 +2626,12 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         wait_for_session_ready(&nb_c, SESSION_READY_TIMEOUT).await,
         "gamma notebook should reach session-ready state within {:?}",
         SESSION_READY_TIMEOUT
+    );
+
+    let _ = tokio::join!(
+        clear_daemon_seeded_starter_cell(&nb_a),
+        clear_daemon_seeded_starter_cell(&nb_b),
+        clear_daemon_seeded_starter_cell(&nb_c),
     );
 
     // Add cells to each notebook
