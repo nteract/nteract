@@ -1368,8 +1368,11 @@ function assertInitialEmptyCodeCell(cells: unknown): void {
     cell_type?: unknown;
     source?: unknown;
   }>;
-  assert.equal(typeof cell.id, "string");
-  assert.match(cell.id, /^cell-/);
+  if (typeof cell.id !== "string") {
+    assert.fail("expected seeded cell id to be a string");
+  }
+  const cellId: string = cell.id;
+  assert.match(cellId, /^cell-/);
   assert.equal(cell.cell_type, "code");
   assert.equal(cell.source, "");
 }
