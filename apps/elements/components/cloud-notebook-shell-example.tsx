@@ -134,9 +134,9 @@ const cloudStateRows = [
   {
     surface: "Notebook actions",
     owner: "Notebook toolbar",
-    language: "Code, Markdown, Run all, packages",
+    language: "Code, Markdown, packages",
     reason:
-      "Runtime and package language stay notebook-local, but view-only cloud sessions should not render a dead command row.",
+      "Cell structure and package language stay notebook-local; execution controls appear only when a runtime can run cells.",
   },
   {
     surface: "Account",
@@ -345,7 +345,12 @@ function CloudAppToolbar({
   return (
     <NotebookDocumentHeader
       capabilities={effectiveCapabilities}
-      className="min-h-14 border-b border-border/70 px-4 py-2"
+      className={cn(
+        "min-h-14 border-b border-border/70 px-4 py-2",
+        "max-[640px]:min-h-[4.75rem] max-[640px]:flex-wrap max-[640px]:content-center max-[640px]:justify-start max-[640px]:gap-x-2 max-[640px]:gap-y-1",
+        "max-[640px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%]",
+        "max-[640px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[640px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[640px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
+      )}
       presence={<CloudDocumentTitle title="MathNet topic visualization" />}
       utilityControls={
         <>
@@ -355,12 +360,7 @@ function CloudAppToolbar({
       }
       sharingControls={<CloudShareMenu compact={false} />}
       editControls={
-        <CloudModeToggle
-          compact={false}
-          interaction={interaction}
-          mode={mode}
-          onModeChange={onModeChange}
-        />
+        <CloudModeToggle interaction={interaction} mode={mode} onModeChange={onModeChange} />
       }
       identityControls={<CloudAccountButton actor={actor} capabilities={effectiveCapabilities} />}
     />
@@ -444,7 +444,12 @@ function CloudStatePreview({
     >
       <NotebookDocumentHeader
         capabilities={effectiveCapabilities}
-        className="min-h-11 px-3 py-1.5"
+        className={cn(
+          "min-h-11 px-3 py-1.5",
+          "max-[640px]:min-h-[4.25rem] max-[640px]:flex-wrap max-[640px]:content-center max-[640px]:justify-start max-[640px]:gap-x-2 max-[640px]:gap-y-1",
+          "max-[640px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%]",
+          "max-[640px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[640px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[640px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
+        )}
         presence={<CloudDocumentTitle title={scenario.title} />}
         utilityControls={
           <>
@@ -453,7 +458,7 @@ function CloudStatePreview({
           </>
         }
         sharingControls={<CloudShareMenu compact />}
-        editControls={<CloudModeToggle compact interaction={interaction} mode={mode} />}
+        editControls={<CloudModeToggle interaction={interaction} mode={mode} />}
         identityControls={<CloudAccountButton actor={actor} capabilities={effectiveCapabilities} />}
       />
       <div className="[&_[data-slot=notebook-command-toolbar]]:h-9 [&_[data-slot=notebook-command-toolbar]]:px-3">
@@ -1108,12 +1113,10 @@ function CloudAccountPanel({
 }
 
 function CloudModeToggle({
-  compact,
   interaction,
   mode,
   onModeChange,
 }: {
-  compact: boolean;
   interaction: NotebookInteractionModeProjection;
   mode: CloudModeState;
   onModeChange?: (mode: CloudModeState) => void;
@@ -1125,19 +1128,8 @@ function CloudModeToggle({
         title="This notebook is view-only for the current identity"
       >
         <CheckCircle2 className="size-3.5" aria-hidden="true" />
-        {compact ? null : <span>View only</span>}
+        <span>View only</span>
       </span>
-    );
-  }
-
-  if (compact) {
-    return (
-      <NotebookEditModeButton
-        mode={mode}
-        state={interaction.state}
-        onModeChange={(nextMode) => onModeChange?.(nextMode)}
-        className="border-0 bg-transparent px-1.5 shadow-none"
-      />
     );
   }
 
