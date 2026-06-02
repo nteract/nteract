@@ -267,10 +267,13 @@ export const MarkdownCell = memo(function MarkdownCell({
       setEditing(false);
       return;
     }
+    if (!isFocused && editing && cell.source.trim()) {
+      setEditing(false);
+    }
     if (!isFocused || editing) {
       setPreviewFrameInteractionActive(false);
     }
-  }, [isFocused, editing, readOnly]);
+  }, [cell.source, isFocused, editing, readOnly]);
 
   const handleBlur = useCallback(() => {
     if (cell.source.trim()) {
