@@ -3860,8 +3860,8 @@ fn test_create_empty_notebook_python() {
     let env_id = result.unwrap();
     assert!(!env_id.is_empty(), "Should generate an env_id");
 
-    // Should have zero cells (frontend creates the first cell locally)
-    assert_eq!(doc.cell_count(), 0);
+    // Daemon-owned notebook creation seeds the initial document structure.
+    assert_eq!(doc.cell_count(), 1);
 }
 
 #[test]
@@ -3877,7 +3877,7 @@ fn test_create_empty_notebook_deno() {
     );
 
     assert!(result.is_ok());
-    assert_eq!(doc.cell_count(), 0);
+    assert_eq!(doc.cell_count(), 1);
 
     // Check metadata was set correctly
     let metadata = doc.get_metadata_snapshot();

@@ -16,6 +16,7 @@ describe("NotebookView shell capabilities", () => {
       /capabilities\?\.canEditStructure \?\? \(canAcceptCellMutations && !readOnly\)/,
     );
     expect(sourceText).toMatch(/capabilities\?\.canExecute \?\? !readOnly/);
+    expect(sourceText).toMatch(/data-notebook-synced=\{!isLoading\}/);
     expect(sourceText).toMatch(/<CodeCell[\s\S]*canExecute=\{canExecuteCells\}/);
     expect(sourceText).toMatch(/<MarkdownCell[\s\S]*readOnly=\{!canEditMarkdownSources\}/);
     expect(sourceText).toMatch(
@@ -26,6 +27,18 @@ describe("NotebookView shell capabilities", () => {
     );
     expect(sourceText).toMatch(/canMutateCells && onSetCellSourceHidden/);
     expect(sourceText).toMatch(/canMutateCells && onSetCellOutputsHidden/);
+  });
+
+  it("does not create notebook cells from transient empty render state", () => {
+    const sourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+
+    expect(sourceText).not.toContain("Auto-seed first cell");
+    expect(sourceText).not.toMatch(
+      /cellIds\.length === 0[\s\S]{0,300}onAddCell\("code"\)/,
+    );
   });
 
   it("does not install code execution keybindings when execution is unavailable", () => {

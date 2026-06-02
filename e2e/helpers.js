@@ -72,12 +72,12 @@ export async function waitForAppReady() {
 }
 
 /**
- * Wait for the notebook to finish initial Automerge sync and render cells.
+ * Wait for the notebook to finish initial Automerge sync and render.
  *
  * Checks the `data-notebook-synced` attribute set by NotebookView when
- * `isLoading` is false and `cells.length > 0`. This is the canonical
- * signal that the doc has synced and cells are in the DOM — no arbitrary
- * timeouts or cell-count polling needed.
+ * `isLoading` is false. This is the canonical signal that the doc has synced
+ * and the notebook surface is ready, including legitimate empty documents —
+ * no arbitrary timeouts or cell-count polling needed.
  */
 export async function waitForNotebookSynced(timeout = 15000) {
   await waitForAppReady();
