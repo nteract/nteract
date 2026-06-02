@@ -173,36 +173,12 @@
   animation: exec-signal-settle 320ms ease-out both;
 }
 
-@keyframes exec-signal-tail {
-  0% {
-    opacity: 0;
-    transform: scaleX(0.2);
-  }
-  20% {
-    opacity: 0.6;
-  }
-  70% {
-    opacity: 0.6;
-    transform: scaleX(1);
-  }
-  100% {
-    opacity: 0;
-    transform: scaleX(1);
-  }
-}
-
-.animate-exec-signal-tail {
-  animation: exec-signal-tail 2.4s ease-out infinite;
-  transform-origin: left center;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .animate-queue-breathe,
   .animate-queue-boundary-pulse,
   .animate-exec-squish,
   .animate-exec-signal-build,
-  .animate-exec-signal-settle,
-  .animate-exec-signal-tail {
+  .animate-exec-signal-settle {
     animation: none;
   }
 }
