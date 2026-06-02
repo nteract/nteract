@@ -15,6 +15,7 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
   assert.doesNotMatch(sourceText, /<CloudLiveNotebook/);
   assert.doesNotMatch(sourceText, /NotebookReadOnlyView/);
   assert.doesNotMatch(sourceText, /<NotebookReadOnlyView/);
+  assert.doesNotMatch(sourceText, /autoSeedFirstCell/);
 });
 
 test("cloud projects live cells into the NotebookView stores", () => {

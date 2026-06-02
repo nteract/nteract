@@ -13,6 +13,7 @@ import { browser } from "@wdio/globals";
 import {
   getKernelStatus,
   setCellSource,
+  setupCodeCell,
   waitForAppReady,
   waitForCellOutput,
   waitForKernelReady,
@@ -38,9 +39,7 @@ describe("E2E Smoke Test", () => {
     // Wait for the notebook to finish Automerge sync and render cells.
     await waitForNotebookSynced();
 
-    // Find the first code cell
-    const codeCell = await $('[data-cell-type="code"]');
-    await codeCell.waitForExist({ timeout: 5000 });
+    const codeCell = await setupCodeCell();
 
     // Set cell source via CodeMirror dispatch API (reliable with any WebDriver)
     await setCellSource(codeCell, "print('hello from e2e')");

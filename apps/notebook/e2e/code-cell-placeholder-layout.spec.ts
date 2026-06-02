@@ -1,13 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { openNotebookRoom, waitForCellCount } from "./helpers";
+import { ensureCodeCell, openNotebookRoom } from "./helpers";
 
 test.describe("code cell placeholder layout", () => {
   test("keeps the empty placeholder aligned in a compact viewport", async ({ page }) => {
     await page.setViewportSize({ width: 624, height: 540 });
     await openNotebookRoom(page, crypto.randomUUID());
-    await waitForCellCount(page, 1);
 
-    const cell = page.locator('[data-cell-type="code"]').first();
+    const cell = await ensureCodeCell(page);
     const metrics = await cell.evaluate((cellElement) => {
       const rectFor = (selector: string) => {
         const element = cellElement.querySelector(selector);

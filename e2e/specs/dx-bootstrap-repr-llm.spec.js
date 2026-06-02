@@ -10,6 +10,7 @@ import { browser } from "@wdio/globals";
 import {
   getKernelStatus,
   setCellSource,
+  setupCodeCell,
   waitForCellOutputMatching,
   waitForKernelReady,
   waitForNotebookSynced,
@@ -25,8 +26,7 @@ describe("DX bootstrap LLM formatter", () => {
 
     await waitForNotebookSynced();
 
-    const codeCell = await $('[data-cell-type="code"]');
-    await codeCell.waitForExist({ timeout: 5000 });
+    const codeCell = await setupCodeCell();
 
     await setCellSource(
       codeCell,

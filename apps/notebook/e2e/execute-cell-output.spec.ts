@@ -26,7 +26,7 @@ test.describe("browser execution with MCP peer", () => {
     await mcp.connectNotebook(notebookId);
     await mcp.createCell("print('browser executes MCP-created cell')");
 
-    await waitForCellCount(page, 2);
+    await waitForCellCount(page, 1);
     const cell = await waitForCodeCellContaining(page, "browser executes MCP-created cell");
 
     await executeCell(cell);

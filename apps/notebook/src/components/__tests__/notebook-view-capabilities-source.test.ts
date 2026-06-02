@@ -28,6 +28,23 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/canMutateCells && onSetCellOutputsHidden/);
   });
 
+  it("does not implicitly seed cells from frontend emptiness", () => {
+    const notebookViewSource = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+    const desktopAppSource = readFileSync(join(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
+    const cloudViewerSource = readFileSync(
+      join(process.cwd(), "apps/notebook-cloud/viewer/index.tsx"),
+      "utf8",
+    );
+
+    expect(notebookViewSource).not.toMatch(/autoSeedFirstCell/);
+    expect(notebookViewSource).not.toMatch(/onAddCell\("code"\)[\s\S]*didAutoSeed/);
+    expect(desktopAppSource).not.toMatch(/autoSeedFirstCell/);
+    expect(cloudViewerSource).not.toMatch(/autoSeedFirstCell/);
+  });
+
   it("does not install code execution keybindings when execution is unavailable", () => {
     const sourceText = readFileSync(
       join(process.cwd(), "apps/notebook/src/components/CodeCell.tsx"),

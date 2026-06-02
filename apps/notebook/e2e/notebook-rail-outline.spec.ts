@@ -29,7 +29,7 @@ test.describe("notebook rail outline", () => {
     await mcp.createCell("## Clean columns\n\nTighten types and null handling.", "markdown");
     await mcp.createCell("### Validate ranges\n\nCheck outliers before model fitting.", "markdown");
     await mcp.createCell('print("validate")', "code");
-    await waitForCellCount(page, 6);
+    await waitForCellCount(page, 5);
 
     await expect(page.getByTestId("notebook-rail")).toHaveAttribute("data-collapsed", "true");
     await page.getByLabel("Outline").click();
@@ -68,7 +68,7 @@ test.describe("notebook rail outline", () => {
       ].join("\n\n"),
       "markdown",
     );
-    await waitForCellCount(page, 2);
+    await waitForCellCount(page, 1);
 
     const childHeading = page
       .frameLocator('iframe[data-slot="isolated-frame"][name^="md-"]')
