@@ -590,8 +590,10 @@ main.flex > .cloud-report-toolbar {
   border-radius: 8px;
   padding: 0;
   color: var(--foreground);
-  background: var(--background);
-  box-shadow: 0 12px 36px color-mix(in srgb, #000 16%, transparent);
+  background: color-mix(in srgb, var(--background) 98%, var(--foreground) 2%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent),
+    0 8px 20px color-mix(in srgb, #000 8%, transparent);
 }
 
 .cloud-share-panel header {
@@ -802,8 +804,10 @@ main.flex > .cloud-report-toolbar {
   border-radius: 8px;
   padding: 0;
   color: var(--foreground);
-  background: var(--background);
-  box-shadow: 0 12px 36px color-mix(in srgb, #000 16%, transparent);
+  background: color-mix(in srgb, var(--background) 98%, var(--foreground) 2%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent),
+    0 8px 20px color-mix(in srgb, #000 8%, transparent);
 }
 
 .cloud-auth-panel-header {

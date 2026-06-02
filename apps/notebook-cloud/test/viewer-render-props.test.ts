@@ -146,6 +146,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     cssText,
     /@media \(max-width: 360px\) \{[\s\S]*cloud-room-toolbar \.cloud-connection-status[\s\S]*display: none;/,
   );
+  assert.match(cssText, /0 8px 20px color-mix\(in srgb, #000 8%, transparent\)/);
+  assert.doesNotMatch(cssText, /0 12px 36px/);
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
   assert.doesNotMatch(sourceText, /label: "live"/);
   assert.doesNotMatch(sourceText, /label: "Room"/);
