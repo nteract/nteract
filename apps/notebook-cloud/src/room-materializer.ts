@@ -226,12 +226,9 @@ export class RoomMaterializer {
       this.loadedPublishedNotebookHeads = null;
       this.loadedPublishedRuntimeStateHeads = null;
       const host = await createEmptyRoomHost(this.notebookId, ROOM_HOST_ACTOR_LABEL);
-      const initialCellId = `cell-${crypto.randomUUID()}`;
-      host.seed_initial_code_cell_if_empty(initialCellId);
       cloudLog("info", "room.materializer.loaded", {
         notebook_id: this.notebookId,
         source: "empty_room",
-        initial_cell_id: initialCellId,
         duration_ms: durationMs(startedAt),
         counter: "materializer_loads",
         counter_delta: 1,

@@ -16,6 +16,7 @@ import {
   Globe2,
   KeyRound,
   Link2,
+  Loader2,
   LogIn,
   LogOut,
   Mail,
@@ -1993,6 +1994,17 @@ function cloudConnectionStatusErrorTitle(error: string): string {
     return "unable to join the live room";
   }
   return sanitizeCloudConnectionError(error);
+}
+
+function sanitizeCloudConnectionError(error: string): string {
+  return error.replace(/\bwss?:\/\/[^\s]+/gi, (rawUrl) => {
+    try {
+      const url = new URL(rawUrl);
+      return `${url.protocol}//${url.host}${url.pathname}`;
+    } catch {
+      return rawUrl.replace(/[?#].*$/, "");
+    }
+  });
 }
 
 function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState }) {
