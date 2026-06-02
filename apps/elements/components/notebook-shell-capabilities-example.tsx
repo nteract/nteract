@@ -24,6 +24,10 @@ import type { LucideIcon } from "lucide-react";
 import type { NotebookShellCapabilities } from "@/components/notebook";
 import { cn } from "@/lib/utils";
 import {
+  ElementsNotebookEnvironment,
+  useElementsNotebookEnvironment,
+} from "@/components/elements-notebook-environment";
+import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
   type ElementsNotebookScenarioId,
@@ -245,6 +249,10 @@ export function NotebookShellCapabilitiesExample() {
         ))}
       </section>
 
+      <ElementsNotebookEnvironment scenarioId="cloud-editor" initialRailCollapsed>
+        <ElementsFixtureEnvironmentCard />
+      </ElementsNotebookEnvironment>
+
       <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
           <div className="flex items-center gap-2 border-b border-fd-border p-4">
@@ -352,6 +360,103 @@ export function NotebookShellCapabilitiesExample() {
         </p>
       </section>
     </div>
+  );
+}
+
+function ElementsFixtureEnvironmentCard() {
+  const environment = useElementsNotebookEnvironment();
+  const firstCellId = environment.document.viewModel.cellIds[0] ?? null;
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="flex items-center gap-2 border-b border-fd-border p-4">
+        <TestTube2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+        <h2 className="text-sm font-semibold">Elements fixture environment</h2>
+      </div>
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
+        <div>
+          <p className="text-xs leading-5 text-fd-muted-foreground">
+            Catalog pages that need notebook context can wrap production shell components in
+            `ElementsNotebookEnvironment`. The provider emits scenario capabilities, rail state,
+            document facts, output fixtures, runtime/package projections, and inert host actions.
+          </p>
+          <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+            <FixtureFact label="Scenario" value={environment.scenario.title} />
+            <FixtureFact
+              label="Access"
+              value={`${environment.capabilities.access.source}:${environment.capabilities.access.level}`}
+            />
+            <FixtureFact
+              label="Document"
+              value={`${environment.document.cellCount} cells, ${environment.rail.outlineItemCount} headings`}
+            />
+            <FixtureFact
+              label="Packages"
+              value={`${environment.rail.packageCount} projected packages`}
+            />
+            <FixtureFact label="Runtime" value={environment.runtime.label} />
+            <FixtureFact
+              label="Outputs"
+              value={`${environment.outputs.outputAreaOutputs.length} outputs, ${environment.outputs.widgetOutputs.length} widget views`}
+            />
+          </dl>
+        </div>
+        <div className="rounded-md border border-fd-border bg-fd-background p-3">
+          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+            Inert host callbacks
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <FixtureActionButton
+              label="Open packages"
+              onClick={() => environment.actions.setActivePanel("packages")}
+            />
+            <FixtureActionButton
+              label={environment.rail.collapsed ? "Expand rail" : "Collapse rail"}
+              onClick={() => environment.actions.setRailCollapsed(!environment.rail.collapsed)}
+            />
+            <FixtureActionButton
+              label="Select first cell"
+              onClick={() => environment.actions.selectCell(firstCellId)}
+            />
+            <FixtureActionButton
+              label="Host action"
+              onClick={() => environment.actions.recordHostAction("request-edit")}
+            />
+            <FixtureActionButton label="Clear" onClick={environment.actions.clearEventLog} />
+          </div>
+          <ol className="mt-3 min-h-20 space-y-1 font-mono text-[11px] text-fd-muted-foreground">
+            {environment.actions.eventLog.length ? (
+              environment.actions.eventLog.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)
+            ) : (
+              <li>No events recorded</li>
+            )}
+          </ol>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FixtureFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+        {label}
+      </dt>
+      <dd className="mt-1 text-fd-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function FixtureActionButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="rounded-md border border-fd-border bg-fd-card px-2 py-1 text-xs font-medium text-fd-foreground transition-colors hover:bg-fd-muted"
+      onClick={onClick}
+    >
+      {label}
+    </button>
   );
 }
 
