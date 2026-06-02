@@ -140,19 +140,6 @@
   transform-origin: center center;
 }
 
-@keyframes exec-signal-wave {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-33.333333%);
-  }
-}
-
-.animate-exec-signal-wave {
-  animation: exec-signal-wave 1.6s linear infinite;
-}
-
 @keyframes exec-signal-build {
   0% {
     clip-path: inset(0 100% 0 0);
@@ -215,7 +202,6 @@
   .animate-exec-squish,
   .animate-exec-signal-build,
   .animate-exec-signal-settle,
-  .animate-exec-signal-wave,
   .animate-exec-signal-tail {
     animation: none;
   }

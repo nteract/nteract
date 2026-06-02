@@ -141,7 +141,16 @@ describe("CodeCellCurrentLine", () => {
       expect(
         rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
       ).not.toBeInTheDocument();
-      expect(rule?.querySelector("svg")).toHaveClass("animate-exec-signal-wave");
+      const wave = rule?.querySelector("svg path");
+      expect(wave).toHaveAttribute("d", expect.stringMatching(/^M0\.00 /));
+      expect(rule?.querySelector("svg")).not.toHaveClass("animate-exec-signal-wave");
+      const firstWavePath = wave?.getAttribute("d");
+
+      act(() => {
+        vi.advanceTimersByTime(48);
+      });
+
+      expect(rule?.querySelector("svg path")?.getAttribute("d")).not.toEqual(firstWavePath);
 
       rerender(<CodeCellCurrentLine languageLabel="Python" count={13} />);
 
