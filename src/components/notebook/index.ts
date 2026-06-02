@@ -34,8 +34,10 @@ export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./Note
 export {
   NotebookNotice,
   NotebookNoticeAction,
+  NotebookNoticeStack,
   type NotebookNoticeActionProps,
   type NotebookNoticeProps,
+  type NotebookNoticeStackProps,
   type NotebookNoticeTone,
 } from "./NotebookNotice";
 export {

@@ -15,5 +15,9 @@ describe("NotebookToolbarFrame", () => {
     expect(frame).toHaveClass("top-0");
     expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
     expect(screen.getByText("Syncing")).toBeVisible();
+    expect(screen.getByText("Syncing").parentElement).toHaveAttribute(
+      "data-slot",
+      "notebook-notice-stack",
+    );
   });
 });

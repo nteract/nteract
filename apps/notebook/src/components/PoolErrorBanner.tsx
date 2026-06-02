@@ -1,6 +1,10 @@
 import { useNotebookHost } from "@nteract/notebook-host";
 import { AlertTriangle, Clock, Settings } from "lucide-react";
-import { NotebookNotice, NotebookNoticeAction } from "@/components/notebook/NotebookNotice";
+import {
+  NotebookNotice,
+  NotebookNoticeAction,
+  NotebookNoticeStack,
+} from "@/components/notebook/NotebookNotice";
 import type { PoolErrorWithTimestamp } from "../hooks/usePoolState";
 
 interface PoolErrorItemProps {
@@ -93,12 +97,12 @@ export function PoolErrorBanner({
   }
 
   return (
-    <div className="flex flex-col">
+    <NotebookNoticeStack>
       {uvError && <PoolErrorItem envType="UV" error={uvError} onDismiss={onDismissUv} />}
       {condaError && (
         <PoolErrorItem envType="Conda" error={condaError} onDismiss={onDismissConda} />
       )}
       {pixiError && <PoolErrorItem envType="Pixi" error={pixiError} onDismiss={onDismissPixi} />}
-    </div>
+    </NotebookNoticeStack>
   );
 }

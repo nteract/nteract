@@ -40,7 +40,6 @@ body {
 
 .cloud-notebook-notices {
   display: grid;
-  gap: 0.25rem;
   border-bottom: 1px solid var(--border);
   background: var(--background);
   padding-inline: clamp(0.75rem, 4vw, 2rem) clamp(0.5rem, 2vw, 1rem);
