@@ -3,6 +3,8 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export async function waitForNotebookReady(page: Page, path = "/") {
   await page.goto(path);
   await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
+  // NotebookView marks sync complete once loading has finished without a load
+  // error. Zero-cell notebooks are valid once the host has initialized them.
   await expect(page.locator("[data-notebook-synced]")).toHaveAttribute(
     "data-notebook-synced",
     "true",
