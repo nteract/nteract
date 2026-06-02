@@ -27,6 +27,7 @@ export interface NotebookIdentityBadgeProps {
   actor: NotebookActorIdentity;
   size?: "sm" | "default";
   showDetail?: boolean;
+  showStatus?: boolean;
   variant?: "badge" | "inline";
   className?: string;
 }
@@ -42,6 +43,7 @@ export function NotebookIdentityBadge({
   actor,
   size = "default",
   showDetail = true,
+  showStatus = true,
   variant = "badge",
   className,
 }: NotebookIdentityBadgeProps) {
@@ -64,14 +66,15 @@ export function NotebookIdentityBadge({
       data-variant={variant}
       title={actor.detail ? `${actor.label} - ${actor.detail}` : actor.label}
     >
-      {inline ? (
+      {inline && showStatus ? (
         <span
           className={cn("size-2 shrink-0 rounded-full", statusTone(actor.status ?? "active"))}
           aria-hidden="true"
         />
-      ) : (
-        <NotebookActorAvatar actor={actor} icon={Icon} size={avatarSize} />
-      )}
+      ) : null}
+      {!inline ? (
+        <NotebookActorAvatar actor={actor} icon={Icon} size={avatarSize} showStatus={showStatus} />
+      ) : null}
       <span className="min-w-0">
         <span
           className={cn(
@@ -142,10 +145,12 @@ function NotebookActorAvatar({
   actor,
   icon: Icon,
   size = "default",
+  showStatus = true,
 }: {
   actor: NotebookActorIdentity;
   icon: LucideIcon;
   size?: "sm" | "default";
+  showStatus?: boolean;
 }) {
   return (
     <Avatar
@@ -162,7 +167,7 @@ function NotebookActorAvatar({
           <Icon className="size-3.5" aria-hidden="true" />
         )}
       </AvatarFallback>
-      <AvatarBadge className={statusTone(actor.status ?? "active")} />
+      {showStatus ? <AvatarBadge className={statusTone(actor.status ?? "active")} /> : null}
     </Avatar>
   );
 }

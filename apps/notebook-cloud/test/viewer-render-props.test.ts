@@ -63,7 +63,7 @@ test("cloud viewer keeps theme resolution out of first-class notebook chrome", (
   assert.doesNotMatch(sourceText, /className="cloud-theme-toggle"/);
 });
 
-test("cloud viewer routes notebook header controls through the shared command toolbar", () => {
+test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
@@ -72,15 +72,20 @@ test("cloud viewer routes notebook header controls through the shared command to
   assert.match(sourceText, /NotebookToolbarFrame,/);
   assert.match(
     sourceText,
-    /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookDocumentHeader[\s\S]*<NotebookCommandToolbar/,
+    /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookDocumentHeader[\s\S]*shouldShowCloudNotebookCommandToolbar\(shellCapabilities\)[\s\S]*<NotebookCommandToolbar/,
   );
   assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /<NotebookCommandToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.match(
+    sourceText,
+    /function shouldShowCloudNotebookCommandToolbar\(capabilities: NotebookShellCapabilities\): boolean \{[\s\S]*capabilities\.canEditStructure[\s\S]*capabilities\.canExecute[\s\S]*capabilities\.canManagePackages/,
+  );
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
-  assert.match(sourceText, /identityControls=\{[\s\S]*<NotebookToolbarIdentity/);
+  assert.match(sourceText, /identityControls=\{[\s\S]*<CloudAuthControls/);
+  assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*showStatus=\{false\}/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
   assert.doesNotMatch(sourceText, /label: "live"/);

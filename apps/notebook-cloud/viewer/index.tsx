@@ -1281,15 +1281,17 @@ function NotebookViewer({
           />
         }
       />
-      <NotebookCommandToolbar
-        capabilities={shellCapabilities}
-        runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-        environmentManager={packageEnvironmentManager}
-        environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
-        addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
-        onAddCell={handleCloudAddCell}
-        onTogglePackages={handleTogglePackagesRail}
-      />
+      {shouldShowCloudNotebookCommandToolbar(shellCapabilities) ? (
+        <NotebookCommandToolbar
+          capabilities={shellCapabilities}
+          runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+          environmentManager={packageEnvironmentManager}
+          environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
+          addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
+          onAddCell={handleCloudAddCell}
+          onTogglePackages={handleTogglePackagesRail}
+        />
+      ) : null}
     </NotebookToolbarFrame>
   );
   const authDiagnostics = shouldShowPrototypeDevControls({
@@ -1813,6 +1815,10 @@ function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
   return <UserRound aria-hidden="true" />;
 }
 
+function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabilities): boolean {
+  return capabilities.canEditStructure || capabilities.canExecute || capabilities.canManagePackages;
+}
+
 function CloudAuthControls({
   authConfig,
   authState,
@@ -1920,6 +1926,7 @@ function CloudAuthControls({
           variant="inline"
           size="sm"
           showDetail={false}
+          showStatus={false}
           className="cloud-auth-identity-badge"
         />
       </summary>

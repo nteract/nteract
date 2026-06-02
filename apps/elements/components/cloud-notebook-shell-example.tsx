@@ -132,10 +132,11 @@ const cloudStateRows = [
     reason: "Sharing is document access; it should read as a quiet ledger, not generic account UI.",
   },
   {
-    surface: "Runtime",
+    surface: "Notebook actions",
     owner: "Notebook toolbar",
-    language: "Python / uv",
-    reason: "Language and package affordances stay on the notebook command toolbar.",
+    language: "Code, Markdown, Run all, packages",
+    reason:
+      "Runtime and package language stay notebook-local, but view-only cloud sessions should not render a dead command row.",
   },
   {
     surface: "Account",
@@ -389,6 +390,10 @@ function CloudNotebookToolbar({
   const interaction = cloudInteractionProjection(scenario, mode);
   const capabilities = withInteractionProjection(scenario.capabilities, interaction);
 
+  if (!shouldShowCloudNotebookCommandToolbar(capabilities)) {
+    return null;
+  }
+
   return (
     <div className="min-w-0 overflow-hidden" data-slot="cloud-notebook-toolbar">
       <NotebookCommandToolbar
@@ -408,6 +413,10 @@ function CloudNotebookToolbar({
       />
     </div>
   );
+}
+
+function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabilities): boolean {
+  return capabilities.canEditStructure || capabilities.canExecute || capabilities.canManagePackages;
 }
 
 function CloudStatePreview({
@@ -1060,6 +1069,7 @@ function CloudAccountPanel({
         actor={actor}
         variant="inline"
         showDetail={false}
+        showStatus={false}
         className="justify-start"
       />
       <dl className="grid gap-1.5 border-l-2 border-border/80 pl-3 text-xs">
@@ -1205,6 +1215,7 @@ function CloudAccountButton({
         actor={actor}
         variant="inline"
         showDetail={false}
+        showStatus={false}
         className="max-w-full"
       />
       <span className="sr-only">{capabilities.access.level} account</span>
