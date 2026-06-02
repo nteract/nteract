@@ -153,6 +153,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
   assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
+  assert.match(sourceText, /Can view this notebook without signing in/);
+  assert.match(sourceText, /Only invited people can open this notebook/);
   assert.match(sourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
   assert.match(sourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
   assert.match(sourceText, /const accessRow = connectedScope/);

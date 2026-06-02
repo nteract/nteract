@@ -1722,7 +1722,11 @@ function CloudSharingControls({
             <Globe2 aria-hidden="true" />
             <div>
               <strong>Anyone with the link</strong>
-              <span>{publicEnabled ? "Can view this notebook" : "No anonymous access"}</span>
+              <span>
+                {publicEnabled
+                  ? "Can view this notebook without signing in"
+                  : "Only invited people can open this notebook"}
+              </span>
             </div>
           </div>
           <button
