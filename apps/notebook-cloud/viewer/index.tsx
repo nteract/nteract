@@ -47,6 +47,8 @@ import {
   type NotebookInteractionModeProjection,
   type NotebookPackageSection,
   type NotebookShellCapabilities,
+  useNotebookCellUIStateBridge,
+  useNotebookViewModel,
 } from "@/components/notebook";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
@@ -81,12 +83,10 @@ import {
   type PresenceContextValue,
 } from "../../notebook/src/contexts/PresenceContext";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
-import { useNotebookCellUIStateBridge } from "../../notebook/src/lib/cell-ui-state";
 import { createNotebookController } from "../../notebook/src/lib/notebook-controller";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { setLoggerHost } from "../../notebook/src/lib/logger";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
-import { useNotebookViewModel } from "../../notebook/src/lib/notebook-view-model";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudViewStoreProjection,

@@ -1,5 +1,5 @@
 import type { JupyterOutput as SharedJupyterOutput } from "@/components/cell/jupyter-output";
-import { replaceNotebookCells } from "../../notebook/src/lib/notebook-cells";
+import { replaceNotebookCells } from "@/components/notebook/state/cell-store";
 import {
   deleteExecutions,
   setCellExecutionPointer,
