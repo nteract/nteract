@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -305,8 +306,11 @@ jobs:
   build-linux:
     name: Linux (release artifacts)
     needs: [changes, build-ui]
-    if: needs.changes.outputs.source_changed == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # This builds the native Tauri/WebDriver app and stages release-like
+    # artifacts for the native E2E smoke below. Keep it off per-commit PR CI;
+    # run it post-merge or manually when the native smoke signal is needed.
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
@@ -544,17 +548,17 @@ jobs:
     needs: [changes, build-ui]
     if: ${{ always() && (needs.changes.outputs.source_changed != 'true' || needs.build-ui.result == 'success') }}
     continue-on-error: ${{ matrix.platform.non_blocking }}
-    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'ubuntu-latest' }}
     strategy:
       matrix:
         platform:
           - name: macOS
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-14
             setup: echo "No extra deps needed on macOS"
             run_on_pr: false
             non_blocking: false
           - name: Windows
-            runner: blacksmith-4vcpu-windows-2025
+            runner: windows-latest
             setup: echo "No extra deps needed on Windows"
             run_on_pr: false
             non_blocking: true
@@ -648,9 +652,11 @@ jobs:
   # job above.
   e2e:
     name: "E2E: ${{ matrix.name }}"
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     needs: [changes, build-linux]
-    if: needs.changes.outputs.source_changed == 'true'
+    # Native WebDriver smoke is intentionally post-merge/manual. PR coverage
+    # stays in Browser E2E so agent commit churn does not fan out Tauri builds.
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
