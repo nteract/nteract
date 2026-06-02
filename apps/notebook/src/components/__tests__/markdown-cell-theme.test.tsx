@@ -342,6 +342,54 @@ describe("MarkdownCell theme sync", () => {
     expect(preview.className).not.toContain("hidden");
   });
 
+  it("exits edit mode when a focused cell with content loses notebook focus", async () => {
+    const cell = { ...makeCell(), source: "# Has content" };
+    mockIsFocused = true;
+
+    const { getByLabelText, rerender } = render(
+      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    // Enter edit mode from the preview (plain Enter on the focused view).
+    fireEvent.keyDown(preview, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+
+    // Notebook focus moves to another cell — the focus effect should drop
+    // this cell back to preview because it has content.
+    mockIsFocused = false;
+    rerender(<MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />);
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+  });
+
+  it("stays editable when an empty cell loses notebook focus", async () => {
+    // Empty cells begin in edit mode and must not be forced into an
+    // uneditable preview when notebook focus moves away.
+    const cell = { ...makeCell(), source: "" };
+    mockIsFocused = true;
+
+    const { getByLabelText, rerender } = render(
+      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).toContain("hidden");
+
+    mockIsFocused = false;
+    rerender(<MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />);
+
+    // The editor must remain visible (preview stays hidden) after losing focus.
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+  });
+
   it("keeps view-mode keyboard navigation active for read-only markdown cells", () => {
     const onFocusNext = vi.fn();
     const onFocusPrevious = vi.fn();
