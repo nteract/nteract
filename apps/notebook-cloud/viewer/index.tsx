@@ -82,11 +82,11 @@ import {
 } from "../../notebook/src/contexts/PresenceContext";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import { useNotebookCellUIStateBridge } from "../../notebook/src/lib/cell-ui-state";
+import { createNotebookController } from "../../notebook/src/lib/notebook-controller";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { setLoggerHost } from "../../notebook/src/lib/logger";
 import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 import { useNotebookViewModel } from "../../notebook/src/lib/notebook-view-model";
-import type { NotebookCell } from "../../notebook/src/types";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudViewStoreProjection,
@@ -1128,7 +1128,19 @@ function NotebookViewer({
       }),
     [authState, codeCellCount, connectionActorLabel, connectionScope, selectedInteractionMode],
   );
-  const canEditMarkdown = shellCapabilities.canEditMarkdown;
+  const canWriteCellSource = useCallback(
+    (cellId: string) => {
+      const cell = cellsByIdRef.current.get(cellId);
+      if (!cell) {
+        return false;
+      }
+      if (cell.cellType === "markdown") {
+        return shellCapabilities.canEditMarkdown;
+      }
+      return shellCapabilities.canEditCells;
+    },
+    [shellCapabilities],
+  );
   const notebookCellIds = notebookViewModel.cellIds;
   const packageEnvironmentManager = cloudNotebookEnvironmentManager(
     notebookViewModel.packages.sections,
@@ -1136,65 +1148,48 @@ function NotebookViewer({
   const requestCloudMaterialization = useCallback((liveRuntime: CloudSyncRuntime) => {
     materializeLiveRuntimeRef.current?.(liveRuntime);
   }, []);
+  const cloudNotebookController = useMemo(
+    () =>
+      createNotebookController({
+        getHandle: () => liveRuntimeRef.current?.handle ?? null,
+        getEngine: () => liveRuntimeRef.current?.engine ?? null,
+        canWriteCellSource,
+        canEditStructure: () => shellCapabilities.canEditStructure,
+        canAcceptStructure: (handle) => handle.cell_count() > 0,
+        createCellId: createCloudNotebookCellId,
+        syncMode: {
+          structure: "scheduleFlush",
+          outputs: "scheduleFlush",
+          visibility: "scheduleFlush",
+        },
+        afterMutation: (handle) => {
+          const liveRuntime = liveRuntimeRef.current;
+          if (liveRuntime?.handle === handle) {
+            requestCloudMaterialization(liveRuntime);
+          }
+        },
+        onFocusCell: setFocusedCellId,
+        logPrefix: "[notebook-cloud]",
+      }),
+    [canWriteCellSource, requestCloudMaterialization, shellCapabilities.canEditStructure],
+  );
   const handleCloudAddCell = useCallback(
-    (type: "code" | "markdown", afterCellId?: string | null): NotebookCell | null => {
-      if (!shellCapabilities.canEditStructure) return null;
-      const liveRuntime = liveRuntimeRef.current;
-      if (!liveRuntime) return null;
-      const cellId = createCloudNotebookCellId();
-      try {
-        liveRuntime.handle.add_cell_after(cellId, type, afterCellId ?? null);
-        liveRuntime.engine.scheduleFlush();
-        requestCloudMaterialization(liveRuntime);
-      } catch (error) {
-        console.warn("[notebook-cloud] add cell failed", error);
-        return null;
-      }
-      const fallback: NotebookCell =
-        type === "markdown"
-          ? { cell_type: "markdown", id: cellId, source: "", metadata: {} }
-          : {
-              cell_type: "code",
-              id: cellId,
-              source: "",
-              execution_count: null,
-              outputs: [],
-              metadata: {},
-            };
-      return fallback;
+    (type: "code" | "markdown", afterCellId?: string | null) => {
+      return cloudNotebookController.addCell(type, afterCellId);
     },
-    [requestCloudMaterialization, shellCapabilities.canEditStructure],
+    [cloudNotebookController],
   );
   const handleCloudDeleteCell = useCallback(
     (cellId: string) => {
-      if (!shellCapabilities.canEditStructure) return;
-      const liveRuntime = liveRuntimeRef.current;
-      if (!liveRuntime || liveRuntime.handle.cell_count() <= 1) return;
-      try {
-        if (liveRuntime.handle.delete_cell(cellId)) {
-          liveRuntime.engine.scheduleFlush();
-          requestCloudMaterialization(liveRuntime);
-        }
-      } catch (error) {
-        console.warn("[notebook-cloud] delete cell failed", error);
-      }
+      cloudNotebookController.deleteCell(cellId);
     },
-    [requestCloudMaterialization, shellCapabilities.canEditStructure],
+    [cloudNotebookController],
   );
   const handleCloudMoveCell = useCallback(
     (cellId: string, afterCellId?: string | null) => {
-      if (!shellCapabilities.canEditStructure) return;
-      const liveRuntime = liveRuntimeRef.current;
-      if (!liveRuntime) return;
-      try {
-        liveRuntime.handle.move_cell(cellId, afterCellId ?? null);
-        liveRuntime.engine.scheduleFlush();
-        requestCloudMaterialization(liveRuntime);
-      } catch (error) {
-        console.warn("[notebook-cloud] move cell failed", error);
-      }
+      cloudNotebookController.moveCell(cellId, afterCellId);
     },
-    [requestCloudMaterialization, shellCapabilities.canEditStructure],
+    [cloudNotebookController],
   );
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
   const cloudPresenceContext = useMemo<PresenceContextValue | null>(
@@ -1219,23 +1214,10 @@ function NotebookViewer({
         : null,
     [connectionPeerId],
   );
-  const handleMarkdownSyncNeeded = useCallback(() => {
-    if (!canEditMarkdown) return;
+  const handleSourceSyncNeeded = useCallback(() => {
+    if (!shellCapabilities.canEditCells && !shellCapabilities.canEditMarkdown) return;
     liveRuntimeRef.current?.engine.scheduleFlush();
-  }, [canEditMarkdown]);
-  const canWriteCellSource = useCallback(
-    (cellId: string) => {
-      const cell = cellsByIdRef.current.get(cellId);
-      if (!cell) {
-        return false;
-      }
-      if (cell.cellType === "markdown") {
-        return shellCapabilities.canEditMarkdown;
-      }
-      return shellCapabilities.canEditCells;
-    },
-    [shellCapabilities],
-  );
+  }, [shellCapabilities.canEditCells, shellCapabilities.canEditMarkdown]);
   const resetPrototypeAuth = useCallback(() => {
     clearCloudPrototypeDevAuth(window.localStorage);
     setSelectedInteractionMode("view");
@@ -1431,7 +1413,7 @@ function NotebookViewer({
         <CrdtBridgeProvider
           getHandle={getLiveNotebookHandle}
           canWriteSource={canWriteCellSource}
-          onSyncNeeded={handleMarkdownSyncNeeded}
+          onSyncNeeded={handleSourceSyncNeeded}
           localActor={connectionActorLabel ?? ""}
         >
           <NotebookView

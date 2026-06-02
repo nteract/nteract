@@ -88,7 +88,7 @@ Prefer extending `NotebookRequest` for daemon-owned notebook behavior. Add host 
 
 | Hook | Role |
 |------|------|
-| `useAutomergeNotebook` | Owns WASM NotebookHandle, `scheduleMaterialize`, `CellChangeset` dispatch |
+| `useNotebook` | Owns the active notebook controller: WASM NotebookHandle, materialization, `CellChangeset` dispatch |
 | `useDaemonKernel` | Kernel execution and ephemeral runtime event callbacks |
 | `usePresence` | Remote cursor/selection tracking via presence frames |
 | `useEnvProgress` | RuntimeStateDoc-backed environment progress projection |
@@ -108,7 +108,7 @@ Prefer extending `NotebookRequest` for daemon-owned notebook behavior. Add host 
 ## Data flow
 
 ```
-Tauri relay ── "notebook:frame" ──► useAutomergeNotebook
+Tauri relay ── "notebook:frame" ──► useNotebook
                                      (WASM receive_frame demux)
                                        │          │         │
                   sync_applied ────────┘          │         │
@@ -137,7 +137,7 @@ Tauri relay ── "notebook:frame" ──► useAutomergeNotebook
 
 ### Incremental sync pipeline
 
-1. **useAutomergeNotebook** — Single frame ingress. Demuxes via WASM `receive_frame()`, applies sync locally. Returns a `CellChangeset` with field-level granularity. Broadcasts and presence dispatch via in-memory frame bus.
+1. **useNotebook** — Single frame ingress. Demuxes via WASM `receive_frame()`, applies sync locally. Returns a `CellChangeset` with field-level granularity. Broadcasts and presence dispatch via in-memory frame bus. The current implementation lives in `useAutomergeNotebook.ts` during the controller extraction.
 
 2. **scheduleMaterialize** — Coalesces sync frames within a 32ms window via `mergeChangesets()`:
    - **Structural changes** (cells added/removed/reordered) → full `cellSnapshotsToNotebookCells()`
@@ -170,7 +170,7 @@ Shape originates in Rust (`notebook-doc/src/diff.rs`). TypeScript source of trut
 ## Invariants
 
 - Use `@nteract/notebook-host` for host-platform effects. No direct `@tauri-apps/*` imports outside the Tauri host implementation and narrow relay glue.
-- `useAutomergeNotebook` is the single daemon-frame ingress for notebook state.
+- `useNotebook` is the single daemon-frame ingress for notebook state.
 - Cell editing mutates the WASM Automerge handle first; flush pending source sync before execute/save.
 - Persistent runtime state comes from RuntimeStateDoc projections. Broadcasts are ephemeral only.
 - Preserve split cell-store behavior: update individual cells by id when possible, reserve full replacement for structural changes.
@@ -182,7 +182,8 @@ Shape originates in Rust (`notebook-doc/src/diff.rs`). TypeScript source of trut
 |------|------|
 | `apps/notebook/tsconfig.json` | Path alias configuration |
 | `apps/notebook/src/App.tsx` | Root component, provider setup |
-| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, materialization |
+| `apps/notebook/src/hooks/useNotebook.ts` | Product-facing notebook controller hook |
+| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Current WASM handle owner and materialization implementation |
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | Pub/sub for broadcast and presence |
 | `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
