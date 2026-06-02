@@ -6,16 +6,11 @@ description: A fluid cloud notebook chrome mockup for presence, access, sync, mo
 import { CloudNotebookShellExample } from "@/components/cloud-notebook-shell-example";
 
 Cloud notebooks reuse the document shell, rail, cells, and output language from
-desktop, but the host adds a few top-level concerns: room presence, document
-sync health, view/edit mode, sharing, and account controls.
+desktop. The host adds the cloud concerns: who is here, whether the document is
+connected, who can share, which mode I am in, and which account is active.
 
-This mockup separates those concerns from runtime state. A cloud notebook can be
-live, reconnecting, signed out, public, or edit-requested without making the
-Python runtime chip carry those meanings.
-
-The first toolbar row is app-level cloud chrome. It answers "who is here, is the
-document connected, can I share, am I viewing or editing, and which account is
-active?" The second row is notebook chrome. It should continue to use the shared
+This mockup keeps those concerns out of runtime state. The app row carries room,
+sync, access, mode, and account context; the notebook row keeps the shared
 `NotebookCommandToolbar` for cell insertion, package/runtime language, and
 execution controls.
 
@@ -40,6 +35,17 @@ execution controls.
 - View/edit is a local interaction mode over host permissions. Users with edit
   permission can step into read-only viewing without requesting access again;
   denied users stay gated by the host capability projection.
+- Sharing should read as document permissions: public link state, people,
+  pending invites, and roles. Avoid generic bubbles, stacked badges, or account
+  language that makes collaborators look like runtime actors.
+- Sharing controls should appear where the role can act. Non-owner editors and
+  viewers need their own quiet pathways: owner shares, viewer requests edit,
+  expired sessions renew before changing access.
+- Auth controls should explain the current account and recovery path. They
+  should not duplicate presence, sharing roles, or notebook runtime state.
+- Account/session panels should use the same quiet ledger language as sharing:
+  signed-in identity, document access, session health, and recovery actions
+  without raised avatar bubbles.
 - Elements scenarios should continue to model desktop and cloud differences
   through capability facts, not forked shell components.
 

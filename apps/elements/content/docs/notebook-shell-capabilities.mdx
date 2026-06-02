@@ -27,8 +27,8 @@ runtime peers, unavailable runtimes, and untrusted dependencies.
   state, or Elements fixtures.
 - Shared surfaces consume the capability object and view model instead of
   importing desktop or cloud state directly.
-- Cloud editor access can edit markdown, but code-cell source edits and sharing
-  are owner-only; execution and package management remain disabled in hosted
-  previews for now.
+- Cloud editor access can edit notebook content when the host grants that mode;
+  sharing remains owner-only, and execution/package management remain disabled
+  in hosted previews for now.
 - The catalog should reuse these scenarios whenever a page needs notebook-level
   context so component examples do not drift from the desktop/cloud shells.
