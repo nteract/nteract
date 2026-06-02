@@ -67,7 +67,9 @@ body {
 
 .cloud-room-toolbar [data-slot="notebook-document-header-presence"] {
   display: flex;
+  flex: 1 1 min(30rem, 52vw);
   min-width: 0;
+  max-width: min(44rem, 58vw);
   align-items: center;
 }
 
@@ -82,7 +84,7 @@ body {
 .cloud-notebook-title {
   display: grid;
   min-width: 0;
-  max-width: min(24rem, 36vw);
+  max-width: 100%;
   text-align: left;
 }
 
@@ -152,6 +154,7 @@ body {
 
   .cloud-room-toolbar [data-slot="notebook-document-header-presence"] {
     flex: 1 1 100%;
+    max-width: none;
   }
 
   .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
