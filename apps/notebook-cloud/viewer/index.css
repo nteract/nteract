@@ -67,13 +67,15 @@ body {
 
 .cloud-room-toolbar [data-slot="notebook-document-header-presence"] {
   display: flex;
-  flex: 1 1 min(30rem, 52vw);
+  flex: 1 1 min(24rem, 44vw);
   min-width: 0;
-  max-width: min(44rem, 58vw);
+  max-width: min(38rem, 48vw);
   align-items: center;
 }
 
 .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
+  flex: 0 0 auto;
+  min-width: max-content;
   gap: clamp(0.5rem, 1.4vw, 1.25rem);
 }
 
@@ -142,7 +144,7 @@ body {
   white-space: nowrap;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .cloud-room-toolbar {
     min-height: 4.75rem;
     flex-wrap: wrap;
@@ -159,6 +161,7 @@ body {
 
   .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
     flex: 1 1 100%;
+    min-width: 0;
     justify-content: flex-start;
     gap: 0.25rem 0.625rem;
   }
