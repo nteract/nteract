@@ -361,9 +361,11 @@ function CloudAppToolbar({
       capabilities={effectiveCapabilities}
       className={cn(
         "min-h-14 border-b border-border/70 px-4 py-2",
-        "max-[640px]:min-h-[4.75rem] max-[640px]:flex-wrap max-[640px]:content-center max-[640px]:justify-start max-[640px]:gap-x-2 max-[640px]:gap-y-1",
-        "max-[640px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%]",
-        "max-[640px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[640px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[640px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
+        "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(24rem,44vw)] [&_[data-slot=notebook-document-header-presence]]:max-w-[min(38rem,48vw)]",
+        "[&_[data-slot=notebook-document-header-controls]]:flex-none [&_[data-slot=notebook-document-header-controls]]:min-w-max",
+        "max-[900px]:min-h-[4.75rem] max-[900px]:flex-wrap max-[900px]:content-center max-[900px]:justify-start max-[900px]:gap-x-2 max-[900px]:gap-y-1",
+        "max-[900px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-presence]]:max-w-none",
+        "max-[900px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-controls]]:min-w-0 max-[900px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[900px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
       )}
       presence={<CloudDocumentTitle title="MathNet topic visualization" />}
       utilityControls={
@@ -460,9 +462,11 @@ function CloudStatePreview({
         capabilities={effectiveCapabilities}
         className={cn(
           "min-h-11 px-3 py-1.5",
-          "max-[640px]:min-h-[4.25rem] max-[640px]:flex-wrap max-[640px]:content-center max-[640px]:justify-start max-[640px]:gap-x-2 max-[640px]:gap-y-1",
-          "max-[640px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%]",
-          "max-[640px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[640px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[640px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
+          "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(24rem,44vw)] [&_[data-slot=notebook-document-header-presence]]:max-w-[min(38rem,48vw)]",
+          "[&_[data-slot=notebook-document-header-controls]]:flex-none [&_[data-slot=notebook-document-header-controls]]:min-w-max",
+          "max-[900px]:min-h-[4.25rem] max-[900px]:flex-wrap max-[900px]:content-center max-[900px]:justify-start max-[900px]:gap-x-2 max-[900px]:gap-y-1",
+          "max-[900px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-presence]]:max-w-none",
+          "max-[900px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%] max-[900px]:[&_[data-slot=notebook-document-header-controls]]:min-w-0 max-[900px]:[&_[data-slot=notebook-document-header-controls]]:justify-start max-[900px]:[&_[data-slot=notebook-document-header-controls]]:gap-1",
         )}
         presence={<CloudDocumentTitle title={scenario.title} />}
         utilityControls={
