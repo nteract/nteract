@@ -306,6 +306,16 @@ async def async_create_cell_and_wait_for_sync(
     return cell_id
 
 
+async def assert_daemon_starter_cell(session):
+    """Assert a daemon-created notebook starts with one blank code cell."""
+    cells = await session.get_cells()
+    assert len(cells) == 1
+    starter = cells[0]
+    assert starter.cell_type == "code"
+    assert starter.source == ""
+    return starter
+
+
 # ============================================================================
 # Fixtures for daemon management
 # ============================================================================
@@ -1566,9 +1576,7 @@ class TestDenoKernel:
         assert ks["display_name"] == "Deno"
         assert ks.get("language") == "typescript"
 
-        # Has zero cells (frontend creates the first cell locally)
-        cells = await deno_session.get_cells()
-        assert len(cells) == 0
+        await assert_daemon_starter_cell(deno_session)
 
         # Verify the kernel is actually Deno by executing TypeScript
         result = await deno_session.execute_cell(
@@ -2512,6 +2520,13 @@ class TestExecutionIdScoping:
         """notebook.queue_all() returns execution handles for each queued cell."""
         await notebook.start()
 
+        for cell in list(notebook.cells):
+            await cell.delete()
+        await async_wait_for_sync(
+            lambda: len(notebook.cells) == 0,
+            description="starter cell deletion",
+        )
+
         first = await notebook.cells.create("print('first')")
         second = await notebook.cells.create("print('second')")
         await asyncio.sleep(0.5)
@@ -2834,23 +2849,21 @@ class TestCreateNotebook:
     """Test Client.create_notebook() - daemon-owned creation."""
 
     async def test_create_python_notebook(self, client):
-        """Creating Python notebook returns session with zero cells."""
+        """Creating Python notebook returns session with daemon starter cell."""
         session = await client.create_notebook(runtime="python")
         assert await session.is_connected()
 
         # notebook_id is UUID (not a path)
         assert len(session.notebook_id) == 36  # UUID format
 
-        # Has zero cells (frontend creates the first cell locally)
-        cells = await session.get_cells()
-        assert len(cells) == 0
+        await assert_daemon_starter_cell(session)
 
     async def test_create_notebook_returns_connection_info(self, client):
         """NotebookConnectionInfo is available for created notebooks."""
         session = await client.create_notebook(runtime="python")
         info = await session.connection_info()
         assert info is not None
-        assert info.cell_count == 0
+        assert info.cell_count == 1
         assert info.notebook_id == session.notebook_id
         # New notebooks don't need trust approval
         assert info.needs_trust_approval is False
