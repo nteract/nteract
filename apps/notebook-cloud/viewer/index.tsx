@@ -2240,6 +2240,7 @@ function CloudConnectionStatus({
       className="cloud-connection-status"
       data-state={connected ? "live" : "waiting"}
       title={title}
+      aria-label={title}
     >
       <Icon aria-hidden="true" />
       <span>{label}</span>

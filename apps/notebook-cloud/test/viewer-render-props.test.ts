@@ -122,6 +122,7 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(sourceText, /Live room reconnecting\./);
   assert.match(sourceText, /tone: "warning"/);
   assert.match(sourceText, /function cloudConnectionStatusErrorTitle/);
+  assert.match(sourceText, /aria-label=\{title\}/);
   assert.match(
     sourceText,
     /Reconnecting to the notebook room: \$\{cloudConnectionStatusErrorTitle\(error\)\}/,
