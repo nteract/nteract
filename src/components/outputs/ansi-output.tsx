@@ -249,7 +249,8 @@ function splitLines(text: string): string[] {
 function buildStreamPreview(text: string): {
   lineCount: number;
   isLong: boolean;
-  previewText: string;
+  headText: string;
+  tailText: string;
   omittedLines: number;
 } {
   const lines = splitLines(text);
@@ -257,19 +258,18 @@ function buildStreamPreview(text: string): {
   const isLong = lineCount > STREAM_PREVIEW_LINE_LIMIT || text.length > STREAM_PREVIEW_CHAR_LIMIT;
 
   if (!isLong) {
-    return { lineCount, isLong, previewText: text, omittedLines: 0 };
+    return { lineCount, isLong, headText: text, tailText: "", omittedLines: 0 };
   }
 
   const head = lines.slice(0, STREAM_PREVIEW_HEAD_LINES);
   const tail = lines.slice(-STREAM_PREVIEW_TAIL_LINES);
   const omittedLines = Math.max(0, lineCount - head.length - tail.length);
-  const omittedMarker =
-    omittedLines > 0 ? [`\n... ${omittedLines.toLocaleString()} lines omitted ...\n`] : [];
 
   return {
     lineCount,
     isLong,
-    previewText: [...head, ...omittedMarker, ...tail].join("\n"),
+    headText: head.join("\n"),
+    tailText: tail.join("\n"),
     omittedLines,
   };
 }
@@ -284,51 +284,82 @@ export function AnsiStreamOutput({ text, streamName, className = "" }: AnsiStrea
   const streamClasses = isStderr
     ? "text-red-600 dark:text-red-400"
     : "text-gray-700 dark:text-gray-300";
-  const displayedText = preview.isLong && !expanded ? preview.previewText : text;
   const label = streamName === "stderr" ? "stderr" : "stdout";
+  const streamTone = isStderr
+    ? {
+        text: "text-red-700/80 dark:text-red-300/80",
+        rule: "bg-red-500/20 dark:bg-red-300/20",
+        fold: "text-red-700/55 dark:text-red-300/60",
+        foldRule: "bg-red-500/15 dark:bg-red-300/20",
+        hover:
+          "hover:bg-red-500/10 hover:text-red-700 dark:hover:bg-red-300/10 dark:hover:text-red-200",
+      }
+    : {
+        text: "text-muted-foreground/75",
+        rule: "bg-border/20",
+        fold: "text-muted-foreground/50",
+        foldRule: "bg-border/20",
+        hover: "hover:bg-muted hover:text-foreground",
+      };
 
   return (
     <div data-slot="ansi-stream-output" className={cn("not-prose py-2", streamClasses, className)}>
       {preview.isLong && (
         <div
-          className={cn(
-            "mb-2 flex flex-wrap items-center gap-2 text-xs leading-none",
-            isStderr ? "text-red-700/80 dark:text-red-300/80" : "text-muted-foreground/70",
-          )}
+          data-slot="ansi-stream-boundary"
+          className={cn("mb-2 flex items-center gap-2 text-xs leading-none", streamTone.text)}
         >
           <span className="font-mono font-semibold">{label}</span>
+          <span className="text-muted-foreground/30" aria-hidden="true">
+            /
+          </span>
           <span
             className={cn(
-              "h-px min-w-8 flex-1 rounded-full",
-              isStderr ? "bg-red-500/20 dark:bg-red-300/20" : "bg-border/20",
+              "shrink-0 tabular-nums",
+              expanded ? "text-muted-foreground/70" : "text-muted-foreground/60",
             )}
+          >
+            {preview.lineCount.toLocaleString()} lines
+          </span>
+          <span
+            className={cn("h-px min-w-8 flex-1 rounded-full", streamTone.rule)}
             aria-hidden="true"
           />
-          <span className="tabular-nums">
-            {preview.lineCount.toLocaleString()} lines · {formatBytes(text.length)}
+          <span className="hidden shrink-0 tabular-nums text-muted-foreground/45 sm:inline">
+            {formatBytes(text.length)}
           </span>
-          {!expanded && preview.omittedLines > 0 && (
-            <span className="tabular-nums text-muted-foreground/55">
-              {preview.omittedLines.toLocaleString()} lines hidden
-            </span>
-          )}
           <button
             type="button"
-            className={cn(
-              "rounded-sm px-1.5 py-1 font-medium transition-colors",
-              isStderr
-                ? "hover:bg-red-500/10 hover:text-red-700 dark:hover:bg-red-300/10 dark:hover:text-red-200"
-                : "hover:bg-muted hover:text-foreground",
-            )}
+            className={cn("rounded-sm px-1.5 py-1 font-medium transition-colors", streamTone.hover)}
             onClick={() => setExpanded((value) => !value)}
             aria-expanded={expanded}
             aria-label={expanded ? "Collapse log" : "Show full log"}
           >
-            {expanded ? "Collapse" : "Show full"}
+            {expanded ? "Collapse" : "Reveal full"}
           </button>
         </div>
       )}
-      <AnsiOutput isError={isStderr}>{displayedText}</AnsiOutput>
+      {preview.isLong && !expanded ? (
+        <div data-slot="ansi-stream-preview" className="space-y-1">
+          <AnsiOutput isError={isStderr}>{preview.headText}</AnsiOutput>
+          {preview.omittedLines > 0 ? (
+            <div
+              data-slot="ansi-stream-fold"
+              className={cn("flex items-center gap-2 py-0.5 text-xs leading-none", streamTone.fold)}
+              title={`${preview.omittedLines.toLocaleString()} lines folded in the preview`}
+            >
+              <span className={cn("h-px min-w-6 flex-1 rounded-full", streamTone.foldRule)} />
+              <span className="shrink-0 tabular-nums">
+                {preview.omittedLines.toLocaleString()} lines folded
+              </span>
+              <span className={cn("h-px min-w-6 flex-1 rounded-full", streamTone.foldRule)} />
+            </div>
+          ) : null}
+          <AnsiOutput isError={isStderr}>{preview.tailText}</AnsiOutput>
+        </div>
+      ) : (
+        <AnsiOutput isError={isStderr}>{text}</AnsiOutput>
+      )}
     </div>
   );
 }

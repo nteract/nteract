@@ -21,12 +21,12 @@ page-local mock state.
 ## What is real here
 
 The rendered surfaces import current output components directly: `OutputArea`
-lane composition, ANSI streams and errors, JSON trees, image output, math
-output, SVG output, audio output, the JavaScript isolation fallback, Plotly,
-Vega/Vega-Lite, GeoJSON, PDF, video, the structured traceback renderer, and
-`SiftTable` with static `TableData` plus a live HuggingFace Parquet URL. The
-page also renders a docs-served Arrow stream manifest through `SiftTable`'s
-appendable WASM store. The page also renders top-level
+lane composition, ANSI streams and folded long-stream previews, ANSI errors,
+JSON trees, image output, math output, SVG output, audio output, the JavaScript
+isolation fallback, Plotly, Vega/Vega-Lite, GeoJSON, PDF, video, the structured
+traceback renderer, and `SiftTable` with static `TableData` plus a live
+HuggingFace Parquet URL. The page also renders a docs-served Arrow stream
+manifest through `SiftTable`'s appendable WASM store. The page also renders top-level
 `application/vnd.jupyter.widget-view+json` output through `OutputArea` with a
 fixture-backed `WidgetStore`, matching the notebook app's widget MIME handoff
 without booting a live comm bridge. The plugin renderer examples use docs-local

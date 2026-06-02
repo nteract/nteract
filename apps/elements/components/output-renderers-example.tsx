@@ -918,6 +918,18 @@ export function OutputRenderersExample() {
               "\u001b[34mexported\u001b[0m forecast.parquet",
             ].join("\n")}
           />
+          <div className="mt-3 border-t border-border/45 pt-3">
+            <AnsiStreamOutput
+              streamName="stdout"
+              text={Array.from({ length: 360 }, (_, index) => {
+                const color = index % 3 === 0 ? "32" : index % 3 === 1 ? "33" : "34";
+                return `\u001b[${color}mepoch ${String(index + 1).padStart(3, "0")}\u001b[0m loss=${(
+                  9.8 -
+                  index * 0.012
+                ).toFixed(3)} validation=${(8.9 - index * 0.008).toFixed(3)}`;
+              }).join("\n")}
+            />
+          </div>
         </RendererCard>
 
         <RendererCard

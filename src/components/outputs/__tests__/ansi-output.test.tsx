@@ -245,7 +245,7 @@ describe("AnsiStreamOutput", () => {
   it("keeps short streams plain", () => {
     const { container } = render(<AnsiStreamOutput text="short\nstream" streamName="stdout" />);
     expect(container.querySelector("button")).toBeNull();
-    expect(screen.queryByText(/lines hidden/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/lines folded/)).not.toBeInTheDocument();
   });
 
   it("keeps terminal-screen-sized streams plain", () => {
@@ -264,7 +264,7 @@ describe("AnsiStreamOutput", () => {
 
     expect(screen.getByText("stdout")).toBeInTheDocument();
     expect(screen.getByText(/360 lines/)).toBeInTheDocument();
-    expect(screen.getByText(/333 lines hidden/)).toBeInTheDocument();
+    expect(screen.getByText(/333 lines folded/)).toBeInTheDocument();
     expect(screen.getByText(/line-0/)).toBeInTheDocument();
     expect(screen.getByText(/line-6/)).toBeInTheDocument();
     expect(screen.queryByText(/line-7/)).not.toBeInTheDocument();
