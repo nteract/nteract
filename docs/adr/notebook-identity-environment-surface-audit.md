@@ -28,7 +28,7 @@ of consuming a structured host/backend actor projection.
 
 Current evidence came from:
 
-- shared shell contracts in `src/components/notebook-shell/**`;
+- shared notebook contracts in `src/components/notebook/**`;
 - desktop capability mapping in
   `apps/notebook/src/lib/desktop-shell-capabilities.ts`;
 - cloud capability mapping in `apps/notebook-cloud/viewer/shell-capabilities.ts`;
@@ -81,7 +81,7 @@ The repo now has a useful convergence spine:
 ## Cross-Host Convergence Notes
 
 Cloud should keep converging toward the desktop/shared shell by moving notebook
-presentation into `src/components/notebook-shell/**` whenever the behavior is
+presentation into `src/components/notebook/**` whenever the behavior is
 not inherently hosted:
 
 - command toolbar chrome, identity controls, interaction mode, and cell surfaces
@@ -126,7 +126,7 @@ step is to remove remaining page-local/raw-label assumptions:
 - feed the same projection into identity badges, active actor groups, cell
   current-line attribution, presence, and future activity surfaces.
 
-This should continue in `src/components/notebook-shell/**` and host adapters,
+This should continue in `src/components/notebook/**` and host adapters,
 then feed the same projection to Elements fixtures. The important direction is
 shared projection, not cloud-specific display fixes.
 

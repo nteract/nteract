@@ -10,7 +10,7 @@ import {
   useUvDependencies,
 } from "../lib/notebook-metadata";
 import { useRuntimeState } from "../lib/runtime-state";
-export type { EnvSyncState } from "../components/runtime-surface-types";
+export type { EnvSyncState } from "@/components/notebook";
 
 export interface NotebookDependencies {
   dependencies: string[];

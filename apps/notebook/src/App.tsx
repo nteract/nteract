@@ -33,26 +33,27 @@ import {
 } from "@/components/notebook-rail";
 import {
   navigateNotebookOutlineItem,
+  type DaemonStatus,
+  DaemonStatusBanner,
+  DebugBanner,
+  EnvBuildDecisionDialog,
+  KernelLaunchErrorBanner,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  PoolErrorBanner,
+  shouldShowKernelLaunchErrorBanner,
+  TrustDialog,
+  UntrustedBanner,
 } from "@/components/notebook";
 import { GlobalFindBar } from "@/components/search";
-import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
-import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
-import { DebugBanner } from "./components/DebugBanner";
-import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
-import { DependencyHeader } from "./components/DependencyHeader";
-import { EnvBuildDecisionDialog } from "./components/EnvBuildDecisionDialog";
+import {
+  CondaDependencyPanel as CondaDependencyHeader,
+  DenoDependencyPanel as DenoDependencyHeader,
+  UvDependencyPanel as DependencyHeader,
+} from "@/components/environment";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
-import { PoolErrorBanner } from "./components/PoolErrorBanner";
-import { TrustDialog } from "./components/TrustDialog";
-import {
-  KernelLaunchErrorBanner,
-  shouldShowKernelLaunchErrorBanner,
-} from "./components/KernelLaunchErrorBanner";
-import { UntrustedBanner } from "./components/UntrustedBanner";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { useNotebook } from "./hooks/useNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
@@ -850,6 +851,11 @@ function AppContent() {
     dismissCondaError: dismissPoolCondaError,
     dismissPixiError: dismissPoolPixiError,
   } = usePoolState(activePoolManager);
+  const handleOpenPoolSettings = useCallback(() => {
+    host.settings.openWindow().catch((e) => {
+      console.error("Failed to open settings:", e);
+    });
+  }, [host]);
 
   // Auto-updater
   const {
@@ -1933,6 +1939,7 @@ function AppContent() {
           onDismissUv={dismissPoolUvError}
           onDismissConda={dismissPoolCondaError}
           onDismissPixi={dismissPoolPixiError}
+          onOpenSettings={handleOpenPoolSettings}
         />
         {needsApproval &&
           !trustApprovalHandoffPending &&

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { DependencyHeader } from "../DependencyHeader";
+import { UvDependencyPanel as DependencyHeader } from "@/components/environment";
 
 function renderDependencyHeader(props: Partial<Parameters<typeof DependencyHeader>[0]> = {}) {
   const defaults = {

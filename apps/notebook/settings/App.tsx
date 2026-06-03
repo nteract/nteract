@@ -12,7 +12,7 @@ import {
   useSyncedTheme,
 } from "@/hooks/useSyncedSettings";
 import { cn } from "@/lib/utils";
-import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
+import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
 import { PrivacySection } from "./sections/Privacy";
 
 /** Format seconds into human-readable duration */
