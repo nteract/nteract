@@ -72,7 +72,7 @@ And the scope governing each new boundary is itself a connect-time-frozen snapsh
 - **Most likely failure:** the recovery loop never gets closed because "blunt reset already exists" was conflated with "recovery is solved." The reset *action* exists; the reset *trigger* does not. The split relocates and multiplies the rejection surface while leaving the stall untouched, and daemon-local per-field actor filtering (`runtime_agent.rs:348-352`) means single-user and desktop testing never reproduce it.
 - **Most dangerous failure:** silent half-notebook / data invisibility from the cells/metadata move, in three converging forms that all fail without a crash, an above-info log, or a `.corrupt` rename: in-place reshape LWW-merging the frozen root into garbage; a v5 client rendering an empty notebook over real CellsDoc content (the #3086 autosave-zeroing class); and the `.ipynb` emitter reading two subtrees off one handle and writing a half-notebook to disk *and* the publish artifact. The most-dangerous failure costs users their work, irreversibly, on the population least likely to file a precise bug.
 
-19 of 20 generated failure modes survived adversarial verification against the real code. The full set is in the premortem report (`docs/handoffs/2026-06-01-host-convergence-premortem.html`).
+19 of 20 generated failure modes survived adversarial verification against the real code. Their fixes are folded into the Revised plan below, each item mapped to the failure it addresses; the raw per-mode deep-dives are archived in the workflow run that produced this doc.
 
 ## Revised plan
 
