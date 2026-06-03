@@ -1,6 +1,6 @@
 # ADR 0001: How a fresh notebook gets its starter cell
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-06-02
 - Deciders: nteract maintainers
 - Supersedes the implicit invariant introduced in #3328
@@ -161,6 +161,7 @@ Any cell insert (op on the `cells` object), metadata write, or post-creation ide
 - Host authority (daemon under the doc write lock; wasm room host before handoff) remains the single-writer guarantee. The new predicate makes the *decision* sound; host authority keeps the *write* singular. Both are needed.
 - `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard are removed.
 - Existing notebooks are unaffected: any notebook with content or history is non-pristine under B, so nothing gets re-seeded on upgrade.
+- Implemented in 2026-06-02: `NotebookDoc::is_pristine` is the shared gate; `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard are removed.
 
 ## Resolved during planning
 
