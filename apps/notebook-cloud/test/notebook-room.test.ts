@@ -127,6 +127,30 @@ describe("NotebookRoom presence rewrite", () => {
     assert.equal(body.peer_label, "alice");
   });
 
+  it("rewrites notebook interaction presence targets", async () => {
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const payload = await encodePresenceFrame({
+      type: "update",
+      peer_id: "client-peer",
+      peer_label: "Mallory",
+      actor_label: "user:dev:mallory/agent:codex:s1",
+      channel: "interaction",
+      data: { kind: "output", cell_id: "cell-plot" },
+    });
+    const frame = splitTypedFrame(encodeTypedFrame(FrameType.PRESENCE, payload));
+
+    const rewritten = await rewritePresenceFrame(frame, { id: "server-peer", identity });
+    const body = (await decodePresenceFrame(rewritten.payload)) as Record<string, unknown>;
+
+    assert.equal(rewritten.type, FrameType.PRESENCE);
+    assert.equal(body.peer_id, "server-peer");
+    assert.equal(body.peer_label, "alice");
+    assert.equal(body.actor_label, "user:dev:alice/agent:codex:s1");
+    assert.deepEqual(body.data, { kind: "output", cell_id: "cell-plot" });
+  });
+
   it("rejects non-CBOR presence payloads", async () => {
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),

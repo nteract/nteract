@@ -49,6 +49,7 @@ pub enum Channel {
     Cursor,
     Selection,
     Focus,
+    Interaction,
     KernelState,
     Custom,
 }
@@ -71,6 +72,45 @@ pub struct CursorPosition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellFocus {
     pub cell_id: String,
+}
+
+/// Local interactive target within a notebook document.
+///
+/// This is the canonical transient target peers can share over presence.
+/// Cursor and selection channels still carry editor geometry; interaction
+/// carries the broader active target so hosts can show presence on outputs,
+/// markdown anchors, and other non-editor surfaces without inventing
+/// frontend-specific side channels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionTarget {
+    Cell {
+        cell_id: String,
+    },
+    Editor {
+        cell_id: String,
+    },
+    MarkdownAnchor {
+        cell_id: String,
+        anchor_id: String,
+    },
+    Output {
+        cell_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_id: Option<String>,
+    },
+}
+
+impl InteractionTarget {
+    pub fn cell_id(&self) -> &str {
+        match self {
+            Self::Cell { cell_id }
+            | Self::Editor { cell_id }
+            | Self::MarkdownAnchor { cell_id, .. }
+            | Self::Output { cell_id, .. } => cell_id,
+        }
+    }
 }
 
 /// Selection range within a cell.
@@ -136,6 +176,7 @@ pub enum ChannelData {
     Cursor(CursorPosition),
     Selection(SelectionRange),
     Focus(CellFocus),
+    Interaction(InteractionTarget),
     KernelState(KernelStateData),
     Custom(Vec<u8>),
 }
@@ -147,6 +188,7 @@ impl ChannelData {
             Self::Cursor(_) => Channel::Cursor,
             Self::Selection(_) => Channel::Selection,
             Self::Focus(_) => Channel::Focus,
+            Self::Interaction(_) => Channel::Interaction,
             Self::KernelState(_) => Channel::KernelState,
             Self::Custom(_) => Channel::Custom,
         }
@@ -297,6 +339,29 @@ pub fn encode_focus_update_labeled(
         data: ChannelData::Focus(CellFocus {
             cell_id: cell_id.to_string(),
         }),
+    })
+}
+
+/// Encode an interaction target update message.
+pub fn encode_interaction_update(
+    peer_id: &str,
+    target: &InteractionTarget,
+) -> Result<Vec<u8>, PresenceError> {
+    encode_interaction_update_labeled(peer_id, None, None, target)
+}
+
+/// Encode an interaction target update with optional peer and actor labels.
+pub fn encode_interaction_update_labeled(
+    peer_id: &str,
+    peer_label: Option<&str>,
+    actor_label: Option<&str>,
+    target: &InteractionTarget,
+) -> Result<Vec<u8>, PresenceError> {
+    encode_message(&PresenceMessage::Update {
+        peer_id: peer_id.to_string(),
+        peer_label: peer_label.map(|s| s.to_string()),
+        actor_label: actor_label.map(|s| s.to_string()),
+        data: ChannelData::Interaction(target.clone()),
     })
 }
 
@@ -1074,6 +1139,12 @@ mod tests {
             cell_id: "c1".into(),
         });
         assert_eq!(focus.channel(), Channel::Focus);
+
+        let interaction = ChannelData::Interaction(InteractionTarget::Output {
+            cell_id: "c1".into(),
+            output_id: Some("out-1".into()),
+        });
+        assert_eq!(interaction.channel(), Channel::Interaction);
     }
 
     // ── Focus tests ──────────────────────────────────────────────────
@@ -1138,6 +1209,89 @@ mod tests {
         );
     }
 
+    // ── Interaction tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_interaction_editor_roundtrip() {
+        let target = InteractionTarget::Editor {
+            cell_id: "cell-abc".into(),
+        };
+        let encoded = encode_interaction_update("peer-1", &target).unwrap();
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+                ..
+            } => {
+                assert_eq!(peer_id, "peer-1");
+                assert_eq!(peer_label, None);
+                assert_eq!(data, ChannelData::Interaction(target));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_interaction_output_roundtrip() {
+        let target = InteractionTarget::Output {
+            cell_id: "cell-xyz".into(),
+            output_id: Some("output-7".into()),
+        };
+        let encoded =
+            encode_interaction_update_labeled("agent-1", Some("Claude"), None, &target).unwrap();
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+                ..
+            } => {
+                assert_eq!(peer_id, "agent-1");
+                assert_eq!(peer_label, Some("Claude".to_string()));
+                assert_eq!(data, ChannelData::Interaction(target));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_interaction_markdown_anchor_roundtrip() {
+        let target = InteractionTarget::MarkdownAnchor {
+            cell_id: "cell-md".into(),
+            anchor_id: "heading-results".into(),
+        };
+        let encoded = encode_interaction_update("peer-1", &target).unwrap();
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update { data, .. } => {
+                assert_eq!(data, ChannelData::Interaction(target));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_interaction_cell_id_accessor() {
+        assert_eq!(
+            InteractionTarget::Cell {
+                cell_id: "cell-a".into(),
+            }
+            .cell_id(),
+            "cell-a"
+        );
+        assert_eq!(
+            InteractionTarget::Output {
+                cell_id: "cell-b".into(),
+                output_id: None,
+            }
+            .cell_id(),
+            "cell-b"
+        );
+    }
+
     // ── ClearChannel tests ───────────────────────────────────────────
 
     #[test]
@@ -1174,6 +1328,19 @@ mod tests {
             PresenceMessage::ClearChannel { peer_id, channel } => {
                 assert_eq!(peer_id, "peer-3");
                 assert_eq!(channel, Channel::Focus);
+            }
+            _ => panic!("expected ClearChannel"),
+        }
+    }
+
+    #[test]
+    fn test_clear_channel_interaction_roundtrip() {
+        let encoded = encode_clear_channel("peer-4", Channel::Interaction).unwrap();
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::ClearChannel { peer_id, channel } => {
+                assert_eq!(peer_id, "peer-4");
+                assert_eq!(channel, Channel::Interaction);
             }
             _ => panic!("expected ClearChannel"),
         }
@@ -1283,6 +1450,34 @@ mod tests {
                 match &peers[0].channels[0] {
                     ChannelData::Focus(f) => assert_eq!(f.cell_id, "cell-a"),
                     _ => panic!("expected Focus"),
+                }
+            }
+            _ => panic!("expected Snapshot"),
+        }
+    }
+
+    #[test]
+    fn test_interaction_in_snapshot() {
+        let mut state = PresenceState::new();
+        let interaction = ChannelData::Interaction(InteractionTarget::Output {
+            cell_id: "cell-a".into(),
+            output_id: None,
+        });
+        state.update_peer("agent", "Claude", None, interaction, 1000);
+
+        let snapshot_bytes = state.encode_snapshot("daemon").unwrap();
+        let msg = decode_message(&snapshot_bytes).unwrap();
+        match msg {
+            PresenceMessage::Snapshot { peers, .. } => {
+                assert_eq!(peers.len(), 1);
+                assert_eq!(peers[0].peer_id, "agent");
+                assert_eq!(peers[0].channels.len(), 1);
+                match &peers[0].channels[0] {
+                    ChannelData::Interaction(InteractionTarget::Output { cell_id, output_id }) => {
+                        assert_eq!(cell_id, "cell-a");
+                        assert_eq!(output_id, &None);
+                    }
+                    _ => panic!("expected Interaction output"),
                 }
             }
             _ => panic!("expected Snapshot"),

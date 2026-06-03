@@ -155,6 +155,20 @@ export {
   type ProjectNotebookOutlineOptions,
 } from "./notebook-outline";
 
+// Notebook interaction projection
+export {
+  createNotebookInteractionStore,
+  notebookInteractionTargetCellId,
+  notebookInteractionTargetsEqual,
+  notebookInteractionTargetToPresenceTarget,
+  notebookPresenceInteractionTargetsEqual,
+  notebookPresenceTargetToInteractionTarget,
+  type NotebookInteractionSnapshot,
+  type NotebookInteractionStore,
+  type NotebookInteractionTarget,
+  type PresenceInteractionTarget,
+} from "./notebook-interaction";
+
 // Comm diffing
 export {
   type CommChanges,

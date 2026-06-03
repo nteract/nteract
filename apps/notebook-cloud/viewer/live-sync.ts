@@ -5,6 +5,7 @@ import {
   type NotebookResponse,
   type NotebookTransport,
   type SyncableHandle,
+  type NotebookInteractionTarget,
 } from "runtimed";
 import { isConnectionScope, type ConnectionScope } from "../src/auth-shared";
 import { identityDisplayLabel } from "../src/display-label";
@@ -18,6 +19,7 @@ import {
   createBootstrapNotebookHandle,
   encodeCursorPresenceAfterInit,
   encodeHeartbeatPresenceAfterInit,
+  encodeInteractionPresenceAfterInit,
   encodeSelectionPresenceAfterInit,
   type NotebookHandle,
 } from "./runtimed-wasm-client";
@@ -38,6 +40,7 @@ export interface CloudSyncRuntime {
     headLine: number,
     headCol: number,
   ) => void;
+  sendInteractionPresence: (target: NotebookInteractionTarget) => void;
 }
 
 export interface CloudSyncConnectOptions {
@@ -134,6 +137,19 @@ export async function connectCloudSyncRuntime({
           .sendFrame(FrameType.PRESENCE, payload)
           .catch((error: unknown) =>
             console.warn("[notebook-cloud] selection presence failed", error),
+          );
+      },
+      sendInteractionPresence: (target) => {
+        const payload = encodeInteractionPresenceAfterInit(
+          heartbeatPeerId,
+          peerLabel,
+          ready.actor_label,
+          target,
+        );
+        void transport
+          .sendFrame(FrameType.PRESENCE, payload)
+          .catch((error: unknown) =>
+            console.warn("[notebook-cloud] interaction presence failed", error),
           );
       },
     };

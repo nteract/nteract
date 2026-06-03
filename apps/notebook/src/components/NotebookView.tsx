@@ -18,7 +18,7 @@ import {
 import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { notebookCellAnchorId } from "runtimed";
+import { notebookCellAnchorId, type NotebookInteractionTarget } from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
 import { CellSkeleton } from "@/components/cell/CellSkeleton";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,12 @@ import { cn } from "@/lib/utils";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
-import { useFocusedCellId, useSearchCurrentMatch } from "@/components/notebook/state/cell-ui-state";
+import {
+  flushCellUIState,
+  setActiveInteractionTarget,
+  useFocusedCellId,
+  useSearchCurrentMatch,
+} from "@/components/notebook/state/cell-ui-state";
 import { logger } from "../lib/logger";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 import {
@@ -389,6 +394,24 @@ function NotebookViewContent({
     }
   }, [cellIds, outputFocusedCellId]);
 
+  const publishInteractionTarget = useCallback(
+    (target: NotebookInteractionTarget) => {
+      setActiveInteractionTarget(target);
+      flushCellUIState();
+      presence?.setInteraction(target);
+      presence?.setFocus(target.cellId);
+    },
+    [presence],
+  );
+
+  const focusInteractionTarget = useCallback(
+    (target: NotebookInteractionTarget) => {
+      onFocusCell(target.cellId);
+      publishInteractionTarget(target);
+    },
+    [onFocusCell, publishInteractionTarget],
+  );
+
   // Document-level Esc listener while a cell is output-focused. Esc events
   // that originate inside the iframe don't reach the document unless the
   // iframe lets them through, so this only fires for top-level Esc.
@@ -397,11 +420,12 @@ function NotebookViewContent({
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setOutputFocusedCellId(null);
+        publishInteractionTarget({ kind: "cell", cellId: outputFocusedCellId });
       }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [outputFocusedCellId]);
+  }, [outputFocusedCellId, publishInteractionTarget]);
 
   // Click-outside-container exit. Clicking another cell's editor already
   // clears focus via the selection-change effect above, but clicking another
@@ -419,23 +443,24 @@ function NotebookViewContent({
       );
       if (focusedCellEl && !focusedCellEl.contains(target)) {
         setOutputFocusedCellId(null);
+        publishInteractionTarget({ kind: "cell", cellId: outputFocusedCellId });
       }
     };
     document.addEventListener("mousedown", handleMouseDown, true);
     return () => document.removeEventListener("mousedown", handleMouseDown, true);
-  }, [outputFocusedCellId]);
+  }, [outputFocusedCellId, publishInteractionTarget]);
 
   const handleOutputFocusChange = useCallback(
     (cellId: string, outputFocused: boolean) => {
       if (outputFocused) {
-        onFocusCell(cellId);
-        presence?.setFocus(cellId);
+        focusInteractionTarget({ kind: "output", cellId });
         setOutputFocusedCellId(cellId);
         return;
       }
       setOutputFocusedCellId((current) => (current === cellId ? null : current));
+      publishInteractionTarget({ kind: "cell", cellId });
     },
-    [onFocusCell, presence],
+    [focusInteractionTarget, publishInteractionTarget],
   );
 
   // Ref for cellIds so renderCell can read the latest list without
@@ -688,9 +713,9 @@ function NotebookViewContent({
     if (!autoFocusFirstCell) return;
     if (isLoading || focusedCellId !== null) return;
     if (cellIds.length > 0) {
-      onFocusCell(cellIds[0]);
+      focusInteractionTarget({ kind: "cell", cellId: cellIds[0] });
     }
-  }, [autoFocusFirstCell, isLoading, cellIds, focusedCellId, onFocusCell]);
+  }, [autoFocusFirstCell, isLoading, cellIds, focusedCellId, focusInteractionTarget]);
 
   const renderCell = useCallback(
     (
@@ -716,8 +741,7 @@ function NotebookViewContent({
         if (prevIndex >= 0) {
           const prevCellId = cellIdsRef.current[prevIndex];
           logger.debug(`[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`);
-          onFocusCell(prevCellId);
-          presence?.setFocus(prevCellId);
+          focusInteractionTarget({ kind: "editor", cellId: prevCellId });
           focusCell(prevCellId, cursorPosition);
         } else {
           logger.debug("[cell-nav] No previous cell (index=0)");
@@ -738,8 +762,7 @@ function NotebookViewContent({
         if (nextIndex < cellIdsRef.current.length) {
           const nextCellId = cellIdsRef.current[nextIndex];
           logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
-          onFocusCell(nextCellId);
-          presence?.setFocus(nextCellId);
+          focusInteractionTarget({ kind: "editor", cellId: nextCellId });
           focusCell(nextCellId, cursorPosition);
         } else {
           logger.debug("[cell-nav] No next cell (at end)");
@@ -749,8 +772,7 @@ function NotebookViewContent({
       const onNavigateToCell = (target: TracebackCellTarget) => {
         const targetCellId = target.cellId;
         logger.debug(`[cell-nav] Navigating to traceback cell: ${targetCellId.slice(0, 8)}`);
-        onFocusCell(targetCellId);
-        presence?.setFocus(targetCellId);
+        focusInteractionTarget({ kind: "editor", cellId: targetCellId });
         focusCell(targetCellId, typeof target.line === "number" ? { line: target.line } : "start");
       };
 
@@ -829,8 +851,7 @@ function NotebookViewContent({
                 : undefined
             }
             onFocus={() => {
-              onFocusCell(cell.id);
-              presence?.setFocus(cell.id);
+              focusInteractionTarget({ kind: "editor", cellId: cell.id });
             }}
             outputFocused={outputFocusedCellId === cell.id}
             outputDimmed={outputFocusedCellId !== null && outputFocusedCellId !== cell.id}
@@ -888,8 +909,7 @@ function NotebookViewContent({
                     pendingRevealFocusCellIdRef.current = hiddenCellId;
                     onSetCellSourceHidden(hiddenCellId, false);
                     onSetCellOutputsHidden(hiddenCellId, false);
-                    onFocusCell(hiddenCellId);
-                    presence?.setFocus(hiddenCellId);
+                    focusInteractionTarget({ kind: "cell", cellId: hiddenCellId });
                   }
                 : undefined
             }
@@ -903,8 +923,7 @@ function NotebookViewContent({
             key={cell.id}
             cell={cell}
             onFocus={() => {
-              onFocusCell(cell.id);
-              presence?.setFocus(cell.id);
+              focusInteractionTarget({ kind: "editor", cellId: cell.id });
             }}
             onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}
@@ -927,8 +946,7 @@ function NotebookViewContent({
           key={cell.id}
           cell={cell}
           onFocus={() => {
-            onFocusCell(cell.id);
-            presence?.setFocus(cell.id);
+            focusInteractionTarget({ kind: "editor", cellId: cell.id });
           }}
           onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
           onFocusPrevious={onFocusPrevious}
@@ -944,7 +962,7 @@ function NotebookViewContent({
     },
     [
       runtime,
-      onFocusCell,
+      focusInteractionTarget,
       onExecuteCell,
       onInterruptKernel,
       onDeleteCell,
@@ -961,7 +979,6 @@ function NotebookViewContent({
       outputFocusedCellId,
       focusCell,
       handleOutputFocusChange,
-      presence,
     ],
   );
 

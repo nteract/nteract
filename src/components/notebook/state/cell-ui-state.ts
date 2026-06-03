@@ -1,4 +1,10 @@
 import { useLayoutEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  createNotebookInteractionStore,
+  notebookInteractionTargetCellId,
+  notebookInteractionTargetsEqual,
+  type NotebookInteractionTarget,
+} from "runtimed";
 import { getCellIdsSnapshot, subscribeIds } from "./cell-store";
 
 export interface NotebookFindMatch {
@@ -22,6 +28,7 @@ export interface NotebookFindMatch {
 // ── Internal state ──────────────────────────────────────────────────────
 
 let _focusedCellId: string | null = null;
+const _interactionStore = createNotebookInteractionStore();
 let _executingCellIds: Set<string> = new Set();
 let _queuedCellIds: Set<string> = new Set();
 let _queuedCellPriority = new Map<string, number>();
@@ -31,6 +38,7 @@ let _searchCurrentMatch: NotebookFindMatch | null = null;
 // ── Subscribers ─────────────────────────────────────────────────────────
 
 const _focusSubscribers = new Set<() => void>();
+const _interactionSubscribers = new Set<() => void>();
 const _executingSubscribers = new Set<() => void>();
 const _queuedSubscribers = new Set<() => void>();
 const _searchQuerySubscribers = new Set<() => void>();
@@ -54,6 +62,7 @@ export function flushCellUIState(): void {
 
 export interface NotebookCellUIStateBridgeInput {
   focusedCellId: string | null;
+  activeInteractionTarget?: NotebookInteractionTarget | null;
   executingCellIds?: Set<string>;
   queuedCellIds?: Iterable<string>;
   searchQuery?: string;
@@ -69,12 +78,17 @@ export interface NotebookCellUIStateBridgeInput {
  */
 export function useNotebookCellUIStateBridge({
   focusedCellId,
+  activeInteractionTarget,
   executingCellIds,
   queuedCellIds,
   searchQuery,
   searchCurrentMatch,
 }: NotebookCellUIStateBridgeInput): void {
-  setFocusedCellId(focusedCellId);
+  if (activeInteractionTarget !== undefined) {
+    setActiveInteractionTarget(activeInteractionTarget);
+  } else {
+    setFocusedCellId(focusedCellId);
+  }
   if (executingCellIds) setExecutingCellIds(executingCellIds);
   if (queuedCellIds) setQueuedCellIds(queuedCellIds);
   setSearchQuery(searchQuery);
@@ -115,6 +129,30 @@ function queuePriorityForIndex(index: number, length: number): number {
 //    renders never trigger subscriber notifications.
 
 export function setFocusedCellId(id: string | null): void {
+  if (id === null) {
+    setActiveInteractionTarget(null);
+    return;
+  }
+
+  const activeTarget = _interactionStore.getSnapshot().activeTarget;
+  if (activeTarget && notebookInteractionTargetCellId(activeTarget) === id) {
+    setDerivedFocusedCellId(id);
+    return;
+  }
+
+  setActiveInteractionTarget({ kind: "cell", cellId: id });
+}
+
+export function setActiveInteractionTarget(target: NotebookInteractionTarget | null): void {
+  const current = _interactionStore.getSnapshot().activeTarget;
+  if (notebookInteractionTargetsEqual(current, target)) return;
+
+  _interactionStore.setActiveTarget(target);
+  setDerivedFocusedCellId(notebookInteractionTargetCellId(target));
+  _dirtySubscribers.add(_interactionSubscribers);
+}
+
+function setDerivedFocusedCellId(id: string | null): void {
   if (id === _focusedCellId) return;
   _focusedCellId = id;
   _dirtySubscribers.add(_focusSubscribers);
@@ -156,11 +194,20 @@ export function getFocusedCellId(): string | null {
   return _focusedCellId;
 }
 
+export function getActiveInteractionTarget(): NotebookInteractionTarget | null {
+  return _interactionStore.getSnapshot().activeTarget;
+}
+
 // ── Hooks ───────────────────────────────────────────────────────────────
 
 /** Subscribe to the focused cell ID. */
 export function useFocusedCellId(): string | null {
   return useSyncExternalStore(subscribeFocus, getFocusSnapshot);
+}
+
+/** Subscribe to the active notebook interaction target. */
+export function useActiveInteractionTarget(): NotebookInteractionTarget | null {
+  return useSyncExternalStore(subscribeInteraction, getInteractionSnapshot);
 }
 
 /** Returns true only when this specific cell is focused. */
@@ -242,8 +289,17 @@ function subscribeFocus(cb: () => void): () => void {
   return () => _focusSubscribers.delete(cb);
 }
 
+function subscribeInteraction(cb: () => void): () => void {
+  _interactionSubscribers.add(cb);
+  return () => _interactionSubscribers.delete(cb);
+}
+
 function getFocusSnapshot(): string | null {
   return _focusedCellId;
+}
+
+function getInteractionSnapshot(): NotebookInteractionTarget | null {
+  return _interactionStore.getSnapshot().activeTarget;
 }
 
 // Per-cell focus: subscribes to the global focus change, but snapshot

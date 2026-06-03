@@ -2,6 +2,7 @@ import initWasm, {
   decode_presence_frame,
   encode_cursor_presence,
   encode_heartbeat_presence,
+  encode_interaction_presence,
   encode_presence_frame,
   encode_selection_presence,
   rewrite_presence_ingress,
@@ -119,6 +120,25 @@ export function encodeSelectionPresenceAfterInit(
     headLine,
     headCol,
   );
+}
+
+export async function encodeInteractionPresence(
+  peerId: string,
+  peerLabel: string,
+  actorLabel: string,
+  target: unknown,
+): Promise<Uint8Array> {
+  await initializeRuntimedWasm();
+  return encode_interaction_presence(peerId, peerLabel, actorLabel, target);
+}
+
+export function encodeInteractionPresenceAfterInit(
+  peerId: string,
+  peerLabel: string,
+  actorLabel: string,
+  target: unknown,
+): Uint8Array {
+  return encode_interaction_presence(peerId, peerLabel, actorLabel, target);
 }
 
 export async function rewritePresenceIngress(

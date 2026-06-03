@@ -18,8 +18,14 @@ export interface FocusData {
   cell_id: string;
 }
 
+export type InteractionTargetData =
+  | { kind: "cell"; cell_id: string }
+  | { kind: "editor"; cell_id: string }
+  | { kind: "markdown_anchor"; cell_id: string; anchor_id: string }
+  | { kind: "output"; cell_id: string; output_id?: string };
+
 export interface ChannelEntry {
-  channel: "cursor" | "selection" | "focus" | "kernel_state" | "custom";
+  channel: "cursor" | "selection" | "focus" | "interaction" | "kernel_state" | "custom";
   data: unknown;
 }
 
@@ -74,6 +80,7 @@ export interface PeerCursorInfo {
   cursor?: CursorData;
   selection?: SelectionData;
   focus?: FocusData;
+  interaction?: InteractionTargetData;
 }
 
 export interface RemoteCellPresence {
@@ -113,6 +120,10 @@ export class RemotePresenceState {
         peer.focus = undefined;
         affectedCells.add(cellId);
       }
+      if (interactionCellId(peer.interaction) === cellId) {
+        peer.interaction = undefined;
+        affectedCells.add(cellId);
+      }
     }
 
     return affectedCells;
@@ -144,7 +155,11 @@ export class RemotePresenceState {
     for (const [peerId, peer] of this.peers) {
       if (peerId === this.localPeerId) continue;
 
-      if (peer.cursor?.cell_id === cellId) {
+      const renderEditorGeometry =
+        !peer.interaction ||
+        (peer.interaction.kind === "editor" && peer.interaction.cell_id === cellId);
+
+      if (renderEditorGeometry && peer.cursor?.cell_id === cellId) {
         cursors.push({
           peerId,
           peerLabel: peer.peerLabel,
@@ -154,7 +169,7 @@ export class RemotePresenceState {
         });
       }
 
-      if (peer.selection?.cell_id === cellId) {
+      if (renderEditorGeometry && peer.selection?.cell_id === cellId) {
         selections.push({
           peerId,
           peerLabel: peer.peerLabel,
@@ -184,7 +199,12 @@ export class RemotePresenceState {
     const result: PeerCursorInfo[] = [];
     for (const peer of this.peers.values()) {
       if (peer.peerId === this.localPeerId) continue;
-      if (peer.cursor?.cell_id === cellId || peer.focus?.cell_id === cellId) {
+      const activeCellId = interactionCellId(peer.interaction);
+      if (
+        activeCellId
+          ? activeCellId === cellId
+          : peer.cursor?.cell_id === cellId || peer.focus?.cell_id === cellId
+      ) {
         result.push(peer);
       }
     }
@@ -212,6 +232,7 @@ export class RemotePresenceState {
 
     if (msg.channel === "cursor") {
       const data = msg.data as CursorData;
+      addInteractionCell(affectedCells, peer.interaction);
       if (peer.cursor && peer.cursor.cell_id !== data.cell_id) {
         affectedCells.add(peer.cursor.cell_id);
       }
@@ -224,16 +245,20 @@ export class RemotePresenceState {
         peer.selection = undefined;
       }
       peer.cursor = data;
+      peer.interaction = { kind: "editor", cell_id: data.cell_id };
       affectedCells.add(data.cell_id);
     } else if (msg.channel === "selection") {
       const data = msg.data as SelectionData;
+      addInteractionCell(affectedCells, peer.interaction);
       if (peer.selection && peer.selection.cell_id !== data.cell_id) {
         affectedCells.add(peer.selection.cell_id);
       }
       peer.selection = data;
+      peer.interaction = { kind: "editor", cell_id: data.cell_id };
       affectedCells.add(data.cell_id);
     } else if (msg.channel === "focus") {
       const data = msg.data as FocusData;
+      addInteractionCell(affectedCells, peer.interaction);
       if (peer.cursor) {
         affectedCells.add(peer.cursor.cell_id);
         peer.cursor = undefined;
@@ -246,6 +271,14 @@ export class RemotePresenceState {
         affectedCells.add(peer.focus.cell_id);
       }
       peer.focus = data;
+      if (!peer.interaction || peer.interaction.cell_id !== data.cell_id) {
+        peer.interaction = { kind: "cell", cell_id: data.cell_id };
+      }
+      affectedCells.add(data.cell_id);
+    } else if (msg.channel === "interaction") {
+      const data = msg.data as InteractionTargetData;
+      addInteractionCell(affectedCells, peer.interaction);
+      peer.interaction = data;
       affectedCells.add(data.cell_id);
     }
 
@@ -257,9 +290,7 @@ export class RemotePresenceState {
     const affectedCells = new Set<string>();
 
     for (const peer of this.peers.values()) {
-      if (peer.cursor) affectedCells.add(peer.cursor.cell_id);
-      if (peer.selection) affectedCells.add(peer.selection.cell_id);
-      if (peer.focus) affectedCells.add(peer.focus.cell_id);
+      addPeerCells(affectedCells, peer);
     }
 
     this.peers.clear();
@@ -284,6 +315,9 @@ export class RemotePresenceState {
         } else if (ch.channel === "focus") {
           peer.focus = ch.data as FocusData;
           affectedCells.add(peer.focus.cell_id);
+        } else if (ch.channel === "interaction") {
+          peer.interaction = ch.data as InteractionTargetData;
+          affectedCells.add(peer.interaction.cell_id);
         }
       }
 
@@ -298,9 +332,7 @@ export class RemotePresenceState {
     if (!peer) return new Set();
 
     const affectedCells = new Set<string>();
-    if (peer.cursor) affectedCells.add(peer.cursor.cell_id);
-    if (peer.selection) affectedCells.add(peer.selection.cell_id);
-    if (peer.focus) affectedCells.add(peer.focus.cell_id);
+    addPeerCells(affectedCells, peer);
 
     this.peers.delete(peerId);
     return affectedCells;
@@ -320,7 +352,29 @@ export class RemotePresenceState {
     } else if (channel === "focus" && peer.focus) {
       affectedCells.add(peer.focus.cell_id);
       peer.focus = undefined;
+    } else if (channel === "interaction" && peer.interaction) {
+      affectedCells.add(peer.interaction.cell_id);
+      peer.interaction = undefined;
     }
     return affectedCells;
   }
+}
+
+function interactionCellId(target: InteractionTargetData | undefined): string | null {
+  return target?.cell_id ?? null;
+}
+
+function addInteractionCell(
+  affectedCells: Set<string>,
+  target: InteractionTargetData | undefined,
+): void {
+  const cellId = interactionCellId(target);
+  if (cellId) affectedCells.add(cellId);
+}
+
+function addPeerCells(affectedCells: Set<string>, peer: PeerCursorInfo): void {
+  if (peer.cursor) affectedCells.add(peer.cursor.cell_id);
+  if (peer.selection) affectedCells.add(peer.selection.cell_id);
+  if (peer.focus) affectedCells.add(peer.focus.cell_id);
+  addInteractionCell(affectedCells, peer.interaction);
 }

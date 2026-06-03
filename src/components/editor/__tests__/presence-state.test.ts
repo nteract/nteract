@@ -75,6 +75,140 @@ describe("RemotePresenceState", () => {
     ]);
   });
 
+  it("uses interaction targets as the active peer cell", () => {
+    const state = new RemotePresenceState("local-peer");
+
+    state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      peer_label: "Alice",
+      channel: "cursor",
+      data: { cell_id: "cell-editor", line: 2, column: 4 },
+    });
+    const affected = state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      peer_label: "Alice",
+      channel: "interaction",
+      data: { kind: "output", cell_id: "cell-output" },
+    });
+
+    expect([...affected].sort()).toEqual(["cell-editor", "cell-output"]);
+    expect(state.getPeersForCell("cell-editor")).toEqual([]);
+    expect(state.getPeersForCell("cell-output")).toMatchObject([
+      {
+        peerId: "peer-1",
+        interaction: { kind: "output", cell_id: "cell-output" },
+      },
+    ]);
+  });
+
+  it("suppresses stale editor geometry while a peer interacts with output", () => {
+    const state = new RemotePresenceState("local-peer");
+
+    state.handlePresence({
+      type: "snapshot",
+      peer_id: "daemon",
+      peers: [
+        {
+          peer_id: "peer-1",
+          peer_label: "Alice",
+          channels: [
+            {
+              channel: "cursor",
+              data: { cell_id: "cell-1", line: 1, column: 2 },
+            },
+            {
+              channel: "interaction",
+              data: { kind: "output", cell_id: "cell-2", output_id: "out-1" },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(state.presenceForCell("cell-1").cursors).toEqual([]);
+    expect(state.getPeersForCell("cell-2")).toMatchObject([
+      {
+        interaction: { kind: "output", cell_id: "cell-2", output_id: "out-1" },
+      },
+    ]);
+  });
+
+  it("does not let same-cell legacy focus overwrite a richer interaction target", () => {
+    const state = new RemotePresenceState("local-peer");
+
+    state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      channel: "interaction",
+      data: { kind: "output", cell_id: "cell-1" },
+    });
+    state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      channel: "focus",
+      data: { cell_id: "cell-1" },
+    });
+
+    expect(state.getPeersForCell("cell-1")).toMatchObject([
+      {
+        interaction: { kind: "output", cell_id: "cell-1" },
+      },
+    ]);
+  });
+
+  it("uses legacy focus to move cells when interaction has not arrived yet", () => {
+    const state = new RemotePresenceState("local-peer");
+
+    state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      channel: "interaction",
+      data: { kind: "output", cell_id: "cell-1" },
+    });
+    state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      channel: "focus",
+      data: { cell_id: "cell-2" },
+    });
+
+    expect(state.getPeersForCell("cell-1")).toEqual([]);
+    expect(state.getPeersForCell("cell-2")).toMatchObject([
+      {
+        interaction: { kind: "cell", cell_id: "cell-2" },
+      },
+    ]);
+  });
+
+  it("restores editor geometry when the interaction channel is cleared", () => {
+    const state = new RemotePresenceState("local-peer");
+
+    state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      channel: "cursor",
+      data: { cell_id: "cell-1", line: 1, column: 2 },
+    });
+    state.handlePresence({
+      type: "update",
+      peer_id: "peer-1",
+      channel: "interaction",
+      data: { kind: "output", cell_id: "cell-2" },
+    });
+    const affected = state.handlePresence({
+      type: "clear_channel",
+      peer_id: "peer-1",
+      channel: "interaction",
+    });
+
+    expect([...affected]).toEqual(["cell-2"]);
+    expect(state.presenceForCell("cell-1").cursors).toMatchObject([
+      { peerId: "peer-1", line: 1, column: 2 },
+    ]);
+  });
+
   it("ignores the local peer and clears remote state on left", () => {
     const state = new RemotePresenceState("local-peer");
     state.handlePresence({

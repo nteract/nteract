@@ -2971,6 +2971,35 @@ pub fn encode_focus_presence(
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Encode a notebook interaction target as a presence frame payload (CBOR).
+///
+/// The `target` object uses the same shape as decoded presence messages:
+/// `{ kind: "cell", cell_id }`, `{ kind: "editor", cell_id }`,
+/// `{ kind: "markdown_anchor", cell_id, anchor_id }`, or
+/// `{ kind: "output", cell_id, output_id? }`.
+#[wasm_bindgen]
+pub fn encode_interaction_presence(
+    peer_id: &str,
+    peer_label: &str,
+    actor_label: &str,
+    target: JsValue,
+) -> Result<Vec<u8>, JsError> {
+    let label = if peer_label.is_empty() {
+        None
+    } else {
+        Some(peer_label)
+    };
+    let actor = if actor_label.is_empty() {
+        None
+    } else {
+        Some(actor_label)
+    };
+    let target: presence::InteractionTarget =
+        serde_wasm_bindgen::from_value(target).map_err(|e| JsError::new(&e.to_string()))?;
+    presence::encode_interaction_update_labeled(peer_id, label, actor, &target)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
 /// Encode a heartbeat as a presence frame payload (CBOR).
 ///
 /// The desktop client sends these on a fixed interval so the daemon's
@@ -2989,6 +3018,7 @@ pub fn encode_clear_channel_presence(peer_id: &str, channel: &str) -> Result<Vec
         "cursor" => presence::Channel::Cursor,
         "selection" => presence::Channel::Selection,
         "focus" => presence::Channel::Focus,
+        "interaction" => presence::Channel::Interaction,
         other => return Err(JsError::new(&format!("unknown presence channel: {other}"))),
     };
     presence::encode_clear_channel(peer_id, ch).map_err(|e| JsError::new(&e.to_string()))
@@ -3057,6 +3087,7 @@ pub fn rewrite_presence_ingress(
                 client_data @ (presence::ChannelData::Cursor(_)
                 | presence::ChannelData::Selection(_)
                 | presence::ChannelData::Focus(_)
+                | presence::ChannelData::Interaction(_)
                 | presence::ChannelData::Custom(_)) => client_data,
                 presence::ChannelData::KernelState(_) => {
                     return Err(JsError::new(
