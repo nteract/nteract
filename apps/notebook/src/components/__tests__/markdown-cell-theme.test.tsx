@@ -205,6 +205,7 @@ describe("MarkdownCell theme sync", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -372,6 +373,27 @@ describe("MarkdownCell theme sync", () => {
 
     act(() => {
       lastFrameMouseUp?.({ hasSelection: true });
+    });
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+  });
+
+  it("does not time out markdown iframe interaction before a selection mouseup", () => {
+    vi.useFakeTimers();
+
+    const { getByTestId } = render(
+      <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const previewWrapper = getByTestId("markdown-frame").parentElement as HTMLElement;
+
+    fireEvent.pointerDown(previewWrapper);
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
     });
 
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
