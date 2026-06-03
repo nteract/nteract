@@ -47,7 +47,7 @@ jobs:
       - name: Build sift-wasm
         run: wasm-pack build crates/sift-wasm --target web --release
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: ./.github/actions/setup-vp
         with:
           run-install: false
       - uses: pnpm/action-setup@v6

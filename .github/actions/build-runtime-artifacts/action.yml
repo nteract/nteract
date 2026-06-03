@@ -32,7 +32,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: voidzero-dev/setup-vp@v1
+    - uses: ./.github/actions/setup-vp
       with:
         run-install: false
 

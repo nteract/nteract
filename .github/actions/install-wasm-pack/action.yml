@@ -31,10 +31,28 @@ runs:
 
         asset="wasm-pack-v${version}-${arch}-${os}.tar.gz"
         url="https://github.com/rustwasm/wasm-pack/releases/download/v${version}/${asset}"
+
+        cache_dir=""
+        cache_bin=""
+        if [ -n "${NTERACT_RUNNER_TOOL_HOME:-}" ]; then
+          cache_dir="${NTERACT_RUNNER_TOOL_HOME}/wasm-pack/${version}/${arch}-${os}"
+          case "$RUNNER_OS" in
+            Windows) cache_bin="$cache_dir/wasm-pack.exe" ;;
+            *) cache_bin="$cache_dir/wasm-pack" ;;
+          esac
+
+          if [ -x "$cache_bin" ]; then
+            echo "Using cached wasm-pack from $cache_bin"
+            echo "$cache_dir" >> "$GITHUB_PATH"
+            "$cache_bin" --version
+            exit 0
+          fi
+        fi
+
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
 
-        curl --fail --location --show-error --retry 5 --retry-delay 2 \
+        curl --fail --location --show-error --retry 10 --retry-delay 2 \
           --output "$tmp/$asset" \
           "$url"
         tar -xzf "$tmp/$asset" -C "$tmp"
@@ -49,6 +67,16 @@ runs:
         mkdir -p "$install_dir"
         cp "$bin" "$install_dir/"
         chmod +x "$install_dir/$(basename "$bin")"
+
+        if [ -n "$cache_dir" ]; then
+          mkdir -p "$cache_dir"
+          cache_tmp="${cache_bin}.tmp.$$"
+          cp "$install_dir/$(basename "$bin")" "$cache_tmp"
+          chmod +x "$cache_tmp"
+          mv "$cache_tmp" "$cache_bin"
+          echo "Cached wasm-pack at $cache_bin"
+        fi
+
         echo "$install_dir" >> "$GITHUB_PATH"
 
         "$install_dir/$(basename "$bin")" --version
