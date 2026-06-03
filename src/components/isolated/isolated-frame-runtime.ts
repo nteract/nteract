@@ -22,6 +22,7 @@ import {
   NTERACT_LINK_CLICK,
   NTERACT_MEASURE_ELEMENT,
   NTERACT_MOUSE_DOWN,
+  NTERACT_MOUSE_UP,
   NTERACT_PING,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_COMPLETE,
@@ -70,6 +71,7 @@ export interface IsolatedFrameRuntimeCallbacks {
   onRenderComplete: (height: number) => void;
   onLinkClick: (url: string, newTab: boolean) => void;
   onMouseDown: () => void;
+  onMouseUp: (params: { hasSelection?: boolean }) => void;
   onDoubleClick: () => void;
   onWheelBoundary: (params: { deltaY?: number }) => void;
   onWidgetUpdate: (commId: string, state: Record<string, unknown>) => void;
@@ -610,6 +612,9 @@ export class IsolatedFrameRuntime {
     });
     transport.onNotification(NTERACT_MOUSE_DOWN, () => {
       this.callbacks.onMouseDown();
+    });
+    transport.onNotification(NTERACT_MOUSE_UP, (params) => {
+      this.callbacks.onMouseUp(params as { hasSelection?: boolean });
     });
     transport.onNotification(NTERACT_WHEEL_BOUNDARY, (params) => {
       this.callbacks.onWheelBoundary(params as { deltaY?: number });

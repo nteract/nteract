@@ -1,4 +1,4 @@
-import { createEvent, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
@@ -7,6 +7,7 @@ let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let mockIsFocused = false;
 const isolatedFrameProps: Array<Record<string, unknown>> = [];
+let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 
 const mockFrameHandle = {
   send: vi.fn(),
@@ -38,7 +39,11 @@ vi.mock("@/components/isolated", async () => {
 
   const MockIsolatedFrame = React.forwardRef<
     typeof mockFrameHandle,
-    Record<string, unknown> & { onMouseDown?: () => void; onReady?: () => void }
+    Record<string, unknown> & {
+      onMouseDown?: () => void;
+      onMouseUp?: (params: { hasSelection?: boolean }) => void;
+      onReady?: () => void;
+    }
   >(function MockIsolatedFrame(props, ref) {
     isolatedFrameProps.push(props);
     React.useImperativeHandle(ref, () => mockFrameHandle);
@@ -46,6 +51,15 @@ vi.mock("@/components/isolated", async () => {
     React.useEffect(() => {
       props.onReady?.();
     }, [props.onReady]);
+
+    React.useEffect(() => {
+      lastFrameMouseUp = props.onMouseUp;
+      return () => {
+        if (lastFrameMouseUp === props.onMouseUp) {
+          lastFrameMouseUp = undefined;
+        }
+      };
+    }, [props.onMouseUp]);
 
     return (
       <iframe
@@ -176,6 +190,7 @@ describe("MarkdownCell theme sync", () => {
     mockColorTheme = undefined;
     mockIsFocused = false;
     isolatedFrameProps.length = 0;
+    lastFrameMouseUp = undefined;
     mockFrameHandle.send.mockClear();
     mockFrameHandle.render.mockClear();
     mockFrameHandle.renderBatch.mockClear();
@@ -307,6 +322,42 @@ describe("MarkdownCell theme sync", () => {
 
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
     expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+  });
+
+  it("releases markdown iframe pointer interaction after a plain iframe click", () => {
+    const { getByTestId } = render(
+      <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const previewWrapper = getByTestId("markdown-frame").parentElement as HTMLElement;
+
+    fireEvent.pointerDown(previewWrapper);
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+
+    act(() => {
+      lastFrameMouseUp?.({ hasSelection: false });
+    });
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+  });
+
+  it("keeps markdown iframe interaction active after text selection", () => {
+    const { getByTestId } = render(
+      <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const previewWrapper = getByTestId("markdown-frame").parentElement as HTMLElement;
+
+    fireEvent.pointerDown(previewWrapper);
+
+    act(() => {
+      lastFrameMouseUp?.({ hasSelection: true });
+    });
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
   });
 
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {

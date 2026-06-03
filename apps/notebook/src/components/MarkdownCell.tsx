@@ -49,6 +49,7 @@ import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
 const EMPTY_HEADING_ANCHORS: readonly MarkdownHeadingAnchor[] = [];
+const DOCUMENT_FRAME_INTERACTION_RELEASE_DELAY_MS = 700;
 
 function formatPluginLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -167,6 +168,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
+  const previewFrameReleaseTimeoutRef = useRef<number | null>(null);
 
   // Register EditorView with the cursor registry when in edit mode.
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -242,10 +244,45 @@ export const MarkdownCell = memo(function MarkdownCell({
     setEditing(true);
   }, [readOnly]);
 
+  const clearPreviewFrameReleaseTimeout = useCallback(() => {
+    if (previewFrameReleaseTimeoutRef.current == null) return;
+    window.clearTimeout(previewFrameReleaseTimeoutRef.current);
+    previewFrameReleaseTimeoutRef.current = null;
+  }, []);
+
+  useEffect(() => clearPreviewFrameReleaseTimeout, [clearPreviewFrameReleaseTimeout]);
+
+  const releasePreviewFrameInteraction = useCallback(() => {
+    clearPreviewFrameReleaseTimeout();
+    setPreviewFrameInteractionActive(false);
+  }, [clearPreviewFrameReleaseTimeout]);
+
+  const schedulePreviewFrameInteractionRelease = useCallback(() => {
+    clearPreviewFrameReleaseTimeout();
+    previewFrameReleaseTimeoutRef.current = window.setTimeout(() => {
+      previewFrameReleaseTimeoutRef.current = null;
+      setPreviewFrameInteractionActive(false);
+    }, DOCUMENT_FRAME_INTERACTION_RELEASE_DELAY_MS);
+  }, [clearPreviewFrameReleaseTimeout]);
+
   const activatePreviewFrameInteraction = useCallback(() => {
+    clearPreviewFrameReleaseTimeout();
     setPreviewFrameInteractionActive(true);
     onFocus();
-  }, [onFocus]);
+  }, [clearPreviewFrameReleaseTimeout, onFocus]);
+
+  const handlePreviewWrapperPointerDown = useCallback(() => {
+    activatePreviewFrameInteraction();
+    schedulePreviewFrameInteractionRelease();
+  }, [activatePreviewFrameInteraction, schedulePreviewFrameInteractionRelease]);
+
+  const handlePreviewFrameMouseUp = useCallback(
+    ({ hasSelection }: { hasSelection?: boolean }) => {
+      if (hasSelection) return;
+      releasePreviewFrameInteraction();
+    },
+    [releasePreviewFrameInteraction],
+  );
 
   const deactivatePreviewFrameInteractionWhenIdle = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
@@ -256,10 +293,10 @@ export const MarkdownCell = memo(function MarkdownCell({
         return;
       }
       if (!(event.buttons > 0)) {
-        setPreviewFrameInteractionActive(false);
+        releasePreviewFrameInteraction();
       }
     },
-    [],
+    [releasePreviewFrameInteraction],
   );
 
   // Derived boundary flag: re-run the focus effect only when source crosses
@@ -640,7 +677,7 @@ export const MarkdownCell = memo(function MarkdownCell({
             {/* Always render IsolatedFrame to preload it (hidden when no content) */}
             <div
               className={cell.source ? undefined : "hidden"}
-              onPointerDown={activatePreviewFrameInteraction}
+              onPointerDown={handlePreviewWrapperPointerDown}
               onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
             >
               <IsolatedFrame
@@ -657,6 +694,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 onReady={handleFrameReady}
                 onLinkClick={handleLinkClick}
                 onMouseDown={activatePreviewFrameInteraction}
+                onMouseUp={handlePreviewFrameMouseUp}
                 onDoubleClick={handleDoubleClick}
                 onError={handleIframeError}
                 onDiagnostic={logNotebookIsolatedDiagnostic}

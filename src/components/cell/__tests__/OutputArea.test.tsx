@@ -6,6 +6,7 @@ import { OutputArea, type JupyterOutput } from "../OutputArea";
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let lastFrameMessageHandler: ((message: unknown) => void) | undefined;
+let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 let isolatedFrameMountCount = 0;
 
 const mockFrameHandle = {
@@ -45,11 +46,20 @@ vi.mock("@/components/isolated", async (importOriginal) => {
       autoHeight?: boolean;
       hostContext?: unknown;
       onMessage?: (message: unknown) => void;
+      onMouseUp?: (params: { hasSelection?: boolean }) => void;
       scrollPassthrough?: boolean;
       onReady?: () => void;
     }
   >(function MockIsolatedFrame(
-    { allowWheelBoundaryScroll, autoHeight, hostContext, onMessage, scrollPassthrough, onReady },
+    {
+      allowWheelBoundaryScroll,
+      autoHeight,
+      hostContext,
+      onMessage,
+      onMouseUp,
+      scrollPassthrough,
+      onReady,
+    },
     ref,
   ) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
@@ -70,6 +80,15 @@ vi.mock("@/components/isolated", async (importOriginal) => {
         }
       };
     }, [onMessage]);
+
+    React.useEffect(() => {
+      lastFrameMouseUp = onMouseUp;
+      return () => {
+        if (lastFrameMouseUp === onMouseUp) {
+          lastFrameMouseUp = undefined;
+        }
+      };
+    }, [onMouseUp]);
 
     return (
       <div
@@ -229,6 +248,7 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.searchNavigate.mockClear();
     mockFrameHandle.measureElement.mockClear();
     lastFrameMessageHandler = undefined;
+    lastFrameMouseUp = undefined;
     isolatedFrameMountCount = 0;
     vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
     vi.mocked(needsPlugin).mockReturnValue(false);
@@ -407,6 +427,39 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
+  it("releases static document iframe outputs after a plain iframe click", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+
+    act(() => {
+      lastFrameMouseUp?.({ hasSelection: false });
+    });
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+  });
+
+  it("keeps static document iframe outputs active after text selection", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    fireEvent.pointerDown(activationWell);
+
+    act(() => {
+      lastFrameMouseUp?.({ hasSelection: true });
+    });
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+  });
+
   it("keeps interactive plugin iframe outputs on the wheel-boundary path", () => {
     const plotlyOutput: JupyterOutput[] = [
       {
@@ -465,6 +518,22 @@ describe("OutputArea iframe theme sync", () => {
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
+  });
+
+  it("keeps wheel-owning outputs engaged after iframe mouse up", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeVegaOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    fireEvent.pointerDown(activationWell);
+
+    act(() => {
+      lastFrameMouseUp?.({ hasSelection: false });
+    });
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
   });
 
   it("aligns sift before engaging iframe scrolling and releases on Escape", () => {

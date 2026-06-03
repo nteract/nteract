@@ -809,6 +809,13 @@
           sendRpc("nteract/mouseDown", {});
         });
 
+        document.addEventListener("mouseup", function () {
+          var selection = window.getSelection();
+          sendRpc("nteract/mouseUp", {
+            hasSelection: !!selection && !selection.isCollapsed && selection.toString().length > 0,
+          });
+        });
+
         // --- Wheel Boundary Forwarding ---
         // Native scroll chaining stops at the iframe boundary. When a scrollable
         // renderer is already at its vertical edge, ask the host to apply the
@@ -864,6 +871,29 @@
           return behavior === "none" || behavior === "contain";
         }
 
+        var pendingWheelBoundary = null;
+        var pendingWheelBoundaryFrame = 0;
+
+        function flushWheelBoundary() {
+          pendingWheelBoundaryFrame = 0;
+          var params = pendingWheelBoundary;
+          pendingWheelBoundary = null;
+          if (!params || !params.deltaY) return;
+          sendRpc("nteract/wheelBoundary", params);
+        }
+
+        function queueWheelBoundary(deltaY, deltaMode) {
+          if (!pendingWheelBoundary || pendingWheelBoundary.deltaMode !== deltaMode) {
+            pendingWheelBoundary = { deltaY: deltaY, deltaMode: deltaMode };
+          } else {
+            pendingWheelBoundary.deltaY += deltaY;
+          }
+
+          if (!pendingWheelBoundaryFrame) {
+            pendingWheelBoundaryFrame = requestAnimationFrame(flushWheelBoundary);
+          }
+        }
+
         document.addEventListener(
           "wheel",
           function (e) {
@@ -877,7 +907,7 @@
               return;
             }
             e.preventDefault();
-            sendRpc("nteract/wheelBoundary", { deltaY: e.deltaY, deltaMode: e.deltaMode });
+            queueWheelBoundary(e.deltaY, e.deltaMode);
           },
           { capture: true, passive: false },
         );

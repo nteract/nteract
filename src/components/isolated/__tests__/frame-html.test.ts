@@ -70,9 +70,18 @@ describe("generateFrameHtml", () => {
     expect(source).toMatch(/document\.addEventListener\(\s*'wheel'/);
     expect(html).toContain("isWheelAtScrollBoundary");
     expect(html).toContain("e.preventDefault()");
+    expect(html).toContain("requestAnimationFrame(flushWheelBoundary)");
+    expect(html).toContain("pendingWheelBoundary.deltaY += deltaY");
     expect(source).toContain("sendRpc('nteract/wheelBoundary'");
-    expect(source).toContain("deltaMode: e.deltaMode");
+    expect(source).toContain("queueWheelBoundary(e.deltaY, e.deltaMode)");
     expect(html).toContain("passive: false");
+  });
+
+  it("forwards iframe mouse up with a selection hint", () => {
+    expect(source).toMatch(/document\.addEventListener\(\s*'mouseup'/);
+    expect(source).toContain("sendRpc('nteract/mouseUp'");
+    expect(source).toContain("hasSelection");
+    expect(source).toContain("selection.toString().length > 0");
   });
 
   it("keeps the iframe bootstrap script parseable", () => {
