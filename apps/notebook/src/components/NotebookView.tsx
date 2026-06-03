@@ -33,7 +33,7 @@ import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { useFocusedCellId, useSearchCurrentMatch } from "@/components/notebook/state/cell-ui-state";
 import { logger } from "../lib/logger";
-import { computeCanMutateCells } from "../lib/notebook-mutation-gate";
+import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 import {
   getCellById,
   getNotebookCellsSnapshot,

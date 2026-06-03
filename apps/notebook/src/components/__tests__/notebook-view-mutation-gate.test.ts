@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vite-plus/test";
 import type { NotebookShellCapabilities } from "@/components/notebook";
-import { computeCanMutateCells } from "../../lib/notebook-mutation-gate";
+import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 
 /** Minimal capability projection: only `canEditStructure` is consulted. */
 function caps(canEditStructure: boolean): Pick<NotebookShellCapabilities, "canEditStructure"> {
