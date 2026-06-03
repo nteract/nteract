@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { extname, join } from "node:path";
 import { test } from "node:test";
 
 test("cloud notebook body renders through the desktop NotebookView surface", () => {
@@ -17,6 +18,32 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
   assert.doesNotMatch(sourceText, /<CloudLiveNotebook/);
   assert.doesNotMatch(sourceText, /NotebookReadOnlyView/);
   assert.doesNotMatch(sourceText, /<NotebookReadOnlyView/);
+});
+
+test("cloud viewer imports desktop notebook code only through public surfaces", () => {
+  const viewerDir = new URL("../viewer", import.meta.url);
+  const offenders: string[] = [];
+
+  for (const fileName of readdirSync(viewerDir)) {
+    if (![".ts", ".tsx"].includes(extname(fileName))) continue;
+    const sourcePath = join(viewerDir.pathname, fileName);
+    const sourceText = readFileSync(sourcePath, "utf8");
+    const imports = sourceText.matchAll(/from\s+["']([^"']*\.\.\/\.\.\/notebook\/src\/[^"']+)["']/g);
+
+    for (const match of imports) {
+      const importPath = match[1] ?? "";
+      if (importPath.includes("/wasm/") || importPath.endsWith("/notebook-surface")) {
+        continue;
+      }
+      offenders.push(`${fileName}: ${importPath}`);
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    "cloud viewer should use the public notebook surface, not private desktop internals",
+  );
 });
 
 test("cloud projects live cells into the NotebookView stores", () => {
