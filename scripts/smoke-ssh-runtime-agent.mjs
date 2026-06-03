@@ -30,6 +30,7 @@ function parseArgs(argv) {
     workingDir:
       process.env.RUNTIMED_SSH_RUNTIME_WORKING_DIR ??
       `${smokeProjectPrefix}${process.pid}`,
+    expectedHostname: process.env.RUNTIMED_SSH_RUNTIME_EXPECTED_HOSTNAME ?? null,
     timeoutMs: Number(process.env.RUNTIMED_SSH_RUNTIME_SMOKE_TIMEOUT_MS ?? 120000),
     keepTemp: process.env.RUNTIMED_SSH_RUNTIME_SMOKE_KEEP_TEMP === "1",
   };
@@ -57,6 +58,8 @@ function parseArgs(argv) {
       options.runtimeAgentExe = path.resolve(readValue());
     } else if (arg === "--working-dir") {
       options.workingDir = readValue();
+    } else if (arg === "--expected-hostname") {
+      options.expectedHostname = readValue();
     } else if (arg === "--timeout-ms") {
       options.timeoutMs = Number(readValue());
     } else if (arg === "--keep-temp") {
@@ -71,6 +74,7 @@ Options:
   --runtime-agent-exe <path>    Local SSH runtime-agent wrapper
   --working-dir <path>          Notebook working dir visible locally and remotely
                                 (default: /tmp/runt-ssh-runtime-agent-smoke-<pid>)
+  --expected-hostname <name>    Expected remote hostname (default: ssh host)
   --timeout-ms <ms>             Execution timeout (default: 120000)
   --keep-temp                   Keep temporary smoke state after success
 `);
@@ -83,6 +87,7 @@ Options:
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
     throw new Error("--timeout-ms must be a positive number");
   }
+  options.expectedHostname ??= options.sshHost;
 
   return options;
 }
@@ -280,8 +285,8 @@ print(platform.platform())
     if (result.status !== "done" || !result.success) {
       throw new Error(`execution did not complete successfully: ${JSON.stringify(result)}`);
     }
-    if (!text.includes(options.sshHost)) {
-      throw new Error(`execution output did not include ${options.sshHost}: ${text}`);
+    if (!text.includes(options.expectedHostname)) {
+      throw new Error(`execution output did not include ${options.expectedHostname}: ${text}`);
     }
 
     console.log(

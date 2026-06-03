@@ -14,7 +14,7 @@ Environment:
   RUNTIMED_SSH_RUNTIME_HOST          SSH host, default: lab2
   RUNTIMED_SSH_RUNTIME_COMMAND       Remote runtimed binary, default: /usr/local/bin/runtimed-nightly
   RUNTIMED_SSH_RUNTIME_REMOTE_TMP    Remote temp parent directory, default: /tmp
-  RUNTIMED_SSH_RUNTIME_REMOTE_PORT   Remote loopback TCP port for SSH -R, default: random 30000-49999
+  RUNTIMED_SSH_RUNTIME_REMOTE_PORT   Remote loopback TCP port for SSH -R, default: random 30000-32767
   RUNTIMED_SSH_BIN                   SSH binary, default: ssh
   RUNTIMED_SSH_RUNTIME_VERBOSE       Set to 1 for wrapper diagnostics
 EOF
@@ -123,7 +123,7 @@ import threading
 
 proxy_path = sys.argv[1]
 daemon_path = sys.argv[2]
-token = os.environ["RUNTIMED_SSH_PROXY_TOKEN"].encode() + b"\n"
+token = sys.stdin.readline().rstrip("\n").encode() + b"\n"
 
 try:
     os.unlink(proxy_path)
@@ -194,7 +194,7 @@ import threading
 
 unix_path = sys.argv[1]
 tcp_port = int(sys.argv[2])
-token = os.environ["RUNTIMED_SSH_PROXY_TOKEN"].encode() + b"\n"
+token = sys.stdin.readline().rstrip("\n").encode() + b"\n"
 
 try:
     os.unlink(unix_path)
@@ -244,8 +244,7 @@ while True:
     thread.start()
 '
 
-RUNTIMED_SSH_PROXY_TOKEN=$proxy_token \
-  python3 -u -c "$local_proxy_code" "$local_proxy_socket" "$local_socket" &
+python3 -u -c "$local_proxy_code" "$local_proxy_socket" "$local_socket" <<<"$proxy_token" &
 local_proxy_pid=$!
 
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -258,7 +257,7 @@ select_remote_port() {
   if [[ -n "$requested_remote_port" ]]; then
     remote_port=$requested_remote_port
   else
-    remote_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(20000))')
+    remote_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(2768))')
   fi
 }
 
@@ -273,7 +272,7 @@ chmod 700 \"\$remote_session_dir\"
 remote_socket=\"\$remote_session_dir/runt-ra.sock\"
 remote_blob_root=\"\$remote_session_dir/blobs\"
 mkdir -p \"\$remote_blob_root\"
-RUNTIMED_SSH_PROXY_TOKEN=\"\$proxy_token\" python3 -u -c $(shell_quote "$bridge_code") \"\$remote_socket\" $(shell_quote "$remote_port") &
+printf '%s\n' \"\$proxy_token\" | python3 -u -c $(shell_quote "$bridge_code") \"\$remote_socket\" $(shell_quote "$remote_port") &
 bridge_pid=\$!
 cleanup() {
   kill \"\$bridge_pid\" 2>/dev/null || true
@@ -301,12 +300,14 @@ $(shell_quote "$remote_runtimed") runtime-agent --notebook-id $(shell_quote "$no
     } >&2
   fi
 
+  last_ssh_stderr=$(mktemp "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-ssh.XXXXXX")
   "$ssh_bin" \
     -o BatchMode=yes \
     -o ExitOnForwardFailure=yes \
     -R "127.0.0.1:$remote_port:$local_proxy_socket" \
     "$ssh_host" \
     "$remote_command" \
+    2> >(tee "$last_ssh_stderr" >&2) \
     <<<"$proxy_token"
 }
 
@@ -322,8 +323,11 @@ for _ in $(seq 1 "$attempts"); do
   else
     ssh_status=$?
   fi
-  if [[ "$ssh_status" -ne 255 || -n "$requested_remote_port" ]]; then
+  if [[ "$ssh_status" -ne 255 || -n "$requested_remote_port" || ! -f "$last_ssh_stderr" ]] ||
+    ! grep -qi "remote port forwarding failed" "$last_ssh_stderr"; then
+    rm -f "${last_ssh_stderr:-}"
     exit "$ssh_status"
   fi
+  rm -f "$last_ssh_stderr"
 done
 exit "$ssh_status"

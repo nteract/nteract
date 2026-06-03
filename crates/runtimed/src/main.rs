@@ -575,7 +575,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn resolve_runtime_agent_exe(cli_value: Option<PathBuf>) -> Option<PathBuf> {
-    cli_value.or_else(|| std::env::var_os(RUNTIME_AGENT_EXE_ENV).map(PathBuf::from))
+    let path = cli_value.or_else(|| std::env::var_os(RUNTIME_AGENT_EXE_ENV).map(PathBuf::from))?;
+    Some(std::fs::canonicalize(&path).unwrap_or_else(|e| {
+        eprintln!(
+            "Runtime agent executable not found: {}: {e}",
+            path.display()
+        );
+        std::process::exit(1);
+    }))
 }
 
 async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
@@ -667,6 +674,16 @@ mod tests {
             ),
             other => panic!("expected run command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_runtime_agent_exe_canonicalizes_existing_path() {
+        let current_exe = std::env::current_exe().unwrap();
+        let canonical = std::fs::canonicalize(&current_exe).unwrap();
+        assert_eq!(
+            resolve_runtime_agent_exe(Some(current_exe)),
+            Some(canonical)
+        );
     }
 }
 
