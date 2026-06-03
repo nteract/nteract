@@ -112,9 +112,9 @@ async function main() {
     );
     contexts.push(alice.context, bob.context, anonymous.context);
 
-    await timed("alice_connected", () => waitForPresence(alice.page, "editing"));
-    await timed("bob_connected", () => waitForPresence(bob.page, "editing"));
-    await timed("anonymous_connected", () => waitForPresence(anonymous.page, "here now"));
+    await timed("alice_connected", () => waitForPresence(alice.page, "participant"));
+    await timed("bob_connected", () => waitForPresence(bob.page, "participant"));
+    await timed("anonymous_connected", () => waitForPresence(anonymous.page, "participant"));
     checks.push("browser_alice_connected", "browser_bob_connected", "anonymous_viewer_connected");
 
     await waitForEditableMarkdown(alice.page);
@@ -221,7 +221,7 @@ ${bobMarker}
       }),
     );
     contexts.push(charlie.context);
-    await timed("charlie_downgraded", () => waitForPresence(charlie.page, "here now"));
+    await timed("charlie_downgraded", () => waitForPresence(charlie.page, "participant"));
     await assertNoEditableMarkdown(charlie.page);
     checks.push("ungranted_editor_downgraded_to_viewer");
 
@@ -478,8 +478,9 @@ async function waitForPresence(page, expectedText) {
   await page.waitForFunction(
     (expected) =>
       document
-        .querySelector("[data-slot='notebook-presence-status']")
-        ?.textContent?.includes(expected),
+        .querySelector("[data-slot='cloud-presence-stack']")
+        ?.getAttribute("title")
+        ?.includes(expected),
     expectedText,
     { timeout: timeoutMs },
   );

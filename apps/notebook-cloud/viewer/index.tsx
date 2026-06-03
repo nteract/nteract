@@ -5,14 +5,13 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type FormEvent,
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertCircle,
-  Cloud,
-  CloudOff,
   Globe2,
   KeyRound,
   Link2,
@@ -35,7 +34,6 @@ import {
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
-  NotebookPresenceStatus,
   NotebookPackageSummaryPanel,
   NotebookToolbarFrame,
   type NotebookEnvironmentManager,
@@ -46,6 +44,13 @@ import {
   useNotebookCellUIStateBridge,
   useNotebookViewModel,
 } from "@/components/notebook";
+import {
+  Avatar,
+  AvatarBadge,
+  AvatarFallback,
+  AvatarGroup,
+  AvatarGroupCount,
+} from "@/components/ui/avatar";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
@@ -97,12 +102,9 @@ import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
-  type CloudViewerPresenceConnection,
-  type CloudViewerPresenceState,
+  type CloudViewerPresencePeer,
+  CloudViewerPresenceStore,
   cloudViewerPresenceDisplay,
-  initialCloudViewerPresence,
-  reduceCloudViewerConnection,
-  reduceCloudViewerPresenceMessage,
 } from "./presence";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { materializeCloudNotebookView } from "./cloud-view-model";
@@ -669,7 +671,11 @@ function NotebookViewer({
   const snapshotResolvedRef = useRef(false);
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const outputResolutionCacheRef = useRef(createOutputResolutionCache());
-  const [presence, setPresence] = useState(initialCloudViewerPresence);
+  const presenceStoreRef = useRef<CloudViewerPresenceStore | null>(null);
+  if (presenceStoreRef.current === null) {
+    presenceStoreRef.current = new CloudViewerPresenceStore();
+  }
+  const presenceStore = presenceStoreRef.current;
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [connectionPeerId, setConnectionPeerId] = useState<string | null>(null);
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
@@ -925,7 +931,7 @@ function NotebookViewer({
     const scheduleReconnect = (reason: Error) => {
       if (disposed) return;
       console.warn("[notebook-cloud] live room connection closed", reason);
-      setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
+      presenceStore.reduceConnection("disconnected");
       setConnectionScope(null);
       setConnectionActorLabel(null);
       setConnectionError(reason.message);
@@ -1016,7 +1022,7 @@ function NotebookViewer({
     };
     materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
-    setPresence(initialCloudViewerPresence());
+    presenceStore.reset();
     setConnectionError(null);
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
@@ -1034,7 +1040,7 @@ function NotebookViewer({
           message.type === "cloud_peer_joined" ||
           message.type === "cloud_peer_left"
         ) {
-          setPresence((state) => reduceCloudViewerPresenceMessage(state, message));
+          presenceStore.reduceMessage(message);
         }
         if (message.type === "cloud_room_ready") {
           markCloudViewerLoadMilestone("live-room-ready");
@@ -1086,7 +1092,7 @@ function NotebookViewer({
             }`,
           });
         }
-        setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
+        presenceStore.reduceConnection("disconnected");
         setConnectionScope(null);
         setConnectionActorLabel(null);
         setConnectionPeerId(null);
@@ -1106,7 +1112,7 @@ function NotebookViewer({
       disposeCurrentRuntime();
       resetCloudViewStoreProjection();
       livePresenceStore = null;
-      setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
+      presenceStore.reduceConnection("disconnected");
       setConnectionPeerId(null);
     };
   }, [
@@ -1119,6 +1125,7 @@ function NotebookViewer({
     config.syncEndpoint,
     connectAttempt,
     loadingPolicy.shouldConnectLiveRoom,
+    presenceStore,
     preloadSiftWasm,
     widgetStore,
   ]);
@@ -1328,10 +1335,7 @@ function NotebookViewer({
         className="cloud-room-toolbar"
         presence={<CloudNotebookTitle />}
         utilityControls={
-          <>
-            <CloudConnectionStatus connection={presence.connection} error={connectionError} />
-            <CloudPresenceStatus presence={presence} />
-          </>
+          <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
         }
         authControls={
           shouldShowCloudHeaderSignIn(authState) ? (
@@ -1993,38 +1997,6 @@ function safeDecodeRouteSegment(value: string | null | undefined): string | null
   }
 }
 
-function CloudConnectionStatus({
-  connection,
-  error,
-}: {
-  connection: CloudViewerPresenceConnection;
-  error: string | null;
-}) {
-  const connected = connection === "connected" && !error;
-  const connecting = connection === "connecting" && !error;
-  const label = connected ? "Live" : connecting ? "Joining" : "Reconnecting";
-  const title = connected
-    ? "Connected to the notebook room"
-    : connecting
-      ? "Joining the notebook room"
-      : error
-        ? `Reconnecting to the notebook room: ${cloudConnectionStatusErrorTitle(error)}`
-        : "Reconnecting to the notebook room";
-  const Icon = connected || connecting ? Cloud : CloudOff;
-
-  return (
-    <span
-      className="cloud-connection-status"
-      data-state={connected ? "live" : "waiting"}
-      title={title}
-      aria-label={title}
-    >
-      <Icon aria-hidden="true" />
-      <span className="sr-only">{label}</span>
-    </span>
-  );
-}
-
 function cloudConnectionStatusErrorTitle(error: string): string {
   if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
     return "unable to join the live room";
@@ -2043,26 +2015,87 @@ function sanitizeCloudConnectionError(error: string): string {
   });
 }
 
-function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState }) {
+function CloudPresenceStatus({
+  connectionError,
+  store,
+}: {
+  connectionError: string | null;
+  store: CloudViewerPresenceStore;
+}) {
+  const presence = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const presenceDisplay = cloudViewerPresenceDisplay(presence);
-
-  if (!presenceDisplay.connected) {
-    return null;
-  }
+  const connected = presenceDisplay.connected && !connectionError;
+  const title = connectionError
+    ? `Room unavailable: ${cloudConnectionStatusErrorTitle(connectionError)}`
+    : presenceDisplay.title;
+  const state = connected ? "live" : presence.connection === "connecting" ? "joining" : "waiting";
 
   return (
-    <NotebookPresenceStatus
-      connected={presenceDisplay.connected}
-      label={compactCloudPresenceLabel(presenceDisplay.label)}
-      title={presenceDisplay.title}
-      variant="inline"
-    />
+    <span
+      className="cloud-presence-stack"
+      data-slot="cloud-presence-stack"
+      data-state={state}
+      title={title}
+      aria-label={title}
+    >
+      <AvatarGroup className="cloud-presence-avatar-group" aria-hidden="true">
+        {presenceDisplay.peers.map((peer) => (
+          <CloudPresenceAvatar key={peer.id} peer={peer} connected={connected} />
+        ))}
+        {presenceDisplay.hiddenCount > 0 ? (
+          <AvatarGroupCount className="cloud-presence-avatar-count" data-size="sm">
+            +{presenceDisplay.hiddenCount}
+          </AvatarGroupCount>
+        ) : null}
+      </AvatarGroup>
+      <span className="sr-only">{presenceDisplay.label}</span>
+    </span>
   );
 }
 
-function compactCloudPresenceLabel(label: string): string {
-  const countMatch = /^(\d+)\s+here now$/.exec(label);
-  return countMatch?.[1] ?? label;
+function CloudPresenceAvatar({
+  connected,
+  peer,
+}: {
+  connected: boolean;
+  peer: CloudViewerPresencePeer;
+}) {
+  const status = connected ? peer.status : "offline";
+  return (
+    <Avatar
+      size="sm"
+      className="cloud-presence-avatar"
+      data-kind={peer.kind}
+      data-status={status}
+      title={peer.label}
+    >
+      <AvatarFallback>
+        {peer.kind === "anonymous" ? (
+          <>
+            <UserRound aria-hidden="true" />
+            {peer.count && peer.count > 1 ? (
+              <span className="cloud-presence-anonymous-count">{peer.count}</span>
+            ) : null}
+          </>
+        ) : (
+          cloudPresenceInitials(peer.label)
+        )}
+      </AvatarFallback>
+      <AvatarBadge data-status={status} />
+    </Avatar>
+  );
+}
+
+function cloudPresenceInitials(label: string): string {
+  const words = label
+    .split(/[\s@._-]+/g)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  const initials = words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
+  return initials || "?";
 }
 
 function appendEndpointPathSegment(endpoint: string, segment: string): string {
