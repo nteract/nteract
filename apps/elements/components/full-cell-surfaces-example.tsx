@@ -12,7 +12,7 @@ import {
   resolveElementsNotebookLanguage,
 } from "@/components/notebook-scenarios";
 import type { NotebookViewCell } from "@/components/notebook";
-import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
+import { CrdtBridgeProvider } from "../../notebook/src/notebook-surface";
 import {
   flushCellUIState,
   setExecutingCellIds,
@@ -21,20 +21,20 @@ import {
   setSearchCurrentMatch,
   setSearchQuery,
 } from "@/components/notebook/state/cell-ui-state";
-import { replaceNotebookCells } from "@/components/notebook/state/cell-store";
+import {
+  replaceNotebookCells,
+  type NotebookStoreCell,
+  type NotebookStoreCodeCell,
+  type NotebookStoreMarkdownCell,
+  type NotebookStoreOutput,
+  type NotebookStoreRawCell,
+} from "@/components/notebook/state/cell-store";
 import {
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,
 } from "@/components/notebook/state/execution-store";
 import { resetNotebookOutputs, setOutput } from "@/components/notebook/state/output-store";
-import type {
-  CodeCell as CodeCellType,
-  JupyterOutput,
-  MarkdownCell as MarkdownCellType,
-  NotebookCell,
-  RawCell as RawCellType,
-} from "../../notebook/src/types";
 
 const fullCellScenario = getElementsNotebookScenario("desktop-local-owner");
 const primaryScenarioCodeCell = getElementsNotebookPrimaryCodeCell(fullCellScenario.cells);
@@ -43,11 +43,11 @@ const standaloneCodeCellExecutionId = "elements-full-code-execution";
 const standaloneCodeCellOutputs = primaryScenarioCodeCell.outputs.map((output, index) => ({
   ...output,
   output_id: standaloneCodeCellOutputId(output, index),
-})) as JupyterOutput[];
+})) as NotebookStoreOutput[];
 const codeCellLanguage =
   resolveElementsNotebookLanguage(primaryScenarioCodeCell.language) ?? "plain";
 
-const codeCell: CodeCellType = scenarioCodeCellToStandaloneCodeCell(
+const codeCell: NotebookStoreCodeCell = scenarioCodeCellToStandaloneCodeCell(
   primaryScenarioCodeCell,
   standaloneCodeCellId,
   standaloneCodeCellOutputs,
@@ -121,14 +121,14 @@ const markdownFixtureSource = [
   "This catalog renders the preview path through the docs `IsolatedFrame` adapter.",
 ].join("\n");
 
-const markdownCell: MarkdownCellType = {
+const markdownCell: NotebookStoreMarkdownCell = {
   cell_type: "markdown",
   id: "elements-full-markdown-cell",
   source: markdownFixtureSource,
   metadata: {},
 };
 
-const rawCell: RawCellType = {
+const rawCell: NotebookStoreRawCell = {
   cell_type: "raw",
   id: "elements-full-raw-cell",
   source: ["---", "title: Forecast Review", "format: dashboard", "kernel: python3", "---"].join(
@@ -224,8 +224,8 @@ function standaloneCodeCellOutputId(output: { output_id?: string }, index: numbe
 function scenarioCodeCellToStandaloneCodeCell(
   cell: NotebookViewCell,
   id: string,
-  outputs: JupyterOutput[],
-): CodeCellType {
+  outputs: NotebookStoreOutput[],
+): NotebookStoreCodeCell {
   return {
     cell_type: "code",
     id,
@@ -256,7 +256,7 @@ function hiddenCodeCellFixture({
   const outputs = primaryScenarioCodeCell.outputs.map((output, index) => ({
     ...output,
     output_id: `${id}:output:${output.output_id ?? index}`,
-  })) as JupyterOutput[];
+  })) as NotebookStoreOutput[];
   const cell = scenarioCodeCellToStandaloneCodeCell(primaryScenarioCodeCell, id, outputs);
 
   cell.metadata = {
@@ -282,14 +282,14 @@ function hiddenCodeCellFixture({
   };
 }
 
-function scenarioCellToNotebookCell(cell: NotebookViewCell): NotebookCell {
+function scenarioCellToNotebookCell(cell: NotebookViewCell): NotebookStoreCell {
   if (cell.cellType === "code") {
     return {
       cell_type: "code",
       id: cell.id,
       source: cell.source,
       execution_count: cell.executionCount,
-      outputs: cell.outputs as JupyterOutput[],
+      outputs: cell.outputs as NotebookStoreOutput[],
       metadata: cell.metadata,
     };
   }
@@ -359,7 +359,7 @@ function seedFullCellFixtures() {
 
     cell.outputs.forEach((output, index) => {
       const outputId = output.output_id ?? `${cell.executionId}:output:${index}`;
-      setOutput(outputId, { ...output, output_id: outputId } as JupyterOutput);
+      setOutput(outputId, { ...output, output_id: outputId } as NotebookStoreOutput);
     });
     setExecution(cell.executionId, {
       execution_count: cell.executionCount,
