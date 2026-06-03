@@ -14,7 +14,7 @@ Environment:
   RUNTIMED_SSH_RUNTIME_HOST          SSH host, default: lab2
   RUNTIMED_SSH_RUNTIME_COMMAND       Remote runtimed binary, default: /usr/local/bin/runtimed-nightly
   RUNTIMED_SSH_RUNTIME_REMOTE_TMP    Remote temp parent directory, default: /tmp
-  RUNTIMED_SSH_RUNTIME_REMOTE_PORT   Remote loopback TCP port for SSH -R, default: random 30000-32767
+  RUNTIMED_SSH_RUNTIME_REMOTE_PORT   Remote loopback TCP port for SSH -R, default: random 30000-60000
   RUNTIMED_SSH_BIN                   SSH binary, default: ssh
   RUNTIMED_SSH_RUNTIME_VERBOSE       Set to 1 for wrapper diagnostics
 EOF
@@ -116,6 +116,7 @@ safe_agent_id=$(printf '%s' "$runtime_agent_id" | tr -c 'A-Za-z0-9_-' '_')
 remote_session_template="$remote_tmp_parent/runt-ssh-runtime-agent-${safe_agent_id}.XXXXXX"
 local_proxy_code='
 import os
+import hmac
 import selectors
 import socket
 import sys
@@ -163,7 +164,7 @@ def read_token(client):
             return False
         received += chunk
     client.settimeout(None)
-    return received == token
+    return hmac.compare_digest(received, token)
 
 def handle_client(client):
     daemon = None
@@ -257,7 +258,7 @@ select_remote_port() {
   if [[ -n "$requested_remote_port" ]]; then
     remote_port=$requested_remote_port
   else
-    remote_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(2768))')
+    remote_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(30001))')
   fi
 }
 
@@ -279,7 +280,7 @@ cleanup() {
   wait \"\$bridge_pid\" 2>/dev/null || true
   rm -rf \"\$remote_session_dir\"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S \"\$remote_socket\" ] && break
   sleep 0.1
@@ -334,4 +335,5 @@ for _ in $(seq 1 "$attempts"); do
   fi
   rm -f "$last_ssh_stderr"
 done
+rm -f "${last_ssh_stderr:-}"
 exit "$ssh_status"

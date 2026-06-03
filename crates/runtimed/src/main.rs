@@ -417,7 +417,7 @@ async fn main() -> anyhow::Result<()> {
                 conda_pool_size,
                 pixi_pool_size,
                 settings_json_path: settings_json,
-                runtime_agent_exe: resolve_runtime_agent_exe(runtime_agent_exe),
+                runtime_agent_exe: resolve_runtime_agent_exe(runtime_agent_exe)?,
                 ..Default::default()
             };
 
@@ -574,15 +574,19 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn resolve_runtime_agent_exe(cli_value: Option<PathBuf>) -> Option<PathBuf> {
-    let path = cli_value.or_else(|| std::env::var_os(RUNTIME_AGENT_EXE_ENV).map(PathBuf::from))?;
-    Some(std::fs::canonicalize(&path).unwrap_or_else(|e| {
-        eprintln!(
+fn resolve_runtime_agent_exe(cli_value: Option<PathBuf>) -> anyhow::Result<Option<PathBuf>> {
+    let Some(path) =
+        cli_value.or_else(|| std::env::var_os(RUNTIME_AGENT_EXE_ENV).map(PathBuf::from))
+    else {
+        return Ok(None);
+    };
+    let canonical = std::fs::canonicalize(&path).map_err(|e| {
+        anyhow::anyhow!(
             "Runtime agent executable not found: {}: {e}",
             path.display()
-        );
-        std::process::exit(1);
-    }))
+        )
+    })?;
+    Ok(Some(canonical))
 }
 
 async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
@@ -681,7 +685,7 @@ mod tests {
         let current_exe = std::env::current_exe().unwrap();
         let canonical = std::fs::canonicalize(&current_exe).unwrap();
         assert_eq!(
-            resolve_runtime_agent_exe(Some(current_exe)),
+            resolve_runtime_agent_exe(Some(current_exe)).unwrap(),
             Some(canonical)
         );
     }
