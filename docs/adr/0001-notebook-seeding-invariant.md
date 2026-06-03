@@ -89,8 +89,8 @@ pub fn is_pristine_notebook_doc(doc: &NotebookDoc) -> bool {
   - No schema bump; uses machinery that already exists (`canonical_schema_seed_change_hashes`, `get_heads`).
   - Preserves the freedom to vary the starter cell later (seeding stays an explicit, runtime-side step).
 - **Cons:**
-  - Must pin down the identity-scaffold boundary precisely: the two identity puts are authored by the creating actor, not the seed actor, so "pristine" is "seed changes + at most the identity-only change," not "heads == seed heads." This is the one subtlety to nail in the plan.
-  - Slightly more than an O(1) count: needs a causal check ("has any cells/metadata change ever applied"). Bounded and cheap for a fresh doc, but not a field read. Mitigation: short-circuit on `get_metadata_snapshot().is_some()` before walking history.
+  - Must pin down the identity-scaffold boundary precisely: the two identity puts are authored by the creating actor, not the seed actor, so "pristine" is "seed changes + at most the identity-only change," not "heads == seed heads." This is the one subtlety to nail in the plan (now resolved - see The predicate).
+  - More than an O(1) count, but the bound is small and concrete: the walk only runs on the metadata-absent path, where a pristine doc's `get_changes(&[])` is exactly two changes - the single seed change (`canonical_schema_seed_change_is_hash_bound` asserts `hashes.len() == 1`) plus the identity batch. So it is O(number of changes), ~2 for a fresh doc, with the `metadata.is_some()` fast-path covering the common already-seeded case. This small bound is the main thing that makes B win over D's O(1).
 
 ### C. Seed the starter cell into genesis
 
@@ -124,26 +124,36 @@ It is the option that actually answers the objection - it replaces an inferred s
 
 ### The predicate
 
-The implementation plan resolved B's open boundary against the pinned automerge fork. A fresh document - daemon **or** cloud - is built by `NotebookDoc::new_with_actor`, which is the frozen genesis plus exactly two ROOT puts (`notebook_id`, `runtime_state_doc_id`); the cloud room host's "schema label" argument is the actor, not a ROOT key, so both hosts produce the identical scaffold. That makes the identity allowlist exact and host-agnostic:
+The implementation plan resolved B's open boundary against the pinned automerge fork. A fresh document - daemon **or** cloud - is built by `NotebookDoc::new_with_actor`, which is the frozen genesis plus exactly two ROOT puts (`notebook_id`, `runtime_state_doc_id`); the cloud room host's "schema label" argument is the actor, not a ROOT key, so both hosts produce the identical scaffold. That makes the allowlist exact and host-agnostic. The op types come from the `automerge::legacy` module (that is what `change.decode().operations` yields), and the gate matches on `op.action` and `op.pred` as well as `obj`/`key`, so that a *delete* or *overwrite* of an identity key after creation - which is post-creation history, not the creation scaffold - is correctly rejected:
 
 ```rust
+use automerge::legacy::{Key, ObjectId, OpType}; // decode() yields legacy ops
+
 pub fn is_pristine(&mut self) -> bool {
-    // Sound fast path: any metadata snapshot means initialized.
+    // Fast path (pure optimization, see below): a *populated* metadata
+    // snapshot means initialized. The history walk is the real backstop.
     if self.doc.get_metadata_snapshot().is_some() { return false; }
     let seed = NotebookDoc::canonical_schema_seed_change_hashes();
     for change in self.doc.get_changes(&[]) {
         if seed.contains(&change.hash()) { continue; }
         for op in change.decode().operations {
-            let identity_put = matches!(op.obj, ObjectId::Root)
+            // only the initial Put (empty pred) of an identity key is scaffold
+            let scaffold_put = matches!(op.action, OpType::Put(_))
+                && op.pred.is_empty()
+                && matches!(op.obj, ObjectId::Root)
                 && matches!(&op.key, Key::Map(k) if k == "notebook_id" || k == "runtime_state_doc_id");
-            if !identity_put { return false; }
+            if !scaffold_put { return false; }
         }
     }
     true
 }
 ```
 
-Any cell insert (op on the `cells` object) or metadata write fails the allowlist, so a notebook a user emptied - which carries add + delete history - is correctly never re-seeded, with no metadata coupling. Full task breakdown in `docs/superpowers/plans/2026-06-02-notebook-pristine-seeding.md`.
+Any cell insert (op on the `cells` object), metadata write, or post-creation identity edit fails the gate, so a notebook a user emptied - which carries add + delete history - is correctly never re-seeded, with no metadata coupling.
+
+**On the metadata fast-path:** `get_metadata_snapshot()` returns `Some` only for *populated* metadata (the genesis-created empty `metadata` Map yields `None`), so the short-circuit can never misfire on a fresh doc. But it is a pure optimization, not the soundness mechanism for the metadata case: a metadata mutation that leaves no populated snapshot is caught by the **history walk** (its op targets the `metadata` object, not a ROOT identity key), not by the fast-path. Skipping the fast-path would change no verdict, only cost.
+
+**On the coupling:** B removes the unstated "`create_empty_notebook` always writes metadata" coupling, but in its place the allowlist depends on a new invariant - *every creation path writes nothing to ROOT but the two identity puts*. That is true today (verified across `new`/`new_with_encoding`/`new_with_actor`/`RoomHostHandle::create_empty`), and unlike the old coupling it is local to one crate and enforced by a constructor-guard test, so a future ROOT scaffolding key trips CI instead of silently shipping a notebook that never seeds. Full task breakdown in `docs/superpowers/plans/2026-06-02-notebook-pristine-seeding.md`.
 
 ## Consequences
 
@@ -154,10 +164,10 @@ Any cell insert (op on the `cells` object) or metadata write fails the allowlist
 
 ## Resolved during planning
 
-1. **Exact pristine predicate** - settled: canonical seed hashes plus identity puts to ROOT (`notebook_id`, `runtime_state_doc_id`); any other op is initialized. See the predicate above.
-2. **Cost** - settled: short-circuit on `metadata.is_some()` (a sound sufficient condition for non-pristine), so the history walk only runs for the rare metadata-absent case.
+1. **Exact pristine predicate** - settled: canonical seed hashes plus *initial* (`Put`, empty `pred`) identity puts to ROOT (`notebook_id`, `runtime_state_doc_id`); any other op - including a delete or overwrite of an identity key - means initialized. See the predicate above.
+2. **Cost** - settled: O(number of changes), ~2 for a fresh doc, walked only on the metadata-absent path; the `metadata.is_some()` short-circuit is a pure optimization for the common already-seeded case, not the soundness mechanism (see The predicate).
 3. **Cloud parity** - settled: the predicate lives in `notebook-doc`; `runtimed` and `runtimed-wasm` both call `NotebookDoc::is_pristine`, no reimplementation.
-4. **Test surface** - settled: unit tests for fresh / metadata-stamped / one-cell / emptied-after-content, plus an integration test that empties a notebook, reconnects, and expects zero cells (the headline behavior, previously only covered indirectly).
+4. **Test surface** - settled: unit tests for fresh / metadata-stamped / one-cell / emptied-after-content / overwritten-or-deleted-identity-key / every-fresh-constructor, plus an integration test that empties a notebook, reconnects, and expects zero cells (the headline behavior, previously only covered indirectly).
 
 ## Still open
 

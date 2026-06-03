@@ -15,7 +15,8 @@
 - `NotebookDoc` wraps an automerge `AutoCommit` in `self.doc` (private field, so the predicate is a method on `NotebookDoc`).
 - A fresh doc is built by `NotebookDoc::new_with_actor` (`crates/notebook-doc/src/lib.rs:983`), which loads the frozen genesis (`notebook_genesis_v5.am`, authored by `SCHEMA_SEED_ACTOR`) then does two `put(ROOT, ...)` ops: `notebook_id` and `runtime_state_doc_id`. Both the daemon and the cloud room host create docs this way (`RoomHostHandle::create_empty` -> `new_with_actor`).
 - `NotebookDoc::canonical_schema_seed_change_hashes()` (`lib.rs:2401`) returns the genesis change hashes (cached).
-- automerge API confirmed for this fork (rev f22752b): `AutoCommit::get_changes(&mut self, &[]) -> Vec<Change>`; `Change::decode(&self) -> automerge::ExpandedChange`; `ExpandedChange.operations: Vec<automerge::legacy::Op>`; `Op { obj: automerge::legacy::ObjectId, key: automerge::legacy::Key, .. }`; `ObjectId::{Root, Id(OpId)}`; `Key::{Map(SmolStr), Seq(ElementId)}`. `legacy` is a public module.
+- automerge API confirmed for this fork (rev f22752b): `AutoCommit::get_changes(&mut self, &[]) -> Vec<Change>`; `Change::decode(&self) -> automerge::ExpandedChange`; `ExpandedChange.operations: Vec<automerge::legacy::Op>`; `Op { action: automerge::legacy::OpType, obj: automerge::legacy::ObjectId, key: automerge::legacy::Key, pred: SortedVec<OpId>, insert: bool }`; `ObjectId::{Root, Id(OpId)}`; `Key::{Map(SmolStr), Seq(ElementId)}`; `OpType::{Put(ScalarValue), Delete, Increment(i64), Make(ObjType), ..}`; `pred.is_empty()` is public. `legacy` is a public module.
+- The predicate matches on `op.action` and `op.pred`, not only `obj`/`key`: a creation-scaffold write is an initial `Put` (`OpType::Put(_)` with empty `pred`). A later *delete* or *overwrite* of an identity key is `OpType::Delete` or a `Put` with non-empty `pred`, and must be rejected - otherwise post-creation identity edits would be misclassified as pristine.
 - `get_changes` takes `&mut self`, so `is_pristine` is `&mut self`. All three daemon call sites already hold `let mut doc = room.doc.write().await`, and the wasm caller is `&mut self`, so this is not a constraint.
 
 ## File structure
@@ -73,9 +74,50 @@ fn notebook_with_metadata_is_not_pristine() {
     doc.set_metadata("trust", "trusted").expect("set metadata");
     assert!(!doc.is_pristine());
 }
+
+#[test]
+fn overwritten_or_deleted_identity_key_is_not_pristine() {
+    // A Put/Delete on an identity key AFTER creation is post-creation history,
+    // not the creation scaffold: the predicate checks action + empty pred, so
+    // these must read non-pristine even though obj==Root and the key matches.
+    let mut overwritten = NotebookDoc::new_with_actor("nb-1", "runtimed");
+    overwritten
+        .doc
+        .put(automerge::ROOT, "notebook_id", "nb-2")
+        .expect("overwrite notebook_id");
+    assert!(
+        !overwritten.is_pristine(),
+        "an overwrite of notebook_id has a non-empty pred and is not scaffold"
+    );
+
+    let mut deleted = NotebookDoc::new_with_actor("nb-1", "runtimed");
+    deleted
+        .doc
+        .delete(automerge::ROOT, "runtime_state_doc_id")
+        .expect("delete runtime_state_doc_id");
+    assert!(
+        !deleted.is_pristine(),
+        "a delete of an identity key is an OpType::Delete, not a Put"
+    );
+}
+
+#[test]
+fn every_fresh_constructor_is_pristine() {
+    // Guard: the allowlist is sound only while every creation path writes
+    // nothing to ROOT except the two identity puts. Enumerate the public fresh
+    // constructors so a future ROOT scaffolding put trips here instead of
+    // silently shipping a notebook that never seeds.
+    assert!(NotebookDoc::new("nb-1").is_pristine());
+    assert!(NotebookDoc::new_with_actor("nb-1", "runtimed").is_pristine());
+    assert!(
+        NotebookDoc::new_with_encoding("nb-1", TextEncoding::UnicodeCodePoint).is_pristine()
+    );
+    // The cloud room host path: RoomHostHandle::create_empty -> new_with_actor.
+    // Covered in runtimed-wasm (Task 3) where RoomHostHandle is in scope.
+}
 ```
 
-Note: confirm the exact helper names against the file before running - `delete_cell` and `set_metadata` are used elsewhere in this crate (`set_metadata` is exercised at `crates/runtimed-wasm/src/lib.rs:1906`). If a helper differs, use the in-crate equivalent; do not invent one.
+Note: `new` / `new_with_actor` / `new_with_encoding` return `NotebookDoc` (not `&mut`), and `is_pristine` is `&mut self`; bind to a `let mut` (as the other tests do) or call on a temporary `let mut d = ...; d.is_pristine()`. `NotebookDoc.doc` is a crate-private field, so the overwrite/delete tests reaching into `.doc.put` / `.doc.delete` only compile inside the `notebook-doc` crate's own test module - which is where these live. Confirm the exact helper names against the file before running - `delete_cell`, `set_metadata`, `new_with_encoding`, and `TextEncoding` all exist in this crate (`set_metadata` is exercised at `crates/runtimed-wasm/src/lib.rs:1906`); if a signature differs, use the in-crate equivalent, do not invent one.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -87,7 +129,7 @@ Expected: FAIL to compile with "no method named `is_pristine`".
 Add the import alongside the existing automerge `use` at `crates/notebook-doc/src/lib.rs:92`:
 
 ```rust
-use automerge::legacy::{Key as LegacyKey, ObjectId as LegacyObjectId};
+use automerge::legacy::{Key as LegacyKey, ObjectId as LegacyObjectId, OpType as LegacyOpType};
 ```
 
 Add the method inside `impl NotebookDoc`, next to `canonical_schema_seed_change_hashes` (around `lib.rs:2414`):
@@ -104,10 +146,13 @@ Add the method inside `impl NotebookDoc`, next to `canonical_schema_seed_change_
 /// deletes every cell. See `docs/adr/0001-notebook-seeding-invariant.md`.
 ///
 /// If document creation ever writes a new ROOT scaffolding key, add it to the
-/// identity allowlist below.
+/// allowlist below (and to the constructor guard test).
 pub fn is_pristine(&mut self) -> bool {
-    // Sound fast path: any metadata snapshot means the document was
-    // initialized. Avoids walking history for the common, already-seeded case.
+    // Sound fast path: a populated metadata snapshot means the document was
+    // initialized (`get_metadata_snapshot` returns `Some` only for non-empty
+    // metadata, so it never misfires on a fresh doc whose metadata Map is
+    // empty). This is a pure optimization for the common already-seeded case;
+    // the history walk below is what actually backstops metadata mutations.
     if self.doc.get_metadata_snapshot().is_some() {
         return false;
     }
@@ -120,14 +165,20 @@ pub fn is_pristine(&mut self) -> bool {
             continue;
         }
         for op in change.decode().operations {
-            let is_identity_put = matches!(op.obj, LegacyObjectId::Root)
+            // Only the *initial creation* of an identity key is allowed beyond
+            // genesis: an inserting `Put` (empty `pred`) to ROOT's
+            // `notebook_id` / `runtime_state_doc_id`. A delete or an overwrite
+            // of those keys is post-creation history and must fail the gate.
+            let is_creation_scaffold_put = matches!(op.action, LegacyOpType::Put(_))
+                && op.pred.is_empty()
+                && matches!(op.obj, LegacyObjectId::Root)
                 && matches!(
                     &op.key,
                     LegacyKey::Map(k)
                         if k.as_str() == "notebook_id"
                             || k.as_str() == "runtime_state_doc_id"
                 );
-            if !is_identity_put {
+            if !is_creation_scaffold_put {
                 return false;
             }
         }
@@ -138,8 +189,8 @@ pub fn is_pristine(&mut self) -> bool {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p notebook-doc is_pristine`
-Expected: PASS - `fresh_notebook_doc_is_pristine`, `notebook_with_a_cell_is_not_pristine`, `emptied_notebook_is_not_pristine`, `notebook_with_metadata_is_not_pristine` all ok.
+Run: `cargo test -p notebook-doc -- pristine`
+Expected: PASS - `fresh_notebook_doc_is_pristine`, `notebook_with_a_cell_is_not_pristine`, `emptied_notebook_is_not_pristine`, `notebook_with_metadata_is_not_pristine`, `overwritten_or_deleted_identity_key_is_not_pristine`, `every_fresh_constructor_is_pristine` all ok.
 
 - [ ] **Step 5: Commit**
 
@@ -229,6 +280,16 @@ pub fn seed_initial_code_cell_if_empty(&mut self, cell_id: &str) -> Result<bool,
 
 The test `room_host_seeds_initial_code_cell_idempotently` (around `crates/runtimed-wasm/src/lib.rs:3110`) creates a host via `RoomHostHandle::create_empty`, seeds once (pristine -> seeds, returns true), then seeds again (now has a cell -> not pristine -> returns false). This matches `is_pristine`. No test change expected; confirm by reading it. If it asserted on `cell_count` semantics that diverge, adjust the assertion to the seed return values only.
 
+Add one assertion to that test (or a sibling) completing the constructor-guard coverage from Task 1: a freshly created room host is pristine before any seed.
+
+```rust
+let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+    .expect("create room host");
+assert!(host.doc.is_pristine(), "a brand-new room host is pristine");
+```
+
+(`host.doc` is accessible inside `runtimed-wasm`'s own test module; `is_pristine` is `&mut self`, so `host` must be `let mut`.)
+
 - [ ] **Step 3: Run the wasm tests**
 
 Run: `cargo test -p runtimed-wasm room_host_seeds_initial_code_cell_idempotently`
@@ -316,5 +377,6 @@ git commit -m "docs(adr): mark 0001 accepted"
 ## Self-review notes
 
 - **Spec coverage:** ADR Decision (Option B) -> Task 1 (predicate in `notebook-doc`). ADR Consequence "one predicate for daemon and cloud" -> Tasks 2+3. ADR Consequence "remove `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard" -> Tasks 2+3. ADR Open Question #1 (exact predicate / identity boundary) -> resolved: `{notebook_id, runtime_state_doc_id}` allowlist, verified both hosts create via `new_with_actor`. Open Question #2 (cost) -> resolved: `metadata.is_some()` fast path. Open Question #4 (test surface) -> Tasks 1 + 4.
-- **Type consistency:** `is_pristine(&mut self) -> bool` used identically in Tasks 1-4. `LegacyKey`/`LegacyObjectId` aliases used only in Task 1.
-- **Known verification point:** helper names (`delete_cell`, `set_metadata`, `add_cell_after`, room/eviction test helpers) must be confirmed against the current files at implementation time; the plan flags each spot rather than guessing a signature.
+- **Type consistency:** `is_pristine(&mut self) -> bool` used identically in Tasks 1-4. `LegacyKey`/`LegacyObjectId`/`LegacyOpType` aliases used only in Task 1.
+- **Review fixes folded in (PR #3335):** the predicate matches `op.action` (`OpType::Put(_)`) and `op.pred.is_empty()`, not just `obj`/`key`, so a post-creation delete or overwrite of an identity key fails the gate (rgbkrk). Negative test `overwritten_or_deleted_identity_key_is_not_pristine` and constructor-guard test `every_fresh_constructor_is_pristine` cover the unenforced creation-path invariant (pullfrog). The metadata fast-path is documented as a pure optimization, not the metadata-case soundness mechanism (pullfrog).
+- **Known verification point:** helper names (`delete_cell`, `set_metadata`, `add_cell_after`, `new_with_encoding`, `TextEncoding`, room/eviction test helpers) must be confirmed against the current files at implementation time; the plan flags each spot rather than guessing a signature.
