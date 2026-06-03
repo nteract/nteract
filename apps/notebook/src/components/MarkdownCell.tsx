@@ -262,15 +262,21 @@ export const MarkdownCell = memo(function MarkdownCell({
     [],
   );
 
+  // Derived boundary flag: re-run the focus effect only when source crosses
+  // empty↔non-empty, not on every keystroke.
+  const hasContent = cell.source.trim().length > 0;
   useEffect(() => {
     if (readOnly) {
       setEditing(false);
       return;
     }
+    if (!isFocused && editing && hasContent) {
+      setEditing(false);
+    }
     if (!isFocused || editing) {
       setPreviewFrameInteractionActive(false);
     }
-  }, [isFocused, editing, readOnly]);
+  }, [hasContent, isFocused, editing, readOnly]);
 
   const handleBlur = useCallback(() => {
     if (cell.source.trim()) {
