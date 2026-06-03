@@ -11,7 +11,7 @@
     "test": "pnpm run wasm && node --import tsx --test test/*.test.ts test/*.test.mjs",
     "test:renderer-parity": "playwright test -c playwright.render-parity.config.ts",
     "test:renderer-parity:update": "playwright test -c playwright.render-parity.config.ts --update-snapshots",
-    "dev": "pnpm --workspace-root exec wrangler dev --config apps/notebook-cloud/wrangler.toml",
+    "dev": "node scripts/dev.mjs",
     "smoke": "node --import tsx scripts/smoke.mjs",
     "smoke:hosted": "node scripts/hosted-render-smoke.mjs",
     "smoke:hosted:live": "node scripts/hosted-live-smoke.mjs",

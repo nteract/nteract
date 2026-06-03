@@ -28,6 +28,14 @@ pnpm --dir apps/notebook-cloud publish:fixture
 pnpm --dir apps/notebook-cloud publish:live
 ```
 
+`pnpm --dir apps/notebook-cloud dev` derives stable Wrangler HTTP and inspector
+ports from the git worktree root, so parallel worktrees do not all bind to
+`8787` and `9229`. The command prints the local base URL. Local smoke and
+publish scripts derive the same URL by default; set `NOTEBOOK_CLOUD_URL` to
+target a deployed Worker instead. Use `NOTEBOOK_CLOUD_WRANGLER_PORT` or
+`NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT` only when you need an explicit local
+override.
+
 The smoke script proves:
 
 - WebSocket upgrade on `/n/:notebookId/sync`.
@@ -60,13 +68,13 @@ cargo xtask wasm runtimed --skip-renderer-plugins
 The browser harness is available at:
 
 ```text
-http://127.0.0.1:8787/n/demo/debug
+http://127.0.0.1:<worktree-port>/n/demo/debug
 ```
 
 The notebook viewer is available at:
 
 ```text
-http://127.0.0.1:8787/n/{generated-ulid}/demo
+http://127.0.0.1:<worktree-port>/n/{generated-ulid}/demo
 ```
 
 `/` serves the sign-in shell; open notebooks through `/n/{id}/{vanityName}`.
@@ -75,7 +83,7 @@ http://127.0.0.1:8787/n/{generated-ulid}/demo
 and publishes a notebook revision with real `RuntimeStateDoc` output manifests:
 
 ```text
-http://127.0.0.1:8787/n/{generated-ulid}/output_streaming
+http://127.0.0.1:<worktree-port>/n/{generated-ulid}/output_streaming
 ```
 
 Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
@@ -470,20 +478,22 @@ but never the stored token value.
 Snapshot and blob stubs:
 
 ```bash
-curl -X PUT "http://127.0.0.1:8787/api/n/demo/runtime-snapshots/runtime123" \
+NOTEBOOK_CLOUD_LOCAL_URL="${NOTEBOOK_CLOUD_URL:-http://127.0.0.1:<worktree-port>}"
+
+curl -X PUT "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/runtime-snapshots/runtime123" \
   -H "X-User: alice" \
   -H "X-Operator: desktop:curl" \
   -H "X-Scope: owner" \
   --data-binary @runtime-state.am
 
-curl -X PUT "http://127.0.0.1:8787/api/n/demo/snapshots/heads123" \
+curl -X PUT "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/snapshots/heads123" \
   -H "X-User: alice" \
   -H "X-Operator: desktop:curl" \
   -H "X-Scope: owner" \
   -H "X-Runtime-Heads-Hash: runtime123" \
   --data-binary @notebook.am
 
-curl -X PUT "http://127.0.0.1:8787/api/n/demo/blobs/sha256abc" \
+curl -X PUT "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/blobs/sha256abc" \
   -H "X-User: alice" \
   -H "X-Operator: desktop:curl" \
   -H "X-Scope: owner" \
@@ -493,9 +503,11 @@ curl -X PUT "http://127.0.0.1:8787/api/n/demo/blobs/sha256abc" \
 Catalog and pinned snapshot readback:
 
 ```bash
-curl "http://127.0.0.1:8787/api/n/demo"
-curl "http://127.0.0.1:8787/api/n/demo/snapshots/{notebookHeadsHash}"
-curl "http://127.0.0.1:8787/api/n/demo/runtime-snapshots/{runtimeHeadsHash}" \
+NOTEBOOK_CLOUD_LOCAL_URL="${NOTEBOOK_CLOUD_URL:-http://127.0.0.1:<worktree-port>}"
+
+curl "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo"
+curl "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/snapshots/{notebookHeadsHash}"
+curl "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/runtime-snapshots/{runtimeHeadsHash}" \
   -H "X-Runtime-State-Doc-Id: {runtimeStateDocId}"
 ```
 

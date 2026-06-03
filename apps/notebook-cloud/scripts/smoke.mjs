@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { FrameType } from "runtimed";
+import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { openWebSocket } from "./raw-websocket-client.mjs";
 import { credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
 
@@ -15,7 +16,7 @@ const wasmBinPath = new URL(
 const wasm = await import(wasmJsPath.href);
 await wasm.default({ module_or_path: await readFile(wasmBinPath) });
 
-const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
+const baseUrl = notebookCloudBaseUrl();
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `smoke-${Date.now()}`;
 const otherRoomId = `${roomId}-other`;

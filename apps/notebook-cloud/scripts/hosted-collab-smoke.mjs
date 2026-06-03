@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "@playwright/test";
 
+import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import {
   assertHostedCollabSmokeEnv,
   browserDevTokenForSmoke,
@@ -14,9 +15,8 @@ import { summarizeCollabPerformanceTimings } from "./hosted-collab-smoke-perform
 import { performanceBudgetFailures } from "./hosted-render-smoke-performance.mjs";
 import { isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const requestedBaseUrl = process.env.NOTEBOOK_CLOUD_URL ?? DEFAULT_BASE_URL;
+const requestedBaseUrl = notebookCloudBaseUrl();
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const providedViewerUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_COLLAB_VIEWER_URL;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);

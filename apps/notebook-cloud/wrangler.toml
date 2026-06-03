@@ -5,6 +5,8 @@ compatibility_flags = ["nodejs_compat"]
 routes = [{ pattern = "preview.runt.run", custom_domain = true }]
 
 [dev]
+# Fallback for direct Wrangler invocations. `pnpm --dir apps/notebook-cloud dev`
+# overrides this with a worktree-specific port to avoid local worktree clashes.
 port = 8787
 
 [[durable_objects.bindings]]
