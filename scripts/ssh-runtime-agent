@@ -111,18 +111,13 @@ server.listen(8)
 
 def pipe(left, right):
     selector = selectors.DefaultSelector()
-    left.setblocking(False)
-    right.setblocking(False)
     selector.register(left, selectors.EVENT_READ, right)
     selector.register(right, selectors.EVENT_READ, left)
     while True:
         for key, _ in selector.select():
             source = key.fileobj
             target = key.data
-            try:
-                data = source.recv(65536)
-            except BlockingIOError:
-                continue
+            data = source.recv(65536)
             if not data:
                 return
             try:
