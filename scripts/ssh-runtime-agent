@@ -89,6 +89,14 @@ requested_remote_port=${RUNTIMED_SSH_RUNTIME_REMOTE_PORT:-}
 [[ -n "$remote_runtimed" ]] || die "RUNTIMED_SSH_RUNTIME_COMMAND must not be empty"
 [[ -n "$remote_tmp_parent" ]] || die "RUNTIMED_SSH_RUNTIME_REMOTE_TMP must not be empty"
 [[ -n "$ssh_bin" ]] || die "RUNTIMED_SSH_BIN must not be empty"
+command -v python3 >/dev/null || die "python3 is required but was not found in PATH"
+
+if [[ -n "$requested_remote_port" ]]; then
+  [[ "$requested_remote_port" =~ ^[0-9]+$ ]] ||
+    die "RUNTIMED_SSH_RUNTIME_REMOTE_PORT must be a number between 1024 and 65535"
+  ((requested_remote_port >= 1024 && requested_remote_port <= 65535)) ||
+    die "RUNTIMED_SSH_RUNTIME_REMOTE_PORT must be a number between 1024 and 65535"
+fi
 
 proxy_token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 local_proxy_dir=$(mktemp -d "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-proxy.XXXXXX")

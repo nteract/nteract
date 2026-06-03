@@ -461,10 +461,10 @@ fn parse_dev_daemon_options(args: &[String]) -> DevDaemonOptions {
                 eprintln!("Error: --runtime-agent-exe requires a path");
                 exit(1);
             };
-            runtime_agent_exe = Some(PathBuf::from(value));
+            runtime_agent_exe = Some(canonicalize_runtime_agent_exe(value));
             index += 2;
         } else if let Some(value) = arg.strip_prefix("--runtime-agent-exe=") {
-            runtime_agent_exe = Some(PathBuf::from(value));
+            runtime_agent_exe = Some(canonicalize_runtime_agent_exe(value));
             index += 1;
         } else {
             eprintln!("Unknown dev-daemon option: {arg}");
@@ -476,6 +476,23 @@ fn parse_dev_daemon_options(args: &[String]) -> DevDaemonOptions {
         release,
         runtime_agent_exe,
     }
+}
+
+fn canonicalize_runtime_agent_exe(value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if let Ok(path) = fs::canonicalize(&path) {
+        return path;
+    }
+    if path.is_relative() {
+        if let Some(workspace) = find_workspace_root() {
+            if let Ok(path) = fs::canonicalize(workspace.join(&path)) {
+                return path;
+            }
+        }
+    }
+
+    eprintln!("--runtime-agent-exe path not found: {value}");
+    exit(1);
 }
 
 fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
@@ -4905,6 +4922,9 @@ mod tests {
 
     #[test]
     fn parse_dev_daemon_options_reads_runtime_agent_exe() {
+        let workspace = find_workspace_root().unwrap();
+        let runtime_agent_exe =
+            std::fs::canonicalize(workspace.join("scripts/ssh-runtime-agent")).unwrap();
         let args = vec![
             "dev-daemon".to_string(),
             "--release".to_string(),
@@ -4917,13 +4937,16 @@ mod tests {
             options,
             DevDaemonOptions {
                 release: true,
-                runtime_agent_exe: Some(PathBuf::from("scripts/ssh-runtime-agent")),
+                runtime_agent_exe: Some(runtime_agent_exe),
             }
         );
     }
 
     #[test]
     fn parse_dev_daemon_options_reads_equals_runtime_agent_exe() {
+        let workspace = find_workspace_root().unwrap();
+        let runtime_agent_exe =
+            std::fs::canonicalize(workspace.join("scripts/ssh-runtime-agent")).unwrap();
         let args = vec![
             "dev-daemon".to_string(),
             "--runtime-agent-exe=scripts/ssh-runtime-agent".to_string(),
@@ -4934,7 +4957,7 @@ mod tests {
             options,
             DevDaemonOptions {
                 release: false,
-                runtime_agent_exe: Some(PathBuf::from("scripts/ssh-runtime-agent")),
+                runtime_agent_exe: Some(runtime_agent_exe),
             }
         );
     }
