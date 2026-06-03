@@ -28,7 +28,7 @@ jobs:
     name: Detect source changes
     runs-on: ubuntu-24.04
     outputs:
-      source_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.source == 'true' }}
+      source_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.source == 'true' || steps.e2e_source_filter.outputs.e2e_source == 'true' }}
       ci_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.ci == 'true' }}
       rust_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.rust == 'true' }}
       frontend_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.frontend == 'true' }}
@@ -55,8 +55,6 @@ jobs:
               - "apps/**"
               - "bin/**"
               - "crates/**"
-              - "e2e/**"
-              - "!e2e/*.md"
               - "python/**"
               - "scripts/**"
               - "src/**"
@@ -159,6 +157,16 @@ jobs:
               - "crates/notebook/Cargo.toml"
               - "Cargo.toml"
               - "Cargo.lock"
+
+      - name: Check e2e source paths
+        id: e2e_source_filter
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: every
+          filters: |
+            e2e_source:
+              - "e2e/**"
+              - "!e2e/*.md"
 
   lint:
     name: Lint & Format
