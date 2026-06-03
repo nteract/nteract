@@ -81,6 +81,7 @@ export {
   type NotebookEditModeButtonProps,
   type NotebookEditModeState,
 } from "./NotebookEditModeButton";
+export { computeCanMutateCells } from "./mutation-gate";
 export {
   createNotebookInteractionModeProjection,
   type CreateNotebookInteractionModeProjectionOptions,
