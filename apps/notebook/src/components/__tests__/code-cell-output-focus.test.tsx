@@ -48,13 +48,22 @@ vi.mock("@/components/cell/OutputArea", () => ({
     focused,
     useOutputWell,
     onIframeMouseDown,
+    preloadIframe,
+    deferIsolatedFrameUntilVisible,
+    deferredIsolatedFrameRootMargin,
   }: {
     focused?: boolean;
     useOutputWell?: boolean;
     onIframeMouseDown?: () => void;
+    preloadIframe?: boolean;
+    deferIsolatedFrameUntilVisible?: boolean;
+    deferredIsolatedFrameRootMargin?: string;
   }) => (
     <button
       data-focused={String(focused)}
+      data-preload-iframe={String(preloadIframe)}
+      data-defer-isolated-frame={String(deferIsolatedFrameUntilVisible)}
+      data-deferred-root-margin={deferredIsolatedFrameRootMargin ?? ""}
       data-use-output-well={String(useOutputWell)}
       data-testid="output"
       type="button"
@@ -228,6 +237,26 @@ describe("CodeCell output focus", () => {
     );
 
     expect(getByTestId("output").getAttribute("data-focused")).toBe("true");
+  });
+
+  it("can defer isolated output frames instead of preloading them", () => {
+    const { getByTestId } = render(
+      <CodeCell
+        cell={makeCell()}
+        deferOutputIsolatedFrameUntilVisible
+        deferredOutputIsolatedFrameRootMargin="400px 0px"
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    const output = getByTestId("output");
+    expect(output.getAttribute("data-preload-iframe")).toBe("false");
+    expect(output.getAttribute("data-defer-isolated-frame")).toBe("true");
+    expect(output.getAttribute("data-deferred-root-margin")).toBe("400px 0px");
   });
 
   it("keeps completed execution state in the stable right readout slot", () => {

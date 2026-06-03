@@ -266,7 +266,7 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
-  it("starts trailing Arrow stream chunk fetches before first chunk append", async () => {
+  it("fetches trailing Arrow stream chunks sequentially after each append", async () => {
     vi.useRealTimers();
     const fetchResolvers: ((response: {
       ok: true;
@@ -315,16 +315,30 @@ describe("SiftTable", () => {
     await waitFor(() => {
       expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    expect(fetchEvents.map((event) => event.url)).toEqual([
+      "http://127.0.0.1:9000/blob/chunk-0",
+      "http://127.0.0.1:9000/blob/chunk-1",
+    ]);
+    expect(fetchEvents[1].appendCallCount).toBe(1);
+
+    fetchResolvers[1](responseFor([4, 5, 6]));
+
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
     expect(fetchEvents.map((event) => event.url)).toEqual([
       "http://127.0.0.1:9000/blob/chunk-0",
       "http://127.0.0.1:9000/blob/chunk-1",
       "http://127.0.0.1:9000/blob/chunk-2",
     ]);
-    expect(fetchEvents[1].appendCallCount).toBe(0);
-    expect(fetchEvents[2].appendCallCount).toBe(0);
+    expect(fetchEvents[2].appendCallCount).toBe(2);
 
-    fetchResolvers[1](responseFor([4, 5, 6]));
     fetchResolvers[2](responseFor([7, 8, 9]));
 
     await waitFor(() => {

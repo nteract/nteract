@@ -129,6 +129,15 @@ test("cloud passes shared NotebookView source and output visibility handlers", (
     sourceText,
     /<NotebookView[\s\S]*onSetCellOutputsHidden=\{handleCloudSetCellOutputsHidden\}/,
   );
+  assert.match(
+    sourceText,
+    /<NotebookView[\s\S]*deferOutputIsolatedFramesUntilVisible=\{!shellCapabilities\.canEditCells\}/,
+  );
+  assert.match(
+    sourceText,
+    /<NotebookView[\s\S]*deferredOutputIsolatedFrameRootMargin=\{CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN\}/,
+  );
+  assert.match(sourceText, /const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";/);
 });
 
 test("cloud wires shared presence and cleans projected store entries", () => {

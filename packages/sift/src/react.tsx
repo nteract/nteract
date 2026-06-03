@@ -473,9 +473,6 @@ export function SiftTable({
       };
 
       const firstBytes = await readChunkBytes(fetchChunkResult(chunks[0], 0));
-      const trailingChunkFetches = chunks
-        .slice(1)
-        .map((chunk, index) => fetchChunkResult(chunk, index + 1));
       if (cancelled) return;
       emitLoadMilestone(startedAt, {
         source: "arrow-stream-manifest",
@@ -535,7 +532,7 @@ export function SiftTable({
         if (cancelled) return;
         await new Promise((r) => setTimeout(r, 0));
         if (cancelled) return;
-        const bytes = await readChunkBytes(trailingChunkFetches[i - 1]);
+        const bytes = await readChunkBytes(fetchChunkResult(chunks[i], i));
         if (cancelled) return;
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
