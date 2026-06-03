@@ -2,12 +2,14 @@
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
@@ -84,6 +86,7 @@ export interface IsolatedFrameProps {
   onResize?: (height: number) => void;
   onLinkClick?: (url: string, newTab: boolean) => void;
   onMouseDown?: () => void;
+  onMouseUp?: (params: { hasSelection?: boolean }) => void;
   onDoubleClick?: () => void;
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
   onError?: (error: { message: string; stack?: string }) => void;
@@ -182,6 +185,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       onReady,
       onResize,
       onMouseDown,
+      onMouseUp,
       onDoubleClick,
     },
     ref,
@@ -193,6 +197,17 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const [hostContext, setHostContextState] = useState<NteractEmbedHostContextPatch>({});
     const onReadyRef = useRef(onReady);
     const onResizeRef = useRef(onResize);
+    const handleMouseUp = useCallback(
+      (event: ReactMouseEvent<HTMLDivElement>) => {
+        if (!onMouseUp) return;
+
+        const selection = event.currentTarget.ownerDocument.getSelection();
+        onMouseUp({
+          hasSelection: !!selection && !selection.isCollapsed && selection.toString().length > 0,
+        });
+      },
+      [onMouseUp],
+    );
 
     useEffect(() => {
       onReadyRef.current = onReady;
@@ -247,6 +262,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         className={className}
         style={frameStyle}
         onMouseDown={onMouseDown}
+        onMouseUp={handleMouseUp}
         onDoubleClick={onDoubleClick}
       >
         {outputs.map((payload) => (
