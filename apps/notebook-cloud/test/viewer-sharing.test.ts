@@ -53,8 +53,12 @@ describe("cloud viewer sharing client", () => {
         ["acl", "Alice Owner", "Owner", null, false],
         ["acl", "Bob Example", "Can edit", null, true],
         ["acl", "Public link", "Can view", "Enabled", true],
-        ["invite", "carol@example.com", "Can view", "Pending", true],
+        ["invite", "c...l@example.com", "Can view", "Pending", true],
       ],
+    );
+    assert.deepEqual(
+      rows.map((row) => row.title),
+      ["alice@example.com", "bob@example.com", "Anyone with the link", "carol@example.com"],
     );
     assert.equal(cloudShareAccessSummary(rows), "2 people, public link, 1 invite");
   });
@@ -91,8 +95,12 @@ describe("cloud viewer sharing client", () => {
       rows.map((row) => [row.label, row.detail]),
       [
         ["fixture", "Dev identity"],
-        ["alice@example.com", "Anaconda identity"],
+        ["a...e@example.com", "Anaconda identity"],
       ],
+    );
+    assert.deepEqual(
+      rows.map((row) => row.title),
+      ["user:dev:fixture", "user:anaconda:alice%40example.com"],
     );
   });
 

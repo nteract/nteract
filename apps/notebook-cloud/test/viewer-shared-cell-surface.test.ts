@@ -195,31 +195,27 @@ test("cloud identity chrome renders through the shared actor projection surface"
   assert.match(sourceText, /actor: runtimeActor/);
 });
 
-test("cloud presence chrome renders through the shared shell component", () => {
+test("cloud presence chrome renders as an isolated host avatar stack", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
-  const sharedPresencePath = new URL(
-    "../../../src/components/notebook/NotebookPresenceStatus.tsx",
-    import.meta.url,
-  );
-  const sharedPresenceText = readFileSync(sharedPresencePath, "utf8");
   const hostedSmokePath = new URL("../scripts/hosted-render-smoke.mjs", import.meta.url);
   const hostedSmokeText = readFileSync(hostedSmokePath, "utf8");
   const collabSmokePath = new URL("../scripts/hosted-collab-smoke.mjs", import.meta.url);
   const collabSmokeText = readFileSync(collabSmokePath, "utf8");
 
-  assert.match(sourceText, /NotebookPresenceStatus/);
+  assert.match(sourceText, /CloudViewerPresenceStore/);
   assert.match(
     sourceText,
-    /<NotebookPresenceStatus[\s\S]*label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/,
+    /useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\)/,
   );
-  assert.match(sourceText, /<NotebookPresenceStatus[\s\S]*variant="inline"/);
-  assert.match(sharedPresenceText, /data-slot="notebook-presence-status"/);
-  assert.match(hostedSmokeText, /\[data-slot='notebook-presence-status'\]/);
-  assert.match(collabSmokeText, /\[data-slot='notebook-presence-status'\]/);
-  assert.doesNotMatch(sourceText, /className="cloud-presence"/);
-  assert.doesNotMatch(hostedSmokeText, /cloud-presence/);
-  assert.doesNotMatch(collabSmokeText, /cloud-presence/);
+  assert.match(sourceText, /<AvatarGroup className="cloud-presence-avatar-group"/);
+  assert.match(sourceText, /data-slot="cloud-presence-stack"/);
+  assert.match(hostedSmokeText, /\[data-slot='cloud-presence-stack'\]/);
+  assert.match(collabSmokeText, /\[data-slot='cloud-presence-stack'\]/);
+  assert.doesNotMatch(sourceText, /NotebookPresenceStatus/);
+  assert.doesNotMatch(sourceText, /compactCloudPresenceLabel/);
+  assert.doesNotMatch(hostedSmokeText, /notebook-presence-status/);
+  assert.doesNotMatch(collabSmokeText, /notebook-presence-status/);
 });
 
 test("cloud edit mode chrome renders through the shared shell component", () => {

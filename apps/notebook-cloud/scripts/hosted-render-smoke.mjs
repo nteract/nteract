@@ -46,7 +46,7 @@ const expectedSourceText =
   process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "from datasets import load_dataset";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
-const expectedPresenceText = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TEXT ?? "here now";
+const expectedPresenceTitle = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE ?? "participant";
 const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", []);
 const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS", [
   "MathNet topic visualization",
@@ -339,13 +339,14 @@ async function main() {
       );
       markTiming("rendered_cell_marker");
     }
-    if (expectedPresenceText) {
+    if (expectedPresenceTitle) {
       await page.waitForFunction(
         (expected) =>
           document
-            .querySelector("[data-slot='notebook-presence-status']")
-            ?.textContent?.includes(expected),
-        expectedPresenceText,
+            .querySelector("[data-slot='cloud-presence-stack']")
+            ?.getAttribute("title")
+            ?.includes(expected),
+        expectedPresenceTitle,
         { timeout: timeoutMs },
       );
       markTiming("presence");
@@ -419,9 +420,9 @@ async function main() {
     const renderedCellCount = await page
       .locator("[data-slot='cell-container'], [data-cell-id]")
       .count();
-    const presenceText = await page
-      .locator("[data-slot='notebook-presence-status']")
-      .textContent({ timeout: 1_000 })
+    const presenceTitle = await page
+      .locator("[data-slot='cloud-presence-stack']")
+      .getAttribute("title", { timeout: 1_000 })
       .catch(() => null);
     viewerMilestones = summarizeViewerMilestones(await collectViewerLoadMarks(page));
 
@@ -548,7 +549,7 @@ async function main() {
           expectedPageTexts,
           expectedExecutionCount,
           requireRenderedCellMarker,
-          expectedPresenceText,
+          expectedPresenceTitle,
           expectedFrameTexts,
           expectedOutputDocumentOrigin,
           expectedCatalogOwnerPrincipal,
@@ -569,7 +570,7 @@ async function main() {
           renderCacheRequests,
           executionCounts,
           renderedCellCount,
-          presenceText,
+          presenceTitle,
           siftLoadMilestoneMatches,
           frameTextMatches,
           pageTextMatches,

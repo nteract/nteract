@@ -1781,7 +1781,7 @@ interface ViewerShellConfig extends Record<string, unknown> {
 }
 
 function homeViewer(request: Request, env: Env): Response {
-  return viewerShell("nteract cloud notebooks", env, authConfigForRequest(request, env), null);
+  return viewerShell("nteract", env, authConfigForRequest(request, env), null);
 }
 
 function oidcCallbackViewer(request: Request, env: Env): Response {

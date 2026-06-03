@@ -77,11 +77,13 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
     cssText.indexOf(".cloud-home-status"),
   );
 
-  assert.match(homeSource, /homeStatusTitle[\s\S]*"Notebook cloud"/);
+  assert.match(homeSource, /homeStatusTitle[\s\S]*"Open a notebook"/);
   assert.match(homeSource, /className="cloud-home-layout"/);
+  assert.match(homeSource, /aria-label="nteract notebook entry"/);
+  assert.match(homeSource, /aria-label="Notebook sign-in"/);
   assert.match(homeSource, /className="cloud-home-copy"/);
   assert.match(homeSource, /<h1>nteract<\/h1>/);
-  assert.match(homeSource, /preview realtime notebooks/);
+  assert.match(homeSource, /realtime notebooks/);
   assert.match(homeSource, /Open topic viz/);
   assert.doesNotMatch(homeSource, /showPrototypeDevControls/);
   assert.doesNotMatch(homeSource, /className="cloud-home-scope"/);
@@ -106,8 +108,10 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
 
   assert.match(callbackSource, /className="cloud-home"/);
   assert.match(callbackSource, /className="cloud-home-layout"/);
+  assert.match(callbackSource, /aria-label="nteract sign-in callback"/);
   assert.match(callbackSource, /className="cloud-home-panel"/);
   assert.match(callbackSource, /returning to the notebook/);
+  assert.match(callbackSource, /Back to nteract/);
   assert.match(callbackSource, /data-mode=\{status\.kind\}/);
   assert.match(cssText, /\.cloud-home-status-spinner/);
   assert.doesNotMatch(callbackSource, /cloud-report-toolbar/);
@@ -149,9 +153,24 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sourceText, /shouldShowPackageEnvironmentSummary \? \([\s\S]*<EnvironmentSummary/);
   assert.match(sourceText, /autoFocusFirstCell=\{false\}/);
-  assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
+  assert.match(
+    sourceText,
+    /const presenceStoreRef = useRef<CloudViewerPresenceStore \| null>\(null\)/,
+  );
+  assert.match(
+    sourceText,
+    /useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\)/,
+  );
+  assert.match(
+    sourceText,
+    /utilityControls=\{[\s\S]*<CloudPresenceStatus[\s\S]*store=\{presenceStore\}/,
+  );
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
-  assert.match(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
+  assert.match(sourceText, /<AvatarGroup className="cloud-presence-avatar-group"/);
+  assert.match(sourceText, /data-slot="cloud-presence-stack"/);
+  assert.doesNotMatch(sourceText, /useState\(initialCloudViewerPresence\)/);
+  assert.doesNotMatch(sourceText, /setPresence\(/);
+  assert.doesNotMatch(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
   assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
   assert.match(
     sourceText,
@@ -178,20 +197,12 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
   assert.match(
     sourceText,
-    /function CloudPresenceStatus[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);[\s\S]*if \(!presenceDisplay\.connected\) \{[\s\S]*return null;/,
+    /function CloudPresenceStatus[\s\S]*const presence = useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\);[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);/,
   );
-  assert.match(
-    cssText,
-    /@media \(max-width: 360px\) \{[\s\S]*cloud-room-toolbar \.cloud-connection-status[\s\S]*display: none;/,
-  );
-  assert.match(
-    cssText,
-    /\.cloud-connection-status \{[\s\S]*width: 1\.875rem;[\s\S]*height: 1\.875rem;/,
-  );
-  assert.match(
-    cssText,
-    /\.cloud-connection-status span \{[\s\S]*position: absolute;[\s\S]*width: 1px;[\s\S]*clip: rect\(0, 0, 0, 0\);/,
-  );
+  assert.match(cssText, /\.cloud-presence-stack \{[\s\S]*min-width: 1\.75rem;[\s\S]*height: 2rem;/);
+  assert.match(cssText, /\.cloud-presence-avatar-group \{[\s\S]*align-items: center;/);
+  assert.match(cssText, /\.cloud-presence-avatar\[data-kind="anonymous"\]/);
+  assert.doesNotMatch(cssText, /\.cloud-connection-status/);
   assert.match(
     cssText,
     /cloud-room-toolbar \[data-slot="notebook-document-header-controls"\] \{[\s\S]*flex: 0 0 auto;[\s\S]*min-width: max-content;/,
@@ -247,7 +258,7 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(sourceText, /aria-label=\{title\}/);
   assert.match(
     sourceText,
-    /Reconnecting to the notebook room: \$\{cloudConnectionStatusErrorTitle\(error\)\}/,
+    /Room unavailable: \$\{cloudConnectionStatusErrorTitle\(connectionError\)\}/,
   );
   assert.doesNotMatch(sourceText, /title="Live room connection failed\."/);
   assert.doesNotMatch(sourceText, /Reconnecting to the notebook room: \$\{error\}/);

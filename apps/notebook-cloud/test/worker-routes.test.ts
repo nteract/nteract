@@ -836,6 +836,69 @@ describe("Worker artifact routes", () => {
     assert.equal(ownerRoute.status, 403);
   });
 
+  it("keeps sharing identity data behind owner-only routes for public viewers", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "public-sharing-demo");
+    seedAcl(env, {
+      notebookId: "public-sharing-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "public-sharing-demo",
+      subject: "user:dev:bob",
+      scope: "editor",
+    });
+    seedAcl(env, {
+      notebookId: "public-sharing-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    seedPendingInvite(env, {
+      id: "invite-private-email",
+      notebookId: "public-sharing-demo",
+      email: "carol@example.com",
+      providerHint: "oidc",
+      scope: "editor",
+    });
+    env.DB.profiles.set("user:dev:bob", {
+      principal: "user:dev:bob",
+      provider: "dev",
+      provider_subject: "bob",
+      email_normalized: "bob@example.com",
+      email_verified: 1,
+      display_name: "Bob Example",
+      avatar_url: null,
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+
+    const catalog = await worker.fetch(
+      new Request("http://localhost/api/n/public-sharing-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(catalog.status, 200);
+
+    const acl = await worker.fetch(
+      new Request("http://localhost/api/n/public-sharing-demo/acl?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    const invites = await worker.fetch(
+      new Request("http://localhost/api/n/public-sharing-demo/invites?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(acl.status, 403);
+    assert.equal(invites.status, 403);
+    assert.doesNotMatch(await acl.text(), /bob@example\.com|carol@example\.com/);
+    assert.doesNotMatch(await invites.text(), /bob@example\.com|carol@example\.com/);
+  });
+
   it("lets owners inspect and grant principal ACL rows", async () => {
     const env = fakeEnv();
     seedNotebook(env, "acl-demo");
