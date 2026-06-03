@@ -98,7 +98,7 @@ cleanup_local_proxy() {
 }
 trap cleanup_local_proxy EXIT INT TERM
 
-safe_agent_id=$(printf '%s' "$runtime_agent_id" | tr -c 'A-Za-z0-9_.-' '_')
+safe_agent_id=$(printf '%s' "$runtime_agent_id" | tr -c 'A-Za-z0-9_-' '_')
 remote_socket="$remote_tmp/runt-ra-${safe_agent_id}.sock"
 remote_blob_root="$remote_tmp/runt-ra-blobs-${safe_agent_id}"
 
@@ -265,6 +265,7 @@ cleanup() {
   kill \"\$bridge_pid\" 2>/dev/null || true
   wait \"\$bridge_pid\" 2>/dev/null || true
   rm -f $(shell_quote "$remote_socket")
+  rm -rf $(shell_quote "$remote_blob_root")
 }
 trap cleanup EXIT INT TERM
 for _ in 1 2 3 4 5 6 7 8 9 10; do
