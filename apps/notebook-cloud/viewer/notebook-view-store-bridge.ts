@@ -1,5 +1,9 @@
 import type { JupyterOutput as SharedJupyterOutput } from "@/components/cell/jupyter-output";
-import { replaceNotebookCells } from "@/components/notebook/state/cell-store";
+import {
+  replaceNotebookCells,
+  type NotebookStoreCell,
+  type NotebookStoreOutput,
+} from "@/components/notebook/state/cell-store";
 import {
   deleteExecutions,
   setCellExecutionPointer,
@@ -7,7 +11,6 @@ import {
   setNotebookQueueProjection,
 } from "@/components/notebook/state/execution-store";
 import { deleteOutputs, setOutput } from "@/components/notebook/state/output-store";
-import type { JupyterOutput, NotebookCell } from "../../notebook/src/types";
 import type { ResolvedCell } from "./render-resolution";
 
 let cloudOwnedExecutionIds = new Set<string>();
@@ -83,8 +86,8 @@ export function resetCloudViewStoreProjection(): void {
 
 function resolvedCellToNotebookCell(
   cell: ResolvedCell,
-  outputs: readonly JupyterOutput[],
-): NotebookCell {
+  outputs: readonly NotebookStoreOutput[],
+): NotebookStoreCell {
   const metadata = cell.metadata ?? {};
   if (cell.cellType === "code") {
     return {
@@ -118,7 +121,7 @@ function normalizeOutputForNotebookView(
   output: SharedJupyterOutput,
   cellId: string,
   index: number,
-): JupyterOutput {
+): NotebookStoreOutput {
   const output_id = output.output_id ?? `cloud-output:${cellId}:${index}`;
   if (output.output_type === "stream") {
     return {
@@ -130,7 +133,7 @@ function normalizeOutputForNotebookView(
   return {
     ...output,
     output_id,
-  } as JupyterOutput;
+  } as NotebookStoreOutput;
 }
 
 function difference(previous: ReadonlySet<string>, next: ReadonlySet<string>): string[] {
