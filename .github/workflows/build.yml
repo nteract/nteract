@@ -62,11 +62,16 @@ jobs:
     name: Lint & Format
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    # Use the Anaconda runner pool for trusted events. Fork PRs stay on
+    # GitHub-hosted runners because this repository is public.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -78,6 +83,8 @@ jobs:
         with:
           run-install: false
       - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -99,7 +106,7 @@ jobs:
     name: NSIS Bootstrap Syntax
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -107,8 +114,10 @@ jobs:
 
       - name: Install NSIS
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y nsis
+          sudo flock /var/lock/nteract-ci-apt.lock bash -euo pipefail <<'APT'
+          apt-get -o DPkg::Lock::Timeout=120 update -qq
+          apt-get -o DPkg::Lock::Timeout=120 install -y nsis
+          APT
 
       - name: Compile bootstrap hook fixture
         run: |
@@ -119,11 +128,14 @@ jobs:
     name: Windows (clippy)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -134,8 +146,10 @@ jobs:
 
       - name: Install mingw-w64 and add Windows GNU target
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc-mingw-w64-x86-64 nasm
+          sudo flock /var/lock/nteract-ci-apt.lock bash -euo pipefail <<'APT'
+          apt-get -o DPkg::Lock::Timeout=120 update -qq
+          apt-get -o DPkg::Lock::Timeout=120 install -y gcc-mingw-w64-x86-64 nasm
+          APT
           rustup target add x86_64-pc-windows-gnu
 
       # Build wasm + renderer plugins (gitignored; runtimed embeds them)
@@ -154,11 +168,14 @@ jobs:
     name: WASM + Deno Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -190,11 +207,14 @@ jobs:
     name: Build shared UI artifacts
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -237,11 +257,14 @@ jobs:
     name: JS Tests & Benchmarks
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -277,6 +300,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -340,11 +366,16 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get -o DPkg::Lock::Timeout=120 update
-          sudo apt-get -o DPkg::Lock::Timeout=120 install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+          sudo flock /var/lock/nteract-ci-apt.lock bash -euo pipefail <<'APT'
+          apt-get -o DPkg::Lock::Timeout=120 update
+          apt-get -o DPkg::Lock::Timeout=120 install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+          APT
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -424,7 +455,7 @@ jobs:
     name: Linux Rust Clippy
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -432,6 +463,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -459,7 +493,7 @@ jobs:
     name: Linux Rust Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -467,6 +501,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -488,11 +525,14 @@ jobs:
     name: Linux runtimed-node
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -602,6 +642,9 @@ jobs:
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         uses: astral-sh/setup-uv@v8.1.0
 
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && runner.environment == 'self-hosted'
+
       - name: Install rust
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         uses: dsherret/rust-toolchain-file@v1
@@ -697,13 +740,15 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get -o DPkg::Lock::Timeout=120 update
-          sudo apt-get -o DPkg::Lock::Timeout=120 install -y \
+          sudo flock /var/lock/nteract-ci-apt.lock bash -euo pipefail <<'APT'
+          apt-get -o DPkg::Lock::Timeout=120 update
+          apt-get -o DPkg::Lock::Timeout=120 install -y \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
             xvfb \
             webkit2gtk-driver
+          APT
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -929,6 +974,9 @@ jobs:
         with:
           lfs: true
 
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
+
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
 
@@ -1035,11 +1083,14 @@ jobs:
     name: Python Unit Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
+
+      - uses: ./.github/actions/prepare-self-hosted-rust
+        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1

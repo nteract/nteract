@@ -37,6 +37,8 @@ runs:
         run-install: false
 
     - uses: pnpm/action-setup@v6
+      with:
+        dest: ${{ runner.temp }}/setup-pnpm
 
     - uses: actions/setup-node@v6
       with:
@@ -46,6 +48,12 @@ runs:
     - name: pnpm install
       shell: bash
       run: pnpm install --frozen-lockfile
+
+    - name: Pin Rust tool paths
+      shell: bash
+      run: |
+        echo "CARGO=$(rustup which cargo)" >> "$GITHUB_ENV"
+        echo "RUSTC=$(rustup which rustc)" >> "$GITHUB_ENV"
 
     - name: Install wasm-pack
       if: inputs.skip-wasm != 'true'
