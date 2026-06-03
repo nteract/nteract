@@ -258,6 +258,7 @@ describe("OutputArea iframe theme sync", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
   });
@@ -469,6 +470,25 @@ describe("OutputArea iframe theme sync", () => {
 
     act(() => {
       lastFrameMouseUp?.({ hasSelection: true });
+    });
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+  });
+
+  it("does not time out static document iframe outputs before selection mouseup", () => {
+    vi.useFakeTimers();
+
+    const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
     });
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
