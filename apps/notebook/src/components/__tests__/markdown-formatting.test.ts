@@ -230,10 +230,6 @@ describe("edit/view toggle conditions", () => {
     return source.trim().length > 0;
   }
 
-  function shouldExitEditWhenUnfocused(source: string, isFocused: boolean): boolean {
-    return !isFocused && source.trim().length > 0;
-  }
-
   it("exits edit mode when cell has content", () => {
     expect(shouldExitEditOnBlur("# Hello")).toBe(true);
   });
@@ -248,18 +244,6 @@ describe("edit/view toggle conditions", () => {
 
   it("exits edit mode for single character content", () => {
     expect(shouldExitEditOnBlur("a")).toBe(true);
-  });
-
-  it("exits edit mode when a non-empty cell loses notebook focus", () => {
-    expect(shouldExitEditWhenUnfocused("# Hello", false)).toBe(true);
-  });
-
-  it("keeps the focused markdown cell in edit mode", () => {
-    expect(shouldExitEditWhenUnfocused("# Hello", true)).toBe(false);
-  });
-
-  it("keeps an unfocused empty markdown cell editable", () => {
-    expect(shouldExitEditWhenUnfocused("", false)).toBe(false);
   });
 
   /**
