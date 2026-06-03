@@ -301,14 +301,18 @@ $(shell_quote "$remote_runtimed") runtime-agent --notebook-id $(shell_quote "$no
   fi
 
   last_ssh_stderr=$(mktemp "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-ssh.XXXXXX")
+  local ssh_status
   "$ssh_bin" \
     -o BatchMode=yes \
     -o ExitOnForwardFailure=yes \
     -R "127.0.0.1:$remote_port:$local_proxy_socket" \
     "$ssh_host" \
     "$remote_command" \
-    2> >(tee "$last_ssh_stderr" >&2) \
+    2>"$last_ssh_stderr" \
     <<<"$proxy_token"
+  ssh_status=$?
+  cat "$last_ssh_stderr" >&2 || true
+  return "$ssh_status"
 }
 
 attempts=1
