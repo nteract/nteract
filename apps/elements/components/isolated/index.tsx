@@ -251,11 +251,6 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       }),
       [autoHeight, maxHeight, minHeight],
     );
-    const handleMouseUp = useCallback(() => {
-      const selection = window.getSelection();
-      const hasSelection = !!selection && !selection.isCollapsed && selection.toString().length > 0;
-      onMouseUp?.({ hasSelection });
-    }, [onMouseUp]);
 
     return (
       <div
