@@ -266,9 +266,9 @@ jobs:
     name: Browser E2E (Playwright)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    # Use the Anaconda runner for trusted events. Fork PRs stay on GitHub-hosted
+    # Use the Anaconda runner pool for trusted events. Fork PRs stay on GitHub-hosted
     # runners because this repository is public.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-anaconda-e2e-lab-runner1' || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -319,9 +319,9 @@ jobs:
     # artifacts for the native E2E smoke below. Keep it off per-commit PR CI;
     # run it post-merge or manually when the native smoke signal is needed.
     if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
-    # Dedicated Anaconda sandbox EC2 runner. This label is intentionally unique
-    # and only used by post-merge/manual lanes.
-    runs-on: nteract-anaconda-e2e-lab-runner1
+    # Dedicated Anaconda sandbox EC2 runner pool, only used by
+    # post-merge/manual lanes.
+    runs-on: nteract-linux-ci
     steps:
       - uses: actions/checkout@v6
         with:
@@ -663,9 +663,9 @@ jobs:
   # job above.
   e2e:
     name: "E2E: ${{ matrix.name }}"
-    # Dedicated Anaconda sandbox EC2 runner. This label is intentionally unique
-    # and only used by post-merge/manual lanes.
-    runs-on: nteract-anaconda-e2e-lab-runner1
+    # Dedicated Anaconda sandbox EC2 runner pool, only used by
+    # post-merge/manual lanes.
+    runs-on: nteract-linux-ci
     needs: [changes, build-linux]
     # Native WebDriver smoke is intentionally post-merge/manual. PR coverage
     # stays in Browser E2E so agent commit churn does not fan out Tauri builds.
@@ -916,9 +916,9 @@ jobs:
   # Python daemon integration tests — builds its own runtimed binary
   runtimed-py-integration:
     name: runtimed-py Integration Tests
-    # Dedicated Anaconda sandbox EC2 runner. This label is intentionally unique
-    # and only used by post-merge/manual lanes.
-    runs-on: nteract-anaconda-e2e-lab-runner1
+    # Dedicated Anaconda sandbox EC2 runner pool, only used by
+    # post-merge/manual lanes.
+    runs-on: nteract-linux-ci
     needs: [changes]
     # This daemon-heavy lane is ~30 minutes on stock GitHub runners. Keep it
     # on post-merge/manual runs so PR pushes do not pay that long tail.
