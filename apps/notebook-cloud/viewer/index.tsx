@@ -1210,7 +1210,7 @@ function NotebookViewer({
         },
         afterMutation: (handle) => {
           const liveRuntime = liveRuntimeRef.current;
-          if (liveRuntime?.handle === handle) {
+          if (liveRuntime && liveRuntime.handle === handle) {
             requestCloudMaterialization(liveRuntime);
           }
         },
@@ -1234,6 +1234,18 @@ function NotebookViewer({
   const handleCloudMoveCell = useCallback(
     (cellId: string, afterCellId?: string | null) => {
       cloudNotebookController.moveCell(cellId, afterCellId);
+    },
+    [cloudNotebookController],
+  );
+  const handleCloudSetCellSourceHidden = useCallback(
+    (cellId: string, hidden: boolean) => {
+      cloudNotebookController.setCellSourceHidden(cellId, hidden);
+    },
+    [cloudNotebookController],
+  );
+  const handleCloudSetCellOutputsHidden = useCallback(
+    (cellId: string, hidden: boolean) => {
+      cloudNotebookController.setCellOutputsHidden(cellId, hidden);
     },
     [cloudNotebookController],
   );
@@ -1276,6 +1288,8 @@ function NotebookViewer({
   }, [refreshAuthState]);
   const shouldShowPackageEnvironmentSummary =
     shellCapabilities.canExecute || shellCapabilities.canManagePackages;
+  const toolbarAddAfterCellId =
+    focusedCellId ?? notebookCellIds[notebookCellIds.length - 1] ?? null;
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
@@ -1348,7 +1362,7 @@ function NotebookViewer({
           runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
           environmentManager={packageEnvironmentManager}
           environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
-          addAfterCellId={notebookCellIds[notebookCellIds.length - 1] ?? null}
+          addAfterCellId={toolbarAddAfterCellId}
           onAddCell={handleCloudAddCell}
           onTogglePackages={handleTogglePackagesRail}
         />
@@ -1417,6 +1431,8 @@ function NotebookViewer({
             onDeleteCell={handleCloudDeleteCell}
             onAddCell={handleCloudAddCell}
             onMoveCell={handleCloudMoveCell}
+            onSetCellSourceHidden={handleCloudSetCellSourceHidden}
+            onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
             markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
             outputHostContext={outputHostContext}
             autoFocusFirstCell={false}

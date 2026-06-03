@@ -79,9 +79,25 @@ test("cloud notebook mutations route through the shared notebook controller", ()
   assert.match(sourceText, /cloudNotebookController\.addCell\(type, afterCellId\)/);
   assert.match(sourceText, /cloudNotebookController\.deleteCell\(cellId\)/);
   assert.match(sourceText, /cloudNotebookController\.moveCell\(cellId, afterCellId\)/);
+  assert.match(sourceText, /cloudNotebookController\.setCellSourceHidden\(cellId, hidden\)/);
+  assert.match(sourceText, /cloudNotebookController\.setCellOutputsHidden\(cellId, hidden\)/);
   assert.doesNotMatch(sourceText, /liveRuntime\.handle\.add_cell_after/);
   assert.doesNotMatch(sourceText, /liveRuntime\.handle\.delete_cell/);
   assert.doesNotMatch(sourceText, /liveRuntime\.handle\.move_cell/);
+});
+
+test("cloud command toolbar inserts below the focused cell before falling back to the tail", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /const toolbarAddAfterCellId =\s+focusedCellId \?\? notebookCellIds\[notebookCellIds\.length - 1\] \?\? null;/,
+  );
+  assert.match(
+    sourceText,
+    /<NotebookCommandToolbar[\s\S]*addAfterCellId=\{toolbarAddAfterCellId\}/,
+  );
 });
 
 test("cloud projects host focus through the shared cell UI state bridge", () => {
@@ -98,6 +114,20 @@ test("cloud projects host focus through the shared cell UI state bridge", () => 
   assert.doesNotMatch(
     sourceText,
     /import \{[^}]*setFocusedCellId[^}]*\} from "\.\.\/\.\.\/notebook\/src\/lib\/cell-ui-state"/,
+  );
+});
+
+test("cloud passes shared NotebookView source and output visibility handlers", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /<NotebookView[\s\S]*onSetCellSourceHidden=\{handleCloudSetCellSourceHidden\}/,
+  );
+  assert.match(
+    sourceText,
+    /<NotebookView[\s\S]*onSetCellOutputsHidden=\{handleCloudSetCellOutputsHidden\}/,
   );
 });
 
@@ -179,7 +209,10 @@ test("cloud presence chrome renders through the shared shell component", () => {
   const collabSmokeText = readFileSync(collabSmokePath, "utf8");
 
   assert.match(sourceText, /NotebookPresenceStatus/);
-  assert.match(sourceText, /<NotebookPresenceStatus[\s\S]*label=\{presenceDisplay\.label\}/);
+  assert.match(
+    sourceText,
+    /<NotebookPresenceStatus[\s\S]*label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/,
+  );
   assert.match(sourceText, /<NotebookPresenceStatus[\s\S]*variant="inline"/);
   assert.match(sharedPresenceText, /data-slot="notebook-presence-status"/);
   assert.match(hostedSmokeText, /\[data-slot='notebook-presence-status'\]/);
