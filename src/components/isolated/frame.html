@@ -349,6 +349,8 @@
           );
         }
 
+        var wheelBoundaryForwardingEnabled = false;
+
         // --- Message Handler ---
         // Note: When the React renderer bundle is loaded, it sets window.__REACT_RENDERER_ACTIVE__
         // and the inline handlers should defer to React for render/theme/clear messages.
@@ -456,6 +458,10 @@
 
               case "search_navigate":
                 handleSearchNavigate(payload);
+                break;
+
+              case "wheel_boundary_policy":
+                wheelBoundaryForwardingEnabled = !!(payload && payload.enabled);
                 break;
 
               case "bridge_ready":
@@ -897,6 +903,7 @@
         document.addEventListener(
           "wheel",
           function (e) {
+            if (!wheelBoundaryForwardingEnabled) return;
             if (!e.deltaY) return;
             var scroller = nearestVerticalScroller(e.target);
             if (!isWheelAtScrollBoundary(scroller, e.deltaY)) return;

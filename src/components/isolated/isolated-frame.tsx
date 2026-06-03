@@ -102,9 +102,19 @@ export interface IsolatedFrameProps {
   /**
    * When true, wheel events that reach a scroll boundary inside the iframe
    * are forwarded to the nearest scrollable parent.
+   * This only gates parent-side application of boundary events; the iframe
+   * must also opt in through forwardWheelBoundaryScroll before it emits them.
    * @default true
    */
   allowWheelBoundaryScroll?: boolean;
+
+  /**
+   * When true, the iframe bootstrap emits wheel-boundary events to the host.
+   * Keep false for document-like outputs that should stay on the browser's
+   * native scroll path.
+   * @default false
+   */
+  forwardWheelBoundaryScroll?: boolean;
 
   /**
    * When true, the iframe is transparent to pointer hit-testing so wheel
@@ -308,6 +318,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       autoHeight = false,
       className = "",
       allowWheelBoundaryScroll = true,
+      forwardWheelBoundaryScroll = false,
       scrollPassthrough = false,
       onReady,
       onResize,
@@ -603,6 +614,14 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     useEffect(() => {
       runtimeRef.current?.setRendererBundle({ rendererCode, rendererCss });
     }, [rendererCode, rendererCss]);
+
+    useEffect(() => {
+      if (!isIframeReady) return;
+      runtimeRef.current?.send({
+        type: "wheel_boundary_policy",
+        payload: { enabled: forwardWheelBoundaryScroll },
+      });
+    }, [forwardWheelBoundaryScroll, isIframeReady]);
 
     // Handle messages from iframe
     useEffect(() => {

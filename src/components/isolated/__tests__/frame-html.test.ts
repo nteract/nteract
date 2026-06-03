@@ -66,8 +66,11 @@ describe("generateFrameHtml", () => {
     expect(html).toContain("postMessage");
   });
 
-  it("forwards wheel deltas when iframe scroll reaches a boundary", () => {
+  it("forwards wheel deltas only when the parent opts into boundary handoff", () => {
     expect(source).toMatch(/document\.addEventListener\(\s*'wheel'/);
+    expect(html).toContain("var wheelBoundaryForwardingEnabled = false");
+    expect(html).toContain('case "wheel_boundary_policy"');
+    expect(source).toContain("if (!wheelBoundaryForwardingEnabled) return");
     expect(html).toContain("isWheelAtScrollBoundary");
     expect(html).toContain("e.preventDefault()");
     expect(html).toContain("requestAnimationFrame(flushWheelBoundary)");
