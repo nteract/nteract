@@ -655,42 +655,6 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     result
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn run_command_parses_runtime_agent_exe_override() {
-        let cli = Cli::try_parse_from([
-            "runtimed",
-            "run",
-            "--runtime-agent-exe",
-            "/tmp/ssh-runtime-agent",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Some(Commands::Run {
-                runtime_agent_exe, ..
-            }) => assert_eq!(
-                runtime_agent_exe,
-                Some(PathBuf::from("/tmp/ssh-runtime-agent"))
-            ),
-            other => panic!("expected run command, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_runtime_agent_exe_canonicalizes_existing_path() {
-        let current_exe = std::env::current_exe().unwrap();
-        let canonical = std::fs::canonicalize(&current_exe).unwrap();
-        assert_eq!(
-            resolve_runtime_agent_exe(Some(current_exe)).unwrap(),
-            Some(canonical)
-        );
-    }
-}
-
 fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     let source_binary = match binary {
         Some(path) => path,
@@ -864,4 +828,40 @@ async fn flush_pool() -> anyhow::Result<()> {
     println!("Pool flushed. Environments will be rebuilt with current settings.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_command_parses_runtime_agent_exe_override() {
+        let cli = Cli::try_parse_from([
+            "runtimed",
+            "run",
+            "--runtime-agent-exe",
+            "/tmp/ssh-runtime-agent",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Commands::Run {
+                runtime_agent_exe, ..
+            }) => assert_eq!(
+                runtime_agent_exe,
+                Some(PathBuf::from("/tmp/ssh-runtime-agent"))
+            ),
+            other => panic!("expected run command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_agent_exe_canonicalizes_existing_path() {
+        let current_exe = std::env::current_exe().unwrap();
+        let canonical = std::fs::canonicalize(&current_exe).unwrap();
+        assert_eq!(
+            resolve_runtime_agent_exe(Some(current_exe)).unwrap(),
+            Some(canonical)
+        );
+    }
 }
