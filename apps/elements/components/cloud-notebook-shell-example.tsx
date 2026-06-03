@@ -122,7 +122,7 @@ const cloudStateRows = [
   {
     surface: "Presence",
     owner: "Room session",
-    language: "2 here now",
+    language: "2",
     reason: "People are peers on the document; mode belongs to the view/edit control.",
   },
   {
@@ -583,24 +583,23 @@ function CloudEntrySurface() {
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,0.85fr)]">
         <div className="grid content-start gap-3">
           <p className="m-0 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
-            Cloud notebooks
+            Notebook cloud
           </p>
-          <h3 className="m-0 max-w-[18ch] text-4xl font-bold leading-none text-foreground">
-            Stay in the document.
+          <h3 className="m-0 max-w-[12ch] text-4xl font-bold leading-none text-foreground">
+            nteract
           </h3>
           <p className="m-0 max-w-xl text-sm leading-6 text-muted-foreground">
-            Public notebooks open calmly. Account controls appear only when someone needs to edit,
-            share, or renew access.
+            preview realtime notebooks
           </p>
         </div>
         <div className="grid content-start gap-3 border-l-2 border-foreground/25 bg-gradient-to-r from-muted/35 to-transparent py-3 pl-4">
           <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
             <KeyRound className="mt-0.5 size-5 text-muted-foreground" aria-hidden="true" />
             <div className="min-w-0">
-              <h3 className="m-0 truncate text-base font-semibold">Public viewer</h3>
+              <h3 className="m-0 truncate text-base font-semibold">Notebook cloud</h3>
               <p className="m-0 mt-1 text-xs leading-5 text-muted-foreground">
-                Public notebooks stay readable without an account. Sign in when edit access or
-                sharing controls are needed.
+                Sign in to open private previews or request edit access. Public notebooks stay
+                readable without an account.
               </p>
             </div>
           </div>
@@ -616,8 +615,8 @@ function CloudEntrySurface() {
         </div>
       </div>
       <div className="border-t border-fd-border px-4 py-3 text-xs leading-5 text-fd-muted-foreground">
-        Local development identity stays in the account panel after a notebook opens, where it can
-        act like host auth instead of document content.
+        After a notebook opens, account and sharing actions belong to the room host. The notebook
+        shell receives capabilities from that host instead of guessing from runtime state.
       </div>
     </section>
   );

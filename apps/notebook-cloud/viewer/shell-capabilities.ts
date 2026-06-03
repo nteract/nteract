@@ -27,6 +27,13 @@ export interface CloudNotebookShellCapabilityInput {
    * hidden. Flip it on once a runtime peer can execute the room's cells.
    */
   runtimeAvailable?: boolean;
+  /**
+   * Host-provided room capabilities. Sharing is a room/host concern, not a
+   * notebook-local affordance, so owner access alone is not enough to show it.
+   */
+  hostCapabilities?: {
+    canManageSharing?: boolean;
+  };
 }
 
 export function cloudNotebookShellCapabilities({
@@ -37,6 +44,7 @@ export function cloudNotebookShellCapabilities({
   selectedMode = "view",
   canAcceptCellMutations = true,
   runtimeAvailable = false,
+  hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = cloudConnectionAccessLevel(connectionScope);
   const isRuntimePeer = connectionScope === "runtime_peer";
@@ -103,7 +111,10 @@ export function cloudNotebookShellCapabilities({
     canToggleCode: hasCodeCells,
     canViewPackages: true,
     canManagePackages: false,
-    canManageSharing: connectionScope === "owner",
+    canManageSharing:
+      Boolean(hostCapabilities?.canManageSharing) &&
+      connectionScope === "owner" &&
+      auth.canUseAuthenticatedIdentity,
     interaction,
     access: {
       ...access,

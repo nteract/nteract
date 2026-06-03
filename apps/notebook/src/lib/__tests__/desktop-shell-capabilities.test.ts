@@ -220,6 +220,34 @@ describe("desktopNotebookShellCapabilities", () => {
     });
   });
 
+  it("requires a host room sharing capability before cloud owners can manage sharing", () => {
+    const ownerWithoutSharingHost = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:alice/desktop:window",
+      connectionScope: "owner",
+    });
+    expect(ownerWithoutSharingHost.canManageSharing).toBe(false);
+
+    const ownerWithSharingHost = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:alice/desktop:window",
+      connectionScope: "owner",
+      hostCapabilities: { canManageSharing: true },
+    });
+    expect(ownerWithSharingHost.canManageSharing).toBe(true);
+
+    const localWithSharingHost = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+      hostCapabilities: { canManageSharing: true },
+    });
+    expect(localWithSharingHost.canManageSharing).toBe(false);
+  });
+
   it("projects desktop agent actors without treating desktop as a single human", () => {
     const capabilities = desktopNotebookShellCapabilities({
       canAcceptCellMutations: true,

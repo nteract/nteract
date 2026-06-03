@@ -184,6 +184,7 @@ export interface NteractWidgetUpdateParams {
 
 export interface NteractWheelBoundaryParams {
   deltaY?: number;
+  deltaMode?: number;
 }
 
 export interface NteractDiagnosticParams {

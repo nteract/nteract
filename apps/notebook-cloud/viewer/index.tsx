@@ -50,6 +50,7 @@ import { MediaProvider } from "@/components/outputs/media-provider";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { EnvironmentSummary } from "@/components/environment";
 import type { NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
@@ -60,7 +61,6 @@ import {
   fetchWithCloudPrototypeAuth,
   isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
-  prototypeAuthSummary,
   storeCloudRequestedScope,
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
@@ -149,6 +149,9 @@ interface CloudViewerConfig {
   runtimeSnapshotBasePath: string;
   aclEndpoint: string;
   invitesEndpoint: string;
+  hostCapabilities?: {
+    canManageSharing?: boolean;
+  };
   syncEndpoint: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
@@ -215,6 +218,9 @@ function loadConfig(): CloudViewerConfig {
     runtimeSnapshotBasePath: parsed.runtimeSnapshotBasePath,
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
+    hostCapabilities: {
+      canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
+    },
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
@@ -448,28 +454,17 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   };
 
   const signedIn = authState.mode === "oidc";
-  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Public viewer";
+  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Notebook cloud";
   const homeStatusDescription = signedIn
-    ? prototypeAuthSummary(authState)
-    : "Public notebooks stay readable without an account. Sign in when you need edit access or sharing controls.";
+    ? "Open the preview notebook or sign out of this browser session."
+    : "Sign in to open private previews or request edit access.";
 
   return (
     <main className="cloud-home">
-      <header className="cloud-report-toolbar" aria-label="Notebook cloud entry controls">
-        <div className="cloud-home-title">
-          <span>nteract cloud notebooks</span>
-          <small>live documents for shared computation</small>
-        </div>
-      </header>
-
       <section className="cloud-home-layout" aria-label="Notebook cloud entry">
         <div className="cloud-home-copy">
-          <p>Cloud notebooks</p>
-          <h1>Stay in the document.</h1>
-          <span>
-            Public notebooks open calmly. Account controls appear only when you need to edit, share,
-            or renew access.
-          </span>
+          <h1>nteract</h1>
+          <span>preview realtime notebooks</span>
         </div>
 
         <section
@@ -501,6 +496,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
           ) : null}
 
           <div className="cloud-home-actions">
+            <a href="/n/topic-viz/topic-viz">Open topic viz</a>
             {signedIn ? (
               <button
                 type="button"
@@ -613,21 +609,10 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
 
   return (
     <main className="cloud-home">
-      <header className="cloud-report-toolbar" aria-label="Sign-in status and controls">
-        <div className="cloud-home-title">
-          <span>nteract cloud notebooks</span>
-          <small>account handoff</small>
-        </div>
-      </header>
-
       <section className="cloud-home-layout" aria-label="Notebook cloud sign-in callback">
         <div className="cloud-home-copy">
-          <p>Cloud sign-in</p>
-          <h1>Returning to the notebook.</h1>
-          <span>
-            The browser is finishing the account handoff. The notebook stays readable while access
-            renews.
-          </span>
+          <h1>nteract</h1>
+          <span>returning to the notebook</span>
         </div>
 
         <section
@@ -1177,11 +1162,13 @@ function NotebookViewer({
         hasCodeCells: codeCellCount > 0,
         selectedMode: selectedInteractionMode,
         canAcceptCellMutations,
+        hostCapabilities: config.hostCapabilities,
       }),
     [
       authState,
       canAcceptCellMutations,
       codeCellCount,
+      config.hostCapabilities,
       connectionActorLabel,
       connectionScope,
       selectedInteractionMode,
@@ -1287,16 +1274,29 @@ function NotebookViewer({
     setSelectedInteractionMode("edit");
     refreshAuthState();
   }, [refreshAuthState]);
+  const shouldShowPackageEnvironmentSummary =
+    shellCapabilities.canExecute || shellCapabilities.canManagePackages;
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
       activePanelId={activeRailPanel}
       collapsed={railCollapsed}
       selectedOutlineItemId={selectedOutlineItemId}
+      packagesSummary={null}
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
           readOnly={!shellCapabilities.canManagePackages}
+          header={
+            shouldShowPackageEnvironmentSummary ? (
+              <EnvironmentSummary
+                capabilities={shellCapabilities}
+                packages={notebookViewModel.packages}
+                showPackageDetails={false}
+                className="cloud-package-summary-header"
+              />
+            ) : undefined
+          }
         />
       }
       onActivePanelChange={setActiveRailPanel}
@@ -1312,7 +1312,7 @@ function NotebookViewer({
       <NotebookDocumentHeader
         capabilities={shellCapabilities}
         className="cloud-room-toolbar"
-        presence={<CloudNotebookTitle notebookId={config.notebookId} />}
+        presence={<CloudNotebookTitle />}
         utilityControls={
           <>
             <CloudConnectionStatus connection={presence.connection} error={connectionError} />
@@ -1419,6 +1419,7 @@ function NotebookViewer({
             onMoveCell={handleCloudMoveCell}
             markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
             outputHostContext={outputHostContext}
+            autoFocusFirstCell={false}
           />
         </CrdtBridgeProvider>
       </PresenceValueProvider>
@@ -1891,10 +1892,7 @@ function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabi
 }
 
 function initialCloudRailCollapsed(): boolean {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return false;
-  }
-  return window.matchMedia("(max-width: 599.98px)").matches;
+  return true;
 }
 
 function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
@@ -1911,8 +1909,8 @@ function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolea
   );
 }
 
-function CloudNotebookTitle({ notebookId }: { notebookId: string }) {
-  const title = cloudNotebookRouteTitle(notebookId);
+function CloudNotebookTitle() {
+  const title = cloudNotebookRouteTitle();
 
   return (
     <div className="cloud-notebook-title" title={title.title}>
@@ -1922,30 +1920,28 @@ function CloudNotebookTitle({ notebookId }: { notebookId: string }) {
   );
 }
 
-function cloudNotebookRouteTitle(notebookId: string): {
+function cloudNotebookRouteTitle(): {
   label: string;
   detail: string | null;
   title: string;
 } {
   const pathParts = window.location.pathname.split("/").filter(Boolean);
-  const routeNotebookId = pathParts[0] === "n" ? pathParts[1] : null;
   const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
   const decodedSlug = safeDecodeRouteSegment(routeSlug);
-  const decodedNotebookId = safeDecodeRouteSegment(routeNotebookId) ?? notebookId;
 
   if (decodedSlug) {
     const label = humanizeCloudRouteTitle(decodedSlug);
     return {
       label,
       detail: null,
-      title: `${label} (${decodedNotebookId})`,
+      title: label,
     };
   }
 
   return {
     label: "Cloud Notebook",
     detail: null,
-    title: decodedNotebookId,
+    title: "Cloud Notebook",
   };
 }
 
@@ -2031,11 +2027,16 @@ function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState 
   return (
     <NotebookPresenceStatus
       connected={presenceDisplay.connected}
-      label={presenceDisplay.label}
+      label={compactCloudPresenceLabel(presenceDisplay.label)}
       title={presenceDisplay.title}
       variant="inline"
     />
   );
+}
+
+function compactCloudPresenceLabel(label: string): string {
+  const countMatch = /^(\d+)\s+here now$/.exec(label);
+  return countMatch?.[1] ?? label;
 }
 
 function appendEndpointPathSegment(endpoint: string, segment: string): string {

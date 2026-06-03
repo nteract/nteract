@@ -44,6 +44,9 @@ package/runtime language, and execution controls.
 - Sharing should read as document permissions: public link state, people,
   pending invites, and roles. Avoid generic bubbles, stacked badges, or account
   language that makes collaborators look like runtime actors.
+- Sharing is a room-host capability. Desktop and cloud shells should both show
+  it only when the active `NotebookRoom` advertises sharing and the current
+  identity can use authenticated owner access.
 - Sharing controls should appear where the role can act. Non-owner editors and
   viewers need their own quiet pathways: owner shares, viewer requests edit,
   expired sessions renew before changing access.

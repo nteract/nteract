@@ -71,6 +71,7 @@ describe("generateFrameHtml", () => {
     expect(html).toContain("isWheelAtScrollBoundary");
     expect(html).toContain("e.preventDefault()");
     expect(source).toContain("sendRpc('nteract/wheelBoundary'");
+    expect(source).toContain("deltaMode: e.deltaMode");
     expect(html).toContain("passive: false");
   });
 

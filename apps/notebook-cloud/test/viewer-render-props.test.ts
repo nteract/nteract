@@ -77,12 +77,17 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
     cssText.indexOf(".cloud-home-status"),
   );
 
-  assert.match(homeSource, /homeStatusTitle[\s\S]*"Public viewer"/);
+  assert.match(homeSource, /homeStatusTitle[\s\S]*"Notebook cloud"/);
   assert.match(homeSource, /className="cloud-home-layout"/);
   assert.match(homeSource, /className="cloud-home-copy"/);
+  assert.match(homeSource, /<h1>nteract<\/h1>/);
+  assert.match(homeSource, /preview realtime notebooks/);
+  assert.match(homeSource, /Open topic viz/);
   assert.doesNotMatch(homeSource, /showPrototypeDevControls/);
   assert.doesNotMatch(homeSource, /className="cloud-home-scope"/);
   assert.doesNotMatch(homeSource, /<select/);
+  assert.doesNotMatch(homeSource, /cloud-report-toolbar/);
+  assert.doesNotMatch(homeSource, /requesting viewer/);
   assert.match(cssText, /\.cloud-home-layout/);
   assert.doesNotMatch(cssText, /\.cloud-home-scope/);
   assert.doesNotMatch(homePanelCss, /box-shadow/);
@@ -102,9 +107,10 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
   assert.match(callbackSource, /className="cloud-home"/);
   assert.match(callbackSource, /className="cloud-home-layout"/);
   assert.match(callbackSource, /className="cloud-home-panel"/);
-  assert.match(callbackSource, /Returning to the notebook\./);
+  assert.match(callbackSource, /returning to the notebook/);
   assert.match(callbackSource, /data-mode=\{status\.kind\}/);
   assert.match(cssText, /\.cloud-home-status-spinner/);
+  assert.doesNotMatch(callbackSource, /cloud-report-toolbar/);
   assert.doesNotMatch(callbackSource, /className="flex min-h-screen/);
 });
 
@@ -135,9 +141,17 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /identityControls=\{null\}/);
   assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
   assert.match(sourceText, /function initialCloudRailCollapsed/);
-  assert.match(sourceText, /matchMedia\("\(max-width: 599\.98px\)"\)/);
+  assert.match(sourceText, /function initialCloudRailCollapsed\(\): boolean \{[\s\S]*return true;/);
+  assert.match(sourceText, /packagesSummary=\{null\}/);
+  assert.match(
+    sourceText,
+    /const shouldShowPackageEnvironmentSummary =[\s\S]*shellCapabilities\.canExecute \|\| shellCapabilities\.canManagePackages/,
+  );
+  assert.match(sourceText, /shouldShowPackageEnvironmentSummary \? \([\s\S]*<EnvironmentSummary/);
+  assert.match(sourceText, /autoFocusFirstCell=\{false\}/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
+  assert.match(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
   assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
   assert.match(
     sourceText,

@@ -45,7 +45,7 @@ export function NotebookDocumentRail({
       activeOutlineItemId={activeOutlineItemId}
       selectedOutlineItemId={selectedOutlineItemId}
       selectedOutlineCellId={selectedOutlineCellId}
-      packagesSummary={packagesSummary ?? viewModel.packages.summary}
+      packagesSummary={packagesSummary === undefined ? viewModel.packages.summary : packagesSummary}
       packagesPanel={packagesPanel}
       onActivePanelChange={onActivePanelChange}
       onCollapsedChange={onCollapsedChange}

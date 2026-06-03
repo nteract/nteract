@@ -1755,6 +1755,9 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
     runtimeSnapshotBasePath: `${notebookApiBasePath}/runtime-snapshots/`,
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,
+    hostCapabilities: {
+      canManageSharing: true,
+    },
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),

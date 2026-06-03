@@ -189,6 +189,7 @@ test("cloud shell capabilities grant owners full cell, structure, and sharing co
     connectionScope: "owner",
     hasCodeCells: true,
     selectedMode: "edit",
+    hostCapabilities: { canManageSharing: true },
   });
 
   assert.equal(capabilities.canEditMarkdown, true);
@@ -210,6 +211,7 @@ test("cloud shell capabilities reserve sharing for owners", () => {
       authState: authState("dev"),
       connectionScope: "owner",
       hasCodeCells: true,
+      hostCapabilities: { canManageSharing: true },
     }).canManageSharing,
     true,
   );
@@ -219,9 +221,27 @@ test("cloud shell capabilities reserve sharing for owners", () => {
       authState: authState("dev"),
       connectionScope: "editor",
       hasCodeCells: true,
+      hostCapabilities: { canManageSharing: true },
     }).canManageSharing,
     false,
   );
+});
+
+test("cloud shell capabilities require the host room to advertise sharing", () => {
+  const ownerWithoutSharingHost = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+  });
+  assert.equal(ownerWithoutSharingHost.canManageSharing, false);
+
+  const expiredOwnerWithSharingHost = cloudNotebookShellCapabilities({
+    authState: authState("oidc_expired", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    hostCapabilities: { canManageSharing: true },
+  });
+  assert.equal(expiredOwnerWithSharingHost.canManageSharing, false);
 });
 
 test("cloud shell capabilities expose interaction mode for local dev identities", () => {
