@@ -39,7 +39,6 @@
       "@/lib/renderer-registry": ["../../src/lib/renderer-registry"],
       "@/lib/utils": ["../../src/lib/utils"],
       "@/lib/widget-error-fallback": ["../../src/lib/widget-error-fallback"],
-      "@/notebook-components/*": ["../../apps/notebook/src/components/*"],
       "@/*": ["./*"],
       "collections/*": ["./.source/*"]
     },

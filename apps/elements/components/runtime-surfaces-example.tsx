@@ -1,6 +1,5 @@
 "use client";
 
-import { NotebookHostProvider } from "@nteract/notebook-host";
 import {
   AlertTriangle,
   CircleDot,
@@ -12,22 +11,20 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { asyncNoop, asyncTrue, noop } from "@/components/fixture-notebook-host";
 import {
-  asyncNoop,
-  asyncTrue,
-  createFixtureNotebookHost,
-  noop,
-} from "@/components/fixture-notebook-host";
-import { NotebookNotice, NotebookNoticeAction } from "@/components/notebook";
-import { DaemonStatusBanner } from "@/notebook-components/DaemonStatusBanner";
-import { DebugBanner } from "@/notebook-components/DebugBanner";
+  DaemonStatusBanner,
+  DebugBanner,
+  EnvBuildDecisionDialog,
+  KernelLaunchErrorBanner,
+  NotebookNotice,
+  NotebookNoticeAction,
+  PoolErrorBanner,
+  RuntimeDecisionDialog,
+  TrustDialog,
+  UntrustedBanner,
+} from "@/components/notebook";
 import { UvDependencyPanel } from "@/components/environment";
-import { EnvBuildDecisionDialog } from "@/notebook-components/EnvBuildDecisionDialog";
-import { KernelLaunchErrorBanner } from "@/notebook-components/KernelLaunchErrorBanner";
-import { PoolErrorBanner } from "@/notebook-components/PoolErrorBanner";
-import { RuntimeDecisionDialog } from "@/notebook-components/RuntimeDecisionDialog";
-import { TrustDialog } from "@/notebook-components/TrustDialog";
-import { UntrustedBanner } from "@/notebook-components/UntrustedBanner";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
@@ -42,19 +39,19 @@ const runtimePieces = [
   },
   {
     name: "RuntimeDecisionDialog",
-    source: "apps/notebook/src/components/RuntimeDecisionDialog.tsx",
+    source: "src/components/notebook/RuntimeDecisionDialog.tsx",
     role: "Shared dialog shell for trust, environment build, and launch decisions.",
     status: "rendered",
   },
   {
     name: "TrustDialog",
-    source: "apps/notebook/src/components/TrustDialog.tsx",
+    source: "src/components/notebook/TrustDialog.tsx",
     role: "Package trust gate with approved packages, typosquat warnings, and trust actions.",
     status: "rendered",
   },
   {
     name: "EnvBuildDecisionDialog",
-    source: "apps/notebook/src/components/EnvBuildDecisionDialog.tsx",
+    source: "src/components/notebook/EnvBuildDecisionDialog.tsx",
     role: "Missing conda environment remediation with copy and create actions.",
     status: "rendered",
   },
@@ -66,31 +63,31 @@ const runtimePieces = [
   },
   {
     name: "KernelLaunchErrorBanner",
-    source: "apps/notebook/src/components/KernelLaunchErrorBanner.tsx",
+    source: "src/components/notebook/KernelLaunchErrorBanner.tsx",
     role: "Generic launch failure remediation with stderr details, copy, retry, and dismiss actions.",
     status: "rendered",
   },
   {
     name: "DaemonStatusBanner",
-    source: "apps/notebook/src/components/DaemonStatusBanner.tsx",
+    source: "src/components/notebook/DaemonStatusBanner.tsx",
     role: "Daemon progress and failure state surfaced before the notebook runtime is usable.",
     status: "rendered",
   },
   {
     name: "PoolErrorBanner",
-    source: "apps/notebook/src/components/PoolErrorBanner.tsx",
+    source: "src/components/notebook/PoolErrorBanner.tsx",
     role: "Package manager pool warming failures with a host-provided settings action.",
     status: "rendered",
   },
   {
     name: "UntrustedBanner",
-    source: "apps/notebook/src/components/UntrustedBanner.tsx",
+    source: "src/components/notebook/UntrustedBanner.tsx",
     role: "Inline package approval gate that opens TrustDialog before kernel start.",
     status: "rendered",
   },
   {
     name: "DebugBanner",
-    source: "apps/notebook/src/components/DebugBanner.tsx",
+    source: "src/components/notebook/DebugBanner.tsx",
     role: "Development branch, commit, and daemon-version chrome for local notebook builds.",
     status: "rendered",
   },
@@ -99,10 +96,10 @@ const runtimePieces = [
 const runtimeAdapterRows = [
   {
     boundary: "Desktop host actions",
-    previewPath: "NotebookHostProvider fixture",
+    previewPath: "adapter callback props",
     notebookOwner: "notebook shell host commands",
     detail:
-      "Pool settings, clipboard, and command callbacks stay inert in the preview while the notebook routes them through the host bridge.",
+      "Pool settings, clipboard, and command callbacks stay inert in the preview while the notebook routes them through host adapters.",
   },
   {
     boundary: "Runtime side effects",
@@ -119,8 +116,6 @@ const runtimeAdapterRows = [
       "The preview owns deterministic package, typosquat, and pyproject facts; live settings and runtime documents stay outside the docs app.",
   },
 ];
-
-const fixtureHost = createFixtureNotebookHost();
 
 const envBuildDetails = `Environment named "mathnet" was not found.
 
@@ -264,8 +259,8 @@ function RuntimeBanners() {
       <div className="border-b border-fd-border p-4">
         <h2 className="text-sm font-semibold">Runtime Banners</h2>
         <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-          Rendered from notebook app components with inert callbacks and a fixture notebook host
-          where a settings action would otherwise reach the desktop shell.
+          Rendered from shared notebook components with inert callbacks where settings, retry,
+          trust, and build actions would otherwise reach the host shell.
         </p>
       </div>
       <div className="divide-y divide-fd-border">
@@ -325,30 +320,29 @@ function RuntimeBanners() {
           name="PoolErrorBanner"
           description="Pool warming warnings for package manager defaults."
         >
-          <NotebookHostProvider host={fixtureHost}>
-            <PoolErrorBanner
-              uvError={{
-                message: "Failed to warm uv environment",
-                failed_package: "reqeusts",
-                error_kind: "invalid_package",
-                consecutive_failures: 3,
-                retry_in_secs: 60,
-                receivedAt: Date.now(),
-              }}
-              condaError={{
-                message: "Conda solve timed out",
-                failed_package: "scikit-learn",
-                error_kind: "timeout",
-                consecutive_failures: 1,
-                retry_in_secs: 30,
-                receivedAt: Date.now(),
-              }}
-              pixiError={null}
-              onDismissUv={noop}
-              onDismissConda={noop}
-              onDismissPixi={noop}
-            />
-          </NotebookHostProvider>
+          <PoolErrorBanner
+            uvError={{
+              message: "Failed to warm uv environment",
+              failed_package: "reqeusts",
+              error_kind: "invalid_package",
+              consecutive_failures: 3,
+              retry_in_secs: 60,
+              receivedAt: Date.now(),
+            }}
+            condaError={{
+              message: "Conda solve timed out",
+              failed_package: "scikit-learn",
+              error_kind: "timeout",
+              consecutive_failures: 1,
+              retry_in_secs: 30,
+              receivedAt: Date.now(),
+            }}
+            pixiError={null}
+            onDismissUv={noop}
+            onDismissConda={noop}
+            onDismissPixi={noop}
+            onOpenSettings={noop}
+          />
         </BannerFixture>
 
         <BannerFixture

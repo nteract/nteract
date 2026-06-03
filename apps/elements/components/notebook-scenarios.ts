@@ -11,18 +11,16 @@ import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
   type NotebookActorProjection,
+  type EnvSyncState,
   type NotebookNoticeTone,
   type NotebookShellCapabilities,
   type NotebookViewCell,
   type NotebookViewModel,
+  type PyProjectDeps,
+  type PyProjectInfo,
+  type TrustInfo,
+  type TyposquatWarning,
 } from "@/components/notebook";
-import type {
-  EnvSyncState,
-  PyProjectDeps,
-  PyProjectInfo,
-  TrustInfo,
-  TyposquatWarning,
-} from "@/notebook-components/runtime-surface-types";
 import { WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 export type ElementsNotebookScenarioId =
@@ -1766,12 +1764,14 @@ function actorProjection({
   };
 }
 
-function packageSyncLabel(status: ElementsNotebookPackageState["syncState"]["status"]) {
+function packageSyncLabel(status: ElementsNotebookPackageState["syncState"]["status"]): string {
   switch (status) {
     case "dirty":
       return "Package metadata has pending changes";
     case "not_running":
       return "Runtime is not running";
+    case "not_conda_managed":
+      return "Package metadata is outside conda";
     case "not_uv_managed":
       return "Package metadata is outside uv";
     case "synced":
@@ -1782,7 +1782,7 @@ function packageSyncLabel(status: ElementsNotebookPackageState["syncState"]["sta
 function notebookPackageSyncStatus(
   status: ElementsNotebookPackageState["syncState"]["status"],
 ): NotebookPackageSyncStatus {
-  return status;
+  return status === "not_conda_managed" ? "unavailable" : status;
 }
 
 function trustStatusLabel(status: ElementsNotebookTrustState["trustInfo"]["status"]) {
