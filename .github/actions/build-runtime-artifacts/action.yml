@@ -49,6 +49,12 @@ runs:
       shell: bash
       run: pnpm install --frozen-lockfile
 
+    - name: Pin Rust tool paths
+      shell: bash
+      run: |
+        echo "CARGO=$(rustup which cargo)" >> "$GITHUB_ENV"
+        echo "RUSTC=$(rustup which rustc)" >> "$GITHUB_ENV"
+
     - name: Install wasm-pack
       if: inputs.skip-wasm != 'true'
       uses: ./.github/actions/install-wasm-pack
