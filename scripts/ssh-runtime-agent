@@ -81,7 +81,7 @@ done
 
 ssh_host=${RUNTIMED_SSH_RUNTIME_HOST:-lab2}
 remote_runtimed=${RUNTIMED_SSH_RUNTIME_COMMAND:-/usr/local/bin/runtimed-nightly}
-remote_tmp=${RUNTIMED_SSH_RUNTIME_REMOTE_TMP:-/tmp/runt-ssh-runtime-agent-${USER:-user}}
+remote_tmp_parent=${RUNTIMED_SSH_RUNTIME_REMOTE_TMP:-/tmp}
 ssh_bin=${RUNTIMED_SSH_BIN:-ssh}
 requested_remote_port=${RUNTIMED_SSH_RUNTIME_REMOTE_PORT:-}
 proxy_token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
@@ -99,10 +99,7 @@ cleanup_local_proxy() {
 trap cleanup_local_proxy EXIT INT TERM
 
 safe_agent_id=$(printf '%s' "$runtime_agent_id" | tr -c 'A-Za-z0-9_-' '_')
-remote_socket="$remote_tmp/runt-ra-${safe_agent_id}.sock"
-remote_blob_root="$remote_tmp/runt-ra-blobs-${safe_agent_id}"
-
-remote_socket_dir=$(dirname "$remote_socket")
+remote_session_template="$remote_tmp_parent/runt-ssh-runtime-agent-${safe_agent_id}.XXXXXX"
 local_proxy_code='
 import os
 import selectors
@@ -227,73 +224,6 @@ while True:
     thread.start()
 '
 
-port_probe_code='
-import socket
-import sys
-
-port = int(sys.argv[1])
-sock = socket.socket(socket.AF_INET)
-sock.bind(("127.0.0.1", port))
-sock.close()
-'
-
-remote_port=$requested_remote_port
-if [[ -z "$remote_port" ]]; then
-  for _ in 1 2 3 4 5; do
-    candidate_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(20000))')
-    if "$ssh_bin" \
-      -o BatchMode=yes \
-      "$ssh_host" \
-      "python3 -c $(shell_quote "$port_probe_code") $(shell_quote "$candidate_port")" \
-      >/dev/null 2>&1; then
-      remote_port=$candidate_port
-      break
-    fi
-  done
-fi
-
-[[ -n "$remote_port" ]] || die "could not find an available remote forwarding port"
-
-remote_command="
-set -e
-IFS= read -r proxy_token
-mkdir -p $(shell_quote "$remote_socket_dir") $(shell_quote "$remote_blob_root")
-chmod 700 $(shell_quote "$remote_socket_dir")
-RUNTIMED_SSH_PROXY_TOKEN=\"\$proxy_token\" python3 -u -c $(shell_quote "$bridge_code") $(shell_quote "$remote_socket") $(shell_quote "$remote_port") &
-bridge_pid=\$!
-cleanup() {
-  kill \"\$bridge_pid\" 2>/dev/null || true
-  wait \"\$bridge_pid\" 2>/dev/null || true
-  rm -f $(shell_quote "$remote_socket")
-  rm -rf $(shell_quote "$remote_blob_root")
-}
-trap cleanup EXIT INT TERM
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ -S $(shell_quote "$remote_socket") ] && break
-  sleep 0.1
-done
-[ -S $(shell_quote "$remote_socket") ]
-$(shell_quote "$remote_runtimed") runtime-agent --notebook-id $(shell_quote "$notebook_id") --runtime-agent-id $(shell_quote "$runtime_agent_id") --blob-root $(shell_quote "$remote_blob_root") --socket $(shell_quote "$remote_socket")
-"
-
-if [[ "${RUNTIMED_SSH_RUNTIME_VERBOSE:-0}" == "1" ]]; then
-  {
-    echo "ssh-runtime-agent: host=$ssh_host"
-    echo "ssh-runtime-agent: remote_runtimed=$remote_runtimed"
-    echo "ssh-runtime-agent: remote_port=$remote_port"
-    echo "ssh-runtime-agent: local_socket=$local_socket"
-    echo "ssh-runtime-agent: local_proxy_socket=$local_proxy_socket"
-    echo "ssh-runtime-agent: remote_socket=$remote_socket"
-    echo "ssh-runtime-agent: local_blob_root=$local_blob_root"
-    echo "ssh-runtime-agent: remote_blob_root=$remote_blob_root"
-  } >&2
-fi
-
-"$ssh_bin" \
-  -o BatchMode=yes \
-  "$ssh_host" \
-  "mkdir -p $(shell_quote "$remote_socket_dir"); chmod 700 $(shell_quote "$remote_socket_dir")"
-
 RUNTIMED_SSH_PROXY_TOKEN=$proxy_token \
   python3 -u -c "$local_proxy_code" "$local_proxy_socket" "$local_socket" &
 local_proxy_pid=$!
@@ -304,10 +234,73 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 [[ -S "$local_proxy_socket" ]] || die "local proxy socket did not start: $local_proxy_socket"
 
-"$ssh_bin" \
-  -o BatchMode=yes \
-  -o ExitOnForwardFailure=yes \
-  -R "127.0.0.1:$remote_port:$local_proxy_socket" \
-  "$ssh_host" \
-  "$remote_command" \
-  <<<"$proxy_token"
+select_remote_port() {
+  if [[ -n "$requested_remote_port" ]]; then
+    remote_port=$requested_remote_port
+  else
+    remote_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(20000))')
+  fi
+}
+
+run_remote_agent() {
+  select_remote_port
+
+  local remote_command="
+set -e
+IFS= read -r proxy_token
+remote_session_dir=\$(mktemp -d $(shell_quote "$remote_session_template"))
+chmod 700 \"\$remote_session_dir\"
+remote_socket=\"\$remote_session_dir/runt-ra.sock\"
+remote_blob_root=\"\$remote_session_dir/blobs\"
+mkdir -p \"\$remote_blob_root\"
+RUNTIMED_SSH_PROXY_TOKEN=\"\$proxy_token\" python3 -u -c $(shell_quote "$bridge_code") \"\$remote_socket\" $(shell_quote "$remote_port") &
+bridge_pid=\$!
+cleanup() {
+  kill \"\$bridge_pid\" 2>/dev/null || true
+  wait \"\$bridge_pid\" 2>/dev/null || true
+  rm -rf \"\$remote_session_dir\"
+}
+trap cleanup EXIT INT TERM
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -S \"\$remote_socket\" ] && break
+  sleep 0.1
+done
+[ -S \"\$remote_socket\" ]
+$(shell_quote "$remote_runtimed") runtime-agent --notebook-id $(shell_quote "$notebook_id") --runtime-agent-id $(shell_quote "$runtime_agent_id") --blob-root \"\$remote_blob_root\" --socket \"\$remote_socket\"
+"
+
+  if [[ "${RUNTIMED_SSH_RUNTIME_VERBOSE:-0}" == "1" ]]; then
+    {
+      echo "ssh-runtime-agent: host=$ssh_host"
+      echo "ssh-runtime-agent: remote_runtimed=$remote_runtimed"
+      echo "ssh-runtime-agent: remote_port=$remote_port"
+      echo "ssh-runtime-agent: remote_session_template=$remote_session_template"
+      echo "ssh-runtime-agent: local_socket=$local_socket"
+      echo "ssh-runtime-agent: local_proxy_socket=$local_proxy_socket"
+      echo "ssh-runtime-agent: local_blob_root=$local_blob_root"
+    } >&2
+  fi
+
+  "$ssh_bin" \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -R "127.0.0.1:$remote_port:$local_proxy_socket" \
+    "$ssh_host" \
+    "$remote_command" \
+    <<<"$proxy_token"
+}
+
+attempts=1
+if [[ -z "$requested_remote_port" ]]; then
+  attempts=3
+fi
+
+ssh_status=255
+for _ in $(seq 1 "$attempts"); do
+  run_remote_agent
+  ssh_status=$?
+  if [[ "$ssh_status" -ne 255 || -n "$requested_remote_port" ]]; then
+    exit "$ssh_status"
+  fi
+done
+exit "$ssh_status"
