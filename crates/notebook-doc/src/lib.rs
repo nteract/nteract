@@ -2450,6 +2450,14 @@ impl NotebookDoc {
                 // genesis: an inserting `Put` (empty `pred`) to ROOT's
                 // `notebook_id` / `runtime_state_doc_id`. A delete or an overwrite
                 // of those keys is post-creation history and must fail the gate.
+                //
+                // INVARIANT: this allowlist must stay limited to scalar identity
+                // pointers and must never grow to include `cells`, `metadata`, or
+                // any structural ROOT key. Those Maps are admitted only via the
+                // exact-hash genesis change (the `seed.contains` skip above), so a
+                // foreign actor that authors its own `cells`/`metadata` skeleton
+                // reads non-pristine. Allowlisting a structural key would let such a
+                // foreign skeleton read pristine and be wrongly re-seeded.
                 let is_creation_scaffold_put = matches!(op.action, LegacyOpType::Put(_))
                     && op.pred.is_empty()
                     && matches!(op.obj, LegacyObjectId::Root)
