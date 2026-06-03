@@ -146,7 +146,7 @@ describe("HTML script serialization", () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("Cache-Control"), "no-store");
-    assert.match(html, /nteract cloud notebooks/);
+    assert.match(html, /<title>nteract<\/title>/);
     assert.match(html, /id="nteract-cloud-auth-config"/);
     assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-viewer\.js"/);
@@ -164,7 +164,7 @@ describe("HTML script serialization", () => {
     const html = await response.text();
 
     assert.equal(response.status, 200);
-    assert.match(html, /nteract cloud notebooks/);
+    assert.match(html, /<title>nteract<\/title>/);
     assert.doesNotMatch(html, /In the Loop - Collaborative Notebooks/);
   });
 

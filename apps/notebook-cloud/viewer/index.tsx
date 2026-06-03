@@ -454,23 +454,23 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   };
 
   const signedIn = authState.mode === "oidc";
-  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Notebook cloud";
+  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Open a notebook";
   const homeStatusDescription = signedIn
-    ? "Open the preview notebook or sign out of this browser session."
-    : "Sign in to open private previews or request edit access.";
+    ? "Open a notebook or sign out of this browser session."
+    : "Sign in to open private notebooks or request edit access.";
 
   return (
     <main className="cloud-home">
-      <section className="cloud-home-layout" aria-label="Notebook cloud entry">
+      <section className="cloud-home-layout" aria-label="nteract notebook entry">
         <div className="cloud-home-copy">
           <h1>nteract</h1>
-          <span>preview realtime notebooks</span>
+          <span>realtime notebooks</span>
         </div>
 
         <section
           className="cloud-home-panel"
           data-mode={authState.mode}
-          aria-label="Notebook cloud sign-in"
+          aria-label="Notebook sign-in"
         >
           <div className="cloud-home-status" data-mode={authState.mode}>
             {signedIn ? <UserRound aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
@@ -609,7 +609,7 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
 
   return (
     <main className="cloud-home">
-      <section className="cloud-home-layout" aria-label="Notebook cloud sign-in callback">
+      <section className="cloud-home-layout" aria-label="nteract sign-in callback">
         <div className="cloud-home-copy">
           <h1>nteract</h1>
           <span>returning to the notebook</span>
@@ -630,7 +630,7 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
 
           {status.kind === "error" || status.kind === "empty" ? (
             <div className="cloud-home-actions">
-              <a href="/">Back to cloud notebooks</a>
+              <a href="/">Back to nteract</a>
             </div>
           ) : null}
         </section>

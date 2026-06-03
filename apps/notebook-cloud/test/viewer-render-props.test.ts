@@ -77,11 +77,13 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
     cssText.indexOf(".cloud-home-status"),
   );
 
-  assert.match(homeSource, /homeStatusTitle[\s\S]*"Notebook cloud"/);
+  assert.match(homeSource, /homeStatusTitle[\s\S]*"Open a notebook"/);
   assert.match(homeSource, /className="cloud-home-layout"/);
+  assert.match(homeSource, /aria-label="nteract notebook entry"/);
+  assert.match(homeSource, /aria-label="Notebook sign-in"/);
   assert.match(homeSource, /className="cloud-home-copy"/);
   assert.match(homeSource, /<h1>nteract<\/h1>/);
-  assert.match(homeSource, /preview realtime notebooks/);
+  assert.match(homeSource, /realtime notebooks/);
   assert.match(homeSource, /Open topic viz/);
   assert.doesNotMatch(homeSource, /showPrototypeDevControls/);
   assert.doesNotMatch(homeSource, /className="cloud-home-scope"/);
@@ -106,8 +108,10 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
 
   assert.match(callbackSource, /className="cloud-home"/);
   assert.match(callbackSource, /className="cloud-home-layout"/);
+  assert.match(callbackSource, /aria-label="nteract sign-in callback"/);
   assert.match(callbackSource, /className="cloud-home-panel"/);
   assert.match(callbackSource, /returning to the notebook/);
+  assert.match(callbackSource, /Back to nteract/);
   assert.match(callbackSource, /data-mode=\{status\.kind\}/);
   assert.match(cssText, /\.cloud-home-status-spinner/);
   assert.doesNotMatch(callbackSource, /cloud-report-toolbar/);
