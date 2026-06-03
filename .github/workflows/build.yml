@@ -1280,3 +1280,116 @@ jobs:
       - name: Run nteract smoke tests
         working-directory: python/nteract
         run: uv run --no-sync pytest -v
+
+  long-tail-ci-health:
+    name: Long-tail CI Health Summary
+    needs:
+      - changes
+      - lint
+      - nsis-bootstrap
+      - windows-clippy
+      - wasm-deno
+      - build-ui
+      - js-tests
+      - browser-e2e
+      - build-linux
+      - linux-rust-clippy
+      - linux-rust-tests
+      - linux-runtimed-node
+      - clippy-and-tests
+      - build
+      - e2e
+      - runtimed-py-integration
+      - python-unit-tests
+    if: always() && github.event_name != 'pull_request' && needs.changes.outputs.source_changed == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Generate health summary
+        run: |
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          attention=0
+
+          track_result() {
+            local result="$1"
+            if [ "$result" != "success" ]; then
+              attention=$((attention + 1))
+            fi
+          }
+
+          track_result "${{ needs.lint.result }}"
+          track_result "${{ needs.js-tests.result }}"
+          track_result "${{ needs.build-ui.result }}"
+          track_result "${{ needs.browser-e2e.result }}"
+          track_result "${{ needs.linux-rust-clippy.result }}"
+          track_result "${{ needs.linux-rust-tests.result }}"
+          track_result "${{ needs.linux-runtimed-node.result }}"
+          track_result "${{ needs.python-unit-tests.result }}"
+          track_result "${{ needs.wasm-deno.result }}"
+          track_result "${{ needs.windows-clippy.result }}"
+          track_result "${{ needs.nsis-bootstrap.result }}"
+          track_result "${{ needs.build-linux.result }}"
+          track_result "${{ needs.e2e.result }}"
+          track_result "${{ needs.runtimed-py-integration.result }}"
+          track_result "${{ needs.build.result }}"
+          track_result "${{ needs.clippy-and-tests.result }}"
+
+          if [ "$attention" -eq 0 ]; then
+            health="green"
+            headline="All reported long-tail lanes passed."
+          else
+            health="attention required"
+            headline="${attention} reported lane(s) need attention."
+          fi
+
+          {
+            echo "# Long-tail CI health"
+            echo
+            echo "- Health: ${health}"
+            echo "- Summary: ${headline}"
+            echo "- Run: [${GITHUB_RUN_ID}](${run_url})"
+            echo "- Ref: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Event: \`${GITHUB_EVENT_NAME}\`"
+            echo
+            echo "A result other than \`success\` needs triage. On non-PR runs, \`skipped\` usually means a dependency lane did not complete successfully."
+            echo
+            echo "## Fast required gates"
+            echo
+            echo "| Lane | Result | Runner class | Signal | Failure triage |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| Lint & Format | ${{ needs.lint.result }} | GitHub-hosted | formatting, lint, workflow syntax | repo hygiene / workflow syntax |"
+            echo "| JS Tests & Benchmarks | ${{ needs.js-tests.result }} | GitHub-hosted | frontend unit tests and JS benchmark smoke | frontend correctness / perf smoke |"
+            echo
+            echo "## Advisory PR lanes also running on main"
+            echo
+            echo "| Lane | Result | Runner class | Signal | Failure triage |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| Build shared UI artifacts | ${{ needs.build-ui.result }} | GitHub-hosted | notebook and Elements production builds | frontend build / type-check / generated assets |"
+            echo "| Browser E2E (Playwright) | ${{ needs.browser-e2e.result }} | GitHub-hosted | browser notebook runtime and renderer smoke | browser runtime / renderer behavior |"
+            echo "| Linux Rust Clippy | ${{ needs.linux-rust-clippy.result }} | GitHub-hosted | Rust clippy shard and dependency budget | Rust compile/lint / dependency drift |"
+            echo "| Linux Rust Tests | ${{ needs.linux-rust-tests.result }} | GitHub-hosted | Rust workspace test shard | Rust behavior / test flake |"
+            echo "| Linux runtimed-node | ${{ needs.linux-runtimed-node.result }} | GitHub-hosted | N-API package build and package smoke | Node native package / Arrow IPC integration |"
+            echo "| Python Unit Tests | ${{ needs.python-unit-tests.result }} | GitHub-hosted | Python package unit tests without live daemon | Python package behavior |"
+            echo "| WASM + Deno Tests | ${{ needs.wasm-deno.result }} | GitHub-hosted | runtimed-wasm, sift-wasm, renderer-plugin coherence | WASM binding / renderer artifact drift |"
+            echo "| Windows (clippy) | ${{ needs.windows-clippy.result }} | GitHub-hosted | Windows cross-target clippy | Windows compile/lint drift |"
+            echo "| NSIS Bootstrap Syntax | ${{ needs.nsis-bootstrap.result }} | GitHub-hosted | NSIS bootstrap fixture compile | Windows installer script syntax |"
+            echo
+            echo "## Post-merge long-tail lanes"
+            echo
+            echo "| Lane | Result | Runner class | Signal | Failure triage |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| Linux release artifacts | ${{ needs.build-linux.result }} | Anaconda self-hosted | release-like Linux binaries and Tauri E2E app | native build / self-hosted runner / release readiness |"
+            echo "| Native E2E | ${{ needs.e2e.result }} | Anaconda self-hosted | Tauri WebDriver smoke and env pool startup | native shell / daemon pool / runner infra |"
+            echo "| runtimed-py Integration Tests | ${{ needs.runtimed-py-integration.result }} | Anaconda self-hosted | daemon-backed Python bindings and dx integration | Python packaging / maturin / env-heavy daemon behavior |"
+            echo "| macOS and Windows release matrix | ${{ needs.build.result }} | GitHub-hosted | platform release build, clippy, and tests | platform compile/test drift; inspect matrix legs because Windows is non-blocking |"
+            echo "| Clippy & Tests (Linux) aggregate | ${{ needs.clippy-and-tests.result }} | GitHub-hosted | Linux Rust shard aggregator | summary check for Rust shard failures |"
+          } > long-tail-ci-summary.md
+
+          cat long-tail-ci-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload health summary
+        uses: actions/upload-artifact@v7
+        with:
+          name: long-tail-ci-health-summary
+          path: long-tail-ci-summary.md
+          retention-days: 30
