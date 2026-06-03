@@ -49,7 +49,6 @@ import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
 const EMPTY_HEADING_ANCHORS: readonly MarkdownHeadingAnchor[] = [];
-const DOCUMENT_FRAME_INTERACTION_RELEASE_DELAY_MS = 700;
 const MARKDOWN_PREVIEW_MIN_HEIGHT = 24;
 const MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT = 720;
 
@@ -210,7 +209,6 @@ export const MarkdownCell = memo(function MarkdownCell({
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
-  const previewFrameReleaseTimeoutRef = useRef<number | null>(null);
   const previewMinHeight = useMemo(() => estimateMarkdownPreviewHeight(cell.source), [cell.source]);
 
   // Register EditorView with the cursor registry when in edit mode.
@@ -287,37 +285,18 @@ export const MarkdownCell = memo(function MarkdownCell({
     setEditing(true);
   }, [readOnly]);
 
-  const clearPreviewFrameReleaseTimeout = useCallback(() => {
-    if (previewFrameReleaseTimeoutRef.current == null) return;
-    window.clearTimeout(previewFrameReleaseTimeoutRef.current);
-    previewFrameReleaseTimeoutRef.current = null;
+  const releasePreviewFrameInteraction = useCallback(() => {
+    setPreviewFrameInteractionActive(false);
   }, []);
 
-  useEffect(() => clearPreviewFrameReleaseTimeout, [clearPreviewFrameReleaseTimeout]);
-
-  const releasePreviewFrameInteraction = useCallback(() => {
-    clearPreviewFrameReleaseTimeout();
-    setPreviewFrameInteractionActive(false);
-  }, [clearPreviewFrameReleaseTimeout]);
-
-  const schedulePreviewFrameInteractionRelease = useCallback(() => {
-    clearPreviewFrameReleaseTimeout();
-    previewFrameReleaseTimeoutRef.current = window.setTimeout(() => {
-      previewFrameReleaseTimeoutRef.current = null;
-      setPreviewFrameInteractionActive(false);
-    }, DOCUMENT_FRAME_INTERACTION_RELEASE_DELAY_MS);
-  }, [clearPreviewFrameReleaseTimeout]);
-
   const activatePreviewFrameInteraction = useCallback(() => {
-    clearPreviewFrameReleaseTimeout();
     setPreviewFrameInteractionActive(true);
     onFocus();
-  }, [clearPreviewFrameReleaseTimeout, onFocus]);
+  }, [onFocus]);
 
   const handlePreviewWrapperPointerDown = useCallback(() => {
     activatePreviewFrameInteraction();
-    schedulePreviewFrameInteractionRelease();
-  }, [activatePreviewFrameInteraction, schedulePreviewFrameInteractionRelease]);
+  }, [activatePreviewFrameInteraction]);
 
   const handlePreviewFrameMouseUp = useCallback(
     ({ hasSelection }: { hasSelection?: boolean }) => {
