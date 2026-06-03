@@ -20,7 +20,7 @@ import {
   type RuntimeStatusKey,
 } from "../lib/kernel-status";
 import type { KernelspecInfo } from "../types";
-import { extractCondaEnvCreateCommand } from "./EnvBuildDecisionDialog";
+import { extractCondaEnvCreateCommand } from "@/components/notebook";
 
 /** Badge color variant for environment sources */
 type EnvBadgeVariant = NotebookEnvironmentManager;

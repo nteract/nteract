@@ -6,7 +6,7 @@ import { type MouseEvent, useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
+import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
 import { isOnboardingPoolReady, type OnboardingPoolState, type PythonEnv } from "./pool-readiness";
 import type { DaemonStatus } from "./types";
 

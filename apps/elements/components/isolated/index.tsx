@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -84,6 +85,7 @@ export interface IsolatedFrameProps {
   onResize?: (height: number) => void;
   onLinkClick?: (url: string, newTab: boolean) => void;
   onMouseDown?: () => void;
+  onMouseUp?: (params: { hasSelection?: boolean }) => void;
   onDoubleClick?: () => void;
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
   onError?: (error: { message: string; stack?: string }) => void;
@@ -182,6 +184,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       onReady,
       onResize,
       onMouseDown,
+      onMouseUp,
       onDoubleClick,
     },
     ref,
@@ -236,6 +239,11 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       }),
       [autoHeight, maxHeight, minHeight],
     );
+    const handleMouseUp = useCallback(() => {
+      const selection = window.getSelection();
+      const hasSelection = !!selection && !selection.isCollapsed && selection.toString().length > 0;
+      onMouseUp?.({ hasSelection });
+    }, [onMouseUp]);
 
     return (
       <div
@@ -247,6 +255,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         className={className}
         style={frameStyle}
         onMouseDown={onMouseDown}
+        onMouseUp={handleMouseUp}
         onDoubleClick={onDoubleClick}
       >
         {outputs.map((payload) => (

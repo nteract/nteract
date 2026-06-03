@@ -1,9 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { CondaDependencyHeader } from "../CondaDependencyHeader";
-import { DenoDependencyHeader } from "../DenoDependencyHeader";
-import { DependencyHeader } from "../DependencyHeader";
-import { PackageSpecList, parsePackageSpec } from "../PackageSpecList";
+import {
+  CondaDependencyPanel as CondaDependencyHeader,
+  DenoDependencyPanel as DenoDependencyHeader,
+  PackageSpecList,
+  parsePackageSpec,
+  UvDependencyPanel as DependencyHeader,
+} from "@/components/environment";
 import { PixiDependencyHeader } from "../PixiDependencyHeader";
 
 describe("PackageSpecList", () => {

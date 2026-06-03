@@ -20,13 +20,13 @@ Related docs:
 
 Prototype and shared component surfaces:
 
-- `src/components/notebook-shell/capabilities.ts`
-- `src/components/notebook-shell/NotebookIdentity.tsx`
-- `src/components/notebook-shell/NotebookCommandToolbar.tsx`
-- `src/components/notebook-shell/NotebookToolbarFrame.tsx`
-- `src/components/notebook-shell/NotebookToolbarIdentity.tsx`
-- `src/components/notebook-shell/NotebookEnvironmentSummary.tsx`
-- `src/components/notebook-shell/interaction-mode.ts`
+- `src/components/notebook/capabilities.ts`
+- `src/components/notebook/NotebookIdentity.tsx`
+- `src/components/notebook/NotebookCommandToolbar.tsx`
+- `src/components/notebook/NotebookToolbarFrame.tsx`
+- `src/components/notebook/NotebookToolbarIdentity.tsx`
+- `src/components/notebook/NotebookEnvironmentSummary.tsx`
+- `src/components/notebook/interaction-mode.ts`
 - `apps/elements/components/notebook-scenarios.ts`
 
 ## Problem
