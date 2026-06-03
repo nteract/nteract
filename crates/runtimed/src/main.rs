@@ -14,6 +14,8 @@ use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::service::ServiceManager;
 use tracing::info;
 
+const RUNTIME_AGENT_EXE_ENV: &str = "RUNTIMED_RUNTIME_AGENT_EXE";
+
 #[derive(Parser, Debug)]
 #[command(name = "runtimed")]
 #[command(version = concat!(env!("CARGO_PKG_VERSION"), "+", include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))))]
@@ -87,6 +89,10 @@ enum Commands {
         /// Override canonical settings JSON path.
         #[arg(long, hide = true)]
         settings_json: Option<PathBuf>,
+
+        /// Override runtime-agent executable path.
+        #[arg(long, hide = true)]
+        runtime_agent_exe: Option<PathBuf>,
     },
 
     /// Install daemon as a system service
@@ -369,6 +375,7 @@ async fn main() -> anyhow::Result<()> {
                 conda_pool_size,
                 pixi_pool_size,
                 settings_json,
+                runtime_agent_exe,
             ) = match cli.command {
                 Some(Commands::Run {
                     socket,
@@ -378,6 +385,7 @@ async fn main() -> anyhow::Result<()> {
                     conda_pool_size,
                     pixi_pool_size,
                     settings_json,
+                    runtime_agent_exe,
                 }) => (
                     socket,
                     cache_dir,
@@ -386,6 +394,7 @@ async fn main() -> anyhow::Result<()> {
                     conda_pool_size,
                     pixi_pool_size,
                     settings_json,
+                    runtime_agent_exe,
                 ),
                 _ => (
                     None,
@@ -394,6 +403,7 @@ async fn main() -> anyhow::Result<()> {
                     runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
                     runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
                     runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
+                    None,
                     None,
                 ),
             };
@@ -407,6 +417,7 @@ async fn main() -> anyhow::Result<()> {
                 conda_pool_size,
                 pixi_pool_size,
                 settings_json_path: settings_json,
+                runtime_agent_exe: resolve_runtime_agent_exe(runtime_agent_exe),
                 ..Default::default()
             };
 
@@ -563,6 +574,10 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+fn resolve_runtime_agent_exe(cli_value: Option<PathBuf>) -> Option<PathBuf> {
+    cli_value.or_else(|| std::env::var_os(RUNTIME_AGENT_EXE_ENV).map(PathBuf::from))
+}
+
 async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     info!("runtimed starting...");
 
@@ -574,6 +589,9 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     info!("  UV pool size: {}", config.uv_pool_size);
     info!("  Conda pool size: {}", config.conda_pool_size);
     info!("  Pixi pool size: {}", config.pixi_pool_size);
+    if let Some(runtime_agent_exe) = &config.runtime_agent_exe {
+        info!("  Runtime agent exe: {:?}", runtime_agent_exe);
+    }
     let daemon = match Daemon::new(config) {
         Ok(d) => d,
         Err(e) => {
@@ -624,6 +642,32 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         Err(e) => early_log(&format!("Daemon exited: Err: {}", e)),
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_command_parses_runtime_agent_exe_override() {
+        let cli = Cli::try_parse_from([
+            "runtimed",
+            "run",
+            "--runtime-agent-exe",
+            "/tmp/ssh-runtime-agent",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Commands::Run {
+                runtime_agent_exe, ..
+            }) => assert_eq!(
+                runtime_agent_exe,
+                Some(PathBuf::from("/tmp/ssh-runtime-agent"))
+            ),
+            other => panic!("expected run command, got {other:?}"),
+        }
+    }
 }
 
 fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {

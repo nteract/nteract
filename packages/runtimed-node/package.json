@@ -56,7 +56,8 @@
     "prepack": "node -e \"const fs = require('node:fs'); const files = fs.readdirSync('src'); if (!files.includes('binding.cjs') || !files.includes('binding.d.ts')) { console.error('Run pnpm --dir packages/runtimed-node build before packing @runtimed/node.'); process.exit(1); }\"",
     "pack:dry-run": "pnpm pack --dry-run",
     "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\"",
-    "smoke:api": "node scripts/smoke-api.cjs"
+    "smoke:api": "node scripts/smoke-api.cjs",
+    "smoke:ssh-runtime-agent": "node ../../scripts/smoke-ssh-runtime-agent.mjs"
   },
   "dependencies": {
     "rxjs": "^7.8.2"

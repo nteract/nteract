@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  ssh-runtime-agent runtime-agent --notebook-id ID --runtime-agent-id ID --blob-root PATH --socket PATH
+
+This wrapper is spawned by the local runtimed daemon as its runtime-agent
+executable. It reverse-forwards the local daemon Unix socket over SSH, then
+execs the remote runtimed runtime-agent binary against the forwarded socket.
+
+Environment:
+  RUNTIMED_SSH_RUNTIME_HOST          SSH host, default: lab2
+  RUNTIMED_SSH_RUNTIME_COMMAND       Remote runtimed binary, default: /usr/local/bin/runtimed-nightly
+  RUNTIMED_SSH_RUNTIME_REMOTE_TMP    Remote temp directory, default: /tmp/runt-ssh-runtime-agent-$USER
+  RUNTIMED_SSH_RUNTIME_REMOTE_PORT   Remote loopback TCP port for SSH -R, default: random 30000-49999
+  RUNTIMED_SSH_BIN                   SSH binary, default: ssh
+  RUNTIMED_SSH_RUNTIME_VERBOSE       Set to 1 for wrapper diagnostics
+EOF
+}
+
+die() {
+  echo "ssh-runtime-agent: $*" >&2
+  exit 64
+}
+
+shell_quote() {
+  local value=${1//\'/\'\\\'\'}
+  printf "'%s'" "$value"
+}
+
+if [[ "${1:-}" != "runtime-agent" ]]; then
+  usage
+  die "expected first argument to be runtime-agent"
+fi
+shift
+
+notebook_id=
+runtime_agent_id=
+local_blob_root=
+local_socket=
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --notebook-id)
+      [[ $# -ge 2 ]] || die "--notebook-id requires a value"
+      notebook_id=$2
+      shift 2
+      ;;
+    --runtime-agent-id)
+      [[ $# -ge 2 ]] || die "--runtime-agent-id requires a value"
+      runtime_agent_id=$2
+      shift 2
+      ;;
+    --blob-root)
+      [[ $# -ge 2 ]] || die "--blob-root requires a value"
+      local_blob_root=$2
+      shift 2
+      ;;
+    --socket)
+      [[ $# -ge 2 ]] || die "--socket requires a value"
+      local_socket=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$notebook_id" ]] || die "missing --notebook-id"
+[[ -n "$runtime_agent_id" ]] || die "missing --runtime-agent-id"
+[[ -n "$local_blob_root" ]] || die "missing --blob-root"
+[[ -n "$local_socket" ]] || die "missing --socket"
+[[ -S "$local_socket" ]] || die "local daemon socket does not exist: $local_socket"
+
+ssh_host=${RUNTIMED_SSH_RUNTIME_HOST:-lab2}
+remote_runtimed=${RUNTIMED_SSH_RUNTIME_COMMAND:-/usr/local/bin/runtimed-nightly}
+remote_tmp=${RUNTIMED_SSH_RUNTIME_REMOTE_TMP:-/tmp/runt-ssh-runtime-agent-${USER:-user}}
+ssh_bin=${RUNTIMED_SSH_BIN:-ssh}
+remote_port=${RUNTIMED_SSH_RUNTIME_REMOTE_PORT:-$((30000 + (RANDOM % 20000)))}
+
+safe_agent_id=$(printf '%s' "$runtime_agent_id" | tr -c 'A-Za-z0-9_.-' '_')
+remote_socket="$remote_tmp/runt-ra-${safe_agent_id}.sock"
+remote_blob_root="$remote_tmp/runt-ra-blobs-${safe_agent_id}"
+
+remote_socket_dir=$(dirname "$remote_socket")
+bridge_code='
+import os
+import selectors
+import socket
+import sys
+
+unix_path = sys.argv[1]
+tcp_port = int(sys.argv[2])
+
+try:
+    os.unlink(unix_path)
+except FileNotFoundError:
+    pass
+
+server = socket.socket(socket.AF_UNIX)
+server.bind(unix_path)
+os.chmod(unix_path, 0o600)
+server.listen(8)
+
+def pipe(left, right):
+    selector = selectors.DefaultSelector()
+    left.setblocking(False)
+    right.setblocking(False)
+    selector.register(left, selectors.EVENT_READ, right)
+    selector.register(right, selectors.EVENT_READ, left)
+    while True:
+        for key, _ in selector.select():
+            source = key.fileobj
+            target = key.data
+            try:
+                data = source.recv(65536)
+            except BlockingIOError:
+                continue
+            if not data:
+                return
+            try:
+                target.sendall(data)
+            except BrokenPipeError:
+                return
+
+while True:
+    client, _ = server.accept()
+    upstream = socket.create_connection(("127.0.0.1", tcp_port))
+    try:
+        pipe(client, upstream)
+    finally:
+        client.close()
+        upstream.close()
+'
+
+remote_command="
+set -e
+mkdir -p $(shell_quote "$remote_socket_dir") $(shell_quote "$remote_blob_root")
+chmod 700 $(shell_quote "$remote_socket_dir")
+python3 -u -c $(shell_quote "$bridge_code") $(shell_quote "$remote_socket") $(shell_quote "$remote_port") &
+bridge_pid=\$!
+cleanup() {
+  kill \"\$bridge_pid\" 2>/dev/null || true
+  wait \"\$bridge_pid\" 2>/dev/null || true
+  rm -f $(shell_quote "$remote_socket")
+}
+trap cleanup EXIT INT TERM
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -S $(shell_quote "$remote_socket") ] && break
+  sleep 0.1
+done
+[ -S $(shell_quote "$remote_socket") ]
+$(shell_quote "$remote_runtimed") runtime-agent --notebook-id $(shell_quote "$notebook_id") --runtime-agent-id $(shell_quote "$runtime_agent_id") --blob-root $(shell_quote "$remote_blob_root") --socket $(shell_quote "$remote_socket")
+"
+
+if [[ "${RUNTIMED_SSH_RUNTIME_VERBOSE:-0}" == "1" ]]; then
+  {
+    echo "ssh-runtime-agent: host=$ssh_host"
+    echo "ssh-runtime-agent: remote_runtimed=$remote_runtimed"
+    echo "ssh-runtime-agent: remote_port=$remote_port"
+    echo "ssh-runtime-agent: local_socket=$local_socket"
+    echo "ssh-runtime-agent: remote_socket=$remote_socket"
+    echo "ssh-runtime-agent: local_blob_root=$local_blob_root"
+    echo "ssh-runtime-agent: remote_blob_root=$remote_blob_root"
+  } >&2
+fi
+
+"$ssh_bin" \
+  -o BatchMode=yes \
+  "$ssh_host" \
+  "mkdir -p $(shell_quote "$remote_socket_dir"); chmod 700 $(shell_quote "$remote_socket_dir")"
+
+exec "$ssh_bin" \
+  -o BatchMode=yes \
+  -o ExitOnForwardFailure=yes \
+  -R "127.0.0.1:$remote_port:$local_socket" \
+  "$ssh_host" \
+  "$remote_command"

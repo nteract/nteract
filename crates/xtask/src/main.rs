@@ -88,8 +88,8 @@ fn main() {
         "build-dmg" => cmd_build_dmg(),
         "build-app" => cmd_build_app(),
         "dev-daemon" => {
-            let release = args.iter().any(|a| a == "--release");
-            cmd_dev_daemon(release);
+            let options = parse_dev_daemon_options(&args);
+            cmd_dev_daemon(options);
         }
         "run-mcp" | "mcp" => {
             let print_config = args.iter().any(|a| a == "--print-config");
@@ -190,6 +190,8 @@ Release:
 
 Daemon:
   dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
+  dev-daemon --runtime-agent-exe <path>
+                             Spawn runtime agents through a custom executable
                              (for local nightly install on Linux see ./scripts/install-nightly)
 
 MCP:
@@ -426,6 +428,12 @@ struct DevOptions<'a> {
     skip_build: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DevDaemonOptions {
+    release: bool,
+    runtime_agent_exe: Option<PathBuf>,
+}
+
 fn parse_dev_options(args: &[String]) -> DevOptions<'_> {
     DevOptions {
         notebook: args
@@ -435,6 +443,38 @@ fn parse_dev_options(args: &[String]) -> DevOptions<'_> {
             .map(String::as_str),
         skip_install: args.iter().any(|arg| arg == "--skip-install"),
         skip_build: args.iter().any(|arg| arg == "--skip-build"),
+    }
+}
+
+fn parse_dev_daemon_options(args: &[String]) -> DevDaemonOptions {
+    let mut release = false;
+    let mut runtime_agent_exe = None;
+    let mut index = 1;
+
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--release" {
+            release = true;
+            index += 1;
+        } else if arg == "--runtime-agent-exe" {
+            let Some(value) = args.get(index + 1) else {
+                eprintln!("Error: --runtime-agent-exe requires a path");
+                exit(1);
+            };
+            runtime_agent_exe = Some(PathBuf::from(value));
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--runtime-agent-exe=") {
+            runtime_agent_exe = Some(PathBuf::from(value));
+            index += 1;
+        } else {
+            eprintln!("Unknown dev-daemon option: {arg}");
+            exit(1);
+        }
+    }
+
+    DevDaemonOptions {
+        release,
+        runtime_agent_exe,
     }
 }
 
@@ -2757,14 +2797,14 @@ fn dev_socket_path() -> PathBuf {
         .join("runtimed.sock")
 }
 
-fn cmd_dev_daemon(release: bool) {
+fn cmd_dev_daemon(options: DevDaemonOptions) {
     // runtimed's build.rs panics if the gitignored renderer-plugin
     // outputs are missing. Ensure they exist before kicking off the
     // cargo build so a fresh clone can run `cargo xtask dev-daemon`
     // directly.
     ensure_build_artifacts();
 
-    if release {
+    if options.release {
         println!("Building runtimed (release)...");
         run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
     } else {
@@ -2772,7 +2812,7 @@ fn cmd_dev_daemon(release: bool) {
         run_cmd("cargo", &["build", "-p", "runtimed"]);
     }
 
-    let binary = dev_daemon_binary(release);
+    let binary = dev_daemon_binary(options.release);
 
     if !binary.exists() {
         eprintln!(
@@ -2800,6 +2840,13 @@ fn cmd_dev_daemon(release: bool) {
 
     let mut cmd = Command::new(&binary);
     cmd.args(["--dev", "run"]);
+    if let Some(runtime_agent_exe) = &options.runtime_agent_exe {
+        println!(
+            "Runtime agents will be spawned through {}",
+            runtime_agent_exe.display()
+        );
+        cmd.arg("--runtime-agent-exe").arg(runtime_agent_exe);
+    }
     apply_worktree_env(&mut cmd, true);
     let status = cmd.status().unwrap_or_else(|e| {
         eprintln!("Failed to run runtimed: {e}");
@@ -4852,6 +4899,42 @@ mod tests {
                 notebook: Some("notebooks/demo.ipynb"),
                 skip_install: true,
                 skip_build: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_dev_daemon_options_reads_runtime_agent_exe() {
+        let args = vec![
+            "dev-daemon".to_string(),
+            "--release".to_string(),
+            "--runtime-agent-exe".to_string(),
+            "scripts/ssh-runtime-agent".to_string(),
+        ];
+
+        let options = parse_dev_daemon_options(&args);
+        assert_eq!(
+            options,
+            DevDaemonOptions {
+                release: true,
+                runtime_agent_exe: Some(PathBuf::from("scripts/ssh-runtime-agent")),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_dev_daemon_options_reads_equals_runtime_agent_exe() {
+        let args = vec![
+            "dev-daemon".to_string(),
+            "--runtime-agent-exe=scripts/ssh-runtime-agent".to_string(),
+        ];
+
+        let options = parse_dev_daemon_options(&args);
+        assert_eq!(
+            options,
+            DevDaemonOptions {
+                release: false,
+                runtime_agent_exe: Some(PathBuf::from("scripts/ssh-runtime-agent")),
             }
         );
     }
