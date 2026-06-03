@@ -205,7 +205,7 @@ test("cloud shell capabilities grant owners full cell, structure, and sharing co
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
-test("cloud shell capabilities reserve sharing for owners", () => {
+test("cloud shell capabilities surface sharing for authenticated hosted rooms", () => {
   assert.equal(
     cloudNotebookShellCapabilities({
       authState: authState("dev"),
@@ -220,6 +220,16 @@ test("cloud shell capabilities reserve sharing for owners", () => {
     cloudNotebookShellCapabilities({
       authState: authState("dev"),
       connectionScope: "editor",
+      hasCodeCells: true,
+      hostCapabilities: { canManageSharing: true },
+    }).canManageSharing,
+    true,
+  );
+
+  assert.equal(
+    cloudNotebookShellCapabilities({
+      authState: authState("anonymous"),
+      connectionScope: "viewer",
       hasCodeCells: true,
       hostCapabilities: { canManageSharing: true },
     }).canManageSharing,

@@ -1504,10 +1504,20 @@ function CloudSharingControls({
           return;
         }
         if (!aclResponse.ok) {
-          throw await cloudResponseError(aclResponse, "Unable to load access list");
+          throw await cloudResponseError(
+            aclResponse,
+            aclResponse.status === 403
+              ? "Only the notebook owner can manage sharing"
+              : "Unable to load access list",
+          );
         }
         if (!invitesResponse.ok) {
-          throw await cloudResponseError(invitesResponse, "Unable to load invites");
+          throw await cloudResponseError(
+            invitesResponse,
+            invitesResponse.status === 403
+              ? "Only the notebook owner can manage invites"
+              : "Unable to load invites",
+          );
         }
         const aclBody = (await aclResponse.json()) as { acl?: CloudNotebookAclRow[] };
         const invitesBody = (await invitesResponse.json()) as { invites?: CloudNotebookInvite[] };

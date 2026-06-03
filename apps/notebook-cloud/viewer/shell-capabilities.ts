@@ -112,9 +112,7 @@ export function cloudNotebookShellCapabilities({
     canViewPackages: true,
     canManagePackages: false,
     canManageSharing:
-      Boolean(hostCapabilities?.canManageSharing) &&
-      connectionScope === "owner" &&
-      auth.canUseAuthenticatedIdentity,
+      Boolean(hostCapabilities?.canManageSharing) && auth.canUseAuthenticatedIdentity,
     interaction,
     access: {
       ...access,
