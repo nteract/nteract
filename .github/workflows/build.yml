@@ -289,9 +289,9 @@ jobs:
     name: Browser E2E (Playwright)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    # Use the Anaconda runner pool for trusted events. Fork PRs stay on GitHub-hosted
-    # runners because this repository is public.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
+    # Keep the generic browser lane on GitHub-hosted runners for predictable
+    # per-job latency. The Anaconda pool is reserved for Linux/env-heavy lanes.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
