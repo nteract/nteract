@@ -877,7 +877,7 @@
               return;
             }
             e.preventDefault();
-            sendRpc("nteract/wheelBoundary", { deltaY: e.deltaY });
+            sendRpc("nteract/wheelBoundary", { deltaY: e.deltaY, deltaMode: e.deltaMode });
           },
           { capture: true, passive: false },
         );

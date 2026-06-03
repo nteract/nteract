@@ -53,6 +53,48 @@ describe("scroll-boundary", () => {
     });
   });
 
+  it("normalizes line-mode wheel deltas before scrolling the ancestor", () => {
+    const scrollContainer = document.createElement("div");
+    scrollContainer.style.overflowY = "auto";
+    setScrollMetrics(scrollContainer, 1000, 200);
+    scrollContainer.scrollTop = 300;
+    scrollContainer.scrollBy = vi.fn();
+
+    const iframe = document.createElement("iframe");
+    scrollContainer.appendChild(iframe);
+    document.body.appendChild(scrollContainer);
+
+    scrollFrameWheelBoundary(iframe, { deltaY: 3, deltaMode: 1 });
+
+    expect(scrollContainer.scrollBy).toHaveBeenCalledWith({
+      top: 48,
+      behavior: "auto",
+    });
+  });
+
+  it("normalizes page-mode wheel deltas from the iframe height", () => {
+    const scrollContainer = document.createElement("div");
+    scrollContainer.style.overflowY = "auto";
+    setScrollMetrics(scrollContainer, 2000, 200);
+    scrollContainer.scrollTop = 300;
+    scrollContainer.scrollBy = vi.fn();
+
+    const iframe = document.createElement("iframe");
+    Object.defineProperty(iframe, "clientHeight", {
+      configurable: true,
+      value: 320,
+    });
+    scrollContainer.appendChild(iframe);
+    document.body.appendChild(scrollContainer);
+
+    scrollFrameWheelBoundary(iframe, { deltaY: 1, deltaMode: 2 });
+
+    expect(scrollContainer.scrollBy).toHaveBeenCalledWith({
+      top: 320,
+      behavior: "auto",
+    });
+  });
+
   it("does not scroll the nearest ancestor past its top edge", () => {
     const scrollContainer = document.createElement("div");
     scrollContainer.style.overflowY = "auto";

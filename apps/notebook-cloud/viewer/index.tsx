@@ -149,6 +149,9 @@ interface CloudViewerConfig {
   runtimeSnapshotBasePath: string;
   aclEndpoint: string;
   invitesEndpoint: string;
+  hostCapabilities?: {
+    canManageSharing?: boolean;
+  };
   syncEndpoint: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
@@ -215,6 +218,9 @@ function loadConfig(): CloudViewerConfig {
     runtimeSnapshotBasePath: parsed.runtimeSnapshotBasePath,
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
+    hostCapabilities: {
+      canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
+    },
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
@@ -1156,16 +1162,13 @@ function NotebookViewer({
         hasCodeCells: codeCellCount > 0,
         selectedMode: selectedInteractionMode,
         canAcceptCellMutations,
-        hostCapabilities: {
-          canManageSharing: Boolean(config.aclEndpoint && config.invitesEndpoint),
-        },
+        hostCapabilities: config.hostCapabilities,
       }),
     [
       authState,
       canAcceptCellMutations,
       codeCellCount,
-      config.aclEndpoint,
-      config.invitesEndpoint,
+      config.hostCapabilities,
       connectionActorLabel,
       connectionScope,
       selectedInteractionMode,

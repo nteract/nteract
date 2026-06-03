@@ -1,5 +1,9 @@
 import type { NteractWheelBoundaryParams } from "./rpc-methods";
 
+const WHEEL_DELTA_LINE = 1;
+const WHEEL_DELTA_PAGE = 2;
+const DEFAULT_WHEEL_LINE_HEIGHT = 16;
+
 function hasScrollableOverflow(element: HTMLElement): boolean {
   const { overflowY } = window.getComputedStyle(element);
   return overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
@@ -60,8 +64,7 @@ export function scrollFrameWheelBoundary(
   iframe: HTMLIFrameElement | null,
   params: NteractWheelBoundaryParams,
 ): void {
-  const deltaY =
-    typeof params.deltaY === "number" && Number.isFinite(params.deltaY) ? params.deltaY : 0;
+  const deltaY = normalizedWheelDeltaY(iframe, params);
 
   if (deltaY === 0) {
     return;
@@ -77,4 +80,41 @@ export function scrollFrameWheelBoundary(
   if (win && canWindowConsumeScrollDelta(win, deltaY)) {
     win.scrollBy({ top: deltaY, behavior: "auto" });
   }
+}
+
+function normalizedWheelDeltaY(
+  iframe: HTMLIFrameElement | null,
+  params: NteractWheelBoundaryParams,
+): number {
+  const rawDeltaY =
+    typeof params.deltaY === "number" && Number.isFinite(params.deltaY) ? params.deltaY : 0;
+  if (rawDeltaY === 0) {
+    return 0;
+  }
+
+  if (params.deltaMode === WHEEL_DELTA_LINE) {
+    return rawDeltaY * wheelLineHeight(iframe);
+  }
+
+  if (params.deltaMode === WHEEL_DELTA_PAGE) {
+    return rawDeltaY * wheelPageHeight(iframe);
+  }
+
+  return rawDeltaY;
+}
+
+function wheelLineHeight(iframe: HTMLIFrameElement | null): number {
+  const ownerWindow = iframe?.ownerDocument.defaultView ?? window;
+  const rawLineHeight = ownerWindow.getComputedStyle(
+    iframe?.ownerDocument.documentElement ?? document.documentElement,
+  ).lineHeight;
+  const parsedLineHeight = Number.parseFloat(rawLineHeight);
+  return Number.isFinite(parsedLineHeight) && parsedLineHeight > 0
+    ? parsedLineHeight
+    : DEFAULT_WHEEL_LINE_HEIGHT;
+}
+
+function wheelPageHeight(iframe: HTMLIFrameElement | null): number {
+  const ownerWindow = iframe?.ownerDocument.defaultView ?? window;
+  return Math.max(1, iframe?.clientHeight || ownerWindow.innerHeight || 0);
 }
