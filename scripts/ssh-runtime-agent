@@ -13,7 +13,7 @@ execs the remote runtimed runtime-agent binary against the forwarded socket.
 Environment:
   RUNTIMED_SSH_RUNTIME_HOST          SSH host, default: lab2
   RUNTIMED_SSH_RUNTIME_COMMAND       Remote runtimed binary, default: /usr/local/bin/runtimed-nightly
-  RUNTIMED_SSH_RUNTIME_REMOTE_TMP    Remote temp directory, default: /tmp/runt-ssh-runtime-agent-$USER
+  RUNTIMED_SSH_RUNTIME_REMOTE_TMP    Remote temp parent directory, default: /tmp
   RUNTIMED_SSH_RUNTIME_REMOTE_PORT   Remote loopback TCP port for SSH -R, default: random 30000-49999
   RUNTIMED_SSH_BIN                   SSH binary, default: ssh
   RUNTIMED_SSH_RUNTIME_VERBOSE       Set to 1 for wrapper diagnostics
@@ -84,6 +84,12 @@ remote_runtimed=${RUNTIMED_SSH_RUNTIME_COMMAND:-/usr/local/bin/runtimed-nightly}
 remote_tmp_parent=${RUNTIMED_SSH_RUNTIME_REMOTE_TMP:-/tmp}
 ssh_bin=${RUNTIMED_SSH_BIN:-ssh}
 requested_remote_port=${RUNTIMED_SSH_RUNTIME_REMOTE_PORT:-}
+
+[[ -n "$ssh_host" ]] || die "RUNTIMED_SSH_RUNTIME_HOST must not be empty"
+[[ -n "$remote_runtimed" ]] || die "RUNTIMED_SSH_RUNTIME_COMMAND must not be empty"
+[[ -n "$remote_tmp_parent" ]] || die "RUNTIMED_SSH_RUNTIME_REMOTE_TMP must not be empty"
+[[ -n "$ssh_bin" ]] || die "RUNTIMED_SSH_BIN must not be empty"
+
 proxy_token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 local_proxy_dir=$(mktemp -d "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-proxy.XXXXXX")
 local_proxy_socket="$local_proxy_dir/proxy.sock"
@@ -123,19 +129,22 @@ server.listen(8)
 
 def pipe(left, right):
     selector = selectors.DefaultSelector()
-    selector.register(left, selectors.EVENT_READ, right)
-    selector.register(right, selectors.EVENT_READ, left)
-    while True:
-        for key, _ in selector.select():
-            source = key.fileobj
-            target = key.data
-            data = source.recv(65536)
-            if not data:
-                return
-            try:
-                target.sendall(data)
-            except BrokenPipeError:
-                return
+    try:
+        selector.register(left, selectors.EVENT_READ, right)
+        selector.register(right, selectors.EVENT_READ, left)
+        while True:
+            for key, _ in selector.select():
+                source = key.fileobj
+                target = key.data
+                data = source.recv(65536)
+                if not data:
+                    return
+                try:
+                    target.sendall(data)
+                except BrokenPipeError:
+                    return
+    finally:
+        selector.close()
 
 def read_token(client):
     client.settimeout(10)
@@ -191,19 +200,22 @@ server.listen(8)
 
 def pipe(left, right):
     selector = selectors.DefaultSelector()
-    selector.register(left, selectors.EVENT_READ, right)
-    selector.register(right, selectors.EVENT_READ, left)
-    while True:
-        for key, _ in selector.select():
-            source = key.fileobj
-            target = key.data
-            data = source.recv(65536)
-            if not data:
-                return
-            try:
-                target.sendall(data)
-            except BrokenPipeError:
-                return
+    try:
+        selector.register(left, selectors.EVENT_READ, right)
+        selector.register(right, selectors.EVENT_READ, left)
+        while True:
+            for key, _ in selector.select():
+                source = key.fileobj
+                target = key.data
+                data = source.recv(65536)
+                if not data:
+                    return
+                try:
+                    target.sendall(data)
+                except BrokenPipeError:
+                    return
+    finally:
+        selector.close()
 
 def handle_client(client):
     upstream = None
@@ -297,8 +309,11 @@ fi
 
 ssh_status=255
 for _ in $(seq 1 "$attempts"); do
-  run_remote_agent
-  ssh_status=$?
+  if run_remote_agent; then
+    ssh_status=0
+  else
+    ssh_status=$?
+  fi
   if [[ "$ssh_status" -ne 255 || -n "$requested_remote_port" ]]; then
     exit "$ssh_status"
   fi
