@@ -6,10 +6,11 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/components\/NotebookView"/);
+  assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/notebook-surface"/);
   assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
   assert.match(sourceText, /<NotebookView[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /<NotebookView[\s\S]*canAcceptCellMutations=\{canAcceptCellMutations\}/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/components\/NotebookView/);
   assert.doesNotMatch(sourceText, /canAcceptCellMutations=\{false\}/);
   assert.doesNotMatch(sourceText, /readOnly=\{!canEditMarkdown\}/);
   assert.doesNotMatch(sourceText, /import \{ CloudLiveNotebook \}/);
@@ -78,6 +79,12 @@ test("cloud wires shared presence and cleans projected store entries", () => {
   const bridgeSourceText = readFileSync(bridgeSourcePath, "utf8");
 
   assert.match(sourceText, /PresenceValueProvider/);
+  assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/notebook-surface"/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/contexts\/PresenceContext/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/hooks\/useCrdtBridge/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/lib\/cursor-registry/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/lib\/logger/);
+  assert.doesNotMatch(sourceText, /\.\.\/\.\.\/notebook\/src\/lib\/notebook-frame-bus/);
   assert.match(sourceText, /sendCursorPresence\(cellId, line, column\)/);
   assert.match(
     sourceText,

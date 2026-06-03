@@ -69,16 +69,17 @@ import { createCloudNotebookCellId } from "./cloud-cell-id";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
-import { NotebookView } from "../../notebook/src/components/NotebookView";
 import {
+  CrdtBridgeProvider,
+  emitBroadcast,
+  emitPresence,
+  createNotebookController,
+  NotebookView,
   PresenceValueProvider,
+  setLoggerHost,
+  startCursorDispatch,
   type PresenceContextValue,
-} from "../../notebook/src/contexts/PresenceContext";
-import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
-import { createNotebookController } from "../../notebook/src/lib/notebook-controller";
-import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
-import { setLoggerHost } from "../../notebook/src/lib/logger";
-import { emitBroadcast, emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
+} from "../../notebook/src/notebook-surface";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudViewStoreProjection,
