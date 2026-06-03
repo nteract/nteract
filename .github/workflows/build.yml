@@ -35,6 +35,7 @@ jobs:
           filters: |
             source:
               - ".github/workflows/**"
+              - ".github/actionlint.yaml"
               - "apps/**"
               - "bin/**"
               - "crates/**"
@@ -265,7 +266,9 @@ jobs:
     name: Browser E2E (Playwright)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    # Use the Anaconda runner for trusted events. Fork PRs stay on GitHub-hosted
+    # runners because this repository is public.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-anaconda-e2e-lab-runner1' || 'ubuntu-24.04' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -286,7 +289,13 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Install Playwright Chromium
-        run: pnpm --filter notebook-ui exec playwright install --with-deps chromium
+        run: |
+          pnpm --filter notebook-ui exec playwright install chromium
+          if [ "$RUNNER_ENVIRONMENT" = "github-hosted" ]; then
+            pnpm --filter notebook-ui exec playwright install-deps chromium
+          fi
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
 
       - name: Run browser E2E
         run: pnpm --filter notebook-ui test:e2e:browser -- --project=chromium --workers=1
@@ -310,7 +319,9 @@ jobs:
     # artifacts for the native E2E smoke below. Keep it off per-commit PR CI;
     # run it post-merge or manually when the native smoke signal is needed.
     if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # Dedicated Anaconda sandbox EC2 runner. This label is intentionally unique
+    # and only used by post-merge/manual lanes.
+    runs-on: nteract-anaconda-e2e-lab-runner1
     steps:
       - uses: actions/checkout@v6
         with:
@@ -329,8 +340,8 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+          sudo apt-get -o DPkg::Lock::Timeout=120 update
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -652,13 +663,18 @@ jobs:
   # job above.
   e2e:
     name: "E2E: ${{ matrix.name }}"
-    runs-on: ubuntu-latest
+    # Dedicated Anaconda sandbox EC2 runner. This label is intentionally unique
+    # and only used by post-merge/manual lanes.
+    runs-on: nteract-anaconda-e2e-lab-runner1
     needs: [changes, build-linux]
     # Native WebDriver smoke is intentionally post-merge/manual. PR coverage
     # stays in Browser E2E so agent commit churn does not fan out Tauri builds.
     if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     strategy:
       fail-fast: false
+      # The native WebDriver app uses fixed display/WebDriver ports, so keep
+      # this matrix serial even when multiple Anaconda runner services exist.
+      max-parallel: 1
       matrix:
         include:
           - name: Smoke
@@ -681,8 +697,8 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get -o DPkg::Lock::Timeout=120 update
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
@@ -900,7 +916,9 @@ jobs:
   # Python daemon integration tests — builds its own runtimed binary
   runtimed-py-integration:
     name: runtimed-py Integration Tests
-    runs-on: ubuntu-24.04
+    # Dedicated Anaconda sandbox EC2 runner. This label is intentionally unique
+    # and only used by post-merge/manual lanes.
+    runs-on: nteract-anaconda-e2e-lab-runner1
     needs: [changes]
     # This daemon-heavy lane is ~30 minutes on stock GitHub runners. Keep it
     # on post-merge/manual runs so PR pushes do not pay that long tail.

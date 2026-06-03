@@ -1,0 +1,3 @@
+self-hosted-runner:
+  labels:
+    - nteract-anaconda-e2e-lab-runner1
