@@ -60,7 +60,6 @@ import {
   fetchWithCloudPrototypeAuth,
   isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
-  prototypeAuthSummary,
   storeCloudRequestedScope,
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
@@ -448,28 +447,17 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   };
 
   const signedIn = authState.mode === "oidc";
-  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Public viewer";
+  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Notebook cloud";
   const homeStatusDescription = signedIn
-    ? prototypeAuthSummary(authState)
-    : "Public notebooks stay readable without an account. Sign in when you need edit access or sharing controls.";
+    ? "Open the preview notebook or sign out of this browser session."
+    : "Sign in to open private previews or request edit access.";
 
   return (
     <main className="cloud-home">
-      <header className="cloud-report-toolbar" aria-label="Notebook cloud entry controls">
-        <div className="cloud-home-title">
-          <span>nteract cloud notebooks</span>
-          <small>live documents for shared computation</small>
-        </div>
-      </header>
-
       <section className="cloud-home-layout" aria-label="Notebook cloud entry">
         <div className="cloud-home-copy">
-          <p>Cloud notebooks</p>
-          <h1>Stay in the document.</h1>
-          <span>
-            Public notebooks open calmly. Account controls appear only when you need to edit, share,
-            or renew access.
-          </span>
+          <h1>nteract</h1>
+          <span>preview realtime notebooks</span>
         </div>
 
         <section
@@ -501,6 +489,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
           ) : null}
 
           <div className="cloud-home-actions">
+            <a href="/n/topic-viz/topic-viz">Open topic viz</a>
             {signedIn ? (
               <button
                 type="button"
@@ -613,21 +602,10 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
 
   return (
     <main className="cloud-home">
-      <header className="cloud-report-toolbar" aria-label="Sign-in status and controls">
-        <div className="cloud-home-title">
-          <span>nteract cloud notebooks</span>
-          <small>account handoff</small>
-        </div>
-      </header>
-
       <section className="cloud-home-layout" aria-label="Notebook cloud sign-in callback">
         <div className="cloud-home-copy">
-          <p>Cloud sign-in</p>
-          <h1>Returning to the notebook.</h1>
-          <span>
-            The browser is finishing the account handoff. The notebook stays readable while access
-            renews.
-          </span>
+          <h1>nteract</h1>
+          <span>returning to the notebook</span>
         </div>
 
         <section
