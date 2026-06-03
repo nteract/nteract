@@ -62,7 +62,9 @@ jobs:
     name: Lint & Format
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    # Use the Anaconda runner pool for trusted events. Fork PRs stay on
+    # GitHub-hosted runners because this repository is public.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -99,7 +101,7 @@ jobs:
     name: NSIS Bootstrap Syntax
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -119,7 +121,7 @@ jobs:
     name: Windows (clippy)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -154,7 +156,7 @@ jobs:
     name: WASM + Deno Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -190,7 +192,7 @@ jobs:
     name: Build shared UI artifacts
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -237,7 +239,7 @@ jobs:
     name: JS Tests & Benchmarks
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -424,7 +426,7 @@ jobs:
     name: Linux Rust Clippy
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -459,7 +461,7 @@ jobs:
     name: Linux Rust Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -488,7 +490,7 @@ jobs:
     name: Linux runtimed-node
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -1035,7 +1037,7 @@ jobs:
     name: Python Unit Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'nteract-linux-ci' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
         with:
