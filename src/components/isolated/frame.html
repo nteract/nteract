@@ -809,6 +809,13 @@
           sendRpc("nteract/mouseDown", {});
         });
 
+        document.addEventListener("mouseup", function () {
+          var selection = window.getSelection();
+          sendRpc("nteract/mouseUp", {
+            hasSelection: !!selection && !selection.isCollapsed && selection.toString().length > 0,
+          });
+        });
+
         // --- Wheel Boundary Forwarding ---
         // Native scroll chaining stops at the iframe boundary. When a scrollable
         // renderer is already at its vertical edge, ask the host to apply the

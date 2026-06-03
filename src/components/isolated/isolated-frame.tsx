@@ -137,6 +137,13 @@ export interface IsolatedFrameProps {
   onMouseDown?: () => void;
 
   /**
+   * Callback when the user releases a click inside the iframe.
+   * `hasSelection` lets document-like frames stay engaged after text selection
+   * while releasing ordinary clicks back to notebook-native scrolling.
+   */
+  onMouseUp?: (params: { hasSelection?: boolean }) => void;
+
+  /**
    * Callback when the user double-clicks in the iframe.
    */
   onDoubleClick?: () => void;
@@ -298,6 +305,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       onResize,
       onLinkClick,
       onMouseDown,
+      onMouseUp,
       onDoubleClick,
       onWidgetUpdate,
       onError,
@@ -347,6 +355,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onResizeRef = useRef(onResize);
     const onLinkClickRef = useRef(onLinkClick);
     const onMouseDownRef = useRef(onMouseDown);
+    const onMouseUpRef = useRef(onMouseUp);
     const onDoubleClickRef = useRef(onDoubleClick);
     const onWidgetUpdateRef = useRef(onWidgetUpdate);
     const onErrorRef = useRef(onError);
@@ -386,6 +395,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onResizeRef.current = onResize;
     onLinkClickRef.current = onLinkClick;
     onMouseDownRef.current = onMouseDown;
+    onMouseUpRef.current = onMouseUp;
     onDoubleClickRef.current = onDoubleClick;
     onWidgetUpdateRef.current = onWidgetUpdate;
     onErrorRef.current = onError;
@@ -456,6 +466,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           },
           onMouseDown: () => {
             onMouseDownRef.current?.();
+          },
+          onMouseUp: (params) => {
+            onMouseUpRef.current?.(params);
           },
           onDoubleClick: () => {
             onDoubleClickRef.current?.();

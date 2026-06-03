@@ -143,6 +143,8 @@ export function createNteractOutputEmbed(
     onLinkClick: (url: string, newTab: boolean) =>
       options.onMessage?.({ type: "link_click", payload: { url, newTab } }),
     onMouseDown: () => options.onMessage?.({ type: "mousedown" }),
+    onMouseUp: (params: { hasSelection?: boolean }) =>
+      options.onMessage?.({ type: "mouseup", payload: params }),
     onDoubleClick: () => options.onMessage?.({ type: "dblclick" }),
     onWheelBoundary: (params: { deltaY?: number }) =>
       options.onMessage?.({ type: "wheel_boundary", payload: params }),

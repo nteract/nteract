@@ -7,6 +7,7 @@ import {
   MCP_UI_RESOURCE_TEARDOWN,
   MCP_UI_SIZE_CHANGED,
   NTERACT_MEASURE_ELEMENT,
+  NTERACT_MOUSE_UP,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
   NTERACT_THEME,
@@ -64,6 +65,7 @@ function createRuntime(
     onRenderComplete: vi.fn(),
     onLinkClick: vi.fn(),
     onMouseDown: vi.fn(),
+    onMouseUp: vi.fn(),
     onDoubleClick: vi.fn(),
     onWheelBoundary: vi.fn(),
     onWidgetUpdate: vi.fn(),
@@ -148,6 +150,18 @@ describe("IsolatedFrameRuntime", () => {
 
     expect(callbacks.onSizeChanged).toHaveBeenCalledWith({ height: 240, width: 640 });
     expect(callbacks.onResize).toHaveBeenCalledWith(240);
+  });
+
+  it("forwards iframe mouse up selection state", () => {
+    const { callbacks, frameWindow, runtime } = createRuntime();
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport).toBeDefined();
+
+    transport.notificationHandlers.get(NTERACT_MOUSE_UP)?.({ hasSelection: true });
+
+    expect(callbacks.onMouseUp).toHaveBeenCalledWith({ hasSelection: true });
   });
 
   it("sends host context once per channel for equivalent content", () => {

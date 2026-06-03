@@ -77,6 +77,13 @@ describe("generateFrameHtml", () => {
     expect(html).toContain("passive: false");
   });
 
+  it("forwards iframe mouse up with a selection hint", () => {
+    expect(source).toMatch(/document\.addEventListener\(\s*'mouseup'/);
+    expect(source).toContain("sendRpc('nteract/mouseUp'");
+    expect(source).toContain("hasSelection");
+    expect(source).toContain("selection.toString().length > 0");
+  });
+
   it("keeps the iframe bootstrap script parseable", () => {
     const scripts = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g), (match) => match[1]);
 

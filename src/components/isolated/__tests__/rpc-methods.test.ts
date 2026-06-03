@@ -26,6 +26,7 @@ import {
   NTERACT_LINK_CLICK,
   NTERACT_MEASURE_ELEMENT,
   NTERACT_MOUSE_DOWN,
+  NTERACT_MOUSE_UP,
   NTERACT_PING,
   NTERACT_PONG,
   NTERACT_READY,
@@ -67,6 +68,7 @@ describe("nteract JSON-RPC method constants", () => {
     NTERACT_RESIZE,
     NTERACT_LINK_CLICK,
     NTERACT_MOUSE_DOWN,
+    NTERACT_MOUSE_UP,
     NTERACT_WHEEL_BOUNDARY,
     NTERACT_DOUBLE_CLICK,
     NTERACT_ERROR,
@@ -126,6 +128,7 @@ describe("nteract JSON-RPC method constants", () => {
     expect(NTERACT_RENDER_COMPLETE).toBe("nteract/renderComplete");
     expect(NTERACT_DOUBLE_CLICK).toBe("nteract/doubleClick");
     expect(NTERACT_MOUSE_DOWN).toBe("nteract/mouseDown");
+    expect(NTERACT_MOUSE_UP).toBe("nteract/mouseUp");
     expect(NTERACT_WHEEL_BOUNDARY).toBe("nteract/wheelBoundary");
     expect(NTERACT_WIDGET_UPDATE).toBe("nteract/widgetUpdate");
     expect(NTERACT_WIDGET_STATE).toBe("nteract/widgetState");

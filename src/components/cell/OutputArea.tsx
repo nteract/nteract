@@ -90,6 +90,7 @@ const DEFERRED_OUTPUT_PLACEHOLDER_HEIGHT = 96;
 const SIFT_VIEWPORT_TOP_INSET_PX = 96;
 const SIFT_VIEWPORT_BOTTOM_INSET_PX = 32;
 const DEFAULT_DEFERRED_ISOLATED_FRAME_ROOT_MARGIN = "1200px 0px";
+const DOCUMENT_FRAME_INTERACTION_RELEASE_DELAY_MS = 700;
 
 function outputAreaInsetClass(layoutInset: NonNullable<OutputAreaProps["layoutInset"]>) {
   switch (layoutInset) {
@@ -618,6 +619,7 @@ function OutputAreaSingle({
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
   const [staticFrameInteractionActive, setStaticFrameInteractionActive] = useState(false);
+  const staticFrameReleaseTimeoutRef = useRef<number | null>(null);
 
   const darkMode = useDarkMode();
   const colorTheme = useColorTheme();
@@ -725,6 +727,28 @@ function OutputAreaSingle({
     }
   }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
 
+  const clearStaticFrameReleaseTimeout = useCallback(() => {
+    if (staticFrameReleaseTimeoutRef.current == null) return;
+    window.clearTimeout(staticFrameReleaseTimeoutRef.current);
+    staticFrameReleaseTimeoutRef.current = null;
+  }, []);
+
+  useEffect(() => clearStaticFrameReleaseTimeout, [clearStaticFrameReleaseTimeout]);
+
+  const releaseStaticFrameInteraction = useCallback(() => {
+    clearStaticFrameReleaseTimeout();
+    setStaticFrameInteractionActive(false);
+  }, [clearStaticFrameReleaseTimeout]);
+
+  const scheduleStaticFrameInteractionRelease = useCallback(() => {
+    if (hasWheelOwningOutputs) return;
+    clearStaticFrameReleaseTimeout();
+    staticFrameReleaseTimeoutRef.current = window.setTimeout(() => {
+      staticFrameReleaseTimeoutRef.current = null;
+      setStaticFrameInteractionActive(false);
+    }, DOCUMENT_FRAME_INTERACTION_RELEASE_DELAY_MS);
+  }, [clearStaticFrameReleaseTimeout, hasWheelOwningOutputs]);
+
   useEffect(() => {
     if (!hasWheelOwningOutputs) return;
     frameRef.current?.send({
@@ -741,15 +765,16 @@ function OutputAreaSingle({
       if (target instanceof Node && staticFrameInteractionRef.current?.contains(target)) {
         return;
       }
-      setStaticFrameInteractionActive(false);
+      releaseStaticFrameInteraction();
     };
 
     document.addEventListener("pointerdown", handlePointerDown, true);
     return () => document.removeEventListener("pointerdown", handlePointerDown, true);
-  }, [staticFrameInteractionActive]);
+  }, [releaseStaticFrameInteraction, staticFrameInteractionActive]);
 
   const activateStaticFrameInteraction = useCallback(() => {
     if (shouldUseScrollPassthroughFrame) {
+      clearStaticFrameReleaseTimeout();
       if (!staticFrameInteractionActive && hasSiftOutputs) {
         scrollElementIntoComfortableView(staticFrameInteractionRef.current);
       }
@@ -764,7 +789,26 @@ function OutputAreaSingle({
     shouldUseScrollPassthroughFrame,
     staticFrameInteractionActive,
     onIframeMouseDown,
+    clearStaticFrameReleaseTimeout,
   ]);
+
+  const activateStaticFrameInteractionTemporarily = useCallback(() => {
+    activateStaticFrameInteraction();
+    scheduleStaticFrameInteractionRelease();
+  }, [activateStaticFrameInteraction, scheduleStaticFrameInteractionRelease]);
+
+  const handleStaticFrameMouseUp = useCallback(
+    ({ hasSelection }: { hasSelection?: boolean }) => {
+      if (hasSelection) {
+        clearStaticFrameReleaseTimeout();
+        return;
+      }
+      if (!hasWheelOwningOutputs) {
+        releaseStaticFrameInteraction();
+      }
+    },
+    [clearStaticFrameReleaseTimeout, hasWheelOwningOutputs, releaseStaticFrameInteraction],
+  );
 
   const handleStaticFrameKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -1039,7 +1083,9 @@ function OutputAreaSingle({
             data-sift-output={hasSiftOutputs ? "true" : undefined}
             tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
             onPointerDown={
-              shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
+              shouldUseScrollPassthroughFrame
+                ? activateStaticFrameInteractionTemporarily
+                : undefined
             }
             onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
           >
@@ -1057,6 +1103,7 @@ function OutputAreaSingle({
                 onReady={handleIsolatedFrameReady}
                 onLinkClick={onLinkClick}
                 onMouseDown={activateStaticFrameInteraction}
+                onMouseUp={handleStaticFrameMouseUp}
                 onWidgetUpdate={onWidgetUpdate}
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
