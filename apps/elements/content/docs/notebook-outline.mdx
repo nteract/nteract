@@ -13,7 +13,7 @@ Outline rows navigate; they are not drag handles. The active row uses a quiet
 spine marker, and native drag previews are cancelled until outline-driven
 reordering becomes a real workflow.
 
-This fixture renders the shared `NotebookDocumentRail` and current notebook
+This fixture renders the shared `NotebookDocumentRail` and shared command
 toolbar with scenario state from the [notebook shell capabilities](/docs/notebook-shell-capabilities)
 fixtures. The package panel hosts the shared `UvDependencyPanel` in its rail
 variant instead of adding docs-only chrome inside the rail.
@@ -24,7 +24,7 @@ variant instead of adding docs-only chrome inside the rail.
 
 - The real app should wrap `NotebookView` in a workspace shell rather than
   moving cells into the sidebar.
-- `NotebookToolbar` is imported from `apps/notebook/src/components` with inert
+- `NotebookCommandToolbar` is imported from `src/components/notebook` with inert
   fixture callbacks and runtime status props.
 - `NotebookDocumentRail` comes from `src/components/notebook`; its
   generic rail frame comes from `src/components/rail`, and its packages panel

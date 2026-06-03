@@ -2,15 +2,11 @@
 
 import { ShieldCheck } from "lucide-react";
 import { useState } from "react";
-import {
-  KERNEL_STATUS,
-  RUNTIME_STATUS,
-  resolveNotebookOutlineSelection,
-  type RuntimeLifecycle,
-} from "runtimed";
+import { resolveNotebookOutlineSelection } from "runtimed";
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import {
   NotebookCellList,
+  NotebookCommandToolbar,
   NotebookDocumentHeader,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -20,7 +16,6 @@ import {
 import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import { EnvironmentSummary, UvDependencyPanel } from "@/components/environment";
-import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
 import {
   getElementsNotebookScenario,
   resolveElementsNotebookLanguage,
@@ -31,11 +26,6 @@ import {
 const noop = () => {};
 const asyncNoop = async () => {};
 const asyncTrue = async () => true;
-
-const runningIdleLifecycle: RuntimeLifecycle = {
-  lifecycle: "Running",
-  activity: "Idle",
-};
 
 const scenarioIds: ElementsNotebookScenarioId[] = [
   "desktop-local-owner",
@@ -88,28 +78,28 @@ export function RailOutlineExample() {
         <NotebookDocumentHeader
           capabilities={scenario.capabilities}
           runtimeControls={
-            <NotebookToolbar
-              kernelStatus={KERNEL_STATUS.IDLE}
-              statusKey={RUNTIME_STATUS.RUNNING_IDLE}
-              lifecycle={runningIdleLifecycle}
-              errorReason={scenario.capabilities.canExecute ? null : scenario.runtimeLabel}
-              kernelErrorMessage={null}
-              envSource="uv:inline"
-              envTypeHint="uv"
-              envProgress={null}
+            <NotebookCommandToolbar
               runtime="python"
-              focusedCellId={focusedCellId}
-              lastCellId="cell-findings"
+              environmentManager="uv"
+              runtimeStatus={{
+                state: scenario.capabilities.canExecute ? "idle" : "unknown",
+                label: scenario.capabilities.canExecute ? "Idle" : "Read only",
+                ariaLabel: scenario.capabilities.canExecute
+                  ? "Kernel: Idle"
+                  : "Kernel controls unavailable",
+                title: scenario.runtimeLabel,
+              }}
+              environmentPanelOpen={activePanel === "packages"}
+              environmentOutOfSync={!scenario.capabilities.canManagePackages}
+              addAfterCellId={focusedCellId ?? "cell-findings"}
               capabilities={scenario.capabilities}
-              onStartKernel={noop}
-              onInterruptKernel={noop}
-              onRestartKernel={noop}
+              onAddCell={noop}
+              onStartRuntime={noop}
+              onInterruptRuntime={noop}
+              onRestartRuntime={noop}
               onRunAllCells={noop}
               onRestartAndRunAll={noop}
-              onAddCell={noop}
-              onToggleDependencies={() => setActivePanel("packages")}
-              isDepsOpen={activePanel === "packages"}
-              depsOutOfSync={!scenario.capabilities.canManagePackages}
+              onTogglePackages={() => setActivePanel("packages")}
             />
           }
         />

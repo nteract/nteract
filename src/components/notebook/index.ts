@@ -40,6 +40,37 @@ export {
   type NotebookNoticeStackProps,
   type NotebookNoticeTone,
 } from "./NotebookNotice";
+export { RuntimeDecisionDialog, type RuntimeDecisionDialogProps } from "./RuntimeDecisionDialog";
+export { TrustDialog, type TrustDialogProps } from "./TrustDialog";
+export {
+  EnvBuildDecisionDialog,
+  extractCondaEnvCreateCommand,
+  type EnvBuildDecisionDialogProps,
+} from "./EnvBuildDecisionDialog";
+export {
+  DaemonStatusBanner,
+  type DaemonStatus,
+  type DaemonStatusBannerProps,
+} from "./DaemonStatusBanner";
+export { DebugBanner, type DebugBannerProps } from "./DebugBanner";
+export {
+  KernelLaunchErrorBanner,
+  shouldShowKernelLaunchErrorBanner,
+  type KernelLaunchErrorBannerProps,
+} from "./KernelLaunchErrorBanner";
+export {
+  PoolErrorBanner,
+  type PoolErrorBannerProps,
+  type PoolErrorDetails,
+} from "./PoolErrorBanner";
+export { UntrustedBanner, type UntrustedBannerProps } from "./UntrustedBanner";
+export type {
+  EnvSyncState,
+  PyProjectDeps,
+  PyProjectInfo,
+  TrustInfo,
+  TyposquatWarning,
+} from "./runtime-surface-types";
 export {
   NotebookCommandToolbar,
   type NotebookCommandRuntimeState,
