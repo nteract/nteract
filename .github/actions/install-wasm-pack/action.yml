@@ -45,7 +45,7 @@ runs:
           exit 1
         fi
 
-        install_dir="$HOME/.cargo/bin"
+        install_dir="$RUNNER_TEMP/wasm-pack/bin"
         mkdir -p "$install_dir"
         cp "$bin" "$install_dir/"
         chmod +x "$install_dir/$(basename "$bin")"
