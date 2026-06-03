@@ -10,7 +10,7 @@ The forced derivation is **confirmed**: to make every CRDT document all-or-nothi
 
 But "confirmed as the logical endpoint" is not "ship it as one program." The recommendation is a **modified, decoupled split**: take the two independently-justified low-risk wins now (CommsDoc, and additive owner-only identity pointers), close the recovery loop using a frame that **already exists on the wire**, and treat the irreversible cells/metadata data-move as a separate, telemetry-gated, reversible-until-proven decision that does not begin until recovery and the export/identity/fleet-floor guards are live.
 
-The single highest-leverage finding: **the recovery wire is half-built and inert.** The cloud room already emits `cloud_frame_rejected` (`apps/notebook-cloud/.../notebook-room.ts:553`), the client already receives it (`live-sync.ts:311`), and `presence.ts:48` silently drops it because it only handles `cloud_room_ready`. The re-offer-forever stall that Thread 2 exists to solve is, today, one missing frame handler.
+The single highest-leverage finding: **the recovery wire is half-built.** The cloud room already emits `cloud_frame_rejected` (`apps/notebook-cloud/src/notebook-room.ts:554`), and the viewer already receives it and surfaces it as an error status (`apps/notebook-cloud/viewer/index.tsx:1059-1061`, `Room rejected a frame: ${reason}`). What's missing is not a frame handler - it's the recovery *action*: nothing discards the diverged local doc and re-syncs to the room's authoritative heads. So the re-offer-forever stall Thread 2 exists to solve is, today, a received-but-inert signal: the error is shown, the divergence is not repaired.
 
 ## Ground-truth corrections to the handoff
 
@@ -69,7 +69,7 @@ And the scope governing each new boundary is itself a connect-time-frozen snapsh
 
 ### Premortem headlines
 
-- **Most likely failure:** the recovery loop never gets closed because "blunt reset already exists" was conflated with "recovery is solved." The reset *action* exists; the reset *trigger* does not. The split relocates and multiplies the rejection surface while leaving the stall untouched, and daemon-local per-field actor filtering (`runtime_agent.rs:348-352`) means single-user and desktop testing never reproduce it.
+- **Most likely failure:** the recovery loop never gets closed because "blunt reset already exists" was conflated with "recovery is solved." The reset *action* exists (`reset_sync_state`) and the rejection signal already arrives and is shown as an error; what's missing is wiring the signal to the action. The split relocates and multiplies the rejection surface while leaving the stall untouched, and daemon-local per-field actor filtering (`runtime_agent.rs:348-352`) means single-user and desktop testing never reproduce it.
 - **Most dangerous failure:** silent half-notebook / data invisibility from the cells/metadata move, in three converging forms that all fail without a crash, an above-info log, or a `.corrupt` rename: in-place reshape LWW-merging the frozen root into garbage; a v5 client rendering an empty notebook over real CellsDoc content (the #3086 autosave-zeroing class); and the `.ipynb` emitter reading two subtrees off one handle and writing a half-notebook to disk *and* the publish artifact. The most-dangerous failure costs users their work, irreversibly, on the population least likely to file a precise bug.
 
 19 of 20 generated failure modes survived adversarial verification against the real code. Their fixes are folded into the Revised plan below, each item mapped to the failure it addresses; the raw per-mode deep-dives are archived in the workflow run that produced this doc.
@@ -79,7 +79,7 @@ And the scope governing each new boundary is itself a connect-time-frozen snapsh
 Each item maps to a specific surfaced failure.
 
 1. **Ship CommsDoc decoupled** from the NotebookDoc owner/cells split, as its own decision. It collapses the RuntimeStateDoc carve-out on its own merits and is the cheap additive new-doc playbook. Do not hold the cheap win hostage to the expensive structural copy.
-2. **Land the recovery wire FIRST**, before any post-split rejection class can fire, using the frame that already exists. Add a `presence.ts`/`live-sync.ts` handler for `cloud_frame_rejected` (today dropped at `presence.ts:48`) that triggers `reset_sync_state` + re-bootstrap; carry authoritative heads + doc_id; add a per-peer consecutive-rejection counter on the room host.
+2. **Land the recovery wire FIRST**, before any post-split rejection class can fire, using the frame that already exists. The viewer's `cloud_frame_rejected` handler (`viewer/index.tsx:1059-1061`) only shows an error today; make it trigger `reset_sync_state` + re-bootstrap. Carry authoritative heads + doc_id on the frame (`notebook-room.ts:554`) so the client knows what to re-sync to; add a per-peer consecutive-rejection counter on the room host.
 3. **Classify rejections by KIND at the rejection site** and branch recovery on it. Propagate a typed reason (can_write gate vs principal-forgery at `lib.rs:864` vs version-skew vs editor-path) instead of generic `Err(JsError)`. Version-skew MUST NOT blunt-reset or increment the sever counter; principal-forgery escalates on a far shorter counter.
 4. **Make rejection cheap before making it punitive.** Add an O(1) pre-check (can_write scalar + raw-actor-label principal binding) that short-circuits before the full doc+peer-state clone at `lib.rs:605-606`; land the `sync_message_new_changes` parser as a launch blocker for CommsDoc specifically (its write frequency is per-widget-tick).
 5. **Make all new doc-id pointers derivable, never random** (`cells:{notebook_id}`, `comms:{notebook_id}`). If a random id is ever required it must be minted into the frozen genesis seed and `ensure_` must fail-closed on absent-for-existing, never mint a second.
@@ -97,7 +97,7 @@ Each item maps to a specific surfaced failure.
 
 **Phase A (ships first, no data move, each independently valuable):**
 1. CommsDoc with its three load-bearing invariants built IN, not after - topology-anchored membership gate, explicit Guard-A orphan drop, daemon CommsDoc write authority for atomic remove/clear, kernel-echo filter wired structurally onto CommsDoc's receive path with a CI guard.
-2. Close the recovery loop using the existing `cloud_frame_rejected` frame: client handler, heads+doc_id+typed reason, per-peer rejection counter.
+2. Close the recovery loop using the existing `cloud_frame_rejected` frame: upgrade the existing viewer handler from show-error to resync/rebootstrap, carry heads+doc_id+typed reason on the frame, add a per-peer rejection counter.
 3. O(1) pre-check + `sync_message_new_changes` parser so clone-before-validate cannot OOM the single-threaded DO.
 4. ACL-revocation eviction/Sever path.
 5. execution_id cell-binding guard.

@@ -23,12 +23,12 @@ Authorization boundaries should line up with **document boundaries**, not field 
 
 ## Background ADRs (read before designing - do not duplicate them)
 
-- `docs/architecture/notebook-host-shell-convergence.md` - shared shell + capability vocabulary across desktop/cloud/elements.
-- `docs/architecture/hosted-room-authorization.md` - ACL model, scopes, **Decision 7** (editor write surface; the part this work most directly touches).
-- `docs/architecture/three-document-split.md` - NotebookDoc / RuntimeStateDoc / PoolDoc boundaries. **Thread 1 proposes superseding this.**
-- `docs/architecture/frontend-sync-bridge.md` - per-document RxJS streams, stable DOM order, local-first writes.
-- `docs/architecture/schema-evolution-and-genesis.md` - frozen genesis, cross-version sync hazards (relevant to both threads' migration story).
-- `docs/architecture/runtime-state-document-identity.md` - the `runtime_state_doc_id` pointer model (the thing #3316 hardened).
+- `docs/adr/notebook-host-shell-convergence.md` - shared shell + capability vocabulary across desktop/cloud/elements.
+- `docs/adr/hosted-room-authorization.md` - ACL model, scopes, **Decision 7** (editor write surface; the part this work most directly touches).
+- `docs/adr/three-document-split.md` - NotebookDoc / RuntimeStateDoc / PoolDoc boundaries. **Thread 1 proposes superseding this.**
+- `docs/adr/frontend-sync-bridge.md` - per-document RxJS streams, stable DOM order, local-first writes.
+- `docs/adr/schema-evolution-and-genesis.md` - frozen genesis, cross-version sync hazards (relevant to both threads' migration story).
+- `docs/adr/runtime-state-document-identity.md` - the `runtime_state_doc_id` pointer model (the thing #3316 hardened).
 
 ## Active design thread 1: four-document split (CommsDoc)
 
