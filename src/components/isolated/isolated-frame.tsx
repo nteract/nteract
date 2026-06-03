@@ -176,6 +176,14 @@ export interface IsolatedFrameProps {
    * @default false
    */
   revealOnRender?: boolean;
+
+  /**
+   * When used with `revealOnRender`, keep the current frame height reserved
+   * while content is visually hidden. This lets document-like surfaces avoid
+   * late layout shifts while still fading in rendered content.
+   * @default false
+   */
+  reserveHeightOnReveal?: boolean;
 }
 
 export interface IsolatedFrameHandle {
@@ -312,6 +320,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       onMessage,
       onDiagnostic,
       revealOnRender = false,
+      reserveHeightOnReveal = false,
     },
     ref,
   ) {
@@ -666,7 +675,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     }
 
     // Compute display values for revealOnRender mode
-    const displayHeight = revealOnRender && !isContentRendered ? 0 : height;
+    const displayHeight =
+      revealOnRender && !isContentRendered && !reserveHeightOnReveal ? 0 : height;
     const displayOpacity = revealOnRender && !isContentRendered ? 0 : 1;
 
     return (

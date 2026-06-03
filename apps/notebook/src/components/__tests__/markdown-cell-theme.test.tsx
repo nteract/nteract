@@ -278,6 +278,24 @@ describe("MarkdownCell theme sync", () => {
     });
   });
 
+  it("reserves a markdown-sized preview while the isolated renderer loads", () => {
+    render(
+      <MarkdownCell
+        cell={{
+          ...makeCell(),
+          source: "# Heading\n\nThis paragraph should reserve document geometry.",
+        }}
+        onFocus={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const frameProps = isolatedFrameProps.at(-1);
+    expect(frameProps?.revealOnRender).toBe(true);
+    expect(frameProps?.reserveHeightOnReveal).toBe(true);
+    expect(frameProps?.minHeight).toBeGreaterThan(24);
+  });
+
   it("focuses the markdown preview without scrolling when the cell becomes focused", async () => {
     const focusSpy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(() => undefined);
 

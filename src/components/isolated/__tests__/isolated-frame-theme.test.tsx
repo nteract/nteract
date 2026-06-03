@@ -365,6 +365,16 @@ describe("IsolatedFrame theme updates", () => {
     expect(iframe.style.pointerEvents).toBe("none");
   });
 
+  it("can reserve frame height while content is hidden for reveal-on-render", () => {
+    const { container } = render(
+      <IsolatedFrame darkMode={false} minHeight={180} revealOnRender reserveHeightOnReveal />,
+    );
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    expect(iframe.style.height).toBe("180px");
+    expect(iframe.style.opacity).toBe("0");
+  });
+
   it("uses srcdoc in a non-Tauri browser runtime", () => {
     const { container } = render(<IsolatedFrame darkMode={false} />);
     const iframe = container.querySelector("iframe") as HTMLIFrameElement;

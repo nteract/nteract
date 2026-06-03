@@ -50,9 +50,51 @@ const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
 const EMPTY_HEADING_ANCHORS: readonly MarkdownHeadingAnchor[] = [];
 const DOCUMENT_FRAME_INTERACTION_RELEASE_DELAY_MS = 700;
+const MARKDOWN_PREVIEW_MIN_HEIGHT = 24;
+const MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT = 720;
 
 function formatPluginLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function estimateMarkdownPreviewHeight(source: string): number {
+  const trimmed = source.trim();
+  if (!trimmed) return MARKDOWN_PREVIEW_MIN_HEIGHT;
+
+  const lines = source.split(/\r?\n/);
+  let height = 20;
+  let inCodeFence = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^(```|~~~)/.test(line)) {
+      inCodeFence = !inCodeFence;
+      height += 24;
+      continue;
+    }
+    if (line.length === 0) {
+      height += 10;
+      continue;
+    }
+    if (inCodeFence) {
+      height += 22;
+      continue;
+    }
+    if (/^#\s+/.test(line)) {
+      height += 56;
+    } else if (/^##\s+/.test(line)) {
+      height += 42;
+    } else if (/^#{3,6}\s+/.test(line)) {
+      height += 34;
+    } else {
+      height += 28 + Math.floor(Math.max(0, line.length - 96) / 96) * 24;
+    }
+  }
+
+  return Math.min(
+    MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT,
+    Math.max(MARKDOWN_PREVIEW_MIN_HEIGHT, height),
+  );
 }
 
 interface MarkdownCellProps {
@@ -169,6 +211,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
   const previewFrameReleaseTimeoutRef = useRef<number | null>(null);
+  const previewMinHeight = useMemo(() => estimateMarkdownPreviewHeight(cell.source), [cell.source]);
 
   // Register EditorView with the cursor registry when in edit mode.
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -686,11 +729,12 @@ export const MarkdownCell = memo(function MarkdownCell({
                 darkMode={darkMode}
                 colorTheme={colorTheme}
                 hostContext={outputHostContext}
-                minHeight={24}
+                minHeight={previewMinHeight}
                 autoHeight
                 scrollPassthrough={!previewFrameInteractionActive}
                 allowWheelBoundaryScroll={previewFrameInteractionActive}
                 revealOnRender
+                reserveHeightOnReveal
                 onReady={handleFrameReady}
                 onLinkClick={handleLinkClick}
                 onMouseDown={activatePreviewFrameInteraction}
