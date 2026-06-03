@@ -1271,23 +1271,28 @@ function NotebookViewer({
     setSelectedInteractionMode("edit");
     refreshAuthState();
   }, [refreshAuthState]);
+  const shouldShowPackageEnvironmentSummary =
+    shellCapabilities.canExecute || shellCapabilities.canManagePackages;
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
       activePanelId={activeRailPanel}
       collapsed={railCollapsed}
       selectedOutlineItemId={selectedOutlineItemId}
+      packagesSummary={null}
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
           readOnly={!shellCapabilities.canManagePackages}
           header={
-            <EnvironmentSummary
-              capabilities={shellCapabilities}
-              packages={notebookViewModel.packages}
-              showPackageDetails={false}
-              className="cloud-package-summary-header"
-            />
+            shouldShowPackageEnvironmentSummary ? (
+              <EnvironmentSummary
+                capabilities={shellCapabilities}
+                packages={notebookViewModel.packages}
+                showPackageDetails={false}
+                className="cloud-package-summary-header"
+              />
+            ) : undefined
           }
         />
       }
