@@ -50,6 +50,7 @@ import { MediaProvider } from "@/components/outputs/media-provider";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { EnvironmentSummary } from "@/components/environment";
 import type { NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
@@ -1280,6 +1281,14 @@ function NotebookViewer({
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
           readOnly={!shellCapabilities.canManagePackages}
+          header={
+            <EnvironmentSummary
+              capabilities={shellCapabilities}
+              packages={notebookViewModel.packages}
+              showPackageDetails={false}
+              className="cloud-package-summary-header"
+            />
+          }
         />
       }
       onActivePanelChange={setActiveRailPanel}
@@ -1295,7 +1304,7 @@ function NotebookViewer({
       <NotebookDocumentHeader
         capabilities={shellCapabilities}
         className="cloud-room-toolbar"
-        presence={<CloudNotebookTitle notebookId={config.notebookId} />}
+        presence={<CloudNotebookTitle />}
         utilityControls={
           <>
             <CloudConnectionStatus connection={presence.connection} error={connectionError} />
@@ -1874,10 +1883,7 @@ function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabi
 }
 
 function initialCloudRailCollapsed(): boolean {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return false;
-  }
-  return window.matchMedia("(max-width: 599.98px)").matches;
+  return true;
 }
 
 function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
@@ -1894,8 +1900,8 @@ function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolea
   );
 }
 
-function CloudNotebookTitle({ notebookId }: { notebookId: string }) {
-  const title = cloudNotebookRouteTitle(notebookId);
+function CloudNotebookTitle() {
+  const title = cloudNotebookRouteTitle();
 
   return (
     <div className="cloud-notebook-title" title={title.title}>
@@ -1905,30 +1911,28 @@ function CloudNotebookTitle({ notebookId }: { notebookId: string }) {
   );
 }
 
-function cloudNotebookRouteTitle(notebookId: string): {
+function cloudNotebookRouteTitle(): {
   label: string;
   detail: string | null;
   title: string;
 } {
   const pathParts = window.location.pathname.split("/").filter(Boolean);
-  const routeNotebookId = pathParts[0] === "n" ? pathParts[1] : null;
   const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
   const decodedSlug = safeDecodeRouteSegment(routeSlug);
-  const decodedNotebookId = safeDecodeRouteSegment(routeNotebookId) ?? notebookId;
 
   if (decodedSlug) {
     const label = humanizeCloudRouteTitle(decodedSlug);
     return {
       label,
       detail: null,
-      title: `${label} (${decodedNotebookId})`,
+      title: label,
     };
   }
 
   return {
     label: "Cloud Notebook",
     detail: null,
-    title: decodedNotebookId,
+    title: "Cloud Notebook",
   };
 }
 
@@ -2014,11 +2018,16 @@ function CloudPresenceStatus({ presence }: { presence: CloudViewerPresenceState 
   return (
     <NotebookPresenceStatus
       connected={presenceDisplay.connected}
-      label={presenceDisplay.label}
+      label={compactCloudPresenceLabel(presenceDisplay.label)}
       title={presenceDisplay.title}
       variant="inline"
     />
   );
+}
+
+function compactCloudPresenceLabel(label: string): string {
+  const countMatch = /^(\d+)\s+here now$/.exec(label);
+  return countMatch?.[1] ?? label;
 }
 
 function appendEndpointPathSegment(endpoint: string, segment: string): string {

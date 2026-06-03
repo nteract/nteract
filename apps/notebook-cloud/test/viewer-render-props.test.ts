@@ -141,9 +141,14 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /identityControls=\{null\}/);
   assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
   assert.match(sourceText, /function initialCloudRailCollapsed/);
-  assert.match(sourceText, /matchMedia\("\(max-width: 599\.98px\)"\)/);
+  assert.match(
+    sourceText,
+    /function initialCloudRailCollapsed\(\): boolean \{[\s\S]*return true;/,
+  );
+  assert.match(sourceText, /<EnvironmentSummary[\s\S]*showPackageDetails=\{false\}/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
+  assert.match(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
   assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
   assert.match(
     sourceText,

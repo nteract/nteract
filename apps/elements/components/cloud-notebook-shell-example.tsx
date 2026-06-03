@@ -122,7 +122,7 @@ const cloudStateRows = [
   {
     surface: "Presence",
     owner: "Room session",
-    language: "2 here now",
+    language: "2",
     reason: "People are peers on the document; mode belongs to the view/edit control.",
   },
   {
