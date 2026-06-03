@@ -130,26 +130,12 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
-  assert.match(
-    sourceText,
-    /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState\) && !showCloudIdentityControls/,
-  );
+  assert.match(sourceText, /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState\) \? \(/);
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
-  assert.match(sourceText, /identityControls=\{[\s\S]*showCloudIdentityControls \? \(/);
-  assert.match(sourceText, /identityControls=\{[\s\S]*<CloudAuthControls/);
-  assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*showStatus=\{false\}/);
-  assert.match(
-    sourceText,
-    /<UserRound className="cloud-auth-identity-icon" aria-hidden="true" \/>/,
-  );
-  assert.match(
-    sourceText,
-    /function shouldShowCloudIdentityControls[\s\S]*authState\.mode === "anonymous"[\s\S]*return showPrototypeDevControls && hasExplicitPrototypeDevAuthSearch\(search\);/,
-  );
+  assert.match(sourceText, /identityControls=\{null\}/);
   assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
   assert.match(sourceText, /function initialCloudRailCollapsed/);
   assert.match(sourceText, /matchMedia\("\(max-width: 599\.98px\)"\)/);
-  assert.match(sourceText, /function hasExplicitPrototypeDevAuthSearch/);
   assert.match(sourceText, /presence=\{[\s\S]*<CloudPresenceStatus[\s\S]*presence=\{presence\}/);
   assert.match(sourceText, /cloudViewerPresenceDisplay,/);
   assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
@@ -167,34 +153,18 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /Only invited people can open this notebook/);
   assert.match(sourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
   assert.match(sourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
-  assert.match(sourceText, /const accessRow = connectedScope/);
   assert.match(
     sourceText,
-    /const requestedAccessRow =[\s\S]*connectedScope && connectedScope !== requestedScope/,
-  );
-  assert.match(sourceText, /description: accessDescription/);
-  assert.match(
-    sourceText,
-    /`\$\{cloudRequestedAccessLabel\(requestedScope\)\} requested for this notebook\.`/,
+    /const accessRows = useMemo\(\(\) => buildCloudShareAccessRows\(\{ acl, invites \}\), \[acl, invites\]\)/,
   );
   assert.match(
     sourceText,
-    /`\$\{cloudRequestedAccessLabel\(requestedScope\)\} requested from a local dev identity\.`/,
+    /accessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
   );
-  assert.match(sourceText, /function cloudRequestedAccessLabel/);
-  assert.match(sourceText, /function cloudGrantedAccessDescription/);
-  assert.match(
-    sourceText,
-    /`\$\{granted\} \$\{cloudRequestedAccessLabel\(requestedScope\)\} is still requested\.`/,
-  );
+  assert.match(sourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
   assert.match(
     sourceText,
     /function CloudPresenceStatus[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);[\s\S]*if \(!presenceDisplay\.connected\) \{[\s\S]*return null;/,
-  );
-  assert.match(cssText, /@media \(max-width: 360px\) \{[\s\S]*cloud-auth-identity-icon/);
-  assert.match(
-    cssText,
-    /cloud-auth-identity-summary \.cloud-auth-identity-badge > span[\s\S]*display: none;/,
   );
   assert.match(
     cssText,
@@ -202,7 +172,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     cssText,
-    /@media \(max-width: 520px\) \{[\s\S]*cloud-room-toolbar \.cloud-connection-status[\s\S]*width: 2rem;[\s\S]*cloud-room-toolbar \.cloud-connection-status span[\s\S]*display: none;/,
+    /\.cloud-connection-status \{[\s\S]*width: 1\.875rem;[\s\S]*height: 1\.875rem;/,
+  );
+  assert.match(
+    cssText,
+    /\.cloud-connection-status span \{[\s\S]*position: absolute;[\s\S]*width: 1px;[\s\S]*clip: rect\(0, 0, 0, 0\);/,
   );
   assert.match(
     cssText,
@@ -235,27 +209,26 @@ test("cloud viewer routes notebook header controls through the shared shell chro
 test("cloud viewer presents live-room failures as one host notice", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const noticesPath = new URL("../viewer/notices.tsx", import.meta.url);
+  const noticesText = readFileSync(noticesPath, "utf8");
 
-  assert.match(sourceText, /const connectionNotice = connectionError/);
   assert.match(sourceText, /const notebookHasReadableSnapshot =/);
   assert.match(
     sourceText,
     /notebookCellIds\.length > 0 \|\|[\s\S]*!\s*connectionError && snapshotResolvedRef\.current && status\.kind === "ready"/,
   );
-  assert.match(
-    sourceText,
-    /cloudConnectionNoticeDisplay\(connectionError, notebookHasReadableSnapshot\)/,
-  );
-  assert.match(sourceText, /const shouldShowStatusNotice =/);
-  assert.match(sourceText, /isStatusDerivedFromConnectionError\(status, connectionError\)/);
-  assert.match(sourceText, /function isStatusDerivedFromConnectionError/);
-  assert.match(sourceText, /function cloudConnectionNoticeDisplay/);
-  assert.match(sourceText, /hasReadableSnapshot: boolean/);
-  assert.match(sourceText, /Live room unavailable\./);
-  assert.match(sourceText, /The notebook will load once the account or connection is refreshed\./);
-  assert.match(sourceText, /tone=\{connectionNotice\.tone\}/);
-  assert.match(sourceText, /Live room reconnecting\./);
-  assert.match(sourceText, /tone: "warning"/);
+  assert.match(noticesText, /const connectionNotice = connectionError/);
+  assert.match(noticesText, /cloudConnectionNoticeDisplay\(connectionError, hasReadableSnapshot\)/);
+  assert.match(noticesText, /const shouldShowStatusNotice =/);
+  assert.match(noticesText, /isStatusDerivedFromConnectionError\(status, connectionError\)/);
+  assert.match(noticesText, /function isStatusDerivedFromConnectionError/);
+  assert.match(noticesText, /function cloudConnectionNoticeDisplay/);
+  assert.match(noticesText, /hasReadableSnapshot: boolean/);
+  assert.match(noticesText, /Live room unavailable\./);
+  assert.match(noticesText, /The notebook will load once the account or connection is refreshed\./);
+  assert.match(noticesText, /tone=\{connectionNotice\.tone\}/);
+  assert.match(noticesText, /Live room reconnecting\./);
+  assert.match(noticesText, /tone: "warning"/);
   assert.match(sourceText, /function cloudConnectionStatusErrorTitle/);
   assert.match(sourceText, /aria-label=\{title\}/);
   assert.match(
