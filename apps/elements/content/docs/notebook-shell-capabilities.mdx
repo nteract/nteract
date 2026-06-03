@@ -19,6 +19,11 @@ desktop-to-remote rooms, public hosted viewing, hosted editing/ownership,
 credential attention, multi-operator attribution, mixed identity providers,
 runtime peers, unavailable runtimes, and untrusted dependencies.
 
+Each scenario also names the source facts and host boundaries behind the shared
+projection. That keeps the catalog honest: the shell may render access,
+identity, package, runtime, and trust state, but the host still owns credentials,
+ACLs, filesystem permissions, runtime authority, and storage/blob resolution.
+
 <NotebookShellCapabilitiesExample />
 
 ## Implementation intent
@@ -27,6 +32,15 @@ runtime peers, unavailable runtimes, and untrusted dependencies.
   state, or Elements fixtures.
 - Shared surfaces consume the capability object and view model instead of
   importing desktop or cloud state directly.
+- Source-fact rows describe what the host adapter supplies; host-boundary rows
+  describe which authority still enforces the action.
+- `ElementsNotebookEnvironment` is the docs-local host adapter for shell pages:
+  it supplies capabilities, rail state, document facts, outputs, runtime facts,
+  projected host notices, and inert callbacks without daemon, cloud, or
+  catalog-specific side effects.
+- Notice policy is host-owned data. The shared shell owns placement and renders
+  `NotebookNotice`; hosts still own credentials, diagnostics, runtime reconnect,
+  trust review, sharing, and reset actions.
 - Cloud editor access can edit notebook content when the host grants that mode;
   sharing remains owner-only, and execution/package management remain disabled
   in hosted previews for now.

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   Check,
   CircleSlash2,
   Cloud,
@@ -8,6 +9,7 @@ import {
   Eye,
   FileCode2,
   GitBranch,
+  Info,
   KeyRound,
   ListTree,
   Monitor,
@@ -21,8 +23,17 @@ import {
   Workflow,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { NotebookShellCapabilities } from "@/components/notebook";
+import {
+  NotebookNotice,
+  NotebookNoticeAction,
+  type NotebookNoticeTone,
+  type NotebookShellCapabilities,
+} from "@/components/notebook";
 import { cn } from "@/lib/utils";
+import {
+  ElementsNotebookEnvironment,
+  useElementsNotebookEnvironment,
+} from "@/components/elements-notebook-environment";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
@@ -245,6 +256,10 @@ export function NotebookShellCapabilitiesExample() {
         ))}
       </section>
 
+      <ElementsNotebookEnvironment scenarioId="cloud-editor" initialRailCollapsed>
+        <ElementsFixtureEnvironmentCard />
+      </ElementsNotebookEnvironment>
+
       <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
           <div className="flex items-center gap-2 border-b border-fd-border p-4">
@@ -355,14 +370,141 @@ export function NotebookShellCapabilitiesExample() {
   );
 }
 
+function ElementsFixtureEnvironmentCard() {
+  const environment = useElementsNotebookEnvironment();
+  const firstCellId = environment.document.viewModel.cellIds[0] ?? null;
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="flex items-center gap-2 border-b border-fd-border p-4">
+        <TestTube2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+        <h2 className="text-sm font-semibold">Elements fixture environment</h2>
+      </div>
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
+        <div>
+          <p className="text-xs leading-5 text-fd-muted-foreground">
+            Catalog pages that need notebook context can wrap production shell components in
+            `ElementsNotebookEnvironment`. The provider emits scenario capabilities, rail state,
+            document facts, output fixtures, runtime/package projections, and inert host actions.
+          </p>
+          <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+            <FixtureFact label="Scenario" value={environment.scenario.title} />
+            <FixtureFact
+              label="Access"
+              value={`${environment.capabilities.access.source}:${environment.capabilities.access.level}`}
+            />
+            <FixtureFact
+              label="Document"
+              value={`${environment.document.cellCount} cells, ${environment.rail.outlineItemCount} headings`}
+            />
+            <FixtureFact
+              label="Packages"
+              value={`${environment.rail.packageCount} projected packages`}
+            />
+            <FixtureFact label="Runtime" value={environment.runtime.label} />
+            <FixtureFact
+              label="Outputs"
+              value={`${environment.outputs.outputAreaOutputs.length} outputs, ${environment.outputs.widgetOutputs.length} widget views`}
+            />
+            <FixtureFact label="Notices" value={`${environment.notices.length} projected`} />
+          </dl>
+          {environment.notices.length ? (
+            <div className="mt-4 space-y-2">
+              {environment.notices.slice(0, 3).map((notice) => (
+                <NotebookNotice
+                  key={`${notice.tone}-${notice.title}`}
+                  tone={notice.tone}
+                  icon={<NoticeIcon tone={notice.tone} />}
+                  title={notice.title}
+                  details={<span>{notice.details}</span>}
+                  actions={
+                    notice.actionLabel ? (
+                      <NotebookNoticeAction
+                        onClick={() =>
+                          environment.actions.recordHostAction(
+                            `notice:${notice.actionLabel?.toLowerCase()}`,
+                          )
+                        }
+                      >
+                        {notice.actionLabel}
+                      </NotebookNoticeAction>
+                    ) : null
+                  }
+                  className="rounded-md border"
+                >
+                  {notice.body}
+                </NotebookNotice>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div className="rounded-md border border-fd-border bg-fd-background p-3">
+          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+            Inert host callbacks
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <FixtureActionButton
+              label="Open packages"
+              onClick={() => environment.actions.setActivePanel("packages")}
+            />
+            <FixtureActionButton
+              label={environment.rail.collapsed ? "Expand rail" : "Collapse rail"}
+              onClick={() => environment.actions.setRailCollapsed(!environment.rail.collapsed)}
+            />
+            <FixtureActionButton
+              label="Select first cell"
+              onClick={() => environment.actions.selectCell(firstCellId)}
+            />
+            <FixtureActionButton
+              label="Host action"
+              onClick={() => environment.actions.recordHostAction("request-edit")}
+            />
+            <FixtureActionButton label="Clear" onClick={environment.actions.clearEventLog} />
+          </div>
+          <ol className="mt-3 min-h-20 space-y-1 font-mono text-[11px] text-fd-muted-foreground">
+            {environment.actions.eventLog.length ? (
+              environment.actions.eventLog.map((item, index) => (
+                <li key={`${item}-${index}`}>{item}</li>
+              ))
+            ) : (
+              <li>No events recorded</li>
+            )}
+          </ol>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FixtureFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+        {label}
+      </dt>
+      <dd className="mt-1 text-fd-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function FixtureActionButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="rounded-md border border-fd-border bg-fd-card px-2 py-1 text-xs font-medium text-fd-foreground transition-colors hover:bg-fd-muted"
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  );
+}
+
 function CapabilityState({ enabled }: { enabled: boolean }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium",
-        enabled
-          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-          : "border-fd-border bg-fd-muted text-fd-muted-foreground",
+        "inline-flex items-center gap-1.5 text-[11px] font-medium",
+        enabled ? "text-emerald-700 dark:text-emerald-300" : "text-fd-muted-foreground",
       )}
     >
       {enabled ? (
@@ -393,33 +535,95 @@ function ScenarioCard({ scenario }: { scenario: ElementsNotebookScenario }) {
         : "local fixture";
 
   return (
-    <article className="rounded-lg border border-fd-border bg-fd-card p-3 text-xs leading-5">
+    <article className="rounded-lg border border-fd-border bg-fd-card text-xs leading-5">
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0 px-3 pt-3">
           <div className="font-semibold text-fd-foreground">{scenario.title}</div>
           <div className="mt-1 text-[11px] text-fd-muted-foreground">{scenario.eyebrow}</div>
         </div>
-        <span className="shrink-0 rounded-full border border-fd-border bg-fd-background px-2 py-0.5 text-[10px] text-fd-muted-foreground">
-          {scenario.capabilities.access.source}:{scenario.capabilities.access.level}
+        <span className="shrink-0 px-3 pt-3 text-[10px] font-medium text-fd-muted-foreground">
+          {scenario.capabilities.access.source} / {scenario.capabilities.access.level}
         </span>
       </div>
-      <p className="mt-2 text-fd-muted-foreground">{scenario.summary}</p>
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        <ScenarioPill label={authLabel} />
-        <ScenarioPill label={scenario.runtimeLabel} />
-        <ScenarioPill label={scenario.packageSummary} />
-        <ScenarioPill
-          label={enabledLabels.length ? `can change: ${enabledLabels.join(", ")}` : "view only"}
+      <p className="px-3 pt-2 text-fd-muted-foreground">{scenario.summary}</p>
+      <div className="mt-3 divide-y divide-fd-border/70 border-y border-fd-border/70">
+        <ScenarioSignal label="Auth" value={authLabel} />
+        <ScenarioSignal
+          label="Runtime"
+          value={`${scenario.runtimeLabel} / ${scenario.packageSummary}`}
         />
+        <ScenarioSignal
+          label="Notices"
+          value={scenario.notices.length ? `${scenario.notices.length} projected` : "none"}
+        />
+        <ScenarioSignal
+          label="Changes"
+          value={enabledLabels.length ? enabledLabels.join(", ") : "view only"}
+        />
+      </div>
+      <dl className="grid gap-2 px-3 pt-3">
+        {scenario.sourceFacts.map((fact) => (
+          <div key={fact.label}>
+            <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+              {fact.label}
+            </dt>
+            <dd className="mt-0.5 text-[11px] leading-4 text-fd-foreground">{fact.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {scenario.notices.length ? (
+        <div className="mt-3 border-t border-fd-border px-3 pt-3">
+          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+            Projected notices
+          </div>
+          <ul className="mt-2 space-y-1.5">
+            {scenario.notices.map((notice) => (
+              <li key={`${notice.tone}-${notice.title}`} className="text-[11px] leading-4">
+                <span className="font-medium text-fd-foreground">{notice.title}</span>
+                <span className="text-fd-muted-foreground"> · {notice.body}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <div className="mt-3 border-t border-fd-border px-3 py-3">
+        <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+          Host boundary
+        </div>
+        <ul className="mt-2 space-y-2">
+          {scenario.hostBoundaries.map((boundary) => (
+            <li key={boundary.surface} className="text-[11px] leading-4">
+              <span className="font-medium text-fd-foreground">{boundary.surface}: </span>
+              <span className="text-fd-muted-foreground">{boundary.sharedSurface}</span>
+              <span className="text-fd-muted-foreground">; </span>
+              <span className="text-fd-muted-foreground">{boundary.hostAuthority}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </article>
   );
 }
 
-function ScenarioPill({ label }: { label: string }) {
+function NoticeIcon({ tone }: { tone: NotebookNoticeTone }) {
+  switch (tone) {
+    case "warning":
+    case "error":
+      return <AlertTriangle className="size-3.5" />;
+    case "success":
+      return <ShieldCheck className="size-3.5" />;
+    default:
+      return <Info className="size-3.5" />;
+  }
+}
+
+function ScenarioSignal({ label, value }: { label: string; value: string }) {
   return (
-    <span className="rounded-full border border-fd-border bg-fd-background px-2 py-0.5 text-[10px] text-fd-muted-foreground">
-      {label}
-    </span>
+    <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 py-1.5">
+      <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
+        {label}
+      </div>
+      <div className="min-w-0 text-[11px] text-fd-foreground">{value}</div>
+    </div>
   );
 }

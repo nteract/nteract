@@ -41,8 +41,11 @@ import {
   type NotebookShellCapabilities,
 } from "@/components/notebook";
 import { EnvironmentSummary } from "@/components/environment";
-import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
+import {
+  ElementsNotebookEnvironment,
+  useElementsNotebookEnvironment,
+} from "@/components/elements-notebook-environment";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
@@ -157,10 +160,16 @@ const cloudStateRows = [
 ];
 
 export function CloudNotebookShellExample() {
-  const scenario = getElementsNotebookScenario("cloud-owner");
+  return (
+    <ElementsNotebookEnvironment scenarioId="cloud-owner" initialRailCollapsed>
+      <CloudNotebookShellExampleContent />
+    </ElementsNotebookEnvironment>
+  );
+}
+
+function CloudNotebookShellExampleContent() {
+  const { actions, rail: railState, scenario } = useElementsNotebookEnvironment();
   const [mode, setMode] = useState<CloudModeState>("edit");
-  const [activePanel, setActivePanel] = useState<NotebookRailPanelId>("outline");
-  const [railCollapsed, setRailCollapsed] = useState(true);
   const shellCapabilities = withInteractionProjection(
     scenario.capabilities,
     cloudInteractionProjection(scenario, mode),
@@ -169,8 +178,8 @@ export function CloudNotebookShellExample() {
   const rail = (
     <NotebookDocumentRail
       viewModel={scenario.viewModel}
-      activePanelId={activePanel}
-      collapsed={railCollapsed}
+      activePanelId={railState.activePanelId}
+      collapsed={railState.collapsed}
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={scenario.viewModel.packages}
@@ -186,8 +195,8 @@ export function CloudNotebookShellExample() {
           }
         />
       }
-      onActivePanelChange={setActivePanel}
-      onCollapsedChange={setRailCollapsed}
+      onActivePanelChange={actions.setActivePanel}
+      onCollapsedChange={actions.setRailCollapsed}
       className="bg-background"
     />
   );
