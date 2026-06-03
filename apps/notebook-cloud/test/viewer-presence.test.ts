@@ -103,7 +103,7 @@ describe("cloud viewer presence", () => {
     assert.equal(state.ownPeerLabel, "Alice Demo");
     assert.deepEqual(cloudViewerPresenceDisplay(state), {
       label: "2 here now",
-      title: "2 participants are in this notebook; You are Alice Demo",
+      title: "2 participants; you are Alice Demo",
       connected: true,
     });
   });

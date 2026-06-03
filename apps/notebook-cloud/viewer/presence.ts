@@ -89,11 +89,8 @@ export function cloudViewerPresenceDisplay(
   }
 
   const count = Math.max(1, state.roomPeerCount);
-  const readerTitle =
-    count === 1
-      ? "1 participant is in this notebook"
-      : `${count} participants are in this notebook`;
-  const selfTitle = state.ownPeerLabel ? `You are ${state.ownPeerLabel}` : null;
+  const readerTitle = count === 1 ? "1 participant" : `${count} participants`;
+  const selfTitle = state.ownPeerLabel ? `you are ${state.ownPeerLabel}` : null;
   return {
     label: count === 1 ? "1 here now" : `${count} here now`,
     title: selfTitle ? `${readerTitle}; ${selfTitle}` : readerTitle,
