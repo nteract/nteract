@@ -1155,11 +1155,16 @@ function NotebookViewer({
         hasCodeCells: codeCellCount > 0,
         selectedMode: selectedInteractionMode,
         canAcceptCellMutations,
+        hostCapabilities: {
+          canManageSharing: Boolean(config.aclEndpoint && config.invitesEndpoint),
+        },
       }),
     [
       authState,
       canAcceptCellMutations,
       codeCellCount,
+      config.aclEndpoint,
+      config.invitesEndpoint,
       connectionActorLabel,
       connectionScope,
       selectedInteractionMode,

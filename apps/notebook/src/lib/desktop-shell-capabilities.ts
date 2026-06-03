@@ -14,6 +14,9 @@ export interface DesktopNotebookShellCapabilityInput {
   sessionReady: boolean;
   localActor: string | null;
   connectionScope: string | null;
+  hostCapabilities?: {
+    canManageSharing?: boolean;
+  };
 }
 
 export function desktopNotebookShellCapabilities({
@@ -21,6 +24,7 @@ export function desktopNotebookShellCapabilities({
   sessionReady,
   localActor,
   connectionScope,
+  hostCapabilities,
 }: DesktopNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
   const source = desktopAccessSourceFromActor(connectionScope, localActor);
@@ -72,7 +76,8 @@ export function desktopNotebookShellCapabilities({
     canToggleCode: true,
     canViewPackages: true,
     canManagePackages: canWriteDocument,
-    canManageSharing: accessLevel === "owner" && source === "cloud",
+    canManageSharing:
+      Boolean(hostCapabilities?.canManageSharing) && accessLevel === "owner" && source === "cloud",
     interaction,
     access: {
       ...access,
