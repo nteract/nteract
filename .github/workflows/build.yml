@@ -1121,6 +1121,7 @@ jobs:
             --package prewarm \
             --package nteract \
             --package nteract-kernel-launcher \
+            --reinstall-package runtimed \
             --group dev
 
       - name: Run runtimed-py unit tests

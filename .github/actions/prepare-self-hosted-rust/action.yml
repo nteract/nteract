@@ -12,12 +12,14 @@ runs:
         cargo_home="${runner_cache_root}/${runner_cache_name}/cargo"
         rustup_home="${runner_cache_root}/${runner_cache_name}/rustup"
         tool_home="${runner_cache_root}/${runner_cache_name}/tools"
+        uv_cache_dir="${runner_cache_root}/${runner_cache_name}/uv"
 
         # A runner service runs one job at a time, so these homes can persist
         # across jobs without concurrent writes from sibling runner services.
-        mkdir -p "${cargo_home}/bin" "${rustup_home}" "${tool_home}"
+        mkdir -p "${cargo_home}/bin" "${rustup_home}" "${tool_home}" "${uv_cache_dir}"
 
         echo "CARGO_HOME=${cargo_home}" >> "${GITHUB_ENV}"
         echo "RUSTUP_HOME=${rustup_home}" >> "${GITHUB_ENV}"
         echo "NTERACT_RUNNER_TOOL_HOME=${tool_home}" >> "${GITHUB_ENV}"
+        echo "UV_CACHE_DIR=${uv_cache_dir}" >> "${GITHUB_ENV}"
         echo "${cargo_home}/bin" >> "${GITHUB_PATH}"
