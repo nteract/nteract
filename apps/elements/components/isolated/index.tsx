@@ -80,6 +80,7 @@ export interface IsolatedFrameProps {
   autoHeight?: boolean;
   className?: string;
   allowWheelBoundaryScroll?: boolean;
+  forwardWheelBoundaryScroll?: boolean;
   scrollPassthrough?: boolean;
   revealOnRender?: boolean;
   reserveHeightOnReveal?: boolean;

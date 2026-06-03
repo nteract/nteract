@@ -44,6 +44,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
     {
       allowWheelBoundaryScroll?: boolean;
       autoHeight?: boolean;
+      forwardWheelBoundaryScroll?: boolean;
       hostContext?: unknown;
       onMessage?: (message: unknown) => void;
       onMouseUp?: (params: { hasSelection?: boolean }) => void;
@@ -54,6 +55,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
     {
       allowWheelBoundaryScroll,
       autoHeight,
+      forwardWheelBoundaryScroll,
       hostContext,
       onMessage,
       onMouseUp,
@@ -94,6 +96,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
       <div
         data-allow-wheel-boundary-scroll={String(allowWheelBoundaryScroll)}
         data-auto-height={String(autoHeight)}
+        data-forward-wheel-boundary-scroll={String(forwardWheelBoundaryScroll)}
         data-host-context={JSON.stringify(hostContext ?? null)}
         data-scroll-passthrough={String(scrollPassthrough)}
         data-testid="isolated-frame"
@@ -326,6 +329,9 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "false",
     );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
+      "false",
+    );
   });
 
   it("passes host context through to isolated output frames", () => {
@@ -406,6 +412,9 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "true",
     );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
+      "false",
+    );
 
     // Pointer out while a button is held used to be a no-op and remains so —
     // active drags keep the frame focused.
@@ -414,6 +423,9 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "true",
+    );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
+      "false",
     );
 
     // Pointer out without buttons no longer drops focus; the user has to
@@ -424,6 +436,9 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "true",
+    );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
+      "false",
     );
   });
 
@@ -476,6 +491,9 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "true",
     );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
+      "true",
+    );
   });
 
   it("puts parquet iframe outputs on scroll passthrough so the page wheels through sift", () => {
@@ -487,6 +505,9 @@ describe("OutputArea iframe theme sync", () => {
 
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "false",
+    );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
       "false",
     );
   });
@@ -501,6 +522,9 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "false",
     );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
+      "false",
+    );
   });
 
   it("locks the wheel boundary for an engaged Vega/Altair chart so zoom stays in the chart", () => {
@@ -513,6 +537,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
 
     fireEvent.keyDown(activationWell, { key: "Escape" });
 
@@ -534,6 +559,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
   });
 
   it("aligns sift before engaging iframe scrolling and releases on Escape", () => {
@@ -568,6 +594,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
     expect(screen.queryByText("Click inside the table to scroll")).toBeNull();
 
     fireEvent.keyDown(activationWell, { key: "Escape" });
@@ -589,6 +616,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
     expect(screen.queryByRole("button", { name: "Click inside the table to scroll" })).toBeNull();
   });
 
@@ -618,6 +646,9 @@ describe("OutputArea iframe theme sync", () => {
 
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "false",
+    );
+    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
       "false",
     );
   });
@@ -685,8 +716,10 @@ describe("OutputArea iframe theme sync", () => {
     expect(frames).toHaveLength(2);
     expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frames[0].getAttribute("data-allow-wheel-boundary-scroll")).toBe("true");
+    expect(frames[0].getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
     expect(frames[1].getAttribute("data-scroll-passthrough")).toBe("true");
     expect(frames[1].getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frames[1].getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([

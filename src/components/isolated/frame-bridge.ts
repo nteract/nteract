@@ -255,6 +255,17 @@ export interface InteractionStateMessage {
 }
 
 /**
+ * Parent-side wheel-boundary policy for iframe outputs.
+ */
+export interface WheelBoundaryPolicyMessage {
+  type: "wheel_boundary_policy";
+  payload: {
+    /** Whether the iframe should forward scroll-boundary wheel deltas to the host. */
+    enabled: boolean;
+  };
+}
+
+/**
  * All message types that can be sent from parent to iframe.
  */
 export type ParentToIframeMessage =
@@ -274,7 +285,8 @@ export type ParentToIframeMessage =
   | BridgeReadyMessage
   | SearchMessage
   | SearchNavigateMessage
-  | InteractionStateMessage;
+  | InteractionStateMessage
+  | WheelBoundaryPolicyMessage;
 
 // --- Message Types: Iframe → Parent ---
 

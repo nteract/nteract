@@ -19,6 +19,7 @@ import {
   type IsolatedDiagnosticHandler,
   type IsolatedFrameHandle,
   outputAllowsScrollPassthrough,
+  outputNeedsIsolation,
   type OutputSegment,
   outputUsesSift,
   outputUsesWheelOwningFrame,
@@ -693,6 +694,14 @@ function OutputAreaSingle({
   const shouldLockWheelBoundary = hasWheelOwningOutputs && staticFrameInteractionActive;
   const allowWheelBoundaryScroll =
     !focused && !shouldScrollPassthroughFrame && !shouldLockWheelBoundary;
+  const shouldForwardWheelBoundaryScroll =
+    allowWheelBoundaryScroll &&
+    !hasWidgets &&
+    !hasWheelOwningOutputs &&
+    outputs.some(
+      (output) =>
+        outputNeedsIsolation(output, priority) && !outputAllowsScrollPassthrough(output, priority),
+    );
   const showSiftInteractionCue =
     shouldMountIsolatedFrame &&
     hasSiftOutputs &&
@@ -1099,6 +1108,7 @@ function OutputAreaSingle({
                 maxHeight={isolatedOutputWellMaxHeight}
                 autoHeight={shouldIsolate && !focused}
                 allowWheelBoundaryScroll={allowWheelBoundaryScroll}
+                forwardWheelBoundaryScroll={shouldForwardWheelBoundaryScroll}
                 scrollPassthrough={shouldScrollPassthroughFrame}
                 onReady={handleIsolatedFrameReady}
                 onLinkClick={onLinkClick}
