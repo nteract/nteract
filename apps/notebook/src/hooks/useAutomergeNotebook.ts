@@ -69,6 +69,24 @@ function projectExecutionViewChangeset(handle: NotebookHandle) {
   return projector.call(handle);
 }
 
+function preWarmCellRenderers(cells: readonly NotebookCell[]) {
+  const pluginMimes = new Set<string>();
+  for (const cell of cells) {
+    if (cell.cell_type === "markdown" && cell.source.trim().length > 0) {
+      pluginMimes.add("text/markdown");
+      continue;
+    }
+    if (cell.cell_type !== "code") continue;
+    for (const output of cell.outputs) {
+      if (!isDisplayCapableJupyterOutput(output)) continue;
+      for (const mime of Object.keys(output.data)) {
+        if (needsPlugin(mime)) pluginMimes.add(mime);
+      }
+    }
+  }
+  if (pluginMimes.size > 0) preWarmForMimes(pluginMimes);
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -155,21 +173,9 @@ export function useNotebook() {
       blobResolver,
       outputCacheRef.current,
     );
-    // Pre-warm plugin cache from output MIME types so iframe rendering
-    // doesn't wait for async loads
-    const pluginMimes: string[] = [];
-    for (const c of newCells) {
-      if (c.cell_type === "code") {
-        for (const output of c.outputs) {
-          if (isDisplayCapableJupyterOutput(output)) {
-            for (const mime of Object.keys(output.data)) {
-              if (needsPlugin(mime)) pluginMimes.push(mime);
-            }
-          }
-        }
-      }
-    }
-    if (pluginMimes.length > 0) preWarmForMimes(pluginMimes);
+    // Pre-warm renderer plugins before cells paint so document-like markdown
+    // and output iframes do not wait for async chunk loads on first render.
+    preWarmCellRenderers(newCells);
     replaceNotebookCells(newCells);
     logger.debug(
       `[automerge-notebook] Full materialization: ${snapshots.length} cells in ${(performance.now() - start).toFixed(1)}ms`,
@@ -185,6 +191,7 @@ export function useNotebook() {
       outputCacheRef.current,
       getBlobResolver(),
     );
+    preWarmCellRenderers(newCells);
     replaceNotebookCells(newCells);
   }, []);
 
