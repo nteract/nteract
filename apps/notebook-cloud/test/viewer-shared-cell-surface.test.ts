@@ -9,7 +9,7 @@ test("cloud notebook body renders through the desktop NotebookView surface", () 
   assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/components\/NotebookView"/);
   assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
   assert.match(sourceText, /<NotebookView[\s\S]*capabilities=\{shellCapabilities\}/);
-  assert.match(sourceText, /<NotebookView[\s\S]*autoSeedEmptyNotebook=\{false\}/);
+  assert.match(sourceText, /<NotebookView[\s\S]*canAcceptCellMutations=\{canAcceptCellMutations\}/);
   assert.doesNotMatch(sourceText, /canAcceptCellMutations=\{false\}/);
   assert.doesNotMatch(sourceText, /readOnly=\{!canEditMarkdown\}/);
   assert.doesNotMatch(sourceText, /import \{ CloudLiveNotebook \}/);
@@ -119,17 +119,14 @@ test("cloud package rail stays package-only and leaves sync/env state to app chr
 });
 
 test("cloud identity chrome renders through the shared actor projection surface", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourcePath = new URL("../viewer/shell-capabilities.ts", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /NotebookIdentityBadge/);
-  assert.match(sourceText, /notebookActorIdentityFromAccess/);
-  assert.match(sourceText, /capabilities=\{shellCapabilities\}/);
-  assert.match(
-    sourceText,
-    /const actor = notebookActorIdentityFromAccess\(capabilities\.access, capabilities\.auth\)/,
-  );
-  assert.match(sourceText, /<NotebookIdentityBadge[\s\S]*actor=\{actor\}/);
+  assert.match(sourceText, /notebookActorProjectionFromAccess/);
+  assert.match(sourceText, /notebookActorProjectionFromRuntime/);
+  assert.match(sourceText, /const accessActor = withCloudIdentityImage/);
+  assert.match(sourceText, /actor: accessActor/);
+  assert.match(sourceText, /actor: runtimeActor/);
 });
 
 test("cloud presence chrome renders through the shared shell component", () => {

@@ -12,8 +12,12 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/capabilities\?: NotebookShellCapabilities;/);
     expect(sourceText).toMatch(/capabilities\?\.canEditCells \?\? !readOnly/);
     expect(sourceText).toMatch(/capabilities\?\.canEditMarkdown \?\? !readOnly/);
+    // Structure-edit gating now lives in computeCanMutateCells (see
+    // notebook-view-mutation-gate.test.ts for the behavioral truth table).
+    // NotebookView must still route through that helper with the host gate,
+    // capabilities, and readOnly fallback.
     expect(sourceText).toMatch(
-      /capabilities\?\.canEditStructure \?\? \(canAcceptCellMutations && !readOnly\)/,
+      /canMutateCells = computeCanMutateCells\(\{ canAcceptCellMutations, capabilities, readOnly \}\)/,
     );
     expect(sourceText).toMatch(/capabilities\?\.canExecute \?\? !readOnly/);
     expect(sourceText).toMatch(/<CodeCell[\s\S]*canExecute=\{canExecuteCells\}/);

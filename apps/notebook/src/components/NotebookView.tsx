@@ -33,6 +33,7 @@ import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { useFocusedCellId, useSearchCurrentMatch } from "@/components/notebook/state/cell-ui-state";
 import { logger } from "../lib/logger";
+import { computeCanMutateCells } from "../lib/notebook-mutation-gate";
 import {
   getCellById,
   getNotebookCellsSnapshot,
@@ -376,7 +377,7 @@ function NotebookViewContent({
   const tailScrollFrameRef = useRef<number | null>(null);
   const canEditCodeCellSources = capabilities?.canEditCells ?? !readOnly;
   const canEditMarkdownSources = capabilities?.canEditMarkdown ?? !readOnly;
-  const canMutateCells = capabilities?.canEditStructure ?? (canAcceptCellMutations && !readOnly);
+  const canMutateCells = computeCanMutateCells({ canAcceptCellMutations, capabilities, readOnly });
   const canExecuteCells = capabilities?.canExecute ?? !readOnly;
 
   // Read transient UI state from the store instead of props
