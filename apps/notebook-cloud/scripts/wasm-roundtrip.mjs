@@ -2,6 +2,7 @@ import { access, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FrameType } from "runtimed";
+import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import {
   clientForSocket,
   closeClient,
@@ -11,7 +12,7 @@ import {
 } from "./raw-websocket-client.mjs";
 import { assertWasmRoundtripAuthEnv, credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
 
-const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
+const baseUrl = notebookCloudBaseUrl();
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `wasm-${Date.now()}`;
 const runtimeStateDocId = `runtime-state:${randomUUID()}`;

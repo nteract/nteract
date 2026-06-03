@@ -10,12 +10,13 @@ import {
   notebookIdFromEnvOrGenerated,
   vanityNameFromEnvOrNotebookName,
 } from "./publish-notebook-id.mjs";
+import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 import { loadRuntimedNode } from "./runtimed-node-loader.mjs";
 
 const rt = loadRuntimedNode();
 
-const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
+const baseUrl = notebookCloudBaseUrl();
 const sourceNotebookId = process.env.NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID;
 const preset = process.env.NOTEBOOK_CLOUD_LIVE_PRESET ?? "mathnet";
 const notebookId = notebookIdFromEnvOrGenerated();

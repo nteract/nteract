@@ -8,9 +8,10 @@ import {
   runtimeStateDocIdFromEnvOrDefault,
   vanityNameFromEnvOrNotebookName,
 } from "./publish-notebook-id.mjs";
+import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 
-const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
+const baseUrl = notebookCloudBaseUrl();
 const fixtureName = process.env.NOTEBOOK_CLOUD_FIXTURE ?? "output_streaming";
 const notebookId = notebookIdFromEnvOrGenerated();
 const vanityName = vanityNameFromEnvOrNotebookName(fixtureName);
