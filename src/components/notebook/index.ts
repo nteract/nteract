@@ -40,14 +40,8 @@ export {
   type NotebookNoticeStackProps,
   type NotebookNoticeTone,
 } from "./NotebookNotice";
-export {
-  RuntimeDecisionDialog,
-  type RuntimeDecisionDialogProps,
-} from "./RuntimeDecisionDialog";
-export {
-  TrustDialog,
-  type TrustDialogProps,
-} from "./TrustDialog";
+export { RuntimeDecisionDialog, type RuntimeDecisionDialogProps } from "./RuntimeDecisionDialog";
+export { TrustDialog, type TrustDialogProps } from "./TrustDialog";
 export {
   EnvBuildDecisionDialog,
   extractCondaEnvCreateCommand,
