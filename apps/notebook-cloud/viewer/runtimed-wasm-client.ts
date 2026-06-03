@@ -1,3 +1,7 @@
+import {
+  notebookInteractionTargetToPresenceTarget,
+  type NotebookInteractionTarget,
+} from "runtimed";
 import type { NotebookHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
 type RuntimedWasmModule = typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
@@ -98,6 +102,20 @@ export function encodeSelectionPresenceAfterInit(
     anchorCol,
     headLine,
     headCol,
+  );
+}
+
+export function encodeInteractionPresenceAfterInit(
+  peerId: string,
+  peerLabel: string,
+  actorLabel: string,
+  target: NotebookInteractionTarget,
+): Uint8Array {
+  return runtimedWasmModuleAfterInit().encode_interaction_presence(
+    peerId,
+    peerLabel,
+    actorLabel,
+    notebookInteractionTargetToPresenceTarget(target),
   );
 }
 

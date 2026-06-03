@@ -51,6 +51,34 @@ Deno.test("Presence: standalone decoder reads real cursor CBOR", () => {
   });
 });
 
+Deno.test("Presence: standalone decoder reads real interaction CBOR", () => {
+  const payload = mod.encode_interaction_presence(
+    "client-peer",
+    "Alice",
+    "user:dev:alice/desktop:browser",
+    {
+      kind: "output",
+      cell_id: "cell-plot",
+      output_id: "out-1",
+    },
+  );
+
+  const decoded = mod.decode_presence_frame(payload);
+
+  assertEquals(decoded, {
+    type: "update",
+    peer_id: "client-peer",
+    peer_label: "Alice",
+    actor_label: "user:dev:alice/desktop:browser",
+    channel: "interaction",
+    data: {
+      kind: "output",
+      cell_id: "cell-plot",
+      output_id: "out-1",
+    },
+  });
+});
+
 Deno.test("Presence: generic JS object encoder round-trips through CBOR", () => {
   const message = {
     type: "update",
@@ -64,6 +92,25 @@ Deno.test("Presence: generic JS object encoder round-trips through CBOR", () => 
       anchor_col: 2,
       head_line: 3,
       head_col: 4,
+    },
+  };
+
+  const encoded = mod.encode_presence_frame(message);
+
+  assertEquals(mod.decode_presence_frame(encoded), message);
+});
+
+Deno.test("Presence: generic JS object encoder round-trips interaction targets", () => {
+  const message = {
+    type: "update",
+    peer_id: "client-peer",
+    peer_label: "Alice",
+    actor_label: "user:dev:alice/desktop:browser",
+    channel: "interaction",
+    data: {
+      kind: "markdown_anchor",
+      cell_id: "cell-md",
+      anchor_id: "findings",
     },
   };
 
@@ -100,6 +147,38 @@ Deno.test("Presence: ingress rewrite stamps trusted peer and principal", () => {
       cell_id: "cell-2",
       line: 5,
       column: 7,
+    },
+  });
+});
+
+Deno.test("Presence: ingress rewrite permits interaction targets", () => {
+  const payload = mod.encode_interaction_presence(
+    "client-forged-peer",
+    "Mallory",
+    "user:dev:mallory/agent:codex:s1",
+    {
+      kind: "output",
+      cell_id: "cell-plot",
+    },
+  );
+
+  const rewritten = mod.rewrite_presence_ingress(
+    payload,
+    "server-peer",
+    "Alice",
+    "user:dev:alice",
+    "desktop:browser",
+  );
+
+  assertEquals(mod.decode_presence_frame(rewritten), {
+    type: "update",
+    peer_id: "server-peer",
+    peer_label: "Alice",
+    actor_label: "user:dev:alice/agent:codex:s1",
+    channel: "interaction",
+    data: {
+      kind: "output",
+      cell_id: "cell-plot",
     },
   });
 });
@@ -190,6 +269,16 @@ Deno.test("Presence: ingress rewrite restamps clear-channel peer id", () => {
     type: "clear_channel",
     peer_id: "server-peer",
     channel: "cursor",
+  });
+});
+
+Deno.test("Presence: clear-channel encoder accepts interaction", () => {
+  const payload = mod.encode_clear_channel_presence("client-peer", "interaction");
+
+  assertEquals(mod.decode_presence_frame(payload), {
+    type: "clear_channel",
+    peer_id: "client-peer",
+    channel: "interaction",
   });
 });
 

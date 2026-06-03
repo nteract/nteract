@@ -12,6 +12,12 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     column: number,
   ): Uint8Array;
   export function encode_heartbeat_presence(peerId: string): Uint8Array;
+  export function encode_interaction_presence(
+    peerId: string,
+    peerLabel: string,
+    actorLabel: string,
+    target: unknown,
+  ): Uint8Array;
   export function encode_presence_frame(message: unknown): Uint8Array;
   export function encode_selection_presence(
     peerId: string,

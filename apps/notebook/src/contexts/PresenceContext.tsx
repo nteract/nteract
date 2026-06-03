@@ -5,6 +5,7 @@
  * wrapping the usePresence hook to avoid prop drilling.
  */
 
+import type { NotebookInteractionTarget } from "runtimed";
 import { createContext, type ReactNode, useCallback, useContext, useMemo } from "react";
 import { usePresence } from "../hooks/usePresence";
 
@@ -21,6 +22,8 @@ export interface PresenceContextValue {
   ) => void;
   /** Send cell-level focus (no cursor position) */
   setFocus: (cellId: string) => void;
+  /** Send active notebook interaction target */
+  setInteraction: (target: NotebookInteractionTarget) => void;
   /** The local peer's ID */
   peerId: string | null;
 }
@@ -73,14 +76,22 @@ export function PresenceProvider({
     [presence],
   );
 
+  const setInteraction = useCallback(
+    (target: NotebookInteractionTarget) => {
+      presence.setInteraction(target);
+    },
+    [presence],
+  );
+
   const value = useMemo<PresenceContextValue>(
     () => ({
       setCursor,
       setSelection,
       setFocus,
+      setInteraction,
       peerId,
     }),
-    [setCursor, setSelection, setFocus, peerId],
+    [setCursor, setSelection, setFocus, setInteraction, peerId],
   );
 
   return <PresenceContext.Provider value={value}>{children}</PresenceContext.Provider>;

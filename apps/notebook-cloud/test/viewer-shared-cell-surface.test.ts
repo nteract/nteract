@@ -149,6 +149,7 @@ test("cloud wires shared presence and cleans projected store entries", () => {
     sourceText,
     /sendSelectionPresence\(\s+cellId,\s+anchorLine,\s+anchorCol,\s+headLine,\s+headCol,/,
   );
+  assert.match(sourceText, /sendInteractionPresence\(target\)/);
   assert.match(sourceText, /resetCloudViewStoreProjection\(\)/);
   assert.match(bridgeSourceText, /@\/components\/notebook\/state\/cell-store/);
   assert.match(bridgeSourceText, /@\/components\/notebook\/state\/execution-store/);

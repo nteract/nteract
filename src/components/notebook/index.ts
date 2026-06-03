@@ -155,13 +155,16 @@ export {
 } from "./state/cell-store";
 export {
   flushCellUIState,
+  getActiveInteractionTarget,
   getFocusedCellId,
+  setActiveInteractionTarget,
   setExecutingCellIds,
   setFocusedCellId,
   setQueuedCellIds,
   setSearchCurrentMatch,
   setSearchQuery,
   useCellQueuePriority,
+  useActiveInteractionTarget,
   useFocusedCellId,
   useIsCellExecuting,
   useIsCellFocused,

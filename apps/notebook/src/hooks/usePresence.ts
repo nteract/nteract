@@ -1,10 +1,15 @@
 import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback } from "react";
-import { sendPresenceFrame } from "runtimed";
+import {
+  notebookInteractionTargetToPresenceTarget,
+  sendPresenceFrame,
+  type NotebookInteractionTarget,
+} from "runtimed";
 import { logger } from "../lib/logger";
 import {
   encode_cursor_presence,
   encode_focus_presence,
+  encode_interaction_presence,
   encode_selection_presence,
 } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -90,6 +95,28 @@ export function usePresence(
     [peerId, peerLabel, actorLabel, transport],
   );
 
+  const setInteraction = useCallback(
+    (target: NotebookInteractionTarget) => {
+      if (!peerId) return;
+      let payload: Uint8Array;
+      try {
+        payload = encode_interaction_presence(
+          peerId,
+          peerLabel,
+          actorLabel,
+          notebookInteractionTargetToPresenceTarget(target),
+        );
+      } catch (e) {
+        logger.warn("[presence] encode interaction failed:", e);
+        return;
+      }
+      sendPresenceFrame(transport, payload).catch((e: unknown) =>
+        logger.warn("[presence] send interaction failed:", e),
+      );
+    },
+    [peerId, peerLabel, actorLabel, transport],
+  );
+
   return {
     /** Set the local cursor position (fire-and-forget). */
     setCursor,
@@ -97,5 +124,7 @@ export function usePresence(
     setSelection,
     /** Set cell-level focus presence (no cursor position). */
     setFocus,
+    /** Set the active notebook interaction target (fire-and-forget). */
+    setInteraction,
   };
 }

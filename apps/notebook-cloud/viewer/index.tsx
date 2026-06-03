@@ -1303,6 +1303,9 @@ function NotebookViewer({
               );
             },
             setFocus: () => {},
+            setInteraction: (target) => {
+              liveRuntimeRef.current?.sendInteractionPresence(target);
+            },
           }
         : null,
     [connectionPeerId],

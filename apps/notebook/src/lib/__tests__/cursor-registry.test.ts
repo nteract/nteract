@@ -98,6 +98,32 @@ describe("cursor-registry cell-level functions", () => {
       const peers = getPeersForCell("cell-1");
       expect(peers).toHaveLength(0);
     });
+
+    it("uses interaction target as the cell-level presence location", () => {
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Human",
+        channel: "cursor",
+        data: { cell_id: "cell-editor", line: 0, column: 5 },
+      });
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Human",
+        channel: "interaction",
+        data: { kind: "output", cell_id: "cell-output" },
+      });
+
+      expect(getPeersForCell("cell-editor")).toEqual([]);
+      expect(getPeersForCell("cell-output")).toMatchObject([
+        {
+          peerId: "peer-1",
+          peerLabel: "Human",
+          interaction: { kind: "output", cell_id: "cell-output" },
+        },
+      ]);
+    });
   });
 
   describe("subscribeToCell", () => {
