@@ -28,7 +28,9 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
     if (![".ts", ".tsx"].includes(extname(fileName))) continue;
     const sourcePath = join(viewerDir.pathname, fileName);
     const sourceText = readFileSync(sourcePath, "utf8");
-    const imports = sourceText.matchAll(/from\s+["']([^"']*\.\.\/\.\.\/notebook\/src\/[^"']+)["']/g);
+    const imports = sourceText.matchAll(
+      /from\s+["']([^"']*\.\.\/\.\.\/notebook\/src\/[^"']+)["']/g,
+    );
 
     for (const match of imports) {
       const importPath = match[1] ?? "";
