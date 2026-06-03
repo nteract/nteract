@@ -321,7 +321,7 @@ print(platform.platform())
     await stopDaemon(daemon);
     fs.closeSync(logFd);
     if (!options.keepTemp && process.exitCode !== 1) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       cleanupSharedProject(options);
     }
   }

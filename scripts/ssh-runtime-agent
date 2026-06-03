@@ -83,21 +83,104 @@ ssh_host=${RUNTIMED_SSH_RUNTIME_HOST:-lab2}
 remote_runtimed=${RUNTIMED_SSH_RUNTIME_COMMAND:-/usr/local/bin/runtimed-nightly}
 remote_tmp=${RUNTIMED_SSH_RUNTIME_REMOTE_TMP:-/tmp/runt-ssh-runtime-agent-${USER:-user}}
 ssh_bin=${RUNTIMED_SSH_BIN:-ssh}
-remote_port=${RUNTIMED_SSH_RUNTIME_REMOTE_PORT:-$((30000 + (RANDOM % 20000)))}
+requested_remote_port=${RUNTIMED_SSH_RUNTIME_REMOTE_PORT:-}
+proxy_token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+local_proxy_dir=$(mktemp -d "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-proxy.XXXXXX")
+local_proxy_socket="$local_proxy_dir/proxy.sock"
+local_proxy_pid=
+
+cleanup_local_proxy() {
+  if [[ -n "$local_proxy_pid" ]]; then
+    kill "$local_proxy_pid" 2>/dev/null || true
+    wait "$local_proxy_pid" 2>/dev/null || true
+  fi
+  rm -rf "$local_proxy_dir"
+}
+trap cleanup_local_proxy EXIT INT TERM
 
 safe_agent_id=$(printf '%s' "$runtime_agent_id" | tr -c 'A-Za-z0-9_.-' '_')
 remote_socket="$remote_tmp/runt-ra-${safe_agent_id}.sock"
 remote_blob_root="$remote_tmp/runt-ra-blobs-${safe_agent_id}"
 
 remote_socket_dir=$(dirname "$remote_socket")
+local_proxy_code='
+import os
+import selectors
+import socket
+import sys
+import threading
+
+proxy_path = sys.argv[1]
+daemon_path = sys.argv[2]
+token = os.environ["RUNTIMED_SSH_PROXY_TOKEN"].encode() + b"\n"
+
+try:
+    os.unlink(proxy_path)
+except FileNotFoundError:
+    pass
+
+server = socket.socket(socket.AF_UNIX)
+server.bind(proxy_path)
+os.chmod(proxy_path, 0o600)
+server.listen(8)
+
+def pipe(left, right):
+    selector = selectors.DefaultSelector()
+    selector.register(left, selectors.EVENT_READ, right)
+    selector.register(right, selectors.EVENT_READ, left)
+    while True:
+        for key, _ in selector.select():
+            source = key.fileobj
+            target = key.data
+            data = source.recv(65536)
+            if not data:
+                return
+            try:
+                target.sendall(data)
+            except BrokenPipeError:
+                return
+
+def read_token(client):
+    client.settimeout(10)
+    received = b""
+    while len(received) < len(token):
+        chunk = client.recv(len(token) - len(received))
+        if not chunk:
+            return False
+        received += chunk
+    client.settimeout(None)
+    return received == token
+
+def handle_client(client):
+    daemon = None
+    try:
+        if not read_token(client):
+            return
+        daemon = socket.socket(socket.AF_UNIX)
+        daemon.connect(daemon_path)
+        pipe(client, daemon)
+    except OSError as exc:
+        print(f"local proxy connection error: {exc}", file=sys.stderr)
+    finally:
+        client.close()
+        if daemon is not None:
+            daemon.close()
+
+while True:
+    client, _ = server.accept()
+    thread = threading.Thread(target=handle_client, args=(client,), daemon=True)
+    thread.start()
+'
 bridge_code='
 import os
 import selectors
 import socket
 import sys
+import threading
 
 unix_path = sys.argv[1]
 tcp_port = int(sys.argv[2])
+token = os.environ["RUNTIMED_SSH_PROXY_TOKEN"].encode() + b"\n"
 
 try:
     os.unlink(unix_path)
@@ -125,21 +208,58 @@ def pipe(left, right):
             except BrokenPipeError:
                 return
 
-while True:
-    client, _ = server.accept()
-    upstream = socket.create_connection(("127.0.0.1", tcp_port))
+def handle_client(client):
+    upstream = None
     try:
+        upstream = socket.create_connection(("127.0.0.1", tcp_port))
+        upstream.sendall(token)
         pipe(client, upstream)
+    except OSError as exc:
+        print(f"bridge connection error: {exc}", file=sys.stderr)
     finally:
         client.close()
-        upstream.close()
+        if upstream is not None:
+            upstream.close()
+
+while True:
+    client, _ = server.accept()
+    thread = threading.Thread(target=handle_client, args=(client,), daemon=True)
+    thread.start()
 '
+
+port_probe_code='
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET)
+sock.bind(("127.0.0.1", port))
+sock.close()
+'
+
+remote_port=$requested_remote_port
+if [[ -z "$remote_port" ]]; then
+  for _ in 1 2 3 4 5; do
+    candidate_port=$(python3 -c 'import secrets; print(30000 + secrets.randbelow(20000))')
+    if "$ssh_bin" \
+      -o BatchMode=yes \
+      "$ssh_host" \
+      "python3 -c $(shell_quote "$port_probe_code") $(shell_quote "$candidate_port")" \
+      >/dev/null 2>&1; then
+      remote_port=$candidate_port
+      break
+    fi
+  done
+fi
+
+[[ -n "$remote_port" ]] || die "could not find an available remote forwarding port"
 
 remote_command="
 set -e
+IFS= read -r proxy_token
 mkdir -p $(shell_quote "$remote_socket_dir") $(shell_quote "$remote_blob_root")
 chmod 700 $(shell_quote "$remote_socket_dir")
-python3 -u -c $(shell_quote "$bridge_code") $(shell_quote "$remote_socket") $(shell_quote "$remote_port") &
+RUNTIMED_SSH_PROXY_TOKEN=\"\$proxy_token\" python3 -u -c $(shell_quote "$bridge_code") $(shell_quote "$remote_socket") $(shell_quote "$remote_port") &
 bridge_pid=\$!
 cleanup() {
   kill \"\$bridge_pid\" 2>/dev/null || true
@@ -161,6 +281,7 @@ if [[ "${RUNTIMED_SSH_RUNTIME_VERBOSE:-0}" == "1" ]]; then
     echo "ssh-runtime-agent: remote_runtimed=$remote_runtimed"
     echo "ssh-runtime-agent: remote_port=$remote_port"
     echo "ssh-runtime-agent: local_socket=$local_socket"
+    echo "ssh-runtime-agent: local_proxy_socket=$local_proxy_socket"
     echo "ssh-runtime-agent: remote_socket=$remote_socket"
     echo "ssh-runtime-agent: local_blob_root=$local_blob_root"
     echo "ssh-runtime-agent: remote_blob_root=$remote_blob_root"
@@ -172,9 +293,20 @@ fi
   "$ssh_host" \
   "mkdir -p $(shell_quote "$remote_socket_dir"); chmod 700 $(shell_quote "$remote_socket_dir")"
 
-exec "$ssh_bin" \
+RUNTIMED_SSH_PROXY_TOKEN=$proxy_token \
+  python3 -u -c "$local_proxy_code" "$local_proxy_socket" "$local_socket" &
+local_proxy_pid=$!
+
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -S "$local_proxy_socket" ]] && break
+  sleep 0.1
+done
+[[ -S "$local_proxy_socket" ]] || die "local proxy socket did not start: $local_proxy_socket"
+
+"$ssh_bin" \
   -o BatchMode=yes \
   -o ExitOnForwardFailure=yes \
-  -R "127.0.0.1:$remote_port:$local_socket" \
+  -R "127.0.0.1:$remote_port:$local_proxy_socket" \
   "$ssh_host" \
-  "$remote_command"
+  "$remote_command" \
+  <<<"$proxy_token"
