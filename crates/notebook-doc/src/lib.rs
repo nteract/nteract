@@ -2446,19 +2446,29 @@ impl NotebookDoc {
                 continue;
             }
             for op in change.decode().operations {
-                // Only the *initial creation* of an identity key is allowed beyond
-                // genesis: an inserting `Put` (empty `pred`) to ROOT's
-                // `notebook_id` / `runtime_state_doc_id`. A delete or an overwrite
-                // of those keys is post-creation history and must fail the gate.
+                // Scaffold allowed beyond genesis: the daemon writes these at room
+                // creation, before any seeding or user interaction.
                 //
-                // INVARIANT: this allowlist must stay limited to scalar identity
-                // pointers and must never grow to include `cells`, `metadata`, or
-                // any structural ROOT key. Those Maps are admitted only via the
-                // exact-hash genesis change (the `seed.contains` skip above), so a
-                // foreign actor that authors its own `cells`/`metadata` skeleton
-                // reads non-pristine. Allowlisting a structural key would let such a
-                // foreign skeleton read pristine and be wrongly re-seeded.
-                let is_creation_scaffold_put = matches!(op.action, LegacyOpType::Put(_))
+                // (1) Initial `Put` (empty `pred`) to ROOT's `notebook_id` /
+                //     `runtime_state_doc_id` (from `new_with_actor`). A delete or
+                //     overwrite of those keys is post-creation history and fails.
+                //
+                //     INVARIANT: this ROOT allowlist must never grow to include
+                //     `cells`, `metadata`, or any structural ROOT key. Those Maps
+                //     are admitted only via the exact-hash genesis change (the
+                //     `seed.contains` skip above), so a foreign actor that authors
+                //     its own `cells`/`metadata` skeleton reads non-pristine.
+                //
+                // (2) The daemon's `ephemeral` room-lifecycle flag, stamped into the
+                //     metadata map at room creation for untitled/ephemeral rooms.
+                //     `get_metadata_snapshot()` deliberately excludes `ephemeral`
+                //     (it is room bookkeeping, not notebook content), so the snapshot
+                //     fast-path above does not see it. It must be treated as scaffold
+                //     here, or ephemeral rooms never get their daemon-seeded starter
+                //     cell. This mirrors the prior
+                //     `cell_count()==0 && get_metadata_snapshot().is_none()` gate,
+                //     which also ignored `ephemeral`.
+                let is_identity_put = matches!(op.action, LegacyOpType::Put(_))
                     && op.pred.is_empty()
                     && matches!(op.obj, LegacyObjectId::Root)
                     && matches!(
@@ -2467,7 +2477,10 @@ impl NotebookDoc {
                             if k.as_str() == "notebook_id"
                                 || k.as_str() == "runtime_state_doc_id"
                     );
-                if !is_creation_scaffold_put {
+                let is_ephemeral_flag = matches!(op.action, LegacyOpType::Put(_))
+                    && op.pred.is_empty()
+                    && matches!(&op.key, LegacyKey::Map(k) if k.as_str() == "ephemeral");
+                if !(is_identity_put || is_ephemeral_flag) {
                     return false;
                 }
             }
@@ -3258,6 +3271,26 @@ mod tests {
         let mut doc = NotebookDoc::new_with_actor("nb-1", "runtimed");
         doc.set_metadata("trust", "trusted").expect("set metadata");
         assert!(!doc.is_pristine());
+    }
+
+    #[test]
+    fn ephemeral_room_flag_does_not_block_pristine() {
+        // The daemon stamps `ephemeral` into the metadata map at room creation
+        // (before seeding) for untitled/ephemeral rooms. It is room bookkeeping,
+        // excluded from the metadata snapshot, and must be treated as creation
+        // scaffold so the host still seeds the starter cell. Regression test for
+        // ephemeral rooms (e.g. the browser e2e) coming up with zero cells.
+        let mut doc = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        doc.set_metadata("ephemeral", "true")
+            .expect("set ephemeral flag");
+        assert!(
+            doc.get_metadata_snapshot().is_none(),
+            "ephemeral is bookkeeping, not a substantive metadata snapshot"
+        );
+        assert!(
+            doc.is_pristine(),
+            "ephemeral room flag must not block seeding"
+        );
     }
 
     #[test]
