@@ -2603,7 +2603,7 @@ impl Daemon {
                     let mut seeded = false;
                     {
                         let mut doc = room.doc.write().await;
-                        if crate::notebook_sync_server::is_uninitialized_notebook_doc(&doc) {
+                        if doc.is_pristine() {
                             match crate::notebook_sync_server::create_empty_notebook(
                                 &mut doc,
                                 &default_runtime.to_string(),
@@ -2976,7 +2976,7 @@ impl Daemon {
             let mut create_error = None;
             let count = {
                 let mut doc = room.doc.write().await;
-                if crate::notebook_sync_server::is_uninitialized_notebook_doc(&doc) {
+                if doc.is_pristine() {
                     match crate::notebook_sync_server::create_empty_notebook(
                         &mut doc,
                         &default_runtime.to_string(),
@@ -3164,7 +3164,7 @@ impl Daemon {
             let mut doc = room.doc.write().await;
             let mut err = None;
             let mut fresh = false;
-            if !crate::notebook_sync_server::is_uninitialized_notebook_doc(&doc) {
+            if !doc.is_pristine() {
                 // Room already has content or initialized metadata.
                 info!(
                     "[runtimed] Room {} already initialized with {} cells",

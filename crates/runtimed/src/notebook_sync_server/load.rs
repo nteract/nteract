@@ -1054,16 +1054,6 @@ pub fn create_empty_notebook(
     Ok(env_id)
 }
 
-/// Return true when a notebook document has not yet been initialized by any
-/// host authority.
-///
-/// A document with metadata but zero cells is still initialized: users may have
-/// intentionally deleted every cell, and reconnecting clients must not recreate
-/// structure from that state.
-pub fn is_uninitialized_notebook_doc(doc: &NotebookDoc) -> bool {
-    doc.cell_count() == 0 && doc.get_metadata_snapshot().is_none()
-}
-
 /// Build default metadata for a new notebook based on runtime.
 ///
 /// Package manager resolution priority:
