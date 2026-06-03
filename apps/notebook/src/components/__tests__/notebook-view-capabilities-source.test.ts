@@ -32,6 +32,29 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/canMutateCells && onSetCellOutputsHidden/);
   });
 
+  it("keeps the cell DOM branch stable while toggling structure mutation capabilities", () => {
+    const sourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+
+    expect(sourceText).toMatch(/<DndContext[\s\S]*<SortableContext[\s\S]*stableDomOrder\.map/);
+    expect(sourceText).toMatch(/disabled: !canMutateCells/);
+    expect(sourceText).toMatch(/canMutateCells && index === 0/);
+    expect(sourceText).not.toContain("function StaticCell");
+  });
+
+  it("does not arm tail-pinned scrolling before cells materialize", () => {
+    const sourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+
+    expect(sourceText).toMatch(
+      /if \(cellIdsRef\.current\.length === 0\) \{[\s\S]*tailPinnedRef\.current = false;[\s\S]*return;/,
+    );
+  });
+
   it("does not create cells from a transient empty sync state", () => {
     const sourceText = readFileSync(
       join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),

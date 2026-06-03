@@ -73,6 +73,7 @@ export interface NotebookViewProps {
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
+  autoFocusFirstCell?: boolean;
 }
 
 const NOTEBOOK_TAIL_SPACE = "clamp(4rem, 10vh, 6rem)";
@@ -258,6 +259,7 @@ function SortableCell({
   onDeleteCell,
   isLastCell,
   isHiddenInGroup,
+  canMutateCells,
 }: {
   cellId: string;
   index: number;
@@ -271,9 +273,11 @@ function SortableCell({
   onDeleteCell: (cellId: string) => void;
   isLastCell?: boolean;
   isHiddenInGroup?: boolean;
+  canMutateCells: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: cellId,
+    disabled: !canMutateCells,
   });
 
   const style: React.CSSProperties = {
@@ -285,10 +289,12 @@ function SortableCell({
 
   // Combine listeners and attributes for the drag handle
   // This enables keyboard-initiated dragging (Space/Enter + arrows)
-  const dragHandleProps = {
-    ...listeners,
-    ...attributes,
-  };
+  const dragHandleProps = canMutateCells
+    ? {
+        ...listeners,
+        ...attributes,
+      }
+    : undefined;
 
   if (isHiddenInGroup) {
     return <div id={anchorId} ref={setNodeRef} style={style} />;
@@ -296,13 +302,13 @@ function SortableCell({
 
   return (
     <div id={anchorId} ref={setNodeRef} style={style}>
-      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
+      {canMutateCells && index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
             error={error}
             onRetry={resetErrorBoundary}
-            onDelete={() => onDeleteCell(cellId)}
+            onDelete={canMutateCells ? () => onDeleteCell(cellId) : undefined}
           />
         )}
       >
@@ -314,38 +320,7 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      <CellAdder afterCellId={cellId} onAdd={onAddCell} terminal={isLastCell} />
-    </div>
-  );
-}
-
-function StaticCell({
-  cellId,
-  index,
-  renderCell,
-  isHiddenInGroup,
-}: {
-  cellId: string;
-  index: number;
-  renderCell: (cell: NotebookCell, index: number) => React.ReactNode;
-  isHiddenInGroup?: boolean;
-}) {
-  const style: React.CSSProperties = { order: index };
-  const anchorId = notebookCellAnchorId(cellId);
-
-  if (isHiddenInGroup) {
-    return <div id={anchorId} style={style} />;
-  }
-
-  return (
-    <div id={anchorId} style={style}>
-      <ErrorBoundary
-        fallback={(error, resetErrorBoundary) => (
-          <CellErrorFallback error={error} onRetry={resetErrorBoundary} />
-        )}
-      >
-        <CellRenderer cellId={cellId} index={index} renderCell={renderCell} />
-      </ErrorBoundary>
+      {canMutateCells && <CellAdder afterCellId={cellId} onAdd={onAddCell} terminal={isLastCell} />}
     </div>
   );
 }
@@ -370,6 +345,7 @@ function NotebookViewContent({
   onSetCellOutputsHidden,
   markdownHeadingAnchorsByCellId,
   outputHostContext,
+  autoFocusFirstCell = true,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -629,6 +605,11 @@ function NotebookViewContent({
         container.scrollLeft = 0;
       }
 
+      if (cellIdsRef.current.length === 0) {
+        tailPinnedRef.current = false;
+        return;
+      }
+
       const distanceFromTail =
         container.scrollHeight - container.clientHeight - container.scrollTop;
       if (distanceFromTail <= NOTEBOOK_TAIL_PIN_THRESHOLD_PX) {
@@ -704,11 +685,12 @@ function NotebookViewContent({
   }, [searchCurrentMatch]);
 
   useEffect(() => {
+    if (!autoFocusFirstCell) return;
     if (isLoading || focusedCellId !== null) return;
     if (cellIds.length > 0) {
       onFocusCell(cellIds[0]);
     }
-  }, [isLoading, cellIds, focusedCellId, onFocusCell]);
+  }, [autoFocusFirstCell, isLoading, cellIds, focusedCellId, onFocusCell]);
 
   const renderCell = useCallback(
     (
@@ -1041,7 +1023,7 @@ function NotebookViewContent({
             ) : null}
           </div>
         )
-      ) : canMutateCells ? (
+      ) : (
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -1064,6 +1046,7 @@ function NotebookViewContent({
                     onDeleteCell={onDeleteCell}
                     isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}
+                    canMutateCells={canMutateCells}
                   />
                 );
               })}
@@ -1071,22 +1054,6 @@ function NotebookViewContent({
           </SortableContext>
           <DragOverlay>{activeId && <CellDragPreview cellId={activeId} />}</DragOverlay>
         </DndContext>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          {stableDomOrder.map((cellId) => {
-            const index = cellIdToIndex.get(cellId) ?? 0;
-            const group = hiddenGroups.get(cellId);
-            return (
-              <StaticCell
-                key={cellId}
-                cellId={cellId}
-                index={index}
-                renderCell={renderCell}
-                isHiddenInGroup={group != null && !group.isFirst}
-              />
-            );
-          })}
-        </div>
       )}
     </div>
   );

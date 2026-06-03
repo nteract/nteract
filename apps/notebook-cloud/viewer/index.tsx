@@ -1411,6 +1411,7 @@ function NotebookViewer({
             onMoveCell={handleCloudMoveCell}
             markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
             outputHostContext={outputHostContext}
+            autoFocusFirstCell={false}
           />
         </CrdtBridgeProvider>
       </PresenceValueProvider>
