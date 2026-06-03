@@ -672,6 +672,99 @@ async fn test_untitled_room_preserves_legacy_persisted_automerge_history() {
     );
 }
 
+/// The headline `is_pristine` behavior: a notebook the user empties must not be
+/// re-seeded on reconnect. A `cell_count() == 0` gate would re-seed here because
+/// the emptied doc has zero cells; the causal `is_pristine` gate refuses because
+/// the change graph still records the seed-then-delete history.
+///
+/// This mirrors the daemon's seeding gate (the three
+/// `if doc.is_pristine() { create_empty_notebook(...) }` call sites) over the
+/// same untitled room persist/reload harness as
+/// `test_untitled_room_preserves_legacy_persisted_automerge_history`: an
+/// untitled (path=None) room round-trips through persisted Automerge bytes, and
+/// reconnect is `NotebookRoom::new_fresh` loading those bytes.
+#[tokio::test]
+async fn emptied_untitled_notebook_is_not_reseeded_on_reconnect() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+
+    // Fixed UUID so the persisted untitled doc reloads on reconnect.
+    let uuid = Uuid::parse_str("dddddddd-eeee-ffff-aaaa-444444444444").unwrap();
+
+    // 1. First connect: a fresh untitled room is pristine, so the daemon seeds
+    //    one starter cell via create_empty_notebook. 2. The user then deletes
+    //    every cell, leaving cell_count == 0 but recording the cell + delete in
+    //    history. Persist the emptied doc to disk.
+    {
+        let room = NotebookRoom::load_or_create(&uuid.to_string(), tmp.path(), blob_store.clone());
+        let mut doc = room.doc.try_write().unwrap();
+
+        assert!(
+            doc.is_pristine(),
+            "a brand-new untitled room must be pristine so the daemon seeds it"
+        );
+        let seeded_cell = {
+            // Mirror the daemon: only seed when pristine. create_empty_notebook
+            // writes metadata + one code cell.
+            create_empty_notebook(
+                &mut doc,
+                "python",
+                crate::settings_doc::PythonEnvType::Uv,
+                Some(&uuid.to_string()),
+                None,
+                &[],
+            )
+            .expect("seed empty notebook");
+            doc.get_cells()[0].id.clone()
+        };
+        assert_eq!(doc.cell_count(), 1, "seeding adds one starter cell");
+        assert!(
+            !doc.is_pristine(),
+            "a seeded notebook is no longer pristine"
+        );
+
+        doc.delete_cell(&seeded_cell).expect("delete cell");
+        assert_eq!(doc.cell_count(), 0, "the user emptied the notebook");
+        assert!(
+            !doc.is_pristine(),
+            "an emptied notebook still has cell history and must never re-seed"
+        );
+
+        let bytes = doc.save();
+        persist_notebook_bytes(&bytes, &room.identity.persist_path);
+    }
+
+    // 3. Evict + reconnect: drop the room above and recreate the untitled room
+    //    from the persisted bytes (the NotebookSync reconnect path).
+    let room = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store, false);
+    let mut doc = room.doc.try_write().unwrap();
+
+    // 4. The reconnect-side seeding gate must refuse to re-seed: the reloaded
+    //    doc carries the seed-then-delete history, so is_pristine is false.
+    assert!(
+        !doc.is_pristine(),
+        "a reloaded emptied notebook must not read as pristine on reconnect"
+    );
+    if doc.is_pristine() {
+        // Mirror the daemon's gate so a regression that flips is_pristine back
+        // to true would visibly re-seed and trip the assertion below.
+        create_empty_notebook(
+            &mut doc,
+            "python",
+            crate::settings_doc::PythonEnvType::Uv,
+            Some(&uuid.to_string()),
+            None,
+            &[],
+        )
+        .expect("seed empty notebook");
+    }
+    assert_eq!(
+        doc.cell_count(),
+        0,
+        "an emptied notebook must stay empty across reconnect — never re-seeded"
+    );
+}
+
 /// Regression test for #1646: untitled notebooks must read trust from
 /// the persisted Automerge doc, not from a non-existent .ipynb file.
 #[tokio::test]
@@ -3915,48 +4008,6 @@ fn test_create_empty_notebook_with_provided_env_id() {
         metadata.runt.env_id,
         Some(provided_id.to_string()),
         "Metadata should have provided env_id"
-    );
-}
-
-#[test]
-fn test_is_uninitialized_notebook_doc() {
-    // A brand-new doc has no cells and no metadata snapshot — uninitialized,
-    // so the host is free to seed starter structure.
-    let mut doc = NotebookDoc::new("test");
-    assert_eq!(doc.cell_count(), 0);
-    assert!(doc.get_metadata_snapshot().is_none());
-    assert!(
-        is_uninitialized_notebook_doc(&doc),
-        "fresh doc with no metadata and zero cells is uninitialized"
-    );
-
-    // The "user emptied it" case: metadata present, zero cells. Because
-    // `create_empty_notebook` always writes a metadata snapshot, a notebook a
-    // user deliberately emptied keeps that metadata, so the host must NOT
-    // re-seed it. Build the snapshot directly to land metadata without cells —
-    // `create_empty_notebook` seeds a starter cell, which is a different state.
-    let metadata = build_new_notebook_metadata(
-        "python",
-        "env-id",
-        crate::settings_doc::PythonEnvType::Uv,
-        None,
-        &[],
-    );
-    doc.set_metadata_snapshot(&metadata)
-        .expect("set_metadata_snapshot");
-    assert_eq!(doc.cell_count(), 0);
-    assert!(doc.get_metadata_snapshot().is_some());
-    assert!(
-        !is_uninitialized_notebook_doc(&doc),
-        "metadata present with zero cells is the user-emptied case, not uninitialized"
-    );
-
-    // Any cell present means the doc is initialized regardless of metadata.
-    doc.add_cell(0, &Uuid::new_v4().to_string(), "code")
-        .expect("add_cell");
-    assert!(
-        !is_uninitialized_notebook_doc(&doc),
-        "a doc with at least one cell is initialized"
     );
 }
 
