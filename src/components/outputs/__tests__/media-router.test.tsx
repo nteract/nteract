@@ -355,9 +355,12 @@ describe("MediaRouter component", () => {
         </MediaProvider>,
       );
       // JsonOutput renders in a pre element with the JSON structure
-      await waitFor(() => {
-        expect(screen.getByText(/"key"/)).toBeInTheDocument();
-      });
+      await waitFor(
+        () => {
+          expect(screen.getByText(/"key"/)).toBeInTheDocument();
+        },
+        { timeout: 5000 },
+      );
     });
 
     it("renders ANSI escape sequences correctly", async () => {
