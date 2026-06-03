@@ -1,5 +1,5 @@
 {
-  "notebook": {
+  "nteract-notebook": {
     "command": "./bin/nteract-mcp",
     "args": [],
     "cwd": ".",

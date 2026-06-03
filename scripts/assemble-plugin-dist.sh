@@ -59,11 +59,13 @@ case "$channel" in
     plugin_name="nteract"
     source_subdir="nteract"
     plugin_description="nteract notebooks."
+    codex_mcp_server="nteract-notebook"
     ;;
   nightly)
     plugin_name="nightly"
     source_subdir="nightly"
     plugin_description="nteract notebooks (nightly channel)."
+    codex_mcp_server="nightly"
     ;;
   *)
     echo "unknown channel '$channel' (expected stable|nightly)" >&2
@@ -138,6 +140,55 @@ chmod 0755 "$plugin_dir/bin/nteract-mcp"
 
 cp "$REPO_ROOT/scripts/plugin-dispatch-wrapper.cmd" \
    "$plugin_dir/bin/nteract-mcp.cmd"
+
+expected_files=(
+  "$plugin_dir/bin/nteract-mcp"
+  "$plugin_dir/bin/nteract-mcp-aarch64-apple-darwin"
+  "$plugin_dir/bin/nteract-mcp-x86_64-apple-darwin"
+  "$plugin_dir/bin/nteract-mcp-x86_64-unknown-linux-gnu"
+  "$plugin_dir/bin/nteract-mcp-x86_64-pc-windows-msvc.exe"
+  "$plugin_dir/bin/nteract-mcp.cmd"
+)
+
+missing_dist=()
+for expected_file in "${expected_files[@]}"; do
+  [[ -f "$expected_file" ]] || missing_dist+=("$expected_file")
+done
+if (( ${#missing_dist[@]} > 0 )); then
+  echo "assembled plugin is missing required files:" >&2
+  printf '  %s\n' "${missing_dist[@]}" >&2
+  exit 1
+fi
+
+if [[ -e "$plugin_dir/bin/.gitignore" ]]; then
+  echo "assembled plugin unexpectedly retained source-only bin/.gitignore" >&2
+  exit 1
+fi
+
+python3 - "$plugin_dir/.codex-mcp.json" "$codex_mcp_server" <<'PY'
+import json
+import sys
+
+path, expected_server = sys.argv[1:3]
+with open(path) as f:
+    data = json.load(f)
+
+servers = set(data)
+if servers != {expected_server}:
+    print(
+        f"{path}: expected only Codex MCP server {expected_server!r}, got {sorted(servers)!r}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+server = data[expected_server]
+if server.get("command") != "./bin/nteract-mcp":
+    print(
+        f"{path}: {expected_server} must launch ./bin/nteract-mcp",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
 
 # Generate / update marketplace files. Read existing, update or insert
 # this channel's entry, rewrite. Both stable and nightly publishers run
