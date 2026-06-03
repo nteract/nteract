@@ -641,6 +641,15 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
   );
 }
 
+function decodeHashAnchorId(hash: string): string {
+  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function NotebookViewer({
   runtime,
   authConfig,
@@ -671,6 +680,7 @@ function NotebookViewer({
   const snapshotResolvedRef = useRef(false);
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const outputResolutionCacheRef = useRef(createOutputResolutionCache());
+  const handledHeadingHashRef = useRef<string | null>(null);
   const presenceStoreRef = useRef<CloudViewerPresenceStore | null>(null);
   if (presenceStoreRef.current === null) {
     presenceStoreRef.current = new CloudViewerPresenceStore();
@@ -1141,12 +1151,30 @@ function NotebookViewer({
       setSelectedOutlineItemId(null);
     }
   }, [outlineItems, selectedOutlineItemId]);
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (!hash || handledHeadingHashRef.current === hash) return;
+
+    const headingAnchorId = decodeHashAnchorId(hash);
+    const item = outlineItems.find(
+      (candidate) =>
+        candidate.headingAnchorId !== null && candidate.headingAnchorId === headingAnchorId,
+    );
+    if (!item) return;
+
+    handledHeadingHashRef.current = hash;
+    setSelectedOutlineItemId(item.id);
+    navigateNotebookOutlineItem(item, hash, {
+      behavior: "auto",
+      headingHashTarget: "cell",
+    });
+  }, [outlineItems]);
   const handleSelectOutlineItem = useCallback((item: NotebookOutlineItem) => {
     setSelectedOutlineItemId(item.id);
   }, []);
   const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
     setSelectedOutlineItemId(item.id);
-    return navigateNotebookOutlineItem(item, href);
+    return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
   }, []);
   const handleTogglePackagesRail = useCallback(() => {
     if (activeRailPanel === "packages" && !railCollapsed) {

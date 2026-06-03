@@ -281,8 +281,27 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
   assert.doesNotMatch(sourceText, /useSourceVersion\(\)/);
   assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
   assert.match(sourceText, /onNavigateOutlineItem=\{handleNavigateOutlineItem\}/);
-  assert.match(sourceText, /navigateNotebookOutlineItem\(item, href/);
+  assert.match(
+    sourceText,
+    /navigateNotebookOutlineItem\(item, href, \{ headingHashTarget: "cell" \}\)/,
+  );
   assert.doesNotMatch(sourceText, /findCellElement: \(outlineItem\)/);
+});
+
+test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /const handledHeadingHashRef = useRef<string \| null>\(null\)/);
+  assert.match(sourceText, /const headingAnchorId = decodeHashAnchorId\(hash\)/);
+  assert.match(
+    sourceText,
+    /candidate\.headingAnchorId !== null && candidate\.headingAnchorId === headingAnchorId/,
+  );
+  assert.match(
+    sourceText,
+    /navigateNotebookOutlineItem\(item, hash, \{\s+behavior: "auto",\s+headingHashTarget: "cell",\s+\}\)/,
+  );
 });
 
 test("cloud live materialization skips empty room handles before resolving outputs", () => {
