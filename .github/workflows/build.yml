@@ -99,10 +99,13 @@ jobs:
           bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
+  # Pull requests intentionally run only the two branch-protection checks above:
+  # Lint & Format and JS Tests & Benchmarks. The remaining coverage stays on
+  # main pushes and manual dispatch so PR feedback stays fast.
   nsis-bootstrap:
     name: NSIS Bootstrap Syntax
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -124,7 +127,7 @@ jobs:
   windows-clippy:
     name: Windows (clippy)
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -161,7 +164,7 @@ jobs:
   wasm-deno:
     name: WASM + Deno Tests
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -197,7 +200,7 @@ jobs:
   build-ui:
     name: Build shared UI artifacts
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -273,7 +276,7 @@ jobs:
   browser-e2e:
     name: Browser E2E (Playwright)
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     # Keep the generic browser lane on GitHub-hosted runners for predictable
     # per-job latency. The Anaconda pool is reserved for Linux/env-heavy lanes.
     runs-on: ubuntu-24.04
@@ -436,7 +439,7 @@ jobs:
   linux-rust-clippy:
     name: Linux Rust Clippy
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -471,7 +474,7 @@ jobs:
   linux-rust-tests:
     name: Linux Rust Tests
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -500,7 +503,7 @@ jobs:
   linux-runtimed-node:
     name: Linux runtimed-node
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -544,7 +547,7 @@ jobs:
       - linux-rust-clippy
       - linux-rust-tests
       - linux-runtimed-node
-    if: always() && needs.changes.outputs.source_changed == 'true'
+    if: always() && needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - name: Check shard results
@@ -570,7 +573,7 @@ jobs:
   build:
     name: ${{ matrix.platform.name }}
     needs: [changes, build-ui]
-    if: ${{ always() && (needs.changes.outputs.source_changed != 'true' || needs.build-ui.result == 'success') }}
+    if: ${{ always() && needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request' && needs.build-ui.result == 'success' }}
     continue-on-error: ${{ matrix.platform.non_blocking }}
     runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'ubuntu-latest' }}
     strategy:
@@ -1055,7 +1058,7 @@ jobs:
     # runs pytest only.
     name: Python Unit Tests
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
