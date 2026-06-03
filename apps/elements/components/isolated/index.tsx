@@ -82,6 +82,7 @@ export interface IsolatedFrameProps {
   allowWheelBoundaryScroll?: boolean;
   scrollPassthrough?: boolean;
   revealOnRender?: boolean;
+  reserveHeightOnReveal?: boolean;
   onReady?: () => void;
   onResize?: (height: number) => void;
   onLinkClick?: (url: string, newTab: boolean) => void;
