@@ -1,21 +1,20 @@
 ---
 title: Runtime surfaces
-description: Fixture-backed runtime decision components from the notebook app.
+description: Fixture-backed runtime decision components from shared notebook surfaces.
 ---
 
 import { RuntimeSurfacesExample } from "@/components/runtime-surfaces-example";
 
-Runtime decisions are notebook UI, not generic dialogs. This page starts
-cataloging the existing package, daemon, pool, trust, and launch decision
-surfaces with preview facts instead of live runtime state.
+Runtime decisions are notebook UI, not generic dialogs. This page catalogs the
+shared package, daemon, pool, trust, and launch decision surfaces with preview
+facts instead of live runtime state.
 
 <RuntimeSurfacesExample />
 
 ## Host notes
 
-The current previews keep side effects inert. Components that need desktop host
-access, such as the pool settings action, render under a small preview host
-instead of importing notebook shell state into the docs app. The boundary table
-names the split between deterministic preview data, host actions, runtime side
-effects, and live package/trust documents before new runtime surfaces are marked
-rendered.
+The current previews keep side effects inert. Components that need host access,
+such as the pool settings action, receive adapter callbacks instead of importing
+notebook shell state into the docs app. The boundary table names the split
+between deterministic preview data, host actions, runtime side effects, and live
+package/trust documents.
