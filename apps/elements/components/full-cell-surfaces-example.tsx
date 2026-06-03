@@ -2,17 +2,20 @@
 
 import { FileCode2, FileText, Rows3, ShieldCheck } from "lucide-react";
 import { useLayoutEffect, useMemo, useState } from "react";
-import { CodeCell, type HiddenGroupCellSummary } from "@/notebook-components/CodeCell";
-import { MarkdownCell } from "@/notebook-components/MarkdownCell";
-import { NotebookView } from "@/notebook-components/NotebookView";
-import { RawCell } from "@/notebook-components/RawCell";
 import {
   getElementsNotebookPrimaryCodeCell,
   getElementsNotebookScenario,
   resolveElementsNotebookLanguage,
 } from "@/components/notebook-scenarios";
 import type { NotebookViewCell } from "@/components/notebook";
-import { CrdtBridgeProvider } from "../../notebook/src/notebook-surface";
+import {
+  CodeCell,
+  CrdtBridgeProvider,
+  MarkdownCell,
+  NotebookView,
+  RawCell,
+  type HiddenGroupCellSummary,
+} from "../../notebook/src/notebook-surface";
 import {
   flushCellUIState,
   setExecutingCellIds,
