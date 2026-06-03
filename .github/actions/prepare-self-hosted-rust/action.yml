@@ -1,0 +1,13 @@
+name: Prepare self-hosted Rust homes
+description: Isolate mutable Rust state for parallel self-hosted runner services.
+
+runs:
+  using: composite
+  steps:
+    - name: Use job-local Rust homes
+      shell: bash
+      run: |
+        mkdir -p "${RUNNER_TEMP}/cargo-home/bin" "${RUNNER_TEMP}/rustup-home"
+        echo "CARGO_HOME=${RUNNER_TEMP}/cargo-home" >> "${GITHUB_ENV}"
+        echo "RUSTUP_HOME=${RUNNER_TEMP}/rustup-home" >> "${GITHUB_ENV}"
+        echo "${RUNNER_TEMP}/cargo-home/bin" >> "${GITHUB_PATH}"
