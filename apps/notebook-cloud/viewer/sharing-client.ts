@@ -55,6 +55,7 @@ export type CloudShareAccessRow =
       acl: CloudNotebookAclRow;
       label: string;
       detail: string;
+      title: string;
       scope: CloudShareScope;
       badge: string;
       stateLabel: string | null;
@@ -67,6 +68,7 @@ export type CloudShareAccessRow =
       invite: CloudNotebookInvite;
       label: string;
       detail: string;
+      title: string;
       scope: CloudShareInviteScope;
       badge: string;
       stateLabel: string | null;
@@ -87,6 +89,7 @@ export function buildCloudShareAccessRows(input: {
       acl,
       label: labelForAcl(acl),
       detail: detailForAcl(acl),
+      title: titleForAcl(acl),
       scope: acl.scope,
       badge: scopeLabel(acl.scope),
       stateLabel: acl.subject_kind === "public" ? "Enabled" : null,
@@ -100,10 +103,11 @@ export function buildCloudShareAccessRows(input: {
       id: `invite:${invite.id}`,
       kind: "invite",
       invite,
-      label: invite.display?.label || invite.email,
+      label: displayEmail(invite.display?.label || invite.email),
       detail: invite.provider_hint
         ? `Pending invite via ${invite.provider_hint}`
         : "Pending invite",
+      title: invite.email,
       scope: invite.scope,
       badge: scopeLabel(invite.scope),
       stateLabel: "Pending",
@@ -182,9 +186,9 @@ function labelForAcl(row: CloudNotebookAclRow): string {
   }
   const displayLabel = row.display?.label?.trim();
   if (displayLabel && displayLabel !== row.subject) {
-    return displayLabel;
+    return displayEmail(displayLabel);
   }
-  return labelForPrincipalSubject(row.subject);
+  return displayEmail(labelForPrincipalSubject(row.subject));
 }
 
 function detailForAcl(row: CloudNotebookAclRow): string {
@@ -195,13 +199,40 @@ function detailForAcl(row: CloudNotebookAclRow): string {
   if (display?.kind === "principal") {
     const email = display.email?.trim();
     if (email && email !== display.label) {
-      return email;
+      return displayEmail(email);
     }
     if (display.principal !== row.subject) {
       return display.principal;
     }
   }
   return detailForPrincipalSubject(row.subject);
+}
+
+function titleForAcl(row: CloudNotebookAclRow): string {
+  if (row.subject_kind === "public") {
+    return row.display?.label || "Public link";
+  }
+
+  if (row.display?.kind === "principal") {
+    const email = row.display.email?.trim();
+    if (email) return email;
+    if (row.display.principal !== row.subject) return row.display.principal;
+  }
+
+  return row.subject;
+}
+
+function displayEmail(value: string): string {
+  const trimmed = value.trim();
+  const parts = trimmed.split("@");
+  if (parts.length !== 2 || !parts[0] || !parts[1] || parts[1].includes(" ")) {
+    return trimmed;
+  }
+
+  const local = parts[0];
+  const first = local.at(0) ?? "";
+  const last = local.length > 2 ? (local.at(-1) ?? "") : "";
+  return `${first}...${last}@${parts[1]}`;
 }
 
 function labelForPrincipalSubject(subject: string): string {

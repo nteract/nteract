@@ -1778,7 +1778,7 @@ function CloudSharingControls({
           ) : (
             <ul>
               {accessRows.map((row) => (
-                <li key={row.id}>
+                <li key={row.id} title={row.title}>
                   <CloudShareRowIcon row={row} />
                   <div>
                     <strong>{row.label}</strong>
