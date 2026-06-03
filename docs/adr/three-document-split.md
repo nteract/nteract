@@ -20,14 +20,14 @@ what changes when the split runs in a multi-user deployment.
 
 Neighbors:
 
-- `docs/architecture/typed-frame-v4-wire-protocol.md` — the byte protocol that carries each doc's sync stream.
-- `docs/architecture/runtime-state-document-identity.md` — the follow-on
+- `docs/adr/typed-frame-v4-wire-protocol.md` — the byte protocol that carries each doc's sync stream.
+- `docs/adr/runtime-state-document-identity.md` — the follow-on
   identity decision that makes `NotebookDoc` point at its associated
   `RuntimeStateDoc`.
-- `docs/architecture/execution-pipeline.md` — how `RuntimeStateDoc` is written during cell execution.
-- `docs/architecture/blob-storage-and-content-addressing.md` — how output payloads are stored separately from the doc itself.
-- `docs/architecture/identity-and-trust.md` — the trust scopes the three-doc split makes expressible.
-- `docs/architecture/cleanup-punchlist.md` — open gaps in the split.
+- `docs/adr/execution-pipeline.md` — how `RuntimeStateDoc` is written during cell execution.
+- `docs/adr/blob-storage-and-content-addressing.md` — how output payloads are stored separately from the doc itself.
+- `docs/adr/identity-and-trust.md` — the trust scopes the three-doc split makes expressible.
+- `docs/adr/cleanup-punchlist.md` — open gaps in the split.
 
 ## Decision 1: Three documents, three sync streams, three frame types
 
@@ -52,7 +52,7 @@ The reasons for keeping them separate, not just logically but physically on the 
    and `RuntimeStateDoc` fan out only to peers attached to that room.
 3. **Different write authority.** `NotebookDoc` is multi-writer (any editor-scope peer authors cells). `RuntimeStateDoc` is daemon-authored for execution intent and daemon/runtime-peer authored for lifecycle, execution progress, output, and comm topology. Editor/owner peers may only mutate existing widget comm state through the shared runtime-doc policy. `PoolDoc` is daemon-only, with all client changes stripped at ingress (`pool_state.rs:341`, `message.changes = Vec::<Vec<u8>>::new().into()`).
 4. **Different lifetimes.** `NotebookDoc` persists to disk (`.automerge` for ephemeral rooms; `.ipynb` for file-backed). `RuntimeStateDoc` is in-memory only. `PoolDoc` lives for the daemon's lifetime. See Decision 4.
-5. **Different trust scopes.** The identity ADR (`docs/architecture/identity-and-trust.md` Decision 5) carves four scopes precisely along these lines. `viewer` reads all three. `editor` writes allowed `NotebookDoc` fields and existing widget comm state. `runtime_peer` writes runtime progress/output state for accepted executions and cannot write `NotebookDoc` or create execution intent. `owner` writes allowed notebook fields and manages the ACL; it does not imply runtime authorship. `PoolDoc` is daemon-write-only across every scope.
+5. **Different trust scopes.** The identity ADR (`docs/adr/identity-and-trust.md` Decision 5) carves four scopes precisely along these lines. `viewer` reads all three. `editor` writes allowed `NotebookDoc` fields and existing widget comm state. `runtime_peer` writes runtime progress/output state for accepted executions and cannot write `NotebookDoc` or create execution intent. `owner` writes allowed notebook fields and manages the ACL; it does not imply runtime authorship. `PoolDoc` is daemon-write-only across every scope.
 
 The split is not bandwidth optimization. It is what makes the trust model expressible at the frame layer at all. A single doc would force scope enforcement into path-level Automerge ACLs, which Automerge does not provide.
 
@@ -227,4 +227,4 @@ The split was designed for the desktop topology (one daemon per user, same-UID t
 - `crates/runtimed/src/notebook_sync_server/peer_pool_sync.rs` - PoolDoc fan-out across all connected peers.
 - `crates/runtimed/src/notebook_sync_server/persist.rs` - NotebookDoc `.automerge` debouncer.
 - `crates/runtimed/src/daemon.rs:4419-4422` - the comment that records "RuntimeStateDoc is not persisted."
-- `docs/architecture/identity-and-trust.md` - the trust scopes that the three-document split makes expressible.
+- `docs/adr/identity-and-trust.md` - the trust scopes that the three-document split makes expressible.

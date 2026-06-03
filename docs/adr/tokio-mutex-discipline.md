@@ -10,12 +10,12 @@ This ADR collects the rules that keep that runtime responsive. The headline rule
 
 Neighbors:
 
-- `docs/architecture/typed-frame-v4-wire-protocol.md` - the framing that bounds inbound work. `FramedReader`'s actor pattern is one of the cancel-safety primitives this ADR depends on.
-- `docs/architecture/three-document-split.md` - why `NotebookDoc` and `RuntimeStateDoc` live behind `std::sync::Mutex` in `DocHandle`, not async locks.
-- `docs/architecture/execution-pipeline.md` - Decision 2 (control-plane vs output-plane separation) is the same problem family at the IOPub boundary. Same goal, different boundary.
-- `docs/architecture/blob-storage-and-content-addressing.md` - the blob store keeps large writes out of the document apply path; concurrency discipline keeps them out of the lifecycle path.
-- `docs/architecture/identity-and-trust.md` - connection-time authentication keeps the validator's hot path mutex-free.
-- `docs/architecture/cleanup-punchlist.md` - open gaps in invariant coverage.
+- `docs/adr/typed-frame-v4-wire-protocol.md` - the framing that bounds inbound work. `FramedReader`'s actor pattern is one of the cancel-safety primitives this ADR depends on.
+- `docs/adr/three-document-split.md` - why `NotebookDoc` and `RuntimeStateDoc` live behind `std::sync::Mutex` in `DocHandle`, not async locks.
+- `docs/adr/execution-pipeline.md` - Decision 2 (control-plane vs output-plane separation) is the same problem family at the IOPub boundary. Same goal, different boundary.
+- `docs/adr/blob-storage-and-content-addressing.md` - the blob store keeps large writes out of the document apply path; concurrency discipline keeps them out of the lifecycle path.
+- `docs/adr/identity-and-trust.md` - connection-time authentication keeps the validator's hot path mutex-free.
+- `docs/adr/cleanup-punchlist.md` - open gaps in invariant coverage.
 
 Three things shaped the rules:
 
@@ -130,7 +130,7 @@ The reader half of the socket is the one place where the loop body cannot be the
 
 The peer loop in `crates/runtimed/src/notebook_sync_server/peer_loop.rs:176-200` uses `biased;` and reorders arms so that the writer task and the request worker (both spawned helpers) are polled first. If they have terminated, the loop returns immediately rather than reading another frame from the client and dispatching it.
 
-This is a degenerate version of the control-plane priority pattern from `docs/architecture/execution-pipeline.md` Decision 2. There, the stream committer routes `ExecutionDone` through a priority arm that always wins over output flushes. Here, the peer loop routes "the helper task you depend on has died" through a priority arm that always wins over "another frame to dispatch." Either way, the principle is: **lifecycle-bearing events do not compete fairly with throughput-bearing events.**
+This is a degenerate version of the control-plane priority pattern from `docs/adr/execution-pipeline.md` Decision 2. There, the stream committer routes `ExecutionDone` through a priority arm that always wins over output flushes. Here, the peer loop routes "the helper task you depend on has died" through a priority arm that always wins over "another frame to dispatch." Either way, the principle is: **lifecycle-bearing events do not compete fairly with throughput-bearing events.**
 
 The same pattern shows up in the runtime agent's main loop (`runtime_agent.rs:155`) and the daemon's connection-accept loop (`daemon.rs:1951, 1991, 2102`). They are not all `biased;` because some of them want fair selection over equally-priority events, but every one of them owns its state locally, drains short events before yielding to long ones, and never holds a lock across a `.await`.
 
@@ -236,4 +236,4 @@ These follow-ups are tracked but not decided here:
 - `crates/runtimed/src/notebook_sync_server/peer_loop.rs:176-200` - `biased;` lifecycle priority in the peer loop.
 - `crates/notebook-protocol/src/connection/framing.rs:245-297` - `FramedReader`, the cancel-safe read primitive.
 - `crates/runtimed/src/notebook_sync_server/metadata.rs:2249-2267` - a use-site comment documenting mixed-lock ordering.
-- `docs/architecture/execution-pipeline.md` Decision 2 - the sibling rule for control-plane signal priority at the IOPub boundary.
+- `docs/adr/execution-pipeline.md` Decision 2 - the sibling rule for control-plane signal priority at the IOPub boundary.

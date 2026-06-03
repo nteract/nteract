@@ -10,10 +10,10 @@ useful for lookup and display, but it is not the room principal.
 
 Related docs:
 
-- `docs/architecture/identity-and-trust.md`
-- `docs/architecture/hosted-room-authorization.md`
-- `docs/architecture/hosted-credential-transport.md`
-- `docs/architecture/hosted-direct-oidc-demo-runbook.md`
+- `docs/adr/identity-and-trust.md`
+- `docs/adr/hosted-room-authorization.md`
+- `docs/adr/hosted-credential-transport.md`
+- `docs/adr/hosted-direct-oidc-demo-runbook.md`
 
 Prototype code:
 

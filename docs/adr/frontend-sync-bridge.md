@@ -16,12 +16,12 @@ The bridge was extracted in commit `4baa957e` from `useAutomergeNotebook` (the h
 
 Neighbors:
 
-- `docs/architecture/typed-frame-v4-wire-protocol.md` - what arrives at `frameIn$` before WASM decodes it.
-- `docs/architecture/three-document-split.md` - `NotebookDoc` vs `RuntimeStateDoc` vs `BlobMap`, and why two of them feed the React tree on different paths.
-- `docs/architecture/execution-pipeline.md` - the `flushSync` -> `get_heads_hex()` -> required-heads handshake that this layer is responsible for honoring.
-- `docs/architecture/blob-storage-and-content-addressing.md` - manifests that resolve through `blob-port.ts` before a cell can finish materializing.
-- `docs/architecture/identity-and-trust.md` - actor labels live in the WASM handle the bridge subscribes to.
-- `docs/architecture/cleanup-punchlist.md` - gaps surfaced by writing this ADR are tracked there.
+- `docs/adr/typed-frame-v4-wire-protocol.md` - what arrives at `frameIn$` before WASM decodes it.
+- `docs/adr/three-document-split.md` - `NotebookDoc` vs `RuntimeStateDoc` vs `BlobMap`, and why two of them feed the React tree on different paths.
+- `docs/adr/execution-pipeline.md` - the `flushSync` -> `get_heads_hex()` -> required-heads handshake that this layer is responsible for honoring.
+- `docs/adr/blob-storage-and-content-addressing.md` - manifests that resolve through `blob-port.ts` before a cell can finish materializing.
+- `docs/adr/identity-and-trust.md` - actor labels live in the WASM handle the bridge subscribes to.
+- `docs/adr/cleanup-punchlist.md` - gaps surfaced by writing this ADR are tracked there.
 
 Three constraints shape every decision below:
 
@@ -123,7 +123,7 @@ acts on the request:
 
 The function returns `boolean`, not `void`, because outbound flush is the failure surface where the transport can drop or error. Direct flush callers such as dependency sync and save check `false` and bail before issuing their dependent request. Execute and run-all use the `required_heads` path instead: the daemon fails closed if the triggered flush does not deliver the requested heads before its timeout.
 
-The `required_heads` extension lives in `App.tsx:374`: `NotebookClient` is constructed with `getRequiredHeads: () => getHandle()?.get_heads_hex() ?? []` and `flushBeforeRequiredHeadsRequest: () => getEngine()?.flush()`. Cross-reference `docs/architecture/execution-pipeline.md` for the daemon side. The bridge does not own this handshake; it owns the inbound projection that lets a UI read the result.
+The `required_heads` extension lives in `App.tsx:374`: `NotebookClient` is constructed with `getRequiredHeads: () => getHandle()?.get_heads_hex() ?? []` and `flushBeforeRequiredHeadsRequest: () => getEngine()?.flush()`. Cross-reference `docs/adr/execution-pipeline.md` for the daemon side. The bridge does not own this handshake; it owns the inbound projection that lets a UI read the result.
 
 ### Why the engine returns `Promise<boolean>` and not a result type
 
@@ -182,7 +182,7 @@ Renderer plugins themselves are out of scope here. See `src/components/isolated/
 - On every editor change, calls `handle.splice_source(cell_id, index, delete_count, text)`. Character-level, no Myers diff. The same call updates the cell store via `updateCellById` and triggers a debounced sync via `onSyncNeeded` -> `engine.scheduleFlush()`.
 - On every text-attribution broadcast targeting this cell, calls `bridge.applyRemoteChanges(...)`. Attributions reach the bridge through `subscribeBroadcast` (the same module bus as Decision 4), filtered by `isTextAttributionEvent`.
 
-The bridge holds a local-actor label so it can filter self-echo attributions. The actor label is sourced from `daemon:ready` payloads and falls back to `desktop:<sessionId>` until the daemon hands one over. Cross-reference Decision 1 of `docs/architecture/identity-and-trust.md` for the actor-label format.
+The bridge holds a local-actor label so it can filter self-echo attributions. The actor label is sourced from `daemon:ready` payloads and falls back to `desktop:<sessionId>` until the daemon hands one over. Cross-reference Decision 1 of `docs/adr/identity-and-trust.md` for the actor-label format.
 
 This is the one place where editor input bypasses the React render path entirely. CodeMirror's ViewPlugin sees the change before React; the cell-store update happens after, asynchronously, via the bridge's `onSourceChanged` callback. The user sees the keystroke instantly.
 
@@ -245,7 +245,7 @@ This is the one place where editor input bypasses the React render path entirely
 
 5. **Bridge as an `nteract-frontend-sync` package.** The current location (`apps/notebook/src/lib/`) couples the bridge to app stores. Extracting it would let `apps/notebook-cloud` and any future host reuse the wiring. Out of scope here; depends on the `NotebookHost` boundary in `packages/notebook-host/`.
 
-6. **`presence$` cardinality.** The bridge dispatches every presence frame to every subscriber. With many remote peers and high heartbeat frequency, this could become a hot path. No throttling today; cross-reference Decision 4 of `docs/architecture/identity-and-trust.md` for the heartbeat shape.
+6. **`presence$` cardinality.** The bridge dispatches every presence frame to every subscriber. With many remote peers and high heartbeat frequency, this could become a hot path. No throttling today; cross-reference Decision 4 of `docs/adr/identity-and-trust.md` for the heartbeat shape.
 
 ## References
 

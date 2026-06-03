@@ -244,7 +244,7 @@ Authorization: Bearer <ANACONDA_API_KEY>
 X-Notebook-Cloud-Auth-Provider: anaconda-api-key
 ```
 
-See `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
+See `docs/adr/hosted-direct-oidc-demo-runbook.md`.
 
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 
@@ -319,7 +319,7 @@ frames up to 4 KiB; and pool-state/session-control frames up to 1 MiB. The
 Durable Object keeps only the latest 500 `frame:*` metadata entries in object
 storage; D1 is not a frame replay log.
 
-Published revision artifacts follow `docs/architecture/hosted-notebook-artifacts.md`:
+Published revision artifacts follow `docs/adr/hosted-notebook-artifacts.md`:
 
 ```text
 n/{id}/snapshots/{notebookHeadsHash}.am

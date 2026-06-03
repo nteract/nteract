@@ -21,11 +21,11 @@ into ordinary notebook MIME outputs.
 
 Neighbors:
 
-- `docs/architecture/blob-ref-and-chunk-manifest-protocol.md` - how serialized
+- `docs/adr/blob-ref-and-chunk-manifest-protocol.md` - how serialized
   Arrow bytes are referenced and chunked.
 - `python/nteract-kernel-launcher/docs/arrow-native-outputs.md` - current
   launcher implementation plan and merged behavior.
-- `docs/architecture/blob-storage-and-content-addressing.md` - where the
+- `docs/adr/blob-storage-and-content-addressing.md` - where the
   resulting bytes live after the daemon receives them.
 
 ## Decision 1: `__arrow_c_stream__` is the primary table producer contract

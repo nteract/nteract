@@ -92,7 +92,7 @@ Three properties fall out:
 3. If the principal is in the ACL, the connection inherits the ACL-stated scope. If not, the connection is rejected. An unauthenticated request may receive anonymous `viewer` scope when the room has a public-read ACL entry.
 4. The connection's `AuthenticatedConnection` carries that principal and scope for the life of the socket.
 
-What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. v1 enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc` and `RuntimeStateDoc` sync frames. The Automerge fork patch tracked in `docs/architecture/automerge-fork-patches.md` remains the intended lower-cost replacement for that validator.
+What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. v1 enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc` and `RuntimeStateDoc` sync frames. The Automerge fork patch tracked in `docs/adr/automerge-fork-patches.md` remains the intended lower-cost replacement for that validator.
 
 ### Federated principal display
 
@@ -147,7 +147,7 @@ The room-host enforces scope at frame ingress by inspecting frame type and empti
 
 For non-empty `NotebookDoc` and `RuntimeStateDoc` sync messages, the room-host also performs a v1 clone-preview validator: clone the current Automerge doc and sync state, apply the incoming message to the clone, extract the actors in the newly applied changes, and reject the frame if any new change's principal differs from the connection's authenticated principal. The real room document is mutated only after this preview succeeds.
 
-This closes live principal forgery for v1, but it is intentionally a stopgap. It deep-clones the document and applies each non-empty inbound message twice, which is most expensive on the high-churn `RuntimeStateDoc` path. `docs/architecture/automerge-fork-patches.md` Patch 1 (`sync_message_new_changes`) is the planned v2 replacement: inspect the new changes from a sync message without cloning or applying to a throwaway document.
+This closes live principal forgery for v1, but it is intentionally a stopgap. It deep-clones the document and applies each non-empty inbound message twice, which is most expensive on the high-churn `RuntimeStateDoc` path. `docs/adr/automerge-fork-patches.md` Patch 1 (`sync_message_new_changes`) is the planned v2 replacement: inspect the new changes from a sync message without cloning or applying to a throwaway document.
 
 ### Schema-seed actors are canonical, with principal-prefixed labels as target
 
@@ -327,7 +327,7 @@ A user adds an entry once (paste a key, OAuth flow, JupyterHub session forward) 
 
 Browsers cannot set custom request headers on `new WebSocket(url, subprotocols)`. The credential has to arrive via one of these mechanisms. Parsing each of them is a **listener-side concern**, not a provider concern: the listener (Cloudflare Worker, Unix socket, etc.) inspects the upgrade request and produces a normalized `Credential` that the provider then validates.
 
-`docs/architecture/hosted-credential-transport.md` is the deployment-level ADR
+`docs/adr/hosted-credential-transport.md` is the deployment-level ADR
 for choosing among these transports. This section only records the base
 credential vocabulary.
 
@@ -471,16 +471,16 @@ The repo currently persists `.automerge` only for untitled ephemeral notebooks. 
 These follow-up ADRs and design decisions are tracked but not decided here:
 
 1. **Room-host crate extraction.** Pulling `runtimed::notebook_sync_server::room` into `nteract-room-host` with pluggable `Listener` and `SnapshotStore` traits. Tracked in a separate ADR.
-2. **Identity provider selection for Anaconda hosted v1.** Direct OIDC against Anaconda's existing SSO is the first browser session layer for the hosted Worker. The staging target is the retired `preview.runt.run` lane from `runtimed/intheloop`, using Anaconda stage OIDC and a `/oidc` callback. `docs/architecture/hosted-credential-transport.md` tracks the exact credential transport and principal-namespace decision.
+2. **Identity provider selection for Anaconda hosted v1.** Direct OIDC against Anaconda's existing SSO is the first browser session layer for the hosted Worker. The staging target is the retired `preview.runt.run` lane from `runtimed/intheloop`, using Anaconda stage OIDC and a `/oidc` callback. `docs/adr/hosted-credential-transport.md` tracks the exact credential transport and principal-namespace decision.
 3. **Public viewer presence visibility.** Public-read URLs use explicit ACL-backed anonymous viewer access under an `anonymous:<session>/browser:<session>` actor. Still open: whether public viewers should see each other in presence, only see aggregate counts, or remain fully local-only.
 4. **Revocation signal and historical-change subduction.** Two parts. First, the wire signal: the exact `SESSION_CONTROL` close frame and the channel for admin revokes / plan downgrades. Second, what happens to changes a revoked principal already authored. The Automerge `filters` work (`origin/filters` branch, `rust/automerge/src/filter.rs`) is the natural primitive: install a `Filter::with_author(revoked, Rule::AllowUpTo { heads: validated })` to subduct edits authored after revocation while keeping causal integrity intact. Wait for `filters` to land in main before depending on it; until then, revocation is a hard connection close with no post-hoc audit hiding.
 5. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
 6. **`runtime_peer` connection topology.** The hosted prototype now supports direct `runtime_peer` `RuntimeStateDoc` ingress into the room. Still open: whether the production kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
-7. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/architecture/deployment-topology.md`.
+7. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/adr/deployment-topology.md`.
 8. **ACL mechanics beyond the Cloudflare v1 shape.** The hosted prototype covers flat D1 rows, public-read rows, and owner-only row mutation. Still open: owner transfer UX, group/org expansion, inherited ACLs, audit event retention, Zanzibar/Authzed-style evaluation, and product policy for anonymous public presence.
 9. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
 10. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
-11. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/architecture/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
+11. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/adr/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
 
 ## Worked examples
 

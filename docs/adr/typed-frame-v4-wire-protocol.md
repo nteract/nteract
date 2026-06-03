@@ -4,17 +4,17 @@
 
 ## Context
 
-Every peer in the nteract desktop world speaks the same byte protocol over a Unix socket: the Tauri relay inside the desktop app, the daemon (`runtimed`), the runtime-agent subprocess, the `runt-mcp` proxy, the Python bindings, and (per `docs/architecture/identity-and-trust.md`) future hosted-room WebSocket bridges. The protocol is `notebook-wire` v4 typed frames on top of a 5-byte preamble.
+Every peer in the nteract desktop world speaks the same byte protocol over a Unix socket: the Tauri relay inside the desktop app, the daemon (`runtimed`), the runtime-agent subprocess, the `runt-mcp` proxy, the Python bindings, and (per `docs/adr/identity-and-trust.md`) future hosted-room WebSocket bridges. The protocol is `notebook-wire` v4 typed frames on top of a 5-byte preamble.
 
 The wire crate (`crates/notebook-wire/src/lib.rs`) is intentionally tiny: magic bytes, protocol-version constant, the `NotebookFrameType` enum, per-type size limits, and the `SessionControlMessage` shapes. Framing itself lives one crate up (`crates/notebook-protocol/src/connection/framing.rs`). Everything heavier (Automerge sync, JSON request/response, CBOR presence, blob uploads) is layered on top.
 
 This ADR pins down what every peer must agree on so the format does not silently drift between Rust, the `packages/runtimed` TypeScript surface, the Python client, and any future browser transport. The semantic neighbors:
 
-- `docs/architecture/identity-and-trust.md` — who is allowed to send which frame.
-- `docs/architecture/three-document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `PoolStateSync` actually carry.
-- `docs/architecture/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
-- `docs/architecture/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
-- `docs/architecture/cleanup-punchlist.md` — open gaps surfaced while writing this.
+- `docs/adr/identity-and-trust.md` — who is allowed to send which frame.
+- `docs/adr/three-document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `PoolStateSync` actually carry.
+- `docs/adr/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
+- `docs/adr/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
+- `docs/adr/cleanup-punchlist.md` — open gaps surfaced while writing this.
 
 This document is the framing layer underneath all of them.
 
@@ -214,7 +214,7 @@ The `>= 3` gate is intentional: clients that pre-date v4 still get the readiness
 `SessionControl` is intentionally **not** a request/response channel:
 
 - The client never originates a `SessionControl` frame. The peer loop drops one with a warning.
-- It is not used for revocation today. The identity ADR (`docs/architecture/identity-and-trust.md` open question 4) explicitly flags `SESSION_CONTROL` as the future delivery channel for server-initiated connection close.
+- It is not used for revocation today. The identity ADR (`docs/adr/identity-and-trust.md` open question 4) explicitly flags `SESSION_CONTROL` as the future delivery channel for server-initiated connection close.
 
 Reserving the type byte for daemon-originated state means the channel can grow new server-pushed signals (e.g., revocation, plan downgrade, room eviction) without inventing another frame type or repurposing broadcasts.
 

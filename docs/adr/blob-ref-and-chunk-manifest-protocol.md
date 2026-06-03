@@ -21,9 +21,9 @@ Jupyter clients.
 
 Neighbors:
 
-- `docs/architecture/blob-storage-and-content-addressing.md` - daemon-side blob
+- `docs/adr/blob-storage-and-content-addressing.md` - daemon-side blob
   store, hash validation, HTTP serving, and multipart upload.
-- `docs/architecture/hosted-notebook-artifacts.md` - hosted snapshot and blob
+- `docs/adr/hosted-notebook-artifacts.md` - hosted snapshot and blob
   artifact materialization.
 - `docs/superpowers/specs/2026-05-11-arrow-manifest-durable-storage-design.md`
   - save/load durability details for nested Arrow manifest refs.

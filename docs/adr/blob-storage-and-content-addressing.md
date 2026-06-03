@@ -30,19 +30,19 @@ upload protocol.
 
 Neighbors:
 
-- `docs/architecture/typed-frame-v4-wire-protocol.md` — the `PUT_BLOB` frame
+- `docs/adr/typed-frame-v4-wire-protocol.md` — the `PUT_BLOB` frame
   shape and the per-type cap.
-- `docs/architecture/three-document-split.md` — which document each blob ref
+- `docs/adr/three-document-split.md` — which document each blob ref
   comes from (`RuntimeStateDoc` executions / comms, `NotebookDoc` assets /
   attachments).
-- `docs/architecture/execution-pipeline.md` — when the daemon decides to
+- `docs/adr/execution-pipeline.md` — when the daemon decides to
   blob an output vs. inline it.
-- `docs/architecture/hosted-notebook-artifacts.md` — how snapshot pairs and
+- `docs/adr/hosted-notebook-artifacts.md` — how snapshot pairs and
   R2 blob storage reuse the same hash addressing.
-- `docs/architecture/identity-and-trust.md` — the room-level auth gate that
+- `docs/adr/identity-and-trust.md` — the room-level auth gate that
   blob HTTP currently leans on; how a connected peer earns the right to
   upload at all.
-- `docs/architecture/cleanup-punchlist.md` — open gaps in blob handling.
+- `docs/adr/cleanup-punchlist.md` — open gaps in blob handling.
 
 ## Decision 1: SHA-256 hex, content-addressed, two-level shard
 
@@ -554,9 +554,9 @@ elsewhere, some are surfaced here for the first time.
   `resolve_content_ref`, snapshot+blob pairing.
 - `packages/runtimed/src/blob-resolver.ts` - host-agnostic resolver surface
   (`BlobResolver`, `createHttpBlobResolver`, `createBlobResolver`).
-- `docs/architecture/hosted-notebook-artifacts.md` - cloud R2 layout, publish
+- `docs/adr/hosted-notebook-artifacts.md` - cloud R2 layout, publish
   artifacts, the matching cloud resolver.
-- `docs/architecture/identity-and-trust.md` - room-level auth that gates the
+- `docs/adr/identity-and-trust.md` - room-level auth that gates the
   socket the `PUT_BLOB` frame rides on.
-- `docs/architecture/runtime-peer-and-blob-authority-audit.md` - hosted
+- `docs/adr/runtime-peer-and-blob-authority-audit.md` - hosted
   scope-gating and reference-authority audit for `PutBlob` and runtime peers.
