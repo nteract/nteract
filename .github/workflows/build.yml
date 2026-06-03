@@ -13,10 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}
   # PR pushes should cancel stale work. Main, scheduled, and manual runs are the
-  # long-tail coverage lanes, so let them finish instead of starving coverage
-  # when main moves quickly.
+  # long-tail coverage lanes, so give each non-PR run a unique concurrency
+  # group. GitHub replaces older pending runs in a group even when
+  # cancel-in-progress is false.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -733,6 +734,7 @@ jobs:
     needs: [changes, build-ui]
     if: ${{ always() && needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request' && needs.build-ui.result == 'success' }}
     continue-on-error: ${{ matrix.platform.non_blocking }}
+    timeout-minutes: 120
     runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'ubuntu-latest' }}
     strategy:
       matrix:
