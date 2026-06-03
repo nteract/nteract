@@ -1,13 +1,23 @@
-name: Prepare self-hosted Rust homes
-description: Isolate mutable Rust state for parallel self-hosted runner services.
+name: Prepare self-hosted tool homes
+description: Isolate mutable Rust and tool state per self-hosted runner service.
 
 runs:
   using: composite
   steps:
-    - name: Use job-local Rust homes
+    - name: Use runner-local Rust homes
       shell: bash
       run: |
-        mkdir -p "${RUNNER_TEMP}/cargo-home/bin" "${RUNNER_TEMP}/rustup-home"
-        echo "CARGO_HOME=${RUNNER_TEMP}/cargo-home" >> "${GITHUB_ENV}"
-        echo "RUSTUP_HOME=${RUNNER_TEMP}/rustup-home" >> "${GITHUB_ENV}"
-        echo "${RUNNER_TEMP}/cargo-home/bin" >> "${GITHUB_PATH}"
+        runner_cache_root="${NTERACT_RUNNER_CACHE:-${NTERACT_RUNNER_RUST_CACHE:-${HOME}/.cache/nteract-actions}}"
+        runner_cache_name="$(printf '%s' "${RUNNER_NAME:-self-hosted}" | tr -c 'A-Za-z0-9_.-' '_')"
+        cargo_home="${runner_cache_root}/${runner_cache_name}/cargo"
+        rustup_home="${runner_cache_root}/${runner_cache_name}/rustup"
+        tool_home="${runner_cache_root}/${runner_cache_name}/tools"
+
+        # A runner service runs one job at a time, so these homes can persist
+        # across jobs without concurrent writes from sibling runner services.
+        mkdir -p "${cargo_home}/bin" "${rustup_home}" "${tool_home}"
+
+        echo "CARGO_HOME=${cargo_home}" >> "${GITHUB_ENV}"
+        echo "RUSTUP_HOME=${rustup_home}" >> "${GITHUB_ENV}"
+        echo "NTERACT_RUNNER_TOOL_HOME=${tool_home}" >> "${GITHUB_ENV}"
+        echo "${cargo_home}/bin" >> "${GITHUB_PATH}"

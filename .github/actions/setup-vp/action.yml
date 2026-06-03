@@ -1,0 +1,25 @@
+name: Set up Vite+
+description: Set up Vite+ without sharing mutable installs across self-hosted runner services.
+
+inputs:
+  run-install:
+    description: Whether setup-vp should run package installation.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Vite+ with runner-local home
+      if: env.NTERACT_RUNNER_TOOL_HOME != ''
+      uses: voidzero-dev/setup-vp@v1
+      env:
+        HOME: ${{ env.NTERACT_RUNNER_TOOL_HOME }}
+      with:
+        run-install: ${{ inputs.run-install }}
+
+    - name: Set up Vite+
+      if: env.NTERACT_RUNNER_TOOL_HOME == ''
+      uses: voidzero-dev/setup-vp@v1
+      with:
+        run-install: ${{ inputs.run-install }}

@@ -79,7 +79,7 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --check
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: ./.github/actions/setup-vp
         with:
           run-install: false
       - uses: pnpm/action-setup@v6
