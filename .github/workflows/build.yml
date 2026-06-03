@@ -4,14 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   workflow_dispatch:
+  schedule:
+    - cron: "23 10 * * *"
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # PR pushes should cancel stale work. Main, scheduled, and manual runs are the
+  # long-tail coverage lanes, so let them finish instead of starving coverage
+  # when main moves quickly.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,7 +27,15 @@ jobs:
     name: Detect source changes
     runs-on: ubuntu-24.04
     outputs:
-      source_changed: ${{ steps.filter.outputs.source }}
+      source_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.source == 'true' }}
+      ci_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.ci == 'true' }}
+      rust_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.rust == 'true' }}
+      frontend_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.frontend == 'true' }}
+      browser_e2e_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.browser_e2e == 'true' }}
+      wasm_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.wasm == 'true' }}
+      python_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.python == 'true' }}
+      node_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.node == 'true' }}
+      windows_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.windows == 'true' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,6 +49,7 @@ jobs:
           filters: |
             source:
               - ".github/workflows/**"
+              - ".github/actions/**"
               - ".github/actionlint.yaml"
               - "apps/**"
               - "bin/**"
@@ -57,6 +72,92 @@ jobs:
               - "tailwind.config.js"
               - "tsconfig.json"
               - "vitest.config.ts"
+            ci:
+              - ".github/workflows/**"
+              - ".github/actions/**"
+              - ".github/actionlint.yaml"
+            rust:
+              - ".github/workflows/build.yml"
+              - "bin/**"
+              - "crates/**"
+              - "scripts/**"
+              - "src/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+            frontend:
+              - ".github/workflows/build.yml"
+              - "apps/**"
+              - "src/**"
+              - "packages/**"
+              - "plugins/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "vite.config.ts"
+              - "components.json"
+              - "tailwind.config.js"
+              - "tsconfig.json"
+              - "vitest.config.ts"
+            browser_e2e:
+              - ".github/workflows/build.yml"
+              - "apps/notebook/**"
+              - "src/**"
+              - "packages/sift/**"
+              - "crates/runtimed-wasm/**"
+              - "crates/sift-wasm/**"
+              - "crates/runtimed/**"
+              - "crates/notebook-doc/**"
+              - "crates/notebook-sync/**"
+              - "crates/notebook-wire/**"
+              - "crates/notebook-protocol/**"
+              - "apps/notebook/e2e/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "vite.config.ts"
+              - "vitest.config.ts"
+            wasm:
+              - ".github/workflows/build.yml"
+              - "apps/notebook/src/renderer-plugins/**"
+              - "apps/notebook/src/wasm/**"
+              - "crates/runtimed-wasm/**"
+              - "crates/sift-wasm/**"
+              - "crates/runt-mcp/assets/plugins/**"
+              - "packages/sift/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "package.json"
+              - "pnpm-lock.yaml"
+            python:
+              - ".github/workflows/build.yml"
+              - "python/**"
+              - "crates/runtimed-py/**"
+              - "crates/runtimed/**"
+              - "crates/kernel-env/**"
+              - "crates/kernel-launch/**"
+              - "pyproject.toml"
+              - "uv.lock"
+              - "Cargo.toml"
+              - "Cargo.lock"
+            node:
+              - ".github/workflows/build.yml"
+              - "packages/runtimed-node/**"
+              - "plugins/nteract/pi/**"
+              - "crates/runtimed-node/**"
+              - "crates/runtimed/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "Cargo.toml"
+              - "Cargo.lock"
+            windows:
+              - ".github/workflows/build.yml"
+              - "crates/notebook/nsis/**"
+              - "crates/notebook/src/**"
+              - "crates/notebook/tauri.conf.json"
+              - "crates/notebook/Cargo.toml"
+              - "Cargo.toml"
+              - "Cargo.lock"
 
   lint:
     name: Lint & Format
@@ -99,13 +200,21 @@ jobs:
           bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
-  # Pull requests intentionally run only the two branch-protection checks above:
-  # Lint & Format and JS Tests & Benchmarks. The remaining coverage stays on
-  # main pushes and manual dispatch so PR feedback stays fast.
+  # Pull requests always run the two branch-protection checks above:
+  # Lint & Format and JS Tests & Benchmarks. The jobs below are advisory on PRs:
+  # they run for relevant paths or ci:* labels, but branch protection does not
+  # require them.
   nsis-bootstrap:
     name: NSIS Bootstrap Syntax
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.windows_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:windows')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -127,7 +236,14 @@ jobs:
   windows-clippy:
     name: Windows (clippy)
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.windows_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:windows')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -164,7 +280,14 @@ jobs:
   wasm-deno:
     name: WASM + Deno Tests
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.wasm_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:wasm')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -200,7 +323,14 @@ jobs:
   build-ui:
     name: Build shared UI artifacts
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.frontend_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:frontend')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -276,7 +406,14 @@ jobs:
   browser-e2e:
     name: Browser E2E (Playwright)
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.browser_e2e_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:browser-e2e')
+      )
     # Keep the generic browser lane on GitHub-hosted runners for predictable
     # per-job latency. The Anaconda pool is reserved for Linux/env-heavy lanes.
     runs-on: ubuntu-24.04
@@ -439,7 +576,14 @@ jobs:
   linux-rust-clippy:
     name: Linux Rust Clippy
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.rust_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:rust')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -474,7 +618,14 @@ jobs:
   linux-rust-tests:
     name: Linux Rust Tests
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.rust_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:rust')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -503,7 +654,14 @@ jobs:
   linux-runtimed-node:
     name: Linux runtimed-node
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.node_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:runtimed-node')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -1058,7 +1216,14 @@ jobs:
     # runs pytest only.
     name: Python Unit Tests
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.python_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:python')
+      )
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6

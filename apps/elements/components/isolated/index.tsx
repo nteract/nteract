@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
@@ -196,6 +197,17 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const [hostContext, setHostContextState] = useState<NteractEmbedHostContextPatch>({});
     const onReadyRef = useRef(onReady);
     const onResizeRef = useRef(onResize);
+    const handleMouseUp = useCallback(
+      (event: ReactMouseEvent<HTMLDivElement>) => {
+        if (!onMouseUp) return;
+
+        const selection = event.currentTarget.ownerDocument.getSelection();
+        onMouseUp({
+          hasSelection: !!selection && !selection.isCollapsed && selection.toString().length > 0,
+        });
+      },
+      [onMouseUp],
+    );
 
     useEffect(() => {
       onReadyRef.current = onReady;
