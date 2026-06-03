@@ -84,6 +84,7 @@ const SCHEMA_SEED_ACTOR: &str = "nteract:notebook-schema:v5";
 // still agreeing on the `cells` and `metadata` object IDs before sync.
 const NOTEBOOK_GENESIS_V5_BYTES: &[u8] = include_bytes!("../assets/notebook_genesis_v5.am");
 
+use automerge::legacy::{Key as LegacyKey, ObjectId as LegacyObjectId, OpType as LegacyOpType};
 use automerge::sync;
 use automerge::sync::SyncDoc;
 #[cfg(test)]
@@ -2413,6 +2414,59 @@ impl NotebookDoc {
             .clone()
     }
 
+    /// True when nothing beyond document creation has been applied: the change
+    /// graph contains only the canonical schema seed and the identity puts
+    /// (`notebook_id`, `runtime_state_doc_id`) that `new_with_actor` writes.
+    ///
+    /// This is the host-authority seeding gate. Unlike a `cell_count()` check it
+    /// is derived from immutable history, so it is convergence-safe (no transient
+    /// empty view during sync misfires) and monotonic: once any cell or metadata
+    /// op lands, the document is never pristine again, including after a user
+    /// deletes every cell. See `docs/adr/0001-notebook-seeding-invariant.md`.
+    ///
+    /// If document creation ever writes a new ROOT scaffolding key, add it to the
+    /// allowlist below (and to the constructor guard test).
+    pub fn is_pristine(&mut self) -> bool {
+        // Sound fast path: a populated metadata snapshot means the document was
+        // initialized (`get_metadata_snapshot` returns `Some` only for non-empty
+        // metadata, so it never misfires on a fresh doc whose metadata Map is
+        // empty). This is a pure optimization for the common already-seeded case;
+        // the history walk below is what actually backstops metadata mutations.
+        if self.get_metadata_snapshot().is_some() {
+            return false;
+        }
+
+        let seed: std::collections::HashSet<automerge::ChangeHash> =
+            Self::canonical_schema_seed_change_hashes()
+                .into_iter()
+                .collect();
+
+        for change in self.doc.get_changes(&[]) {
+            if seed.contains(&change.hash()) {
+                continue;
+            }
+            for op in change.decode().operations {
+                // Only the *initial creation* of an identity key is allowed beyond
+                // genesis: an inserting `Put` (empty `pred`) to ROOT's
+                // `notebook_id` / `runtime_state_doc_id`. A delete or an overwrite
+                // of those keys is post-creation history and must fail the gate.
+                let is_creation_scaffold_put = matches!(op.action, LegacyOpType::Put(_))
+                    && op.pred.is_empty()
+                    && matches!(op.obj, LegacyObjectId::Root)
+                    && matches!(
+                        &op.key,
+                        LegacyKey::Map(k)
+                            if k.as_str() == "notebook_id"
+                                || k.as_str() == "runtime_state_doc_id"
+                    );
+                if !is_creation_scaffold_put {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// True when an actor/hash pair is the frozen schema seed change.
     ///
     /// Room hosts use this as a narrow authorization exception: the seed actor
@@ -3162,6 +3216,81 @@ mod tests {
         assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
         assert_eq!(doc.get_metadata("runtime"), None);
         assert!(doc.get_metadata_snapshot().is_none());
+    }
+
+    #[test]
+    fn fresh_notebook_doc_is_pristine() {
+        // genesis + the two identity puts, nothing else
+        let mut doc = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        assert!(doc.is_pristine());
+    }
+
+    #[test]
+    fn notebook_with_a_cell_is_not_pristine() {
+        let mut doc = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        doc.add_cell(0, "cell-a", "code").expect("add cell");
+        assert!(!doc.is_pristine());
+    }
+
+    #[test]
+    fn emptied_notebook_is_not_pristine() {
+        // add then delete every cell — current cell_count is 0, but history remains
+        let mut doc = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        doc.add_cell(0, "cell-a", "code").expect("add cell");
+        doc.delete_cell("cell-a").expect("delete cell");
+        assert_eq!(doc.cell_count(), 0);
+        assert!(
+            !doc.is_pristine(),
+            "an emptied notebook has cell history and must never be re-seeded"
+        );
+    }
+
+    #[test]
+    fn notebook_with_metadata_is_not_pristine() {
+        let mut doc = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        doc.set_metadata("trust", "trusted").expect("set metadata");
+        assert!(!doc.is_pristine());
+    }
+
+    #[test]
+    fn overwritten_or_deleted_identity_key_is_not_pristine() {
+        // A Put/Delete on an identity key AFTER creation is post-creation history,
+        // not the creation scaffold: the predicate checks action + empty pred, so
+        // these must read non-pristine even though obj==Root and the key matches.
+        let mut overwritten = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        overwritten
+            .doc
+            .put(automerge::ROOT, "notebook_id", "nb-2")
+            .expect("overwrite notebook_id");
+        assert!(
+            !overwritten.is_pristine(),
+            "an overwrite of notebook_id has a non-empty pred and is not scaffold"
+        );
+
+        let mut deleted = NotebookDoc::new_with_actor("nb-1", "runtimed");
+        deleted
+            .doc
+            .delete(automerge::ROOT, "runtime_state_doc_id")
+            .expect("delete runtime_state_doc_id");
+        assert!(
+            !deleted.is_pristine(),
+            "a delete of an identity key is an OpType::Delete, not a Put"
+        );
+    }
+
+    #[test]
+    fn every_fresh_constructor_is_pristine() {
+        // Guard: the allowlist is sound only while every creation path writes
+        // nothing to ROOT except the two identity puts. Enumerate the public fresh
+        // constructors so a future ROOT scaffolding put trips here instead of
+        // silently shipping a notebook that never seeds.
+        assert!(NotebookDoc::new("nb-1").is_pristine());
+        assert!(NotebookDoc::new_with_actor("nb-1", "runtimed").is_pristine());
+        assert!(
+            NotebookDoc::new_with_encoding("nb-1", TextEncoding::UnicodeCodePoint).is_pristine()
+        );
+        // The cloud room host path: RoomHostHandle::create_empty -> new_with_actor.
+        // Covered in runtimed-wasm (Task 3) where RoomHostHandle is in scope.
     }
 
     #[test]
