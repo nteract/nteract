@@ -27,9 +27,7 @@ function parseArgs(argv) {
     runtimeAgentExe:
       process.env.RUNTIMED_SMOKE_RUNTIME_AGENT_EXE ??
       path.join(repoRoot, "scripts/ssh-runtime-agent"),
-    workingDir:
-      process.env.RUNTIMED_SSH_RUNTIME_WORKING_DIR ??
-      `${smokeProjectPrefix}${process.pid}`,
+    workingDir: process.env.RUNTIMED_SSH_RUNTIME_WORKING_DIR ?? null,
     expectedHostname: process.env.RUNTIMED_SSH_RUNTIME_EXPECTED_HOSTNAME ?? null,
     timeoutMs: Number(process.env.RUNTIMED_SSH_RUNTIME_SMOKE_TIMEOUT_MS ?? 120000),
     keepTemp: process.env.RUNTIMED_SSH_RUNTIME_SMOKE_KEEP_TEMP === "1",
@@ -73,7 +71,7 @@ Options:
   --runtimed-bin <path>         Local runtimed binary (default: target/debug/runtimed)
   --runtime-agent-exe <path>    Local SSH runtime-agent wrapper
   --working-dir <path>          Notebook working dir visible locally and remotely
-                                (default: /tmp/runt-ssh-runtime-agent-smoke-<pid>)
+                                (default: /tmp/runt-ssh-runtime-agent-smoke-XXXXXX)
   --expected-hostname <name>    Expected remote hostname (default: ssh host)
   --timeout-ms <ms>             Execution timeout (default: 120000)
   --keep-temp                   Keep temporary smoke state after success
@@ -87,6 +85,7 @@ Options:
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
     throw new Error("--timeout-ms must be a positive number");
   }
+  options.workingDir ??= fs.mkdtempSync(smokeProjectPrefix);
   options.expectedHostname ??= options.sshHost;
 
   return options;

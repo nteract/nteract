@@ -102,12 +102,14 @@ proxy_token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 local_proxy_dir=$(mktemp -d "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-proxy.XXXXXX")
 local_proxy_socket="$local_proxy_dir/proxy.sock"
 local_proxy_pid=
+last_ssh_stderr=
 
 cleanup_local_proxy() {
   if [[ -n "$local_proxy_pid" ]]; then
     kill "$local_proxy_pid" 2>/dev/null || true
     wait "$local_proxy_pid" 2>/dev/null || true
   fi
+  rm -f "${last_ssh_stderr:-}"
   rm -rf "$local_proxy_dir"
 }
 trap cleanup_local_proxy EXIT INT TERM
@@ -301,11 +303,13 @@ $(shell_quote "$remote_runtimed") runtime-agent --notebook-id $(shell_quote "$no
     } >&2
   fi
 
-  last_ssh_stderr=$(mktemp "${TMPDIR:-/tmp}/runt-ssh-runtime-agent-ssh.XXXXXX")
+  last_ssh_stderr="$local_proxy_dir/ssh-stderr"
+  : > "$last_ssh_stderr"
   local ssh_status
   "$ssh_bin" \
     -o BatchMode=yes \
     -o ExitOnForwardFailure=yes \
+    -o GatewayPorts=no \
     -R "127.0.0.1:$remote_port:$local_proxy_socket" \
     "$ssh_host" \
     "$remote_command" \
@@ -323,11 +327,8 @@ fi
 
 ssh_status=255
 for _ in $(seq 1 "$attempts"); do
-  if run_remote_agent; then
-    ssh_status=0
-  else
-    ssh_status=$?
-  fi
+  ssh_status=0
+  run_remote_agent || ssh_status=$?
   if [[ "$ssh_status" -ne 255 || -n "$requested_remote_port" || ! -f "$last_ssh_stderr" ]] ||
     ! grep -qi "remote port forwarding failed" "$last_ssh_stderr"; then
     rm -f "${last_ssh_stderr:-}"
