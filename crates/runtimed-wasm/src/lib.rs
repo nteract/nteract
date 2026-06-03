@@ -477,7 +477,7 @@ impl RoomHostHandle {
     /// bootstrap handles and test fixtures can still use `create_empty` to mean
     /// "schema only, zero cells."
     pub fn seed_initial_code_cell_if_empty(&mut self, cell_id: &str) -> Result<bool, JsError> {
-        if self.doc.cell_count() > 0 {
+        if !self.doc.is_pristine() {
             return Ok(false);
         }
         self.doc
@@ -3117,6 +3117,7 @@ mod tests {
     fn room_host_seeds_initial_code_cell_idempotently() {
         let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
             .expect("create room host");
+        assert!(host.doc.is_pristine(), "a brand-new room host is pristine");
         assert_eq!(host.doc.cell_count(), 0);
 
         let seeded = host
