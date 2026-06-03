@@ -1301,12 +1301,27 @@ jobs:
       - e2e
       - runtimed-py-integration
       - python-unit-tests
-    if: always() && github.event_name != 'pull_request' && needs.changes.outputs.source_changed == 'true'
+    if: always() && needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Generate health summary
         run: |
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            {
+              echo "# Long-tail CI health"
+              echo
+              echo "Long-tail CI health is evaluated only on non-PR Build runs."
+              echo
+              echo "- Run: [${GITHUB_RUN_ID}](${run_url})"
+              echo "- Ref: \`${GITHUB_REF_NAME}\`"
+              echo "- Commit: \`${GITHUB_SHA}\`"
+              echo "- Event: \`${GITHUB_EVENT_NAME}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           attention=0
 
           track_result() {
@@ -1388,6 +1403,7 @@ jobs:
           cat long-tail-ci-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload health summary
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: long-tail-ci-health-summary
