@@ -51,6 +51,8 @@ jobs:
         with:
           run-install: false
       - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
