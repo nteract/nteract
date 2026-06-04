@@ -1536,6 +1536,9 @@ function NotebookViewer({
     />
   );
 
+  const showCloudCommandToolbar =
+    shouldShowCloudNotebookCommandToolbar(shellCapabilities) || editAccessPending;
+
   const toolbar = (
     <NotebookToolbarFrame className="z-20">
       <NotebookDocumentHeader
@@ -1570,7 +1573,7 @@ function NotebookViewer({
         }
         identityControls={null}
       />
-      {shouldShowCloudNotebookCommandToolbar(shellCapabilities) || editAccessPending ? (
+      {showCloudCommandToolbar ? (
         <NotebookCommandToolbar
           capabilities={shellCapabilities}
           runtime={toolbarRuntime}
@@ -1623,7 +1626,11 @@ function NotebookViewer({
   return (
     <NotebookDocumentShell
       rootElement="main"
-      className="cloud-notebook-shell"
+      className={
+        showCloudCommandToolbar
+          ? "cloud-notebook-shell cloud-notebook-shell--command-toolbar"
+          : "cloud-notebook-shell"
+      }
       stageClassName="cloud-notebook-stage"
       toolbar={toolbar}
       toolbarLabel="Notebook view status and controls"

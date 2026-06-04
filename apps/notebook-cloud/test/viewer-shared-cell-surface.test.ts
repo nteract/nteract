@@ -263,8 +263,9 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /disabled=\{accessPending\}/);
   assert.match(
     sourceText,
-    /shouldShowCloudNotebookCommandToolbar\(shellCapabilities\) \|\| editAccessPending/,
+    /const showCloudCommandToolbar =\s+shouldShowCloudNotebookCommandToolbar\(shellCapabilities\) \|\| editAccessPending/,
   );
+  assert.match(sourceText, /\{showCloudCommandToolbar \? \(/);
   assert.match(sourceText, /addCellControlsDisabled=\{editAccessPending\}/);
   assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
@@ -309,16 +310,18 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   assert.match(sourceText, /const notices = hasNotices \? \(/);
   assert.match(sourceText, /notices=\{notices\}/);
   assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
+  assert.match(sourceText, /cloud-notebook-shell--command-toolbar/);
   assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*position: relative;/);
+  assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: 3\.75rem;/);
   assert.match(
     cssText,
-    /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: calc\(3\.75rem \+ 2\.5rem\);/,
+    /\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-top: calc\(3\.75rem \+ 2\.5rem\);/,
   );
   assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*position: absolute;/);
   assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*top: var\(--cloud-notice-top\);/);
   assert.match(
     cssText,
-    /@media \(max-width: 900px\) \{[\s\S]*--cloud-notice-top: calc\(4\.75rem \+ 2\.5rem\);/,
+    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: 4\.75rem;[\s\S]*\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-top: calc\(4\.75rem \+ 2\.5rem\);/,
   );
   assert.match(
     shellText,

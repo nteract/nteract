@@ -129,7 +129,11 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /NotebookToolbarFrame,/);
   assert.match(
     sourceText,
-    /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookDocumentHeader[\s\S]*shouldShowCloudNotebookCommandToolbar\(shellCapabilities\)[\s\S]*<NotebookCommandToolbar/,
+    /const showCloudCommandToolbar =\s+shouldShowCloudNotebookCommandToolbar\(shellCapabilities\) \|\| editAccessPending/,
+  );
+  assert.match(
+    sourceText,
+    /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookDocumentHeader[\s\S]*\{showCloudCommandToolbar \? \([\s\S]*<NotebookCommandToolbar/,
   );
   assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /<NotebookCommandToolbar[\s\S]*capabilities=\{shellCapabilities\}/);

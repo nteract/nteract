@@ -16,7 +16,7 @@ body {
 }
 
 .cloud-notebook-shell {
-  --cloud-notice-top: calc(3.75rem + 2.5rem);
+  --cloud-notice-top: 3.75rem;
 
   display: flex;
   position: relative;
@@ -25,6 +25,10 @@ body {
   min-width: 0;
   overflow: hidden;
   background: var(--background);
+}
+
+.cloud-notebook-shell--command-toolbar {
+  --cloud-notice-top: calc(3.75rem + 2.5rem);
 }
 
 .cloud-notebook-rail {
@@ -210,6 +214,10 @@ body {
 
 @media (max-width: 900px) {
   .cloud-notebook-shell {
+    --cloud-notice-top: 4.75rem;
+  }
+
+  .cloud-notebook-shell--command-toolbar {
     --cloud-notice-top: calc(4.75rem + 2.5rem);
   }
 
