@@ -70,6 +70,15 @@ export interface NotebookAccessRequestRow {
   resolved_at: string | null;
 }
 
+export interface PrincipalAccountLinkRow {
+  transport_principal: string;
+  canonical_principal: string;
+  provider: string;
+  email_normalized: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -130,6 +139,16 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS principal_profiles_email_idx
     ON principal_profiles(provider, email_normalized)
     WHERE email_verified = 1`,
+  `CREATE TABLE IF NOT EXISTS principal_account_links (
+    transport_principal TEXT PRIMARY KEY,
+    canonical_principal TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    email_normalized TEXT,
+    first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS principal_account_links_canonical_idx
+    ON principal_account_links(canonical_principal)`,
   `CREATE TABLE IF NOT EXISTS notebook_invites (
     id TEXT PRIMARY KEY,
     notebook_id TEXT NOT NULL,
@@ -330,10 +349,17 @@ export async function getNotebookAclRowsForPrincipal(
        FROM notebook_acl
        WHERE notebook_id = ?
          AND subject_kind = 'principal'
-         AND subject = ?
+         AND (
+           subject = ?
+           OR subject IN (
+             SELECT canonical_principal
+               FROM principal_account_links
+              WHERE transport_principal = ?
+           )
+         )
        ORDER BY scope`,
   )
-    .bind(notebookId, principal)
+    .bind(notebookId, principal, principal)
     .all<NotebookAclRow>();
   return rows.results ?? [];
 }
@@ -442,26 +468,166 @@ export async function createNotebookWithOwnerAcl(
   env: Env,
   notebookId: string,
   identity: AuthenticatedConnection,
-): Promise<void> {
+): Promise<string> {
   if (!env.DB) {
-    return;
+    return identity.principal;
   }
 
   await ensureCatalogSchema(env);
   const now = new Date().toISOString();
+  const ownerSubject =
+    (await getCanonicalPrincipalForTransport(env, identity.principal)) ?? identity.principal;
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO notebooks (id, owner_principal, created_at, updated_at)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(id) DO NOTHING`,
-    ).bind(notebookId, identity.principal, now, now),
+    ).bind(notebookId, ownerSubject, now, now),
     notebookOwnerAclInsert(env, {
       notebookId,
-      subject: identity.principal,
+      subject: ownerSubject,
       actorLabel: identity.actorLabel,
       timestamp: now,
     }),
   ]);
+  return ownerSubject;
+}
+
+export async function getCanonicalPrincipalForTransport(
+  env: Env,
+  transportPrincipal: string,
+): Promise<string | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const row = await env.DB.prepare(
+    `SELECT canonical_principal
+       FROM principal_account_links
+      WHERE transport_principal = ?`,
+  )
+    .bind(transportPrincipal)
+    .first<Pick<PrincipalAccountLinkRow, "canonical_principal">>();
+  return row?.canonical_principal ?? null;
+}
+
+export async function canonicalizeNotebookAclForPrincipal(
+  env: Env,
+  input: {
+    transportPrincipal: string;
+    canonicalPrincipal: string;
+    timestamp?: string;
+  },
+): Promise<void> {
+  if (!env.DB || input.transportPrincipal === input.canonicalPrincipal) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  const timestamp = input.timestamp ?? new Date().toISOString();
+  await env.DB.batch(
+    canonicalizeNotebookAclForPrincipalStatements(env, {
+      transportPrincipal: input.transportPrincipal,
+      canonicalPrincipal: input.canonicalPrincipal,
+      timestamp,
+    }),
+  );
+}
+
+export function canonicalizeNotebookAclForPrincipalStatements(
+  env: Env,
+  input: {
+    transportPrincipal: string;
+    canonicalPrincipal: string;
+    timestamp: string;
+  },
+): D1PreparedStatement[] {
+  if (!env.DB || input.transportPrincipal === input.canonicalPrincipal) {
+    return [];
+  }
+
+  return [
+    copyNotebookAclForPrincipalStatement(env, {
+      sourcePrincipal: input.transportPrincipal,
+      targetPrincipal: input.canonicalPrincipal,
+      timestamp: input.timestamp,
+    }),
+    env.DB.prepare(
+      `UPDATE notebooks
+          SET owner_principal = ?,
+              updated_at = ?
+        WHERE owner_principal = ?`,
+    ).bind(input.canonicalPrincipal, input.timestamp, input.transportPrincipal),
+    env.DB.prepare(
+      `DELETE FROM notebook_acl
+        WHERE subject_kind = 'principal'
+          AND subject = ?
+          AND EXISTS (
+            SELECT 1
+              FROM notebook_acl AS target_acl
+             WHERE target_acl.notebook_id = notebook_acl.notebook_id
+               AND target_acl.subject_kind = 'principal'
+               AND target_acl.subject = ?
+               AND target_acl.scope = notebook_acl.scope
+          )`,
+    ).bind(input.transportPrincipal, input.canonicalPrincipal),
+  ];
+}
+
+export async function copyNotebookAclForPrincipal(
+  env: Env,
+  input: {
+    sourcePrincipal: string;
+    targetPrincipal: string;
+    timestamp?: string;
+  },
+): Promise<void> {
+  if (!env.DB || input.sourcePrincipal === input.targetPrincipal) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  await copyNotebookAclForPrincipalStatement(env, {
+    sourcePrincipal: input.sourcePrincipal,
+    targetPrincipal: input.targetPrincipal,
+    timestamp: input.timestamp ?? new Date().toISOString(),
+  }).run();
+}
+
+export function copyNotebookAclForPrincipalStatement(
+  env: Env,
+  input: {
+    sourcePrincipal: string;
+    targetPrincipal: string;
+    timestamp: string;
+  },
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `INSERT INTO notebook_acl (
+       notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT notebook_id,
+            'principal',
+            ?,
+            scope,
+            created_at,
+            ?,
+            created_by_actor_label
+       FROM notebook_acl
+      WHERE subject_kind = 'principal'
+        AND subject = ?
+     ON CONFLICT(notebook_id, subject_kind, subject, scope) DO UPDATE SET
+       updated_at = excluded.updated_at`,
+    )
+    .bind(input.targetPrincipal, input.timestamp, input.sourcePrincipal);
 }
 
 function notebookAclInsert(

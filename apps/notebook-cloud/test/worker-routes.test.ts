@@ -33,6 +33,8 @@ import {
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
+import { canonicalAccountPrincipalForProfile } from "../src/sharing-storage.ts";
+import type { PrincipalAccountLinkRow } from "../src/storage.ts";
 import { oidcTokenFixture } from "./oidc-jwt-fixture.ts";
 
 const wasmBytes = await readFile(
@@ -523,18 +525,27 @@ describe("Worker artifact routes", () => {
       size: body.byteLength,
     });
     assert.deepEqual(seenAuthorizations, [`Bearer ${token}`]);
-    assert.equal(
-      env.DB.notebooks.get("api-key-artifact-demo")?.owner_principal,
-      "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
-    );
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "anaconda-api-key",
+      principalNamespace: "user:anaconda",
+      email: "rgbkrk@gmail.com",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
+    assert.equal(env.DB.notebooks.get("api-key-artifact-demo")?.owner_principal, accountPrincipal);
     assert.equal(
       env.DB.acl.some(
         (row) =>
           row.notebook_id === "api-key-artifact-demo" &&
-          row.subject === "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0" &&
+          row.subject === accountPrincipal &&
           row.scope === "owner",
       ),
       true,
+    );
+    assert.equal(
+      env.DB.accountLinks.get("user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0")
+        ?.canonical_principal,
+      accountPrincipal,
     );
     const profile = env.DB.profiles.get("user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0");
     assert.deepEqual(profile, {
@@ -549,6 +560,85 @@ describe("Worker artifact routes", () => {
       last_seen_at: profile?.last_seen_at,
       raw_claims_json: null,
     });
+  });
+
+  it("authorizes OIDC and API-key transports through one canonical account ACL", async (t) => {
+    const apiKeyToken = anacondaApiKeyToken();
+    const { env: oidcEnv, token: oidcToken } = await oidcTokenFixture({
+      subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      email: "rgbkrk@gmail.com",
+      extraPayload: { email_verified: true },
+      name: "Kyle Kelley",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      ...anacondaApiKeyEnv(),
+    });
+
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          email: "rgbkrk@gmail.com",
+          firstName: "Kyle",
+          lastName: "Kelley",
+          userId: "fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+          scopes: ["cloud:write"],
+        }),
+      ),
+    );
+
+    const publish = await worker.fetch(
+      new Request("https://cloud.test/api/n/canonical-account-demo/runtime-snapshots/api-key", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${apiKeyToken}`,
+          "Content-Type": "application/octet-stream",
+          "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+          "X-Operator": "agent:runt-publish",
+          "X-Runtime-State-Doc-Id": "runtime:canonical-account-demo",
+          "X-Scope": "owner",
+        },
+        body: new Uint8Array([1, 2, 3, 4]),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(publish.status, 201);
+
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "oidc",
+      principalNamespace: "user:anaconda",
+      email: "rgbkrk@gmail.com",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
+    const acl = await worker.fetch(
+      new Request("https://cloud.test/api/n/canonical-account-demo/acl?scope=owner", {
+        headers: {
+          Authorization: `Bearer ${oidcToken}`,
+          "X-Operator": "browser:tab",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(acl.status, 200);
+    const body = (await acl.json()) as { acl: NotebookAclRow[] };
+    assert.deepEqual(
+      body.acl.map((row) => [row.subject, row.scope]),
+      [[accountPrincipal, "owner"]],
+    );
+    assert.equal(
+      env.DB.accountLinks.get("user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0")
+        ?.canonical_principal,
+      accountPrincipal,
+    );
+    assert.equal(
+      env.DB.accountLinks.get("user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375")
+        ?.canonical_principal,
+      accountPrincipal,
+    );
   });
 
   it("requires RuntimeStateDoc ids for snapshot publishes", async () => {
@@ -1846,12 +1936,19 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     assert.ok(forwardedRequest);
     assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "editor");
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "oidc",
+      principalNamespace: "user:anaconda",
+      email: "kkelley@anaconda.com",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
     assert.ok(
       env.DB.acl.some(
         (row) =>
           row.notebook_id === "oidc-invite-demo" &&
           row.subject_kind === "principal" &&
-          row.subject === "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375" &&
+          row.subject === accountPrincipal &&
           row.scope === "editor",
       ),
     );
@@ -2693,6 +2790,7 @@ class FakeD1 implements D1Database {
   readonly blobs = new Map<string, BlobRow>();
   readonly acl: NotebookAclRow[] = [];
   readonly profiles = new Map<string, PrincipalProfileRow>();
+  readonly accountLinks = new Map<string, PrincipalAccountLinkRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly accessRequests = new Map<string, NotebookAccessRequestRow>();
   readonly batchSizes: number[] = [];
@@ -2853,6 +2951,25 @@ class FakeD1Statement implements D1PreparedStatement {
         return okResult(undefined, { changes: 1 });
       }
       return okResult(undefined, { changes: 0 });
+    } else if (
+      this.query.includes("INSERT INTO notebook_acl") &&
+      this.query.includes("FROM notebook_acl")
+    ) {
+      const [canonicalPrincipal, updatedAt, transportPrincipal] = this.values as [
+        string,
+        string,
+        string,
+      ];
+      const rows = this.db.acl.filter(
+        (row) => row.subject_kind === "principal" && row.subject === transportPrincipal,
+      );
+      for (const row of rows) {
+        this.insertAclIfMissing({
+          ...row,
+          subject: canonicalPrincipal,
+          updated_at: updatedAt,
+        });
+      }
     } else if (this.query.includes("INSERT INTO notebook_acl")) {
       const [notebookId, subjectKind, subject, scope, createdAt, updatedAt, actorLabel] = this
         .values as [
@@ -2873,6 +2990,27 @@ class FakeD1Statement implements D1PreparedStatement {
         updated_at: updatedAt,
         created_by_actor_label: actorLabel,
       });
+    } else if (
+      this.query.includes("DELETE FROM notebook_acl") &&
+      this.query.includes("subject_kind = 'principal'") &&
+      !this.query.includes("notebook_id = ?")
+    ) {
+      const [transportPrincipal, canonicalPrincipal] = this.values as [string, string];
+      const retained = this.db.acl.filter(
+        (row) =>
+          !(
+            row.subject_kind === "principal" &&
+            row.subject === transportPrincipal &&
+            this.db.acl.some(
+              (target) =>
+                target.notebook_id === row.notebook_id &&
+                target.subject_kind === "principal" &&
+                target.subject === canonicalPrincipal &&
+                target.scope === row.scope,
+            )
+          ),
+      );
+      this.db.acl.splice(0, this.db.acl.length, ...retained);
     } else if (this.query.includes("DELETE FROM notebook_acl")) {
       const [notebookId, subjectKind, subject, scope] = this.values as [
         string,
@@ -3086,6 +3224,17 @@ class FakeD1Statement implements D1PreparedStatement {
         existing.latest_revision_id = revisionId;
         existing.updated_at = updatedAt;
       }
+    } else if (this.query.includes("UPDATE notebooks") && this.query.includes("owner_principal")) {
+      const [canonicalPrincipal, updatedAt, transportPrincipal] = this.values as [
+        string,
+        string,
+        string,
+      ];
+      for (const notebook of this.db.notebooks.values()) {
+        if (notebook.owner_principal !== transportPrincipal) continue;
+        notebook.owner_principal = canonicalPrincipal;
+        notebook.updated_at = updatedAt;
+      }
     } else if (this.query.includes("UPDATE notebooks")) {
       const [updatedAt, notebookId] = this.values as [string, string];
       const existing = this.db.notebooks.get(notebookId);
@@ -3144,6 +3293,24 @@ class FakeD1Statement implements D1PreparedStatement {
         first_seen_at: existing?.first_seen_at ?? firstSeenAt,
         last_seen_at: lastSeenAt,
         raw_claims_json: rawClaimsJson,
+      });
+    } else if (this.query.includes("INSERT INTO principal_account_links")) {
+      const [
+        transportPrincipal,
+        canonicalPrincipal,
+        provider,
+        emailNormalized,
+        firstSeenAt,
+        lastSeenAt,
+      ] = this.values as [string, string, string, string | null, string, string];
+      const existing = this.db.accountLinks.get(transportPrincipal);
+      this.db.accountLinks.set(transportPrincipal, {
+        transport_principal: transportPrincipal,
+        canonical_principal: canonicalPrincipal,
+        provider,
+        email_normalized: emailNormalized,
+        first_seen_at: existing?.first_seen_at ?? firstSeenAt,
+        last_seen_at: lastSeenAt,
       });
     } else if (this.query.includes("UPDATE notebook_invites")) {
       const [principal, acceptedAt, inviteId, email, providerHint, now] = this.values as [
@@ -3214,6 +3381,19 @@ class FakeD1Statement implements D1PreparedStatement {
         ) as T | undefined) ?? null
       );
     }
+    if (this.query.includes("FROM principal_account_links")) {
+      if (this.query.includes("canonical_principal = ?")) {
+        const [canonicalPrincipal, exceptTransportPrincipal] = this.values as [string, string];
+        return (
+          ([...this.db.accountLinks.values()].find(
+            (link) =>
+              link.canonical_principal === canonicalPrincipal &&
+              link.transport_principal !== exceptTransportPrincipal,
+          ) as T | undefined) ?? null
+        );
+      }
+      return (this.db.accountLinks.get(this.values[0] as string) as T | undefined) ?? null;
+    }
     if (this.query.includes("FROM notebook_invites")) {
       if (this.query.includes("WHERE notebook_id = ?")) {
         const [notebookId, email, scope, providerHint] = this.values as [
@@ -3260,6 +3440,14 @@ class FakeD1Statement implements D1PreparedStatement {
       );
     }
     if (this.query.includes("FROM principal_profiles")) {
+      if (this.query.includes("email_normalized = ?")) {
+        const [email] = this.values as [string];
+        return okResult(
+          [...this.db.profiles.values()].filter(
+            (profile) => profile.email_normalized === email && profile.email_verified === 1,
+          ) as T[],
+        );
+      }
       const principals = new Set(this.values as string[]);
       if (this.values.length > 100) {
         throw new Error("D1_ERROR: too many SQL variables");
@@ -3296,12 +3484,14 @@ class FakeD1Statement implements D1PreparedStatement {
       }
       if (this.query.includes("subject_kind = 'principal'")) {
         const principal = this.values[1] as string;
+        const linked = this.db.accountLinks.get(principal)?.canonical_principal;
+        const subjects = new Set([principal, ...(linked ? [linked] : [])]);
         return okResult(
           this.db.acl.filter(
             (row) =>
               row.notebook_id === notebookId &&
               row.subject_kind === "principal" &&
-              row.subject === principal,
+              subjects.has(row.subject),
           ) as T[],
         );
       }

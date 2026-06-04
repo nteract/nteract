@@ -1,5 +1,11 @@
 import type { D1PreparedStatement, Env } from "./cloudflare-types.ts";
-import { ensureCatalogSchema } from "./storage.ts";
+import { validatePrincipal } from "./identity.ts";
+import {
+  canonicalizeNotebookAclForPrincipalStatements,
+  copyNotebookAclForPrincipalStatement,
+  ensureCatalogSchema,
+  type PrincipalAccountLinkRow,
+} from "./storage.ts";
 import {
   normalizeInviteEmail,
   normalizeProviderHint,
@@ -27,6 +33,7 @@ export interface PrincipalProfileRow {
 export interface PrincipalProfileInput {
   principal: string;
   provider: string;
+  principalNamespace?: string | null;
   providerSubject?: string | null;
   email?: string | null;
   emailVerified?: boolean;
@@ -34,6 +41,12 @@ export interface PrincipalProfileInput {
   avatarUrl?: string | null;
   rawClaimsJson?: string | null;
   timestamp?: string;
+}
+
+export interface PrincipalAccountResolution {
+  canonicalPrincipal: string | null;
+  profile: PrincipalProfileRow | null;
+  transportProfile: PrincipalProfileRow | null;
 }
 
 export interface PendingNotebookInviteRow {
@@ -118,6 +131,243 @@ export async function upsertPrincipalProfile(
     .run();
 
   return await getPrincipalProfile(env, input.principal);
+}
+
+export async function upsertPrincipalProfileWithAccount(
+  env: Env,
+  input: PrincipalProfileInput,
+): Promise<PrincipalAccountResolution> {
+  const transportProfile = await upsertPrincipalProfile(env, input);
+  const canonicalPrincipal = await canonicalAccountPrincipalForProfile(input);
+  if (!env.DB || !canonicalPrincipal) {
+    return { canonicalPrincipal: null, profile: transportProfile, transportProfile };
+  }
+
+  const timestamp = input.timestamp ?? new Date().toISOString();
+  const accountNamespace = normalizeAccountNamespace(input);
+  const canonicalProfile = await upsertPrincipalProfile(env, {
+    principal: canonicalPrincipal,
+    provider: accountNamespace,
+    providerSubject: null,
+    email: input.email ?? null,
+    emailVerified: true,
+    displayName: input.displayName ?? null,
+    avatarUrl: input.avatarUrl ?? null,
+    rawClaimsJson: input.rawClaimsJson ?? null,
+    timestamp,
+  });
+  await upsertPrincipalAccountLink(env, {
+    transportPrincipal: input.principal,
+    canonicalPrincipal,
+    provider: accountNamespace,
+    email: normalizeMaybeInviteEmail(input.email ?? null),
+    timestamp,
+  });
+  const relatedProfiles = await getVerifiedProfilesForCanonicalAccount(
+    env,
+    accountNamespace,
+    input,
+  );
+  for (const relatedProfile of relatedProfiles) {
+    await upsertPrincipalAccountLink(env, {
+      transportPrincipal: relatedProfile.principal,
+      canonicalPrincipal,
+      provider: accountNamespace,
+      email: relatedProfile.email_normalized,
+      timestamp,
+    });
+  }
+
+  return {
+    canonicalPrincipal,
+    profile: canonicalProfile ?? transportProfile,
+    transportProfile,
+  };
+}
+
+async function getVerifiedProfilesForCanonicalAccount(
+  env: Env,
+  accountNamespace: string,
+  input: Pick<PrincipalProfileInput, "principal" | "email">,
+): Promise<PrincipalProfileRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+  const email = normalizeMaybeInviteEmail(input.email ?? null);
+  if (!email) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT principal,
+            provider,
+            provider_subject,
+            email_normalized,
+            email_verified,
+            display_name,
+            avatar_url,
+            first_seen_at,
+            last_seen_at,
+            raw_claims_json
+       FROM principal_profiles
+      WHERE email_normalized = ?
+        AND email_verified = 1`,
+  )
+    .bind(email)
+    .all<PrincipalProfileRow>();
+  return (rows.results ?? []).filter(
+    (profile) =>
+      profile.principal !== input.principal &&
+      !profile.principal.startsWith("account:") &&
+      principalNamespaceFromPrincipal(profile.principal) === accountNamespace,
+  );
+}
+
+export async function canonicalAccountPrincipalForProfile(
+  input: Pick<PrincipalProfileInput, "principalNamespace" | "provider" | "email" | "emailVerified">,
+): Promise<string | null> {
+  if (!input.emailVerified) {
+    return null;
+  }
+  const email = normalizeMaybeInviteEmail(input.email ?? null);
+  if (!email) {
+    return null;
+  }
+  const accountNamespace = normalizeAccountNamespace(input);
+  const digest = await sha256Hex(`${accountNamespace}\n${email}`);
+  const principal = `account:${encodeURIComponent(accountNamespace)}:email:${digest}`;
+  validatePrincipal(principal);
+  return principal;
+}
+
+async function upsertPrincipalAccountLink(
+  env: Env,
+  input: {
+    transportPrincipal: string;
+    canonicalPrincipal: string;
+    provider: string;
+    email: string | null;
+    timestamp: string;
+  },
+): Promise<PrincipalAccountLinkRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const existing = await getPrincipalAccountLink(env, input.transportPrincipal);
+  const statements: D1PreparedStatement[] = [];
+  if (existing && existing.canonical_principal !== input.canonicalPrincipal) {
+    const oldCanonicalHasOtherTransports = await canonicalPrincipalHasOtherTransportLinks(env, {
+      canonicalPrincipal: existing.canonical_principal,
+      exceptTransportPrincipal: input.transportPrincipal,
+    });
+    if (oldCanonicalHasOtherTransports) {
+      statements.push(
+        copyNotebookAclForPrincipalStatement(env, {
+          sourcePrincipal: existing.canonical_principal,
+          targetPrincipal: input.canonicalPrincipal,
+          timestamp: input.timestamp,
+        }),
+      );
+    } else {
+      statements.push(
+        ...canonicalizeNotebookAclForPrincipalStatements(env, {
+          transportPrincipal: existing.canonical_principal,
+          canonicalPrincipal: input.canonicalPrincipal,
+          timestamp: input.timestamp,
+        }),
+      );
+    }
+  }
+  statements.push(
+    ...canonicalizeNotebookAclForPrincipalStatements(env, {
+      transportPrincipal: input.transportPrincipal,
+      canonicalPrincipal: input.canonicalPrincipal,
+      timestamp: input.timestamp,
+    }),
+    principalAccountLinkUpsertStatement(env, input),
+  );
+
+  await env.DB.batch(statements);
+
+  return await getPrincipalAccountLink(env, input.transportPrincipal);
+}
+
+function principalAccountLinkUpsertStatement(
+  env: Env,
+  input: {
+    transportPrincipal: string;
+    canonicalPrincipal: string;
+    provider: string;
+    email: string | null;
+    timestamp: string;
+  },
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `INSERT INTO principal_account_links (
+       transport_principal,
+       canonical_principal,
+       provider,
+       email_normalized,
+       first_seen_at,
+       last_seen_at
+     ) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(transport_principal) DO UPDATE SET
+       canonical_principal = excluded.canonical_principal,
+       provider = excluded.provider,
+       email_normalized = excluded.email_normalized,
+       last_seen_at = excluded.last_seen_at`,
+    )
+    .bind(
+      input.transportPrincipal,
+      input.canonicalPrincipal,
+      input.provider,
+      input.email,
+      input.timestamp,
+      input.timestamp,
+    );
+}
+
+async function getPrincipalAccountLink(
+  env: Env,
+  transportPrincipal: string,
+): Promise<PrincipalAccountLinkRow | null> {
+  return await env
+    .DB!.prepare(
+      `SELECT transport_principal,
+            canonical_principal,
+            provider,
+            email_normalized,
+            first_seen_at,
+            last_seen_at
+       FROM principal_account_links
+      WHERE transport_principal = ?`,
+    )
+    .bind(transportPrincipal)
+    .first<PrincipalAccountLinkRow>();
+}
+
+async function canonicalPrincipalHasOtherTransportLinks(
+  env: Env,
+  input: {
+    canonicalPrincipal: string;
+    exceptTransportPrincipal: string;
+  },
+): Promise<boolean> {
+  const row = await env
+    .DB!.prepare(
+      `SELECT transport_principal
+         FROM principal_account_links
+        WHERE canonical_principal = ?
+          AND transport_principal != ?
+        LIMIT 1`,
+    )
+    .bind(input.canonicalPrincipal, input.exceptTransportPrincipal)
+    .first<Pick<PrincipalAccountLinkRow, "transport_principal">>();
+  return Boolean(row);
 }
 
 export async function getPrincipalProfile(
@@ -442,9 +692,10 @@ export async function resolveNotebookInvitesForLogin(
 ): Promise<InviteResolution> {
   // Trust boundary: callers must pass identity-provider verified claims.
   // Invite acceptance is derived from login.email plus login.emailVerified.
-  const profile = await upsertPrincipalProfile(env, {
+  const account = await upsertPrincipalProfileWithAccount(env, {
     principal: login.principal,
     provider: login.provider,
+    principalNamespace: login.principalNamespace,
     email: login.email,
     emailVerified: login.emailVerified,
     displayName: login.displayName,
@@ -452,10 +703,15 @@ export async function resolveNotebookInvitesForLogin(
   });
 
   const invites = await getPendingNotebookInvitesForLogin(env, login, now);
-  const resolution = resolvePendingInvitesForLogin({ invites, login, now });
+  const resolution = resolvePendingInvitesForLogin({
+    invites,
+    login,
+    aclSubject: account.canonicalPrincipal ?? login.principal,
+    now,
+  });
   const resolutionWithProfile = {
     ...resolution,
-    profile: profileFromRow(profile) ?? resolution.profile,
+    profile: profileFromRow(account.profile) ?? resolution.profile,
   };
   if (!env.DB || resolution.aclGrants.length === 0) {
     return resolutionWithProfile;
@@ -548,7 +804,7 @@ function inviteAclInsert(
       timestamp,
       grant.actorLabel,
       invite.id,
-      grant.subject,
+      grant.acceptedByPrincipal,
       timestamp,
       normalizeInviteEmail(invite.email),
       normalizeProviderHint(invite.providerHint),
@@ -578,7 +834,7 @@ function inviteAcceptedUpdate(
           )`,
     )
     .bind(
-      grant.subject,
+      grant.acceptedByPrincipal,
       timestamp,
       invite.id,
       normalizeInviteEmail(invite.email),
@@ -665,6 +921,26 @@ function profileFromRow(row: PrincipalProfileRow | null): InviteResolution["prof
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
   };
+}
+
+function normalizeAccountNamespace(
+  input: Pick<PrincipalProfileInput, "principalNamespace" | "provider">,
+): string {
+  return normalizeRequiredProvider(input.principalNamespace ?? input.provider);
+}
+
+function principalNamespaceFromPrincipal(principal: string): string | null {
+  const [scheme, provider] = principal.split(":", 3);
+  if (!scheme || !provider) {
+    return null;
+  }
+  return `${scheme}:${provider}`.toLowerCase();
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

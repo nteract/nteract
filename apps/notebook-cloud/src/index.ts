@@ -52,7 +52,6 @@ import {
   listNotebookInvites,
   resolveNotebookInvitesForLogin,
   revokePendingNotebookInvite,
-  upsertPrincipalProfile,
   type ListedPendingNotebookInviteRow,
   type PendingNotebookInviteRow,
   type PrincipalProfileRow,
@@ -1795,20 +1794,18 @@ async function syncAuthenticatedProfile(
       displayName: identity.metadata.displayName ?? null,
     };
 
-    if (identity.metadata.provider === "anaconda-api-key") {
-      await upsertPrincipalProfile(env, {
-        ...profile,
-        emailVerified: Boolean(identity.metadata.email),
-      });
-      return;
-    }
-
-    // The identity provider has already authenticated this email claim; use it
-    // to keep profile labels current and resolve pending invite rows into
-    // principal ACL rows before authorization.
+    // Canonical account ACLs are keyed by verified email. OIDC carries an
+    // explicit email_verified claim; Anaconda API-key whoami responses are
+    // trusted to return only server-verified account emails. If that backend
+    // contract changes, API-key email claims must stop feeding invite
+    // resolution and account canonicalization.
     const resolution = await resolveNotebookInvitesForLogin(env, {
       ...profile,
-      emailVerified: identity.metadata.emailVerified === true,
+      principalNamespace: identity.metadata.principalNamespace,
+      emailVerified:
+        identity.metadata.provider === "anaconda-api-key"
+          ? Boolean(identity.metadata.email)
+          : identity.metadata.emailVerified === true,
     });
     if (resolution.acceptedInvites.length === 0 && resolution.aclGrants.length === 0) {
       return;
@@ -1902,10 +1899,10 @@ async function authorizePublishOrCreate(
     return authorizeIdentityOrResponse(env, notebookId, identity, "owner");
   }
 
-  await createNotebookWithOwnerAcl(env, notebookId, identity);
+  const ownerPrincipal = await createNotebookWithOwnerAcl(env, notebookId, identity);
   cloudLog("info", "notebook.created", {
     notebook_id: notebookId,
-    owner_principal: identity.principal,
+    owner_principal: ownerPrincipal,
     actor_label: identity.actorLabel,
     counter: "notebooks_created",
     counter_delta: 1,
