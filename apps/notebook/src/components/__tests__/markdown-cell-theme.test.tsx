@@ -1,4 +1,4 @@
-import { act, createEvent, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
@@ -8,6 +8,7 @@ let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let mockIsFocused = false;
 let mockEditorSelectionHead = 0;
+let mockEditorDoc: string | null = null;
 const isolatedFrameProps: Array<Record<string, unknown>> = [];
 let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 let lastFrameDoubleClick: (() => void) | undefined;
@@ -101,7 +102,7 @@ vi.mock("@/components/cell/CellContainer", () => ({
 
 vi.mock("@/components/editor/codemirror-editor", () => ({
   CodeMirrorEditor: React.forwardRef(function CodeMirrorEditor(
-    props: { keyMap?: Array<{ key: string; run: () => boolean }> },
+    props: { initialValue?: string; keyMap?: Array<{ key: string; run: () => boolean }> },
     ref,
   ) {
     React.useImperativeHandle(ref, () => ({
@@ -109,6 +110,9 @@ vi.mock("@/components/editor/codemirror-editor", () => ({
       setCursorPosition: vi.fn(),
       getEditor: () => ({
         state: {
+          doc: {
+            toString: () => mockEditorDoc ?? props.initialValue ?? "",
+          },
           selection: {
             main: {
               head: mockEditorSelectionHead,
@@ -277,6 +281,7 @@ describe("MarkdownCell theme sync", () => {
     mockColorTheme = undefined;
     mockIsFocused = false;
     mockEditorSelectionHead = 0;
+    mockEditorDoc = null;
     isolatedFrameProps.length = 0;
     lastFrameMouseUp = undefined;
     lastFrameDoubleClick = undefined;
@@ -294,6 +299,7 @@ describe("MarkdownCell theme sync", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -511,6 +517,25 @@ describe("MarkdownCell theme sync", () => {
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
   });
 
+  it("enters edit mode from a projected markdown double-click", async () => {
+    mockIsFocused = true;
+    const onFocus = vi.fn();
+
+    const { getByLabelText } = render(
+      <MarkdownCell cell={makeTaskCell()} onFocus={onFocus} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).not.toContain("hidden");
+
+    fireEvent.doubleClick(preview);
+
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+    expect(onFocus).toHaveBeenCalled();
+  });
+
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {
     const cell = { ...makeCell(), source: "" };
 
@@ -528,6 +553,32 @@ describe("MarkdownCell theme sync", () => {
 
     await waitFor(() => {
       expect(preview.className).not.toContain("hidden");
+    });
+  });
+
+  it("renders the current editor document when explicitly switching to preview", async () => {
+    const cell = { ...makeCell(), source: "" };
+    mockEditorDoc = "hello";
+
+    const { getByLabelText, getByRole } = render(
+      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).toContain("hidden");
+
+    fireEvent.mouseDown(getByRole("button", { name: "View rendered markdown" }));
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+    await waitFor(() => {
+      expect(mockFrameHandle.render).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mimeType: "text/markdown",
+          data: "hello",
+        }),
+      );
     });
   });
 
@@ -664,10 +715,10 @@ describe("MarkdownCell theme sync", () => {
       expect(preview.className).not.toContain("hidden");
     });
 
-    expect(container.querySelector('[data-source-active="true"]')).toHaveTextContent(
+    expect(container.querySelector('[data-source-active="true"]')?.textContent).toContain(
       "ship checkboxes",
     );
-    expect(container.querySelector('[data-source-active-run="true"]')).toHaveTextContent(
+    expect(container.querySelector('[data-source-active-run="true"]')?.textContent).toContain(
       "ship checkboxes",
     );
   });

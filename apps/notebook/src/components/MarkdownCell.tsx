@@ -1,7 +1,8 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { Pencil } from "lucide-react";
+import { Check, Pencil } from "lucide-react";
 import {
   memo,
+  type MouseEvent,
   type PointerEvent,
   type ReactNode,
   useCallback,
@@ -218,19 +219,8 @@ export const MarkdownCell = memo(function MarkdownCell({
     return true;
   }, []);
 
-  const handleTaskCheckedChange = useCallback(
-    (run: MarkdownProjectionRun, checked: boolean) => {
-      if (readOnly || !onUpdateSource) return;
-
-      const nextSource = toggleMarkdownTaskMarker(cell.source, run, checked);
-      if (nextSource === null || nextSource === cell.source) return;
-
-      onUpdateSource(nextSource);
-    },
-    [cell.source, onUpdateSource, readOnly],
-  );
-
   const [editing, setEditing] = useState(!readOnly && cell.source === "");
+  const [draftPreviewSource, setDraftPreviewSource] = useState<string | null>(null);
   const [activeSourcePosition, setActiveSourcePosition] = useState<number | undefined>();
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const previewSourcePositionRef = useRef<number | undefined>(undefined);
@@ -240,22 +230,46 @@ export const MarkdownCell = memo(function MarkdownCell({
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
+  const previewSource = draftPreviewSource ?? cell.source;
+
+  useEffect(() => {
+    if (draftPreviewSource !== null && cell.source === draftPreviewSource) {
+      setDraftPreviewSource(null);
+    }
+  }, [cell.source, draftPreviewSource]);
+
   const markdownProjection = useMemo(
-    () => cell.markdownProjection ?? projectMarkdownPlan(cell.source),
-    [cell.markdownProjection, cell.source],
+    () =>
+      draftPreviewSource !== null
+        ? projectMarkdownPlan(draftPreviewSource)
+        : (cell.markdownProjection ?? projectMarkdownPlan(cell.source)),
+    [cell.markdownProjection, cell.source, draftPreviewSource],
   );
   const canRenderProjectionInHost = canRenderMarkdownProjectionInHost(markdownProjection);
   const previewMinHeight = useMemo(
     () =>
       projectedMarkdownPreviewHeight(
         markdownProjection,
-        estimateMarkdownPreviewHeight(cell.source),
+        estimateMarkdownPreviewHeight(previewSource),
         {
           maxHeight: MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT,
           minHeight: MARKDOWN_PREVIEW_MIN_HEIGHT,
         },
       ),
-    [cell.source, markdownProjection],
+    [previewSource, markdownProjection],
+  );
+
+  const handleTaskCheckedChange = useCallback(
+    (run: MarkdownProjectionRun, checked: boolean) => {
+      if (readOnly || !onUpdateSource) return;
+
+      const nextSource = toggleMarkdownTaskMarker(previewSource, run, checked);
+      if (nextSource === null || nextSource === previewSource) return;
+
+      setDraftPreviewSource(nextSource);
+      onUpdateSource(nextSource);
+    },
+    [onUpdateSource, previewSource, readOnly],
   );
 
   // Register EditorView with the cursor registry when in edit mode.
@@ -339,6 +353,10 @@ export const MarkdownCell = memo(function MarkdownCell({
     previewSourcePositionRef.current = position;
   }, []);
 
+  const getCurrentEditorSource = useCallback(() => {
+    return editorRef.current?.getEditor()?.state.doc.toString() ?? cell.source;
+  }, [cell.source]);
+
   const revealEditorSourcePosition = useCallback(() => {
     const view = editorRef.current?.getEditor();
     const position = view?.state.selection.main.head ?? previewSourcePositionRef.current;
@@ -346,6 +364,25 @@ export const MarkdownCell = memo(function MarkdownCell({
     previewSourcePositionRef.current = position;
     setActiveSourcePosition(position);
   }, []);
+
+  const exitEditingToPreview = useCallback(
+    (options?: { allowEmpty?: boolean }) => {
+      const source = getCurrentEditorSource();
+      if (!source.trim() && !options?.allowEmpty) return;
+      setDraftPreviewSource(source);
+      revealEditorSourcePosition();
+      setEditing(false);
+    },
+    [getCurrentEditorSource, revealEditorSourcePosition],
+  );
+
+  const handleRenderMarkdownMouseDown = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      exitEditingToPreview({ allowEmpty: true });
+    },
+    [exitEditingToPreview],
+  );
 
   const releasePreviewFrameInteraction = useCallback(() => {
     setPreviewFrameInteractionActive(false);
@@ -385,7 +422,7 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   // Derived boundary flag: re-run the focus effect only when source crosses
   // empty↔non-empty, not on every keystroke.
-  const hasContent = cell.source.trim().length > 0;
+  const hasContent = previewSource.trim().length > 0;
   useEffect(() => {
     if (readOnly) {
       setEditing(false);
@@ -400,26 +437,25 @@ export const MarkdownCell = memo(function MarkdownCell({
   }, [hasContent, isFocused, editing, readOnly]);
 
   const handleBlur = useCallback(() => {
-    if (cell.source.trim()) {
-      revealEditorSourcePosition();
-      setEditing(false);
-    }
-  }, [cell.source, revealEditorSourcePosition]);
+    exitEditingToPreview();
+  }, [exitEditingToPreview]);
 
   // Render markdown content when iframe is ready
   const handleFrameReady = useCallback(async () => {
     if (canRenderProjectionInHost) return;
-    if (!frameRef.current || !cell.source) return;
+    const frame = frameRef.current;
+    if (!frame || !previewSource) return;
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
-    frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
+    frame.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
     // Clear injected set — a reloaded iframe has a fresh renderer registry
     injectedLibsRef.current.clear();
     // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
     try {
-      await injectPluginsForMimes(frameRef.current, ["text/markdown"], injectedLibsRef.current);
+      await injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current);
     } catch (error) {
       logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
-      frameRef.current.render({
+      if (frameRef.current !== frame) return;
+      frame.render({
         mimeType: "text/plain",
         data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
         outputId: `markdown-error:${cell.id}`,
@@ -428,12 +464,13 @@ export const MarkdownCell = memo(function MarkdownCell({
       });
       return;
     }
+    if (frameRef.current !== frame) return;
     const processedSource = rewriteMarkdownAssetRefs(
-      cell.source,
+      previewSource,
       cell.resolvedAssets,
       blobResolver,
     );
-    frameRef.current.render({
+    frame.render({
       mimeType: "text/markdown",
       data: processedSource,
       metadata: markdownMetadata,
@@ -443,7 +480,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     });
   }, [
     canRenderProjectionInHost,
-    cell.source,
+    previewSource,
     cell.id,
     cell.resolvedAssets,
     blobResolver,
@@ -453,13 +490,13 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
     if (canRenderProjectionInHost) return;
-    if (frameRef.current?.isReady && cell.source) {
+    if (frameRef.current?.isReady && previewSource) {
       const frame = frameRef.current;
       // Inject markdown renderer plugin (idempotent) then render
       injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current)
         .then(() => {
           const processedSource = rewriteMarkdownAssetRefs(
-            cell.source,
+            previewSource,
             cell.resolvedAssets,
             blobResolver,
           );
@@ -485,7 +522,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     }
   }, [
     canRenderProjectionInHost,
-    cell.source,
+    previewSource,
     cell.id,
     cell.resolvedAssets,
     blobResolver,
@@ -609,7 +646,9 @@ export const MarkdownCell = memo(function MarkdownCell({
         return;
       }
       // For markdown, close edit mode first
-      if (cell.source.trim()) {
+      const source = getCurrentEditorSource();
+      if (source.trim()) {
+        setDraftPreviewSource(source);
         setEditing(false);
       }
       if (isLastCell && onInsertCellAfter) {
@@ -618,7 +657,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         onFocusNext(cursorPosition);
       }
     },
-    [cell.source, isLastCell, onFocusNext, onInsertCellAfter, readOnly],
+    [getCurrentEditorSource, isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
   // Remote cursors extension (stable — no deps that change)
@@ -664,8 +703,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       {
         key: "Ctrl-Enter",
         run: () => {
-          revealEditorSourcePosition();
-          setEditing(false);
+          exitEditingToPreview({ allowEmpty: true });
           return true;
         },
       },
@@ -673,10 +711,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       {
         key: "Escape",
         run: () => {
-          if (cell.source.trim()) {
-            revealEditorSourcePosition();
-            setEditing(false);
-          }
+          exitEditingToPreview();
           return true;
         },
       },
@@ -707,8 +742,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     ],
     [
       navigationKeyMap,
-      cell.source,
-      revealEditorSourcePosition,
+      exitEditingToPreview,
       applyInlineFormatting,
       applyLinkFormatting,
       applyQuoteFormatting,
@@ -758,7 +792,19 @@ export const MarkdownCell = memo(function MarkdownCell({
       isDragging={isDragging}
       rightGutterContent={
         readOnly ? null : editing ? (
-          rightGutterContent
+          <div className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              tabIndex={-1}
+              onMouseDown={handleRenderMarkdownMouseDown}
+              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+              title="View rendered markdown"
+              aria-label="View rendered markdown"
+            >
+              <Check className="h-3.5 w-3.5" />
+            </button>
+            {rightGutterContent}
+          </div>
         ) : (
           <div className="flex flex-col gap-0.5">
             <button
@@ -812,7 +858,7 @@ export const MarkdownCell = memo(function MarkdownCell({
             onPointerDown={handlePreviewWrapperPointerDown}
             onKeyDown={handleViewKeyDown}
           >
-            {cell.source && canRenderProjectionInHost && markdownProjection ? (
+            {previewSource && canRenderProjectionInHost && markdownProjection ? (
               <ProjectedMarkdownView
                 plan={markdownProjection}
                 headingAnchors={headingAnchors}
@@ -824,7 +870,7 @@ export const MarkdownCell = memo(function MarkdownCell({
               />
             ) : (
               <div
-                className={cell.source ? undefined : "hidden"}
+                className={previewSource ? undefined : "hidden"}
                 onPointerDown={handlePreviewWrapperPointerDown}
                 onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
               >
@@ -851,7 +897,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 />
               </div>
             )}
-            {!cell.source && <p className="text-muted-foreground italic">Double-click to edit</p>}
+            {!previewSource && <p className="text-muted-foreground italic">Double-click to edit</p>}
           </div>
         </>
       }
