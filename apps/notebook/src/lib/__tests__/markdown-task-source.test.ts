@@ -1,7 +1,39 @@
-import { describe, expect, it } from "vite-plus/test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import initMarkdownWasm from "../../wasm/runtimed-wasm/runtimed_wasm.js";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
+import { projectMarkdownPlan } from "../markdown-projection";
 import { toggleMarkdownTaskMarker } from "../markdown-task-source";
 
 describe("toggleMarkdownTaskMarker", () => {
+  beforeAll(async () => {
+    const wasmBytes = readFileSync(
+      join(process.cwd(), "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm"),
+    );
+    await initMarkdownWasm({
+      module_or_path: wasmBytes.buffer.slice(
+        wasmBytes.byteOffset,
+        wasmBytes.byteOffset + wasmBytes.byteLength,
+      ),
+    });
+  });
+
+  it("uses projected WASM task spans to update literal markdown source", () => {
+    const source = "- [ ] ship checkboxes\n- [x] keep outputs read-only";
+    const plan = projectMarkdownPlan(source);
+    const waitingRun = plan?.runs.find((run) => run.renderedText === "ship checkboxes");
+
+    expect(waitingRun).toEqual(
+      expect.objectContaining({
+        listItemChecked: false,
+        semantic: "list-item",
+      }),
+    );
+    expect(toggleMarkdownTaskMarker(source, waitingRun!, true)).toBe(
+      "- [x] ship checkboxes\n- [x] keep outputs read-only",
+    );
+  });
+
   it("checks an unchecked task marker within the projected source span", () => {
     const source = "- [ ] ship checkboxes\n- [x] keep outputs read-only";
 
