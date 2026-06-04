@@ -261,7 +261,10 @@ function ProjectedTable({
   const hasHeader = headerRow?.cells.some((cell) => cell.header);
 
   return (
-    <div className="my-4 overflow-x-auto rounded-md border border-border">
+    <div
+      data-slot="projected-markdown-table"
+      className="my-4 overflow-x-auto rounded-md border border-border"
+    >
       <table className="min-w-full border-collapse bg-background font-[var(--output-ui-font)] text-sm leading-normal">
         {hasHeader ? (
           <thead>

@@ -416,6 +416,10 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
     expect(screen.getByRole("table").parentElement).toHaveClass("rounded-md");
+    expect(screen.getByRole("table").parentElement).toHaveAttribute(
+      "data-slot",
+      "projected-markdown-table",
+    );
     expect(document.querySelector("pre")).toBeNull();
   });
 
