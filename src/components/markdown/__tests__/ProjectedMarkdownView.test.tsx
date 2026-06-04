@@ -94,6 +94,8 @@ describe("ProjectedMarkdownView", () => {
 
     expect(container.querySelector('[data-slot="projected-markdown-output"]')).toHaveClass(
       "leading-[1.65]",
+      "[&>*:first-child]:mt-0",
+      "[&>*:last-child]:mb-0",
     );
     expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-[1.875rem]", "font-bold");
     expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-bold");
@@ -161,6 +163,11 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector(".katex-display")?.parentElement).toHaveClass(
       "text-center",
       "overflow-x-auto",
+      "bg-muted/[0.18]",
+    );
+    expect(document.querySelector(".katex-display")?.parentElement).toHaveAttribute(
+      "data-display-mode",
+      "true",
     );
     expect(document.querySelector(".katex-display")?.parentElement?.tagName).toBe("DIV");
   });
@@ -245,6 +252,7 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
       "border-l-4",
       "border-border",
+      "bg-muted/[0.22]",
       "text-muted-foreground",
     );
   });
@@ -622,6 +630,8 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
     expect(screen.getByRole("table").parentElement).toHaveClass("rounded-md");
+    expect(screen.getByRole("table").parentElement).toHaveClass("bg-background/80");
+    expect(screen.getByRole("row", { name: "rows 128" })).toHaveClass("odd:bg-muted/[0.04]");
     expect(screen.getByRole("table").parentElement).toHaveAttribute(
       "data-slot",
       "projected-markdown-table",

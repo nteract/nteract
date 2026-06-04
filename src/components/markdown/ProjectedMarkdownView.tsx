@@ -55,7 +55,7 @@ export function ProjectedMarkdownView({
     <div
       data-slot="projected-markdown-output"
       className={cn(
-        "not-prose select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility] [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]",
+        "not-prose select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]",
         className,
       )}
     >
@@ -165,7 +165,7 @@ function ProjectedMarkdownBlock({
       <blockquote
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          "my-4 border-l-4 border-border pl-4 text-muted-foreground italic",
+          "my-4 rounded-sm border-l-4 border-border bg-muted/[0.22] py-2 pr-3 pl-4 text-muted-foreground italic",
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -509,7 +509,7 @@ function ProjectedTable({
       data-slot="projected-markdown-table"
       data-source-active={activeBlock ? "true" : undefined}
       className={cn(
-        "my-4 overflow-x-auto rounded-md border border-border",
+        "my-4 overflow-x-auto rounded-md border border-border bg-background/80",
         activeBlock && sourceActiveBlockClass,
       )}
     >
@@ -531,7 +531,7 @@ function ProjectedTable({
         ) : null}
         <tbody>
           {(hasHeader ? bodyRows : rows).map((row) => (
-            <tr key={row.key}>
+            <tr key={row.key} className="odd:bg-muted/[0.04]">
               {row.cells.map((cell) => (
                 <td
                   key={cell.key}
@@ -814,7 +814,8 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
     return (
       <div
         data-slot="projected-markdown-math"
-        className="my-4 overflow-x-auto text-center [&_.katex-display]:my-0"
+        data-display-mode="true"
+        className="my-5 overflow-x-auto rounded-sm bg-muted/[0.18] px-3 py-3 text-center [&_.katex-display]:my-0"
         dangerouslySetInnerHTML={{ __html: html }}
       />
     );
@@ -823,6 +824,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
   return (
     <span
       data-slot="projected-markdown-math"
+      data-display-mode="false"
       className="inline align-baseline [&_.katex]:text-[1.03em]"
       dangerouslySetInnerHTML={{ __html: html }}
     />
