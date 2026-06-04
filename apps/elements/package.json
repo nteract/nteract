@@ -3,15 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "portless run",
+    "dev": "portless run --name nteract-elements next dev",
     "dev:local": "next dev --port 5176",
-    "dev:next": "next dev",
     "url": "portless get nteract-elements",
     "build": "next build"
-  },
-  "portless": {
-    "name": "nteract-elements",
-    "script": "dev:next"
   },
   "dependencies": {
     "@nteract/sift": "workspace:*",
