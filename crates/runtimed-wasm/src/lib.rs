@@ -58,6 +58,16 @@ fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindge
     value.serialize(&serializer)
 }
 
+/// Project markdown source into the experimental nteract markdown plan.
+///
+/// This is intentionally exposed through `runtimed-wasm` first so the
+/// frontend can test the projection data in the same WASM module that already
+/// owns notebook materialization. Rendering policy still lives in the app.
+#[wasm_bindgen]
+pub fn project_markdown_json(source: &str) -> String {
+    nteract_markdown_wasm::project_to_json(source)
+}
+
 /// A text attribution range produced when a sync message modifies cell source.
 ///
 /// Pushed to the frontend inside `SyncApplied` so it can highlight freshly

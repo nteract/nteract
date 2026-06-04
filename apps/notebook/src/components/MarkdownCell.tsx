@@ -36,6 +36,7 @@ import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { logger } from "../lib/logger";
+import { projectedMarkdownPreviewHeight, projectMarkdownPlan } from "../lib/markdown-projection";
 import {
   isMeasuredElementFound,
   registerMarkdownHeadingNavigator,
@@ -209,7 +210,19 @@ export const MarkdownCell = memo(function MarkdownCell({
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
-  const previewMinHeight = useMemo(() => estimateMarkdownPreviewHeight(cell.source), [cell.source]);
+  const markdownProjection = useMemo(() => projectMarkdownPlan(cell.source), [cell.source]);
+  const previewMinHeight = useMemo(
+    () =>
+      projectedMarkdownPreviewHeight(
+        markdownProjection,
+        estimateMarkdownPreviewHeight(cell.source),
+        {
+          maxHeight: MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT,
+          minHeight: MARKDOWN_PREVIEW_MIN_HEIGHT,
+        },
+      ),
+    [cell.source, markdownProjection],
+  );
 
   // Register EditorView with the cursor registry when in edit mode.
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -270,15 +283,16 @@ export const MarkdownCell = memo(function MarkdownCell({
   colorThemeRef.current = colorTheme;
 
   const blobResolver = useBlobResolver();
-  const markdownMetadata = useMemo(
-    () =>
-      headingAnchors.length > 0
-        ? {
-            nteractMarkdownHeadingAnchors: headingAnchors,
-          }
-        : undefined,
-    [headingAnchors],
-  );
+  const markdownMetadata = useMemo(() => {
+    if (headingAnchors.length === 0 && !markdownProjection) {
+      return undefined;
+    }
+
+    return {
+      ...(headingAnchors.length > 0 ? { nteractMarkdownHeadingAnchors: headingAnchors } : {}),
+      ...(markdownProjection ? { nteractMarkdownProjection: markdownProjection } : {}),
+    };
+  }, [headingAnchors, markdownProjection]);
 
   const handleDoubleClick = useCallback(() => {
     if (readOnly) return;

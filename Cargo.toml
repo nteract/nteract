@@ -28,6 +28,8 @@ members = [
     "crates/runtimed-wasm",
     "crates/mcp-client-branding",
     "crates/mcp-supervisor",
+    "crates/nteract-markdown-engine",
+    "crates/nteract-markdown-wasm",
     "crates/playdate-image",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
