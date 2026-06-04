@@ -1,3 +1,5 @@
+import type { MarkdownProjectionPlan } from "./lib/markdown-projection";
+
 /** Cell metadata (arbitrary JSON object, preserves unknown keys) */
 export type CellMetadata = Record<string, unknown>;
 
@@ -30,6 +32,8 @@ export interface MarkdownCell {
   id: string;
   source: string;
   metadata: CellMetadata;
+  /** Host-renderable markdown projection derived from source, when available. */
+  markdownProjection?: MarkdownProjectionPlan;
   /** Resolved markdown asset refs (`attachment:...`, relative paths) → blob hash */
   resolvedAssets?: Record<string, string>;
 }

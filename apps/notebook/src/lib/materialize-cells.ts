@@ -1,6 +1,7 @@
 import type { JupyterOutput, NotebookCell } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
+import { projectMarkdownPlan } from "./markdown-projection";
 import {
   type BlobResolverInput,
   isOutputManifest,
@@ -234,6 +235,19 @@ export function reuseOutputsIfUnchanged(
   return resolvedOutputs;
 }
 
+function materializeMarkdownCell(
+  snap: Pick<CellSnapshot, "id" | "source" | "metadata" | "resolved_assets">,
+): Extract<NotebookCell, { cell_type: "markdown" }> {
+  return {
+    id: snap.id,
+    cell_type: "markdown",
+    source: snap.source,
+    metadata: snap.metadata ?? {},
+    markdownProjection: projectMarkdownPlan(snap.source) ?? undefined,
+    resolvedAssets: snap.resolved_assets,
+  };
+}
+
 /**
  * Synchronous cell materialization for local mutations.
  *
@@ -276,13 +290,7 @@ export function cellSnapshotsToNotebookCellsSync(
     }
 
     if (snap.cell_type === "markdown") {
-      return {
-        id: snap.id,
-        cell_type: "markdown" as const,
-        source: snap.source,
-        metadata,
-        resolvedAssets: snap.resolved_assets,
-      };
+      return materializeMarkdownCell({ ...snap, metadata });
     }
 
     return {
@@ -337,13 +345,7 @@ export async function cellSnapshotsToNotebookCells(
 
       // markdown or raw
       if (snap.cell_type === "markdown") {
-        return {
-          id: snap.id,
-          cell_type: "markdown" as const,
-          source: snap.source,
-          metadata,
-          resolvedAssets: snap.resolved_assets,
-        };
+        return materializeMarkdownCell({ ...snap, metadata });
       }
 
       return {
@@ -411,6 +413,7 @@ export function materializeCellFromWasm(
       cell_type: "markdown",
       source,
       metadata,
+      markdownProjection: projectMarkdownPlan(source) ?? undefined,
       resolvedAssets,
     };
   }

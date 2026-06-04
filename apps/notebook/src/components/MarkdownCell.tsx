@@ -20,7 +20,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
 import { findVerticalScrollAncestor } from "@/components/isolated/scroll-boundary";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
-import { ProjectedMarkdownView } from "~/components/markdown/ProjectedMarkdownView";
+import { ProjectedMarkdownView } from "./markdown/ProjectedMarkdownView";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import {
   canRenderMarkdownProjectionInHost,
@@ -222,7 +222,10 @@ export const MarkdownCell = memo(function MarkdownCell({
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
-  const markdownProjection = useMemo(() => projectMarkdownPlan(cell.source), [cell.source]);
+  const markdownProjection = useMemo(
+    () => cell.markdownProjection ?? projectMarkdownPlan(cell.source),
+    [cell.markdownProjection, cell.source],
+  );
   const canRenderProjectionInHost = canRenderMarkdownProjectionInHost(markdownProjection);
   const previewMinHeight = useMemo(
     () =>

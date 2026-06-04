@@ -8,6 +8,7 @@ import {
   resolveOutput,
   reuseOutputsIfUnchanged,
 } from "../materialize-cells";
+import { setMarkdownProjectionProjector } from "../markdown-projection";
 import { resetRuntimeState, setRuntimeState } from "../runtime-state";
 import { DEFAULT_RUNTIME_STATE } from "runtimed";
 
@@ -17,12 +18,30 @@ import { DEFAULT_RUNTIME_STATE } from "runtimed";
 
 const mockFetch =
   vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
+let restoreMarkdownProjectionProjector: (() => void) | undefined;
 
 beforeEach(() => {
   vi.stubGlobal("fetch", mockFetch);
+  restoreMarkdownProjectionProjector = setMarkdownProjectionProjector((source) =>
+    JSON.stringify({
+      version: 1,
+      engine: "test",
+      byteLength: source.length,
+      utf16Length: source.length,
+      measurement: {
+        estimatedHeight: 24,
+        confidence: "medium",
+        width: 720,
+      },
+      blocks: [],
+      runs: [],
+    }),
+  );
 });
 
 afterEach(() => {
+  restoreMarkdownProjectionProjector?.();
+  restoreMarkdownProjectionProjector = undefined;
   mockFetch.mockReset();
   vi.unstubAllGlobals();
   resetRuntimeState();
@@ -474,12 +493,18 @@ describe("cellSnapshotsToNotebookCells", () => {
 
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
     expect(cells).toHaveLength(1);
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "# Title",
-      metadata: {},
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "# Title",
+        metadata: {},
+      }),
+    );
+    expect(cells[0]).toHaveProperty("markdownProjection");
+    if (cells[0].cell_type === "markdown") {
+      expect(cells[0].markdownProjection?.version).toBe(1);
+    }
   });
 
   it("preserves resolved markdown assets", async () => {
@@ -488,13 +513,16 @@ describe("cellSnapshotsToNotebookCells", () => {
     });
 
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "![x](attachment:image.png)",
-      metadata: {},
-      resolvedAssets: { "attachment:image.png": "abc123" },
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "![x](attachment:image.png)",
+        metadata: {},
+        resolvedAssets: { "attachment:image.png": "abc123" },
+      }),
+    );
+    expect(cells[0]).toHaveProperty("markdownProjection");
   });
 
   it("preserves resolved markdown assets during sync materialization", () => {
@@ -503,13 +531,16 @@ describe("cellSnapshotsToNotebookCells", () => {
     });
 
     const cells = cellSnapshotsToNotebookCellsSync([snap], new Map());
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "![x](images/foo.png)",
-      metadata: {},
-      resolvedAssets: { "images/foo.png": "abc123" },
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "![x](images/foo.png)",
+        metadata: {},
+        resolvedAssets: { "images/foo.png": "abc123" },
+      }),
+    );
+    expect(cells[0]).toHaveProperty("markdownProjection");
   });
 
   it("converts a raw cell", async () => {
@@ -833,12 +864,14 @@ describe("cellSnapshotsToNotebookCells", () => {
     const snap = markdownSnapshot("m1", "text");
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
 
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "text",
-      metadata: {},
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "text",
+        metadata: {},
+      }),
+    );
     expect(cells[0]).not.toHaveProperty("outputs");
     expect(cells[0]).not.toHaveProperty("execution_count");
   });

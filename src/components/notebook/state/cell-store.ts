@@ -1,4 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
+import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
 
 export type NotebookCellMetadata = Record<string, unknown>;
 
@@ -40,6 +41,7 @@ export interface NotebookStoreMarkdownCell {
   id: string;
   source: string;
   metadata: NotebookCellMetadata;
+  markdownProjection?: MarkdownProjectionPlan;
   resolvedAssets?: Record<string, string>;
 }
 
