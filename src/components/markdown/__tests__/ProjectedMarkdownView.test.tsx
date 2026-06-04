@@ -442,6 +442,93 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector("pre code span")).not.toBeNull();
   });
 
+  it("renders safe projected inline HTML as document markup", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 42],
+              sourceSpanUtf16: [0, 42],
+              syntaxSpans: [],
+              text: "Press K and note",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "kbd",
+              listItemIndex: null,
+              renderedHtml: '<kbd title="shortcut">K</kbd>',
+              renderedText: "K",
+              renderedTextUtf16: [0, 1],
+              semantic: "html-fragment",
+              sourceSpanByte: [0, 31],
+              sourceSpanUtf16: [0, 31],
+            },
+            {
+              blockId: "p0",
+              inlineId: "text",
+              listItemIndex: null,
+              renderedText: " and note",
+              renderedTextUtf16: [1, 10],
+              semantic: "text",
+              sourceSpanByte: [32, 42],
+              sourceSpanUtf16: [32, 42],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const shortcut = screen.getByText("K");
+    expect(shortcut.tagName).toBe("KBD");
+    expect(shortcut).toHaveAttribute("title", "shortcut");
+  });
+
+  it("falls back to text for unsafe projected inline HTML", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 28],
+              sourceSpanUtf16: [0, 28],
+              syntaxSpans: [],
+              text: "unsafe",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "unsafe",
+              listItemIndex: null,
+              renderedHtml: '<span onclick="alert(1)">unsafe</span>',
+              renderedText: "unsafe",
+              renderedTextUtf16: [0, 6],
+              semantic: "html-fragment",
+              sourceSpanByte: [0, 28],
+              sourceSpanUtf16: [0, 28],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("unsafe")).toBeInTheDocument();
+    expect(document.querySelector("[onclick]")).toBeNull();
+  });
+
   it("renders projected images in the host document", () => {
     render(
       <ProjectedMarkdownView

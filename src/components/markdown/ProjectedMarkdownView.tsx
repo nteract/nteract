@@ -44,7 +44,7 @@ export function ProjectedMarkdownView({
     <div
       data-slot="projected-markdown-output"
       className={cn(
-        "select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility]",
+        "select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility] [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]",
         className,
       )}
     >
@@ -324,6 +324,10 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
     return <ProjectedImage run={run} />;
   }
 
+  if (run.semantic === "html-fragment" && run.renderedHtml) {
+    return <ProjectedInlineHtml html={run.renderedHtml} fallbackText={text} />;
+  }
+
   if (!text) return null;
 
   if (run.href) {
@@ -351,6 +355,64 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
   if (run.semantic === "link-label") return text;
 
   return text;
+}
+
+const SAFE_INLINE_HTML_TAGS = new Set([
+  "b",
+  "em",
+  "i",
+  "kbd",
+  "mark",
+  "s",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "u",
+]);
+
+function ProjectedInlineHtml({ fallbackText, html }: { fallbackText: string; html: string }) {
+  const safeHtml = sanitizeProjectedInlineHtml(html);
+
+  if (!safeHtml) {
+    return fallbackText ? <span>{fallbackText}</span> : null;
+  }
+
+  return <span dangerouslySetInnerHTML={{ __html: safeHtml }} />;
+}
+
+function sanitizeProjectedInlineHtml(html: string): string | null {
+  if (typeof document === "undefined" || !html.trim()) return null;
+
+  const template = document.createElement("template");
+  template.innerHTML = html;
+
+  const validateNode = (node: Node): boolean => {
+    if (node.nodeType === Node.TEXT_NODE) return true;
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+
+    const element = node as Element;
+    if (!SAFE_INLINE_HTML_TAGS.has(element.tagName.toLowerCase())) {
+      return false;
+    }
+
+    for (const attr of Array.from(element.attributes)) {
+      const name = attr.name.toLowerCase();
+      const allowedName = name === "class" || name === "title" || name.startsWith("data-");
+      if (!allowedName || /[<>]/.test(attr.value)) {
+        return false;
+      }
+    }
+
+    return Array.from(element.childNodes).every(validateNode);
+  };
+
+  if (!Array.from(template.content.childNodes).every(validateNode)) {
+    return null;
+  }
+
+  return template.innerHTML;
 }
 
 function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
