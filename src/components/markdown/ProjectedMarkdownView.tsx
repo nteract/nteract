@@ -165,7 +165,7 @@ function ProjectedMarkdownBlock({
       <blockquote
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          "my-4 rounded-sm border-l-4 border-border bg-muted/[0.22] py-2 pr-3 pl-4 text-muted-foreground italic",
+          "my-4 border-l-4 border-border pl-4 text-muted-foreground italic",
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -214,7 +214,7 @@ function ProjectedMarkdownBlock({
   ) : null;
 }
 
-const sourceActiveBlockClass = "rounded-sm bg-primary/[0.035]";
+const sourceActiveBlockClass = "";
 const sourceActiveRunClass =
   "rounded-sm bg-primary/10 ring-1 ring-primary/20 ring-offset-1 ring-offset-background";
 
@@ -434,8 +434,11 @@ function TaskCheckbox({
       : "Incomplete task";
 
   return (
-    <span
-      className="relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center"
+    <label
+      className={cn(
+        "relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center",
+        interactive && "cursor-pointer",
+      )}
       data-slot="projected-markdown-task-checkbox"
       data-state={checked ? "checked" : "unchecked"}
     >
@@ -461,7 +464,7 @@ function TaskCheckbox({
       >
         {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
       </span>
-    </span>
+    </label>
   );
 }
 
@@ -515,18 +518,18 @@ function ProjectedTable({
       data-slot="projected-markdown-table"
       data-source-active={activeBlock ? "true" : undefined}
       className={cn(
-        "my-4 overflow-x-auto rounded-md border border-border bg-background/80",
+        "my-4 overflow-x-auto border-y border-border",
         activeBlock && sourceActiveBlockClass,
       )}
     >
-      <table className="min-w-full border-collapse bg-background font-[var(--output-ui-font)] text-sm leading-normal">
+      <table className="min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal">
         {hasHeader ? (
           <thead>
             <tr>
               {headerRow.cells.map((cell) => (
                 <th
                   key={cell.key}
-                  className="border-b border-r border-border bg-muted/70 px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
+                  className="border-b border-r border-border bg-muted/55 px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
                   style={tableCellStyle(cell.align)}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
@@ -821,7 +824,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
       <div
         data-slot="projected-markdown-math"
         data-display-mode="true"
-        className="my-5 overflow-x-auto rounded-sm bg-muted/[0.18] px-3 py-3 text-center [&_.katex-display]:my-0"
+        className="my-4 overflow-x-auto px-1 py-1 text-center [&_.katex-display]:my-0"
         dangerouslySetInnerHTML={{ __html: html }}
       />
     );

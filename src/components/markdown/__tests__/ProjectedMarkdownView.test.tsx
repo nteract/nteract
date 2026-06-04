@@ -163,6 +163,9 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector(".katex-display")?.parentElement).toHaveClass(
       "text-center",
       "overflow-x-auto",
+      "px-1",
+    );
+    expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
       "bg-muted/[0.18]",
     );
     expect(document.querySelector(".katex-display")?.parentElement).toHaveAttribute(
@@ -252,9 +255,9 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
       "border-l-4",
       "border-border",
-      "bg-muted/[0.22]",
       "text-muted-foreground",
     );
+    expect(screen.getByText("quoted").closest("blockquote")).not.toHaveClass("bg-muted/[0.22]");
   });
 
   it("does not trust projected math commands that can shape host DOM", () => {
@@ -629,8 +632,9 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
-    expect(screen.getByRole("table").parentElement).toHaveClass("rounded-md");
-    expect(screen.getByRole("table").parentElement).toHaveClass("bg-background/80");
+    expect(screen.getByRole("table").parentElement).toHaveClass("border-y");
+    expect(screen.getByRole("table").parentElement).not.toHaveClass("rounded-md");
+    expect(screen.getByRole("table").parentElement).not.toHaveClass("bg-background/80");
     expect(screen.getByRole("row", { name: "rows 128" })).toHaveClass("odd:bg-muted/[0.04]");
     expect(screen.getByRole("table").parentElement).toHaveAttribute(
       "data-slot",
