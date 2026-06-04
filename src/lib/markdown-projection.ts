@@ -40,6 +40,10 @@ export interface MarkdownProjectionRun {
   semantic: string;
   sourceSpanByte: [number, number];
   sourceSpanUtf16: [number, number];
+  tableCellAlign?: "none" | "left" | "right" | "center" | string;
+  tableCellHeader?: boolean;
+  tableCellIndex?: number;
+  tableRowIndex?: number;
 }
 
 export interface MarkdownProjectionPlan {

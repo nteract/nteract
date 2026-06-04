@@ -1,5 +1,5 @@
 use nteract_markdown_engine::{
-    project_markdown, MeasurementConfidence, MeasurementPlan, NodeKind, ProjectedNode,
+    project_markdown, MeasurementConfidence, MeasurementPlan, NodeKind, ProjectedNode, TableAlign,
 };
 use std::sync::Mutex;
 
@@ -122,6 +122,10 @@ fn collect_block(
         rendered_cursor: 0,
         runs: Vec::new(),
         syntax_spans: Vec::new(),
+        table_cell_align: None,
+        table_cell_header: None,
+        table_cell_index: None,
+        table_row_index: None,
     };
 
     let mut kind = block_kind(block);
@@ -155,6 +159,7 @@ fn collect_block(
             context.item_checked = None;
             context.item_index = None;
         }
+        NodeKind::Table => collect_table(source, &mut context, block),
         NodeKind::CodeBlock => collect_code_block(source, &mut context, block),
         NodeKind::MathBlock => {
             context.add_run(
@@ -240,6 +245,36 @@ fn collect_block(
     };
 
     (wasm_block, context.runs)
+}
+
+fn collect_table(source: &str, context: &mut RunContext<'_>, block: &ProjectedNode) {
+    for (row_index, row) in block.children.iter().enumerate() {
+        if row.kind != NodeKind::TableRow {
+            continue;
+        }
+
+        for (cell_index, cell) in row.children.iter().enumerate() {
+            if cell.kind != NodeKind::TableCell {
+                continue;
+            }
+
+            context.table_row_index = Some(row_index);
+            context.table_cell_index = Some(cell_index);
+            context.table_cell_header = Some(row_index == 0);
+            context.table_cell_align = block
+                .attrs
+                .align
+                .get(cell_index)
+                .copied()
+                .map(table_align_label);
+            collect_children(source, context, &cell.children, "table-cell");
+        }
+    }
+
+    context.table_row_index = None;
+    context.table_cell_index = None;
+    context.table_cell_header = None;
+    context.table_cell_align = None;
 }
 
 fn collect_children(
@@ -612,6 +647,10 @@ struct RunContext<'a> {
     rendered_cursor: usize,
     runs: Vec<WasmRun>,
     syntax_spans: Vec<WasmSyntaxSpan>,
+    table_cell_align: Option<&'static str>,
+    table_cell_header: Option<bool>,
+    table_cell_index: Option<usize>,
+    table_row_index: Option<usize>,
 }
 
 impl RunContext<'_> {
@@ -643,6 +682,10 @@ impl RunContext<'_> {
                 self.position_index.byte_to_utf16(source_start),
                 self.position_index.byte_to_utf16(source_end),
             ],
+            table_cell_align: self.table_cell_align,
+            table_cell_header: self.table_cell_header,
+            table_cell_index: self.table_cell_index,
+            table_row_index: self.table_row_index,
         };
         self.runs.push(run.clone());
         run
@@ -663,6 +706,10 @@ struct WasmRun {
     semantic: &'static str,
     source_span_byte: [usize; 2],
     source_span_utf16: [usize; 2],
+    table_cell_align: Option<&'static str>,
+    table_cell_header: Option<bool>,
+    table_cell_index: Option<usize>,
+    table_row_index: Option<usize>,
 }
 
 impl WasmRun {
@@ -701,7 +748,35 @@ impl WasmRun {
         push_json_key_span(output, "sourceSpanByte", self.source_span_byte);
         output.push(',');
         push_json_key_span(output, "sourceSpanUtf16", self.source_span_utf16);
+        if let Some(row_index) = self.table_row_index {
+            output.push(',');
+            output.push_str("\"tableRowIndex\":");
+            output.push_str(&row_index.to_string());
+        }
+        if let Some(cell_index) = self.table_cell_index {
+            output.push(',');
+            output.push_str("\"tableCellIndex\":");
+            output.push_str(&cell_index.to_string());
+        }
+        if let Some(header) = self.table_cell_header {
+            output.push(',');
+            output.push_str("\"tableCellHeader\":");
+            output.push_str(if header { "true" } else { "false" });
+        }
+        if let Some(align) = self.table_cell_align {
+            output.push(',');
+            push_json_key_string(output, "tableCellAlign", align);
+        }
         output.push('}');
+    }
+}
+
+fn table_align_label(align: TableAlign) -> &'static str {
+    match align {
+        TableAlign::None => "none",
+        TableAlign::Left => "left",
+        TableAlign::Right => "right",
+        TableAlign::Center => "center",
     }
 }
 
@@ -1012,5 +1087,19 @@ mod tests {
         assert!(json.contains("\"kind\":\"math\""));
         assert!(json.contains("\"kind\":\"thematic-break\""));
         assert!(json.contains("\"element\":\"hr\""));
+    }
+
+    #[test]
+    fn projects_table_rows_cells_and_alignment() {
+        let json = project_to_json("| metric | value |\n| --- | ---: |\n| rows | 128 |\n");
+
+        assert!(json.contains("\"kind\":\"table\""));
+        assert!(json.contains("\"tableRowIndex\":0"));
+        assert!(json.contains("\"tableRowIndex\":1"));
+        assert!(json.contains("\"tableCellIndex\":1"));
+        assert!(json.contains("\"tableCellHeader\":true"));
+        assert!(json.contains("\"tableCellHeader\":false"));
+        assert!(json.contains("\"tableCellAlign\":\"right\""));
+        assert!(json.contains("\"renderedText\":\"128\""));
     }
 }

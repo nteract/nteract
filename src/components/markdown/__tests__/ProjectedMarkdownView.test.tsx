@@ -155,4 +155,87 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("important").tagName).toBe("EM");
     expect(screen.getByText("removed").tagName).toBe("DEL");
   });
+
+  it("renders projected tables as host table elements", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "table",
+              blockIndex: 0,
+              element: "div",
+              kind: "table",
+              measurement: { estimatedHeight: 96, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 48],
+              sourceSpanUtf16: [0, 48],
+              syntaxSpans: [],
+              text: "metric value\nrows 128",
+            },
+          ],
+          runs: [
+            {
+              blockId: "table",
+              inlineId: "h0",
+              listItemIndex: null,
+              renderedText: "metric",
+              renderedTextUtf16: [0, 6],
+              semantic: "table-cell",
+              sourceSpanByte: [2, 8],
+              sourceSpanUtf16: [2, 8],
+              tableCellHeader: true,
+              tableCellIndex: 0,
+              tableRowIndex: 0,
+            },
+            {
+              blockId: "table",
+              inlineId: "h1",
+              listItemIndex: null,
+              renderedText: "value",
+              renderedTextUtf16: [7, 12],
+              semantic: "table-cell",
+              sourceSpanByte: [11, 16],
+              sourceSpanUtf16: [11, 16],
+              tableCellAlign: "right",
+              tableCellHeader: true,
+              tableCellIndex: 1,
+              tableRowIndex: 0,
+            },
+            {
+              blockId: "table",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: "rows",
+              renderedTextUtf16: [13, 17],
+              semantic: "table-cell",
+              sourceSpanByte: [32, 36],
+              sourceSpanUtf16: [32, 36],
+              tableCellHeader: false,
+              tableCellIndex: 0,
+              tableRowIndex: 1,
+            },
+            {
+              blockId: "table",
+              inlineId: "r1",
+              listItemIndex: null,
+              renderedText: "128",
+              renderedTextUtf16: [18, 21],
+              semantic: "table-cell",
+              sourceSpanByte: [39, 42],
+              sourceSpanUtf16: [39, 42],
+              tableCellAlign: "right",
+              tableCellHeader: false,
+              tableCellIndex: 1,
+              tableRowIndex: 1,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
+    expect(document.querySelector("pre")).toBeNull();
+  });
 });

@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { Fragment, useState } from "react";
+import { Fragment, useState, type CSSProperties } from "react";
 import katex from "katex";
 import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import type {
@@ -148,11 +148,7 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "table") {
-    return (
-      <pre className="my-2 overflow-x-auto rounded bg-muted px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap">
-        {block.text}
-      </pre>
-    );
+    return <ProjectedTable runs={runs} fallbackText={block.text} onLinkClick={onLinkClick} />;
   }
 
   if (block.kind === "paragraph") {
@@ -209,6 +205,102 @@ function groupListRuns(runs: MarkdownProjectionRun[]) {
     key,
     runs,
   }));
+}
+
+function ProjectedTable({
+  fallbackText,
+  onLinkClick,
+  runs,
+}: {
+  fallbackText: string;
+  onLinkClick?: (url: string) => void;
+  runs: MarkdownProjectionRun[];
+}) {
+  const rows = groupTableRuns(runs);
+  if (rows.length === 0) {
+    return (
+      <pre className="my-2 overflow-x-auto rounded bg-muted px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap">
+        {fallbackText}
+      </pre>
+    );
+  }
+
+  const [headerRow, ...bodyRows] = rows;
+  const hasHeader = headerRow?.cells.some((cell) => cell.header);
+
+  return (
+    <div className="my-4 overflow-x-auto">
+      <table className="min-w-full border-collapse border border-border text-sm">
+        {hasHeader ? (
+          <thead>
+            <tr>
+              {headerRow.cells.map((cell) => (
+                <th
+                  key={cell.key}
+                  className="border border-border bg-muted px-3 py-2 font-semibold"
+                  style={tableCellStyle(cell.align)}
+                >
+                  {renderRuns(cell.runs, onLinkClick)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        ) : null}
+        <tbody>
+          {(hasHeader ? bodyRows : rows).map((row) => (
+            <tr key={row.key}>
+              {row.cells.map((cell) => (
+                <td
+                  key={cell.key}
+                  className="border border-border px-3 py-2 align-top"
+                  style={tableCellStyle(cell.align)}
+                >
+                  {renderRuns(cell.runs, onLinkClick)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function groupTableRuns(runs: MarkdownProjectionRun[]) {
+  const rows = new Map<number, Map<number, MarkdownProjectionRun[]>>();
+  for (const run of runs) {
+    const rowIndex = run.tableRowIndex ?? 0;
+    const cellIndex = run.tableCellIndex ?? 0;
+    let row = rows.get(rowIndex);
+    if (!row) {
+      row = new Map<number, MarkdownProjectionRun[]>();
+      rows.set(rowIndex, row);
+    }
+    const cell = row.get(cellIndex);
+    if (cell) {
+      cell.push(run);
+    } else {
+      row.set(cellIndex, [run]);
+    }
+  }
+
+  return Array.from(rows, ([rowIndex, cells]) => ({
+    key: rowIndex,
+    cells: Array.from(cells, ([cellIndex, runs]) => ({
+      align: runs.find((run) => run.tableCellAlign)?.tableCellAlign,
+      header: runs.some((run) => run.tableCellHeader),
+      key: `${rowIndex}:${cellIndex}`,
+      runs,
+    })),
+  }));
+}
+
+function tableCellStyle(align: MarkdownProjectionRun["tableCellAlign"]): CSSProperties | undefined {
+  if (align === "right" || align === "center" || align === "left") {
+    return { textAlign: align };
+  }
+
+  return undefined;
 }
 
 function renderRuns(runs: MarkdownProjectionRun[], onLinkClick?: (url: string) => void) {
