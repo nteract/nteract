@@ -164,7 +164,8 @@ export class TauriTransport implements NotebookTransport {
       console.error("[tauri-transport] response dispatch failed:", err);
     }
 
-    for (const callback of this.subscribers) {
+    const subscribers = Array.from(this.subscribers);
+    for (const callback of subscribers) {
       try {
         callback(frame);
       } catch (err) {

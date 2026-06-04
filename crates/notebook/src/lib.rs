@@ -887,56 +887,62 @@ async fn setup_sync_receivers(
             }
         };
 
-        if let Some(frame_channel) = frame_channel {
-            // Wait for the frontend SyncEngine to signal readiness. Daemon frames
-            // buffer in `raw_frame_rx` during this wait — the mpsc channel is
-            // unbounded, so nothing is lost.
-            if !*ready_rx.borrow() {
-                info!(
-                    "[notebook-sync] Waiting for frontend ready before sending frames (gen {})",
-                    current_generation,
-                );
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    ready_rx.wait_for(|&ready| ready),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => {
-                        info!(
-                            "[notebook-sync] Frontend signaled ready (gen {})",
-                            current_generation,
-                        );
-                    }
-                    _ => {
-                        warn!(
-                            "[notebook-sync] Frontend ready timeout after 30s (gen {}) — proceeding anyway",
-                            current_generation,
-                        );
-                    }
+        let Some(frame_channel) = frame_channel else {
+            warn!(
+                "[notebook-sync] Frame relay stopped before frontend channel registration (gen {})",
+                current_generation,
+            );
+            return;
+        };
+
+        // Wait for the frontend SyncEngine to signal readiness. Daemon frames
+        // buffer in `raw_frame_rx` during this wait — the mpsc channel is
+        // unbounded, so nothing is lost.
+        if !*ready_rx.borrow() {
+            info!(
+                "[notebook-sync] Waiting for frontend ready before sending frames (gen {})",
+                current_generation,
+            );
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                ready_rx.wait_for(|&ready| ready),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    info!(
+                        "[notebook-sync] Frontend signaled ready (gen {})",
+                        current_generation,
+                    );
+                }
+                _ => {
+                    warn!(
+                        "[notebook-sync] Frontend ready timeout after 30s (gen {}) — proceeding anyway",
+                        current_generation,
+                    );
                 }
             }
+        }
 
-            while let Some(frame_bytes) = raw_frame_rx.recv().await {
-                // Stop forwarding if a newer connection has replaced this one.
-                // Without this check, frames from the old room can interleave
-                // with the new connection's frames on the frontend channel,
-                // causing the frontend to feed them to the wrong WASM handle
-                // (stale Automerge document).
-                if sync_generation_for_cleanup.load(Ordering::SeqCst) != current_generation {
-                    info!(
-                        "[notebook-sync] Stale relay for {} (gen {} superseded) — stopping frame emission",
-                        notebook_id_for_relay, current_generation,
-                    );
-                    break;
-                }
+        while let Some(frame_bytes) = raw_frame_rx.recv().await {
+            // Stop forwarding if a newer connection has replaced this one.
+            // Without this check, frames from the old room can interleave
+            // with the new connection's frames on the frontend channel,
+            // causing the frontend to feed them to the wrong WASM handle
+            // (stale Automerge document).
+            if sync_generation_for_cleanup.load(Ordering::SeqCst) != current_generation {
+                info!(
+                    "[notebook-sync] Stale relay for {} (gen {} superseded) — stopping frame emission",
+                    notebook_id_for_relay, current_generation,
+                );
+                break;
+            }
 
-                if let Err(e) = frame_channel
-                    .channel
-                    .send(tauri::ipc::InvokeResponseBody::Raw(frame_bytes))
-                {
-                    warn!("[notebook-sync] Failed to send frame over channel: {}", e);
-                }
+            if let Err(e) = frame_channel
+                .channel
+                .send(tauri::ipc::InvokeResponseBody::Raw(frame_bytes))
+            {
+                warn!("[notebook-sync] Failed to send frame over channel: {}", e);
             }
         }
         warn!(

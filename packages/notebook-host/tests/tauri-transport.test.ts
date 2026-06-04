@@ -127,4 +127,19 @@ describe("TauriTransport", () => {
 
     expect(subscriber).not.toHaveBeenCalled();
   });
+
+  it("dispatches to a subscriber snapshot when one listener disconnects", () => {
+    const transport = new TauriTransport();
+    const second = vi.fn();
+    const first = vi.fn(() => {
+      transport.disconnect();
+    });
+    transport.onFrame(first);
+    transport.onFrame(second);
+
+    coreMock.channels[0].onmessage(new Uint8Array([0x00, 1, 2, 3]));
+
+    expect(first).toHaveBeenCalledWith([0x00, 1, 2, 3]);
+    expect(second).toHaveBeenCalledWith([0x00, 1, 2, 3]);
+  });
 });
