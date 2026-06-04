@@ -110,7 +110,10 @@ function ProjectedMarkdownBlock({
         {items.map(({ checked, key, runs }) => (
           <li
             key={key}
-            className={cn("my-1", checked !== undefined && "flex min-w-0 items-start gap-2")}
+            className={cn(
+              "my-1",
+              checked !== undefined && "flex min-w-0 list-none items-start gap-2",
+            )}
           >
             {checked !== undefined ? <TaskCheckbox checked={checked} /> : null}
             <span className="min-w-0 leading-relaxed">{renderRuns(runs, onLinkClick)}</span>

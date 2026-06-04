@@ -328,6 +328,10 @@ describe("ProjectedMarkdownView", () => {
     expect(list).toHaveClass("list-disc");
     expect(list).not.toHaveClass("list-none");
     expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Incomplete task" }).closest("li")).toHaveClass(
+      "list-none",
+    );
+    expect(screen.getByText("regular").closest("li")).not.toHaveClass("list-none");
     expect(screen.getByText("regular")).toBeInTheDocument();
   });
 
