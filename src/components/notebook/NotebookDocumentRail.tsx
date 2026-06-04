@@ -1,4 +1,9 @@
-import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail";
+import {
+  NotebookRail,
+  type NotebookContentItem,
+  type NotebookContentSection,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import type { ReactNode } from "react";
 import type { NotebookOutlineItem } from "runtimed";
 import type { NotebookViewModel } from "./view-model";
@@ -7,6 +12,8 @@ export interface NotebookDocumentRailProps {
   viewModel: Pick<NotebookViewModel, "outlineItems" | "packages">;
   activePanelId: NotebookRailPanelId;
   collapsed: boolean;
+  contentSections?: readonly NotebookContentSection[];
+  contentSummary?: string | null;
   outlineCellIds?: readonly string[];
   activeOutlineItemId?: string | null;
   selectedOutlineItemId?: string | null;
@@ -15,6 +22,7 @@ export interface NotebookDocumentRailProps {
   packagesPanel: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
+  onOpenContentItem?: (item: NotebookContentItem) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
   onNavigateOutlineItem?: (item: NotebookOutlineItem, href: string) => boolean | void;
   className?: string;
@@ -24,6 +32,8 @@ export function NotebookDocumentRail({
   viewModel,
   activePanelId,
   collapsed,
+  contentSections,
+  contentSummary,
   outlineCellIds,
   activeOutlineItemId = null,
   selectedOutlineItemId = null,
@@ -32,6 +42,7 @@ export function NotebookDocumentRail({
   packagesPanel,
   onActivePanelChange,
   onCollapsedChange,
+  onOpenContentItem,
   onSelectOutlineItem,
   onNavigateOutlineItem,
   className,
@@ -40,6 +51,8 @@ export function NotebookDocumentRail({
     <NotebookRail
       activePanelId={activePanelId}
       collapsed={collapsed}
+      contentSections={contentSections}
+      contentSummary={contentSummary}
       outlineItems={viewModel.outlineItems}
       outlineCellIds={outlineCellIds}
       activeOutlineItemId={activeOutlineItemId}
@@ -49,6 +62,7 @@ export function NotebookDocumentRail({
       packagesPanel={packagesPanel}
       onActivePanelChange={onActivePanelChange}
       onCollapsedChange={onCollapsedChange}
+      onOpenContentItem={onOpenContentItem}
       onSelectOutlineItem={onSelectOutlineItem}
       onNavigateOutlineItem={onNavigateOutlineItem}
       className={className}

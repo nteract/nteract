@@ -13,7 +13,11 @@ import {
   NotebookPackageSummaryPanel,
   type NotebookViewCell,
 } from "@/components/notebook";
-import { NotebookPackagesPanel, type NotebookRailPanelId } from "@/components/notebook-rail";
+import {
+  type NotebookContentSection,
+  NotebookPackagesPanel,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import { EnvironmentSummary, UvDependencyPanel } from "@/components/environment";
 import {
@@ -55,6 +59,8 @@ export function RailOutlineExample() {
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [focusedCellId, setFocusedCellId] = useState("cell-clean-code");
   const { viewModel } = scenario;
+  const contentSections = scenarioContentSections(scenario);
+  const contentSummary = scenario.id.startsWith("cloud") ? "Hosted" : "Desktop";
   const activeOutlineItemId =
     viewModel.outlineItems.find((item) => item.cellId === "cell-explore-shape")?.id ?? null;
   const resolvedOutlineItemId = resolveNotebookOutlineSelection(viewModel.outlineItems, {
@@ -109,6 +115,8 @@ export function RailOutlineExample() {
           viewModel={viewModel}
           activePanelId={activePanel}
           collapsed={railCollapsed}
+          contentSections={contentSections}
+          contentSummary={contentSummary}
           outlineCellIds={viewModel.cellIds}
           activeOutlineItemId={activeOutlineItemId}
           selectedOutlineItemId={selectedOutlineItemId}
@@ -175,6 +183,109 @@ export function RailOutlineExample() {
       />
     </NotebookDocumentShell>
   );
+}
+
+function scenarioContentSections(
+  scenario: ElementsNotebookScenario,
+): readonly NotebookContentSection[] {
+  if (scenario.id.startsWith("cloud")) {
+    return [
+      {
+        id: "recently-opened",
+        title: "Recently opened",
+        summary: "2",
+        items: [
+          {
+            id: "cloud-current",
+            kind: "notebook",
+            title: scenario.title,
+            detail: "Current hosted notebook",
+            meta: "open",
+          },
+          {
+            id: "cloud-metrics",
+            kind: "remote",
+            title: "Metrics review",
+            detail: "Private workspace",
+            meta: "2h ago",
+          },
+        ],
+      },
+      {
+        id: "shared",
+        title: "Shared with me",
+        summary: "2",
+        items: [
+          {
+            id: "cloud-shared-launch",
+            kind: "shared",
+            title: "Launch plan analysis",
+            detail: "Shared by Product Ops",
+            meta: "edit",
+          },
+          {
+            id: "cloud-shared-cost",
+            kind: "shared",
+            title: "Cost model",
+            detail: "Shared by Finance",
+            meta: "view",
+          },
+        ],
+      },
+    ];
+  }
+
+  return [
+    {
+      id: "recent",
+      title: "Recent notebooks",
+      summary: "3",
+      items: [
+        {
+          id: "desktop-current",
+          kind: "notebook",
+          title: scenario.title,
+          detail: "~/Notebooks/current-analysis.ipynb",
+          meta: "open",
+        },
+        {
+          id: "desktop-run-quality",
+          kind: "notebook",
+          title: "run-quality-checks.ipynb",
+          detail: "~/Notebooks/run-quality-checks.ipynb",
+          meta: "today",
+        },
+        {
+          id: "desktop-audit",
+          kind: "notebook",
+          title: "model-audit.ipynb",
+          detail: "~/Notebooks/research/model-audit.ipynb",
+          meta: "Mon",
+        },
+      ],
+    },
+    {
+      id: "local",
+      title: "Local files",
+      summary: "2",
+      items: [
+        {
+          id: "desktop-folder",
+          kind: "folder",
+          title: "Notebook folder",
+          detail: "~/Notebooks",
+          meta: "local",
+        },
+        {
+          id: "desktop-project",
+          kind: "file",
+          title: "pyproject.toml",
+          detail: "~/Notebooks/pyproject.toml",
+          meta: "env",
+        },
+      ],
+    },
+  ];
 }
 
 function ScenarioNotice({
