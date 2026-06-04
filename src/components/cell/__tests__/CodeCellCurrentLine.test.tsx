@@ -382,7 +382,7 @@ describe("CodeCellCurrentLine", () => {
     expect(detail).toHaveClass("opacity-100");
   });
 
-  it("can carry activity context after the run state", () => {
+  it("can carry activity context before the boundary line", () => {
     const { container } = render(
       <CodeCellCurrentLine
         languageLabel="Python"
@@ -394,13 +394,15 @@ describe("CodeCellCurrentLine", () => {
     const footer = container.querySelector('[data-slot="code-cell-current-line"]');
 
     const activity = container.querySelector('[data-slot="code-cell-current-line-activity"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
     const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
 
     expect(footer).toHaveTextContent("Kyle");
     expect(activity).toHaveClass("max-w-0");
-    expect(status?.compareDocumentPosition(activity as Element)).toBe(
+    expect(activity?.compareDocumentPosition(rule as Element)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+    expect(rule?.compareDocumentPosition(status as Element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(screen.getByTestId("peer-activity")).toBeInTheDocument();
   });
 });

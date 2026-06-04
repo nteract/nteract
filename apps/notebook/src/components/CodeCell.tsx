@@ -613,7 +613,7 @@ export const CodeCell = memo(function CodeCell({
       isErrored={isExecutionErrored}
       isFocused={isFocused}
       compactIdle={isSourceEmpty}
-      activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
+      activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" />}
     />
   ) : null;
 

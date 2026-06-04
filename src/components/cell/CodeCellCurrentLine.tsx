@@ -429,6 +429,19 @@ export function CodeCellCurrentLine({
         className,
       )}
     >
+      {!isCompactIdle && activityContent ? (
+        <div
+          data-slot="code-cell-current-line-activity"
+          className={cn(
+            "flex min-w-0 shrink-0 items-center overflow-hidden transition-[margin,max-width,opacity] duration-150 empty:hidden",
+            isQuietResting
+              ? "-mr-1.5 max-w-0 opacity-0 group-hover:mr-0 group-hover:max-w-24 group-hover:opacity-100 group-focus-within:mr-0 group-focus-within:max-w-24 group-focus-within:opacity-100"
+              : "max-w-24 opacity-100",
+          )}
+        >
+          {activityContent}
+        </div>
+      ) : null}
       {!isCompactIdle ? (
         <ExecutionBoundaryRule
           state={boundaryState}
@@ -497,19 +510,6 @@ export function CodeCellCurrentLine({
           {detailLabel}
         </span>
       </span>
-      {!isCompactIdle && activityContent ? (
-        <div
-          data-slot="code-cell-current-line-activity"
-          className={cn(
-            "flex min-w-0 shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-150",
-            isQuietResting
-              ? "max-w-0 opacity-0 group-hover:max-w-24 group-hover:opacity-100 group-focus-within:max-w-24 group-focus-within:opacity-100"
-              : "max-w-24 opacity-100",
-          )}
-        >
-          {activityContent}
-        </div>
-      ) : null}
     </div>
   );
 }
