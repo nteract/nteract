@@ -635,7 +635,7 @@ describe("MarkdownCell theme sync", () => {
       />,
     );
 
-    fireEvent.click(getByRole("checkbox", { name: "Incomplete task" }));
+    fireEvent.click(getByRole("checkbox", { name: "Mark task complete: ship checkboxes" }));
 
     expect(onUpdateSource).toHaveBeenCalledWith("- [x] ship checkboxes");
   });

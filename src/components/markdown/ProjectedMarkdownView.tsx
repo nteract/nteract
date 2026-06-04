@@ -311,11 +311,16 @@ function ProjectedListItem({
 }) {
   const taskRun = item.taskRun;
   const checked = item.checked;
+  const taskLabel = item.runs
+    .map((run) => run.renderedText)
+    .join("")
+    .trim();
   const content = (
     <>
       {checked !== undefined ? (
         <TaskCheckbox
           checked={checked}
+          label={taskLabel || "task"}
           onToggle={
             taskRun && onTaskCheckedChange
               ? () => onTaskCheckedChange(taskRun, !checked)
@@ -410,8 +415,17 @@ function parentListItemPath(path: string): string | null {
   return path.slice(0, index);
 }
 
-function TaskCheckbox({ checked, onToggle }: { checked: boolean; onToggle?: () => void }) {
+function TaskCheckbox({
+  checked,
+  label,
+  onToggle,
+}: {
+  checked: boolean;
+  label: string;
+  onToggle?: () => void;
+}) {
   const interactive = Boolean(onToggle);
+  const actionLabel = checked ? "Mark task incomplete" : "Mark task complete";
 
   return (
     <span
@@ -425,7 +439,7 @@ function TaskCheckbox({ checked, onToggle }: { checked: boolean; onToggle?: () =
         disabled={!interactive}
         readOnly={!interactive}
         tabIndex={interactive ? 0 : -1}
-        aria-label={checked ? "Completed task" : "Incomplete task"}
+        aria-label={`${actionLabel}: ${label}`}
         className="peer sr-only"
         onChange={interactive ? onToggle : undefined}
       />

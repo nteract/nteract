@@ -351,8 +351,8 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    expect(screen.getByRole("checkbox", { name: "Completed task" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Mark task incomplete: done" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Mark task complete: todo" })).not.toBeChecked();
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     expect(
       document.querySelectorAll('[data-slot="projected-markdown-task-checkbox"]'),
@@ -400,7 +400,7 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    const toggle = screen.getByRole("checkbox", { name: "Incomplete task" });
+    const toggle = screen.getByRole("checkbox", { name: "Mark task complete: todo" });
     expect(toggle).not.toBeChecked();
     expect(toggle).not.toBeDisabled();
 
@@ -456,10 +456,10 @@ describe("ProjectedMarkdownView", () => {
     const list = screen.getByRole("list");
     expect(list).toHaveClass("list-disc");
     expect(list).not.toHaveClass("list-none");
-    expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Incomplete task" }).closest("li")).toHaveClass(
-      "list-none",
-    );
+    expect(screen.getByRole("checkbox", { name: "Mark task complete: todo" })).not.toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Mark task complete: todo" }).closest("li"),
+    ).toHaveClass("list-none");
     expect(screen.getByText("regular").closest("li")).not.toHaveClass("list-none");
     expect(screen.getByText("regular")).toBeInTheDocument();
   });
@@ -538,7 +538,7 @@ describe("ProjectedMarkdownView", () => {
     expect(childItem).toContainElement(grandchildItem);
     expect(rootList?.tagName).toBe("UL");
     expect(grandchildItem?.parentElement?.tagName).toBe("OL");
-    expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Mark task complete: child" })).not.toBeChecked();
   });
 
   it("renders projected tables as host table elements", () => {
