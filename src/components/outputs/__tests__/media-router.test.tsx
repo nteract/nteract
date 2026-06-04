@@ -421,10 +421,8 @@ describe("MediaRouter component", () => {
         </MediaProvider>,
       );
 
-      expect(screen.getByRole("checkbox", { name: "Mark task incomplete: done" })).toBeChecked();
-      expect(
-        screen.getByRole("checkbox", { name: "Mark task complete: waiting" }),
-      ).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Completed task: done" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Incomplete task: waiting" })).not.toBeChecked();
       expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
       expect(container.querySelector("iframe")).toBeNull();
     });

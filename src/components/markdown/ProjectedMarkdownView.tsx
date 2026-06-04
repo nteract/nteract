@@ -425,7 +425,13 @@ function TaskCheckbox({
   onToggle?: () => void;
 }) {
   const interactive = Boolean(onToggle);
-  const actionLabel = checked ? "Mark task incomplete" : "Mark task complete";
+  const actionLabel = interactive
+    ? checked
+      ? "Mark task incomplete"
+      : "Mark task complete"
+    : checked
+      ? "Completed task"
+      : "Incomplete task";
 
   return (
     <span
