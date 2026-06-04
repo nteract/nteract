@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { Fragment, useState, type CSSProperties } from "react";
+import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
 import katex from "katex";
 import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import type {
@@ -172,11 +172,11 @@ function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
 }
 
 function headingClass(element: string) {
-  if (element === "h1") return "mt-6 mb-4 text-3xl leading-tight font-bold";
-  if (element === "h2") return "mt-5 mb-3 text-2xl leading-tight font-bold";
-  if (element === "h3") return "mt-4 mb-2.5 text-xl leading-tight font-bold";
-  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-bold";
-  if (element === "h5") return "mt-3.5 mb-1.5 text-base leading-tight font-bold";
+  if (element === "h1") return "mt-6 mb-4 text-2xl leading-tight font-bold";
+  if (element === "h2") return "mt-5 mb-3 text-xl leading-tight font-bold";
+  if (element === "h3") return "mt-4 mb-2 text-lg leading-tight font-semibold";
+  if (element === "h4") return "mt-3 mb-2 text-base leading-tight font-semibold";
+  if (element === "h5") return "mt-2 mb-1 text-sm leading-tight font-semibold";
   return "mt-2 mb-1 text-sm leading-tight font-medium text-muted-foreground";
 }
 
@@ -246,14 +246,16 @@ function ProjectedListItem({
           }
         />
       ) : null}
-      <span className="min-w-0 leading-relaxed">{renderRuns(item.runs, onLinkClick)}</span>
+      <ProjectedTaskContent checked={checked}>
+        {renderRuns(item.runs, onLinkClick)}
+      </ProjectedTaskContent>
     </>
   );
 
   return (
     <li
       className={cn(
-        "my-1",
+        "group/task my-1",
         item.checked !== undefined && "list-none",
         item.checked !== undefined && item.children.length === 0
           ? "flex min-w-0 items-start gap-2"
@@ -330,49 +332,50 @@ function parentListItemPath(path: string): string | null {
 }
 
 function TaskCheckbox({ checked, onToggle }: { checked: boolean; onToggle?: () => void }) {
-  const box = (
-    <span
-      aria-hidden="true"
-      className={cn(
-        "grid size-3.5 place-items-center rounded-sm border transition-colors",
-        checked
-          ? "border-primary bg-primary text-primary-foreground"
-          : "border-border bg-background",
-      )}
-    >
-      {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
-    </span>
-  );
-
-  if (onToggle) {
-    return (
-      <button
-        type="button"
-        aria-pressed={checked}
-        aria-label={checked ? "Mark task incomplete" : "Mark task complete"}
-        className="relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center rounded-sm outline-none transition hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
-        data-slot="projected-markdown-task-checkbox"
-        onClick={onToggle}
-      >
-        {box}
-      </button>
-    );
-  }
+  const interactive = Boolean(onToggle);
 
   return (
     <span
       className="relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center"
       data-slot="projected-markdown-task-checkbox"
+      data-state={checked ? "checked" : "unchecked"}
     >
       <input
         type="checkbox"
         checked={checked}
-        readOnly
-        tabIndex={-1}
-        className="sr-only"
+        disabled={!interactive}
+        readOnly={!interactive}
+        tabIndex={interactive ? 0 : -1}
         aria-label={checked ? "Completed task" : "Incomplete task"}
+        className="peer sr-only"
+        onChange={interactive ? onToggle : undefined}
       />
-      {box}
+      <span
+        aria-hidden="true"
+        className={cn(
+          "grid size-3.5 place-items-center rounded-sm border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-ring/40 peer-focus-visible:ring-offset-1 peer-disabled:opacity-100",
+          checked
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-border bg-background",
+          interactive && "group-hover/task:border-primary/70",
+        )}
+      >
+        {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
+      </span>
+    </span>
+  );
+}
+
+function ProjectedTaskContent({
+  checked,
+  children,
+}: {
+  checked: boolean | undefined;
+  children: ReactNode;
+}) {
+  return (
+    <span className={cn("min-w-0 leading-relaxed", checked === true && "text-muted-foreground")}>
+      {children}
     </span>
   );
 }

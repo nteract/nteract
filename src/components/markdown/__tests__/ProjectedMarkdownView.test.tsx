@@ -95,10 +95,10 @@ describe("ProjectedMarkdownView", () => {
     expect(container.querySelector('[data-slot="projected-markdown-output"]')).toHaveClass(
       "leading-[1.65]",
     );
-    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-3xl", "font-bold");
-    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-bold");
-    expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-xl", "font-bold");
-    expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-lg", "font-bold");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-2xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-lg", "font-semibold");
+    expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-base", "font-semibold");
   });
 
   it("renders projected inline and display math with KaTeX", () => {
@@ -316,8 +316,9 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    const toggle = screen.getByRole("button", { name: "Mark task complete" });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    const toggle = screen.getByRole("checkbox", { name: "Incomplete task" });
+    expect(toggle).not.toBeChecked();
+    expect(toggle).not.toBeDisabled();
 
     fireEvent.click(toggle);
 
