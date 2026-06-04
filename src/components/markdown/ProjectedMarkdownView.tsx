@@ -100,7 +100,7 @@ function ProjectedMarkdownBlock({
     return (
       <List
         className={cn(
-          "my-2 pl-6",
+          "my-3 pl-6",
           List === "ol" ? "list-decimal" : "list-disc",
           items.some(({ checked }) => checked !== undefined) && "list-none pl-0",
         )}
@@ -152,7 +152,7 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "paragraph") {
-    return <p className="my-2 leading-relaxed">{renderRuns(runs, onLinkClick)}</p>;
+    return <p className="my-3 leading-relaxed">{renderRuns(runs, onLinkClick)}</p>;
   }
 
   return block.text ? <div className="my-3">{renderRuns(runs, onLinkClick)}</div> : null;
@@ -180,11 +180,11 @@ function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
 }
 
 function headingClass(element: string) {
-  if (element === "h1") return "mt-6 mb-4 text-2xl leading-tight font-bold";
-  if (element === "h2") return "mt-5 mb-3 text-xl leading-tight font-bold";
-  if (element === "h3") return "mt-4 mb-2 text-lg leading-tight font-semibold";
-  if (element === "h4") return "mt-3 mb-2 text-base leading-tight font-semibold";
-  if (element === "h5") return "mt-2 mb-1 text-sm leading-tight font-semibold";
+  if (element === "h1") return "mt-6 mb-4 text-3xl leading-tight font-bold";
+  if (element === "h2") return "mt-5 mb-3 text-2xl leading-tight font-bold";
+  if (element === "h3") return "mt-5 mb-2.5 text-xl leading-tight font-bold";
+  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-bold";
+  if (element === "h5") return "mt-3.5 mb-1.5 text-base leading-tight font-bold";
   return "mt-2 mb-1 text-sm leading-tight font-medium text-muted-foreground";
 }
 
