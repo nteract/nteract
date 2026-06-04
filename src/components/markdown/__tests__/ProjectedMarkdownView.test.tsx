@@ -95,6 +95,7 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText(/Inline/)).toBeInTheDocument();
     expect(document.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(2);
     expect(document.querySelector(".katex-display")).not.toBeNull();
+    expect(document.querySelector(".katex-display")?.parentElement).toHaveClass("text-center");
   });
 
   it("does not trust projected math commands that can shape host DOM", () => {
@@ -206,6 +207,57 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("removed").tagName).toBe("DEL");
   });
 
+  it("keeps list markers available for mixed task and regular lists", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 48, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 28],
+              sourceSpanUtf16: [0, 28],
+              syntaxSpans: [],
+              text: "todo regular",
+            },
+          ],
+          runs: [
+            {
+              blockId: "list",
+              inlineId: "todo",
+              listItemChecked: false,
+              listItemIndex: 0,
+              renderedText: "todo",
+              renderedTextUtf16: [0, 4],
+              semantic: "list-item",
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+            },
+            {
+              blockId: "list",
+              inlineId: "regular",
+              listItemIndex: 1,
+              renderedText: "regular",
+              renderedTextUtf16: [0, 7],
+              semantic: "list-item",
+              sourceSpanByte: [11, 20],
+              sourceSpanUtf16: [11, 20],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const list = screen.getByRole("list");
+    expect(list).toHaveClass("list-disc");
+    expect(list).not.toHaveClass("list-none");
+    expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
+    expect(screen.getByText("regular")).toBeInTheDocument();
+  });
+
   it("renders projected tables as host table elements", () => {
     render(
       <ProjectedMarkdownView
@@ -286,6 +338,7 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
+    expect(screen.getByRole("table").parentElement).toHaveClass("rounded-md");
     expect(document.querySelector("pre")).toBeNull();
   });
 

@@ -97,12 +97,14 @@ function ProjectedMarkdownBlock({
   if (block.kind === "list") {
     const items = groupListRuns(runs);
     const List = block.ordered || block.element === "ol" ? "ol" : "ul";
+    const allItemsAreTasks =
+      items.length > 0 && items.every(({ checked }) => checked !== undefined);
     return (
       <List
         className={cn(
-          "my-3 pl-6",
+          "my-3 pl-6 leading-relaxed",
           List === "ol" ? "list-decimal" : "list-disc",
-          items.some(({ checked }) => checked !== undefined) && "list-none pl-0",
+          allItemsAreTasks && "list-none pl-0",
         )}
       >
         {items.map(({ checked, key, runs }) => (
@@ -137,7 +139,7 @@ function ProjectedMarkdownBlock({
 
   if (block.kind === "blockquote") {
     return (
-      <blockquote className="my-4 border-l-4 border-border pl-4 text-muted-foreground italic">
+      <blockquote className="my-4 border-l-2 border-primary/35 bg-muted/20 py-1 pl-4 text-muted-foreground italic">
         {renderRuns(runs, onLinkClick)}
       </blockquote>
     );
@@ -229,15 +231,15 @@ function ProjectedTable({
   const hasHeader = headerRow?.cells.some((cell) => cell.header);
 
   return (
-    <div className="my-4 overflow-x-auto">
-      <table className="min-w-full border-collapse border border-border font-[var(--output-ui-font)] text-sm leading-normal">
+    <div className="my-4 overflow-x-auto rounded-md border border-border">
+      <table className="min-w-full border-collapse bg-background font-[var(--output-ui-font)] text-sm leading-normal">
         {hasHeader ? (
           <thead>
             <tr>
               {headerRow.cells.map((cell) => (
                 <th
                   key={cell.key}
-                  className="border border-border bg-muted px-2 py-1.5 font-semibold"
+                  className="border-b border-r border-border bg-muted/70 px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
                   style={tableCellStyle(cell.align)}
                 >
                   {renderRuns(cell.runs, onLinkClick)}
@@ -252,7 +254,7 @@ function ProjectedTable({
               {row.cells.map((cell) => (
                 <td
                   key={cell.key}
-                  className="border border-border px-2 py-1.5 align-top"
+                  className="border-r border-t border-border px-3 py-2 align-top text-muted-foreground first:text-foreground last:border-r-0"
                   style={tableCellStyle(cell.align)}
                 >
                   {renderRuns(cell.runs, onLinkClick)}
@@ -438,7 +440,11 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
 
   return (
     <span
-      className={cn(displayMode ? "my-4 block overflow-x-auto" : "inline-block align-baseline")}
+      className={cn(
+        displayMode
+          ? "my-4 block overflow-x-auto text-center [&_.katex-display]:my-0"
+          : "inline align-baseline [&_.katex]:text-[1.03em]",
+      )}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
