@@ -112,16 +112,7 @@ function ProjectedMarkdownBlock({
             key={key}
             className={cn("my-1", checked !== undefined && "flex min-w-0 items-start gap-2")}
           >
-            {checked !== undefined ? (
-              <input
-                type="checkbox"
-                checked={checked}
-                readOnly
-                tabIndex={-1}
-                className="mt-[0.42em] h-3.5 w-3.5 shrink-0 pointer-events-none accent-primary"
-                aria-label={checked ? "Completed task" : "Incomplete task"}
-              />
-            ) : null}
+            {checked !== undefined ? <TaskCheckbox checked={checked} /> : null}
             <span className="min-w-0 leading-relaxed">{renderRuns(runs, onLinkClick)}</span>
           </li>
         ))}
@@ -214,6 +205,35 @@ function groupListRuns(runs: MarkdownProjectionRun[]) {
     key,
     runs,
   }));
+}
+
+function TaskCheckbox({ checked }: { checked: boolean }) {
+  return (
+    <span
+      className="relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center"
+      data-slot="projected-markdown-task-checkbox"
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        readOnly
+        tabIndex={-1}
+        className="sr-only"
+        aria-label={checked ? "Completed task" : "Incomplete task"}
+      />
+      <span
+        aria-hidden="true"
+        className={cn(
+          "grid size-3.5 place-items-center rounded-sm border transition-colors",
+          checked
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-border bg-background",
+        )}
+      >
+        {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
+      </span>
+    </span>
+  );
 }
 
 function ProjectedTable({
@@ -511,20 +531,31 @@ function ProjectedCodeBlock({
 function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; latex: string }) {
   const html = renderLatex(latex, displayMode);
   if (!html) {
+    if (displayMode) {
+      return (
+        <div className="my-4 overflow-x-auto">
+          <InlineCode className="block px-3 py-2">{latex}</InlineCode>
+        </div>
+      );
+    }
+
+    return <InlineCode>{latex}</InlineCode>;
+  }
+
+  if (displayMode) {
     return (
-      <InlineCode className={displayMode ? "my-4 block overflow-x-auto px-3 py-2" : undefined}>
-        {latex}
-      </InlineCode>
+      <div
+        data-slot="projected-markdown-math"
+        className="my-4 overflow-x-auto text-center [&_.katex-display]:my-0"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
     );
   }
 
   return (
     <span
-      className={cn(
-        displayMode
-          ? "my-4 block overflow-x-auto text-center [&_.katex-display]:my-0"
-          : "inline align-baseline [&_.katex]:text-[1.03em]",
-      )}
+      data-slot="projected-markdown-math"
+      className="inline align-baseline [&_.katex]:text-[1.03em]"
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

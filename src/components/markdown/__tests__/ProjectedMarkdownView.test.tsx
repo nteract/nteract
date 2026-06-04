@@ -158,7 +158,11 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText(/Inline/)).toBeInTheDocument();
     expect(document.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(2);
     expect(document.querySelector(".katex-display")).not.toBeNull();
-    expect(document.querySelector(".katex-display")?.parentElement).toHaveClass("text-center");
+    expect(document.querySelector(".katex-display")?.parentElement).toHaveClass(
+      "text-center",
+      "overflow-x-auto",
+    );
+    expect(document.querySelector(".katex-display")?.parentElement?.tagName).toBe("DIV");
   });
 
   it("does not trust projected math commands that can shape host DOM", () => {
@@ -266,6 +270,12 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("checkbox", { name: "Completed task" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+    expect(
+      document.querySelectorAll('[data-slot="projected-markdown-task-checkbox"]'),
+    ).toHaveLength(2);
+    expect(
+      document.querySelector('[data-slot="projected-markdown-task-checkbox"] span'),
+    ).toHaveClass("bg-primary");
     expect(screen.getByText("important").tagName).toBe("EM");
     expect(screen.getByText("removed").tagName).toBe("DEL");
   });
