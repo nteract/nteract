@@ -456,6 +456,61 @@ describe("MediaRouter component", () => {
       expect(container.querySelector("iframe")).toBeNull();
     });
 
+    it("renders projected math from text/markdown outputs in the host DOM", () => {
+      restoreMarkdownProjector?.();
+      restoreMarkdownProjector = setMarkdownProjectionProjector((source) =>
+        JSON.stringify({
+          ...makeMarkdownProjectionPlan({ source, text: "Inline x^2" }),
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, source.length],
+              sourceSpanUtf16: [0, source.length],
+              syntaxSpans: [],
+              text: "Inline x^2",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "text",
+              listItemIndex: null,
+              renderedText: "Inline ",
+              renderedTextUtf16: [0, 7],
+              semantic: "text",
+              sourceSpanByte: [0, 7],
+              sourceSpanUtf16: [0, 7],
+            },
+            {
+              blockId: "p0",
+              inlineId: "math",
+              listItemIndex: null,
+              renderedText: "x^2",
+              renderedTextUtf16: [7, 10],
+              semantic: "math-source",
+              sourceSpanByte: [8, 13],
+              sourceSpanUtf16: [8, 13],
+            },
+          ],
+        }),
+      );
+
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/markdown": "Inline $x^2$" }} />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByText(/Inline/)).toBeInTheDocument();
+      expect(container.querySelector(".katex")).not.toBeNull();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+      expect(container.querySelector("iframe")).toBeNull();
+    });
+
     it("renders projected nteract markdown plans in the host DOM when safe", () => {
       const { container } = render(
         <MediaProvider>
