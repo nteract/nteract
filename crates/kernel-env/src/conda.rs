@@ -88,8 +88,7 @@ fn should_enforce_gil_python(deps: &CondaDependencies) -> bool {
 }
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
-/// reopen path from the unified env resolution design (see
-/// `docs/superpowers/specs/2026-04-20-unified-env-resolution.md`).
+/// reopen path from the unified env resolution design.
 ///
 /// Requires `deps.env_id` to be `Some`. Distinct from [`compute_env_hash`]
 /// only in that contract: the existing function tolerates `env_id = None`

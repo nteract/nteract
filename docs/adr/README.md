@@ -50,6 +50,10 @@ These entries define the center of gravity for the system:
 |-------|--------|-------|
 | [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md) | Draft | Frame bytes, channels, caps, and compatibility. |
 | [The Three-Document Split](three-document-split.md) | Draft | NotebookDoc, RuntimeStateDoc, and PoolDoc responsibility boundaries. |
+| [ADR 0001: Notebook seeding invariant](0001-notebook-seeding-invariant.md) | Proposed | Causal `is_pristine` seeding gate replacing the cell-count/metadata proxy. |
+| [Notebook Pristine-Seeding Implementation Plan](notebook-pristine-seeding-implementation-plan.md) | Implementation plan | Task breakdown for ADR 0001; shipped in #3342. |
+| [ADR 0002: CommsDoc split](0002-comms-document-split.md) | Proposed | Extract widget comm state into a fourth document so RuntimeStateDoc becomes cleanly daemon-only. |
+| [CommsDoc Split Implementation Plan](commsdoc-split-implementation-plan.md) | Implementation plan | Phase-1 (foundation) TDD task breakdown for ADR 0002. |
 | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft | NotebookDoc-owned pointer to the RuntimeStateDoc identity and checkpoint-head split. |
 | [Notebook Schema Evolution and the Frozen Genesis](schema-evolution-and-genesis.md) | Draft | Frozen genesis seed, freeze-and-layer evolution, forward-tolerant reader, and cross-version sync hazards. |
 | [Notebook Host Shell Convergence](notebook-host-shell-convergence.md) | Draft | Shared notebook shell, capability vocabulary, and host adapter boundary across desktop, cloud, and elements. |
@@ -75,8 +79,10 @@ These entries define the center of gravity for the system:
 |-------|--------|-------|
 | [Blob Storage and Content Addressing](blob-storage-and-content-addressing.md) | Draft | Local CAS, HTTP serving, durability, and GC. |
 | [Blob Ref and Chunk Manifest Output Protocol](blob-ref-and-chunk-manifest-protocol.md) | Draft | Host-neutral blob refs and logical chunk manifests. |
+| [Arrow Manifest Durable Storage](arrow-manifest-durable-storage-design.md) | Design memo | Durable storage design for Arrow manifest outputs. |
 | [Arrow C Stream Output Protocol](arrow-c-stream-output-protocol.md) | Draft | Table producer contract and Arrow IPC transport. |
 | [Structured Kernel Traceback Output Protocol](traceback-output-protocol.md) | Draft | Structured traceback MIME payload and fallback behavior. |
+| [Runtime Redaction Refresh](runtime-redaction-refresh-design.md) | Design memo | Output redaction refresh design referenced by the traceback protocol. |
 | [Output Rendering Segmentation](output-rendering-segmentation.md) | Draft | Rendering-lane segmentation invariants. |
 | [Runtime Output Optimization Plan](runtime-output-optimization.md) | Measurement / plan | Performance plan; not an ADR. |
 | [Non-Stream Output Commit Measurements](output-commit-measurements.md) | Measurement | Benchmark evidence for ordinary output commits. |

@@ -1,6 +1,9 @@
 # Notebook Pristine-Seeding Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+- Status: Implemented (shipped in #3342)
+- Implements: [ADR 0001 - Notebook seeding invariant](0001-notebook-seeding-invariant.md)
+
+Task-by-task, test-first breakdown; checkbox (`- [ ]`) steps track progress. Retained as the implementation record for ADR 0001.
 
 **Goal:** Replace the cell-count/metadata proxy that decides whether a fresh notebook gets a starter cell with a single causal predicate (`NotebookDoc::is_pristine`) shared by the daemon and the cloud wasm host.
 

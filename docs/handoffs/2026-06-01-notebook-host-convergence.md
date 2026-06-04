@@ -72,14 +72,13 @@ Existing surfaces to build on (don't start from scratch):
 
 Status: **not started, design-first.** This is squarely an automerge-sync convergence/reconnection problem.
 
-## Suggested skills (invoke as relevant)
+## Relevant subsystem skills (invoke as relevant)
 
-- `superpowers:brainstorming` - **first**, before designing either thread. Both are pre-implementation design.
 - `automerge-sync` - thread 2 (divergence/recovery, reconnection, peer state) is exactly this skill's domain; also relevant to thread 1's new sync stream.
 - `mcp-session-lifecycle` - rejoin/reconnect/eviction races; the "stale peer rejoined" scenario.
 - `daemon-dev` and `frontend-dev` - implementation across the daemon, wasm bindings, and the React sync bridge.
 - `testing` - both threads need room-host/sync test coverage (see `apps/notebook-cloud/test/room-materializer.test.ts` and `crates/runtimed-wasm` unit tests for the existing patterns).
-- After brainstorming: `writing-plans` or `to-prd` / `to-issues` to turn either thread into an ADR + tracked work.
+- Both threads are design-first: settle the decision in a `docs/adr/` entry, then write an implementation plan alongside it before cutting code.
 
 ## Notes
 

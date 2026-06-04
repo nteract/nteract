@@ -80,7 +80,6 @@ use crate::output_redaction::OutputRedactor;
 /// there, so producers should not emit multiple whitelisted binary table
 /// payloads in the same output bundle.
 ///
-/// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
 /// Order matters: when an output bundle carries multiple whitelisted payloads,
 /// the first match wins the single [`BLOB_REF_MIME`] slot.
 const REF_MIME_SAVE_WHITELIST: &[&str] = &[
@@ -1228,7 +1227,6 @@ async fn convert_data_bundle(
 /// parquet) are externalized as [`BLOB_REF_MIME`] entries instead of being
 /// re-inlined as base64. The selected binary MIME key is dropped and replaced
 /// by a `BLOB_REF_MIME` → `{hash, content_type, size}` entry.
-/// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
 /// The reverse transform is handled by `convert_data_bundle`'s
 /// existing `BLOB_REF_MIME` branch on load.
 async fn resolve_data_bundle(
