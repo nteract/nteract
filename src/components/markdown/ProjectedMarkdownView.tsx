@@ -195,7 +195,7 @@ function ProjectedMarkdownBlock({
       <p
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          "my-2 leading-relaxed",
+          "my-3 leading-relaxed",
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -240,12 +240,12 @@ function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
 }
 
 function headingClass(element: string) {
-  if (element === "h1") return "mt-6 mb-4 text-2xl leading-tight font-bold";
-  if (element === "h2") return "mt-5 mb-3 text-xl leading-tight font-bold";
-  if (element === "h3") return "mt-4 mb-2 text-lg leading-tight font-semibold";
-  if (element === "h4") return "mt-3 mb-2 text-base leading-tight font-semibold";
-  if (element === "h5") return "mt-2 mb-1 text-sm leading-tight font-semibold";
-  return "mt-2 mb-1 text-sm leading-tight font-medium text-muted-foreground";
+  if (element === "h1") return "mt-6 mb-4 text-[1.875rem] leading-tight font-bold";
+  if (element === "h2") return "mt-[1.35rem] mb-3 text-2xl leading-tight font-bold";
+  if (element === "h3") return "mt-[1.2rem] mb-2.5 text-xl leading-tight font-semibold";
+  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-semibold";
+  if (element === "h5") return "mt-3.5 mb-1.5 text-base leading-tight font-semibold";
+  return "mt-3 mb-1.5 text-sm leading-tight font-semibold text-muted-foreground";
 }
 
 interface ProjectedListItem {
@@ -279,7 +279,7 @@ function ProjectedList({
     <List
       data-source-active={activeBlock ? "true" : undefined}
       className={cn(
-        "my-2 ml-6 leading-relaxed",
+        "my-3 ml-6 leading-relaxed",
         ordered ? "list-decimal" : "list-disc",
         allItemsAreTasks && "ml-0 list-none",
         activeBlock && sourceActiveBlockClass,

@@ -95,10 +95,10 @@ describe("ProjectedMarkdownView", () => {
     expect(container.querySelector('[data-slot="projected-markdown-output"]')).toHaveClass(
       "leading-[1.65]",
     );
-    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-2xl", "font-bold");
-    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-xl", "font-bold");
-    expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-lg", "font-semibold");
-    expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-base", "font-semibold");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-[1.875rem]", "font-bold");
+    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-xl", "font-semibold");
+    expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-lg", "font-semibold");
   });
 
   it("renders projected inline and display math with KaTeX", () => {
@@ -240,8 +240,8 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    expect(screen.getByText("First paragraph")).toHaveClass("my-2", "leading-relaxed");
-    expect(screen.getByRole("list")).toHaveClass("my-2", "ml-6", "list-disc");
+    expect(screen.getByText("First paragraph")).toHaveClass("my-3", "leading-relaxed");
+    expect(screen.getByRole("list")).toHaveClass("my-3", "ml-6", "list-disc");
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
       "border-l-4",
       "border-border",
