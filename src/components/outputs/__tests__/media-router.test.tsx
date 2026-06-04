@@ -7,7 +7,7 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   setMarkdownProjectionProjector,
@@ -16,6 +16,7 @@ import { MediaProvider } from "../media-provider";
 import { DEFAULT_PRIORITY, getSelectedMimeType, MediaRouter } from "../media-router";
 
 let restoreMarkdownProjector: (() => void) | undefined;
+const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
 
 function withMarkdownProjection({
   isolated = false,
@@ -79,6 +80,23 @@ function makeMarkdownProjectionPlan({
 afterEach(() => {
   restoreMarkdownProjector?.();
   restoreMarkdownProjector = undefined;
+
+  if (originalMatchMedia) {
+    Object.defineProperty(window, "matchMedia", originalMatchMedia);
+  } else {
+    delete (window as Partial<Window>).matchMedia;
+  }
+});
+
+beforeEach(() => {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  });
 });
 
 describe("getSelectedMimeType", () => {
@@ -379,6 +397,63 @@ describe("MediaRouter component", () => {
 
       expect(screen.getByRole("heading", { name: "Test" })).toBeInTheDocument();
       expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+    });
+
+    it("renders projected task checkboxes from text/markdown outputs in the host DOM", () => {
+      restoreMarkdownProjector?.();
+      restoreMarkdownProjector = setMarkdownProjectionProjector((source) =>
+        JSON.stringify({
+          ...makeMarkdownProjectionPlan({ source, text: "done waiting" }),
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 48, confidence: "high", width: 720 },
+              sourceSpanByte: [0, source.length],
+              sourceSpanUtf16: [0, source.length],
+              syntaxSpans: [],
+              text: "done waiting",
+            },
+          ],
+          runs: [
+            {
+              blockId: "list",
+              inlineId: "done",
+              listItemChecked: true,
+              listItemIndex: 0,
+              renderedText: "done",
+              renderedTextUtf16: [0, 4],
+              semantic: "list-item",
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+            },
+            {
+              blockId: "list",
+              inlineId: "waiting",
+              listItemChecked: false,
+              listItemIndex: 1,
+              renderedText: "waiting",
+              renderedTextUtf16: [0, 7],
+              semantic: "list-item",
+              sourceSpanByte: [11, 23],
+              sourceSpanUtf16: [11, 23],
+            },
+          ],
+        }),
+      );
+
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/markdown": "- [x] done\n- [ ] waiting" }} />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByRole("checkbox", { name: "Completed task" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+      expect(container.querySelector("iframe")).toBeNull();
     });
 
     it("renders projected nteract markdown plans in the host DOM when safe", () => {
