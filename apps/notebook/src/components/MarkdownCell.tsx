@@ -20,6 +20,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
 import { findVerticalScrollAncestor } from "@/components/isolated/scroll-boundary";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
+import { ProjectedMarkdownView } from "~/components/markdown/ProjectedMarkdownView";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
@@ -36,7 +37,11 @@ import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { logger } from "../lib/logger";
-import { projectedMarkdownPreviewHeight, projectMarkdownPlan } from "../lib/markdown-projection";
+import {
+  canRenderMarkdownProjectionInHost,
+  projectedMarkdownPreviewHeight,
+  projectMarkdownPlan,
+} from "../lib/markdown-projection";
 import {
   isMeasuredElementFound,
   registerMarkdownHeadingNavigator,
@@ -52,6 +57,13 @@ const handleIframeError = (err: { message: string; stack?: string }) =>
 const EMPTY_HEADING_ANCHORS: readonly MarkdownHeadingAnchor[] = [];
 const MARKDOWN_PREVIEW_MIN_HEIGHT = 24;
 const MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT = 720;
+
+function cssEscape(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return value.replace(/["\\]/g, "\\$&");
+}
 
 function formatPluginLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -211,6 +223,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
   const markdownProjection = useMemo(() => projectMarkdownPlan(cell.source), [cell.source]);
+  const canRenderProjectionInHost = canRenderMarkdownProjectionInHost(markdownProjection);
   const previewMinHeight = useMemo(
     () =>
       projectedMarkdownPreviewHeight(
@@ -361,6 +374,7 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   // Render markdown content when iframe is ready
   const handleFrameReady = useCallback(async () => {
+    if (canRenderProjectionInHost) return;
     if (!frameRef.current || !cell.source) return;
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
     frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
@@ -393,10 +407,18 @@ export const MarkdownCell = memo(function MarkdownCell({
       cellId: cell.id,
       replace: true,
     });
-  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver, markdownMetadata]);
+  }, [
+    canRenderProjectionInHost,
+    cell.source,
+    cell.id,
+    cell.resolvedAssets,
+    blobResolver,
+    markdownMetadata,
+  ]);
 
   // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
+    if (canRenderProjectionInHost) return;
     if (frameRef.current?.isReady && cell.source) {
       const frame = frameRef.current;
       // Inject markdown renderer plugin (idempotent) then render
@@ -427,11 +449,49 @@ export const MarkdownCell = memo(function MarkdownCell({
           });
         });
     }
-  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver, markdownMetadata]);
+  }, [
+    canRenderProjectionInHost,
+    cell.source,
+    cell.id,
+    cell.resolvedAssets,
+    blobResolver,
+    markdownMetadata,
+  ]);
 
   const scrollToHeading = useCallback(
     async (headingAnchorId: string, options?: { behavior?: ScrollBehavior }) => {
-      if (editing || !headingAnchorId || !frameRef.current?.isReady) return false;
+      if (editing || !headingAnchorId) return false;
+
+      const hostHeading = viewRef.current?.querySelector<HTMLElement>(
+        `[id="${cssEscape(headingAnchorId)}"]`,
+      );
+      if (hostHeading) {
+        const behavior = options?.behavior ?? "smooth";
+        const topPadding = 16;
+        const scrollContainer = findVerticalScrollAncestor(hostHeading);
+
+        if (scrollContainer) {
+          const containerRect = scrollContainer.getBoundingClientRect();
+          const headingRect = hostHeading.getBoundingClientRect();
+          scrollContainer.scrollTo({
+            top: Math.max(
+              0,
+              scrollContainer.scrollTop + headingRect.top - containerRect.top - topPadding,
+            ),
+            behavior,
+          });
+          return true;
+        }
+
+        const headingRect = hostHeading.getBoundingClientRect();
+        window.scrollTo({
+          top: Math.max(0, window.scrollY + headingRect.top - topPadding),
+          behavior,
+        });
+        return true;
+      }
+
+      if (!frameRef.current?.isReady) return false;
 
       const measurement = await frameRef.current.measureElement(headingAnchorId);
       if (!isMeasuredElementFound(measurement)) return false;
@@ -634,10 +694,10 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   // Forward search query to the markdown iframe
   useEffect(() => {
-    if (!editing && frameRef.current?.isReady) {
+    if (!editing && !canRenderProjectionInHost && frameRef.current?.isReady) {
       frameRef.current.search(searchQuery || "");
     }
-  }, [searchQuery, editing]);
+  }, [searchQuery, editing, canRenderProjectionInHost]);
 
   // Focus view section when cell becomes focused but not editing
   useEffect(() => {
@@ -714,33 +774,41 @@ export const MarkdownCell = memo(function MarkdownCell({
             onPointerDown={handlePreviewWrapperPointerDown}
             onKeyDown={handleViewKeyDown}
           >
-            {/* Always render IsolatedFrame to preload it (hidden when no content) */}
-            <div
-              className={cell.source ? undefined : "hidden"}
-              onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
-            >
-              <IsolatedFrame
-                ref={frameRef}
-                name={`md-${cell.id}`}
-                darkMode={darkMode}
-                colorTheme={colorTheme}
-                hostContext={outputHostContext}
-                minHeight={previewMinHeight}
-                autoHeight
-                scrollPassthrough={!previewFrameInteractionActive}
-                allowWheelBoundaryScroll={previewFrameInteractionActive}
-                revealOnRender
-                reserveHeightOnReveal
-                onReady={handleFrameReady}
+            {cell.source && canRenderProjectionInHost && markdownProjection ? (
+              <ProjectedMarkdownView
+                plan={markdownProjection}
+                headingAnchors={headingAnchors}
                 onLinkClick={handleLinkClick}
-                onMouseDown={activatePreviewFrameInteraction}
-                onMouseUp={handlePreviewFrameMouseUp}
-                onDoubleClick={handleDoubleClick}
-                onError={handleIframeError}
-                onDiagnostic={logNotebookIsolatedDiagnostic}
-                className="w-full"
               />
-            </div>
+            ) : (
+              <div
+                className={cell.source ? undefined : "hidden"}
+                onPointerDown={handlePreviewWrapperPointerDown}
+                onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
+              >
+                <IsolatedFrame
+                  ref={frameRef}
+                  name={`md-${cell.id}`}
+                  darkMode={darkMode}
+                  colorTheme={colorTheme}
+                  hostContext={outputHostContext}
+                  minHeight={previewMinHeight}
+                  autoHeight
+                  scrollPassthrough={!previewFrameInteractionActive}
+                  allowWheelBoundaryScroll={previewFrameInteractionActive}
+                  revealOnRender
+                  reserveHeightOnReveal
+                  onReady={handleFrameReady}
+                  onLinkClick={handleLinkClick}
+                  onMouseDown={activatePreviewFrameInteraction}
+                  onMouseUp={handlePreviewFrameMouseUp}
+                  onDoubleClick={handleDoubleClick}
+                  onError={handleIframeError}
+                  onDiagnostic={logNotebookIsolatedDiagnostic}
+                  className="w-full"
+                />
+              </div>
+            )}
             {!cell.source && <p className="text-muted-foreground italic">Double-click to edit</p>}
           </div>
         </>

@@ -6,6 +6,33 @@ export interface MarkdownProjectionMeasurement {
   width: number;
 }
 
+export interface MarkdownProjectionBlock {
+  anchorSlug?: string;
+  blockId: string;
+  blockIndex: number;
+  element: string;
+  kind: string;
+  measurement: MarkdownProjectionMeasurement & { basis?: string };
+  sourceSpanByte: [number, number];
+  sourceSpanUtf16: [number, number];
+  syntaxSpans: unknown[];
+  text: string;
+}
+
+export interface MarkdownProjectionRun {
+  blockId: string;
+  inlineId: string;
+  listItemIndex: number | null;
+  href?: string;
+  title?: string;
+  renderedHtml?: string;
+  renderedText: string;
+  renderedTextUtf16: [number, number];
+  semantic: string;
+  sourceSpanByte: [number, number];
+  sourceSpanUtf16: [number, number];
+}
+
 export interface MarkdownProjectionPlan {
   version: 1;
   engine: string;
@@ -13,8 +40,8 @@ export interface MarkdownProjectionPlan {
   utf16Length: number;
   error?: string;
   measurement: MarkdownProjectionMeasurement;
-  blocks: unknown[];
-  runs: unknown[];
+  blocks: MarkdownProjectionBlock[];
+  runs: MarkdownProjectionRun[];
 }
 
 export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | null {
@@ -30,6 +57,15 @@ export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | nu
   } catch {
     return null;
   }
+}
+
+export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan | null): boolean {
+  if (!plan) return false;
+
+  return (
+    plan.blocks.every((block) => block.kind !== "isolated") &&
+    plan.runs.every((run) => !run.renderedHtml)
+  );
 }
 
 export function projectedMarkdownPreviewHeight(

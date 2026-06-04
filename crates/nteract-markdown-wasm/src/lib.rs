@@ -115,6 +115,8 @@ fn collect_block(
         block_id: block.id.clone(),
         inline_index: 0,
         item_index: None,
+        link_href: None,
+        link_title: None,
         position_index,
         rendered_cursor: 0,
         runs: Vec::new(),
@@ -214,6 +216,7 @@ fn collect_block(
     }
 
     let wasm_block = WasmBlock {
+        anchor_slug: block.attrs.anchor_slug.clone(),
         block_id: block.id.clone(),
         block_index,
         element,
@@ -325,8 +328,14 @@ fn collect_inline(
             add_outer_syntax_spans(context, node, "nearest-visible");
         }
         NodeKind::Link => {
+            let previous_href = context.link_href.take();
+            let previous_title = context.link_title.take();
+            context.link_href = node.attrs.url.clone();
+            context.link_title = node.attrs.title.clone();
             collect_children(source, context, &node.children, "link-label");
             add_outer_syntax_spans(context, node, "nearest-visible");
+            context.link_href = previous_href;
+            context.link_title = previous_title;
         }
         NodeKind::InlineCode => collect_delimited_inline(source, context, node, "inline-code"),
         NodeKind::InlineMath => collect_delimited_inline(source, context, node, "math-source"),
@@ -575,6 +584,8 @@ struct RunContext<'a> {
     block_id: String,
     inline_index: usize,
     item_index: Option<usize>,
+    link_href: Option<String>,
+    link_title: Option<String>,
     position_index: &'a PositionIndex,
     rendered_cursor: usize,
     runs: Vec<WasmRun>,
@@ -598,6 +609,8 @@ impl RunContext<'_> {
             block_id: self.block_id.clone(),
             inline_id,
             item_index: self.item_index,
+            link_href: self.link_href.clone(),
+            link_title: self.link_title.clone(),
             rendered_html,
             rendered_text,
             rendered_text_utf16: [rendered_start, self.rendered_cursor],
@@ -618,6 +631,8 @@ struct WasmRun {
     block_id: String,
     inline_id: String,
     item_index: Option<usize>,
+    link_href: Option<String>,
+    link_title: Option<String>,
     rendered_html: Option<String>,
     rendered_text: String,
     rendered_text_utf16: [usize; 2],
@@ -636,6 +651,14 @@ impl WasmRun {
         output.push_str("\"listItemIndex\":");
         push_json_option_usize(output, self.item_index);
         output.push(',');
+        if let Some(href) = &self.link_href {
+            push_json_key_string(output, "href", href);
+            output.push(',');
+        }
+        if let Some(title) = &self.link_title {
+            push_json_key_string(output, "title", title);
+            output.push(',');
+        }
         if let Some(html) = &self.rendered_html {
             push_json_key_string(output, "renderedHtml", html);
             output.push(',');
@@ -654,6 +677,7 @@ impl WasmRun {
 }
 
 struct WasmBlock {
+    anchor_slug: Option<String>,
     block_id: String,
     block_index: usize,
     element: &'static str,
@@ -676,6 +700,10 @@ impl WasmBlock {
         output.push('{');
         push_json_key_string(output, "blockId", &self.block_id);
         output.push(',');
+        if let Some(anchor_slug) = &self.anchor_slug {
+            push_json_key_string(output, "anchorSlug", anchor_slug);
+            output.push(',');
+        }
         output.push_str("\"blockIndex\":");
         output.push_str(&self.block_index.to_string());
         output.push(',');
