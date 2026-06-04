@@ -12,7 +12,6 @@
 //! shot CLI callers (e.g. `runt daemon status`) continue to use the
 //! existing helper.
 //!
-//! Design doc: `docs/superpowers/specs/2026-04-15-daemon-connection-session-design.md`
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

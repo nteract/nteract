@@ -8,7 +8,6 @@ Public API:
 - :class:`BlobRef` — content-addressed blob reference (``hash``, ``size``).
 - :class:`DxError` — base exception.
 
-Design: ``docs/superpowers/specs/2026-04-13-nteract-dx-design.md``.
 """
 
 from __future__ import annotations

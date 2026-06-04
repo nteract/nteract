@@ -79,8 +79,7 @@ pub const UV_BASE_PACKAGES: &[&str] = &[
 ];
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
-/// reopen path from the unified env resolution design (see
-/// `docs/superpowers/specs/2026-04-20-unified-env-resolution.md`).
+/// reopen path from the unified env resolution design.
 ///
 /// Hashes `(sorted_deps, requires_python, prerelease, env_id)`. `env_id` is
 /// always included so each notebook's env is isolated by default, regardless

@@ -25,7 +25,7 @@ Neighbors:
   store, hash validation, HTTP serving, and multipart upload.
 - `docs/adr/hosted-notebook-artifacts.md` - hosted snapshot and blob
   artifact materialization.
-- `docs/superpowers/specs/2026-05-11-arrow-manifest-durable-storage-design.md`
+- `docs/adr/arrow-manifest-durable-storage-design.md`
   - save/load durability details for nested Arrow manifest refs.
 - `python/nteract-kernel-launcher/docs/arrow-native-outputs.md` - Python
   producer behavior.
