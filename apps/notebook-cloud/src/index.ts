@@ -72,6 +72,13 @@ import {
   viewerThemeBootstrapScript,
   viewerThemeFirstPaintStyle,
 } from "./viewer-theme-bootstrap.ts";
+import {
+  dispatchWorkerRoute,
+  exactPath,
+  routePath,
+  type WorkerRouteMatch,
+  type WorkerRoute,
+} from "./worker-routing.ts";
 
 export { NotebookRoom };
 
@@ -100,10 +107,89 @@ type SnapshotPairValidationResult =
       body: Record<string, unknown>;
     };
 
+const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
+  {
+    match: exactPath("/api/health"),
+    methods: ["GET"],
+    handler: routeHealth,
+  },
+  {
+    match: exactPath("/", "/index.html"),
+    methods: ["GET"],
+    handler: (_match, request, env) => homeViewer(request, env),
+  },
+  {
+    match: exactPath("/oidc"),
+    methods: ["GET"],
+    handler: (_match, request, env) => oidcCallbackViewer(request, env),
+  },
+  {
+    match: routePath("/n/:notebookId/sync", { trailingSlash: "optional" }),
+    handler: (_match, request, env) => routeRoomSync(request, env),
+  },
+  {
+    match: routePath("/n/:notebookId/debug", { trailingSlash: "optional" }),
+    methods: ["GET"],
+    handler: ({ params }) => debugViewer(params.notebookId),
+  },
+  {
+    match: routePath("/n/:notebookId/r/:revision", { trailingSlash: "optional" }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) => viewer(params.notebookId, request, env, params.revision),
+  },
+  {
+    match: routePath("/n/:notebookId/:vanityName", { trailingSlash: "optional" }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) => viewer(params.notebookId, request, env),
+  },
+  {
+    match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) => routeCatalog(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/acl", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) => routeNotebookAcl(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/invites", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) => routeNotebookInvites(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/invites/:inviteId", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) =>
+      routeNotebookInvite(request, env, params.notebookId, params.inviteId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/access-requests", { trailingSlash: "optional" }),
+    handler: ({ params }, request, env) =>
+      routeNotebookAccessRequests(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/access-requests/:accessRequestId", {
+      trailingSlash: "optional",
+    }),
+    handler: ({ params }, request, env) =>
+      routeNotebookAccessRequest(request, env, params.notebookId, params.accessRequestId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/runtime-snapshots/:runtimeHeadsHash"),
+    handler: ({ params }, request, env) =>
+      routeRuntimeSnapshot(request, env, params.notebookId, params.runtimeHeadsHash),
+  },
+  {
+    match: routePath("/api/n/:notebookId/snapshots/:headsHash"),
+    handler: ({ params }, request, env) =>
+      routeSnapshot(request, env, params.notebookId, params.headsHash),
+  },
+  {
+    match: routePath("/api/n/:notebookId/blobs/:hash"),
+    handler: ({ params }, request, env) => routeBlob(request, env, params.notebookId, params.hash),
+  },
+];
+
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-
     if (request.method === "OPTIONS") {
       return withCors(new Response(null, { status: 204 }));
     }
@@ -113,124 +199,9 @@ const worker: ExportedHandler<Env> = {
       return assetResponse;
     }
 
-    if (url.pathname === "/api/health" && request.method === "GET") {
-      await safeEnsureCatalogSchema(env, ctx);
-      return json({
-        status: "ok",
-        service: "nteract-notebook-cloud",
-        deployment_env: env.DEPLOYMENT_ENV ?? "development",
-        auth: {
-          anaconda_api_key: anacondaApiKeyHealth(env),
-          oidc: oidcHealth(env),
-        },
-      });
-    }
-
-    if ((url.pathname === "/" || url.pathname === "/index.html") && request.method === "GET") {
-      return homeViewer(request, env);
-    }
-
-    if (url.pathname === "/oidc" && request.method === "GET") {
-      return oidcCallbackViewer(request, env);
-    }
-
-    const syncMatch = url.pathname.match(/^\/n\/([^/]+)\/sync\/?$/);
-    if (syncMatch) {
-      return routeRoomSync(request, env);
-    }
-
-    const debugMatch = url.pathname.match(/^\/n\/([^/]+)\/debug\/?$/);
-    if (debugMatch && request.method === "GET") {
-      return debugViewer(decodeURIComponent(debugMatch[1]));
-    }
-
-    const pinnedViewerMatch = url.pathname.match(/^\/n\/([^/]+)\/r\/([^/]+)\/?$/);
-    if (pinnedViewerMatch && request.method === "GET") {
-      return viewer(
-        decodeURIComponent(pinnedViewerMatch[1]),
-        request,
-        env,
-        decodeURIComponent(pinnedViewerMatch[2]),
-      );
-    }
-
-    const vanityViewerMatch = url.pathname.match(/^\/n\/([^/]+)\/([^/]+)\/?$/);
-    if (vanityViewerMatch && request.method === "GET") {
-      return viewer(decodeURIComponent(vanityViewerMatch[1]), request, env);
-    }
-
-    const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
-    if (catalogMatch && request.method === "GET") {
-      return routeCatalog(request, env, decodeURIComponent(catalogMatch[1]));
-    }
-
-    const aclMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/acl\/?$/);
-    if (aclMatch) {
-      return routeNotebookAcl(request, env, decodeURIComponent(aclMatch[1]));
-    }
-
-    const inviteMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/invites\/?$/);
-    if (inviteMatch) {
-      return routeNotebookInvites(request, env, decodeURIComponent(inviteMatch[1]));
-    }
-
-    const inviteItemMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/invites\/([^/]+)\/?$/);
-    if (inviteItemMatch) {
-      return routeNotebookInvite(
-        request,
-        env,
-        decodeURIComponent(inviteItemMatch[1]),
-        decodeURIComponent(inviteItemMatch[2]),
-      );
-    }
-
-    const accessRequestMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/access-requests\/?$/);
-    if (accessRequestMatch) {
-      return routeNotebookAccessRequests(request, env, decodeURIComponent(accessRequestMatch[1]));
-    }
-
-    const accessRequestItemMatch = url.pathname.match(
-      /^\/api\/n\/([^/]+)\/access-requests\/([^/]+)\/?$/,
-    );
-    if (accessRequestItemMatch) {
-      return routeNotebookAccessRequest(
-        request,
-        env,
-        decodeURIComponent(accessRequestItemMatch[1]),
-        decodeURIComponent(accessRequestItemMatch[2]),
-      );
-    }
-
-    const runtimeSnapshotMatch = url.pathname.match(
-      /^\/api\/n\/([^/]+)\/runtime-snapshots\/([^/]+)$/,
-    );
-    if (runtimeSnapshotMatch) {
-      return routeRuntimeSnapshot(
-        request,
-        env,
-        decodeURIComponent(runtimeSnapshotMatch[1]),
-        decodeURIComponent(runtimeSnapshotMatch[2]),
-      );
-    }
-
-    const snapshotMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/snapshots\/([^/]+)$/);
-    if (snapshotMatch) {
-      return routeSnapshot(
-        request,
-        env,
-        decodeURIComponent(snapshotMatch[1]),
-        decodeURIComponent(snapshotMatch[2]),
-      );
-    }
-
-    const blobMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/blobs\/([^/]+)$/);
-    if (blobMatch) {
-      return routeBlob(
-        request,
-        env,
-        decodeURIComponent(blobMatch[1]),
-        decodeURIComponent(blobMatch[2]),
-      );
+    const routeResponse = await dispatchWorkerRoute(NOTEBOOK_CLOUD_ROUTES, request, env, ctx);
+    if (routeResponse) {
+      return routeResponse;
     }
 
     return json({ error: "not found" }, 404);
@@ -238,6 +209,24 @@ const worker: ExportedHandler<Env> = {
 };
 
 export default worker;
+
+async function routeHealth(
+  _match: WorkerRouteMatch,
+  _request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  await safeEnsureCatalogSchema(env, ctx);
+  return json({
+    status: "ok",
+    service: "nteract-notebook-cloud",
+    deployment_env: env.DEPLOYMENT_ENV ?? "development",
+    auth: {
+      anaconda_api_key: anacondaApiKeyHealth(env),
+      oidc: oidcHealth(env),
+    },
+  });
+}
 
 async function routeAsset(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
