@@ -1,11 +1,18 @@
-import { Fragment } from "react";
+import { Check, Copy } from "lucide-react";
+import { Fragment, useState } from "react";
+import katex from "katex";
+import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import type {
   MarkdownProjectionBlock,
   MarkdownProjectionPlan,
   MarkdownProjectionRun,
 } from "@/lib/markdown-projection";
+import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
+import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
+
+import "katex/dist/katex.min.css";
 
 interface ProjectedMarkdownViewProps {
   plan: MarkdownProjectionPlan;
@@ -20,6 +27,9 @@ export function ProjectedMarkdownView({
   headingAnchors = [],
   onLinkClick,
 }: ProjectedMarkdownViewProps) {
+  const isDark = useDarkMode();
+  const rawTheme = useColorTheme();
+  const colorTheme = (rawTheme === "cream" ? "cream" : "classic") as "classic" | "cream";
   const runsByBlock = new Map<string, MarkdownProjectionRun[]>();
   for (const run of plan.runs) {
     const runs = runsByBlock.get(run.blockId);
@@ -34,7 +44,7 @@ export function ProjectedMarkdownView({
     <div
       data-slot="projected-markdown-output"
       className={cn(
-        "select-text py-1 text-base leading-[1.65] font-serif text-foreground",
+        "select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [text-rendering:optimizeLegibility]",
         className,
       )}
     >
@@ -43,6 +53,8 @@ export function ProjectedMarkdownView({
           key={block.blockId}
           block={block}
           headingAnchor={headingAnchorForBlock(block, headingAnchors)}
+          colorTheme={colorTheme}
+          isDark={isDark}
           runs={runsByBlock.get(block.blockId) ?? []}
           onLinkClick={onLinkClick}
         />
@@ -54,6 +66,8 @@ export function ProjectedMarkdownView({
 interface ProjectedMarkdownBlockProps {
   block: MarkdownProjectionBlock;
   headingAnchor?: MarkdownHeadingAnchor;
+  colorTheme: "classic" | "cream";
+  isDark: boolean;
   runs: MarkdownProjectionRun[];
   onLinkClick?: (url: string) => void;
 }
@@ -61,6 +75,8 @@ interface ProjectedMarkdownBlockProps {
 function ProjectedMarkdownBlock({
   block,
   headingAnchor,
+  colorTheme,
+  isDark,
   runs,
   onLinkClick,
 }: ProjectedMarkdownBlockProps) {
@@ -84,7 +100,7 @@ function ProjectedMarkdownBlock({
     return (
       <List
         className={cn(
-          "my-3 pl-6",
+          "my-2 pl-6",
           List === "ol" ? "list-decimal" : "list-disc",
           items.some(({ checked }) => checked !== undefined) && "list-none pl-0",
         )}
@@ -112,24 +128,16 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "code") {
-    return (
-      <pre className="my-2 overflow-x-auto rounded bg-muted px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap">
-        <code>{block.text}</code>
-      </pre>
-    );
+    return <ProjectedCodeBlock code={block.text} colorTheme={colorTheme} isDark={isDark} />;
   }
 
   if (block.kind === "math") {
-    return (
-      <pre className="my-2 overflow-x-auto rounded border border-border/60 px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap">
-        <code>{block.text}</code>
-      </pre>
-    );
+    return <ProjectedMath latex={block.text} displayMode />;
   }
 
   if (block.kind === "blockquote") {
     return (
-      <blockquote className="my-4 border-l-2 border-border pl-4 text-muted-foreground">
+      <blockquote className="my-4 border-l-4 border-border pl-4 text-muted-foreground italic">
         {renderRuns(runs, onLinkClick)}
       </blockquote>
     );
@@ -148,7 +156,7 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "paragraph") {
-    return <p className="my-3">{renderRuns(runs, onLinkClick)}</p>;
+    return <p className="my-2 leading-relaxed">{renderRuns(runs, onLinkClick)}</p>;
   }
 
   return block.text ? <div className="my-3">{renderRuns(runs, onLinkClick)}</div> : null;
@@ -176,11 +184,12 @@ function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
 }
 
 function headingClass(element: string) {
-  if (element === "h1") return "mt-6 mb-4 text-3xl leading-tight font-bold";
-  if (element === "h2") return "mt-5 mb-3 text-2xl leading-tight font-bold";
-  if (element === "h3") return "mt-4 mb-2 text-xl leading-tight font-bold";
-  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-semibold";
-  return "mt-3 mb-2 text-base leading-tight font-semibold";
+  if (element === "h1") return "mt-6 mb-4 text-2xl leading-tight font-bold";
+  if (element === "h2") return "mt-5 mb-3 text-xl leading-tight font-bold";
+  if (element === "h3") return "mt-4 mb-2 text-lg leading-tight font-semibold";
+  if (element === "h4") return "mt-3 mb-2 text-base leading-tight font-semibold";
+  if (element === "h5") return "mt-2 mb-1 text-sm leading-tight font-semibold";
+  return "mt-2 mb-1 text-sm leading-tight font-medium text-muted-foreground";
 }
 
 function groupListRuns(runs: MarkdownProjectionRun[]) {
@@ -229,11 +238,77 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
   }
 
   if (run.semantic === "strong") return <strong>{text}</strong>;
+  if (run.semantic === "emphasis") return <em>{text}</em>;
+  if (run.semantic === "delete") return <del>{text}</del>;
   if (run.semantic === "inline-code") {
     return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">{text}</code>;
   }
-  if (run.semantic === "code-block" || run.semantic === "math-source") return text;
+  if (run.semantic === "math-source") return <ProjectedMath latex={text} />;
+  if (run.semantic === "code-block") return text;
   if (run.semantic === "link-label") return text;
 
   return text;
+}
+
+function ProjectedCodeBlock({
+  code,
+  colorTheme,
+  isDark,
+}: {
+  code: string;
+  colorTheme: "classic" | "cream";
+  isDark: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (error) {
+      console.error("Failed to copy projected markdown code block:", error);
+    }
+  };
+
+  return (
+    <div className="group/codeblock relative my-3">
+      <StaticCodeBlock code={code} colorTheme={colorTheme} isDark={isDark} className="max-w-full" />
+      <button
+        type="button"
+        className="absolute top-2 right-2 z-10 rounded border border-border bg-background p-1.5 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover/codeblock:opacity-100 hover:bg-muted hover:text-foreground"
+        title={copied ? "Copied" : "Copy code"}
+        onClick={copyCode}
+      >
+        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+      </button>
+    </div>
+  );
+}
+
+function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; latex: string }) {
+  const html = renderLatex(latex, displayMode);
+  if (!html) {
+    return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">{latex}</code>;
+  }
+
+  return (
+    <span
+      className={cn(displayMode ? "my-4 block overflow-x-auto" : "inline-block align-baseline")}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+function renderLatex(latex: string, displayMode: boolean): string | null {
+  try {
+    return katex.renderToString(latex.trim(), {
+      displayMode,
+      strict: katexStrict,
+      throwOnError: false,
+      trust: true,
+    });
+  } catch {
+    return null;
+  }
 }

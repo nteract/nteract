@@ -327,8 +327,12 @@ fn collect_inline(
             collect_children(source, context, &node.children, "strong");
             add_outer_syntax_spans(context, node, "nearest-visible");
         }
-        NodeKind::Emphasis | NodeKind::Delete => {
-            collect_children(source, context, &node.children, semantic);
+        NodeKind::Emphasis => {
+            collect_children(source, context, &node.children, "emphasis");
+            add_outer_syntax_spans(context, node, "nearest-visible");
+        }
+        NodeKind::Delete => {
+            collect_children(source, context, &node.children, "delete");
             add_outer_syntax_spans(context, node, "nearest-visible");
         }
         NodeKind::Link => {
@@ -993,7 +997,7 @@ mod tests {
     #[test]
     fn projects_host_renderable_block_semantics() {
         let json = project_to_json(
-            "### Third\n\n1. ordered\n2. list\n\n- [x] done\n- [ ] todo\n\n> quote\n\n---",
+            "### Third\n\n1. ordered\n2. list\n\n- [x] done\n- [ ] todo\n\n> quote\n\n*em* ~~gone~~ $x^2$\n\n$$\n\\int_0^1 x dx\n$$\n\n---",
         );
 
         assert!(json.contains("\"element\":\"h3\""));
@@ -1002,6 +1006,10 @@ mod tests {
         assert!(json.contains("\"listItemChecked\":true"));
         assert!(json.contains("\"listItemChecked\":false"));
         assert!(json.contains("\"kind\":\"blockquote\""));
+        assert!(json.contains("\"semantic\":\"emphasis\""));
+        assert!(json.contains("\"semantic\":\"delete\""));
+        assert!(json.contains("\"semantic\":\"math-source\""));
+        assert!(json.contains("\"kind\":\"math\""));
         assert!(json.contains("\"kind\":\"thematic-break\""));
         assert!(json.contains("\"element\":\"hr\""));
     }
