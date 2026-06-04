@@ -87,6 +87,12 @@ describe("generateFrameHtml", () => {
     expect(source).toContain("selection.toString().length > 0");
   });
 
+  it("forwards iframe double-clicks during capture phase", () => {
+    expect(source).toMatch(/document\.addEventListener\(\s*'dblclick'/);
+    expect(source).toContain("sendRpc('nteract/doubleClick'");
+    expect(source).toContain("{ capture: true }");
+  });
+
   it("keeps the iframe bootstrap script parseable", () => {
     const scripts = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g), (match) => match[1]);
 
