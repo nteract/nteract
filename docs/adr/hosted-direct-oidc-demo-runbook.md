@@ -68,9 +68,9 @@ publishing credential path.
 
 ## API-key Publishing
 
-Browser sessions use direct OIDC. Non-browser publishing agents should use an
-Anaconda API key with `cloud:write`, presented as `Authorization: Bearer` plus
-an explicit provider header:
+Browser sessions use direct OIDC. Non-browser publishing agents should use a
+publish bearer token with write capability, presented as `Authorization: Bearer`
+plus an explicit provider header:
 
 ```text
 X-Notebook-Cloud-Auth-Provider: anaconda-api-key
@@ -84,14 +84,26 @@ responses are cached for 60 seconds with a bounded in-isolate cache; token
 revocation can therefore take up to 60 seconds to be observed by a hot Worker
 isolate.
 
-For `runt-publish`, use:
+For `runt-publish`, store the publish bearer token in the environment or a
+local `.env` file:
 
 ```bash
-NOTEBOOK_CLOUD_URL=https://preview.runt.run \
-NOTEBOOK_CLOUD_BEARER_TOKEN="$ANACONDA_API_KEY" \
-NOTEBOOK_CLOUD_AUTH_PROVIDER=anaconda-api-key \
+NTERACT_API_KEY=...
+```
+
+Then use:
+
+```bash
 cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
 ```
+
+The publisher defaults to the current hosted dev URL, `https://preview.runt.run`,
+and loads publish-related keys from `.env`. The hosted deployment currently
+validates non-browser publish bearer tokens through Anaconda's API-key `whoami`
+endpoint, so the publisher sends
+`X-Notebook-Cloud-Auth-Provider: anaconda-api-key` for `NTERACT_API_KEY`.
+`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` and `ANACONDA_API_KEY` remain local
+aliases. Use `--env-file path/to/.env` when running from a different checkout.
 
 ## Viewer Runtime OIDC Config
 

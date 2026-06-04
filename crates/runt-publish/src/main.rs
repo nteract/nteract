@@ -1,11 +1,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use automerge::AutoCommit;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use clap::Parser;
 use notebook_doc::NotebookDoc;
 use notebook_sync::connect;
@@ -20,6 +22,27 @@ use url::Url;
 const ARROW_STREAM_MANIFEST_MIME: &str = "application/vnd.nteract.arrow-stream-manifest+json";
 const DEFAULT_BLOB_CONTENT_TYPE: &str = "application/octet-stream";
 const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
+const DEFAULT_CLOUD_URL: &str = "https://preview.runt.run";
+const ANACONDA_API_KEY_AUTH_PROVIDER: &str = "anaconda-api-key";
+const NTERACT_PUBLISH_URL_ENV: &str = "NTERACT_PUBLISH_URL";
+const NTERACT_API_KEY_ENV: &str = "NTERACT_API_KEY";
+const NTERACT_PUBLISH_AUTH_PROVIDER_ENV: &str = "NTERACT_PUBLISH_AUTH_PROVIDER";
+const ANACONDA_API_KEY_ENV: &str = "ANACONDA_API_KEY";
+const NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV: &str = "NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN";
+const NOTEBOOK_CLOUD_BEARER_TOKEN_ENV: &str = "NOTEBOOK_CLOUD_BEARER_TOKEN";
+
+const PUBLISH_ENV_KEYS: &[&str] = &[
+    NTERACT_PUBLISH_URL_ENV,
+    NTERACT_API_KEY_ENV,
+    NTERACT_PUBLISH_AUTH_PROVIDER_ENV,
+    "NOTEBOOK_CLOUD_URL",
+    "NOTEBOOK_CLOUD_NOTEBOOK_ID",
+    "NOTEBOOK_CLOUD_DEV_TOKEN",
+    NOTEBOOK_CLOUD_BEARER_TOKEN_ENV,
+    NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV,
+    "NOTEBOOK_CLOUD_AUTH_PROVIDER",
+    ANACONDA_API_KEY_ENV,
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,8 +54,12 @@ struct Args {
     notebook: PathBuf,
 
     /// Hosted notebook-cloud base URL.
-    #[arg(long = "url", env = "NOTEBOOK_CLOUD_URL")]
+    #[arg(long = "url", env = "NTERACT_PUBLISH_URL", default_value = DEFAULT_CLOUD_URL)]
     cloud_url: String,
+
+    /// Load publishing env vars from a KEY=VALUE file before resolving credentials.
+    #[arg(long = "env-file", value_name = "PATH")]
+    _env_file: Vec<PathBuf>,
 
     /// Hosted notebook id. Defaults to NOTEBOOK_CLOUD_NOTEBOOK_ID, then the file stem.
     #[arg(long = "id", env = "NOTEBOOK_CLOUD_NOTEBOOK_ID")]
@@ -48,23 +75,18 @@ struct Args {
     socket: Option<PathBuf>,
 
     /// Dev publish token for deployed notebook-cloud environments.
-    #[arg(
-        long = "dev-token",
-        env = "NOTEBOOK_CLOUD_DEV_TOKEN",
-        hide_env_values = true
-    )]
+    #[arg(long = "dev-token", hide_env_values = true)]
     dev_token: Option<String>,
 
-    /// Bearer token for notebook-cloud OIDC/API-key auth.
-    #[arg(
-        long = "bearer-token",
-        env = "NOTEBOOK_CLOUD_BEARER_TOKEN",
-        hide_env_values = true
-    )]
+    /// Bearer token for notebook-cloud publish auth. Env fallback order:
+    /// NTERACT_API_KEY, NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN, NOTEBOOK_CLOUD_BEARER_TOKEN,
+    /// ANACONDA_API_KEY.
+    #[arg(long = "bearer-token", hide_env_values = true)]
     bearer_token: Option<String>,
 
-    /// Explicit provider for bearer-token auth.
-    #[arg(long = "auth-provider", env = "NOTEBOOK_CLOUD_AUTH_PROVIDER")]
+    /// Explicit provider for bearer-token auth. The current hosted deployment uses
+    /// anaconda-api-key for publish bearer tokens.
+    #[arg(long = "auth-provider", env = "NTERACT_PUBLISH_AUTH_PROVIDER")]
     auth_provider: Option<String>,
 
     /// User label sent to notebook-cloud dev auth.
@@ -111,7 +133,13 @@ struct Publisher {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let raw_args = std::env::args_os().collect::<Vec<_>>();
+    if !is_clap_short_circuit(&raw_args) {
+        load_publish_env_files(&raw_args)?;
+        apply_publish_env_aliases();
+    }
+    let args = Args::parse_from(raw_args);
+    let publish_auth = resolve_publish_auth(&args)?;
     let notebook_path = std::fs::canonicalize(&args.notebook)
         .with_context(|| format!("canonicalize notebook path {}", args.notebook.display()))?;
     let notebook_id = args
@@ -159,7 +187,13 @@ async fn main() -> Result<()> {
     let runtime_state_doc_id =
         runtime_state_doc_id_from_notebook_snapshot(&snapshot.notebook_bytes)?;
 
-    let publisher = Publisher::new(args, notebook_id, blob_base_url, blob_store_path)?;
+    let publisher = Publisher::new(
+        args,
+        publish_auth,
+        notebook_id,
+        blob_base_url,
+        blob_store_path,
+    )?;
     let uploaded_blobs = publisher.upload_blob_closure(&mut refs).await?;
 
     let runtime_heads_hash = heads_digest(&snapshot.runtime_state_heads);
@@ -247,13 +281,11 @@ async fn main() -> Result<()> {
 impl Publisher {
     fn new(
         args: Args,
+        publish_auth: PublishAuth,
         notebook_id: String,
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
     ) -> Result<Self> {
-        if args.dev_token.is_some() && args.bearer_token.is_some() {
-            bail!("use either --dev-token or --bearer-token, not both");
-        }
         let base_url = Url::parse(&with_trailing_slash(&args.cloud_url))
             .with_context(|| format!("parse notebook-cloud URL {}", args.cloud_url))?;
         Ok(Self {
@@ -261,9 +293,9 @@ impl Publisher {
             base_url,
             notebook_id,
             vanity_name: args.vanity_name,
-            dev_token: args.dev_token,
-            bearer_token: args.bearer_token,
-            auth_provider: args.auth_provider,
+            dev_token: publish_auth.dev_token,
+            bearer_token: publish_auth.bearer_token,
+            auth_provider: publish_auth.auth_provider,
             user: args.user,
             operator: args.operator,
             blob_base_url,
@@ -468,6 +500,407 @@ impl Publisher {
         }
         url
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublishAuth {
+    dev_token: Option<String>,
+    bearer_token: Option<String>,
+    auth_provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BearerTokenSource {
+    ExplicitBearer,
+    NteractApiKeyEnv,
+    CloudBearerEnv,
+    PublishBearerEnv,
+    AnacondaApiKeyEnv,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevTokenSource {
+    Explicit,
+    Env,
+}
+
+impl BearerTokenSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ExplicitBearer => "--bearer-token",
+            Self::NteractApiKeyEnv => NTERACT_API_KEY_ENV,
+            Self::CloudBearerEnv => NOTEBOOK_CLOUD_BEARER_TOKEN_ENV,
+            Self::PublishBearerEnv => NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV,
+            Self::AnacondaApiKeyEnv => ANACONDA_API_KEY_ENV,
+        }
+    }
+
+    fn is_publish_bearer_source(self) -> bool {
+        matches!(
+            self,
+            Self::NteractApiKeyEnv | Self::PublishBearerEnv | Self::AnacondaApiKeyEnv
+        )
+    }
+}
+
+fn resolve_publish_auth(args: &Args) -> Result<PublishAuth> {
+    resolve_publish_auth_with_env(args, env_var_nonempty)
+}
+
+fn resolve_publish_auth_with_env(
+    args: &Args,
+    mut env: impl FnMut(&str) -> Option<String>,
+) -> Result<PublishAuth> {
+    let dev_token = resolve_dev_token(args, &mut env);
+    let bearer = resolve_bearer_token(args, &mut env);
+
+    if matches!(dev_token, Some((_, DevTokenSource::Explicit))) && bearer.is_some() {
+        let source = bearer
+            .as_ref()
+            .map(|(_, source)| source.label())
+            .unwrap_or("bearer token");
+        bail!("use either --dev-token or {source}, not both");
+    }
+
+    let Some((bearer_token, source)) = bearer else {
+        return Ok(PublishAuth {
+            dev_token: dev_token.map(|(token, _)| token),
+            bearer_token: None,
+            auth_provider: args
+                .auth_provider
+                .as_deref()
+                .and_then(nonempty_string)
+                .map(ToOwned::to_owned),
+        });
+    };
+
+    if source.is_publish_bearer_source() && token_looks_like_legacy_runt_api_key(&bearer_token) {
+        bail!(
+            "{} looks like an old runt/intheloop API key, not a hosted publish bearer token. Create or copy a publish credential with cloud:write, then set {}.",
+            source.label(),
+            NTERACT_API_KEY_ENV
+        );
+    }
+
+    let auth_provider = args
+        .auth_provider
+        .as_deref()
+        .and_then(nonempty_string)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            source
+                .is_publish_bearer_source()
+                .then(|| ANACONDA_API_KEY_AUTH_PROVIDER.to_string())
+        });
+
+    Ok(PublishAuth {
+        dev_token: None,
+        bearer_token: Some(bearer_token),
+        auth_provider,
+    })
+}
+
+fn resolve_bearer_token(
+    args: &Args,
+    env: &mut impl FnMut(&str) -> Option<String>,
+) -> Option<(String, BearerTokenSource)> {
+    args.bearer_token
+        .as_deref()
+        .and_then(nonempty_string)
+        .map(|token| (token.to_string(), BearerTokenSource::ExplicitBearer))
+        .or_else(|| {
+            env(NTERACT_API_KEY_ENV)
+                .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
+                .map(|token| (token, BearerTokenSource::NteractApiKeyEnv))
+        })
+        .or_else(|| {
+            env(NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV)
+                .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
+                .map(|token| (token, BearerTokenSource::PublishBearerEnv))
+        })
+        .or_else(|| {
+            env(NOTEBOOK_CLOUD_BEARER_TOKEN_ENV)
+                .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
+                .map(|token| (token, BearerTokenSource::CloudBearerEnv))
+        })
+        .or_else(|| {
+            env(ANACONDA_API_KEY_ENV)
+                .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
+                .map(|token| (token, BearerTokenSource::AnacondaApiKeyEnv))
+        })
+}
+
+fn resolve_dev_token(
+    args: &Args,
+    env: &mut impl FnMut(&str) -> Option<String>,
+) -> Option<(String, DevTokenSource)> {
+    args.dev_token
+        .as_deref()
+        .and_then(nonempty_string)
+        .map(|token| (token.to_string(), DevTokenSource::Explicit))
+        .or_else(|| {
+            env("NOTEBOOK_CLOUD_DEV_TOKEN")
+                .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
+                .map(|token| (token, DevTokenSource::Env))
+        })
+}
+
+fn nonempty_string(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn env_var_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| nonempty_string(&value).map(ToOwned::to_owned))
+}
+
+fn token_looks_like_legacy_runt_api_key(token: &str) -> bool {
+    let Some(payload) = unverified_jwt_payload(token) else {
+        return false;
+    };
+
+    let version = payload
+        .get("ver")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if version == "api:1" {
+        return false;
+    }
+
+    let issuer = payload
+        .get("iss")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let has_runt_scope = payload
+        .get("scopes")
+        .and_then(Value::as_array)
+        .is_some_and(|scopes| {
+            scopes.iter().any(|scope| {
+                matches!(
+                    scope.as_str(),
+                    Some("runt:read" | "runt:execute" | "runt:write")
+                )
+            })
+        });
+
+    version.contains("japikey") || issuer.contains("/api/api-keys") || has_runt_scope
+}
+
+fn unverified_jwt_payload(token: &str) -> Option<Value> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let _signature = parts.next()?;
+    if parts.next().is_some() || payload.is_empty() {
+        return None;
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn is_clap_short_circuit(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| matches!(arg.to_str(), Some("-h" | "--help" | "-V" | "--version")))
+}
+
+fn load_publish_env_files(raw_args: &[OsString]) -> Result<()> {
+    let mut loaded = HashSet::new();
+    let explicit_files = explicit_env_files_from_args(raw_args);
+
+    for path in explicit_files {
+        load_publish_env_file(expand_tilde(path), true, &mut loaded)?;
+    }
+
+    if let Some(path) = std::env::var_os("NOTEBOOK_CLOUD_ENV_FILE") {
+        load_publish_env_file(expand_tilde(PathBuf::from(path)), true, &mut loaded)?;
+    }
+
+    for path in default_env_file_candidates() {
+        load_publish_env_file(path, false, &mut loaded)?;
+    }
+
+    Ok(())
+}
+
+fn apply_publish_env_aliases() {
+    set_env_alias_if_absent(NTERACT_PUBLISH_URL_ENV, &["NOTEBOOK_CLOUD_URL"]);
+    set_env_alias_if_absent(
+        NTERACT_PUBLISH_AUTH_PROVIDER_ENV,
+        &["NOTEBOOK_CLOUD_AUTH_PROVIDER"],
+    );
+}
+
+fn set_env_alias_if_absent(canonical: &str, aliases: &[&str]) {
+    if env_var_nonempty(canonical).is_some() {
+        return;
+    }
+    for alias in aliases {
+        if let Some(value) = env_var_nonempty(alias) {
+            std::env::set_var(canonical, value);
+            return;
+        }
+    }
+}
+
+fn explicit_env_files_from_args(raw_args: &[OsString]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut iter = raw_args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == OsStr::new("--env-file") {
+            if let Some(path) = iter.next() {
+                files.push(PathBuf::from(path));
+            }
+            continue;
+        }
+
+        if let Some(value) = arg
+            .to_str()
+            .and_then(|value| value.strip_prefix("--env-file="))
+            .filter(|value| !value.is_empty())
+        {
+            files.push(PathBuf::from(value));
+        }
+    }
+    files
+}
+
+fn default_env_file_candidates() -> Vec<PathBuf> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    for ancestor in cwd.ancestors() {
+        candidates.push(ancestor.join(".env"));
+        if ancestor.join(".git").exists() {
+            break;
+        }
+    }
+    candidates
+}
+
+fn load_publish_env_file(
+    path: PathBuf,
+    required: bool,
+    loaded: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    let canonical_for_dedupe = path.canonicalize().unwrap_or_else(|_| path.clone());
+    if !loaded.insert(canonical_for_dedupe) {
+        return Ok(());
+    }
+
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if !required && error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read publishing env file {}", path.display()))
+        }
+    };
+
+    for line in text.lines() {
+        let Some((key, value)) = parse_env_line(line) else {
+            continue;
+        };
+        if !PUBLISH_ENV_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if std::env::var_os(&key).is_none() {
+            std::env::set_var(&key, value);
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_env_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+
+    let assignment = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+    let (key, raw_value) = assignment.split_once('=')?;
+    let key = key.trim();
+    if !is_env_key(key) {
+        return None;
+    }
+
+    Some((key.to_string(), parse_env_value(raw_value.trim())))
+}
+
+fn is_env_key(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+fn parse_env_value(value: &str) -> String {
+    if let Some(stripped) = strip_matching_quotes(value, '"') {
+        return unescape_double_quoted_env_value(stripped);
+    }
+    if let Some(stripped) = strip_matching_quotes(value, '\'') {
+        return stripped.to_string();
+    }
+
+    strip_unquoted_comment(value).trim().to_string()
+}
+
+fn strip_matching_quotes(value: &str, quote: char) -> Option<&str> {
+    value
+        .strip_prefix(quote)
+        .and_then(|value| value.strip_suffix(quote))
+}
+
+fn unescape_double_quoted_env_value(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            output.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => output.push('\n'),
+            Some('r') => output.push('\r'),
+            Some('t') => output.push('\t'),
+            Some('"') => output.push('"'),
+            Some('\\') => output.push('\\'),
+            Some(other) => {
+                output.push('\\');
+                output.push(other);
+            }
+            None => output.push('\\'),
+        }
+    }
+    output
+}
+
+fn strip_unquoted_comment(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes[index] == b'#' && (index == 0 || bytes[index - 1].is_ascii_whitespace()) {
+            return &value[..index];
+        }
+    }
+    value
+}
+
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let Some(value) = path.to_str() else {
+        return path;
+    };
+    let Some(rest) = value.strip_prefix("~/") else {
+        return path;
+    };
+    let Some(home) = std::env::var_os("HOME") else {
+        return path;
+    };
+    PathBuf::from(home).join(rest)
 }
 
 fn collect_snapshot_blob_refs(
@@ -1047,5 +1480,173 @@ mod tests {
                 .as_str(),
             "https://cloud.test/api/n/topic-viz"
         );
+    }
+
+    #[test]
+    fn default_cloud_url_targets_preview() {
+        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+
+        assert_eq!(args.cloud_url, DEFAULT_CLOUD_URL);
+    }
+
+    #[test]
+    fn nteract_api_key_env_uses_preview_provider_header() {
+        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let token = anaconda_token();
+        let auth = resolve_publish_auth_with_env(&args, |name| {
+            (name == NTERACT_API_KEY_ENV).then(|| token.clone())
+        })
+        .unwrap();
+
+        assert_eq!(auth.bearer_token.as_deref(), Some(token.as_str()));
+        assert_eq!(
+            auth.auth_provider.as_deref(),
+            Some(ANACONDA_API_KEY_AUTH_PROVIDER)
+        );
+        assert_eq!(auth.dev_token, None);
+    }
+
+    #[test]
+    fn publish_bearer_env_uses_preview_provider_header() {
+        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let auth = resolve_publish_auth_with_env(&args, |name| {
+            (name == NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV).then(|| "publish-token".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(auth.bearer_token.as_deref(), Some("publish-token"));
+        assert_eq!(
+            auth.auth_provider.as_deref(),
+            Some(ANACONDA_API_KEY_AUTH_PROVIDER)
+        );
+    }
+
+    #[test]
+    fn anaconda_api_key_alias_env_uses_preview_provider_header() {
+        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let token = anaconda_token();
+        let auth = resolve_publish_auth_with_env(&args, |name| {
+            (name == ANACONDA_API_KEY_ENV).then(|| token.clone())
+        })
+        .unwrap();
+
+        assert_eq!(auth.bearer_token.as_deref(), Some(token.as_str()));
+        assert_eq!(
+            auth.auth_provider.as_deref(),
+            Some(ANACONDA_API_KEY_AUTH_PROVIDER)
+        );
+    }
+
+    #[test]
+    fn cloud_bearer_env_preserves_explicit_auth_provider() {
+        let args = Args::try_parse_from([
+            "runt-publish",
+            "--auth-provider",
+            "custom-provider",
+            "topic.ipynb",
+        ])
+        .unwrap();
+        let auth = resolve_publish_auth_with_env(&args, |name| {
+            (name == NOTEBOOK_CLOUD_BEARER_TOKEN_ENV).then(|| "bearer-token".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(auth.bearer_token.as_deref(), Some("bearer-token"));
+        assert_eq!(auth.auth_provider.as_deref(), Some("custom-provider"));
+    }
+
+    #[test]
+    fn publish_bearer_env_ignores_stale_env_dev_token() {
+        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let token = anaconda_token();
+        let auth = resolve_publish_auth_with_env(&args, |name| match name {
+            NTERACT_API_KEY_ENV => Some(token.clone()),
+            "NOTEBOOK_CLOUD_DEV_TOKEN" => Some("stale-dev-token".to_string()),
+            _ => None,
+        })
+        .unwrap();
+
+        assert_eq!(auth.bearer_token.as_deref(), Some(token.as_str()));
+        assert_eq!(auth.dev_token, None);
+    }
+
+    #[test]
+    fn explicit_dev_token_conflicts_with_publish_bearer_env() {
+        let args =
+            Args::try_parse_from(["runt-publish", "--dev-token", "dev-token", "topic.ipynb"])
+                .unwrap();
+        let error = resolve_publish_auth_with_env(&args, |name| {
+            (name == NTERACT_API_KEY_ENV).then(|| anaconda_token())
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("use either --dev-token"));
+    }
+
+    #[test]
+    fn rejects_legacy_runt_key_from_publish_env() {
+        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let error = resolve_publish_auth_with_env(&args, |name| {
+            (name == NTERACT_API_KEY_ENV).then(|| legacy_runt_token())
+        })
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("old runt/intheloop API key"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn explicit_env_files_support_space_and_equals_forms() {
+        let files = explicit_env_files_from_args(&[
+            OsString::from("runt-publish"),
+            OsString::from("--env-file"),
+            OsString::from("~/codex/desktop/.env"),
+            OsString::from("--env-file=/tmp/publish.env"),
+            OsString::from("topic.ipynb"),
+        ]);
+
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from("~/codex/desktop/.env"),
+                PathBuf::from("/tmp/publish.env")
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_quoted_publish_env_values() {
+        assert_eq!(
+            parse_env_line("export ANACONDA_API_KEY=\"abc.def\""),
+            Some((ANACONDA_API_KEY_ENV.to_string(), "abc.def".to_string()))
+        );
+        assert_eq!(
+            parse_env_line("NOTEBOOK_CLOUD_URL=https://preview.runt.run # preview"),
+            Some((
+                "NOTEBOOK_CLOUD_URL".to_string(),
+                "https://preview.runt.run".to_string()
+            ))
+        );
+    }
+
+    fn anaconda_token() -> String {
+        jwt_with_payload(json!({"ver": "api:1", "jti": "key"}))
+    }
+
+    fn legacy_runt_token() -> String {
+        jwt_with_payload(json!({
+            "ver": "japikey-v1",
+            "iss": "http://localhost:8787/api/api-keys/key-id",
+            "scopes": ["runt:read", "runt:execute"]
+        }))
+    }
+
+    fn jwt_with_payload(payload: Value) -> String {
+        format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes())
+        )
     }
 }

@@ -245,12 +245,26 @@ collaborator rows. Viewer-scope HTTP reads authorize through the public
 from a stale `editor` request to stamped `viewer` scope for public notebooks.
 Mutation routes do not use that downgrade.
 
-Non-browser publishing uses Anaconda API keys with:
+Non-browser publishing uses a publish bearer token:
 
 ```text
-Authorization: Bearer <ANACONDA_API_KEY>
+Authorization: Bearer <NTERACT_API_KEY>
 X-Notebook-Cloud-Auth-Provider: anaconda-api-key
 ```
+
+`runt-publish` treats this as publish bearer auth. It defaults to the current
+hosted dev URL, `https://preview.runt.run`, loads publish-related values from
+`.env`, and maps `NTERACT_API_KEY` to the current provider header
+automatically. `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` and `ANACONDA_API_KEY` are
+accepted as local aliases:
+
+```bash
+NTERACT_API_KEY=... \
+cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
+```
+
+Use `--env-file ~/codex/desktop/.env` when publishing from a worktree that does
+not have the key in its own `.env`.
 
 See `docs/adr/hosted-direct-oidc-demo-runbook.md`.
 
