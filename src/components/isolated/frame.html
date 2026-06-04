@@ -920,13 +920,23 @@
         );
 
         // --- Double Click Forwarding ---
-        document.addEventListener("dblclick", function (e) {
-          // Don't forward double-clicks on links (user is selecting text)
-          const link = e.target.closest("a");
-          if (!link) {
-            sendRpc("nteract/doubleClick", {});
-          }
-        });
+        document.addEventListener(
+          "dblclick",
+          function (e) {
+            // Don't forward double-clicks on links (user is selecting text).
+            // Capture phase keeps markdown renderers from swallowing the edit
+            // affordance after the iframe has taken pointer ownership.
+            var target =
+              e.target && e.target.nodeType === Node.ELEMENT_NODE
+                ? e.target
+                : e.target && e.target.parentElement;
+            var link = target && target.closest ? target.closest("a") : null;
+            if (!link) {
+              sendRpc("nteract/doubleClick", {});
+            }
+          },
+          { capture: true },
+        );
 
         // --- Clear selection on blur ---
         // When focus leaves this iframe (user clicked elsewhere), clear

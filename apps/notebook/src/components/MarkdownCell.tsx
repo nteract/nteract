@@ -282,8 +282,10 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   const handleDoubleClick = useCallback(() => {
     if (readOnly) return;
+    onFocus();
+    setPreviewFrameInteractionActive(false);
     setEditing(true);
-  }, [readOnly]);
+  }, [onFocus, readOnly]);
 
   const releasePreviewFrameInteraction = useCallback(() => {
     setPreviewFrameInteractionActive(false);

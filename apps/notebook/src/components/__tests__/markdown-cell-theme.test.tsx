@@ -8,6 +8,7 @@ let mockColorTheme: string | undefined;
 let mockIsFocused = false;
 const isolatedFrameProps: Array<Record<string, unknown>> = [];
 let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
+let lastFrameDoubleClick: (() => void) | undefined;
 
 const mockFrameHandle = {
   send: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("@/components/isolated", async () => {
     Record<string, unknown> & {
       onMouseDown?: () => void;
       onMouseUp?: (params: { hasSelection?: boolean }) => void;
+      onDoubleClick?: () => void;
       onReady?: () => void;
     }
   >(function MockIsolatedFrame(props, ref) {
@@ -54,18 +56,23 @@ vi.mock("@/components/isolated", async () => {
 
     React.useEffect(() => {
       lastFrameMouseUp = props.onMouseUp;
+      lastFrameDoubleClick = props.onDoubleClick;
       return () => {
         if (lastFrameMouseUp === props.onMouseUp) {
           lastFrameMouseUp = undefined;
         }
+        if (lastFrameDoubleClick === props.onDoubleClick) {
+          lastFrameDoubleClick = undefined;
+        }
       };
-    }, [props.onMouseUp]);
+    }, [props.onDoubleClick, props.onMouseUp]);
 
     return (
       <iframe
         data-testid="markdown-frame"
         data-slot="isolated-frame"
         onMouseDown={props.onMouseDown}
+        onDoubleClick={props.onDoubleClick}
       />
     );
   });
@@ -191,6 +198,7 @@ describe("MarkdownCell theme sync", () => {
     mockIsFocused = false;
     isolatedFrameProps.length = 0;
     lastFrameMouseUp = undefined;
+    lastFrameDoubleClick = undefined;
     mockFrameHandle.send.mockClear();
     mockFrameHandle.render.mockClear();
     mockFrameHandle.renderBatch.mockClear();
@@ -398,6 +406,28 @@ describe("MarkdownCell theme sync", () => {
 
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
     expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+  });
+
+  it("enters edit mode from an iframe double-click", async () => {
+    mockIsFocused = true;
+    const onFocus = vi.fn();
+
+    const { getByLabelText } = render(
+      <MarkdownCell cell={makeCell()} onFocus={onFocus} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).not.toContain("hidden");
+
+    act(() => {
+      lastFrameDoubleClick?.();
+    });
+
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+    expect(onFocus).toHaveBeenCalled();
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
   });
 
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {
