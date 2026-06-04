@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use automerge::AutoCommit;
@@ -13,7 +12,7 @@ use notebook_doc::NotebookDoc;
 use notebook_sync::{connect, BroadcastReceiver, SnapshotPairBytes};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use runtime_doc::RuntimeStateDoc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::time::{sleep, Duration, Instant};
@@ -34,7 +33,6 @@ const NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID_ENV: &str = "NOTEBOOK_CLOUD_SOURCE_NOTEB
 const NOTEBOOK_CLOUD_AUTH_PROVIDER_ENV: &str = "NOTEBOOK_CLOUD_AUTH_PROVIDER";
 const NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV: &str = "NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN";
 const NOTEBOOK_CLOUD_BEARER_TOKEN_ENV: &str = "NOTEBOOK_CLOUD_BEARER_TOKEN";
-const ULID_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 const PUBLISH_ENV_KEYS: &[&str] = &[
     NTERACT_CLOUD_URL_ENV,
@@ -44,7 +42,6 @@ const PUBLISH_ENV_KEYS: &[&str] = &[
     NTERACT_PUBLISH_AUTH_PROVIDER_ENV,
     NOTEBOOK_CLOUD_URL_ENV,
     NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID_ENV,
-    "NOTEBOOK_CLOUD_NOTEBOOK_ID",
     NOTEBOOK_CLOUD_BEARER_TOKEN_ENV,
     NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV,
     NOTEBOOK_CLOUD_AUTH_PROVIDER_ENV,
@@ -71,10 +68,6 @@ struct Args {
     /// Load publishing env vars from a KEY=VALUE file before resolving credentials.
     #[arg(long = "env-file", value_name = "PATH")]
     _env_file: Vec<PathBuf>,
-
-    /// Hosted notebook id. Defaults to NOTEBOOK_CLOUD_NOTEBOOK_ID, then the file stem.
-    #[arg(long = "id", env = "NOTEBOOK_CLOUD_NOTEBOOK_ID")]
-    notebook_id: Option<String>,
 
     /// Optional vanity path segment for the reported viewer URL: /n/{id}/{vanity-name}.
     #[arg(long)]
@@ -140,12 +133,42 @@ struct SourceSnapshot {
     _broadcast_rx: BroadcastReceiver,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublishSourceDescriptor {
+    source_notebook_id: Option<String>,
+    source_notebook_name: Option<String>,
+    vanity_name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreatePublishTargetRequest<'a> {
+    vanity_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_notebook_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_notebook_name: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishTargetResponse {
+    notebook_id: String,
+    viewer_url: String,
+    vanity_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublishTarget {
+    notebook_id: String,
+    viewer_url: String,
+    vanity_name: String,
+}
+
 #[derive(Debug)]
 struct Publisher {
     client: reqwest::Client,
     base_url: Url,
     notebook_id: String,
-    vanity_name: Option<String>,
+    viewer_url: String,
     dev_token: Option<String>,
     bearer_token: Option<String>,
     auth_provider: Option<String>,
@@ -172,17 +195,24 @@ pub async fn run_from_args(raw_args: Vec<OsString>) -> Result<()> {
 async fn publish(args: Args) -> Result<()> {
     let publish_auth = resolve_publish_auth(&args)?;
     let publish_source = resolve_publish_source(&args)?;
-    let notebook_id = args
-        .notebook_id
-        .clone()
-        .unwrap_or_else(|| default_notebook_id(&publish_source));
     let socket_path = args
         .socket
         .clone()
         .unwrap_or_else(runtimed_client::daemon_paths::get_socket_path);
+    if let PublishSource::ActiveNotebookId(source_notebook_id) = &publish_source {
+        ensure_active_room_exists(&socket_path, source_notebook_id).await?;
+    }
 
-    let source_snapshot =
-        export_source_snapshot(&args, &publish_source, socket_path.clone(), &notebook_id).await?;
+    let source_descriptor = publish_source_descriptor(&args, &publish_source);
+    let publish_target = create_publish_target(&args, &publish_auth, &source_descriptor).await?;
+
+    let source_snapshot = export_source_snapshot(
+        &args,
+        &publish_source,
+        socket_path.clone(),
+        &publish_target.notebook_id,
+    )
+    .await?;
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
     let mut refs = collect_snapshot_blob_refs(
@@ -196,7 +226,7 @@ async fn publish(args: Args) -> Result<()> {
     let publisher = Publisher::new(
         args,
         publish_auth,
-        notebook_id,
+        publish_target,
         blob_base_url,
         blob_store_path,
     )?;
@@ -281,6 +311,59 @@ async fn publish(args: Args) -> Result<()> {
     );
 
     Ok(())
+}
+
+async fn create_publish_target(
+    args: &Args,
+    publish_auth: &PublishAuth,
+    source: &PublishSourceDescriptor,
+) -> Result<PublishTarget> {
+    let base_url = cloud_base_url(&args.cloud_url)?;
+    let url = endpoint(&base_url, &["api", "n"])?;
+    let body = CreatePublishTargetRequest {
+        vanity_name: &source.vanity_name,
+        source_notebook_id: source.source_notebook_id.as_deref(),
+        source_notebook_name: source.source_notebook_name.as_deref(),
+    };
+    let request = add_identity_headers(
+        reqwest::Client::new().post(url.clone()).json(&body),
+        publish_auth,
+        &args.user,
+        &args.operator,
+    );
+
+    let response = request.send().await?;
+    let status = response.status();
+    let text = response.text().await?;
+    if !status.is_success() {
+        bail!(
+            "{} returned {} while creating publish target: {}",
+            url,
+            status,
+            text
+        );
+    }
+
+    let target: PublishTargetResponse =
+        serde_json::from_str(&text).with_context(|| format!("decode JSON response from {url}"))?;
+    let notebook_id = nonempty_string(&target.notebook_id)
+        .context("publish target response did not include notebook_id")?
+        .to_string();
+    let viewer_url = nonempty_string(&target.viewer_url)
+        .context("publish target response did not include viewer_url")?
+        .to_string();
+    let vanity_name = target
+        .vanity_name
+        .as_deref()
+        .and_then(nonempty_string)
+        .unwrap_or(&source.vanity_name)
+        .to_string();
+
+    Ok(PublishTarget {
+        notebook_id,
+        viewer_url,
+        vanity_name,
+    })
 }
 
 async fn export_source_snapshot(
@@ -396,17 +479,16 @@ impl Publisher {
     fn new(
         args: Args,
         publish_auth: PublishAuth,
-        notebook_id: String,
+        publish_target: PublishTarget,
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
     ) -> Result<Self> {
-        let base_url = Url::parse(&with_trailing_slash(&args.cloud_url))
-            .with_context(|| format!("parse notebook-cloud URL {}", args.cloud_url))?;
+        let base_url = cloud_base_url(&args.cloud_url)?;
         Ok(Self {
             client: reqwest::Client::new(),
             base_url,
-            notebook_id,
-            vanity_name: args.vanity_name,
+            notebook_id: publish_target.notebook_id,
+            viewer_url: publish_target.viewer_url,
             dev_token: publish_auth.dev_token,
             bearer_token: publish_auth.bearer_token,
             auth_provider: publish_auth.auth_provider,
@@ -464,7 +546,10 @@ impl Publisher {
     }
 
     async fn remote_blob_exists(&self, hash: &str) -> Result<bool> {
-        let url = self.endpoint(&["api", "n", &self.notebook_id, "blobs", hash])?;
+        let url = endpoint(
+            &self.base_url,
+            &["api", "n", &self.notebook_id, "blobs", hash],
+        )?;
         let response = self
             .add_identity_headers(self.client.head(url.clone()))
             .send()
@@ -526,7 +611,7 @@ impl Publisher {
         content_type: &str,
         extra_headers: HeaderMap,
     ) -> Result<Value> {
-        let url = self.endpoint(path)?;
+        let url = endpoint(&self.base_url, path)?;
         let mut request = self.add_identity_headers(
             self.client
                 .put(url.clone())
@@ -550,7 +635,7 @@ impl Publisher {
     }
 
     async fn get_json(&self, path: &[&str]) -> Result<Value> {
-        let url = self.endpoint(path)?;
+        let url = endpoint(&self.base_url, path)?;
         let response = self
             .add_identity_headers(self.client.get(url.clone()))
             .send()
@@ -567,53 +652,63 @@ impl Publisher {
         self.get_json(&["api", "n", &self.notebook_id]).await
     }
 
-    fn add_identity_headers(
-        &self,
-        mut request: reqwest::RequestBuilder,
-    ) -> reqwest::RequestBuilder {
-        request = request
-            .header("X-Operator", &self.operator)
-            .header("X-Scope", "owner");
-
-        if let Some(token) = &self.bearer_token {
-            if let Some(provider) = &self.auth_provider {
-                request = request.header("X-Notebook-Cloud-Auth-Provider", provider);
-            }
-            return request.bearer_auth(token);
-        }
-
-        request = request.header("X-User", &self.user);
-
-        if let Some(token) = &self.dev_token {
-            request = request.header("X-Notebook-Cloud-Dev-Token", token);
-        }
-        request
+    fn add_identity_headers(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        add_identity_headers(
+            request,
+            &PublishAuth {
+                dev_token: self.dev_token.clone(),
+                bearer_token: self.bearer_token.clone(),
+                auth_provider: self.auth_provider.clone(),
+            },
+            &self.user,
+            &self.operator,
+        )
     }
 
-    fn endpoint(&self, path: &[&str]) -> Result<Url> {
-        let joined = path
-            .iter()
-            .map(|segment| urlencoding::encode(segment).into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-        self.base_url
-            .join(&joined)
-            .with_context(|| format!("build endpoint path {joined}"))
+    fn viewer_url(&self) -> &str {
+        &self.viewer_url
+    }
+}
+
+fn add_identity_headers(
+    mut request: reqwest::RequestBuilder,
+    publish_auth: &PublishAuth,
+    user: &str,
+    operator: &str,
+) -> reqwest::RequestBuilder {
+    request = request
+        .header("X-Operator", operator)
+        .header("X-Scope", "owner");
+
+    if let Some(token) = &publish_auth.bearer_token {
+        if let Some(provider) = &publish_auth.auth_provider {
+            request = request.header("X-Notebook-Cloud-Auth-Provider", provider);
+        }
+        return request.bearer_auth(token);
     }
 
-    fn viewer_url(&self) -> String {
-        let id = urlencoding::encode(&self.notebook_id);
-        let mut url = format!("{}n/{}", self.base_url, id);
-        if let Some(slug) = self
-            .vanity_name
-            .as_deref()
-            .filter(|slug| !slug.trim().is_empty())
-        {
-            url.push('/');
-            url.push_str(&urlencoding::encode(slug.trim()));
-        }
-        url
+    request = request.header("X-User", user);
+
+    if let Some(token) = &publish_auth.dev_token {
+        request = request.header("X-Notebook-Cloud-Dev-Token", token);
     }
+    request
+}
+
+fn cloud_base_url(value: &str) -> Result<Url> {
+    Url::parse(&with_trailing_slash(value))
+        .with_context(|| format!("parse notebook-cloud URL {value}"))
+}
+
+fn endpoint(base_url: &Url, path: &[&str]) -> Result<Url> {
+    let joined = path
+        .iter()
+        .map(|segment| urlencoding::encode(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    base_url
+        .join(&joined)
+        .with_context(|| format!("build endpoint path {joined}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1295,23 +1390,41 @@ fn validate_source_notebook_id(value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
-fn default_notebook_id(source: &PublishSource) -> String {
-    match source {
-        PublishSource::Path(path) => default_notebook_id_from_path(path),
-        PublishSource::ActiveNotebookId(_) => create_ulid(),
+fn publish_source_descriptor(args: &Args, source: &PublishSource) -> PublishSourceDescriptor {
+    let source_notebook_id = match source {
+        PublishSource::Path(_) => None,
+        PublishSource::ActiveNotebookId(source_notebook_id) => Some(source_notebook_id.clone()),
+    };
+    let source_notebook_name = match source {
+        PublishSource::Path(path) => path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(nonempty_string)
+            .map(ToOwned::to_owned),
+        PublishSource::ActiveNotebookId(_) => None,
+    };
+    let vanity_name = args
+        .vanity_name
+        .as_deref()
+        .and_then(nonempty_string)
+        .map(slugify_path_segment)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            source_notebook_name
+                .as_deref()
+                .map(slugify_path_segment)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "notebook".to_string());
+
+    PublishSourceDescriptor {
+        source_notebook_id,
+        source_notebook_name,
+        vanity_name,
     }
 }
 
-fn default_notebook_id_from_path(path: &Path) -> String {
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(sanitize_notebook_id)
-        .filter(|id| !id.is_empty());
-    stem.unwrap_or_else(create_ulid)
-}
-
-fn sanitize_notebook_id(value: &str) -> String {
+fn slugify_path_segment(value: &str) -> String {
     value
         .chars()
         .map(|ch| {
@@ -1326,45 +1439,6 @@ fn sanitize_notebook_id(value: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-")
-}
-
-fn create_ulid() -> String {
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let random_uuid = uuid::Uuid::new_v4();
-    let mut random = [0u8; 10];
-    random.copy_from_slice(&random_uuid.as_bytes()[..10]);
-    create_ulid_from_parts(timestamp_ms, random)
-}
-
-fn create_ulid_from_parts(timestamp_ms: u128, random: [u8; 10]) -> String {
-    let mut output = String::with_capacity(26);
-    let mut time = timestamp_ms & ((1u128 << 48) - 1);
-    let mut time_chars = [0u8; 10];
-    for index in (0..time_chars.len()).rev() {
-        time_chars[index] = ULID_ALPHABET[(time & 0b11111) as usize];
-        time >>= 5;
-    }
-    for ch in time_chars {
-        output.push(char::from(ch));
-    }
-
-    let mut random_value = 0u128;
-    for byte in random {
-        random_value = (random_value << 8) | u128::from(byte);
-    }
-    let mut random_chars = [0u8; 16];
-    for index in (0..random_chars.len()).rev() {
-        random_chars[index] = ULID_ALPHABET[(random_value & 0b11111) as usize];
-        random_value >>= 5;
-    }
-    for ch in random_chars {
-        output.push(char::from(ch));
-    }
-
-    output
 }
 
 fn with_trailing_slash(value: &str) -> String {
@@ -1557,30 +1631,41 @@ mod tests {
     }
 
     #[test]
-    fn default_id_is_file_stem_slug() {
+    fn source_descriptor_uses_file_name_for_vanity() {
+        let args = Args::try_parse_from(["runt-publish", "/tmp/Topic Viz!.ipynb"]).unwrap();
         assert_eq!(
-            default_notebook_id(&PublishSource::Path(PathBuf::from("/tmp/Topic Viz!.ipynb"))),
-            "topic-viz"
+            publish_source_descriptor(
+                &args,
+                &PublishSource::Path(PathBuf::from("/tmp/Topic Viz!.ipynb"))
+            ),
+            PublishSourceDescriptor {
+                source_notebook_id: None,
+                source_notebook_name: Some("Topic Viz!".to_string()),
+                vanity_name: "topic-viz".to_string(),
+            }
         );
     }
 
     #[test]
-    fn active_source_default_id_is_ulid() {
+    fn source_descriptor_uses_active_room_id() {
+        let source_id = "018fc2e5-ea4b-7f7c-a079-6f42d90ff3a0";
+        let args = Args::try_parse_from([
+            "runt-publish",
+            "--vanity-name",
+            "Markdown Harness",
+            "--source-notebook-id",
+            source_id,
+        ])
+        .unwrap();
         let source =
             PublishSource::ActiveNotebookId("018fc2e5-ea4b-7f7c-a079-6f42d90ff3a0".to_string());
-
-        assert_is_canonical_ulid(&default_notebook_id(&source));
-    }
-
-    #[test]
-    fn create_ulid_encodes_timestamp_and_random_bytes() {
         assert_eq!(
-            create_ulid_from_parts(1, [0; 10]),
-            "00000000010000000000000000"
-        );
-        assert_eq!(
-            create_ulid_from_parts((1u128 << 48) - 1, [0xff; 10]),
-            "7ZZZZZZZZZZZZZZZZZZZZZZZZZ"
+            publish_source_descriptor(&args, &source),
+            PublishSourceDescriptor {
+                source_notebook_id: Some(source_id.to_string()),
+                source_notebook_name: None,
+                vanity_name: "markdown-harness".to_string(),
+            }
         );
     }
 
@@ -1693,7 +1778,7 @@ mod tests {
             client: reqwest::Client::new(),
             base_url: Url::parse("https://cloud.test/").unwrap(),
             notebook_id: "topic-viz".to_string(),
-            vanity_name: None,
+            viewer_url: "https://cloud.test/n/topic-viz/topic-viz".to_string(),
             dev_token: None,
             bearer_token: None,
             auth_provider: None,
@@ -1704,8 +1789,7 @@ mod tests {
         };
 
         assert_eq!(
-            publisher
-                .endpoint(&["api", "n", &publisher.notebook_id])
+            endpoint(&publisher.base_url, &["api", "n", &publisher.notebook_id])
                 .unwrap()
                 .as_str(),
             "https://cloud.test/api/n/topic-viz"
@@ -1906,12 +1990,5 @@ mod tests {
             std::env::remove_var(name);
         }
         result
-    }
-
-    fn assert_is_canonical_ulid(value: &str) {
-        assert_eq!(value.len(), 26);
-        assert!(value.chars().all(
-            |ch| matches!(ch, '0'..='9' | 'A'..='H' | 'J'..='K' | 'M'..='N' | 'P'..='T' | 'V'..='Z')
-        ));
     }
 }

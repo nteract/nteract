@@ -90,6 +90,8 @@ const DEFAULT_RUNTIMED_WASM_BASE_PATH = "/assets/";
 const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
 const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
+const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CREATE_NOTEBOOK_ID_ATTEMPTS = 8;
 
 interface MissingSnapshotBlob {
   hash: string;
@@ -141,6 +143,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/n/:notebookId/:vanityName", { trailingSlash: "optional" }),
     methods: ["GET"],
     handler: ({ params }, request, env) => viewer(params.notebookId, request, env),
+  },
+  {
+    match: exactPath("/api/n"),
+    methods: ["POST"],
+    handler: (_match, request, env) => routeCreateNotebook(request, env),
   },
   {
     match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
@@ -434,6 +441,187 @@ function anacondaApiKeyHealth(env: Env): {
     status,
     principal_namespace: hasPrincipalNamespace ? "configured" : "default",
   };
+}
+
+type CreateNotebookPayload = Record<string, unknown>;
+
+async function routeCreateNotebook(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!allowsPublish(identity.scope)) {
+    return json({ error: `${identity.scope} cannot create notebooks` }, 403);
+  }
+
+  const payload = await readCreateNotebookPayload(request);
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const vanityName = optionalPayloadString(payload, ["vanity_name", "vanityName"], {
+    field: "vanity_name",
+    maxLength: 128,
+  });
+  if (vanityName instanceof Response) {
+    return vanityName;
+  }
+  const sourceNotebookId = optionalPayloadString(
+    payload,
+    ["source_notebook_id", "sourceNotebookId"],
+    { field: "source_notebook_id", maxLength: 256 },
+  );
+  if (sourceNotebookId instanceof Response) {
+    return sourceNotebookId;
+  }
+  const sourceNotebookName = optionalPayloadString(
+    payload,
+    ["source_notebook_name", "sourceNotebookName"],
+    { field: "source_notebook_name", maxLength: 256 },
+  );
+  if (sourceNotebookName instanceof Response) {
+    return sourceNotebookName;
+  }
+
+  const notebookId = await createUniqueNotebookId(env);
+  if (!notebookId) {
+    return json({ error: "could not allocate notebook id" }, 500);
+  }
+  const ownerPrincipal = await createNotebookWithOwnerAcl(env, notebookId, identity);
+  cloudLog("info", "notebook.created", {
+    notebook_id: notebookId,
+    owner_principal: ownerPrincipal,
+    actor_label: identity.actorLabel,
+    source_notebook_id: sourceNotebookId,
+    source_notebook_name: sourceNotebookName,
+    counter: "notebooks_created",
+    counter_delta: 1,
+  });
+
+  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName);
+  const apiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
+  return json(
+    {
+      ok: true,
+      notebook_id: notebookId,
+      vanity_name: vanityName,
+      viewer_url: viewerUrl,
+      source_notebook_id: sourceNotebookId,
+      source_notebook_name: sourceNotebookName,
+      endpoints: {
+        catalog: apiBasePath,
+        blobs: `${apiBasePath}/blobs/{hash}`,
+        runtime_snapshots: `${apiBasePath}/runtime-snapshots/{runtimeHeadsHash}`,
+        snapshots: `${apiBasePath}/snapshots/{notebookHeadsHash}`,
+      },
+    },
+    201,
+  );
+}
+
+async function readCreateNotebookPayload(
+  request: Request,
+): Promise<CreateNotebookPayload | Response> {
+  if (!request.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+    return {};
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: "request body must be valid JSON" }, 400);
+  }
+  if (!isRecord(payload)) {
+    return json({ error: "request body must be a JSON object" }, 400);
+  }
+  return payload;
+}
+
+function optionalPayloadString(
+  payload: Record<string, unknown>,
+  keys: string[],
+  options: {
+    field: string;
+    maxLength: number;
+  },
+): string | null | Response {
+  const rawValue = keys.map((key) => payload[key]).find((value) => value !== undefined);
+  if (rawValue === undefined || rawValue === null) {
+    return null;
+  }
+  if (typeof rawValue !== "string") {
+    return json({ error: `${options.field} must be a string` }, 400);
+  }
+  const value = rawValue.trim();
+  if (!value) {
+    return null;
+  }
+  if (value.length > options.maxLength) {
+    return json({ error: `${options.field} is too long` }, 400);
+  }
+  return value;
+}
+
+async function createUniqueNotebookId(env: Env): Promise<string | null> {
+  for (let attempt = 0; attempt < CREATE_NOTEBOOK_ID_ATTEMPTS; attempt += 1) {
+    const notebookId = createUlid();
+    if (!(await getNotebookRow(env, notebookId))) {
+      return notebookId;
+    }
+  }
+  return null;
+}
+
+function createUlid(now = Date.now(), random = randomBytes(10)): string {
+  let time = BigInt(Math.max(0, Math.min(now, 0xffffffffffff)));
+  let encodedTime = "";
+  for (let index = 0; index < 10; index += 1) {
+    encodedTime = ULID_ALPHABET[Number(time & 31n)] + encodedTime;
+    time >>= 5n;
+  }
+
+  let randomValue = 0n;
+  for (const byte of random) {
+    randomValue = (randomValue << 8n) | BigInt(byte);
+  }
+  let encodedRandom = "";
+  for (let index = 0; index < 16; index += 1) {
+    encodedRandom = ULID_ALPHABET[Number(randomValue & 31n)] + encodedRandom;
+    randomValue >>= 5n;
+  }
+
+  return `${encodedTime}${encodedRandom}`;
+}
+
+function randomBytes(length: number): Uint8Array {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function viewerUrlForRequest(
+  request: Request,
+  notebookId: string,
+  vanityName: string | null,
+): string {
+  const url = new URL(request.url);
+  const vanitySegment = vanityName?.trim() || "notebook";
+  url.pathname = `/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanitySegment)}`;
+  url.search = "";
+  url.hash = "";
+  return url.href;
 }
 
 function oidcHealth(env: Env): {

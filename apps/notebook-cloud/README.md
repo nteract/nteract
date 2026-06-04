@@ -148,6 +148,28 @@ verifies the catalog revision. By default it creates and executes a small
 `ShadenA/MathNet` Polars notebook. Set `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>`
 to publish an already-open live notebook room instead.
 
+The hidden `runt publish` CLI follows the same source-room idea but lets the
+cloud allocate the hosted notebook id. It first posts the requested vanity name
+and local source identity to `/api/n`, then uploads blobs and snapshot bytes to
+the returned target:
+
+```bash
+runt publish --source-notebook-id <local-room-uuid> --vanity-name markdown-harness
+```
+
+For local `.ipynb` files, pass the path as `SOURCE`; the CLI opens it through
+the daemon, derives the default vanity segment from the filename, and still lets
+the cloud allocate the hosted id:
+
+```bash
+runt publish ./examples/markdown-harness.ipynb
+```
+
+Hosted publishing uses `NTERACT_CLOUD_URL` for the cloud origin and
+`NTERACT_API_KEY` for bearer auth. `NTERACT_PUBLISH_URL`,
+`NOTEBOOK_CLOUD_URL`, and `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remain accepted
+aliases while the alpha publishing surface is settling.
+
 `smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
 the returned viewer URL and exported notebook/runtime heads, then runs
 `smoke:hosted` against that exact notebook while asserting the catalog latest
