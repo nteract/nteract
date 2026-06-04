@@ -45,7 +45,16 @@ test("honors explicit local port and host overrides", () => {
   );
 });
 
-test("prefers NOTEBOOK_CLOUD_URL when a script targets a deployed host", () => {
+test("prefers NTERACT_CLOUD_URL when a script targets a deployed host", () => {
+  const baseUrl = notebookCloudBaseUrl({
+    env: { NTERACT_CLOUD_URL: "https://preview.runt.run" },
+    workspaceRoot: "/tmp/nteract/worktrees/cloud-c/desktop",
+  });
+
+  assert.equal(baseUrl, "https://preview.runt.run");
+});
+
+test("keeps NOTEBOOK_CLOUD_URL as a deployed host alias", () => {
   const baseUrl = notebookCloudBaseUrl({
     env: { NOTEBOOK_CLOUD_URL: "https://preview.runt.run" },
     workspaceRoot: "/tmp/nteract/worktrees/cloud-c/desktop",

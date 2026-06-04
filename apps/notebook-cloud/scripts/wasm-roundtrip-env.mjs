@@ -4,7 +4,7 @@ export function assertWasmRoundtripAuthEnv({ baseUrl, devAuthToken }) {
   }
 
   throw new Error(
-    "NOTEBOOK_CLOUD_DEV_TOKEN is required when NOTEBOOK_CLOUD_URL targets a deployed notebook-cloud host. Pass it through the environment; deployed dev credentials are intentionally not accepted in URLs.",
+    "NOTEBOOK_CLOUD_DEV_TOKEN is required when NTERACT_CLOUD_URL or NOTEBOOK_CLOUD_URL targets a deployed notebook-cloud host. Pass it through the environment; deployed dev credentials are intentionally not accepted in URLs.",
   );
 }
 
