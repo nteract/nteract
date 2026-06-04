@@ -95,6 +95,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /"runtimeSnapshotBasePath":"\/api\/n\/demo\/runtime-snapshots\/"/);
     assert.match(html, /"aclEndpoint":"\/api\/n\/demo\/acl"/);
     assert.match(html, /"invitesEndpoint":"\/api\/n\/demo\/invites"/);
+    assert.match(html, /"accessRequestsEndpoint":"\/api\/n\/demo\/access-requests"/);
     assert.match(html, /"hostCapabilities":\{"canManageSharing":true\}/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
     assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);

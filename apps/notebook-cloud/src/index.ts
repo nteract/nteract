@@ -9,6 +9,7 @@ import {
   authenticateRequestWithProviders,
   DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  isAnonymousViewer,
   parseScope,
   stampTrustedIdentity,
   type AuthenticatedConnection,
@@ -34,6 +35,8 @@ import {
   runtimeStateSnapshotKey,
   snapshotKey,
   type NotebookAclRow,
+  type NotebookAccessRequestRow,
+  type NotebookAccessRequestStatus,
 } from "./storage.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
 import {
@@ -60,6 +63,12 @@ import {
   shareTargetDisplay,
   type PrincipalProfile,
 } from "./sharing.ts";
+import {
+  createNotebookAccessRequest,
+  getLatestNotebookAccessRequestForRequester,
+  listNotebookAccessRequests,
+  resolveNotebookAccessRequest,
+} from "./access-requests-storage.ts";
 import {
   viewerThemeBootstrapScript,
   viewerThemeFirstPaintStyle,
@@ -173,6 +182,23 @@ const worker: ExportedHandler<Env> = {
         env,
         decodeURIComponent(inviteItemMatch[1]),
         decodeURIComponent(inviteItemMatch[2]),
+      );
+    }
+
+    const accessRequestMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/access-requests\/?$/);
+    if (accessRequestMatch) {
+      return routeNotebookAccessRequests(request, env, decodeURIComponent(accessRequestMatch[1]));
+    }
+
+    const accessRequestItemMatch = url.pathname.match(
+      /^\/api\/n\/([^/]+)\/access-requests\/([^/]+)\/?$/,
+    );
+    if (accessRequestItemMatch) {
+      return routeNotebookAccessRequest(
+        request,
+        env,
+        decodeURIComponent(accessRequestItemMatch[1]),
+        decodeURIComponent(accessRequestItemMatch[2]),
       );
     }
 
@@ -795,6 +821,266 @@ async function routeNotebookInvite(
     notebook_id: notebookId,
     invites: (await listNotebookInvites(env, notebookId)).map(inviteResponse),
   });
+}
+
+interface AccessRequestActionPayload {
+  action?: unknown;
+}
+
+async function routeNotebookAccessRequests(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method === "GET") {
+    const owner = await tryAuthorizeNotebookAccess(env, notebookId, identity, "owner");
+    if (owner.ok) {
+      return json({
+        notebook_id: notebookId,
+        access_requests: await accessRequestResponseRows(
+          env,
+          await listNotebookAccessRequests(env, notebookId),
+        ),
+      });
+    }
+
+    if (isAnonymousViewer(identity)) {
+      return json({ error: "sign in to view access requests" }, 401);
+    }
+
+    const viewer = await tryAuthorizeNotebookAccess(env, notebookId, identity, "viewer");
+    if (!viewer.ok) {
+      return json({ error: viewer.error.message }, viewer.error.status);
+    }
+
+    const latest = await getLatestNotebookAccessRequestForRequester(env, {
+      notebookId,
+      requesterPrincipal: identity.principal,
+    });
+    return json({
+      notebook_id: notebookId,
+      access_requests: latest ? [accessRequestResponse(latest)] : [],
+    });
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to request edit access" }, 401);
+  }
+
+  const viewer = await tryAuthorizeNotebookAccess(env, notebookId, identity, "viewer");
+  if (!viewer.ok) {
+    return json({ error: viewer.error.message }, viewer.error.status);
+  }
+
+  const editor = await tryAuthorizeNotebookAccess(env, notebookId, identity, "editor");
+  if (editor.ok) {
+    return json({
+      ok: true,
+      notebook_id: notebookId,
+      access_status: "granted",
+      access_request: null,
+    });
+  }
+
+  const accessRequestResult = await createNotebookAccessRequest(env, {
+    notebookId,
+    requesterPrincipal: identity.principal,
+    actorLabel: identity.actorLabel,
+  });
+  if (!accessRequestResult) {
+    return json({ error: "access request was not created" }, 500);
+  }
+  const accessRequest = accessRequestResult.request;
+
+  if (accessRequestResult.created) {
+    cloudLog("info", "access_request.create.completed", {
+      notebook_id: notebookId,
+      principal: identity.principal,
+      actor_label: identity.actorLabel,
+      access_request_id: accessRequest.id,
+      counter: "access_request_creates",
+      counter_delta: 1,
+    });
+  }
+
+  return json(
+    {
+      ok: true,
+      notebook_id: notebookId,
+      access_status: accessRequest.status,
+      access_request: accessRequestResponse(accessRequest),
+    },
+    accessRequestResult.created ? 201 : 200,
+  );
+}
+
+async function routeNotebookAccessRequest(
+  request: Request,
+  env: Env,
+  notebookId: string,
+  requestId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const status = await parseAccessRequestResolutionStatus(request);
+  if (status instanceof Response) {
+    return status;
+  }
+
+  const resolved = await resolveNotebookAccessRequest(env, {
+    notebookId,
+    requestId,
+    status,
+    actorLabel: identity.actorLabel,
+  });
+  if (!resolved) {
+    return json({ error: "pending access request not found" }, 404);
+  }
+
+  cloudLog("info", "access_request.resolve.completed", {
+    notebook_id: notebookId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    access_request_id: requestId,
+    access_request_status: resolved.status,
+    counter: "access_request_resolutions",
+    counter_delta: 1,
+  });
+
+  return json({
+    ok: true,
+    notebook_id: notebookId,
+    access_request: accessRequestResponse(resolved),
+    access_requests: await accessRequestResponseRows(
+      env,
+      await listNotebookAccessRequests(env, notebookId),
+    ),
+  });
+}
+
+async function parseAccessRequestResolutionStatus(
+  request: Request,
+): Promise<Exclude<NotebookAccessRequestStatus, "pending"> | Response> {
+  let payload: AccessRequestActionPayload;
+  try {
+    payload = (await request.json()) as AccessRequestActionPayload;
+  } catch {
+    return json({ error: "access request body must be JSON" }, 400);
+  }
+
+  const action = stringField(payload.action, "action");
+  if (action instanceof Response) {
+    return action;
+  }
+
+  switch (action) {
+    case "approve":
+      return "approved";
+    case "deny":
+      return "denied";
+    case "dismiss":
+      return "dismissed";
+    default:
+      return json({ error: "access request action must be approve, deny, or dismiss" }, 400);
+  }
+}
+
+async function accessRequestResponseRows(
+  env: Env,
+  rows: NotebookAccessRequestRow[],
+): Promise<Array<Record<string, unknown>>> {
+  const principals = rows.map((row) => row.requester_principal);
+  const profilesByPrincipal = new Map(
+    (await getPrincipalProfiles(env, principals)).map((profile) => [profile.principal, profile]),
+  );
+  return rows.map((row) =>
+    accessRequestResponse(row, profilesByPrincipal.get(row.requester_principal)),
+  );
+}
+
+function accessRequestResponse(
+  row: NotebookAccessRequestRow,
+  profile?: PrincipalProfileRow,
+): Record<string, unknown> {
+  return {
+    id: row.id,
+    notebook_id: row.notebook_id,
+    requester_principal: row.requester_principal,
+    scope: row.scope,
+    status: row.status,
+    requested_by_actor_label: row.requested_by_actor_label,
+    resolved_by_actor_label: row.resolved_by_actor_label,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    resolved_at: row.resolved_at,
+    display: profile
+      ? shareTargetDisplay({ profile: principalProfileFromRow(profile) })
+      : {
+          kind: "principal",
+          label: row.requester_principal,
+          principal: row.requester_principal,
+          email: null,
+        },
+  };
+}
+
+async function tryAuthorizeNotebookAccess(
+  env: Env,
+  notebookId: string,
+  identity: AuthenticatedConnection,
+  requestedScope: ConnectionScope,
+): Promise<
+  { ok: true; identity: AuthenticatedConnection } | { ok: false; error: AuthorizationError }
+> {
+  try {
+    return {
+      ok: true,
+      identity: await authorizeNotebookAccess(env, notebookId, identity, requestedScope),
+    };
+  } catch (error) {
+    if (error instanceof AuthorizationError) {
+      return { ok: false, error };
+    }
+    throw error;
+  }
 }
 
 async function parsePendingInviteInput(
@@ -1755,6 +2041,7 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
     runtimeSnapshotBasePath: `${notebookApiBasePath}/runtime-snapshots/`,
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,
+    accessRequestsEndpoint: `${notebookApiBasePath}/access-requests`,
     hostCapabilities: {
       canManageSharing: true,
     },

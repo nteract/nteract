@@ -862,6 +862,12 @@ describe("Worker artifact routes", () => {
       providerHint: "oidc",
       scope: "editor",
     });
+    seedAccessRequest(env, {
+      id: "request-private-profile",
+      notebookId: "public-sharing-demo",
+      requesterPrincipal: "user:dev:bob",
+      status: "pending",
+    });
     env.DB.profiles.set("user:dev:bob", {
       principal: "user:dev:bob",
       provider: "dev",
@@ -892,11 +898,20 @@ describe("Worker artifact routes", () => {
       env,
       fakeContext(),
     );
+    const accessRequests = await worker.fetch(
+      new Request(
+        "http://localhost/api/n/public-sharing-demo/access-requests?viewer_session=anon-a",
+      ),
+      env,
+      fakeContext(),
+    );
 
     assert.equal(acl.status, 403);
     assert.equal(invites.status, 403);
+    assert.equal(accessRequests.status, 401);
     assert.doesNotMatch(await acl.text(), /bob@example\.com|carol@example\.com/);
     assert.doesNotMatch(await invites.text(), /bob@example\.com|carol@example\.com/);
+    assert.doesNotMatch(await accessRequests.text(), /bob@example\.com|carol@example\.com/);
   });
 
   it("lets owners inspect and grant principal ACL rows", async () => {
@@ -1085,6 +1100,145 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await publicEditor.json(), {
       error: "public ACL rows may only grant viewer scope",
     });
+  });
+
+  it("lets authenticated viewers create owner-visible edit access requests", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "access-request-demo");
+    seedAcl(env, {
+      notebookId: "access-request-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "access-request-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    env.DB.profiles.set("user:dev:bob", {
+      principal: "user:dev:bob",
+      provider: "dev",
+      provider_subject: "bob",
+      email_normalized: "bob@example.com",
+      email_verified: 1,
+      display_name: "Bob Example",
+      avatar_url: null,
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+
+    const create = await accessRequestsRequest(env, "POST", "access-request-demo", undefined, {
+      "X-User": "bob",
+      "X-Operator": "browser:tab",
+      "X-Scope": "viewer",
+    });
+
+    assert.equal(create.status, 201);
+    assert.equal(env.DB.accessRequests.size, 1);
+    const createBody = (await create.json()) as {
+      access_status: string;
+      access_request: { status: string; requester_principal: string };
+    };
+    assert.equal(createBody.access_status, "pending");
+    assert.equal(createBody.access_request.status, "pending");
+    assert.equal(createBody.access_request.requester_principal, "user:dev:bob");
+
+    const duplicate = await accessRequestsRequest(env, "POST", "access-request-demo", undefined, {
+      "X-User": "bob",
+      "X-Operator": "browser:tab",
+      "X-Scope": "viewer",
+    });
+    assert.equal(duplicate.status, 200);
+    assert.equal(env.DB.accessRequests.size, 1);
+
+    const ownerList = await accessRequestsRequest(env, "GET", "access-request-demo");
+    assert.equal(ownerList.status, 200);
+    const ownerBody = (await ownerList.json()) as {
+      access_requests: Array<Record<string, unknown>>;
+    };
+    assert.deepEqual(
+      ownerBody.access_requests.map((row) => [row.status, row.display]),
+      [
+        [
+          "pending",
+          {
+            kind: "principal",
+            label: "Bob Example",
+            principal: "user:dev:bob",
+            email: "bob@example.com",
+          },
+        ],
+      ],
+    );
+  });
+
+  it("lets owners approve edit access requests through the ACL path", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "access-approve-demo");
+    seedAcl(env, {
+      notebookId: "access-approve-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAccessRequest(env, {
+      id: "request-bob",
+      notebookId: "access-approve-demo",
+      requesterPrincipal: "user:dev:bob",
+      status: "pending",
+    });
+
+    const approve = await accessRequestItemRequest(
+      env,
+      "POST",
+      "access-approve-demo",
+      "request-bob",
+      "approve",
+    );
+
+    assert.equal(approve.status, 200);
+    assert.equal(env.DB.accessRequests.get("request-bob")?.status, "approved");
+    assert.equal(env.DB.batchSizes.at(-1), 2);
+    assert.deepEqual(
+      (await getNotebookAclRowsForPrincipal(env, "access-approve-demo", "user:dev:bob")).map(
+        (row) => row.scope,
+      ),
+      ["editor"],
+    );
+  });
+
+  it("lets owners deny edit access requests without granting ACL rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "access-deny-demo");
+    seedAcl(env, {
+      notebookId: "access-deny-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAccessRequest(env, {
+      id: "request-bob-denied",
+      notebookId: "access-deny-demo",
+      requesterPrincipal: "user:dev:bob",
+      status: "pending",
+    });
+
+    const deny = await accessRequestItemRequest(
+      env,
+      "POST",
+      "access-deny-demo",
+      "request-bob-denied",
+      "deny",
+    );
+
+    assert.equal(deny.status, 200);
+    assert.equal(env.DB.accessRequests.get("request-bob-denied")?.status, "denied");
+    assert.deepEqual(
+      (await getNotebookAclRowsForPrincipal(env, "access-deny-demo", "user:dev:bob")).map(
+        (row) => row.scope,
+      ),
+      [],
+    );
   });
 
   it("does not revoke pending invites through another notebook route", async () => {
@@ -2247,6 +2401,59 @@ async function inviteItemRequest(
   );
 }
 
+async function accessRequestsRequest(
+  env: FakeEnv,
+  method: "GET" | "POST",
+  notebookId: string,
+  body: Record<string, unknown> | undefined = undefined,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const init: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": "alice",
+      "X-Operator": "desktop:test",
+      "X-Scope": "owner",
+      ...headers,
+    },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  return worker.fetch(
+    new Request(new URL(`/api/n/${notebookId}/access-requests`, "http://localhost"), init),
+    env,
+    fakeContext(),
+  );
+}
+
+async function accessRequestItemRequest(
+  env: FakeEnv,
+  method: "POST",
+  notebookId: string,
+  requestId: string,
+  action: "approve" | "deny" | "dismiss",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return worker.fetch(
+    new Request(new URL(`/api/n/${notebookId}/access-requests/${requestId}`, "http://localhost"), {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "X-User": "alice",
+        "X-Operator": "desktop:test",
+        "X-Scope": "owner",
+        ...headers,
+      },
+      body: JSON.stringify({ action }),
+    }),
+    env,
+    fakeContext(),
+  );
+}
+
 async function scopedPut(
   env: FakeEnv,
   pathname: string,
@@ -2325,6 +2532,29 @@ function seedPendingInvite(
     accepted_at: null,
     revoked_at: null,
     revoked_by_actor_label: null,
+  });
+}
+
+function seedAccessRequest(
+  env: FakeEnv,
+  input: {
+    id: string;
+    notebookId: string;
+    requesterPrincipal: string;
+    status: NotebookAccessRequestRow["status"];
+  },
+): void {
+  env.DB.accessRequests.set(input.id, {
+    id: input.id,
+    notebook_id: input.notebookId,
+    requester_principal: input.requesterPrincipal,
+    scope: "editor",
+    status: input.status,
+    requested_by_actor_label: `${input.requesterPrincipal}/browser:tab`,
+    resolved_by_actor_label: null,
+    created_at: "2026-05-22T00:00:00.000Z",
+    updated_at: "2026-05-22T00:00:00.000Z",
+    resolved_at: null,
   });
 }
 
@@ -2432,6 +2662,19 @@ interface NotebookAclRow {
   created_by_actor_label: string;
 }
 
+interface NotebookAccessRequestRow {
+  id: string;
+  notebook_id: string;
+  requester_principal: string;
+  scope: "editor";
+  status: "pending" | "approved" | "denied" | "dismissed";
+  requested_by_actor_label: string;
+  resolved_by_actor_label: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+}
+
 interface RevisionRow {
   id: string;
   notebook_id: string;
@@ -2451,6 +2694,7 @@ class FakeD1 implements D1Database {
   readonly acl: NotebookAclRow[] = [];
   readonly profiles = new Map<string, PrincipalProfileRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
+  readonly accessRequests = new Map<string, NotebookAccessRequestRow>();
   readonly batchSizes: number[] = [];
   afterBlockedOwnerDelete?: () => void;
 
@@ -2580,6 +2824,35 @@ class FakeD1Statement implements D1PreparedStatement {
         return okResult(undefined, { changes: 1 });
       }
       return okResult(undefined, { changes: 0 });
+    } else if (
+      this.query.includes("INSERT INTO notebook_acl") &&
+      this.query.includes("FROM notebook_access_requests")
+    ) {
+      const [createdAt, updatedAt, actorLabel, notebookId, requestId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      const accessRequest = this.db.accessRequests.get(requestId);
+      if (
+        accessRequest &&
+        accessRequest.notebook_id === notebookId &&
+        accessRequest.status === "pending"
+      ) {
+        this.insertAclIfMissing({
+          notebook_id: notebookId,
+          subject_kind: "principal",
+          subject: accessRequest.requester_principal,
+          scope: accessRequest.scope,
+          created_at: createdAt,
+          updated_at: updatedAt,
+          created_by_actor_label: actorLabel,
+        });
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebook_acl")) {
       const [notebookId, subjectKind, subject, scope, createdAt, updatedAt, actorLabel] = this
         .values as [
@@ -2699,6 +2972,55 @@ class FakeD1Statement implements D1PreparedStatement {
         invite.status = "revoked";
         invite.revoked_at = revokedAt;
         invite.revoked_by_actor_label = revokedByActorLabel;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("INSERT INTO notebook_access_requests")) {
+      const [id, notebookId, requesterPrincipal, actorLabel, createdAt, updatedAt] = this
+        .values as [string, string, string, string, string, string];
+      const duplicate = [...this.db.accessRequests.values()].find(
+        (accessRequest) =>
+          accessRequest.notebook_id === notebookId &&
+          accessRequest.requester_principal === requesterPrincipal &&
+          accessRequest.scope === "editor" &&
+          accessRequest.status === "pending",
+      );
+      if (duplicate) {
+        throw new Error(
+          "D1_ERROR: UNIQUE constraint failed: notebook_access_requests pending request",
+        );
+      }
+      this.db.accessRequests.set(id, {
+        id,
+        notebook_id: notebookId,
+        requester_principal: requesterPrincipal,
+        scope: "editor",
+        status: "pending",
+        requested_by_actor_label: actorLabel,
+        resolved_by_actor_label: null,
+        created_at: createdAt,
+        updated_at: updatedAt,
+        resolved_at: null,
+      });
+    } else if (this.query.includes("UPDATE notebook_access_requests")) {
+      const [status, actorLabel, resolvedAt, updatedAt, notebookId, requestId] = this.values as [
+        NotebookAccessRequestRow["status"],
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      const accessRequest = this.db.accessRequests.get(requestId);
+      if (
+        accessRequest &&
+        accessRequest.notebook_id === notebookId &&
+        accessRequest.status === "pending"
+      ) {
+        accessRequest.status = status;
+        accessRequest.resolved_by_actor_label = actorLabel;
+        accessRequest.resolved_at = resolvedAt;
+        accessRequest.updated_at = updatedAt;
         return okResult(undefined, { changes: 1 });
       }
       return okResult(undefined, { changes: 0 });
@@ -2867,6 +3189,31 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
+    if (this.query.includes("FROM notebook_access_requests")) {
+      if (this.query.includes("requester_principal = ?")) {
+        const [notebookId, requesterPrincipal] = this.values as [string, string];
+        return (
+          ([...this.db.accessRequests.values()]
+            .filter(
+              (accessRequest) =>
+                accessRequest.notebook_id === notebookId &&
+                accessRequest.requester_principal === requesterPrincipal &&
+                (!this.query.includes("status = 'pending'") || accessRequest.status === "pending"),
+            )
+            .sort(
+              (left, right) =>
+                right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+            )[0] as T | undefined) ?? null
+        );
+      }
+      const [notebookId, requestId] = this.values as [string, string];
+      return (
+        ([...this.db.accessRequests.values()].find(
+          (accessRequest) =>
+            accessRequest.notebook_id === notebookId && accessRequest.id === requestId,
+        ) as T | undefined) ?? null
+      );
+    }
     if (this.query.includes("FROM notebook_invites")) {
       if (this.query.includes("WHERE notebook_id = ?")) {
         const [notebookId, email, scope, providerHint] = this.values as [
@@ -2899,6 +3246,19 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
+    if (this.query.includes("FROM notebook_access_requests")) {
+      const notebookId = this.values[0] as string;
+      const limit = typeof this.values[1] === "number" ? this.values[1] : Number.POSITIVE_INFINITY;
+      return okResult(
+        [...this.db.accessRequests.values()]
+          .filter((accessRequest) => accessRequest.notebook_id === notebookId)
+          .sort(
+            (left, right) =>
+              right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+          )
+          .slice(0, limit) as T[],
+      );
+    }
     if (this.query.includes("FROM principal_profiles")) {
       const principals = new Set(this.values as string[]);
       if (this.values.length > 100) {
