@@ -695,13 +695,14 @@ export const MarkdownCell = memo(function MarkdownCell({
             aria-label="Markdown cell content"
             tabIndex={0}
             className={cn("py-2 cursor-text outline-none", editing && "hidden")}
+            onFocus={activatePreviewFrameInteraction}
             onDoubleClick={handleDoubleClick}
+            onPointerDown={handlePreviewWrapperPointerDown}
             onKeyDown={handleViewKeyDown}
           >
             {/* Always render IsolatedFrame to preload it (hidden when no content) */}
             <div
               className={cell.source ? undefined : "hidden"}
-              onPointerDown={handlePreviewWrapperPointerDown}
               onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
             >
               <IsolatedFrame
