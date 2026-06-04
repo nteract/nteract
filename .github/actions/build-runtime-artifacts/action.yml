@@ -40,10 +40,20 @@ runs:
       with:
         dest: ${{ runner.temp }}/setup-pnpm
 
-    - uses: actions/setup-node@v6
+    # setup-node's pnpm cache post step can fail Windows jobs after artifacts upload
+    # while saving cache.tzst, which turns an otherwise successful release red.
+    - name: Set up Node with pnpm cache
+      if: runner.os != 'Windows'
+      uses: actions/setup-node@v6
       with:
         node-version: ${{ inputs.node-version }}
         cache: pnpm
+
+    - name: Set up Node
+      if: runner.os == 'Windows'
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
 
     - name: pnpm install
       shell: bash
