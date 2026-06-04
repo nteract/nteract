@@ -53,6 +53,7 @@ export interface NotebookCommandToolbarProps {
   environmentOutOfSync?: boolean;
   runtimeStatus?: NotebookCommandToolbarStatus | null;
   startDisabled?: boolean;
+  addCellControlsDisabled?: boolean;
   addAfterCellId?: string | null;
   onAddCell?: (type: "code" | "markdown", afterCellId?: string | null) => unknown;
   onStartRuntime?: () => void;
@@ -81,6 +82,7 @@ export function NotebookCommandToolbar({
   environmentOutOfSync = false,
   runtimeStatus,
   startDisabled = false,
+  addCellControlsDisabled = false,
   addAfterCellId = null,
   onAddCell,
   onStartRuntime,
@@ -107,7 +109,7 @@ export function NotebookCommandToolbar({
     runtimeStatus?.state === "idle" ||
     runtimeStatus?.state === "busy" ||
     runtimeStatus?.state === "starting";
-  const showAddCellControls = canEditStructure && Boolean(onAddCell);
+  const showAddCellControls = Boolean(onAddCell) && (canEditStructure || addCellControlsDisabled);
   const showRuntimeStart =
     hasRuntimeStatus && canExecute && !isRuntimeRunning && Boolean(onStartRuntime);
   const showRuntimeActions =
@@ -134,8 +136,9 @@ export function NotebookCommandToolbar({
           <button
             type="button"
             onClick={() => onAddCell?.("code", addAfterCellId)}
-            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="Add code cell"
+            disabled={addCellControlsDisabled}
+            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            title={addCellControlsDisabled ? "Checking edit access" : "Add code cell"}
             aria-label="Add code cell"
             data-testid="add-code-cell-button"
           >
@@ -145,8 +148,9 @@ export function NotebookCommandToolbar({
           <button
             type="button"
             onClick={() => onAddCell?.("markdown", addAfterCellId)}
-            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="Add markdown cell"
+            disabled={addCellControlsDisabled}
+            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            title={addCellControlsDisabled ? "Checking edit access" : "Add markdown cell"}
             aria-label="Add markdown cell"
             data-testid="add-markdown-cell-button"
           >

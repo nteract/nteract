@@ -16,12 +16,19 @@ body {
 }
 
 .cloud-notebook-shell {
+  --cloud-notice-top: 3.75rem;
+
   display: flex;
+  position: relative;
   height: 100%;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
   background: var(--background);
+}
+
+.cloud-notebook-shell--command-toolbar {
+  --cloud-notice-top: calc(3.75rem + 2.5rem);
 }
 
 .cloud-notebook-rail {
@@ -40,10 +47,16 @@ body {
 
 .cloud-notebook-notices {
   display: grid;
+  position: absolute;
+  top: var(--cloud-notice-top);
+  right: 0;
+  left: 0;
+  z-index: 18;
   gap: 0;
   border-bottom: 1px solid var(--border);
   background: var(--background);
   padding: 0;
+  box-shadow: 0 6px 14px color-mix(in srgb, #000 4%, transparent);
 }
 
 .cloud-notebook-notices [data-slot="notebook-notice"] {
@@ -200,6 +213,14 @@ body {
 }
 
 @media (max-width: 900px) {
+  .cloud-notebook-shell {
+    --cloud-notice-top: 4.75rem;
+  }
+
+  .cloud-notebook-shell--command-toolbar {
+    --cloud-notice-top: calc(4.75rem + 2.5rem);
+  }
+
   .cloud-room-toolbar {
     min-height: 4.75rem;
     flex-wrap: wrap;
