@@ -38,6 +38,69 @@ describe("ProjectedMarkdownView", () => {
     }
   });
 
+  it("matches the output document heading rhythm", () => {
+    const { container } = render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "h1",
+              blockIndex: 0,
+              element: "h1",
+              kind: "heading",
+              measurement: { estimatedHeight: 48, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 7],
+              sourceSpanUtf16: [0, 7],
+              syntaxSpans: [],
+              text: "Heading",
+            },
+            {
+              blockId: "h2",
+              blockIndex: 1,
+              element: "h2",
+              kind: "heading",
+              measurement: { estimatedHeight: 40, confidence: "high", width: 720 },
+              sourceSpanByte: [9, 20],
+              sourceSpanUtf16: [9, 20],
+              syntaxSpans: [],
+              text: "Subheading",
+            },
+            {
+              blockId: "h3",
+              blockIndex: 2,
+              element: "h3",
+              kind: "heading",
+              measurement: { estimatedHeight: 36, confidence: "high", width: 720 },
+              sourceSpanByte: [22, 28],
+              sourceSpanUtf16: [22, 28],
+              syntaxSpans: [],
+              text: "Minor",
+            },
+            {
+              blockId: "h4",
+              blockIndex: 3,
+              element: "h4",
+              kind: "heading",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [30, 36],
+              sourceSpanUtf16: [30, 36],
+              syntaxSpans: [],
+              text: "Small",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(container.querySelector('[data-slot="projected-markdown-output"]')).toHaveClass(
+      "leading-[1.65]",
+    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-3xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-lg", "font-bold");
+  });
+
   it("renders projected inline and display math with KaTeX", () => {
     render(
       <ProjectedMarkdownView

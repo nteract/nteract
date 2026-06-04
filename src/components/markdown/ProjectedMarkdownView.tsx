@@ -44,7 +44,7 @@ export function ProjectedMarkdownView({
     <div
       data-slot="projected-markdown-output"
       className={cn(
-        "not-prose select-text py-2 text-base leading-[1.6] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility] [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]",
+        "not-prose select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility] [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]",
         className,
       )}
     >
@@ -189,11 +189,11 @@ function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
 }
 
 function headingClass(element: string) {
-  if (element === "h1") return "mt-6 mb-4 text-2xl leading-tight font-bold";
-  if (element === "h2") return "mt-5 mb-3 text-xl leading-tight font-bold";
-  if (element === "h3") return "mt-4 mb-2 text-lg leading-tight font-semibold";
-  if (element === "h4") return "mt-3 mb-2 text-base leading-tight font-semibold";
-  if (element === "h5") return "mt-2 mb-1 text-sm leading-tight font-semibold";
+  if (element === "h1") return "mt-6 mb-4 text-3xl leading-tight font-bold";
+  if (element === "h2") return "mt-5 mb-3 text-2xl leading-tight font-bold";
+  if (element === "h3") return "mt-4 mb-2.5 text-xl leading-tight font-bold";
+  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-bold";
+  if (element === "h5") return "mt-3.5 mb-1.5 text-base leading-tight font-bold";
   return "mt-2 mb-1 text-sm leading-tight font-medium text-muted-foreground";
 }
 
