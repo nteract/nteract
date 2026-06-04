@@ -1,4 +1,4 @@
-import type { MarkdownProjectionRun } from "@/lib/markdown-projection";
+import type { MarkdownProjectionRun } from "./markdown-projection";
 
 const TASK_MARKER_PATTERN = /\[[ xX]\]/;
 

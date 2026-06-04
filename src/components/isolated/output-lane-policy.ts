@@ -7,7 +7,7 @@ import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   markdownProjectionPlanFromMimeData,
   projectMarkdownPlan,
-} from "@/lib/markdown-projection";
+} from "../../lib/markdown-projection";
 
 export type OutputLane = "dom" | "static-frame" | "interactive-frame" | "sift-frame" | "vega-frame";
 

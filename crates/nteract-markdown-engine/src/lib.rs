@@ -720,8 +720,8 @@ fn measured(
 
 fn estimate_wrapped_lines(text: &str, width: usize) -> usize {
     let chars_per_line = (width / AVG_CHAR_WIDTH).max(20);
-    (text.chars().count() / chars_per_line).max(1)
-        + usize::from(text.chars().count() % chars_per_line != 0)
+    let char_count = text.chars().count();
+    (char_count / chars_per_line).max(1) + usize::from(!char_count.is_multiple_of(chars_per_line))
 }
 
 fn slugify(value: &str) -> String {
@@ -731,11 +731,12 @@ fn slugify(value: &str) -> String {
         if character.is_ascii_alphanumeric() {
             slug.push(character);
             last_was_dash = false;
-        } else if character.is_whitespace() || character == '-' {
-            if !last_was_dash && !slug.is_empty() {
-                slug.push('-');
-                last_was_dash = true;
-            }
+        } else if (character.is_whitespace() || character == '-')
+            && !last_was_dash
+            && !slug.is_empty()
+        {
+            slug.push('-');
+            last_was_dash = true;
         }
     }
     while slug.ends_with('-') {

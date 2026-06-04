@@ -455,6 +455,20 @@ describe("MediaRouter component", () => {
       expect(container.querySelector("iframe")).toBeNull();
     });
 
+    it("renders host text/latex without trusted KaTeX HTML commands", async () => {
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/latex": String.raw`\href{javascript:alert(1)}{x}` }} />
+        </MediaProvider>,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('[data-slot="math-output"]')).not.toBeNull();
+      });
+      expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
+      expect(container.querySelector("iframe")).toBeNull();
+    });
+
     it("renders projected nteract markdown plans in the host DOM when safe", () => {
       const { container } = render(
         <MediaProvider>

@@ -9,6 +9,11 @@ interface MathOutputProps {
   /** Raw LaTeX string, possibly wrapped in $...$ or $$...$$ delimiters */
   content: string;
   className?: string;
+  /**
+   * KaTeX trust enables commands such as \href and \html*. Keep it disabled
+   * in the host DOM; isolated renderers may opt in inside their sandbox.
+   */
+  trust?: boolean;
 }
 
 /**
@@ -31,9 +36,10 @@ function parseLatex(raw: string): { latex: string; displayMode: boolean } {
  * Renders a `text/latex` MIME output using KaTeX.
  *
  * Used for display_data / execute_result from CAS kernels (sympy, Sage, etc.).
- * KaTeX output is safe static HTML — no iframe isolation needed.
+ * Host renderers keep KaTeX trust disabled; iframe renderers can opt into
+ * trusted commands inside the sandbox.
  */
-export function MathOutput({ content, className }: MathOutputProps) {
+export function MathOutput({ content, className, trust = false }: MathOutputProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -43,9 +49,9 @@ export function MathOutput({ content, className }: MathOutputProps) {
       displayMode,
       strict: katexStrict,
       throwOnError: false,
-      trust: true,
+      trust,
     });
-  }, [content]);
+  }, [content, trust]);
 
   return <div data-slot="math-output" className={cn("py-1", className)} ref={ref} />;
 }

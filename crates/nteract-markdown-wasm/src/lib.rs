@@ -13,6 +13,13 @@ pub extern "C" fn nteract_markdown_alloc(len: usize) -> *mut u8 {
     pointer
 }
 
+/// Frees a buffer previously allocated by [`nteract_markdown_alloc`].
+///
+/// # Safety
+///
+/// `pointer` must either be null or a pointer returned by
+/// [`nteract_markdown_alloc`] with the same `len`. It must not be used after
+/// this call returns.
 #[no_mangle]
 pub unsafe extern "C" fn nteract_markdown_free(pointer: *mut u8, len: usize) {
     if !pointer.is_null() {
@@ -20,6 +27,13 @@ pub unsafe extern "C" fn nteract_markdown_free(pointer: *mut u8, len: usize) {
     }
 }
 
+/// Projects a UTF-8 markdown source buffer into the last-result JSON buffer.
+///
+/// # Safety
+///
+/// `pointer` must reference `len` readable bytes for the duration of this call.
+/// The bytes should contain UTF-8 markdown source; invalid UTF-8 is reported in
+/// the returned projection JSON rather than panicking.
 #[no_mangle]
 pub unsafe extern "C" fn nteract_markdown_project(pointer: *const u8, len: usize) -> usize {
     let bytes = std::slice::from_raw_parts(pointer, len);
@@ -518,7 +532,7 @@ fn collect_delimited_inline(
 
 fn collect_code_block(source: &str, context: &mut RunContext<'_>, node: &ProjectedNode) {
     let raw = source.get(node.span.start..node.span.end).unwrap_or("");
-    let content_start = raw.find('\n').map(|index| index + 1).unwrap_or(raw.len());
+    let content_start = raw.find('\n').map(|index| index + 1).unwrap_or(0);
     let close_start = raw
         .rfind('\n')
         .filter(|index| {
@@ -593,12 +607,22 @@ fn add_outer_syntax_spans(
 
 fn inner_delimited_span(raw: &str) -> Option<[usize; 2]> {
     let first = raw.chars().next()?;
-    let last = raw.rfind(first)?;
-    let open = raw.find(first)? + first.len_utf8();
-    if last < open {
+    let open = raw
+        .chars()
+        .take_while(|character| *character == first)
+        .map(char::len_utf8)
+        .sum::<usize>();
+    let close_len = raw
+        .chars()
+        .rev()
+        .take_while(|character| *character == first)
+        .map(char::len_utf8)
+        .sum::<usize>();
+    let close = raw.len().checked_sub(close_len)?;
+    if close < open {
         return None;
     }
-    Some([open, last])
+    Some([open, close])
 }
 
 fn block_kind(block: &ProjectedNode) -> &'static str {
@@ -1246,6 +1270,30 @@ mod tests {
         assert!(json.contains("\"listItemDepth\":2"));
         assert!(json.contains("\"listItemOrdered\":true"));
         assert!(json.contains("\"listItemPath\":\"0.0.0\""));
+    }
+
+    #[test]
+    fn projects_multi_character_delimiter_source_spans() {
+        let json = project_to_json("``code`` and $$x$$");
+
+        assert!(json.contains("\"renderedText\":\"code\""));
+        assert!(json.contains("\"semantic\":\"inline-code\""));
+        assert!(json.contains("\"sourceSpanByte\":[2,6]"));
+        assert!(json.contains("\"sourceSpanUtf16\":[2,6]"));
+        assert!(json.contains("\"renderedText\":\"x\""));
+        assert!(json.contains("\"semantic\":\"math-source\""));
+        assert!(json.contains("\"sourceSpanByte\":[15,16]"));
+        assert!(json.contains("\"sourceSpanUtf16\":[15,16]"));
+    }
+
+    #[test]
+    fn projects_single_line_indented_code_block_source_span() {
+        let json = project_to_json("    code");
+
+        assert!(json.contains("\"kind\":\"code\""));
+        assert!(json.contains("\"renderedText\":\"code\""));
+        assert!(json.contains("\"semantic\":\"code-block\""));
+        assert!(!json.contains("\"sourceSpanByte\":[8,8]"));
     }
 
     #[test]

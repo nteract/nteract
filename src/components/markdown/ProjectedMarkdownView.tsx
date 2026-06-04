@@ -6,8 +6,8 @@ import type {
   MarkdownProjectionBlock,
   MarkdownProjectionPlan,
   MarkdownProjectionRun,
-} from "@/lib/markdown-projection";
-import { findMarkdownProjectionAtSourcePosition } from "@/lib/markdown-projection";
+} from "../../lib/markdown-projection";
+import { findMarkdownProjectionAtSourcePosition } from "../../lib/markdown-projection";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
@@ -379,21 +379,35 @@ function groupListRuns(runs: MarkdownProjectionRun[]): ProjectedListItem[] {
   }
 
   const items = new Map<string, ProjectedListItem>();
-  for (const key of itemOrder) {
+  const ensureItem = (key: string) => {
+    const existing = items.get(key);
+    if (existing) return existing;
+
     const runs = groups.get(key) ?? [];
     const taskRun = runs.find((run) => run.listItemChecked !== undefined);
-    items.set(key, {
+    const item = {
       checked: taskRun?.listItemChecked,
       children: [],
       key,
       ordered: runs.find((run) => run.listItemOrdered !== undefined)?.listItemOrdered,
       runs,
       taskRun,
-    });
+    } satisfies ProjectedListItem;
+    items.set(key, item);
+    return item;
+  };
+
+  for (const key of itemOrder) {
+    ensureItem(key);
+    let parentKey = parentListItemPath(key);
+    while (parentKey) {
+      ensureItem(parentKey);
+      parentKey = parentListItemPath(parentKey);
+    }
   }
 
   const roots: ProjectedListItem[] = [];
-  for (const key of itemOrder) {
+  for (const key of [...items.keys()].sort(compareListItemPaths)) {
     const item = items.get(key);
     if (!item) continue;
 
@@ -407,6 +421,22 @@ function groupListRuns(runs: MarkdownProjectionRun[]): ProjectedListItem[] {
   }
 
   return roots;
+}
+
+function compareListItemPaths(left: string, right: string): number {
+  const leftParts = left.split(".");
+  const rightParts = right.split(".");
+  const length = Math.min(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = Number(leftParts[index]);
+    const rightPart = Number(rightParts[index]);
+    const bothNumeric = Number.isFinite(leftPart) && Number.isFinite(rightPart);
+    const difference = bothNumeric
+      ? leftPart - rightPart
+      : leftParts[index].localeCompare(rightParts[index]);
+    if (difference !== 0) return difference;
+  }
+  return leftParts.length - rightParts.length;
 }
 
 function parentListItemPath(path: string): string | null {

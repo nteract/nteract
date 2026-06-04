@@ -1,1 +1,1 @@
-export * from "@/lib/markdown-projection";
+export * from "../../../../src/lib/markdown-projection";

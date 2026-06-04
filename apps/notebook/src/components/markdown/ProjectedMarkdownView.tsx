@@ -1,1 +1,1 @@
-export { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
+export { ProjectedMarkdownView } from "../../../../../src/components/markdown/ProjectedMarkdownView";

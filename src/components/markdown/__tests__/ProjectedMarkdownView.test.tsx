@@ -552,6 +552,65 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("checkbox", { name: "Incomplete task: child" })).not.toBeChecked();
   });
 
+  it("preserves nested lists under container-only list items", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 72, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 20],
+              sourceSpanUtf16: [0, 20],
+              syntaxSpans: [],
+              text: "a nested",
+            },
+          ],
+          runs: [
+            {
+              blockId: "list",
+              inlineId: "a",
+              listItemDepth: 0,
+              listItemIndex: 0,
+              listItemOrdered: false,
+              listItemPath: "0",
+              renderedText: "a",
+              renderedTextUtf16: [0, 1],
+              semantic: "list-item",
+              sourceSpanByte: [2, 3],
+              sourceSpanUtf16: [2, 3],
+            },
+            {
+              blockId: "list",
+              inlineId: "nested",
+              listItemDepth: 2,
+              listItemIndex: 0,
+              listItemOrdered: false,
+              listItemPath: "1.0",
+              renderedText: "nested",
+              renderedTextUtf16: [1, 7],
+              semantic: "list-item",
+              sourceSpanByte: [12, 18],
+              sourceSpanUtf16: [12, 18],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const firstItem = screen.getByText("a").closest("li");
+    const nestedItem = screen.getByText("nested").closest("li");
+    expect(firstItem).not.toContainElement(nestedItem);
+    expect(nestedItem).not.toBeNull();
+    expect(
+      document.querySelector('[data-slot="projected-markdown-output"] > ul')?.children,
+    ).toHaveLength(2);
+    expect(nestedItem?.parentElement?.parentElement?.tagName).toBe("LI");
+  });
+
   it("renders projected tables as host table elements", () => {
     render(
       <ProjectedMarkdownView

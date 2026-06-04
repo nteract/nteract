@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
-import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
+import type { MarkdownProjectionPlan } from "../../../lib/markdown-projection";
 
 export type NotebookCellMetadata = Record<string, unknown>;
 

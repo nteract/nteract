@@ -5,8 +5,8 @@ import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   markdownProjectionPlanFromMimeData,
   projectMarkdownPlan,
-} from "@/lib/markdown-projection";
-import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
+} from "../../lib/markdown-projection";
+import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
 import { AnsiOutput } from "./ansi-output";
 import { TracebackOutput } from "./traceback-output";
 import { isSafeForMainDom } from "./safe-mime-types";
