@@ -65,6 +65,12 @@ export interface MarkdownProjectionPlan {
   runs: MarkdownProjectionRun[];
 }
 
+export interface MarkdownProjectionSourceMatch {
+  block: MarkdownProjectionBlock | null;
+  position: number;
+  run: MarkdownProjectionRun | null;
+}
+
 export function setMarkdownProjectionProjector(
   projector: MarkdownProjectionProjector,
 ): () => void {
@@ -88,6 +94,49 @@ export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | nu
   } catch {
     return null;
   }
+}
+
+function normalizeSourcePosition(plan: MarkdownProjectionPlan, position: number): number {
+  if (!Number.isFinite(position)) return 0;
+  return Math.min(plan.utf16Length, Math.max(0, position));
+}
+
+function spanContainsPosition(
+  span: [number, number],
+  position: number,
+): boolean {
+  const [start, end] = span;
+  if (start === end) return position === start;
+  return position >= start && position <= end;
+}
+
+function spanLength(span: [number, number]): number {
+  return Math.max(0, span[1] - span[0]);
+}
+
+export function findMarkdownProjectionAtSourcePosition(
+  plan: MarkdownProjectionPlan | null,
+  position: number,
+): MarkdownProjectionSourceMatch | null {
+  if (!plan) return null;
+
+  const normalizedPosition = normalizeSourcePosition(plan, position);
+  const block =
+    plan.blocks.find((candidate) =>
+      spanContainsPosition(candidate.sourceSpanUtf16, normalizedPosition),
+    ) ?? null;
+  const runCandidates = plan.runs.filter((candidate) =>
+    spanContainsPosition(candidate.sourceSpanUtf16, normalizedPosition),
+  );
+  const run =
+    runCandidates.sort((left, right) => {
+      const lengthDelta =
+        spanLength(left.sourceSpanUtf16) - spanLength(right.sourceSpanUtf16);
+      if (lengthDelta !== 0) return lengthDelta;
+      return left.sourceSpanUtf16[0] - right.sourceSpanUtf16[0];
+    })[0] ?? null;
+
+  return { block, position: normalizedPosition, run };
 }
 
 export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan | null): boolean {

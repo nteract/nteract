@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   canRenderMarkdownProjectionInHost,
+  findMarkdownProjectionAtSourcePosition,
   projectMarkdownPlan,
 } from "../markdown-projection";
 
@@ -54,5 +55,43 @@ describe("markdown projection", () => {
 
     expect(plan?.runs.some((run) => run.renderedHtml)).toBe(true);
     expect(canRenderMarkdownProjectionInHost(plan)).toBe(false);
+  });
+
+  it("maps source cursor positions back to projected rendered blocks and runs", () => {
+    const source = "# Heading\n\nA paragraph with **focus**.\n\n- [ ] checkbox\n";
+    const plan = projectMarkdownPlan(source);
+    const focusPosition = source.indexOf("focus") + 2;
+    const checkboxPosition = source.indexOf("checkbox") + 2;
+
+    expect(
+      findMarkdownProjectionAtSourcePosition(plan, focusPosition),
+    ).toEqual(
+      expect.objectContaining({
+        block: expect.objectContaining({
+          kind: "paragraph",
+          text: "A paragraph with focus.",
+        }),
+        position: focusPosition,
+        run: expect.objectContaining({
+          renderedText: "focus",
+          semantic: "strong",
+        }),
+      }),
+    );
+    expect(
+      findMarkdownProjectionAtSourcePosition(plan, checkboxPosition),
+    ).toEqual(
+      expect.objectContaining({
+        block: expect.objectContaining({
+          kind: "list",
+          text: "checkbox",
+        }),
+        run: expect.objectContaining({
+          listItemChecked: false,
+          renderedText: "checkbox",
+          semantic: "list-item",
+        }),
+      }),
+    );
   });
 });
