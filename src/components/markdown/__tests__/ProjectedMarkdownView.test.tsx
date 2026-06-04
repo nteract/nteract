@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { ProjectedMarkdownView } from "../ProjectedMarkdownView";
 import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
@@ -278,6 +278,50 @@ describe("ProjectedMarkdownView", () => {
     ).toHaveClass("bg-primary");
     expect(screen.getByText("important").tagName).toBe("EM");
     expect(screen.getByText("removed").tagName).toBe("DEL");
+  });
+
+  it("lets editable projections toggle task markers without changing output semantics", () => {
+    const onTaskCheckedChange = vi.fn();
+    const taskRun = {
+      blockId: "list",
+      inlineId: "todo",
+      listItemChecked: false,
+      listItemIndex: 0,
+      renderedText: "todo",
+      renderedTextUtf16: [0, 4] as [number, number],
+      semantic: "list-item" as const,
+      sourceSpanByte: [0, 10] as [number, number],
+      sourceSpanUtf16: [0, 10] as [number, number],
+    };
+
+    render(
+      <ProjectedMarkdownView
+        onTaskCheckedChange={onTaskCheckedChange}
+        plan={plan({
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 24, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+              syntaxSpans: [],
+              text: "todo",
+            },
+          ],
+          runs: [taskRun],
+        })}
+      />,
+    );
+
+    const toggle = screen.getByRole("button", { name: "Mark task complete" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(toggle);
+
+    expect(onTaskCheckedChange).toHaveBeenCalledWith(taskRun, true);
   });
 
   it("keeps list markers available for mixed task and regular lists", () => {

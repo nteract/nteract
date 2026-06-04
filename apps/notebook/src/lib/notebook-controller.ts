@@ -120,6 +120,7 @@ export function createNotebookController<THandle extends NotebookControllerHandl
       if (!updated) return;
 
       updateCellById(cellId, (cell) => ({ ...cell, source }));
+      afterMutation?.(handle, "source");
       syncAfterMutation(engine, "source");
     },
 

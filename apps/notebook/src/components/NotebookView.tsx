@@ -71,6 +71,7 @@ export interface NotebookViewProps {
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
+  onUpdateCellSource?: (cellId: string, source: string) => void;
   onAddCell: AddCellHandler;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
@@ -345,6 +346,7 @@ function NotebookViewContent({
   onExecuteCell,
   onInterruptKernel,
   onDeleteCell,
+  onUpdateCellSource,
   onAddCell,
   onMoveCell,
   onReportOutputMatchCount,
@@ -932,6 +934,11 @@ function NotebookViewContent({
               focusInteractionTarget({ kind: "editor", cellId: cell.id });
             }}
             onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
+            onUpdateSource={
+              canMutateCells && canEditMarkdownSources && onUpdateCellSource
+                ? (source: string) => onUpdateCellSource(cell.id, source)
+                : undefined
+            }
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
             onInsertCellAfter={canMutateCells ? () => onAddCell("markdown", cell.id) : undefined}
@@ -972,6 +979,7 @@ function NotebookViewContent({
       onExecuteCell,
       onInterruptKernel,
       onDeleteCell,
+      onUpdateCellSource,
       onAddCell,
       onReportOutputMatchCount,
       onSetCellSourceHidden,

@@ -70,17 +70,20 @@ describe("createNotebookController", () => {
     replaceNotebookCells([codeCell("cell-a", "old")]);
     const handle = createHandle();
     const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const afterMutation = vi.fn();
     const controller = createNotebookController({
       getHandle: () => handle,
       getEngine: () => engine,
       canWriteCellSource: () => true,
       canEditStructure: () => true,
+      afterMutation,
     });
 
     controller.updateCellSource("cell-a", "new");
 
     expect(handle.sources.get("cell-a")).toBe("new");
     expect(getCellById("cell-a")?.source).toBe("new");
+    expect(afterMutation).toHaveBeenCalledWith(handle, "source");
     expect(engine.scheduleFlush).toHaveBeenCalledTimes(1);
     expect(engine.flush).not.toHaveBeenCalled();
   });

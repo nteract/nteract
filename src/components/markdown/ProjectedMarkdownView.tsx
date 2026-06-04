@@ -19,6 +19,7 @@ interface ProjectedMarkdownViewProps {
   className?: string;
   headingAnchors?: readonly MarkdownHeadingAnchor[];
   onLinkClick?: (url: string) => void;
+  onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }
 
 export function ProjectedMarkdownView({
@@ -26,6 +27,7 @@ export function ProjectedMarkdownView({
   className,
   headingAnchors = [],
   onLinkClick,
+  onTaskCheckedChange,
 }: ProjectedMarkdownViewProps) {
   const isDark = useDarkMode();
   const rawTheme = useColorTheme();
@@ -57,6 +59,7 @@ export function ProjectedMarkdownView({
           isDark={isDark}
           runs={runsByBlock.get(block.blockId) ?? []}
           onLinkClick={onLinkClick}
+          onTaskCheckedChange={onTaskCheckedChange}
         />
       ))}
     </div>
@@ -70,6 +73,7 @@ interface ProjectedMarkdownBlockProps {
   isDark: boolean;
   runs: MarkdownProjectionRun[];
   onLinkClick?: (url: string) => void;
+  onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }
 
 function ProjectedMarkdownBlock({
@@ -79,6 +83,7 @@ function ProjectedMarkdownBlock({
   isDark,
   runs,
   onLinkClick,
+  onTaskCheckedChange,
 }: ProjectedMarkdownBlockProps) {
   if (block.kind === "heading") {
     const Heading = headingTag(block.element);
@@ -107,7 +112,7 @@ function ProjectedMarkdownBlock({
           allItemsAreTasks && "list-none pl-0",
         )}
       >
-        {items.map(({ checked, key, runs }) => (
+        {items.map(({ checked, key, runs, taskRun }) => (
           <li
             key={key}
             className={cn(
@@ -115,7 +120,16 @@ function ProjectedMarkdownBlock({
               checked !== undefined && "flex min-w-0 list-none items-start gap-2",
             )}
           >
-            {checked !== undefined ? <TaskCheckbox checked={checked} /> : null}
+            {checked !== undefined ? (
+              <TaskCheckbox
+                checked={checked}
+                onToggle={
+                  taskRun && onTaskCheckedChange
+                    ? () => onTaskCheckedChange(taskRun, !checked)
+                    : undefined
+                }
+              />
+            ) : null}
             <span className="min-w-0 leading-relaxed">{renderRuns(runs, onLinkClick)}</span>
           </li>
         ))}
@@ -207,10 +221,40 @@ function groupListRuns(runs: MarkdownProjectionRun[]) {
     checked: runs.find((run) => run.listItemChecked !== undefined)?.listItemChecked,
     key,
     runs,
+    taskRun: runs.find((run) => run.listItemChecked !== undefined),
   }));
 }
 
-function TaskCheckbox({ checked }: { checked: boolean }) {
+function TaskCheckbox({ checked, onToggle }: { checked: boolean; onToggle?: () => void }) {
+  const box = (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "grid size-3.5 place-items-center rounded-sm border transition-colors",
+        checked
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border bg-background",
+      )}
+    >
+      {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
+    </span>
+  );
+
+  if (onToggle) {
+    return (
+      <button
+        type="button"
+        aria-pressed={checked}
+        aria-label={checked ? "Mark task incomplete" : "Mark task complete"}
+        className="relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center rounded-sm outline-none transition hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
+        data-slot="projected-markdown-task-checkbox"
+        onClick={onToggle}
+      >
+        {box}
+      </button>
+    );
+  }
+
   return (
     <span
       className="relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center"
@@ -224,17 +268,7 @@ function TaskCheckbox({ checked }: { checked: boolean }) {
         className="sr-only"
         aria-label={checked ? "Completed task" : "Incomplete task"}
       />
-      <span
-        aria-hidden="true"
-        className={cn(
-          "grid size-3.5 place-items-center rounded-sm border transition-colors",
-          checked
-            ? "border-primary bg-primary text-primary-foreground"
-            : "border-border bg-background",
-        )}
-      >
-        {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
-      </span>
+      {box}
     </span>
   );
 }

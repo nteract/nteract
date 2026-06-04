@@ -347,6 +347,7 @@ function AppContent() {
     loadError,
     focusedCellId,
     setFocusedCellId,
+    updateCellSource,
     addCell,
     moveCell,
     deleteCell,
@@ -1627,6 +1628,7 @@ function AppContent() {
                 onExecuteCell={handleExecuteCell}
                 onInterruptKernel={interruptKernel}
                 onDeleteCell={deleteCell}
+                onUpdateCellSource={updateCellSource}
                 onAddCell={handleAddCell}
                 onMoveCell={moveCell}
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}

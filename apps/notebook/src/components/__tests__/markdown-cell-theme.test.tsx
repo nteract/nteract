@@ -1,6 +1,7 @@
 import { act, createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
 
 let mockDarkMode = false;
@@ -182,6 +183,59 @@ function makeCell(): MarkdownCellType {
     id: "md-1",
     source: "```python\nprint('hello')\n```",
     metadata: {},
+  };
+}
+
+function makeTaskCell(): MarkdownCellType {
+  const source = "- [ ] ship checkboxes";
+  const markdownProjection: MarkdownProjectionPlan = {
+    version: 1,
+    engine: "test",
+    byteLength: source.length,
+    utf16Length: source.length,
+    measurement: {
+      estimatedHeight: 24,
+      confidence: "high",
+      width: 720,
+    },
+    blocks: [
+      {
+        blockId: "tasks",
+        blockIndex: 0,
+        element: "ul",
+        kind: "list",
+        measurement: {
+          estimatedHeight: 24,
+          confidence: "high",
+          width: 720,
+        },
+        sourceSpanByte: [0, source.length],
+        sourceSpanUtf16: [0, source.length],
+        syntaxSpans: [],
+        text: "ship checkboxes",
+      },
+    ],
+    runs: [
+      {
+        blockId: "tasks",
+        inlineId: "task-0",
+        listItemIndex: 0,
+        listItemChecked: false,
+        renderedText: "ship checkboxes",
+        renderedTextUtf16: [0, 14],
+        semantic: "list-item",
+        sourceSpanByte: [6, source.length],
+        sourceSpanUtf16: [6, source.length],
+      },
+    ],
+  };
+
+  return {
+    cell_type: "markdown",
+    id: "md-task",
+    source,
+    metadata: {},
+    markdownProjection,
   };
 }
 
@@ -540,5 +594,22 @@ describe("MarkdownCell theme sync", () => {
 
     fireEvent.keyDown(preview, { key: "Enter" });
     expect(preview.className).not.toContain("hidden");
+  });
+
+  it("updates markdown task markers from projected task checkboxes", () => {
+    const onUpdateSource = vi.fn();
+
+    const { getByRole } = render(
+      <MarkdownCell
+        cell={makeTaskCell()}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onUpdateSource={onUpdateSource}
+      />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "Mark task complete" }));
+
+    expect(onUpdateSource).toHaveBeenCalledWith("- [x] ship checkboxes");
   });
 });

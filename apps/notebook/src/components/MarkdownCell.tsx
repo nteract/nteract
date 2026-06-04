@@ -24,6 +24,7 @@ import { ProjectedMarkdownView } from "./markdown/ProjectedMarkdownView";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import {
   canRenderMarkdownProjectionInHost,
+  type MarkdownProjectionRun,
   projectedMarkdownPreviewHeight,
   projectMarkdownPlan,
 } from "@/lib/markdown-projection";
@@ -48,6 +49,7 @@ import {
 } from "@/components/cell/markdown-heading-navigation";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
+import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
@@ -116,6 +118,7 @@ interface MarkdownCellProps {
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
+  onUpdateSource?: (source: string) => void;
   isLastCell?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
@@ -135,6 +138,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   onFocusPrevious,
   onFocusNext,
   onInsertCellAfter,
+  onUpdateSource,
   isLastCell = false,
   dragHandleProps,
   isDragging,
@@ -213,6 +217,18 @@ export const MarkdownCell = memo(function MarkdownCell({
     });
     return true;
   }, []);
+
+  const handleTaskCheckedChange = useCallback(
+    (run: MarkdownProjectionRun, checked: boolean) => {
+      if (readOnly || !onUpdateSource) return;
+
+      const nextSource = toggleMarkdownTaskMarker(cell.source, run, checked);
+      if (nextSource === null || nextSource === cell.source) return;
+
+      onUpdateSource(nextSource);
+    },
+    [cell.source, onUpdateSource, readOnly],
+  );
 
   const [editing, setEditing] = useState(!readOnly && cell.source === "");
   const editorRef = useRef<CodeMirrorEditorRef>(null);
@@ -782,6 +798,9 @@ export const MarkdownCell = memo(function MarkdownCell({
                 plan={markdownProjection}
                 headingAnchors={headingAnchors}
                 onLinkClick={handleLinkClick}
+                onTaskCheckedChange={
+                  readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
+                }
               />
             ) : (
               <div
