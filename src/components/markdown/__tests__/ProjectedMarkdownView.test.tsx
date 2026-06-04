@@ -165,6 +165,90 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector(".katex-display")?.parentElement?.tagName).toBe("DIV");
   });
 
+  it("uses the document rhythm for paragraphs, lists, and quotes", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 16],
+              sourceSpanUtf16: [0, 16],
+              syntaxSpans: [],
+              text: "First paragraph",
+            },
+            {
+              blockId: "list",
+              blockIndex: 1,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 48, confidence: "high", width: 720 },
+              sourceSpanByte: [18, 36],
+              sourceSpanUtf16: [18, 36],
+              syntaxSpans: [],
+              text: "item",
+            },
+            {
+              blockId: "quote",
+              blockIndex: 2,
+              element: "blockquote",
+              kind: "blockquote",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [38, 48],
+              sourceSpanUtf16: [38, 48],
+              syntaxSpans: [],
+              text: "quoted",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "p0-text",
+              listItemIndex: null,
+              renderedText: "First paragraph",
+              renderedTextUtf16: [0, 15],
+              semantic: "text",
+              sourceSpanByte: [0, 15],
+              sourceSpanUtf16: [0, 15],
+            },
+            {
+              blockId: "list",
+              inlineId: "list-item",
+              listItemIndex: 0,
+              renderedText: "item",
+              renderedTextUtf16: [0, 4],
+              semantic: "list-item",
+              sourceSpanByte: [20, 24],
+              sourceSpanUtf16: [20, 24],
+            },
+            {
+              blockId: "quote",
+              inlineId: "quote-text",
+              listItemIndex: null,
+              renderedText: "quoted",
+              renderedTextUtf16: [0, 6],
+              semantic: "text",
+              sourceSpanByte: [40, 46],
+              sourceSpanUtf16: [40, 46],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("First paragraph")).toHaveClass("my-2", "leading-relaxed");
+    expect(screen.getByRole("list")).toHaveClass("my-2", "ml-6", "list-disc");
+    expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
+      "border-l-4",
+      "border-border",
+      "text-muted-foreground",
+    );
+  });
+
   it("does not trust projected math commands that can shape host DOM", () => {
     render(
       <ProjectedMarkdownView

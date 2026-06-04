@@ -129,7 +129,7 @@ function ProjectedMarkdownBlock({
 
   if (block.kind === "blockquote") {
     return (
-      <blockquote className="my-4 border-l-2 border-primary/35 bg-muted/20 py-1 pl-4 text-muted-foreground italic">
+      <blockquote className="my-4 border-l-4 border-border pl-4 text-muted-foreground italic">
         {renderRuns(runs, onLinkClick)}
       </blockquote>
     );
@@ -144,10 +144,10 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "paragraph") {
-    return <p className="my-3 leading-relaxed">{renderRuns(runs, onLinkClick)}</p>;
+    return <p className="my-2 leading-relaxed">{renderRuns(runs, onLinkClick)}</p>;
   }
 
-  return block.text ? <div className="my-3">{renderRuns(runs, onLinkClick)}</div> : null;
+  return block.text ? <div className="my-2">{renderRuns(runs, onLinkClick)}</div> : null;
 }
 
 function headingAnchorForBlock(
@@ -206,9 +206,9 @@ function ProjectedList({
   return (
     <List
       className={cn(
-        "my-3 pl-6 leading-relaxed",
+        "my-2 ml-6 leading-relaxed",
         ordered ? "list-decimal" : "list-disc",
-        allItemsAreTasks && "list-none pl-0",
+        allItemsAreTasks && "ml-0 list-none",
       )}
     >
       {items.map((item) => (
