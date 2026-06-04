@@ -1,6 +1,7 @@
 export type CloudShareScope = "viewer" | "editor" | "runtime_peer" | "owner";
 export type CloudShareInviteScope = "viewer" | "editor";
 export type CloudInviteStatus = "pending" | "accepted" | "revoked" | "expired";
+export type CloudAccessRequestStatus = "pending" | "approved" | "denied" | "dismissed";
 export type CloudShareAccessRowStateTone = "success" | "pending";
 
 export type CloudShareDisplay =
@@ -48,6 +49,20 @@ export interface CloudNotebookInvite {
   display?: CloudShareDisplay;
 }
 
+export interface CloudNotebookAccessRequest {
+  id: string;
+  notebook_id: string;
+  requester_principal: string;
+  scope: "editor";
+  status: CloudAccessRequestStatus;
+  requested_by_actor_label: string;
+  resolved_by_actor_label: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+  display?: Extract<CloudShareDisplay, { kind: "principal" }>;
+}
+
 export type CloudShareAccessRow =
   | {
       id: string;
@@ -74,11 +89,25 @@ export type CloudShareAccessRow =
       stateLabel: string | null;
       stateTone: CloudShareAccessRowStateTone | null;
       removable: boolean;
+    }
+  | {
+      id: string;
+      kind: "access_request";
+      accessRequest: CloudNotebookAccessRequest;
+      label: string;
+      detail: string;
+      title: string;
+      scope: "editor";
+      badge: string;
+      stateLabel: string | null;
+      stateTone: CloudShareAccessRowStateTone | null;
+      removable: boolean;
     };
 
 export function buildCloudShareAccessRows(input: {
   acl: CloudNotebookAclRow[];
   invites: CloudNotebookInvite[];
+  accessRequests?: CloudNotebookAccessRequest[];
 }): CloudShareAccessRow[] {
   const rows: CloudShareAccessRow[] = [];
 
@@ -116,6 +145,24 @@ export function buildCloudShareAccessRows(input: {
     });
   }
 
+  for (const request of (input.accessRequests ?? []).filter(
+    (candidate) => candidate.status === "pending",
+  )) {
+    rows.push({
+      id: `access-request:${request.id}`,
+      kind: "access_request",
+      accessRequest: request,
+      label: labelForAccessRequest(request),
+      detail: "Requested edit access",
+      title: titleForAccessRequest(request),
+      scope: request.scope,
+      badge: scopeLabel(request.scope),
+      stateLabel: "Requested",
+      stateTone: "pending",
+      removable: false,
+    });
+  }
+
   return rows;
 }
 
@@ -134,6 +181,7 @@ export function cloudShareAccessSummary(rows: CloudShareAccessRow[]): string | n
     (row) => row.kind === "acl" && row.acl.subject_kind === "public",
   ).length;
   const invites = rows.filter((row) => row.kind === "invite").length;
+  const requests = rows.filter((row) => row.kind === "access_request").length;
 
   const parts: string[] = [];
   if (people > 0) parts.push(pluralize(people, "person", "people"));
@@ -141,6 +189,7 @@ export function cloudShareAccessSummary(rows: CloudShareAccessRow[]): string | n
   if (publicLinks > 0)
     parts.push(publicLinks === 1 ? "public link" : `${publicLinks} public links`);
   if (invites > 0) parts.push(pluralize(invites, "invite", "invites"));
+  if (requests > 0) parts.push(pluralize(requests, "request", "requests"));
   return parts.join(", ") || null;
 }
 
@@ -220,6 +269,23 @@ function titleForAcl(row: CloudNotebookAclRow): string {
   }
 
   return row.subject;
+}
+
+function labelForAccessRequest(request: CloudNotebookAccessRequest): string {
+  const displayLabel = request.display?.label?.trim();
+  if (displayLabel && displayLabel !== request.requester_principal) {
+    return displayEmail(displayLabel);
+  }
+  return displayEmail(labelForPrincipalSubject(request.requester_principal));
+}
+
+function titleForAccessRequest(request: CloudNotebookAccessRequest): string {
+  const email = request.display?.email?.trim();
+  if (email) return email;
+  if (request.display?.principal && request.display.principal !== request.requester_principal) {
+    return request.display.principal;
+  }
+  return request.requester_principal;
 }
 
 function displayEmail(value: string): string {

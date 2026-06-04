@@ -12,6 +12,7 @@ import {
 import { createRoot } from "react-dom/client";
 import {
   AlertCircle,
+  Check,
   Globe2,
   KeyRound,
   Link2,
@@ -23,9 +24,11 @@ import {
   Share2,
   Trash2,
   UserRound,
+  X,
 } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   NotebookCommandToolbar,
@@ -116,6 +119,7 @@ import {
   cloudShareAccessSummary,
   hasPublicViewerAccess,
   normalizeShareInviteEmail,
+  type CloudNotebookAccessRequest,
   type CloudNotebookAclRow,
   type CloudNotebookInvite,
   type CloudShareAccessRow,
@@ -137,6 +141,7 @@ import {
 import "./index.css";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
+const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 10_000;
 
 setLoggerHost({
   debug: () => {},
@@ -153,6 +158,7 @@ interface CloudViewerConfig {
   runtimeSnapshotBasePath: string;
   aclEndpoint: string;
   invitesEndpoint: string;
+  accessRequestsEndpoint: string;
   hostCapabilities?: {
     canManageSharing?: boolean;
   };
@@ -206,6 +212,7 @@ function loadConfig(): CloudViewerConfig {
     !parsed.runtimeSnapshotBasePath ||
     !parsed.aclEndpoint ||
     !parsed.invitesEndpoint ||
+    !parsed.accessRequestsEndpoint ||
     !parsed.syncEndpoint ||
     !parsed.blobBasePath ||
     !parsed.rendererAssetsBasePath ||
@@ -222,6 +229,7 @@ function loadConfig(): CloudViewerConfig {
     runtimeSnapshotBasePath: parsed.runtimeSnapshotBasePath,
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
+    accessRequestsEndpoint: parsed.accessRequestsEndpoint,
     hostCapabilities: {
       canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
     },
@@ -694,6 +702,10 @@ function NotebookViewer({
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
+  const [latestAccessRequest, setLatestAccessRequest] = useState<CloudNotebookAccessRequest | null>(
+    null,
+  );
+  const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
   const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
     () =>
       authState.requestedScope === "editor" || authState.requestedScope === "owner"
@@ -1318,14 +1330,136 @@ function NotebookViewer({
   }, [shellCapabilities.canEditCells, shellCapabilities.canEditMarkdown]);
   const resetPrototypeAuth = useCallback(() => {
     clearCloudPrototypeDevAuth(window.localStorage);
+    setLatestAccessRequest(null);
+    setAccessRequestError(null);
     setSelectedInteractionMode("view");
     refreshAuthState();
   }, [refreshAuthState]);
+  const applyLatestAccessRequest = useCallback(
+    (request: CloudNotebookAccessRequest | null) => {
+      setLatestAccessRequest(request);
+      if (request?.status === "pending" || request?.status === "approved") {
+        storeCloudRequestedScope(window.localStorage, "editor");
+        setSelectedInteractionMode("edit");
+        if (request.status === "approved") {
+          setConnectAttempt((attempt) => attempt + 1);
+        }
+        if (authState.requestedScope !== "editor") {
+          refreshAuthState();
+        }
+        return;
+      }
+
+      if (authState.requestedScope === "editor" && connectionScope === "viewer") {
+        storeCloudRequestedScope(window.localStorage, "viewer");
+        setSelectedInteractionMode("view");
+        refreshAuthState();
+      }
+    },
+    [authState.requestedScope, connectionScope, refreshAuthState],
+  );
+  const loadOwnAccessRequest = useCallback(
+    async (options?: { signal?: AbortSignal }) => {
+      if (connectionScope !== "viewer" || (authState.mode !== "dev" && authState.mode !== "oidc")) {
+        return;
+      }
+
+      try {
+        const response = await fetchWithCloudPrototypeAuth(
+          config.accessRequestsEndpoint,
+          { headers: { Accept: "application/json" }, signal: options?.signal },
+          authState,
+        );
+        if (options?.signal?.aborted) {
+          return;
+        }
+        if (!response.ok) {
+          return;
+        }
+        const body = (await response.json()) as {
+          access_requests?: CloudNotebookAccessRequest[];
+        };
+        setAccessRequestError(null);
+        applyLatestAccessRequest(
+          Array.isArray(body.access_requests) ? (body.access_requests[0] ?? null) : null,
+        );
+      } catch {
+        return;
+      }
+    },
+    [applyLatestAccessRequest, authState, config.accessRequestsEndpoint, connectionScope],
+  );
+  useEffect(() => {
+    if (connectionScope !== "viewer" || (authState.mode !== "dev" && authState.mode !== "oidc")) {
+      setLatestAccessRequest(null);
+      return;
+    }
+    const controller = new AbortController();
+    void loadOwnAccessRequest({ signal: controller.signal });
+    return () => controller.abort();
+  }, [authState.mode, connectionScope, loadOwnAccessRequest]);
+  useEffect(() => {
+    if (
+      latestAccessRequest?.status !== "pending" ||
+      connectionScope !== "viewer" ||
+      (authState.mode !== "dev" && authState.mode !== "oidc")
+    ) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const intervalId = window.setInterval(() => {
+      void loadOwnAccessRequest({ signal: controller.signal });
+    }, CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS);
+    return () => {
+      controller.abort();
+      window.clearInterval(intervalId);
+    };
+  }, [authState.mode, connectionScope, latestAccessRequest?.status, loadOwnAccessRequest]);
   const requestCloudEditAccess = useCallback(() => {
-    storeCloudRequestedScope(window.localStorage, "editor");
-    setSelectedInteractionMode("edit");
-    refreshAuthState();
-  }, [refreshAuthState]);
+    void (async () => {
+      setAccessRequestError(null);
+      try {
+        const response = await fetchWithCloudPrototypeAuth(
+          config.accessRequestsEndpoint,
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ scope: "editor" }),
+          },
+          authState,
+        );
+        if (!response.ok) {
+          throw await cloudResponseError(response, "Unable to request edit access");
+        }
+        const body = (await response.json()) as {
+          access_request?: CloudNotebookAccessRequest | null;
+          access_status?: string;
+        };
+        if (body.access_status === "granted") {
+          applyLatestAccessRequest({
+            id: "already-granted",
+            notebook_id: config.notebookId,
+            requester_principal: "",
+            scope: "editor",
+            status: "approved",
+            requested_by_actor_label: "",
+            resolved_by_actor_label: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            resolved_at: new Date().toISOString(),
+          });
+          return;
+        }
+        applyLatestAccessRequest(body.access_request ?? null);
+      } catch (error) {
+        setAccessRequestError(error instanceof Error ? error.message : String(error));
+      }
+    })();
+  }, [applyLatestAccessRequest, authState, config.accessRequestsEndpoint, config.notebookId]);
   const shouldShowPackageEnvironmentSummary =
     shellCapabilities.canExecute || shellCapabilities.canManagePackages;
   const toolbarAddAfterCellId =
@@ -1379,6 +1513,7 @@ function NotebookViewer({
           <CloudSharingControls
             aclEndpoint={config.aclEndpoint}
             invitesEndpoint={config.invitesEndpoint}
+            accessRequestsEndpoint={config.accessRequestsEndpoint}
             authState={authState}
           />
         }
@@ -1409,10 +1544,12 @@ function NotebookViewer({
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
+  const accessRequestNotice = cloudAccessRequestNotice(latestAccessRequest, accessRequestError);
   const hasNotices = cloudNotebookHasNotices({
     authState,
     authRenewal,
     connectionError,
+    diagnostics: accessRequestNotice,
     hasReadableSnapshot: notebookHasReadableSnapshot,
     status,
   });
@@ -1427,6 +1564,7 @@ function NotebookViewer({
       authState={authState}
       authRenewal={authRenewal}
       connectionError={connectionError}
+      diagnostics={accessRequestNotice}
       hasReadableSnapshot={notebookHasReadableSnapshot}
       status={status}
       onResetAuth={resetPrototypeAuth}
@@ -1493,18 +1631,84 @@ function cloudNotebookEnvironmentManager(
   return null;
 }
 
+function cloudAccessRequestNotice(
+  request: CloudNotebookAccessRequest | null,
+  error: string | null,
+): ReactNode {
+  if (error) {
+    return (
+      <NotebookNotice
+        tone="error"
+        icon={<AlertCircle className="h-4 w-4" />}
+        title="Edit request failed."
+      >
+        {error}
+      </NotebookNotice>
+    );
+  }
+
+  if (!request) {
+    return null;
+  }
+
+  if (request.status === "pending") {
+    return (
+      <NotebookNotice
+        tone="info"
+        icon={<Loader2 className="h-4 w-4 animate-spin" />}
+        title="Edit access requested."
+      >
+        The owner can review this request from the sharing panel.
+      </NotebookNotice>
+    );
+  }
+
+  if (request.status === "approved") {
+    return (
+      <NotebookNotice
+        tone="success"
+        icon={<Check className="h-4 w-4" />}
+        title="Edit access approved."
+      >
+        Reconnecting with editor access.
+      </NotebookNotice>
+    );
+  }
+
+  if (request.status === "denied") {
+    return (
+      <NotebookNotice tone="warning" icon={<X className="h-4 w-4" />} title="Edit request denied.">
+        The notebook stays in view mode.
+      </NotebookNotice>
+    );
+  }
+
+  return (
+    <NotebookNotice
+      tone="info"
+      icon={<AlertCircle className="h-4 w-4" />}
+      title="Edit request dismissed."
+    >
+      The owner dismissed the request.
+    </NotebookNotice>
+  );
+}
+
 function CloudSharingControls({
   aclEndpoint,
   invitesEndpoint,
+  accessRequestsEndpoint,
   authState,
 }: {
   aclEndpoint: string;
   invitesEndpoint: string;
+  accessRequestsEndpoint: string;
   authState: CloudPrototypeAuthState;
 }) {
   const [open, setOpen] = useState(false);
   const [acl, setAcl] = useState<CloudNotebookAclRow[]>([]);
   const [invites, setInvites] = useState<CloudNotebookInvite[]>([]);
+  const [accessRequests, setAccessRequests] = useState<CloudNotebookAccessRequest[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [messageKind, setMessageKind] = useState<"info" | "error">("info");
@@ -1515,7 +1719,10 @@ function CloudSharingControls({
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const inviteSubmitLockRef = useRef(false);
   const publicLink = new URL(window.location.pathname, window.location.origin).href;
-  const accessRows = useMemo(() => buildCloudShareAccessRows({ acl, invites }), [acl, invites]);
+  const accessRows = useMemo(
+    () => buildCloudShareAccessRows({ acl, invites, accessRequests }),
+    [accessRequests, acl, invites],
+  );
   const accessSummary = useMemo(() => cloudShareAccessSummary(accessRows), [accessRows]);
   const publicEnabled = useMemo(() => hasPublicViewerAccess(acl), [acl]);
   const inviteReady = normalizeShareInviteEmail(inviteEmail) !== null;
@@ -1527,7 +1734,7 @@ function CloudSharingControls({
         setMessage(null);
       }
       try {
-        const [aclResponse, invitesResponse] = await Promise.all([
+        const [aclResponse, invitesResponse, accessRequestsResponse] = await Promise.all([
           fetchWithCloudPrototypeAuth(
             aclEndpoint,
             { headers: { Accept: "application/json" }, signal: options?.signal },
@@ -1535,6 +1742,11 @@ function CloudSharingControls({
           ),
           fetchWithCloudPrototypeAuth(
             invitesEndpoint,
+            { headers: { Accept: "application/json" }, signal: options?.signal },
+            authState,
+          ),
+          fetchWithCloudPrototypeAuth(
+            accessRequestsEndpoint,
             { headers: { Accept: "application/json" }, signal: options?.signal },
             authState,
           ),
@@ -1558,10 +1770,26 @@ function CloudSharingControls({
               : "Unable to load invites",
           );
         }
+        if (!accessRequestsResponse.ok) {
+          throw await cloudResponseError(
+            accessRequestsResponse,
+            accessRequestsResponse.status === 403
+              ? "Only the notebook owner can manage access requests"
+              : "Unable to load access requests",
+          );
+        }
         const aclBody = (await aclResponse.json()) as { acl?: CloudNotebookAclRow[] };
         const invitesBody = (await invitesResponse.json()) as { invites?: CloudNotebookInvite[] };
+        const accessRequestsBody = (await accessRequestsResponse.json()) as {
+          access_requests?: CloudNotebookAccessRequest[];
+        };
         setAcl(Array.isArray(aclBody.acl) ? aclBody.acl : []);
         setInvites(Array.isArray(invitesBody.invites) ? invitesBody.invites : []);
+        setAccessRequests(
+          Array.isArray(accessRequestsBody.access_requests)
+            ? accessRequestsBody.access_requests
+            : [],
+        );
         setLoadState("ready");
       } catch (error) {
         if (options?.signal?.aborted) {
@@ -1572,7 +1800,7 @@ function CloudSharingControls({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     },
-    [aclEndpoint, authState, invitesEndpoint],
+    [accessRequestsEndpoint, aclEndpoint, authState, invitesEndpoint],
   );
 
   useEffect(() => {
@@ -1677,6 +1905,7 @@ function CloudSharingControls({
 
   const removeAccessRow = async (row: CloudShareAccessRow) => {
     if (!row.removable) return;
+    if (row.kind === "access_request") return;
 
     setBusyAction(row.id);
     setMessage(null);
@@ -1721,6 +1950,39 @@ function CloudSharingControls({
     }
   };
 
+  const resolveAccessRequest = async (
+    row: Extract<CloudShareAccessRow, { kind: "access_request" }>,
+    action: "approve" | "deny" | "dismiss",
+  ) => {
+    setBusyAction(`${row.id}:${action}`);
+    setMessage(null);
+    try {
+      const response = await fetchWithCloudPrototypeAuth(
+        appendEndpointPathSegment(accessRequestsEndpoint, row.accessRequest.id),
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ action }),
+        },
+        authState,
+      );
+      if (!response.ok) {
+        throw await cloudResponseError(response, "Unable to update access request");
+      }
+      setMessageKind("info");
+      setMessage(accessRequestActionMessage(row.label, action));
+      await loadSharingState({ preserveMessage: true });
+    } catch (error) {
+      setMessageKind("error");
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const copyLinkLabel =
     copyState === "copied" ? "Copied link" : copyState === "failed" ? "Copy failed" : "Copy link";
   const compactCopyLinkLabel =
@@ -1740,7 +2002,7 @@ function CloudSharingControls({
         <header>
           <div>
             <h2>Share notebook</h2>
-            <p>Public link, collaborators, and pending invites for this notebook.</p>
+            <p>Public link, collaborators, pending invites, and edit requests.</p>
           </div>
           <button type="button" aria-label={copyLinkLabel} onClick={() => void copyPublicLink()}>
             <Link2 aria-hidden="true" />
@@ -1829,6 +2091,37 @@ function CloudSharingControls({
                       <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
                         {row.stateLabel}
                       </span>
+                    ) : null}
+                    {row.kind === "access_request" ? (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={`Approve ${row.label}`}
+                          title={`Approve ${row.label}`}
+                          disabled={busyAction === `${row.id}:approve`}
+                          onClick={() => void resolveAccessRequest(row, "approve")}
+                        >
+                          <Check aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Deny ${row.label}`}
+                          title={`Deny ${row.label}`}
+                          disabled={busyAction === `${row.id}:deny`}
+                          onClick={() => void resolveAccessRequest(row, "deny")}
+                        >
+                          <X aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Dismiss ${row.label}`}
+                          title={`Dismiss ${row.label}`}
+                          disabled={busyAction === `${row.id}:dismiss`}
+                          onClick={() => void resolveAccessRequest(row, "dismiss")}
+                        >
+                          <Trash2 aria-hidden="true" />
+                        </button>
+                      </>
                     ) : null}
                     {row.removable ? (
                       <button
@@ -1946,10 +2239,24 @@ function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
   if (row.kind === "invite") {
     return <Mail aria-hidden="true" />;
   }
+  if (row.kind === "access_request") {
+    return <UserRound aria-hidden="true" />;
+  }
   if (row.acl.subject_kind === "public") {
     return <Globe2 aria-hidden="true" />;
   }
   return <UserRound aria-hidden="true" />;
+}
+
+function accessRequestActionMessage(label: string, action: "approve" | "deny" | "dismiss"): string {
+  switch (action) {
+    case "approve":
+      return `${label} can now edit.`;
+    case "deny":
+      return `${label} denied.`;
+    case "dismiss":
+      return `${label} dismissed.`;
+  }
 }
 
 function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabilities): boolean {

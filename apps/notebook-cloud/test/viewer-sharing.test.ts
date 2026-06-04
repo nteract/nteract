@@ -7,6 +7,7 @@ import {
   normalizeShareInviteEmail,
   scopeLabel,
   type CloudNotebookAclRow,
+  type CloudNotebookAccessRequest,
   type CloudNotebookInvite,
 } from "../viewer/sharing-client.ts";
 
@@ -44,8 +45,21 @@ describe("cloud viewer sharing client", () => {
       inviteRow({ id: "invite-1", email: "carol@example.com", scope: "viewer" }),
       inviteRow({ id: "invite-2", email: "done@example.com", status: "accepted" }),
     ];
+    const accessRequests: CloudNotebookAccessRequest[] = [
+      accessRequestRow({
+        id: "request-1",
+        requester_principal: "user:anaconda:dana",
+        display: {
+          kind: "principal",
+          label: "Dana Requester",
+          principal: "user:anaconda:dana",
+          email: "dana@example.com",
+        },
+      }),
+      accessRequestRow({ id: "request-2", status: "denied" }),
+    ];
 
-    const rows = buildCloudShareAccessRows({ acl, invites });
+    const rows = buildCloudShareAccessRows({ acl, invites, accessRequests });
 
     assert.deepEqual(
       rows.map((row) => [row.kind, row.label, row.badge, row.stateLabel, row.removable]),
@@ -54,13 +68,20 @@ describe("cloud viewer sharing client", () => {
         ["acl", "Bob Example", "Can edit", null, true],
         ["acl", "Public link", "Can view", "Enabled", true],
         ["invite", "c...l@example.com", "Can view", "Pending", true],
+        ["access_request", "Dana Requester", "Can edit", "Requested", false],
       ],
     );
     assert.deepEqual(
       rows.map((row) => row.title),
-      ["alice@example.com", "bob@example.com", "Anyone with the link", "carol@example.com"],
+      [
+        "alice@example.com",
+        "bob@example.com",
+        "Anyone with the link",
+        "carol@example.com",
+        "dana@example.com",
+      ],
     );
-    assert.equal(cloudShareAccessSummary(rows), "2 people, public link, 1 invite");
+    assert.equal(cloudShareAccessSummary(rows), "2 people, public link, 1 invite, 1 request");
   });
 
   it("detects public viewer access from explicit public ACL rows", () => {
@@ -146,6 +167,24 @@ function inviteRow(overrides: Partial<CloudNotebookInvite> = {}): CloudNotebookI
     accepted_at: null,
     revoked_at: null,
     revoked_by_actor_label: null,
+    ...overrides,
+  };
+}
+
+function accessRequestRow(
+  overrides: Partial<CloudNotebookAccessRequest> = {},
+): CloudNotebookAccessRequest {
+  return {
+    id: "request-1",
+    notebook_id: "topic-viz",
+    requester_principal: "user:anaconda:bob",
+    scope: "editor",
+    status: "pending",
+    requested_by_actor_label: "user:anaconda:bob/browser:viewer",
+    resolved_by_actor_label: null,
+    created_at: "2026-05-28T00:00:00.000Z",
+    updated_at: "2026-05-28T00:00:00.000Z",
+    resolved_at: null,
     ...overrides,
   };
 }

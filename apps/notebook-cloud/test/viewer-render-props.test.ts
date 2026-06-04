@@ -171,7 +171,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /useState\(initialCloudViewerPresence\)/);
   assert.doesNotMatch(sourceText, /setPresence\(/);
   assert.doesNotMatch(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
-  assert.match(sourceText, /Public link, collaborators, and pending invites for this notebook\./);
+  assert.match(sourceText, /Public link, collaborators, pending invites, and edit requests\./);
   assert.match(
     sourceText,
     /const accessSummary = useMemo\(\(\) => cloudShareAccessSummary\(accessRows\)/,
@@ -186,10 +186,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /Only invited people can open this notebook/);
   assert.match(sourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
   assert.match(sourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
-  assert.match(
-    sourceText,
-    /const accessRows = useMemo\(\(\) => buildCloudShareAccessRows\(\{ acl, invites \}\), \[acl, invites\]\)/,
-  );
+  assert.match(sourceText, /buildCloudShareAccessRows\(\{ acl, invites, accessRequests \}\)/);
   assert.match(
     sourceText,
     /accessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
