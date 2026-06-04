@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
+  ensureMarkdownCell,
   executeCell,
   getCellSource,
   openNotebookRoom,
@@ -118,6 +119,34 @@ test.describe("markdown parity", () => {
       timeout: 60_000,
     });
     await expect(renderedMarkdown).not.toContainText("Original rendered text.");
+  });
+
+  test("renders a newly inserted markdown cell after editing through the UI", async ({ page }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+    await waitForKernelStatus(page, "idle", 120_000);
+
+    const markdownCell = await ensureMarkdownCell(page);
+    const editor = markdownCell.locator('.cm-content[contenteditable="true"]');
+    await expect(editor).toBeVisible({ timeout: 10_000 });
+
+    await setCellSource(
+      markdownCell,
+      "# Inserted markdown parity\n\nhello from the inserted markdown cell",
+    );
+    await expect.poll(() => getCellSource(markdownCell)).toContain("hello from the inserted");
+
+    await editor.press("Control+Enter");
+    await expect(editor).toBeHidden({ timeout: 10_000 });
+
+    const renderedMarkdown = await renderedMarkdownSurface(
+      markdownCell,
+      "Inserted markdown parity",
+    );
+    await expect(renderedMarkdown).toContainText("hello from the inserted markdown cell", {
+      timeout: 60_000,
+    });
+    await expect(renderedMarkdown).not.toContainText("Enter markdown");
   });
 });
 
