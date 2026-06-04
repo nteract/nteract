@@ -1,44 +1,18 @@
 import { expect, test, type FrameLocator, type Locator, type Page } from "@playwright/test";
 import {
+  executeCell,
   getCellSource,
   openNotebookRoom,
   setCellSource,
   waitForCellCount,
+  waitForCodeCellContaining,
   waitForKernelStatus,
 } from "./helpers";
+import {
+  MARKDOWN_CELL_PARITY_SOURCE,
+  MARKDOWN_OUTPUT_PARITY_CODE,
+} from "./fixtures/markdown-parity";
 import { McpPeer } from "./mcp-peer";
-
-const PARITY_MARKDOWN = [
-  "# Markdown parity heading",
-  "",
-  "Selectable paragraph for copy behavior with **strong text**, *emphasis*, and `inline code`.",
-  "",
-  "> A quote should keep the document voice without becoming editor chrome.",
-  "",
-  "- [x] completed task",
-  "- [ ] open task",
-  "",
-  "| package | role |",
-  "| --- | --- |",
-  "| pandas | dataframes |",
-  "| polars | expressions |",
-  "",
-  "Inline math $E = mc^2$ should typeset, and display math should too:",
-  "",
-  "$$",
-  "a^2 + b^2 = c^2",
-  "$$",
-  "",
-  '<button id="markdown-parity-raw-html">raw html stays isolated</button>',
-  "",
-  "```python",
-  "print('highlighted code block')",
-  "```",
-  "",
-  "## Deep parity section",
-  "",
-  "The outline should be able to land inside rendered markdown.",
-].join("\n");
 
 let mcp: McpPeer | null = null;
 
@@ -51,7 +25,7 @@ test.describe("markdown parity", () => {
   test("renders rich markdown, math, raw HTML, task lists, selection, and outline anchors", async ({
     page,
   }) => {
-    const markdownCell = await createParityMarkdownCell(page, PARITY_MARKDOWN);
+    const markdownCell = await createParityMarkdownCell(page, MARKDOWN_CELL_PARITY_SOURCE);
     const renderedMarkdown = renderedMarkdownSurface(markdownCell);
     const renderedBody = renderedMarkdown.locator("body");
 
@@ -91,6 +65,33 @@ test.describe("markdown parity", () => {
     await expect
       .poll(async () => (await deepHeading.boundingBox())?.y ?? Infinity)
       .toBeLessThan((page.viewportSize()?.height ?? 720) - 32);
+  });
+
+  test("renders selectable markdown outputs without changing output routing semantics", async ({
+    page,
+  }) => {
+    const codeCell = await createParityCodeCell(page, MARKDOWN_OUTPUT_PARITY_CODE);
+    await executeCell(codeCell);
+
+    const outputMarkdown = renderedMarkdownSurface(codeCell);
+    const outputBody = outputMarkdown.locator("body");
+
+    await expect(
+      outputMarkdown.getByRole("heading", { name: "Markdown output parity" }),
+    ).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(outputBody).toContainText("Selectable output paragraph");
+    await expect(outputMarkdown.getByRole("table")).toContainText("markdown");
+    await expect
+      .poll(() => outputMarkdown.locator(".katex").count(), { timeout: 30_000 })
+      .toBeGreaterThanOrEqual(2);
+
+    const selectionText = await selectRenderedText(
+      page,
+      outputMarkdown.locator("p", { hasText: "Selectable output paragraph" }),
+    );
+    expect(selectionText).toContain("Selectable output");
   });
 
   test("round-trips rendered markdown through double-click edit and render", async ({ page }) => {
@@ -140,6 +141,18 @@ async function createParityMarkdownCell(page: Page, source: string): Promise<Loc
   return markdownCell;
 }
 
+async function createParityCodeCell(page: Page, source: string): Promise<Locator> {
+  const notebookId = crypto.randomUUID();
+  await openNotebookRoom(page, notebookId);
+  await waitForKernelStatus(page, "idle", 120_000);
+
+  mcp = await McpPeer.start();
+  await mcp.connectNotebook(notebookId);
+  await mcp.createCell(source, "code");
+
+  return await waitForCodeCellContaining(page, "Markdown output parity");
+}
+
 function renderedMarkdownSurface(markdownCell: Locator): FrameLocator {
   // Current markdown rendering lives in an isolated frame. Keep the dependency
   // at this boundary so projected/main-DOM markdown can swap this helper
@@ -156,38 +169,8 @@ async function doubleClickRenderedMarkdown(markdownCell: Locator): Promise<void>
   await preview.dblclick({ position: { x: 80, y: 48 } });
 }
 
-async function selectRenderedText(page: Page, locator: Locator): Promise<string> {
+async function selectRenderedText(_page: Page, locator: Locator): Promise<string> {
   await locator.scrollIntoViewIfNeeded();
-  const box = await locator.boundingBox();
-  if (!box) throw new Error("Cannot select markdown text without a visible bounding box");
-
-  const textRange = await locator.evaluate((element) => {
-    const document = element.ownerDocument;
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-    const textNode = walker.nextNode();
-    if (!textNode?.textContent) return null;
-
-    const end = Math.min(textNode.textContent.length, 32);
-    const range = document.createRange();
-    range.setStart(textNode, 0);
-    range.setEnd(textNode, end);
-
-    const elementRect = element.getBoundingClientRect();
-    const rect = range.getBoundingClientRect();
-    range.detach();
-
-    return {
-      startX: rect.left - elementRect.left,
-      endX: rect.right - elementRect.left,
-      y: rect.top - elementRect.top + rect.height / 2,
-    };
-  });
-  if (!textRange) throw new Error("Cannot select markdown text without a text node");
-
-  await page.mouse.move(box.x + textRange.startX, box.y + textRange.y);
-  await page.mouse.down();
-  await page.mouse.move(box.x + textRange.endX, box.y + textRange.y, { steps: 8 });
-  await page.mouse.up();
-
+  await locator.selectText({ force: true });
   return locator.evaluate(() => window.getSelection()?.toString() ?? "");
 }
