@@ -13,6 +13,7 @@ export interface MarkdownProjectionBlock {
   element: string;
   kind: string;
   measurement: MarkdownProjectionMeasurement & { basis?: string };
+  ordered?: boolean;
   sourceSpanByte: [number, number];
   sourceSpanUtf16: [number, number];
   syntaxSpans: unknown[];
@@ -23,6 +24,7 @@ export interface MarkdownProjectionRun {
   blockId: string;
   inlineId: string;
   listItemIndex: number | null;
+  listItemChecked?: boolean;
   href?: string;
   title?: string;
   renderedHtml?: string;

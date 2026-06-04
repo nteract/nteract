@@ -80,14 +80,34 @@ function ProjectedMarkdownBlock({
 
   if (block.kind === "list") {
     const items = groupListRuns(runs);
+    const List = block.ordered || block.element === "ol" ? "ol" : "ul";
     return (
-      <ul className="my-3 list-disc pl-6">
-        {items.map(({ key, runs }) => (
-          <li key={key} className="my-1">
-            {renderRuns(runs, onLinkClick)}
+      <List
+        className={cn(
+          "my-3 pl-6",
+          List === "ol" ? "list-decimal" : "list-disc",
+          items.some(({ checked }) => checked !== undefined) && "list-none pl-0",
+        )}
+      >
+        {items.map(({ checked, key, runs }) => (
+          <li
+            key={key}
+            className={cn("my-1", checked !== undefined && "flex min-w-0 items-baseline gap-2")}
+          >
+            {checked !== undefined ? (
+              <input
+                type="checkbox"
+                checked={checked}
+                readOnly
+                tabIndex={-1}
+                className="translate-y-0.5 accent-primary"
+                aria-label={checked ? "Completed task" : "Incomplete task"}
+              />
+            ) : null}
+            <span className="min-w-0">{renderRuns(runs, onLinkClick)}</span>
           </li>
         ))}
-      </ul>
+      </List>
     );
   }
 
@@ -105,6 +125,18 @@ function ProjectedMarkdownBlock({
         <code>{block.text}</code>
       </pre>
     );
+  }
+
+  if (block.kind === "blockquote") {
+    return (
+      <blockquote className="my-4 border-l-2 border-border pl-4 text-muted-foreground">
+        {renderRuns(runs, onLinkClick)}
+      </blockquote>
+    );
+  }
+
+  if (block.kind === "thematic-break") {
+    return <hr className="my-6 border-border" />;
   }
 
   if (block.kind === "table") {
@@ -134,16 +166,21 @@ function headingAnchorForBlock(
   });
 }
 
-function headingTag(element: string): "h1" | "h2" | "h3" {
+function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
   if (element === "h1") return "h1";
   if (element === "h2") return "h2";
-  return "h3";
+  if (element === "h3") return "h3";
+  if (element === "h4") return "h4";
+  if (element === "h5") return "h5";
+  return "h6";
 }
 
 function headingClass(element: string) {
   if (element === "h1") return "mt-6 mb-4 text-3xl leading-tight font-bold";
   if (element === "h2") return "mt-5 mb-3 text-2xl leading-tight font-bold";
-  return "mt-4 mb-2 text-xl leading-tight font-bold";
+  if (element === "h3") return "mt-4 mb-2 text-xl leading-tight font-bold";
+  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-semibold";
+  return "mt-3 mb-2 text-base leading-tight font-semibold";
 }
 
 function groupListRuns(runs: MarkdownProjectionRun[]) {
@@ -158,7 +195,11 @@ function groupListRuns(runs: MarkdownProjectionRun[]) {
     }
   }
 
-  return Array.from(groups, ([key, runs]) => ({ key, runs }));
+  return Array.from(groups, ([key, runs]) => ({
+    checked: runs.find((run) => run.listItemChecked !== undefined)?.listItemChecked,
+    key,
+    runs,
+  }));
 }
 
 function renderRuns(runs: MarkdownProjectionRun[], onLinkClick?: (url: string) => void) {

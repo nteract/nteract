@@ -114,6 +114,7 @@ fn collect_block(
     let mut context = RunContext {
         block_id: block.id.clone(),
         inline_index: 0,
+        item_checked: None,
         item_index: None,
         link_href: None,
         link_title: None,
@@ -137,6 +138,7 @@ fn collect_block(
         NodeKind::List => {
             for (item_index, item) in block.children.iter().enumerate() {
                 let before = context.runs.len();
+                context.item_checked = item.attrs.checked;
                 context.item_index = Some(item_index);
                 collect_children(source, &mut context, &item.children, "list-item");
                 if let Some(first_run) = context.runs.get(before) {
@@ -150,6 +152,7 @@ fn collect_block(
                     ));
                 }
             }
+            context.item_checked = None;
             context.item_index = None;
         }
         NodeKind::CodeBlock => collect_code_block(source, &mut context, block),
@@ -221,6 +224,7 @@ fn collect_block(
         block_index,
         element,
         kind,
+        ordered: block.attrs.ordered,
         measurement: WasmBlockMeasurement {
             basis: block.measurement.basis.clone(),
             confidence: confidence_label(block.measurement.confidence),
@@ -515,9 +519,11 @@ fn block_kind(block: &ProjectedNode) -> &'static str {
     match block.kind {
         NodeKind::Heading => "heading",
         NodeKind::List => "list",
+        NodeKind::Blockquote => "blockquote",
         NodeKind::CodeBlock => "code",
         NodeKind::Html | NodeKind::Mdx => "isolated",
         NodeKind::MathBlock => "math",
+        NodeKind::ThematicBreak => "thematic-break",
         NodeKind::Table => "table",
         _ => "paragraph",
     }
@@ -527,11 +533,22 @@ fn block_element(block: &ProjectedNode) -> &'static str {
     match block.kind {
         NodeKind::Heading => match block.attrs.depth.unwrap_or(1) {
             1 => "h1",
-            _ => "h2",
+            2 => "h2",
+            3 => "h3",
+            4 => "h4",
+            5 => "h5",
+            _ => "h6",
         },
         NodeKind::Paragraph | NodeKind::TableCell => "p",
-        NodeKind::List => "ul",
+        NodeKind::List => {
+            if block.attrs.ordered == Some(true) {
+                "ol"
+            } else {
+                "ul"
+            }
+        }
         NodeKind::CodeBlock => "pre",
+        NodeKind::ThematicBreak => "hr",
         _ => "div",
     }
 }
@@ -583,6 +600,7 @@ impl PositionIndex {
 struct RunContext<'a> {
     block_id: String,
     inline_index: usize,
+    item_checked: Option<bool>,
     item_index: Option<usize>,
     link_href: Option<String>,
     link_title: Option<String>,
@@ -608,6 +626,7 @@ impl RunContext<'_> {
         let run = WasmRun {
             block_id: self.block_id.clone(),
             inline_id,
+            item_checked: self.item_checked,
             item_index: self.item_index,
             link_href: self.link_href.clone(),
             link_title: self.link_title.clone(),
@@ -630,6 +649,7 @@ impl RunContext<'_> {
 struct WasmRun {
     block_id: String,
     inline_id: String,
+    item_checked: Option<bool>,
     item_index: Option<usize>,
     link_href: Option<String>,
     link_title: Option<String>,
@@ -659,6 +679,11 @@ impl WasmRun {
             push_json_key_string(output, "title", title);
             output.push(',');
         }
+        if let Some(checked) = self.item_checked {
+            output.push_str("\"listItemChecked\":");
+            output.push_str(if checked { "true" } else { "false" });
+            output.push(',');
+        }
         if let Some(html) = &self.rendered_html {
             push_json_key_string(output, "renderedHtml", html);
             output.push(',');
@@ -682,6 +707,7 @@ struct WasmBlock {
     block_index: usize,
     element: &'static str,
     kind: &'static str,
+    ordered: Option<bool>,
     measurement: WasmBlockMeasurement,
     source_span_byte: [usize; 2],
     source_span_utf16: [usize; 2],
@@ -711,6 +737,11 @@ impl WasmBlock {
         output.push(',');
         push_json_key_string(output, "kind", self.kind);
         output.push(',');
+        if let Some(ordered) = self.ordered {
+            output.push_str("\"ordered\":");
+            output.push_str(if ordered { "true" } else { "false" });
+            output.push(',');
+        }
         output.push_str("\"measurement\":{");
         output.push_str("\"estimatedHeight\":");
         output.push_str(&self.measurement.estimated_height.to_string());
@@ -957,5 +988,21 @@ mod tests {
 
         assert!(json.contains("\"kind\":\"isolated\""));
         assert!(json.contains("\"semantic\":\"isolated-placeholder\""));
+    }
+
+    #[test]
+    fn projects_host_renderable_block_semantics() {
+        let json = project_to_json(
+            "### Third\n\n1. ordered\n2. list\n\n- [x] done\n- [ ] todo\n\n> quote\n\n---",
+        );
+
+        assert!(json.contains("\"element\":\"h3\""));
+        assert!(json.contains("\"element\":\"ol\""));
+        assert!(json.contains("\"ordered\":true"));
+        assert!(json.contains("\"listItemChecked\":true"));
+        assert!(json.contains("\"listItemChecked\":false"));
+        assert!(json.contains("\"kind\":\"blockquote\""));
+        assert!(json.contains("\"kind\":\"thematic-break\""));
+        assert!(json.contains("\"element\":\"hr\""));
     }
 }
