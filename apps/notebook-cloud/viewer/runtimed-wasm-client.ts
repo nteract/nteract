@@ -2,6 +2,7 @@ import {
   notebookInteractionTargetToPresenceTarget,
   type NotebookInteractionTarget,
 } from "runtimed";
+import { setMarkdownProjectionProjector } from "../../notebook/src/lib/markdown-projection";
 import type { NotebookHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
 type RuntimedWasmModule = typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
@@ -30,6 +31,7 @@ export async function initializeRuntimedWasmClient(
   initialized ??= loadRuntimedWasmModule(modulePath)
     .then(async (module) => {
       await module.default({ module_or_path: moduleOrPath });
+      setMarkdownProjectionProjector(module.project_markdown_json);
       resolvedModule = module;
       return module;
     })

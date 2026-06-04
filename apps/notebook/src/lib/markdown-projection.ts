@@ -1,5 +1,9 @@
 import { project_markdown_json } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
+type MarkdownProjectionProjector = (source: string) => string;
+
+let markdownProjectionProjector: MarkdownProjectionProjector = project_markdown_json;
+
 export interface MarkdownProjectionMeasurement {
   estimatedHeight: number;
   confidence: "low" | "medium" | "high" | string;
@@ -46,11 +50,21 @@ export interface MarkdownProjectionPlan {
   runs: MarkdownProjectionRun[];
 }
 
+export function setMarkdownProjectionProjector(
+  projector: MarkdownProjectionProjector,
+): () => void {
+  const previousProjector = markdownProjectionProjector;
+  markdownProjectionProjector = projector;
+  return () => {
+    markdownProjectionProjector = previousProjector;
+  };
+}
+
 export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | null {
   if (!source.trim()) return null;
 
   try {
-    const json = project_markdown_json(source);
+    const json = markdownProjectionProjector(source);
     const plan = JSON.parse(json) as MarkdownProjectionPlan;
     if (plan.error) {
       return null;
