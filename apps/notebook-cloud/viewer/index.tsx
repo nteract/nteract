@@ -707,13 +707,10 @@ function NotebookViewer({
     null,
   );
   const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
-  const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
-    () =>
-      authState.requestedScope === "editor" || authState.requestedScope === "owner"
-        ? "edit"
-        : "view",
-  );
+  const [selectedInteractionMode, setSelectedInteractionMode] =
+    useState<NotebookInteractionMode>("view");
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
+  const appliedGrantedEditScopeRef = useRef<string | null>(null);
   const blobResolver = useMemo(
     () =>
       createNotebookCloudBlobResolver({
@@ -1204,6 +1201,10 @@ function NotebookViewer({
     Boolean(connectionPeerId) &&
     !connectionError &&
     (status.kind === "ready" || status.kind === "empty");
+  const requestedEditAccess =
+    authState.requestedScope === "editor" || authState.requestedScope === "owner";
+  const editAccessPending =
+    !connectionError && status.kind === "loading" && !canAcceptCellMutations && requestedEditAccess;
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
@@ -1211,7 +1212,7 @@ function NotebookViewer({
         connectionScope,
         connectionActorLabel,
         hasCodeCells: codeCellCount > 0,
-        selectedMode: selectedInteractionMode,
+        selectedMode: editAccessPending ? "view" : selectedInteractionMode,
         canAcceptCellMutations,
         hostCapabilities: config.hostCapabilities,
       }),
@@ -1222,15 +1223,30 @@ function NotebookViewer({
       config.hostCapabilities,
       connectionActorLabel,
       connectionScope,
+      editAccessPending,
       selectedInteractionMode,
     ],
   );
-  const editAccessPending =
-    !connectionError &&
-    status.kind === "loading" &&
-    !canAcceptCellMutations &&
-    selectedInteractionMode === "edit" &&
-    (authState.requestedScope === "editor" || authState.requestedScope === "owner");
+  useEffect(() => {
+    if (!requestedEditAccess) {
+      appliedGrantedEditScopeRef.current = null;
+      return;
+    }
+    if (
+      !canAcceptCellMutations ||
+      (connectionScope !== "editor" && connectionScope !== "owner") ||
+      !connectionPeerId
+    ) {
+      return;
+    }
+
+    const grantKey = `${connectionPeerId}:${connectionScope}`;
+    if (appliedGrantedEditScopeRef.current === grantKey) {
+      return;
+    }
+    appliedGrantedEditScopeRef.current = grantKey;
+    setSelectedInteractionMode("edit");
+  }, [canAcceptCellMutations, connectionPeerId, connectionScope, requestedEditAccess]);
   const canWriteCellSource = useCallback(
     (cellId: string) => {
       const cell = cellsByIdRef.current.get(cellId);
@@ -1248,6 +1264,12 @@ function NotebookViewer({
   const packageEnvironmentManager = cloudNotebookEnvironmentManager(
     notebookViewModel.packages.sections,
   );
+  const toolbarRuntime = editAccessPending
+    ? null
+    : notebookLanguageRef.current === "deno"
+      ? "deno"
+      : "python";
+  const toolbarEnvironmentManager = editAccessPending ? null : packageEnvironmentManager;
   useEffect(() => {
     if (status.kind !== "empty" || notebookCellIds.length > 0) {
       setEmptyRoomGraceElapsed(false);
@@ -1548,12 +1570,13 @@ function NotebookViewer({
         }
         identityControls={null}
       />
-      {shouldShowCloudNotebookCommandToolbar(shellCapabilities) ? (
+      {shouldShowCloudNotebookCommandToolbar(shellCapabilities) || editAccessPending ? (
         <NotebookCommandToolbar
           capabilities={shellCapabilities}
-          runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-          environmentManager={packageEnvironmentManager}
+          runtime={toolbarRuntime}
+          environmentManager={toolbarEnvironmentManager}
           environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
+          addCellControlsDisabled={editAccessPending}
           addAfterCellId={toolbarAddAfterCellId}
           onAddCell={handleCloudAddCell}
           onTogglePackages={handleTogglePackagesRail}
@@ -2196,15 +2219,12 @@ function CloudNotebookEditModeButton({
     return null;
   }
 
-  if (accessPending) {
-    return <CloudNotebookEditModePlaceholder />;
-  }
-
   return (
     <NotebookEditModeButton
-      mode={interaction.selectedMode}
-      state={interaction.state}
+      mode={accessPending ? "view" : interaction.selectedMode}
+      state={accessPending ? "viewing" : interaction.state}
       variant="segmented"
+      disabled={accessPending}
       onModeChange={(mode) => {
         if (mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner") {
           onRequestEditAccess();
@@ -2213,20 +2233,6 @@ function CloudNotebookEditModeButton({
         onModeChange(mode);
       }}
     />
-  );
-}
-
-function CloudNotebookEditModePlaceholder() {
-  return (
-    <div
-      className="cloud-edit-mode-placeholder"
-      aria-busy="true"
-      aria-label="Loading notebook access"
-      role="status"
-    >
-      <span aria-hidden="true" />
-      <span aria-hidden="true" />
-    </div>
   );
 }
 

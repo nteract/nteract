@@ -235,27 +235,41 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   const cssText = readFileSync(cssPath, "utf8");
 
   assert.match(sourceText, /NotebookEditModeButton/);
-  assert.match(sourceText, /<NotebookEditModeButton[\s\S]*mode=\{interaction\.selectedMode\}/);
-  assert.match(sourceText, /<NotebookEditModeButton[\s\S]*state=\{interaction\.state\}/);
+  assert.match(
+    sourceText,
+    /<NotebookEditModeButton[\s\S]*mode=\{accessPending \? "view" : interaction\.selectedMode\}/,
+  );
+  assert.match(
+    sourceText,
+    /<NotebookEditModeButton[\s\S]*state=\{accessPending \? "viewing" : interaction\.state\}/,
+  );
   assert.match(sourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
-  assert.match(sourceText, /selectedMode: selectedInteractionMode/);
+  assert.match(sourceText, /selectedMode: editAccessPending \? "view" : selectedInteractionMode/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
   assert.match(sourceText, /const editAccessPending =/);
   assert.match(
     sourceText,
-    /status\.kind === "loading"[\s\S]*!canAcceptCellMutations[\s\S]*authState\.requestedScope === "editor"/,
+    /const requestedEditAccess =\s+authState\.requestedScope === "editor" \|\|\s+authState\.requestedScope === "owner"/,
   );
-  assert.match(sourceText, /accessPending=\{editAccessPending\}/);
   assert.match(
     sourceText,
-    /if \(accessPending\) \{\s+return <CloudNotebookEditModePlaceholder \/>;\s+\}/,
+    /status\.kind === "loading"[\s\S]*!canAcceptCellMutations[\s\S]*requestedEditAccess/,
   );
-  assert.match(sourceText, /function CloudNotebookEditModePlaceholder\(\)/);
-  assert.match(cssText, /\.cloud-edit-mode-placeholder \{[\s\S]*height: 2rem;/);
-  assert.match(cssText, /\.cloud-edit-mode-placeholder > span \{[\s\S]*height: 1\.5rem;/);
+  assert.match(sourceText, /accessPending=\{editAccessPending\}/);
+  assert.match(sourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
+  assert.match(sourceText, /disabled=\{accessPending\}/);
+  assert.match(
+    sourceText,
+    /shouldShowCloudNotebookCommandToolbar\(shellCapabilities\) \|\| editAccessPending/,
+  );
+  assert.match(sourceText, /addCellControlsDisabled=\{editAccessPending\}/);
+  assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
+  assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
+  assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
+  assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
   assert.match(
     sourceText,
     /if \(mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner"\) \{/,
@@ -278,6 +292,8 @@ test("cloud rail binds through the shared document rail adapter", () => {
 test("cloud host notices sit in the shared shell above the rail and notebook stage", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const cssPath = new URL("../viewer/index.css", import.meta.url);
+  const cssText = readFileSync(cssPath, "utf8");
   const shellPath = new URL(
     "../../../src/components/notebook/NotebookDocumentShell.tsx",
     import.meta.url,
@@ -288,6 +304,9 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   assert.match(sourceText, /const notices = hasNotices \? \(/);
   assert.match(sourceText, /notices=\{notices\}/);
   assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
+  assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*position: relative;/);
+  assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*position: absolute;/);
+  assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*top: var\(--cloud-notice-top\);/);
   assert.match(
     shellText,
     /data-slot="notebook-document-notices"[\s\S]*data-slot="notebook-document-body"[\s\S]*\{rail\}[\s\S]*data-slot="notebook-document-stage"/,

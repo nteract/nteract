@@ -110,6 +110,33 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.getByTestId("kernel-status")).toHaveAttribute("data-kernel-status", "idle");
   });
 
+  it("can reserve add-cell controls as disabled while host edit access resolves", () => {
+    const onAddCell = vi.fn();
+
+    render(
+      <NotebookCommandToolbar
+        capabilities={{
+          ...editableToolbarCapabilities,
+          canEditStructure: false,
+          canExecute: false,
+        }}
+        addCellControlsDisabled
+        onAddCell={onAddCell}
+      />,
+    );
+
+    const codeButton = screen.getByTestId("add-code-cell-button");
+    const markdownButton = screen.getByTestId("add-markdown-cell-button");
+
+    expect(codeButton).toBeDisabled();
+    expect(codeButton).toHaveAttribute("title", "Checking edit access");
+    expect(markdownButton).toBeDisabled();
+
+    fireEvent.click(codeButton);
+
+    expect(onAddCell).not.toHaveBeenCalled();
+  });
+
   it("can render notebook commands without a runtime status surface", () => {
     render(
       <NotebookCommandToolbar
