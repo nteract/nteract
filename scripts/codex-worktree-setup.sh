@@ -18,9 +18,3 @@ else
 fi
 
 git lfs pull
-
-if command -v direnv >/dev/null 2>&1; then
-  direnv allow
-else
-  echo "direnv not found; skipping direnv allow" >&2
-fi
