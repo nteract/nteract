@@ -7563,6 +7563,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "nteract-identity",
+ "nteract-markdown-wasm",
  "nteract-telemetry",
  "petname",
  "pulldown-cmark",

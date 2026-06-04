@@ -31,6 +31,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
+const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
+const MARKDOWN_SOURCE_MIME: &str = "text/markdown";
+
 /// Install the panic hook on module init so Rust panics inside WASM
 /// surface as `console.error` entries with file/line and backtrace,
 /// instead of the opaque `__wbindgen_throw` stack the frontend sees
@@ -1645,7 +1648,11 @@ impl NotebookHandle {
             if let Some(winner_mime) = winner {
                 let mut narrowed = serde_json::Map::new();
                 for (mime, val) in data {
-                    if mime == winner_mime || mime == "text/plain" || is_binary_mime(mime) {
+                    if mime == winner_mime
+                        || mime == "text/plain"
+                        || is_binary_mime(mime)
+                        || (winner_mime == MARKDOWN_PROJECTION_MIME && mime == MARKDOWN_SOURCE_MIME)
+                    {
                         let resolved = self.resolve_content_ref(mime, val);
                         narrowed.insert(mime.clone(), resolved);
                     }
@@ -3325,6 +3332,37 @@ mod tests {
         assert_eq!(resolved, json!({ "value": 42 }));
         assert!(buffer_paths.is_empty());
         assert!(text_paths.is_empty());
+    }
+
+    #[test]
+    fn markdown_projection_narrowing_keeps_markdown_fallback() {
+        let mut handle = NotebookHandle::create_empty().expect("create handle");
+        handle.mime_priority = vec![
+            MARKDOWN_PROJECTION_MIME.to_string(),
+            MARKDOWN_SOURCE_MIME.to_string(),
+            "text/html".to_string(),
+            "text/plain".to_string(),
+        ];
+
+        let narrowed = handle.narrow_output_data(json!({
+            "output_type": "display_data",
+            "data": {
+                MARKDOWN_PROJECTION_MIME: { "inline": "{\"version\":1,\"blocks\":[],\"runs\":[]}" },
+                MARKDOWN_SOURCE_MIME: { "inline": "raw markdown fallback" },
+                "text/html": { "inline": "<p>html fallback</p>" },
+                "text/plain": { "inline": "plain fallback" },
+            },
+            "metadata": {},
+        }));
+        let data = narrowed["data"].as_object().expect("narrowed data object");
+
+        assert!(data.contains_key(MARKDOWN_PROJECTION_MIME));
+        assert!(data.contains_key(MARKDOWN_SOURCE_MIME));
+        assert!(data.contains_key("text/plain"));
+        assert!(
+            !data.contains_key("text/html"),
+            "non-winning rich text fallbacks should still be dropped"
+        );
     }
 
     #[test]
