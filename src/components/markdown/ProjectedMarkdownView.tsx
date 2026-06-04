@@ -108,7 +108,7 @@ function ProjectedMarkdownBlock({
         {items.map(({ checked, key, runs }) => (
           <li
             key={key}
-            className={cn("my-1", checked !== undefined && "flex min-w-0 items-baseline gap-2")}
+            className={cn("my-1", checked !== undefined && "flex min-w-0 items-start gap-2")}
           >
             {checked !== undefined ? (
               <input
@@ -116,11 +116,11 @@ function ProjectedMarkdownBlock({
                 checked={checked}
                 readOnly
                 tabIndex={-1}
-                className="translate-y-0.5 accent-primary"
+                className="mt-[0.42em] h-3.5 w-3.5 shrink-0 pointer-events-none accent-primary"
                 aria-label={checked ? "Completed task" : "Incomplete task"}
               />
             ) : null}
-            <span className="min-w-0">{renderRuns(runs, onLinkClick)}</span>
+            <span className="min-w-0 leading-relaxed">{renderRuns(runs, onLinkClick)}</span>
           </li>
         ))}
       </List>

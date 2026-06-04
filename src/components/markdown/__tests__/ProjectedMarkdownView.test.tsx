@@ -128,8 +128,19 @@ describe("ProjectedMarkdownView", () => {
             },
             {
               blockId: "list",
-              inlineId: "em",
+              inlineId: "todo",
+              listItemChecked: false,
               listItemIndex: 1,
+              renderedText: "todo",
+              renderedTextUtf16: [0, 4],
+              semantic: "list-item",
+              sourceSpanByte: [11, 21],
+              sourceSpanUtf16: [11, 21],
+            },
+            {
+              blockId: "list",
+              inlineId: "em",
+              listItemIndex: 2,
               renderedText: "important",
               renderedTextUtf16: [0, 9],
               semantic: "emphasis",
@@ -139,7 +150,7 @@ describe("ProjectedMarkdownView", () => {
             {
               blockId: "list",
               inlineId: "del",
-              listItemIndex: 2,
+              listItemIndex: 3,
               renderedText: "removed",
               renderedTextUtf16: [0, 7],
               semantic: "delete",
@@ -152,6 +163,8 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByRole("checkbox", { name: "Completed task" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     expect(screen.getByText("important").tagName).toBe("EM");
     expect(screen.getByText("removed").tagName).toBe("DEL");
   });
