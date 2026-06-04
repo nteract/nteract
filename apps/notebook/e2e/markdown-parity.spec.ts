@@ -1,4 +1,4 @@
-import { expect, test, type FrameLocator, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
   executeCell,
   getCellSource,
@@ -26,13 +26,12 @@ test.describe("markdown parity", () => {
     page,
   }) => {
     const markdownCell = await createParityMarkdownCell(page, MARKDOWN_CELL_PARITY_SOURCE);
-    const renderedMarkdown = renderedMarkdownSurface(markdownCell);
-    const renderedBody = renderedMarkdown.locator("body");
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Markdown parity heading");
 
     await expect(
       renderedMarkdown.getByRole("heading", { name: "Markdown parity heading" }),
     ).toBeVisible({ timeout: 60_000 });
-    await expect(renderedBody).toContainText("Selectable paragraph for copy behavior");
+    await expect(renderedMarkdown).toContainText("Selectable paragraph for copy behavior");
     await expect(renderedMarkdown.getByText("strong text")).toBeVisible();
     await expect(renderedMarkdown.getByText("inline code")).toBeVisible();
     await expect(renderedMarkdown.getByRole("table")).toContainText("pandas");
@@ -73,15 +72,14 @@ test.describe("markdown parity", () => {
     const codeCell = await createParityCodeCell(page, MARKDOWN_OUTPUT_PARITY_CODE);
     await executeCell(codeCell);
 
-    const outputMarkdown = renderedMarkdownSurface(codeCell);
-    const outputBody = outputMarkdown.locator("body");
+    const outputMarkdown = await renderedMarkdownSurface(codeCell, "Markdown output parity");
 
     await expect(
       outputMarkdown.getByRole("heading", { name: "Markdown output parity" }),
     ).toBeVisible({
       timeout: 60_000,
     });
-    await expect(outputBody).toContainText("Selectable output paragraph");
+    await expect(outputMarkdown).toContainText("Selectable output paragraph");
     await expect(outputMarkdown.getByRole("table")).toContainText("markdown");
     await expect
       .poll(() => outputMarkdown.locator(".katex").count(), { timeout: 30_000 })
@@ -99,7 +97,7 @@ test.describe("markdown parity", () => {
       page,
       "# Editable parity heading\n\nOriginal rendered text.",
     );
-    const renderedMarkdown = renderedMarkdownSurface(markdownCell);
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Editable parity heading");
     await expect(
       renderedMarkdown.getByRole("heading", { name: "Editable parity heading" }),
     ).toBeVisible({ timeout: 60_000 });
@@ -116,13 +114,10 @@ test.describe("markdown parity", () => {
 
     await editor.press("Control+Enter");
     await expect(editor).toBeHidden({ timeout: 10_000 });
-    await expect(renderedMarkdown.locator("body")).toContainText(
-      "Updated rendered text after edit.",
-      {
-        timeout: 60_000,
-      },
-    );
-    await expect(renderedMarkdown.locator("body")).not.toContainText("Original rendered text.");
+    await expect(renderedMarkdown).toContainText("Updated rendered text after edit.", {
+      timeout: 60_000,
+    });
+    await expect(renderedMarkdown).not.toContainText("Original rendered text.");
   });
 });
 
@@ -153,11 +148,35 @@ async function createParityCodeCell(page: Page, source: string): Promise<Locator
   return await waitForCodeCellContaining(page, "Markdown output parity");
 }
 
-function renderedMarkdownSurface(markdownCell: Locator): FrameLocator {
-  // Current markdown rendering lives in an isolated frame. Keep the dependency
-  // at this boundary so projected/main-DOM markdown can swap this helper
-  // without rewriting the conformance assertions above.
-  return markdownCell.frameLocator('[data-slot="isolated-frame"]');
+async function renderedMarkdownSurface(
+  markdownCell: Locator,
+  headingName: string,
+): Promise<Locator> {
+  // Keep the host-vs-iframe dependency at this boundary. Projected markdown
+  // renders in the host DOM; unsafe fallback and legacy markdown render inside
+  // the isolated frame.
+  const projected = markdownCell.locator('[data-slot="projected-markdown-output"]');
+  const isolatedBody = markdownCell.frameLocator('[data-slot="isolated-frame"]').locator("body");
+
+  await expect
+    .poll(
+      async () => {
+        if (await projected.getByRole("heading", { name: headingName }).isVisible()) {
+          return "projected";
+        }
+        if (await isolatedBody.getByRole("heading", { name: headingName }).isVisible()) {
+          return "isolated";
+        }
+        return "none";
+      },
+      { timeout: 60_000 },
+    )
+    .not.toBe("none");
+
+  if (await projected.getByRole("heading", { name: headingName }).isVisible()) {
+    return projected;
+  }
+  return isolatedBody;
 }
 
 async function activateRenderedMarkdown(markdownCell: Locator): Promise<void> {
