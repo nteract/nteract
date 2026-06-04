@@ -19,6 +19,7 @@ export interface PendingNotebookInvite {
 export interface AuthenticatedLoginProfile {
   principal: string;
   provider: string;
+  principalNamespace?: string | null;
   email: string | null;
   emailVerified: boolean;
   displayName: string | null;
@@ -40,6 +41,7 @@ export interface InviteAclGrant {
   scope: PendingNotebookInvite["scope"];
   actorLabel: string;
   inviteId: string;
+  acceptedByPrincipal: string;
 }
 
 export interface InviteResolution {
@@ -102,10 +104,12 @@ export function normalizeProviderHint(provider: string | null): string | null {
 export function resolvePendingInvitesForLogin({
   invites,
   login,
+  aclSubject,
   now = new Date().toISOString(),
 }: {
   invites: PendingNotebookInvite[];
   login: AuthenticatedLoginProfile;
+  aclSubject?: string;
   now?: string;
 }): InviteResolution {
   const normalizedEmail = safeNormalizeInviteEmail(login.email);
@@ -135,10 +139,11 @@ export function resolvePendingInvitesForLogin({
   const aclGrants = acceptedInvites.map((invite) => ({
     notebookId: invite.notebookId,
     subjectKind: "principal" as const,
-    subject: login.principal,
+    subject: aclSubject ?? login.principal,
     scope: invite.scope,
     actorLabel: INVITE_RESOLUTION_ACTOR_LABEL,
     inviteId: invite.id,
+    acceptedByPrincipal: login.principal,
   }));
 
   return { profile, acceptedInvites, aclGrants };

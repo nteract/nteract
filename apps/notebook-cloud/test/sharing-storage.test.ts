@@ -10,6 +10,7 @@ import type {
 } from "../src/cloudflare-types.ts";
 import {
   createPendingNotebookInvite,
+  canonicalAccountPrincipalForProfile,
   getPrincipalProfiles,
   resolveNotebookInvitesForLogin,
   upsertPrincipalProfile,
@@ -17,6 +18,7 @@ import {
   type PrincipalProfileRow,
 } from "../src/sharing-storage.ts";
 import type { NotebookAclRow } from "../src/storage.ts";
+import type { PrincipalAccountLinkRow } from "../src/storage.ts";
 import type { AuthenticatedLoginProfile } from "../src/sharing.ts";
 
 describe("hosted sharing storage", () => {
@@ -138,6 +140,7 @@ describe("hosted sharing storage", () => {
       timestamp: "2026-05-24T11:00:00.000Z",
     });
 
+    const accountPrincipal = await oidcAccountPrincipal();
     const resolution = await resolveNotebookInvitesForLogin(
       env,
       oidcLogin(),
@@ -158,7 +161,7 @@ describe("hosted sharing storage", () => {
       {
         notebook_id: "notebook-1",
         subject_kind: "principal",
-        subject: "user:oidc:oidc-sub-1",
+        subject: accountPrincipal,
         scope: "editor",
         created_at: "2026-05-24T12:00:00.000Z",
         updated_at: "2026-05-24T12:00:00.000Z",
@@ -166,6 +169,200 @@ describe("hosted sharing storage", () => {
       },
     ]);
     assert.doesNotMatch(env.DB.acl[0]?.subject ?? "", /alice@example.com/);
+  });
+
+  it("merges same-account OIDC and API-key ACL rows onto one canonical account subject", async () => {
+    const env = fakeEnv();
+    const apiKeyLogin = oidcLogin({
+      principal: "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+      provider: "anaconda-api-key",
+      principalNamespace: "user:anaconda",
+      email: "rgbkrk@gmail.com",
+      displayName: "Kyle Kelley",
+    });
+    const oidcBrowserLogin = oidcLogin({
+      principal: "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      provider: "oidc",
+      principalNamespace: "user:anaconda",
+      email: "rgbkrk@gmail.com",
+      displayName: "Kyle Kelley",
+    });
+    const accountPrincipal = await canonicalAccountPrincipalForProfile(apiKeyLogin);
+    assert.ok(accountPrincipal);
+    env.DB.acl.push(
+      aclRow({
+        subject: apiKeyLogin.principal,
+        scope: "owner",
+        created_by_actor_label: `${apiKeyLogin.principal}/agent:runt-publish`,
+      }),
+      aclRow({
+        subject: oidcBrowserLogin.principal,
+        scope: "owner",
+        created_by_actor_label: `${oidcBrowserLogin.principal}/browser:tab`,
+      }),
+    );
+
+    await resolveNotebookInvitesForLogin(env, apiKeyLogin, "2026-05-24T12:00:00.000Z");
+    await resolveNotebookInvitesForLogin(env, oidcBrowserLogin, "2026-05-24T12:01:00.000Z");
+
+    assert.deepEqual(
+      env.DB.acl.map((row) => [row.subject, row.scope]),
+      [[accountPrincipal, "owner"]],
+    );
+    assert.equal(
+      env.DB.accountLinks.get(apiKeyLogin.principal)?.canonical_principal,
+      accountPrincipal,
+    );
+    assert.equal(
+      env.DB.accountLinks.get(oidcBrowserLogin.principal)?.canonical_principal,
+      accountPrincipal,
+    );
+    assert.equal(env.DB.profiles.get(accountPrincipal)?.display_name, "Kyle Kelley");
+  });
+
+  it("moves ACL rows from an old canonical account when a transport link changes", async () => {
+    const env = fakeEnv();
+    const oldLogin = oidcLogin({ email: "alice.old@example.com" });
+    const newLogin = oidcLogin({ email: "alice.new@example.com" });
+    const oldAccountPrincipal = await canonicalAccountPrincipalForProfile(oldLogin);
+    const newAccountPrincipal = await canonicalAccountPrincipalForProfile(newLogin);
+    assert.ok(oldAccountPrincipal);
+    assert.ok(newAccountPrincipal);
+    env.DB.accountLinks.set(
+      oldLogin.principal,
+      accountLinkRow({
+        transport_principal: oldLogin.principal,
+        canonical_principal: oldAccountPrincipal,
+        email_normalized: "alice.old@example.com",
+      }),
+    );
+    env.DB.acl.push(
+      aclRow({
+        subject: oldAccountPrincipal,
+        scope: "editor",
+      }),
+    );
+
+    await resolveNotebookInvitesForLogin(env, newLogin, "2026-05-24T12:02:00.000Z");
+
+    assert.deepEqual(
+      env.DB.acl.map((row) => [row.subject, row.scope, row.updated_at]),
+      [[newAccountPrincipal, "editor", "2026-05-24T12:02:00.000Z"]],
+    );
+    assert.equal(
+      env.DB.accountLinks.get(newLogin.principal)?.canonical_principal,
+      newAccountPrincipal,
+    );
+  });
+
+  it("copies ACL rows when an old canonical account is still linked elsewhere", async () => {
+    const env = fakeEnv();
+    const movingLogin = oidcLogin({ email: "moving.new@example.com" });
+    const otherTransportPrincipal = "user:oidc:other-sub";
+    const oldAccountPrincipal = await canonicalAccountPrincipalForProfile(
+      oidcLogin({ email: "shared.old@example.com" }),
+    );
+    const newAccountPrincipal = await canonicalAccountPrincipalForProfile(movingLogin);
+    assert.ok(oldAccountPrincipal);
+    assert.ok(newAccountPrincipal);
+    env.DB.accountLinks.set(
+      movingLogin.principal,
+      accountLinkRow({
+        transport_principal: movingLogin.principal,
+        canonical_principal: oldAccountPrincipal,
+        email_normalized: "shared.old@example.com",
+      }),
+    );
+    env.DB.accountLinks.set(
+      otherTransportPrincipal,
+      accountLinkRow({
+        transport_principal: otherTransportPrincipal,
+        canonical_principal: oldAccountPrincipal,
+        email_normalized: "shared.old@example.com",
+      }),
+    );
+    env.DB.acl.push(
+      aclRow({
+        subject: oldAccountPrincipal,
+        scope: "editor",
+      }),
+    );
+
+    await resolveNotebookInvitesForLogin(env, movingLogin, "2026-05-24T12:02:30.000Z");
+
+    assert.deepEqual(
+      env.DB.acl.map((row) => [row.subject, row.scope, row.updated_at]),
+      [
+        [oldAccountPrincipal, "editor", "2026-05-24T11:00:00.000Z"],
+        [newAccountPrincipal, "editor", "2026-05-24T12:02:30.000Z"],
+      ],
+    );
+    assert.equal(
+      env.DB.accountLinks.get(movingLogin.principal)?.canonical_principal,
+      newAccountPrincipal,
+    );
+    assert.equal(
+      env.DB.accountLinks.get(otherTransportPrincipal)?.canonical_principal,
+      oldAccountPrincipal,
+    );
+  });
+
+  it("moves related profile ACL rows from an old canonical account before relinking", async () => {
+    const env = fakeEnv();
+    const currentLogin = oidcLogin({
+      principal: "user:anaconda:current",
+      provider: "oidc",
+      principalNamespace: "user:anaconda",
+      email: "shared@example.com",
+    });
+    const relatedLogin = oidcLogin({
+      principal: "User:Anaconda:related:with-colon",
+      provider: "anaconda-api-key",
+      principalNamespace: "user:anaconda",
+      email: "shared@example.com",
+    });
+    const relatedOldAccountPrincipal = await canonicalAccountPrincipalForProfile({
+      ...relatedLogin,
+      email: "related.old@example.com",
+    });
+    const sharedAccountPrincipal = await canonicalAccountPrincipalForProfile(currentLogin);
+    assert.ok(relatedOldAccountPrincipal);
+    assert.ok(sharedAccountPrincipal);
+    env.DB.profiles.set(
+      relatedLogin.principal,
+      profileRow({
+        principal: relatedLogin.principal,
+        provider: relatedLogin.provider,
+        email_normalized: "shared@example.com",
+        email_verified: 1,
+      }),
+    );
+    env.DB.accountLinks.set(
+      relatedLogin.principal,
+      accountLinkRow({
+        transport_principal: relatedLogin.principal,
+        canonical_principal: relatedOldAccountPrincipal,
+        provider: "user:anaconda",
+        email_normalized: "related.old@example.com",
+      }),
+    );
+    env.DB.acl.push(
+      aclRow({
+        subject: relatedOldAccountPrincipal,
+        scope: "owner",
+      }),
+    );
+
+    await resolveNotebookInvitesForLogin(env, currentLogin, "2026-05-24T12:03:00.000Z");
+
+    assert.deepEqual(
+      env.DB.acl.map((row) => [row.subject, row.scope, row.updated_at]),
+      [[sharedAccountPrincipal, "owner", "2026-05-24T12:03:00.000Z"]],
+    );
+    assert.equal(
+      env.DB.accountLinks.get(relatedLogin.principal)?.canonical_principal,
+      sharedAccountPrincipal,
+    );
   });
 
   it("does not duplicate ACL rows when invite resolution reruns", async () => {
@@ -616,8 +813,58 @@ function oidcLogin(overrides: Partial<AuthenticatedLoginProfile> = {}): Authenti
   };
 }
 
+async function oidcAccountPrincipal(
+  overrides: Partial<AuthenticatedLoginProfile> = {},
+): Promise<string> {
+  const principal = await canonicalAccountPrincipalForProfile(oidcLogin(overrides));
+  assert.ok(principal);
+  return principal;
+}
+
+function aclRow(overrides: Partial<NotebookAclRow> = {}): NotebookAclRow {
+  return {
+    notebook_id: "notebook-1",
+    subject_kind: "principal",
+    subject: "user:oidc:oidc-sub-1",
+    scope: "viewer",
+    created_at: "2026-05-24T11:00:00.000Z",
+    updated_at: "2026-05-24T11:00:00.000Z",
+    created_by_actor_label: "system/test",
+    ...overrides,
+  };
+}
+
+function accountLinkRow(overrides: Partial<PrincipalAccountLinkRow> = {}): PrincipalAccountLinkRow {
+  return {
+    transport_principal: "user:oidc:oidc-sub-1",
+    canonical_principal: "account:oidc:email:test",
+    provider: "oidc",
+    email_normalized: "alice@example.com",
+    first_seen_at: "2026-05-24T11:00:00.000Z",
+    last_seen_at: "2026-05-24T11:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function profileRow(overrides: Partial<PrincipalProfileRow> = {}): PrincipalProfileRow {
+  return {
+    principal: "user:oidc:oidc-sub-1",
+    provider: "oidc",
+    provider_subject: null,
+    email_normalized: "alice@example.com",
+    email_verified: 1,
+    display_name: "Alice Example",
+    avatar_url: null,
+    first_seen_at: "2026-05-24T11:00:00.000Z",
+    last_seen_at: "2026-05-24T11:00:00.000Z",
+    raw_claims_json: null,
+    ...overrides,
+  };
+}
+
 class FakeD1 implements D1Database {
   readonly profiles = new Map<string, PrincipalProfileRow>();
+  readonly accountLinks = new Map<string, PrincipalAccountLinkRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly acl: NotebookAclRow[] = [];
   readonly deletedNotebookIds = new Set<string>();
@@ -663,6 +910,19 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
+    if (this.query.includes("FROM principal_account_links")) {
+      if (this.query.includes("canonical_principal = ?")) {
+        const [canonicalPrincipal, exceptTransportPrincipal] = this.values as [string, string];
+        return (
+          ([...this.db.accountLinks.values()].find(
+            (link) =>
+              link.canonical_principal === canonicalPrincipal &&
+              link.transport_principal !== exceptTransportPrincipal,
+          ) as T | undefined) ?? null
+        );
+      }
+      return (this.db.accountLinks.get(this.values[0] as string) as T | undefined) ?? null;
+    }
     if (this.query.includes("FROM principal_profiles")) {
       return (this.db.profiles.get(this.values[0] as string) as T | undefined) ?? null;
     }
@@ -729,6 +989,63 @@ class FakeD1Statement implements D1PreparedStatement {
         last_seen_at: lastSeenAt,
         raw_claims_json: rawClaimsJson,
       });
+    } else if (this.query.includes("INSERT INTO principal_account_links")) {
+      const [
+        transportPrincipal,
+        canonicalPrincipal,
+        provider,
+        emailNormalized,
+        firstSeenAt,
+        lastSeenAt,
+      ] = this.values as [string, string, string, string | null, string, string];
+      const existing = this.db.accountLinks.get(transportPrincipal);
+      this.db.accountLinks.set(transportPrincipal, {
+        transport_principal: transportPrincipal,
+        canonical_principal: canonicalPrincipal,
+        provider,
+        email_normalized: emailNormalized,
+        first_seen_at: existing?.first_seen_at ?? firstSeenAt,
+        last_seen_at: lastSeenAt,
+      });
+    } else if (
+      this.query.includes("INSERT INTO notebook_acl") &&
+      this.query.includes("FROM notebook_acl")
+    ) {
+      const [canonicalPrincipal, updatedAt, transportPrincipal] = this.values as [
+        string,
+        string,
+        string,
+      ];
+      const rows = this.db.acl.filter(
+        (row) => row.subject_kind === "principal" && row.subject === transportPrincipal,
+      );
+      for (const row of rows) {
+        this.insertAclIfMissing({
+          ...row,
+          subject: canonicalPrincipal,
+          updated_at: updatedAt,
+        });
+      }
+    } else if (
+      this.query.includes("DELETE FROM notebook_acl") &&
+      this.query.includes("subject_kind = 'principal'")
+    ) {
+      const [transportPrincipal, canonicalPrincipal] = this.values as [string, string];
+      const retained = this.db.acl.filter(
+        (row) =>
+          !(
+            row.subject_kind === "principal" &&
+            row.subject === transportPrincipal &&
+            this.db.acl.some(
+              (target) =>
+                target.notebook_id === row.notebook_id &&
+                target.subject_kind === "principal" &&
+                target.subject === canonicalPrincipal &&
+                target.scope === row.scope,
+            )
+          ),
+      );
+      this.db.acl.splice(0, this.db.acl.length, ...retained);
     } else if (this.query.includes("INSERT INTO notebook_invites")) {
       const [
         id,
@@ -858,6 +1175,14 @@ class FakeD1Statement implements D1PreparedStatement {
       return okResult([{ name: "runtime_snapshot_key" }, { name: "runtime_state_doc_id" }] as T[]);
     }
     if (this.query.includes("FROM principal_profiles")) {
+      if (this.query.includes("email_normalized = ?")) {
+        const [email] = this.values as [string];
+        return okResult(
+          [...this.db.profiles.values()].filter(
+            (profile) => profile.email_normalized === email && profile.email_verified === 1,
+          ) as T[],
+        );
+      }
       const principals = new Set(this.values as string[]);
       this.db.maxPrincipalProfileLookupBindCount = Math.max(
         this.db.maxPrincipalProfileLookupBindCount,
