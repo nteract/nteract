@@ -22,6 +22,11 @@ import { findVerticalScrollAncestor } from "@/components/isolated/scroll-boundar
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { ProjectedMarkdownView } from "~/components/markdown/ProjectedMarkdownView";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
+import {
+  canRenderMarkdownProjectionInHost,
+  projectedMarkdownPreviewHeight,
+  projectMarkdownPlan,
+} from "@/lib/markdown-projection";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
@@ -37,11 +42,6 @@ import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { logger } from "../lib/logger";
-import {
-  canRenderMarkdownProjectionInHost,
-  projectedMarkdownPreviewHeight,
-  projectMarkdownPlan,
-} from "../lib/markdown-projection";
 import {
   isMeasuredElementFound,
   registerMarkdownHeadingNavigator,

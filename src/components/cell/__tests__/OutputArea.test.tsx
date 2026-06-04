@@ -1,6 +1,7 @@
 import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
+import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
 
 let mockDarkMode = false;
@@ -8,6 +9,7 @@ let mockColorTheme: string | undefined;
 let lastFrameMessageHandler: ((message: unknown) => void) | undefined;
 let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 let isolatedFrameMountCount = 0;
+let restoreMarkdownProjector: (() => void) | undefined;
 
 const mockFrameHandle = {
   send: vi.fn(),
@@ -120,6 +122,45 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
       metadata: {},
     },
   ];
+}
+
+function withSafeMarkdownProjection(text = "Projected markdown") {
+  restoreMarkdownProjector?.();
+  restoreMarkdownProjector = setMarkdownProjectionProjector((source) =>
+    JSON.stringify({
+      version: 1,
+      engine: "test",
+      byteLength: source.length,
+      utf16Length: source.length,
+      measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+      blocks: [
+        {
+          anchorSlug: "projected-markdown",
+          blockId: "b0",
+          blockIndex: 0,
+          element: "h1",
+          kind: "heading",
+          measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+          sourceSpanByte: [0, source.length],
+          sourceSpanUtf16: [0, source.length],
+          syntaxSpans: [],
+          text,
+        },
+      ],
+      runs: [
+        {
+          blockId: "b0",
+          inlineId: "r0",
+          listItemIndex: null,
+          renderedText: text,
+          renderedTextUtf16: [0, text.length],
+          semantic: "text",
+          sourceSpanByte: [0, source.length],
+          sourceSpanUtf16: [0, source.length],
+        },
+      ],
+    }),
+  );
 }
 
 function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
@@ -261,6 +302,8 @@ describe("OutputArea iframe theme sync", () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+    restoreMarkdownProjector?.();
+    restoreMarkdownProjector = undefined;
   });
 
   it("re-sends the current cream color theme when the iframe becomes ready", async () => {
@@ -692,6 +735,19 @@ describe("OutputArea iframe theme sync", () => {
     const outputContent = getOutputContent(container);
     expect(outputContent.getAttribute("class") ?? "").not.toContain("overflow-y-auto");
     expect(outputContent.style.maxHeight).toBe("");
+  });
+
+  it("renders safe markdown outputs in the host DOM by default", () => {
+    withSafeMarkdownProjection("Projected markdown");
+
+    const { container } = render(
+      <OutputArea outputs={makeMarkdownOutput("# Projected markdown")} />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Projected markdown" })).toBeInTheDocument();
+    expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+    expect(screen.queryByTestId("isolated-frame")).toBeNull();
+    expect(mockFrameHandle.renderBatch).not.toHaveBeenCalled();
   });
 
   it("keeps standalone output padding by default", () => {

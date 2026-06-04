@@ -7,9 +7,79 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import {
+  MARKDOWN_PROJECTION_MIME_TYPE,
+  setMarkdownProjectionProjector,
+} from "@/lib/markdown-projection";
 import { MediaProvider } from "../media-provider";
 import { DEFAULT_PRIORITY, getSelectedMimeType, MediaRouter } from "../media-router";
+
+let restoreMarkdownProjector: (() => void) | undefined;
+
+function withMarkdownProjection({
+  isolated = false,
+  text = "Test",
+}: {
+  isolated?: boolean;
+  text?: string;
+} = {}) {
+  restoreMarkdownProjector?.();
+  restoreMarkdownProjector = setMarkdownProjectionProjector((source) =>
+    JSON.stringify(makeMarkdownProjectionPlan({ isolated, source, text })),
+  );
+}
+
+function makeMarkdownProjectionPlan({
+  isolated = false,
+  source = "# Test",
+  text = "Test",
+}: {
+  isolated?: boolean;
+  source?: string;
+  text?: string;
+}) {
+  return {
+    version: 1,
+    engine: "test",
+    byteLength: source.length,
+    utf16Length: source.length,
+    measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+    blocks: [
+      {
+        anchorSlug: isolated ? undefined : "test",
+        blockId: "b0",
+        blockIndex: 0,
+        element: isolated ? "div" : "h1",
+        kind: isolated ? "isolated" : "heading",
+        measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+        sourceSpanByte: [0, source.length],
+        sourceSpanUtf16: [0, source.length],
+        syntaxSpans: [],
+        text,
+      },
+    ],
+    runs: isolated
+      ? []
+      : [
+          {
+            blockId: "b0",
+            inlineId: "r0",
+            listItemIndex: null,
+            renderedText: text,
+            renderedTextUtf16: [0, text.length],
+            semantic: "text",
+            sourceSpanByte: [0, source.length],
+            sourceSpanUtf16: [0, source.length],
+          },
+        ],
+  };
+}
+
+afterEach(() => {
+  restoreMarkdownProjector?.();
+  restoreMarkdownProjector = undefined;
+});
 
 describe("getSelectedMimeType", () => {
   describe("priority-based selection", () => {
@@ -53,6 +123,14 @@ describe("getSelectedMimeType", () => {
         "text/markdown": "# Hello",
       };
       expect(getSelectedMimeType(data)).toBe("text/markdown");
+    });
+
+    it("returns projected nteract markdown over source markdown", () => {
+      const data = {
+        "text/markdown": "# Hello",
+        [MARKDOWN_PROJECTION_MIME_TYPE]: makeMarkdownProjectionPlan({ text: "Hello" }),
+      };
+      expect(getSelectedMimeType(data)).toBe(MARKDOWN_PROJECTION_MIME_TYPE);
     });
   });
 
@@ -290,7 +368,36 @@ describe("MediaRouter component", () => {
       warnSpy.mockRestore();
     });
 
-    it("renders empty wrapper for text/markdown", () => {
+    it("renders projected text/markdown in the host DOM when safe", () => {
+      withMarkdownProjection({ text: "Test" });
+
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/markdown": "# Test" }} />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByRole("heading", { name: "Test" })).toBeInTheDocument();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+    });
+
+    it("renders projected nteract markdown plans in the host DOM when safe", () => {
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter
+            data={{
+              [MARKDOWN_PROJECTION_MIME_TYPE]: makeMarkdownProjectionPlan({ text: "Projected" }),
+            }}
+          />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByRole("heading", { name: "Projected" })).toBeInTheDocument();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+    });
+
+    it("renders empty wrapper for text/markdown when the plan needs isolation", () => {
+      withMarkdownProjection({ isolated: true });
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       const { container } = render(

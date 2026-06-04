@@ -1,5 +1,12 @@
 import { lazy, type ReactNode, Suspense } from "react";
 import { getRenderer } from "@/lib/renderer-registry";
+import {
+  canRenderMarkdownProjectionInHost,
+  MARKDOWN_PROJECTION_MIME_TYPE,
+  markdownProjectionPlanFromMimeData,
+  projectMarkdownPlan,
+} from "@/lib/markdown-projection";
+import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
 import { AnsiOutput } from "./ansi-output";
 import { TracebackOutput } from "./traceback-output";
 import { isSafeForMainDom } from "./safe-mime-types";
@@ -231,6 +238,16 @@ export function MediaRouter({
   }
 
   const renderBuiltIn = () => {
+    const markdownPlan =
+      mimeType === MARKDOWN_PROJECTION_MIME_TYPE
+        ? markdownProjectionPlanFromMimeData(content)
+        : mimeType === "text/markdown"
+          ? projectMarkdownPlan(String(content))
+          : null;
+    if (markdownPlan && canRenderMarkdownProjectionInHost(markdownPlan)) {
+      return <ProjectedMarkdownView plan={markdownPlan} className={className} />;
+    }
+
     // ISOLATION GUARD: Only types in the safe-list can render in the main DOM.
     // Everything else requires iframe isolation for security.
     const needsIsolation = !isSafeForMainDom(mimeType);
@@ -256,6 +273,10 @@ export function MediaRouter({
     // Text/Markdown (only renders when in iframe)
     if (mimeType === "text/markdown") {
       return <MarkdownOutput content={String(content)} className={className} />;
+    }
+
+    if (mimeType === MARKDOWN_PROJECTION_MIME_TYPE && data["text/markdown"] != null) {
+      return <MarkdownOutput content={String(data["text/markdown"])} className={className} />;
     }
 
     // HTML (only renders when in iframe)

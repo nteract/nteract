@@ -9,6 +9,9 @@ export const DEFAULT_PRIORITY = [
   // the JSON-tree fallback never wins on a mistyped payload.
   "application/vnd.nteract.traceback+json",
   "application/vnd.jupyter.widget-view+json",
+  // Projected markdown is our own structured representation, so it should
+  // outrank source markdown and HTML fallbacks when a host supplies it.
+  "application/vnd.nteract.markdown+json",
   "application/vnd.plotly.v1+json",
   "application/vnd.vegalite.v6+json",
   "application/vnd.vegalite.v6.json",

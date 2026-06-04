@@ -2,7 +2,7 @@ import {
   notebookInteractionTargetToPresenceTarget,
   type NotebookInteractionTarget,
 } from "runtimed";
-import { setMarkdownProjectionProjector } from "../../notebook/src/lib/markdown-projection";
+import { setMarkdownProjectionProjector } from "../../../src/lib/markdown-projection";
 import type { NotebookHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
 type RuntimedWasmModule = typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
