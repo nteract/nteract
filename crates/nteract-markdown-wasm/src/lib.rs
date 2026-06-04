@@ -116,6 +116,9 @@ fn collect_block(
         inline_index: 0,
         item_checked: None,
         item_index: None,
+        image_alt: None,
+        image_src: None,
+        image_title: None,
         link_href: None,
         link_title: None,
         position_index,
@@ -428,13 +431,30 @@ fn collect_inline(
             );
         }
         NodeKind::Image => {
-            context.add_run(
+            let previous_src = context.image_src.take();
+            let previous_alt = context.image_alt.take();
+            let previous_title = context.image_title.take();
+            context.image_src = node.attrs.url.clone();
+            context.image_alt = node.attrs.alt.clone();
+            context.image_title = node.attrs.title.clone();
+            let run = context.add_run(
                 node.span.start,
                 node.span.end,
                 node.attrs.alt.clone().unwrap_or_default(),
-                "text",
+                "image",
                 None,
             );
+            context.syntax_spans.push(WasmSyntaxSpan::new(
+                context.position_index,
+                node.span.start,
+                node.span.end,
+                Some(run.inline_id.clone()),
+                run.rendered_text_utf16[1],
+                "nearest-visible",
+            ));
+            context.image_src = previous_src;
+            context.image_alt = previous_alt;
+            context.image_title = previous_title;
         }
         _ => collect_children(source, context, &node.children, semantic),
     }
@@ -638,6 +658,9 @@ impl PositionIndex {
 
 struct RunContext<'a> {
     block_id: String,
+    image_alt: Option<String>,
+    image_src: Option<String>,
+    image_title: Option<String>,
     inline_index: usize,
     item_checked: Option<bool>,
     item_index: Option<usize>,
@@ -668,6 +691,9 @@ impl RunContext<'_> {
         self.rendered_cursor += rendered_text.encode_utf16().count();
         let run = WasmRun {
             block_id: self.block_id.clone(),
+            image_alt: self.image_alt.clone(),
+            image_src: self.image_src.clone(),
+            image_title: self.image_title.clone(),
             inline_id,
             item_checked: self.item_checked,
             item_index: self.item_index,
@@ -695,6 +721,9 @@ impl RunContext<'_> {
 #[derive(Clone)]
 struct WasmRun {
     block_id: String,
+    image_alt: Option<String>,
+    image_src: Option<String>,
+    image_title: Option<String>,
     inline_id: String,
     item_checked: Option<bool>,
     item_index: Option<usize>,
@@ -717,6 +746,18 @@ impl WasmRun {
         output.push('{');
         push_json_key_string(output, "blockId", &self.block_id);
         output.push(',');
+        if let Some(src) = &self.image_src {
+            push_json_key_string(output, "imageSrc", src);
+            output.push(',');
+        }
+        if let Some(alt) = &self.image_alt {
+            push_json_key_string(output, "imageAlt", alt);
+            output.push(',');
+        }
+        if let Some(title) = &self.image_title {
+            push_json_key_string(output, "imageTitle", title);
+            output.push(',');
+        }
         push_json_key_string(output, "inlineId", &self.inline_id);
         output.push(',');
         output.push_str("\"listItemIndex\":");
@@ -1101,5 +1142,16 @@ mod tests {
         assert!(json.contains("\"tableCellHeader\":false"));
         assert!(json.contains("\"tableCellAlign\":\"right\""));
         assert!(json.contains("\"renderedText\":\"128\""));
+    }
+
+    #[test]
+    fn projects_image_metadata_for_host_renderer() {
+        let json = project_to_json("![Plot alt](attachment:plot.png \"Daily plot\")\n");
+
+        assert!(json.contains("\"semantic\":\"image\""));
+        assert!(json.contains("\"imageSrc\":\"attachment:plot.png\""));
+        assert!(json.contains("\"imageAlt\":\"Plot alt\""));
+        assert!(json.contains("\"imageTitle\":\"Daily plot\""));
+        assert!(json.contains("\"renderedText\":\"Plot alt\""));
     }
 }

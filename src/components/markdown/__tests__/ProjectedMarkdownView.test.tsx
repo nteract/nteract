@@ -238,4 +238,84 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
     expect(document.querySelector("pre")).toBeNull();
   });
+
+  it("renders projected images in the host document", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "image",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 120, confidence: "low", width: 720 },
+              sourceSpanByte: [0, 42],
+              sourceSpanUtf16: [0, 42],
+              syntaxSpans: [],
+              text: "Plot alt",
+            },
+          ],
+          runs: [
+            {
+              blockId: "image",
+              imageAlt: "Plot alt",
+              imageSrc: "attachment:plot.png",
+              imageTitle: "Daily plot",
+              inlineId: "img0",
+              listItemIndex: null,
+              renderedText: "Plot alt",
+              renderedTextUtf16: [0, 8],
+              semantic: "image",
+              sourceSpanByte: [0, 42],
+              sourceSpanUtf16: [0, 42],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const image = screen.getByRole("img", { name: "Plot alt" });
+    expect(image).toHaveAttribute("src", "attachment:plot.png");
+    expect(image).toHaveAttribute("title", "Daily plot");
+  });
+
+  it("does not render projected images with unsafe sources", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "image",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 32],
+              sourceSpanUtf16: [0, 32],
+              syntaxSpans: [],
+              text: "Bad image",
+            },
+          ],
+          runs: [
+            {
+              blockId: "image",
+              imageAlt: "Bad image",
+              imageSrc: "javascript:alert(1)",
+              inlineId: "img0",
+              listItemIndex: null,
+              renderedText: "Bad image",
+              renderedTextUtf16: [0, 9],
+              semantic: "image",
+              sourceSpanByte: [0, 32],
+              sourceSpanUtf16: [0, 32],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.getByText("Bad image")).toBeInTheDocument();
+  });
 });

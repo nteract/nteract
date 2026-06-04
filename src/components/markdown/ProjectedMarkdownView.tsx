@@ -311,6 +311,10 @@ function renderRuns(runs: MarkdownProjectionRun[], onLinkClick?: (url: string) =
 
 function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => void) {
   const text = run.renderedText;
+  if (run.semantic === "image" && run.imageSrc) {
+    return <ProjectedImage run={run} />;
+  }
+
   if (!text) return null;
 
   if (run.href) {
@@ -340,6 +344,54 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
   if (run.semantic === "link-label") return text;
 
   return text;
+}
+
+function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
+  const src = safeImageSrc(run.imageSrc);
+  const alt = run.imageAlt ?? run.renderedText;
+  if (!src) {
+    return alt ? <span>{alt}</span> : null;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      title={run.imageTitle}
+      className="my-4 max-w-full h-auto rounded-sm"
+      loading="lazy"
+    />
+  );
+}
+
+function safeImageSrc(src: string | undefined): string | null {
+  if (!src) return null;
+
+  if (
+    src.startsWith("/") ||
+    src.startsWith("./") ||
+    src.startsWith("../") ||
+    src.startsWith("#") ||
+    src.startsWith("blob:") ||
+    src.startsWith("attachment:")
+  ) {
+    return src;
+  }
+
+  if (src.startsWith("data:")) {
+    return /^data:image\//i.test(src) ? src : null;
+  }
+
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(src)) {
+    return src;
+  }
+
+  try {
+    const url = new URL(src);
+    return url.protocol === "http:" || url.protocol === "https:" ? src : null;
+  } catch {
+    return null;
+  }
 }
 
 function ProjectedCodeBlock({

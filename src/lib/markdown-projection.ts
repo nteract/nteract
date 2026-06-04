@@ -29,6 +29,9 @@ export interface MarkdownProjectionBlock {
 
 export interface MarkdownProjectionRun {
   blockId: string;
+  imageAlt?: string;
+  imageSrc?: string;
+  imageTitle?: string;
   inlineId: string;
   listItemIndex: number | null;
   listItemChecked?: boolean;
