@@ -95,6 +95,7 @@ crates/notebook/fixtures/**/uv.lock
 
 # Agent workspace context (per-worktree state)
 .context/
+.codex/environments/environment.toml
 
 # Override global gitignore for .claude — rules and skills are project docs
 !.claude/
