@@ -155,6 +155,8 @@ export class TauriTransport implements NotebookTransport {
   }
 
   private dispatchInboundFrame(payload: ChannelFramePayload): void {
+    if (!this._connected) return;
+
     const frame = normalizeFramePayload(payload);
     try {
       this.dispatchResponseFrame(frame);

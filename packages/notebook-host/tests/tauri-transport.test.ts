@@ -116,4 +116,15 @@ describe("TauriTransport", () => {
 
     await expect(result).rejects.toThrow("Transport disconnected (request req-1)");
   });
+
+  it("ignores channel frames after disconnect", () => {
+    const transport = new TauriTransport();
+    const subscriber = vi.fn();
+    transport.onFrame(subscriber);
+
+    transport.disconnect();
+    coreMock.channels[0].onmessage(new Uint8Array([0x00, 1, 2, 3]));
+
+    expect(subscriber).not.toHaveBeenCalled();
+  });
 });

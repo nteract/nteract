@@ -215,10 +215,18 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   const relay: HostRelay = {
     requiresReadyGeneration: true,
     async notifySyncReady(generation?: number) {
+      let frameChannelError: unknown;
       if (canSubscribeNotebookFrames(transport)) {
-        await transport.subscribeNotebookFrames(generation);
+        try {
+          await transport.subscribeNotebookFrames(generation);
+        } catch (err) {
+          frameChannelError = err;
+        }
       }
       await invoke("notify_sync_ready", { generation });
+      if (frameChannelError) {
+        throw frameChannelError;
+      }
     },
   };
 
