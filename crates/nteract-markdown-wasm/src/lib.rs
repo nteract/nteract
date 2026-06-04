@@ -1125,6 +1125,9 @@ mod tests {
         assert!(json.contains("\"semantic\":\"emphasis\""));
         assert!(json.contains("\"semantic\":\"delete\""));
         assert!(json.contains("\"semantic\":\"math-source\""));
+        assert!(json.contains("\"renderedText\":\"x^2\""));
+        assert!(json.contains("\"renderedText\":\"\\\\int_0^1 x dx\""));
+        assert!(!json.contains("\"renderedText\":\"$x^2$\""));
         assert!(json.contains("\"kind\":\"math\""));
         assert!(json.contains("\"kind\":\"thematic-break\""));
         assert!(json.contains("\"element\":\"hr\""));

@@ -44,7 +44,7 @@ export function ProjectedMarkdownView({
     <div
       data-slot="projected-markdown-output"
       className={cn(
-        "select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [text-rendering:optimizeLegibility]",
+        "select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility]",
         className,
       )}
     >
@@ -180,12 +180,12 @@ function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
 }
 
 function headingClass(element: string) {
-  if (element === "h1") return "mt-6 mb-4 text-3xl leading-tight font-bold";
-  if (element === "h2") return "mt-5 mb-3 text-2xl leading-tight font-bold";
-  if (element === "h3") return "mt-5 mb-2.5 text-xl leading-tight font-bold";
+  if (element === "h1") return "mt-6 mb-4 text-[1.875rem] leading-tight font-bold";
+  if (element === "h2") return "mt-[1.35rem] mb-3 text-2xl leading-tight font-bold";
+  if (element === "h3") return "mt-[1.2rem] mb-2.5 text-xl leading-tight font-bold";
   if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-bold";
   if (element === "h5") return "mt-3.5 mb-1.5 text-base leading-tight font-bold";
-  return "mt-2 mb-1 text-sm leading-tight font-medium text-muted-foreground";
+  return "mt-3 mb-1.5 text-sm leading-tight font-semibold text-muted-foreground";
 }
 
 function groupListRuns(runs: MarkdownProjectionRun[]) {
@@ -230,14 +230,14 @@ function ProjectedTable({
 
   return (
     <div className="my-4 overflow-x-auto">
-      <table className="min-w-full border-collapse border border-border text-sm">
+      <table className="min-w-full border-collapse border border-border font-[var(--output-ui-font)] text-sm leading-normal">
         {hasHeader ? (
           <thead>
             <tr>
               {headerRow.cells.map((cell) => (
                 <th
                   key={cell.key}
-                  className="border border-border bg-muted px-3 py-2 font-semibold"
+                  className="border border-border bg-muted px-2 py-1.5 font-semibold"
                   style={tableCellStyle(cell.align)}
                 >
                   {renderRuns(cell.runs, onLinkClick)}
@@ -252,7 +252,7 @@ function ProjectedTable({
               {row.cells.map((cell) => (
                 <td
                   key={cell.key}
-                  className="border border-border px-3 py-2 align-top"
+                  className="border border-border px-2 py-1.5 align-top"
                   style={tableCellStyle(cell.align)}
                 >
                   {renderRuns(cell.runs, onLinkClick)}
