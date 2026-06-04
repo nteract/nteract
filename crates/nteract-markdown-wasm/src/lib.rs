@@ -1162,6 +1162,19 @@ mod tests {
     }
 
     #[test]
+    fn projects_task_list_state_for_host_checkboxes() {
+        let json = project_to_json("- [x] done\n- [ ] waiting\n- regular\n");
+
+        assert!(json.contains("\"kind\":\"list\""));
+        assert!(json.contains("\"semantic\":\"list-item\""));
+        assert!(json.contains("\"renderedText\":\"done\""));
+        assert!(json.contains("\"listItemChecked\":true"));
+        assert!(json.contains("\"renderedText\":\"waiting\""));
+        assert!(json.contains("\"listItemChecked\":false"));
+        assert!(json.contains("\"renderedText\":\"regular\""));
+    }
+
+    #[test]
     fn projects_image_metadata_for_host_renderer() {
         let json = project_to_json("![Plot alt](attachment:plot.png \"Daily plot\")\n");
 
