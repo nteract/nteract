@@ -6,18 +6,18 @@
 
 set -euo pipefail
 
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required for Codex worktree setup" >&2
+  exit 1
+fi
+
 if [ -n "${CODEX_WORKTREE_PATH:-}" ]; then
   cd "$CODEX_WORKTREE_PATH"
 else
   cd "$(git rev-parse --show-toplevel)"
 fi
 
-if command -v git >/dev/null 2>&1; then
-  git lfs pull
-else
-  echo "git is required for Codex worktree setup" >&2
-  exit 1
-fi
+git lfs pull
 
 if command -v direnv >/dev/null 2>&1; then
   direnv allow
