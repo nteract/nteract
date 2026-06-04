@@ -28,7 +28,7 @@
 //! JS-originated requests arrive via `RelayCommand::ForwardFrame` with
 //! frame type `0x01`; the relay forwards them unchanged and never looks at
 //! the id. The frontend maintains its own pending map and matches responses
-//! via the `notebook:frame` event stream.
+//! via the host transport's inbound frame stream.
 
 use std::collections::HashMap;
 use std::time::Duration;

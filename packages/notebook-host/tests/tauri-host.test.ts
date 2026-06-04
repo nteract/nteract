@@ -7,6 +7,13 @@ const mockUnlisten = vi.fn();
 let reconnectPromiseOverride: Promise<unknown> | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
+  Channel: class Channel<T = unknown> {
+    onmessage: (payload: T) => void;
+
+    constructor(onmessage?: (payload: T) => void) {
+      this.onmessage = onmessage ?? (() => {});
+    }
+  },
   invoke: vi.fn((cmd: string, args?: unknown) => {
     capturedInvokes.push({ cmd, args });
     // Shape-of-return for the commands the tests hit:

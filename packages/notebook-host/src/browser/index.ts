@@ -3,7 +3,7 @@
  *
  * This host talks to a local Vite-only relay over WebSocket. The relay owns the
  * daemon Unix-socket connection and exposes the same typed notebook frames that
- * the Tauri host receives through `notebook:frame`.
+ * the Tauri host receives through its frame channel.
  */
 
 import {

@@ -167,9 +167,10 @@ struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
 /// Per-window sync readiness gate.
 ///
 /// The Tauri relay task buffers daemon frames in the mpsc channel and waits
-/// for the frontend to signal readiness before emitting `notebook:frame` events.
+/// for the frontend to install a frame channel and signal readiness before
+/// sending frames through that channel.
 /// This prevents frame loss when the JS `SyncEngine` hasn't subscribed yet
-/// (race between relay start and `engine.start()` + `webview.listen()`).
+/// (race between relay start and `engine.start()` + channel registration).
 ///
 /// Each relay generation blocks until the JS calls `notify_sync_ready` after
 /// completing that generation's WASM bootstrap/reset. This keeps buffered
@@ -179,16 +180,27 @@ struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
 /// `notify_sync_ready` can re-emit it for late-mounted JS listeners. Tauri
 /// webview events aren't sticky — if Rust emits `daemon:ready` before the
 /// React tree has called `host.daemonEvents.onReady(...)`, the event is lost.
-/// Re-emitting on sync-ready closes that race.
+/// `get_daemon_ready_info` lets late-mounted listeners backfill that payload.
 #[derive(Clone, Default)]
 struct SyncReadyState {
     gates: Arc<Mutex<HashMap<String, SyncReadyGate>>>,
+    frame_channels: Arc<Mutex<HashMap<String, FrameChannelGate>>>,
     last_ready: Arc<Mutex<HashMap<String, DaemonReadyPayload>>>,
 }
 
 struct SyncReadyGate {
     generation: u64,
     tx: tokio::sync::watch::Sender<bool>,
+}
+
+struct FrameChannelGate {
+    tx: tokio::sync::watch::Sender<Option<FrameChannelSubscription>>,
+}
+
+#[derive(Clone)]
+struct FrameChannelSubscription {
+    generation: u64,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 }
 
 impl SyncReadyState {
@@ -217,6 +229,14 @@ impl SyncReadyState {
                     },
                 );
             }
+        }
+
+        let mut frame_channels = match self.frame_channels.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+        if let Some(gate) = frame_channels.get_mut(label) {
+            gate.tx.send_replace(None);
         }
     }
 
@@ -264,6 +284,62 @@ impl SyncReadyState {
             .or_insert_with(|| SyncReadyGate {
                 generation: 0,
                 tx: tokio::sync::watch::channel(false).0,
+            });
+        gate.tx.subscribe()
+    }
+
+    /// Bind a JS-owned Tauri channel to the active relay generation.
+    fn set_frame_channel(
+        &self,
+        label: &str,
+        generation: Option<u64>,
+        channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    ) -> bool {
+        let Some(generation) = generation else {
+            return false;
+        };
+
+        let current_generation = {
+            let gates = match self.gates.lock() {
+                Ok(s) => s,
+                Err(e) => e.into_inner(),
+            };
+            gates.get(label).map(|gate| gate.generation)
+        };
+
+        if current_generation.is_some_and(|current| current != generation) {
+            return false;
+        }
+
+        let mut frame_channels = match self.frame_channels.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+        let gate = frame_channels
+            .entry(label.to_string())
+            .or_insert_with(|| FrameChannelGate {
+                tx: tokio::sync::watch::channel(None).0,
+            });
+        gate.tx.send_replace(Some(FrameChannelSubscription {
+            generation,
+            channel,
+        }));
+        true
+    }
+
+    /// Get a receiver for the currently registered frame channel.
+    fn subscribe_frame_channel(
+        &self,
+        label: &str,
+    ) -> tokio::sync::watch::Receiver<Option<FrameChannelSubscription>> {
+        let mut frame_channels = match self.frame_channels.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+        let gate = frame_channels
+            .entry(label.to_string())
+            .or_insert_with(|| FrameChannelGate {
+                tx: tokio::sync::watch::channel(None).0,
             });
         gate.tx.subscribe()
     }
@@ -708,8 +784,8 @@ async fn initialize_notebook_sync_attach(
 ///
 /// This is the common tail of `initialize_notebook_sync_open` and `_create`.
 /// It stores the handle, spawns a single relay task that forwards all typed
-/// frames (AutomergeSync, Broadcast, Presence) to the frontend via the
-/// `notebook:frame` event, and emits `daemon:ready` with the connection payload.
+/// frames (AutomergeSync, Broadcast, Presence) to the frontend via a
+/// generation-scoped Tauri channel, and emits `daemon:ready` with the connection payload.
 ///
 /// Note: No SyncUpdate receiver task is spawned — in pipe mode the relay forwards
 /// raw Automerge bytes directly, and the frontend WASM drives metadata updates
@@ -733,7 +809,7 @@ async fn setup_sync_receivers(
     );
 
     // Spawn unified frame relay task — forwards all typed frames (AutomergeSync,
-    // Broadcast, Presence) to the frontend as raw bytes via one event.
+    // Broadcast, Presence) to the frontend as raw bytes via one Tauri channel.
     // On disconnect, conditionally clears the handle using the generation counter
     // to avoid clobbering a newer connection's handle.
     let window_for_ready = window.clone();
@@ -746,14 +822,57 @@ async fn setup_sync_receivers(
     let sync_ready = window.app_handle().state::<SyncReadyState>();
     sync_ready.reset_for_generation(window.label(), current_generation);
     let mut ready_rx = sync_ready.subscribe(window.label());
+    let mut frame_channel_rx = sync_ready.subscribe_frame_channel(window.label());
 
     tokio::spawn(async move {
+        // Wait for the frontend transport to register the Tauri channel for
+        // this relay generation. Daemon frames buffer in `raw_frame_rx` during
+        // this wait — the mpsc channel is unbounded, so nothing is lost.
+        loop {
+            if sync_generation_for_cleanup.load(Ordering::SeqCst) != current_generation {
+                info!(
+                    "[notebook-sync] Stale relay for {} (gen {} superseded) before channel registration",
+                    notebook_id_for_relay, current_generation,
+                );
+                return;
+            }
+
+            let has_channel = frame_channel_rx
+                .borrow()
+                .as_ref()
+                .is_some_and(|subscription| subscription.generation == current_generation);
+            if has_channel {
+                break;
+            }
+
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                frame_channel_rx.wait_for(|subscription| {
+                    subscription
+                        .as_ref()
+                        .is_some_and(|subscription| subscription.generation == current_generation)
+                }),
+            )
+            .await
+            {
+                Ok(Ok(_)) => break,
+                Ok(Err(_)) => {
+                    warn!(
+                        "[notebook-sync] Frame channel closed before registration (gen {})",
+                        current_generation,
+                    );
+                    return;
+                }
+                Err(_) => continue,
+            }
+        }
+
         // Wait for the frontend SyncEngine to signal readiness. Daemon frames
         // buffer in `raw_frame_rx` during this wait — the mpsc channel is
         // unbounded, so nothing is lost.
         if !*ready_rx.borrow() {
             info!(
-                "[notebook-sync] Waiting for frontend ready before emitting frames (gen {})",
+                "[notebook-sync] Waiting for frontend ready before sending frames (gen {})",
                 current_generation,
             );
             match tokio::time::timeout(
@@ -780,9 +899,9 @@ async fn setup_sync_receivers(
         while let Some(frame_bytes) = raw_frame_rx.recv().await {
             // Stop forwarding if a newer connection has replaced this one.
             // Without this check, frames from the old room can interleave
-            // with the new connection's frames on the notebook:frame event
-            // channel, causing the frontend to feed them to the wrong WASM
-            // handle (stale Automerge document).
+            // with the new connection's frames on the frontend channel,
+            // causing the frontend to feed them to the wrong WASM handle
+            // (stale Automerge document).
             if sync_generation_for_cleanup.load(Ordering::SeqCst) != current_generation {
                 info!(
                     "[notebook-sync] Stale relay for {} (gen {} superseded) — stopping frame emission",
@@ -790,10 +909,22 @@ async fn setup_sync_receivers(
                 );
                 break;
             }
-            if let Err(e) =
-                emit_to_label::<_, _, _>(&window, window.label(), "notebook:frame", &frame_bytes)
+
+            let subscription = frame_channel_rx.borrow().clone();
+            let Some(subscription) = subscription.filter(|s| s.generation == current_generation)
+            else {
+                warn!(
+                    "[notebook-sync] Missing frame channel for active relay generation {}",
+                    current_generation,
+                );
+                continue;
+            };
+
+            if let Err(e) = subscription
+                .channel
+                .send(tauri::ipc::InvokeResponseBody::Raw(frame_bytes))
             {
-                warn!("[notebook-sync] Failed to emit notebook:frame: {}", e);
+                warn!("[notebook-sync] Failed to send frame over channel: {}", e);
             }
         }
         warn!(
@@ -2708,11 +2839,40 @@ async fn reconnect_to_daemon(
     }
 }
 
+/// Register the JS-owned channel that receives inbound daemon frames.
+///
+/// The channel is bound to a relay generation before `notify_sync_ready`
+/// releases that generation's buffered frames. A stale frontend cannot replace
+/// the channel for a newer relay generation.
+#[tauri::command]
+fn subscribe_notebook_frames(
+    window: tauri::Window,
+    sync_ready: tauri::State<'_, SyncReadyState>,
+    generation: Option<u64>,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<(), String> {
+    if sync_ready.set_frame_channel(window.label(), generation, channel) {
+        info!(
+            "[notebook-sync] Registered frame channel for '{}'{}",
+            window.label(),
+            generation.map_or_else(String::new, |g| format!(" (gen {g})"))
+        );
+        Ok(())
+    } else {
+        warn!(
+            "[notebook-sync] Ignoring stale frame channel for '{}'{}",
+            window.label(),
+            generation.map_or_else(String::new, |g| format!(" (gen {g})"))
+        );
+        Err("stale notebook frame channel generation".to_string())
+    }
+}
+
 /// Signal that the frontend SyncEngine is ready to receive frames.
 ///
 /// The Tauri frame relay buffers daemon frames until this is called,
 /// preventing frame loss when the relay starts emitting before the
-/// JS `SyncEngine` has subscribed to `notebook:frame` events.
+/// JS `SyncEngine` has bootstrapped its current WASM handle.
 ///
 /// Called once after `engine.start()` in `useAutomergeNotebook`. On
 /// reconnection the flag persists, so the new relay proceeds immediately.
@@ -3785,12 +3945,13 @@ pub fn run(
             clone_notebook_to_ephemeral,
             open_notebook_in_new_window,
             // Daemon connection state (kernel ops now go through
-            // `send_frame(0x01)` + the `notebook:frame` pending-map path,
+            // `send_frame(0x01)` + the channel-backed pending-map path,
             // not per-type Tauri commands).
             is_daemon_connected,
             get_daemon_status,
             get_pool_status,
             reconnect_to_daemon,
+            subscribe_notebook_frames,
             notify_sync_ready,
             get_daemon_ready_info,
             send_frame,

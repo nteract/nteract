@@ -26,7 +26,7 @@ The desktop app bundles its own daemon binary. Version-mismatch detection betwee
 
 ## Connection topology
 
-The frontend talks to the Tauri relay through `invoke()` calls and Tauri events. The relay is a transparent byte pipe to the runtimed socket for Automerge sync, request, runtime-state, pool-state, and presence frames; it holds no document replica of its own. Broadcasts, responses, presence, and session-control frames arrive through the unified `notebook:frame` event.
+The frontend talks to the Tauri relay through `invoke()` calls, a generation-scoped frame channel, and connection-status Tauri events. The relay is a transparent byte pipe to the runtimed socket for Automerge sync, request, runtime-state, pool-state, and presence frames; it holds no document replica of its own. Broadcasts, responses, presence, and session-control frames arrive through the unified inbound frame stream.
 
 ## Connection lifecycle
 
@@ -138,7 +138,7 @@ user types in cell
   → Tauri relay pipes to daemon socket
   → Daemon applies sync, updates canonical doc
   → Daemon generates reply → frame 0x00
-  → Relay emits "notebook:frame" (raw typed bytes)
+  → Relay sends over the frame channel (raw typed bytes)
   → useAutomergeNotebook listener → handle.receive_frame(bytes)
   → WASM demuxes, returns FrameEvent[]
   → FrameEvent::SyncApplied includes a CellChangeset (field-level diff)
@@ -212,7 +212,7 @@ Frontend: host.transport.sendRequest({ type: "execute_cell", cell_id })
   → Frame 0x01 on socket
   → Daemon processes request
   → Frame 0x02 returned with matching id
-  → Relay emits "notebook:frame"
+  → Relay sends over the frame channel
   → TauriTransport response tap resolves the pending request by id
 ```
 
@@ -234,19 +234,19 @@ Kernel produces output
   → Daemon intercepts Jupyter IOPub
   → Daemon writes output manifest to RuntimeStateDoc
   → RuntimeStateDoc sync produces frame 0x05
-  → Relay emits "notebook:frame"
+  → Relay sends over the frame channel
   → WASM handle.receive_frame() → RuntimeStateDoc merge
   → frame-pipeline.ts plans output materialization
   → UI updates
 ```
 
-## Tauri event bridge and frame bus
+## Tauri channel bridge and frame bus
 
-| Event | Direction | Payload | Purpose |
-|-------|-----------|---------|---------|
-| `notebook:frame` | Relay → Frontend | `number[]` (typed frame bytes) | All daemon frames via unified pipe |
-| `daemon:ready` | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
-| `daemon:disconnected` | Relay → Frontend | — | Connection lost |
+| Bridge | Direction | Payload | Purpose |
+|--------|-----------|---------|---------|
+| Frame channel | Relay → Frontend | typed frame bytes | All daemon frames via unified pipe |
+| `daemon:ready` event | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
+| `daemon:disconnected` event | Relay → Frontend | — | Connection lost |
 
 Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`; `0x02`, `0x03`, `0x07` are daemon-originated.
 
