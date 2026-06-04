@@ -485,7 +485,7 @@ function TaskCheckbox({
       <span
         aria-hidden="true"
         className={cn(
-          "grid size-3.5 place-items-center rounded-sm border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-ring/40 peer-focus-visible:ring-offset-1 peer-disabled:opacity-100",
+          "pointer-events-none grid size-3.5 place-items-center rounded-sm border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-ring/40 peer-focus-visible:ring-offset-1 peer-disabled:opacity-100",
           checked
             ? "border-primary bg-primary text-primary-foreground"
             : "border-border bg-background",

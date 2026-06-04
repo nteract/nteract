@@ -420,6 +420,53 @@ describe("ProjectedMarkdownView", () => {
     expect(onTaskCheckedChange).toHaveBeenCalledWith(taskRun, true);
   });
 
+  it("lets the visible task checkbox glyph toggle the marker", () => {
+    const onTaskCheckedChange = vi.fn();
+    const taskRun = {
+      blockId: "list",
+      inlineId: "todo",
+      listItemChecked: false,
+      listItemIndex: 0,
+      renderedText: "todo",
+      renderedTextUtf16: [0, 4] as [number, number],
+      semantic: "list-item" as const,
+      sourceSpanByte: [0, 10] as [number, number],
+      sourceSpanUtf16: [0, 10] as [number, number],
+    };
+
+    render(
+      <ProjectedMarkdownView
+        onTaskCheckedChange={onTaskCheckedChange}
+        plan={plan({
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 24, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+              syntaxSpans: [],
+              text: "todo",
+            },
+          ],
+          runs: [taskRun],
+        })}
+      />,
+    );
+
+    const visualGlyph = document.querySelector(
+      '[data-slot="projected-markdown-task-checkbox"] span',
+    );
+    expect(visualGlyph).not.toBeNull();
+    expect(visualGlyph).toHaveClass("pointer-events-none");
+
+    fireEvent.click(visualGlyph!);
+
+    expect(onTaskCheckedChange).toHaveBeenCalledWith(taskRun, true);
+  });
+
   it("keeps list markers available for mixed task and regular lists", () => {
     render(
       <ProjectedMarkdownView
