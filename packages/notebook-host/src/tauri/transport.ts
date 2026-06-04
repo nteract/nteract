@@ -3,18 +3,17 @@
  *
  * Bridges the `runtimed` `SyncEngine` to the daemon via Tauri IPC:
  *   - `sendFrame` → `invoke("send_frame", bytes)`
- *   - `onFrame` → `getCurrentWebview().listen("notebook:frame")`
+ *   - `onFrame` → fanout from a Tauri `Channel` registered with Rust
  *   - `sendRequest` → encode `NotebookRequestEnvelope`, send as `0x01` frame,
  *                     wait for matching `0x02` response via an internal
- *                     frame tap keyed by correlation id.
+ *                     channel dispatch keyed by correlation id.
  *
- * The pending map is tapped directly off `notebook:frame` events so Rust
- * and JS callers can share the same socket concurrently — responses are
- * dispatched by id, not by serialization order.
+ * The pending map is dispatched directly off the same inbound channel as sync
+ * frames so Rust and JS callers can share the same socket concurrently —
+ * responses are dispatched by id, not by serialization order.
  */
 
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   FrameType,
   type FrameTypeValue,
@@ -27,6 +26,8 @@ import {
 
 const FRAME_TYPE_REQUEST = 0x01;
 const FRAME_TYPE_RESPONSE = 0x02;
+
+type ChannelFramePayload = ArrayBuffer | Uint8Array | number[];
 
 /** Per-request-type timeouts. Mirror `relay_task::request_timeout` in Rust. */
 function requestTimeoutMs(request: NotebookRequest): number {
@@ -41,6 +42,12 @@ function requestTimeoutMs(request: NotebookRequest): number {
   }
 }
 
+function normalizeFramePayload(payload: ChannelFramePayload): number[] {
+  if (payload instanceof Uint8Array) return Array.from(payload);
+  if (payload instanceof ArrayBuffer) return Array.from(new Uint8Array(payload));
+  return payload;
+}
+
 interface PendingEntry {
   resolve: (response: NotebookResponse) => void;
   reject: (err: Error) => void;
@@ -49,16 +56,39 @@ interface PendingEntry {
 
 export class TauriTransport implements NotebookTransport {
   private _connected = true;
-  private unlisteners: Array<() => void> = [];
+  private subscribers = new Set<FrameListener>();
+  private frameChannel = new Channel<ChannelFramePayload>((payload) =>
+    this.dispatchInboundFrame(payload),
+  );
+  private frameChannelGeneration: number | undefined;
+  private frameChannelSubscription: Promise<void> | null = null;
   /** In-flight requests keyed by correlation id. */
   private pending = new Map<string, PendingEntry>();
 
-  constructor() {
-    this.attachResponseTap();
-  }
-
   get connected(): boolean {
     return this._connected;
+  }
+
+  async subscribeNotebookFrames(generation?: number): Promise<void> {
+    if (this.frameChannelSubscription && this.frameChannelGeneration === generation) {
+      return this.frameChannelSubscription;
+    }
+
+    this.frameChannelGeneration = generation;
+    const subscription = invoke<void>("subscribe_notebook_frames", {
+      generation,
+      channel: this.frameChannel,
+    })
+      .then(() => undefined)
+      .catch((err) => {
+        if (this.frameChannelGeneration === generation) {
+          this.frameChannelSubscription = null;
+        }
+        throw err;
+      });
+    this.frameChannelSubscription = subscription;
+
+    return subscription;
   }
 
   async sendFrame(frameType: number, payload: Uint8Array): Promise<void> {
@@ -84,47 +114,10 @@ export class TauriTransport implements NotebookTransport {
   }
 
   onFrame(callback: FrameListener): () => void {
-    const webview = getCurrentWebview();
-
-    let unlistenFn: (() => void) | null = null;
-    let cancelled = false;
-
-    // IMPORTANT: wrap the callback in try/catch. Tauri's event system drops
-    // listeners whose handlers throw — a single exception escaping here
-    // silently unsubscribes the webview for the rest of its lifetime, and
-    // the daemon's subsequent frames land nowhere. Catching preserves the
-    // listener across a bad frame and surfaces the exception to the console
-    // so the underlying issue is fixable.
-    const unlistenPromise = webview.listen<number[]>("notebook:frame", (event) => {
-      try {
-        callback(event.payload);
-      } catch (err) {
-        console.error("[tauri-transport] notebook:frame handler threw:", err);
-      }
-    });
-
-    unlistenPromise
-      .then((fn) => {
-        if (cancelled) {
-          fn();
-        } else {
-          unlistenFn = fn;
-        }
-      })
-      .catch((err) => {
-        console.error("[tauri-transport] failed to register notebook:frame listener:", err);
-      });
-
-    const unlisten = () => {
-      cancelled = true;
-      if (unlistenFn) {
-        unlistenFn();
-        unlistenFn = null;
-      }
+    this.subscribers.add(callback);
+    return () => {
+      this.subscribers.delete(callback);
     };
-
-    this.unlisteners.push(unlisten);
-    return unlisten;
   }
 
   async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
@@ -152,10 +145,7 @@ export class TauriTransport implements NotebookTransport {
 
   disconnect(): void {
     this._connected = false;
-    for (const unlisten of this.unlisteners) {
-      unlisten();
-    }
-    this.unlisteners = [];
+    this.subscribers.clear();
     // Reject any still-pending requests so callers don't hang.
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
@@ -164,47 +154,24 @@ export class TauriTransport implements NotebookTransport {
     this.pending.clear();
   }
 
-  /**
-   * Attach a permanent tap on `notebook:frame` that intercepts `0x02`
-   * response frames and dispatches them to the pending map.
-   *
-   * Non-response frames are ignored here — user-registered `onFrame`
-   * callbacks (e.g., the SyncEngine) see every frame independently.
-   * Tauri webview events fan out to all listeners, so the tap doesn't
-   * steal frames from other subscribers.
-   */
-  private attachResponseTap(): void {
-    const webview = getCurrentWebview();
-    let unlistenFn: (() => void) | null = null;
-    let cancelled = false;
+  private dispatchInboundFrame(payload: ChannelFramePayload): void {
+    if (!this._connected) return;
 
-    const unlistenPromise = webview.listen<number[]>("notebook:frame", (event) => {
+    const frame = normalizeFramePayload(payload);
+    try {
+      this.dispatchResponseFrame(frame);
+    } catch (err) {
+      console.error("[tauri-transport] response dispatch failed:", err);
+    }
+
+    const subscribers = Array.from(this.subscribers);
+    for (const callback of subscribers) {
       try {
-        this.dispatchResponseFrame(event.payload);
+        callback(frame);
       } catch (err) {
-        console.error("[tauri-transport] response tap failed:", err);
+        console.error("[tauri-transport] frame subscriber failed:", err);
       }
-    });
-
-    unlistenPromise
-      .then((fn) => {
-        if (cancelled) {
-          fn();
-        } else {
-          unlistenFn = fn;
-        }
-      })
-      .catch((err) => {
-        console.error("[tauri-transport] failed to attach response tap:", err);
-      });
-
-    this.unlisteners.push(() => {
-      cancelled = true;
-      if (unlistenFn) {
-        unlistenFn();
-        unlistenFn = null;
-      }
-    });
+    }
   }
 
   private awaitResponse(

@@ -80,7 +80,7 @@ Module-level helpers (no hooks) — called once from `main.tsx` after `createTau
 
 ### Transport protocol
 
-Notebook request/response traffic goes through `NotebookClient` on `host.transport`, encoding `NotebookRequestEnvelope` values as typed protocol frames (`0x01`). Responses return as `0x02` frames on the unified `notebook:frame` event, resolved by request id.
+Notebook request/response traffic goes through `NotebookClient` on `host.transport`, encoding `NotebookRequestEnvelope` values as typed protocol frames (`0x01`). Responses return as `0x02` frames on the unified inbound transport stream, resolved by request id.
 
 Prefer extending `NotebookRequest` for daemon-owned notebook behavior. Add host methods for platform behavior. Some direct `invoke(...)` calls remain for host-side work that is not a notebook request/response frame: save/open dialogs, app update flows, dependency validation helpers.
 
@@ -108,7 +108,7 @@ Prefer extending `NotebookRequest` for daemon-owned notebook behavior. Add host 
 ## Data flow
 
 ```
-Tauri relay ── "notebook:frame" ──► useNotebook
+Tauri relay ── frame channel ──► useNotebook
                                      (WASM receive_frame demux)
                                        │          │         │
                   sync_applied ────────┘          │         │

@@ -6,10 +6,10 @@
  * events. Subscribers now receive payloads via direct in-memory dispatch —
  * synchronous, typed, no event loop hop.
  *
- * The `notebook:frame` Tauri listener stays in `useAutomergeNotebook` (it
- * owns the WASM handle for sync demux). After WASM `receive_frame()` returns
- * typed events, this bus dispatches broadcast and presence payloads to
- * subscribers without a webview round-trip.
+ * The host transport listener stays in `useAutomergeNotebook` (it owns the
+ * WASM handle for sync demux). After WASM `receive_frame()` returns typed
+ * events, this bus dispatches broadcast and presence payloads to subscribers
+ * without a webview round-trip.
  */
 
 // ── Types ────────────────────────────────────────────────────────────

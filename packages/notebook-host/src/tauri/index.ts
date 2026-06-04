@@ -65,6 +65,18 @@ export interface CreateTauriHostOptions {
   transport?: NotebookTransport;
 }
 
+interface TauriFrameChannelTransport {
+  subscribeNotebookFrames(generation?: number): Promise<void>;
+}
+
+function canSubscribeNotebookFrames(
+  transport: NotebookTransport,
+): transport is NotebookTransport & TauriFrameChannelTransport {
+  return (
+    typeof (transport as Partial<TauriFrameChannelTransport>).subscribeNotebookFrames === "function"
+  );
+}
+
 /** Helper: subscribe to a Tauri webview event with a sync unlisten. */
 function listenWebview<T>(eventName: string, cb: (payload: T) => void): Unlisten {
   const webview = getCurrentWebview();
@@ -203,7 +215,18 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   const relay: HostRelay = {
     requiresReadyGeneration: true,
     async notifySyncReady(generation?: number) {
+      let frameChannelError: unknown;
+      if (canSubscribeNotebookFrames(transport)) {
+        try {
+          await transport.subscribeNotebookFrames(generation);
+        } catch (err) {
+          frameChannelError = err;
+        }
+      }
       await invoke("notify_sync_ready", { generation });
+      if (frameChannelError) {
+        throw frameChannelError;
+      }
     },
   };
 

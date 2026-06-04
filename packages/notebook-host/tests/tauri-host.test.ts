@@ -7,6 +7,13 @@ const mockUnlisten = vi.fn();
 let reconnectPromiseOverride: Promise<unknown> | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
+  Channel: class Channel<T = unknown> {
+    onmessage: (payload: T) => void;
+
+    constructor(onmessage?: (payload: T) => void) {
+      this.onmessage = onmessage ?? (() => {});
+    }
+  },
   invoke: vi.fn((cmd: string, args?: unknown) => {
     capturedInvokes.push({ cmd, args });
     // Shape-of-return for the commands the tests hit:
@@ -366,6 +373,26 @@ describe("createTauriHost()", () => {
     ).toBeUndefined();
   });
 
+  it("relay.notifySyncReady still notifies Rust when frame channel registration fails", async () => {
+    const frameChannelError = new Error("stale generation");
+    const subscribeNotebookFrames = vi.fn(async () => {
+      throw frameChannelError;
+    });
+    const host = createTauriHost({
+      transport: {
+        ...stubTransport,
+        subscribeNotebookFrames,
+      } as NotebookTransport & {
+        subscribeNotebookFrames(generation?: number): Promise<void>;
+      },
+    });
+
+    await expect(host.relay.notifySyncReady(11)).rejects.toThrow("stale generation");
+    expect(subscribeNotebookFrames).toHaveBeenCalledWith(11);
+    expect(capturedInvokes.at(-1)?.cmd).toBe("notify_sync_ready");
+    expect(capturedInvokes.at(-1)?.args).toEqual({ generation: 11 });
+  });
+
   it("daemon.isConnected returns false when invoke rejects", async () => {
     const mod = await import("@tauri-apps/api/core");
     const rejectOnce = vi.spyOn(mod, "invoke").mockRejectedValueOnce(new Error("boom"));
@@ -376,7 +403,7 @@ describe("createTauriHost()", () => {
 
   it("daemonEvents.onDisconnected starts one host-owned reconnect", async () => {
     const host = createTauriHost({ transport: stubTransport });
-    let resolveReconnect: (() => void) | null = null;
+    let resolveReconnect!: () => void;
     reconnectPromiseOverride = new Promise((resolve) => {
       resolveReconnect = () => resolve(undefined);
     });
@@ -396,7 +423,7 @@ describe("createTauriHost()", () => {
     expect(second).toHaveBeenCalledTimes(1);
     expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toHaveLength(1);
 
-    resolveReconnect?.();
+    resolveReconnect();
     await reconnectPromiseOverride;
   });
 
