@@ -7390,6 +7390,7 @@ dependencies = [
  "petname",
  "rmcp",
  "runt-mcp",
+ "runt-publish",
  "runt-workspace",
  "runtimed-client",
  "runtimed-service",

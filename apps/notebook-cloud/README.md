@@ -254,7 +254,7 @@ Authorization: Bearer <NTERACT_API_KEY>
 X-Notebook-Cloud-Auth-Provider: anaconda-api-key
 ```
 
-`runt-publish` treats this as publish bearer auth. It defaults to the current
+`runt publish` treats this as publish bearer auth. It defaults to the current
 hosted staging URL, `https://preview.runt.run`, accepts `NTERACT_CLOUD_URL` for
 a different deployment, loads publish-related values from `.env`, and maps
 `NTERACT_API_KEY` to the current provider header automatically.
@@ -268,7 +268,19 @@ as a compatibility alias:
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
 NTERACT_API_KEY=... \
-cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
+runt publish --id topic-viz --vanity-name topic-viz ./topic-viz.ipynb
+```
+
+To publish an already-open daemon room, pass its notebook UUID instead of a
+file path, or use `--source-notebook-id`. This exports the active session's
+`NotebookDoc` and `RuntimeStateDoc` snapshot pair, so executed outputs and
+widget/runtime state are included. When `--id` is omitted for an active source,
+the hosted notebook id is generated as a ULID:
+
+```bash
+NTERACT_CLOUD_URL=https://preview.runt.run \
+NTERACT_API_KEY=... \
+runt publish --source-notebook-id <open-notebook-uuid> --vanity-name markdown-harness
 ```
 
 See `docs/adr/hosted-direct-oidc-demo-runbook.md`.
