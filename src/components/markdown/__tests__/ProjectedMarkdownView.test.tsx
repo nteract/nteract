@@ -895,4 +895,55 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.queryByRole("img")).toBeNull();
     expect(screen.getByText("Bad image")).toBeInTheDocument();
   });
+
+  it("marks the projected block and run for an active source position", () => {
+    const { container } = render(
+      <ProjectedMarkdownView
+        activeSourcePosition={10}
+        plan={plan({
+          utf16Length: 20,
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 20],
+              sourceSpanUtf16: [0, 20],
+              syntaxSpans: [],
+              text: "Before focus after",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: "Before ",
+              renderedTextUtf16: [0, 7],
+              semantic: "text",
+              sourceSpanByte: [0, 7],
+              sourceSpanUtf16: [0, 7],
+            },
+            {
+              blockId: "p0",
+              inlineId: "r1",
+              listItemIndex: null,
+              renderedText: "focus",
+              renderedTextUtf16: [7, 12],
+              semantic: "strong",
+              sourceSpanByte: [9, 14],
+              sourceSpanUtf16: [9, 14],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(container.querySelector('[data-source-active="true"]')).toHaveTextContent(
+      "Before focus",
+    );
+    expect(container.querySelector('[data-source-active-run="true"]')).toHaveTextContent("focus");
+  });
 });

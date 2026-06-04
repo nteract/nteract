@@ -7,6 +7,7 @@ import type {
   MarkdownProjectionPlan,
   MarkdownProjectionRun,
 } from "@/lib/markdown-projection";
+import { findMarkdownProjectionAtSourcePosition } from "@/lib/markdown-projection";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,7 @@ import "katex/dist/katex.min.css";
 interface ProjectedMarkdownViewProps {
   plan: MarkdownProjectionPlan;
   className?: string;
+  activeSourcePosition?: number;
   headingAnchors?: readonly MarkdownHeadingAnchor[];
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
@@ -25,6 +27,7 @@ interface ProjectedMarkdownViewProps {
 export function ProjectedMarkdownView({
   plan,
   className,
+  activeSourcePosition,
   headingAnchors = [],
   onLinkClick,
   onTaskCheckedChange,
@@ -41,6 +44,12 @@ export function ProjectedMarkdownView({
       runsByBlock.set(run.blockId, [run]);
     }
   }
+  const sourceMatch =
+    activeSourcePosition == null
+      ? null
+      : findMarkdownProjectionAtSourcePosition(plan, activeSourcePosition);
+  const activeBlockId = sourceMatch?.block?.blockId;
+  const activeInlineId = sourceMatch?.run?.inlineId;
 
   return (
     <div
@@ -55,6 +64,8 @@ export function ProjectedMarkdownView({
           key={block.blockId}
           block={block}
           headingAnchor={headingAnchorForBlock(block, headingAnchors)}
+          activeBlockId={activeBlockId}
+          activeInlineId={activeInlineId}
           colorTheme={colorTheme}
           isDark={isDark}
           runs={runsByBlock.get(block.blockId) ?? []}
@@ -69,6 +80,8 @@ export function ProjectedMarkdownView({
 interface ProjectedMarkdownBlockProps {
   block: MarkdownProjectionBlock;
   headingAnchor?: MarkdownHeadingAnchor;
+  activeBlockId?: string;
+  activeInlineId?: string;
   colorTheme: "classic" | "cream";
   isDark: boolean;
   runs: MarkdownProjectionRun[];
@@ -79,6 +92,8 @@ interface ProjectedMarkdownBlockProps {
 function ProjectedMarkdownBlock({
   block,
   headingAnchor,
+  activeBlockId,
+  activeInlineId,
   colorTheme,
   isDark,
   runs,
@@ -92,9 +107,13 @@ function ProjectedMarkdownBlock({
         id={headingAnchor?.headingAnchorId}
         data-nteract-heading-anchor={headingAnchor?.headingAnchorId}
         data-nteract-outline-item-id={headingAnchor?.itemId}
-        className={headingClass(block.element)}
+        data-source-active={activeBlockId === block.blockId ? "true" : undefined}
+        className={cn(
+          headingClass(block.element),
+          activeBlockId === block.blockId && sourceActiveBlockClass,
+        )}
       >
-        {renderRuns(runs, onLinkClick)}
+        {renderRuns(runs, onLinkClick, activeInlineId)}
       </Heading>
     );
   }
@@ -105,6 +124,8 @@ function ProjectedMarkdownBlock({
     return (
       <ProjectedList
         items={items}
+        activeBlock={activeBlockId === block.blockId}
+        activeInlineId={activeInlineId}
         ordered={ordered}
         onLinkClick={onLinkClick}
         onTaskCheckedChange={onTaskCheckedChange}
@@ -114,23 +135,41 @@ function ProjectedMarkdownBlock({
 
   if (block.kind === "code") {
     return (
-      <ProjectedCodeBlock
-        code={block.text}
-        colorTheme={colorTheme}
-        isDark={isDark}
-        language={block.codeLanguage}
-      />
+      <div
+        data-source-active={activeBlockId === block.blockId ? "true" : undefined}
+        className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
+      >
+        <ProjectedCodeBlock
+          code={block.text}
+          colorTheme={colorTheme}
+          isDark={isDark}
+          language={block.codeLanguage}
+        />
+      </div>
     );
   }
 
   if (block.kind === "math") {
-    return <ProjectedMath latex={block.text} displayMode />;
+    return (
+      <div
+        data-source-active={activeBlockId === block.blockId ? "true" : undefined}
+        className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
+      >
+        <ProjectedMath latex={block.text} displayMode />
+      </div>
+    );
   }
 
   if (block.kind === "blockquote") {
     return (
-      <blockquote className="my-4 border-l-4 border-border pl-4 text-muted-foreground italic">
-        {renderRuns(runs, onLinkClick)}
+      <blockquote
+        data-source-active={activeBlockId === block.blockId ? "true" : undefined}
+        className={cn(
+          "my-4 border-l-4 border-border pl-4 text-muted-foreground italic",
+          activeBlockId === block.blockId && sourceActiveBlockClass,
+        )}
+      >
+        {renderRuns(runs, onLinkClick, activeInlineId)}
       </blockquote>
     );
   }
@@ -140,15 +179,44 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "table") {
-    return <ProjectedTable runs={runs} fallbackText={block.text} onLinkClick={onLinkClick} />;
+    return (
+      <ProjectedTable
+        activeBlock={activeBlockId === block.blockId}
+        activeInlineId={activeInlineId}
+        runs={runs}
+        fallbackText={block.text}
+        onLinkClick={onLinkClick}
+      />
+    );
   }
 
   if (block.kind === "paragraph") {
-    return <p className="my-2 leading-relaxed">{renderRuns(runs, onLinkClick)}</p>;
+    return (
+      <p
+        data-source-active={activeBlockId === block.blockId ? "true" : undefined}
+        className={cn(
+          "my-2 leading-relaxed",
+          activeBlockId === block.blockId && sourceActiveBlockClass,
+        )}
+      >
+        {renderRuns(runs, onLinkClick, activeInlineId)}
+      </p>
+    );
   }
 
-  return block.text ? <div className="my-2">{renderRuns(runs, onLinkClick)}</div> : null;
+  return block.text ? (
+    <div
+      data-source-active={activeBlockId === block.blockId ? "true" : undefined}
+      className={cn("my-2", activeBlockId === block.blockId && sourceActiveBlockClass)}
+    >
+      {renderRuns(runs, onLinkClick, activeInlineId)}
+    </div>
+  ) : null;
 }
+
+const sourceActiveBlockClass = "rounded-sm bg-primary/[0.035]";
+const sourceActiveRunClass =
+  "rounded-sm bg-primary/10 ring-1 ring-primary/20 ring-offset-1 ring-offset-background";
 
 function headingAnchorForBlock(
   block: MarkdownProjectionBlock,
@@ -191,11 +259,15 @@ interface ProjectedListItem {
 
 function ProjectedList({
   items,
+  activeBlock,
+  activeInlineId,
   ordered,
   onLinkClick,
   onTaskCheckedChange,
 }: {
   items: ProjectedListItem[];
+  activeBlock: boolean;
+  activeInlineId?: string;
   ordered: boolean;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
@@ -205,16 +277,19 @@ function ProjectedList({
 
   return (
     <List
+      data-source-active={activeBlock ? "true" : undefined}
       className={cn(
         "my-2 ml-6 leading-relaxed",
         ordered ? "list-decimal" : "list-disc",
         allItemsAreTasks && "ml-0 list-none",
+        activeBlock && sourceActiveBlockClass,
       )}
     >
       {items.map((item) => (
         <ProjectedListItem
           key={item.key}
           item={item}
+          activeInlineId={activeInlineId}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
         />
@@ -225,10 +300,12 @@ function ProjectedList({
 
 function ProjectedListItem({
   item,
+  activeInlineId,
   onLinkClick,
   onTaskCheckedChange,
 }: {
   item: ProjectedListItem;
+  activeInlineId?: string;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }) {
@@ -247,7 +324,7 @@ function ProjectedListItem({
         />
       ) : null}
       <ProjectedTaskContent checked={checked}>
-        {renderRuns(item.runs, onLinkClick)}
+        {renderRuns(item.runs, onLinkClick, activeInlineId)}
       </ProjectedTaskContent>
     </>
   );
@@ -270,6 +347,8 @@ function ProjectedListItem({
       {item.children.length > 0 ? (
         <ProjectedList
           items={item.children}
+          activeBlock={false}
+          activeInlineId={activeInlineId}
           ordered={item.children[0]?.ordered ?? false}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
@@ -381,10 +460,14 @@ function ProjectedTaskContent({
 }
 
 function ProjectedTable({
+  activeBlock,
+  activeInlineId,
   fallbackText,
   onLinkClick,
   runs,
 }: {
+  activeBlock: boolean;
+  activeInlineId?: string;
   fallbackText: string;
   onLinkClick?: (url: string) => void;
   runs: MarkdownProjectionRun[];
@@ -392,7 +475,13 @@ function ProjectedTable({
   const rows = groupTableRuns(runs);
   if (rows.length === 0) {
     return (
-      <pre className="my-2 overflow-x-auto rounded bg-muted px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap">
+      <pre
+        data-source-active={activeBlock ? "true" : undefined}
+        className={cn(
+          "my-2 overflow-x-auto rounded bg-muted px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap",
+          activeBlock && sourceActiveBlockClass,
+        )}
+      >
         {fallbackText}
       </pre>
     );
@@ -404,7 +493,11 @@ function ProjectedTable({
   return (
     <div
       data-slot="projected-markdown-table"
-      className="my-4 overflow-x-auto rounded-md border border-border"
+      data-source-active={activeBlock ? "true" : undefined}
+      className={cn(
+        "my-4 overflow-x-auto rounded-md border border-border",
+        activeBlock && sourceActiveBlockClass,
+      )}
     >
       <table className="min-w-full border-collapse bg-background font-[var(--output-ui-font)] text-sm leading-normal">
         {hasHeader ? (
@@ -416,7 +509,7 @@ function ProjectedTable({
                   className="border-b border-r border-border bg-muted/70 px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
                   style={tableCellStyle(cell.align)}
                 >
-                  {renderRuns(cell.runs, onLinkClick)}
+                  {renderRuns(cell.runs, onLinkClick, activeInlineId)}
                 </th>
               ))}
             </tr>
@@ -431,7 +524,7 @@ function ProjectedTable({
                   className="border-r border-t border-border px-3 py-2 align-top text-muted-foreground first:text-foreground last:border-r-0"
                   style={tableCellStyle(cell.align)}
                 >
-                  {renderRuns(cell.runs, onLinkClick)}
+                  {renderRuns(cell.runs, onLinkClick, activeInlineId)}
                 </td>
               ))}
             </tr>
@@ -479,10 +572,24 @@ function tableCellStyle(align: MarkdownProjectionRun["tableCellAlign"]): CSSProp
   return undefined;
 }
 
-function renderRuns(runs: MarkdownProjectionRun[], onLinkClick?: (url: string) => void) {
+function renderRuns(
+  runs: MarkdownProjectionRun[],
+  onLinkClick?: (url: string) => void,
+  activeInlineId?: string,
+) {
   if (runs.length === 0) return null;
 
-  return runs.map((run) => <Fragment key={run.inlineId}>{renderRun(run, onLinkClick)}</Fragment>);
+  return runs.map((run) => (
+    <Fragment key={run.inlineId}>
+      {activeInlineId === run.inlineId ? (
+        <span data-source-active-run="true" className={sourceActiveRunClass}>
+          {renderRun(run, onLinkClick)}
+        </span>
+      ) : (
+        renderRun(run, onLinkClick)
+      )}
+    </Fragment>
+  ));
 }
 
 function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => void) {
