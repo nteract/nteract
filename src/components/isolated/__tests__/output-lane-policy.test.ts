@@ -129,6 +129,13 @@ describe("output lane policy", () => {
     ).toBe("dom");
   });
 
+  it("renders text/latex outputs in the host DOM", () => {
+    expect(outputSegmentLane(displayOutput("latex-output", { "text/latex": "$x^2$" }))).toBe("dom");
+    expect(
+      anyOutputNeedsIsolation([displayOutput("latex-output", { "text/latex": "$x^2$" })]),
+    ).toBe(false);
+  });
+
   it("keeps markdown outputs with isolated blocks in static iframes", () => {
     withMarkdownProjection("isolated");
 

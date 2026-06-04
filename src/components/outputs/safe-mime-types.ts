@@ -19,6 +19,8 @@ const MAIN_DOM_SAFE_TYPES = new Set([
   // Rich traceback payloads — our own schema, rendered by TracebackOutput.
   // Experimental; shape is not yet persisted to .ipynb.
   "application/vnd.nteract.traceback+json",
+  // LaTeX math renders through our KaTeX component in the host DOM.
+  "text/latex",
 ]);
 
 /** Check if a MIME type can safely render in the main DOM (no iframe needed). */

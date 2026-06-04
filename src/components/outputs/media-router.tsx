@@ -23,6 +23,7 @@ export type { MimeType } from "./mime-priority";
 const MarkdownOutput = lazy(() =>
   import("./markdown-output").then((m) => ({ default: m.MarkdownOutput })),
 );
+const MathOutput = lazy(() => import("./math-output").then((m) => ({ default: m.MathOutput })));
 const HtmlOutput = lazy(() => import("./html-output").then((m) => ({ default: m.HtmlOutput })));
 const ImageOutput = lazy(() => import("./image-output").then((m) => ({ default: m.ImageOutput })));
 const SvgOutput = lazy(() => import("./svg-output").then((m) => ({ default: m.SvgOutput })));
@@ -277,6 +278,10 @@ export function MediaRouter({
 
     if (mimeType === MARKDOWN_PROJECTION_MIME_TYPE && data["text/markdown"] != null) {
       return <MarkdownOutput content={String(data["text/markdown"])} className={className} />;
+    }
+
+    if (mimeType === "text/latex") {
+      return <MathOutput content={String(content)} className={className} />;
     }
 
     // HTML (only renders when in iframe)
