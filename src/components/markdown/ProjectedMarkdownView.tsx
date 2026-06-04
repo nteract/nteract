@@ -338,9 +338,7 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
   if (run.semantic === "strong") return <strong>{text}</strong>;
   if (run.semantic === "emphasis") return <em>{text}</em>;
   if (run.semantic === "delete") return <del>{text}</del>;
-  if (run.semantic === "inline-code") {
-    return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">{text}</code>;
-  }
+  if (run.semantic === "inline-code") return <InlineCode>{text}</InlineCode>;
   if (run.semantic === "math-source") return <ProjectedMath latex={text} />;
   if (run.semantic === "code-block") return text;
   if (run.semantic === "link-label") return text;
@@ -422,7 +420,8 @@ function ProjectedCodeBlock({
       <StaticCodeBlock code={code} colorTheme={colorTheme} isDark={isDark} className="max-w-full" />
       <button
         type="button"
-        className="absolute top-2 right-2 z-10 rounded border border-border bg-background p-1.5 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover/codeblock:opacity-100 hover:bg-muted hover:text-foreground"
+        aria-label={copied ? "Copied code" : "Copy code"}
+        className="absolute top-2 right-2 z-10 rounded border border-border bg-background p-1.5 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover/codeblock:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
         title={copied ? "Copied" : "Copy code"}
         onClick={copyCode}
       >
@@ -435,7 +434,11 @@ function ProjectedCodeBlock({
 function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; latex: string }) {
   const html = renderLatex(latex, displayMode);
   if (!html) {
-    return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">{latex}</code>;
+    return (
+      <InlineCode className={displayMode ? "my-4 block overflow-x-auto px-3 py-2" : undefined}>
+        {latex}
+      </InlineCode>
+    );
   }
 
   return (
@@ -460,4 +463,17 @@ function renderLatex(latex: string, displayMode: boolean): string | null {
   } catch {
     return null;
   }
+}
+
+function InlineCode({ children, className }: { children: string; className?: string }) {
+  return (
+    <code
+      className={cn(
+        "rounded-sm bg-muted/75 px-1.5 py-0.5 font-mono text-[0.9em] text-foreground",
+        className,
+      )}
+    >
+      {children}
+    </code>
+  );
 }

@@ -342,6 +342,79 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector("pre")).toBeNull();
   });
 
+  it("renders inline code with the document code chip styling", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 20],
+              sourceSpanUtf16: [0, 20],
+              syntaxSpans: [],
+              text: "Use value here",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "text",
+              listItemIndex: null,
+              renderedText: "Use ",
+              renderedTextUtf16: [0, 4],
+              semantic: "text",
+              sourceSpanByte: [0, 4],
+              sourceSpanUtf16: [0, 4],
+            },
+            {
+              blockId: "p0",
+              inlineId: "code",
+              listItemIndex: null,
+              renderedText: "value",
+              renderedTextUtf16: [4, 9],
+              semantic: "inline-code",
+              sourceSpanByte: [5, 12],
+              sourceSpanUtf16: [5, 12],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("value").tagName).toBe("CODE");
+    expect(screen.getByText("value")).toHaveClass("bg-muted/75", "font-mono");
+  });
+
+  it("keeps projected code block copy controls reachable without hover", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "code",
+              blockIndex: 0,
+              element: "pre",
+              kind: "code",
+              measurement: { estimatedHeight: 72, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 20],
+              sourceSpanUtf16: [0, 20],
+              syntaxSpans: [],
+              text: "print('hi')",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Copy code" })).toHaveClass(
+      "focus-visible:opacity-100",
+    );
+  });
+
   it("renders projected images in the host document", () => {
     render(
       <ProjectedMarkdownView
