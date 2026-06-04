@@ -1587,15 +1587,6 @@ function NotebookViewer({
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
-  const accessRequestNotice = cloudAccessRequestNotice(latestAccessRequest, accessRequestError);
-  const hasNotices = cloudNotebookHasNotices({
-    authState,
-    authRenewal,
-    connectionError,
-    diagnostics: accessRequestNotice,
-    hasReadableSnapshot: notebookHasReadableSnapshot,
-    status,
-  });
   const notebookViewIsLoading =
     status.kind === "loading" ||
     editAccessPending ||
@@ -1604,6 +1595,19 @@ function NotebookViewer({
     (shellCapabilities.canEditStructure &&
       notebookCellIds.length === 0 &&
       !liveMaterializedRef.current);
+  const noticeStatus: ViewerStatus =
+    notebookViewIsLoading && (status.kind === "ready" || status.kind === "empty")
+      ? { kind: "loading", message: "Preparing notebook view..." }
+      : status;
+  const accessRequestNotice = cloudAccessRequestNotice(latestAccessRequest, accessRequestError);
+  const hasNotices = cloudNotebookHasNotices({
+    authState,
+    authRenewal,
+    connectionError,
+    diagnostics: accessRequestNotice,
+    hasReadableSnapshot: notebookHasReadableSnapshot,
+    status: noticeStatus,
+  });
   const notices = hasNotices ? (
     <CloudNotebookNotices
       authState={authState}
@@ -1611,7 +1615,7 @@ function NotebookViewer({
       connectionError={connectionError}
       diagnostics={accessRequestNotice}
       hasReadableSnapshot={notebookHasReadableSnapshot}
-      status={status}
+      status={noticeStatus}
       onResetAuth={resetPrototypeAuth}
     />
   ) : null;

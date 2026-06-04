@@ -16,7 +16,7 @@ body {
 }
 
 .cloud-notebook-shell {
-  --cloud-notice-top: 3.75rem;
+  --cloud-notice-top: calc(3.75rem + 2.5rem);
 
   display: flex;
   position: relative;
@@ -52,7 +52,7 @@ body {
   border-bottom: 1px solid var(--border);
   background: var(--background);
   padding: 0;
-  box-shadow: 0 8px 18px color-mix(in srgb, #000 6%, transparent);
+  box-shadow: 0 6px 14px color-mix(in srgb, #000 4%, transparent);
 }
 
 .cloud-notebook-notices [data-slot="notebook-notice"] {
@@ -210,7 +210,7 @@ body {
 
 @media (max-width: 900px) {
   .cloud-notebook-shell {
-    --cloud-notice-top: 4.75rem;
+    --cloud-notice-top: calc(4.75rem + 2.5rem);
   }
 
   .cloud-room-toolbar {

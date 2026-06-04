@@ -301,12 +301,25 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   const shellText = readFileSync(shellPath, "utf8");
 
   assert.match(sourceText, /const hasNotices =/);
+  assert.match(sourceText, /const noticeStatus: ViewerStatus =/);
+  assert.match(
+    sourceText,
+    /notebookViewIsLoading && \(status\.kind === "ready" \|\| status\.kind === "empty"\)[\s\S]*Preparing notebook view/,
+  );
   assert.match(sourceText, /const notices = hasNotices \? \(/);
   assert.match(sourceText, /notices=\{notices\}/);
   assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
   assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*position: relative;/);
+  assert.match(
+    cssText,
+    /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: calc\(3\.75rem \+ 2\.5rem\);/,
+  );
   assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*position: absolute;/);
   assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*top: var\(--cloud-notice-top\);/);
+  assert.match(
+    cssText,
+    /@media \(max-width: 900px\) \{[\s\S]*--cloud-notice-top: calc\(4\.75rem \+ 2\.5rem\);/,
+  );
   assert.match(
     shellText,
     /data-slot="notebook-document-notices"[\s\S]*data-slot="notebook-document-body"[\s\S]*\{rail\}[\s\S]*data-slot="notebook-document-stage"/,
