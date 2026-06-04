@@ -17,6 +17,8 @@ export interface MarkdownProjectionBlock {
   anchorSlug?: string;
   blockId: string;
   blockIndex: number;
+  codeLanguage?: string;
+  codeMeta?: string;
   element: string;
   kind: string;
   measurement: MarkdownProjectionMeasurement & { basis?: string };

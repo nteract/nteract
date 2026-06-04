@@ -130,7 +130,14 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "code") {
-    return <ProjectedCodeBlock code={block.text} colorTheme={colorTheme} isDark={isDark} />;
+    return (
+      <ProjectedCodeBlock
+        code={block.text}
+        colorTheme={colorTheme}
+        isDark={isDark}
+        language={block.codeLanguage}
+      />
+    );
   }
 
   if (block.kind === "math") {
@@ -398,10 +405,12 @@ function ProjectedCodeBlock({
   code,
   colorTheme,
   isDark,
+  language,
 }: {
   code: string;
   colorTheme: "classic" | "cream";
   isDark: boolean;
+  language?: string;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -417,7 +426,13 @@ function ProjectedCodeBlock({
 
   return (
     <div className="group/codeblock relative my-3">
-      <StaticCodeBlock code={code} colorTheme={colorTheme} isDark={isDark} className="max-w-full" />
+      <StaticCodeBlock
+        code={code}
+        colorTheme={colorTheme}
+        isDark={isDark}
+        language={language}
+        className="max-w-full"
+      />
       <button
         type="button"
         aria-label={copied ? "Copied code" : "Copy code"}

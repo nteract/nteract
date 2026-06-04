@@ -230,6 +230,8 @@ fn collect_block(
         anchor_slug: block.attrs.anchor_slug.clone(),
         block_id: block.id.clone(),
         block_index,
+        code_lang: block.attrs.lang.clone(),
+        code_meta: block.attrs.meta.clone(),
         element,
         kind,
         ordered: block.attrs.ordered,
@@ -825,6 +827,8 @@ struct WasmBlock {
     anchor_slug: Option<String>,
     block_id: String,
     block_index: usize,
+    code_lang: Option<String>,
+    code_meta: Option<String>,
     element: &'static str,
     kind: &'static str,
     ordered: Option<bool>,
@@ -853,6 +857,14 @@ impl WasmBlock {
         output.push_str("\"blockIndex\":");
         output.push_str(&self.block_index.to_string());
         output.push(',');
+        if let Some(code_lang) = &self.code_lang {
+            push_json_key_string(output, "codeLanguage", code_lang);
+            output.push(',');
+        }
+        if let Some(code_meta) = &self.code_meta {
+            push_json_key_string(output, "codeMeta", code_meta);
+            output.push(',');
+        }
         push_json_key_string(output, "element", self.element);
         output.push(',');
         push_json_key_string(output, "kind", self.kind);
@@ -1095,9 +1107,11 @@ mod tests {
 
     #[test]
     fn projects_open_fence_as_code_block() {
-        let json = project_to_json("```ts\nconst plan = wasm.project(source);");
+        let json = project_to_json("```ts live\nconst plan = wasm.project(source);");
 
         assert!(json.contains("\"kind\":\"code\""));
+        assert!(json.contains("\"codeLanguage\":\"ts\""));
+        assert!(json.contains("\"codeMeta\":\"live\""));
         assert!(json.contains("\"semantic\":\"code-block\""));
         assert!(json.contains("wasm.project"));
     }

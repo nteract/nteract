@@ -415,6 +415,33 @@ describe("ProjectedMarkdownView", () => {
     );
   });
 
+  it("passes projected code fence language to the static highlighter", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "code",
+              blockIndex: 0,
+              codeLanguage: "python",
+              codeMeta: "editable",
+              element: "pre",
+              kind: "code",
+              measurement: { estimatedHeight: 72, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 36],
+              sourceSpanUtf16: [0, 36],
+              syntaxSpans: [],
+              text: "from datasets import load_dataset",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("datasets")).toBeInTheDocument();
+    expect(document.querySelector("pre code span")).not.toBeNull();
+  });
+
   it("renders projected images in the host document", () => {
     render(
       <ProjectedMarkdownView
