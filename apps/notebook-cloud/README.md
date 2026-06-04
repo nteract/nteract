@@ -31,8 +31,10 @@ pnpm --dir apps/notebook-cloud publish:live
 `pnpm --dir apps/notebook-cloud dev` derives stable Wrangler HTTP and inspector
 ports from the git worktree root, so parallel worktrees do not all bind to
 `8787` and `9229`. The command prints the local base URL. Local smoke and
-publish scripts derive the same URL by default; set `NOTEBOOK_CLOUD_URL` to
-target a deployed Worker instead. Use `NOTEBOOK_CLOUD_WRANGLER_PORT` or
+publish scripts derive the same URL by default; set `NTERACT_CLOUD_URL` to
+target a deployed Worker instead. `NOTEBOOK_CLOUD_URL` remains accepted for
+existing smoke commands. Use
+`NOTEBOOK_CLOUD_WRANGLER_PORT` or
 `NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT` only when you need an explicit local
 override.
 
@@ -149,9 +151,9 @@ to publish an already-open live notebook room instead.
 `smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
 the returned viewer URL and exported notebook/runtime heads, then runs
 `smoke:hosted` against that exact notebook while asserting the catalog latest
-revision still points at those heads. Use `NOTEBOOK_CLOUD_URL=https://preview.runt.run`
-and `NOTEBOOK_CLOUD_DEV_TOKEN=...` to target the deployed prototype, or leave
-the defaults to target local Wrangler.
+revision still points at those heads. Use `NTERACT_CLOUD_URL=https://preview.runt.run`
+and `NOTEBOOK_CLOUD_DEV_TOKEN=...` only for the deployed smoke run, or leave the
+defaults to target local Wrangler.
 
 `smoke:hosted:source-room` covers the already-open room path. It creates and
 executes the same live MathNet notebook first, then calls `smoke:hosted:live`
@@ -253,18 +255,19 @@ X-Notebook-Cloud-Auth-Provider: anaconda-api-key
 ```
 
 `runt-publish` treats this as publish bearer auth. It defaults to the current
-hosted dev URL, `https://preview.runt.run`, loads publish-related values from
-`.env`, and maps `NTERACT_API_KEY` to the current provider header
-automatically. `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` and `ANACONDA_API_KEY` are
-accepted as local aliases:
+hosted staging URL, `https://preview.runt.run`, accepts `NTERACT_CLOUD_URL` for
+a different deployment, loads publish-related values from `.env`, and maps
+`NTERACT_API_KEY` to the current provider header automatically.
+The Worker validates the token through Anaconda `whoami`; the validated
+`cloud:write` scope, not unverified JWT payload claims, is what authorizes owner
+publishes. Existing token values can be reused if they pass that validation.
+`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remains accepted as a compatibility alias:
 
 ```bash
+NTERACT_CLOUD_URL=https://preview.runt.run \
 NTERACT_API_KEY=... \
 cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
 ```
-
-Use `--env-file ~/codex/desktop/.env` when publishing from a worktree that does
-not have the key in its own `.env`.
 
 See `docs/adr/hosted-direct-oidc-demo-runbook.md`.
 
@@ -436,22 +439,22 @@ Useful events while debugging collaboration:
 - `authz.denied`, `acl.grant.completed`, and `acl.revoke.completed` - ACL
   decisions and owner mutations.
 
-Quick deployed runbook:
+Quick deployed smoke runbook:
 
 ```bash
-NOTEBOOK_CLOUD_URL=https://preview.runt.run \
+NTERACT_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke
 
-NOTEBOOK_CLOUD_URL=https://preview.runt.run \
+NTERACT_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud wasm:roundtrip
 
-NOTEBOOK_CLOUD_URL=https://preview.runt.run \
+NTERACT_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke:hosted:live
 
-NOTEBOOK_CLOUD_URL=https://preview.runt.run \
+NTERACT_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke:hosted:collab
 
@@ -460,9 +463,10 @@ NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \
 pnpm --dir apps/notebook-cloud smoke:hosted
 ```
 
-`wasm:roundtrip` refuses to target a deployed Worker without
-`NOTEBOOK_CLOUD_DEV_TOKEN` in the environment, because deployed dev credentials
-must never travel in URLs. Its JSON result includes `timings_ms` for owner
+These smoke commands use `NOTEBOOK_CLOUD_DEV_TOKEN` as a prototype diagnostic
+credential. `wasm:roundtrip` refuses to target a deployed Worker without that
+environment variable because deployed dev credentials must never travel in
+URLs. Its JSON result includes `timings_ms` for owner
 seeding, ACL grants, peer connection, and both Alice/Bob/anonymous convergence
 directions; use those values with `room.peer_sync.completed` and
 `room.materialized_frame.applied` logs to separate WebSocket latency from room
@@ -492,7 +496,7 @@ but never the stored token value.
 Snapshot and blob stubs:
 
 ```bash
-NOTEBOOK_CLOUD_LOCAL_URL="${NOTEBOOK_CLOUD_URL:-http://127.0.0.1:<worktree-port>}"
+NOTEBOOK_CLOUD_LOCAL_URL="${NTERACT_CLOUD_URL:-${NOTEBOOK_CLOUD_URL:-http://127.0.0.1:<worktree-port>}}"
 
 curl -X PUT "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/runtime-snapshots/runtime123" \
   -H "X-User: alice" \
@@ -517,7 +521,7 @@ curl -X PUT "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/blobs/sha256abc" \
 Catalog and pinned snapshot readback:
 
 ```bash
-NOTEBOOK_CLOUD_LOCAL_URL="${NOTEBOOK_CLOUD_URL:-http://127.0.0.1:<worktree-port>}"
+NOTEBOOK_CLOUD_LOCAL_URL="${NTERACT_CLOUD_URL:-${NOTEBOOK_CLOUD_URL:-http://127.0.0.1:<worktree-port>}}"
 
 curl "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo"
 curl "$NOTEBOOK_CLOUD_LOCAL_URL/api/n/demo/snapshots/{notebookHeadsHash}"

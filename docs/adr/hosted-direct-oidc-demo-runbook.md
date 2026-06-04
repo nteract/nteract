@@ -63,7 +63,7 @@ be replaced gradually. Use
 where fetching the provider JWKS is intentionally disabled.
 
 `NOTEBOOK_CLOUD_DEV_TOKEN` may remain for local-only smoke tests and emergency
-prototype diagnostics. It is not the browser auth path and it is not the
+prototype diagnostics. It is not the browser auth path and it is not the hosted
 publishing credential path.
 
 ## API-key Publishing
@@ -88,6 +88,7 @@ For `runt-publish`, store the publish bearer token in the environment or a
 local `.env` file:
 
 ```bash
+NTERACT_CLOUD_URL=https://preview.runt.run
 NTERACT_API_KEY=...
 ```
 
@@ -97,13 +98,16 @@ Then use:
 cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
 ```
 
-The publisher defaults to the current hosted dev URL, `https://preview.runt.run`,
-and loads publish-related keys from `.env`. The hosted deployment currently
-validates non-browser publish bearer tokens through Anaconda's API-key `whoami`
-endpoint, so the publisher sends
-`X-Notebook-Cloud-Auth-Provider: anaconda-api-key` for `NTERACT_API_KEY`.
-`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` and `ANACONDA_API_KEY` remain local
-aliases. Use `--env-file path/to/.env` when running from a different checkout.
+The publisher defaults to the current hosted staging URL, `https://preview.runt.run`,
+and loads publish-related keys from `.env`. Set `NTERACT_CLOUD_URL` for a
+different hosted deployment. The hosted deployment currently validates
+non-browser publish bearer tokens through Anaconda's API-key `whoami` endpoint,
+so the publisher sends `X-Notebook-Cloud-Auth-Provider: anaconda-api-key` for
+`NTERACT_API_KEY`. The Worker trusts the `whoami` response, not unverified JWT
+payload fields: owner publish requests require `cloud:write` in the validated
+API-key scopes. Existing token values can be reused only if they validate that
+way. `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remains a compatibility alias. Use
+`--env-file path/to/.env` when running from a different checkout.
 
 ## Viewer Runtime OIDC Config
 

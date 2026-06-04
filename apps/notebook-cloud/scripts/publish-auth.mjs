@@ -3,7 +3,7 @@ export function publishIdentityHeaders({
   operator,
   user,
   devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN,
-  bearerToken = process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN ?? process.env.ANACONDA_API_KEY,
+  bearerToken = process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN,
 } = {}) {
   if (bearerToken) {
     return {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const NOTEBOOK_CLOUD_URL_ENV = "NOTEBOOK_CLOUD_URL";
+export const NTERACT_CLOUD_URL_ENV = "NTERACT_CLOUD_URL";
 export const NOTEBOOK_CLOUD_WRANGLER_PORT_ENV = "NOTEBOOK_CLOUD_WRANGLER_PORT";
 export const NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT_ENV = "NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT";
 export const NOTEBOOK_CLOUD_WRANGLER_HOST_ENV = "NOTEBOOK_CLOUD_WRANGLER_HOST";
@@ -65,7 +66,11 @@ export function notebookCloudLoopbackUrl(options = {}) {
 }
 
 export function notebookCloudBaseUrl({ env = process.env, ...options } = {}) {
-  return env[NOTEBOOK_CLOUD_URL_ENV] || notebookCloudLoopbackUrl({ env, ...options });
+  return (
+    env[NTERACT_CLOUD_URL_ENV] ||
+    env[NOTEBOOK_CLOUD_URL_ENV] ||
+    notebookCloudLoopbackUrl({ env, ...options })
+  );
 }
 
 function readPort(value, name) {

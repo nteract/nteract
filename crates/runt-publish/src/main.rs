@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use automerge::AutoCommit;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use clap::Parser;
 use notebook_doc::NotebookDoc;
 use notebook_sync::connect;
@@ -24,24 +23,27 @@ const DEFAULT_BLOB_CONTENT_TYPE: &str = "application/octet-stream";
 const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
 const DEFAULT_CLOUD_URL: &str = "https://preview.runt.run";
 const ANACONDA_API_KEY_AUTH_PROVIDER: &str = "anaconda-api-key";
+const NTERACT_CLOUD_URL_ENV: &str = "NTERACT_CLOUD_URL";
+const NTERACT_CLOUD_AUTH_PROVIDER_ENV: &str = "NTERACT_CLOUD_AUTH_PROVIDER";
 const NTERACT_PUBLISH_URL_ENV: &str = "NTERACT_PUBLISH_URL";
 const NTERACT_API_KEY_ENV: &str = "NTERACT_API_KEY";
 const NTERACT_PUBLISH_AUTH_PROVIDER_ENV: &str = "NTERACT_PUBLISH_AUTH_PROVIDER";
-const ANACONDA_API_KEY_ENV: &str = "ANACONDA_API_KEY";
+const NOTEBOOK_CLOUD_URL_ENV: &str = "NOTEBOOK_CLOUD_URL";
+const NOTEBOOK_CLOUD_AUTH_PROVIDER_ENV: &str = "NOTEBOOK_CLOUD_AUTH_PROVIDER";
 const NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV: &str = "NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN";
 const NOTEBOOK_CLOUD_BEARER_TOKEN_ENV: &str = "NOTEBOOK_CLOUD_BEARER_TOKEN";
 
 const PUBLISH_ENV_KEYS: &[&str] = &[
+    NTERACT_CLOUD_URL_ENV,
+    NTERACT_CLOUD_AUTH_PROVIDER_ENV,
     NTERACT_PUBLISH_URL_ENV,
     NTERACT_API_KEY_ENV,
     NTERACT_PUBLISH_AUTH_PROVIDER_ENV,
-    "NOTEBOOK_CLOUD_URL",
+    NOTEBOOK_CLOUD_URL_ENV,
     "NOTEBOOK_CLOUD_NOTEBOOK_ID",
-    "NOTEBOOK_CLOUD_DEV_TOKEN",
     NOTEBOOK_CLOUD_BEARER_TOKEN_ENV,
     NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV,
-    "NOTEBOOK_CLOUD_AUTH_PROVIDER",
-    ANACONDA_API_KEY_ENV,
+    NOTEBOOK_CLOUD_AUTH_PROVIDER_ENV,
 ];
 
 #[derive(Debug, Parser)]
@@ -54,7 +56,7 @@ struct Args {
     notebook: PathBuf,
 
     /// Hosted notebook-cloud base URL.
-    #[arg(long = "url", env = "NTERACT_PUBLISH_URL", default_value = DEFAULT_CLOUD_URL)]
+    #[arg(long = "url", env = "NTERACT_CLOUD_URL", default_value = DEFAULT_CLOUD_URL)]
     cloud_url: String,
 
     /// Load publishing env vars from a KEY=VALUE file before resolving credentials.
@@ -75,18 +77,18 @@ struct Args {
     socket: Option<PathBuf>,
 
     /// Dev publish token for deployed notebook-cloud environments.
-    #[arg(long = "dev-token", hide_env_values = true)]
+    #[arg(long = "dev-token", hide = true, hide_env_values = true)]
     dev_token: Option<String>,
 
-    /// Bearer token for notebook-cloud publish auth. Env fallback order:
-    /// NTERACT_API_KEY, NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN, NOTEBOOK_CLOUD_BEARER_TOKEN,
-    /// ANACONDA_API_KEY.
+    /// Bearer token for notebook-cloud publish auth. Explicit values override env;
+    /// env fallback order is NTERACT_API_KEY, NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN,
+    /// then NOTEBOOK_CLOUD_BEARER_TOKEN.
     #[arg(long = "bearer-token", hide_env_values = true)]
     bearer_token: Option<String>,
 
     /// Explicit provider for bearer-token auth. The current hosted deployment uses
     /// anaconda-api-key for publish bearer tokens.
-    #[arg(long = "auth-provider", env = "NTERACT_PUBLISH_AUTH_PROVIDER")]
+    #[arg(long = "auth-provider", env = "NTERACT_CLOUD_AUTH_PROVIDER")]
     auth_provider: Option<String>,
 
     /// User label sent to notebook-cloud dev auth.
@@ -515,13 +517,11 @@ enum BearerTokenSource {
     NteractApiKeyEnv,
     CloudBearerEnv,
     PublishBearerEnv,
-    AnacondaApiKeyEnv,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DevTokenSource {
     Explicit,
-    Env,
 }
 
 impl BearerTokenSource {
@@ -531,15 +531,11 @@ impl BearerTokenSource {
             Self::NteractApiKeyEnv => NTERACT_API_KEY_ENV,
             Self::CloudBearerEnv => NOTEBOOK_CLOUD_BEARER_TOKEN_ENV,
             Self::PublishBearerEnv => NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV,
-            Self::AnacondaApiKeyEnv => ANACONDA_API_KEY_ENV,
         }
     }
 
     fn is_publish_bearer_source(self) -> bool {
-        matches!(
-            self,
-            Self::NteractApiKeyEnv | Self::PublishBearerEnv | Self::AnacondaApiKeyEnv
-        )
+        matches!(self, Self::NteractApiKeyEnv | Self::PublishBearerEnv)
     }
 }
 
@@ -553,6 +549,12 @@ fn resolve_publish_auth_with_env(
 ) -> Result<PublishAuth> {
     let dev_token = resolve_dev_token(args, &mut env);
     let bearer = resolve_bearer_token(args, &mut env);
+
+    if matches!(dev_token, Some((_, DevTokenSource::Explicit)))
+        && !is_loopback_cloud_url(&args.cloud_url)
+    {
+        bail!("--dev-token is only for local notebook-cloud development; use {NTERACT_API_KEY_ENV} for hosted publishing");
+    }
 
     if matches!(dev_token, Some((_, DevTokenSource::Explicit))) && bearer.is_some() {
         let source = bearer
@@ -573,14 +575,6 @@ fn resolve_publish_auth_with_env(
                 .map(ToOwned::to_owned),
         });
     };
-
-    if source.is_publish_bearer_source() && token_looks_like_legacy_runt_api_key(&bearer_token) {
-        bail!(
-            "{} looks like an old runt/intheloop API key, not a hosted publish bearer token. Create or copy a publish credential with cloud:write, then set {}.",
-            source.label(),
-            NTERACT_API_KEY_ENV
-        );
-    }
 
     let auth_provider = args
         .auth_provider
@@ -623,26 +617,16 @@ fn resolve_bearer_token(
                 .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
                 .map(|token| (token, BearerTokenSource::CloudBearerEnv))
         })
-        .or_else(|| {
-            env(ANACONDA_API_KEY_ENV)
-                .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
-                .map(|token| (token, BearerTokenSource::AnacondaApiKeyEnv))
-        })
 }
 
 fn resolve_dev_token(
     args: &Args,
-    env: &mut impl FnMut(&str) -> Option<String>,
+    _env: &mut impl FnMut(&str) -> Option<String>,
 ) -> Option<(String, DevTokenSource)> {
     args.dev_token
         .as_deref()
         .and_then(nonempty_string)
         .map(|token| (token.to_string(), DevTokenSource::Explicit))
-        .or_else(|| {
-            env("NOTEBOOK_CLOUD_DEV_TOKEN")
-                .and_then(|token| nonempty_string(&token).map(ToOwned::to_owned))
-                .map(|token| (token, DevTokenSource::Env))
-        })
 }
 
 fn nonempty_string(value: &str) -> Option<&str> {
@@ -656,48 +640,11 @@ fn env_var_nonempty(name: &str) -> Option<String> {
         .and_then(|value| nonempty_string(&value).map(ToOwned::to_owned))
 }
 
-fn token_looks_like_legacy_runt_api_key(token: &str) -> bool {
-    let Some(payload) = unverified_jwt_payload(token) else {
+fn is_loopback_cloud_url(value: &str) -> bool {
+    let Ok(url) = Url::parse(&with_trailing_slash(value)) else {
         return false;
     };
-
-    let version = payload
-        .get("ver")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if version == "api:1" {
-        return false;
-    }
-
-    let issuer = payload
-        .get("iss")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let has_runt_scope = payload
-        .get("scopes")
-        .and_then(Value::as_array)
-        .is_some_and(|scopes| {
-            scopes.iter().any(|scope| {
-                matches!(
-                    scope.as_str(),
-                    Some("runt:read" | "runt:execute" | "runt:write")
-                )
-            })
-        });
-
-    version.contains("japikey") || issuer.contains("/api/api-keys") || has_runt_scope
-}
-
-fn unverified_jwt_payload(token: &str) -> Option<Value> {
-    let mut parts = token.split('.');
-    let _header = parts.next()?;
-    let payload = parts.next()?;
-    let _signature = parts.next()?;
-    if parts.next().is_some() || payload.is_empty() {
-        return None;
-    }
-    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
 }
 
 fn is_clap_short_circuit(args: &[OsString]) -> bool {
@@ -726,10 +673,16 @@ fn load_publish_env_files(raw_args: &[OsString]) -> Result<()> {
 }
 
 fn apply_publish_env_aliases() {
-    set_env_alias_if_absent(NTERACT_PUBLISH_URL_ENV, &["NOTEBOOK_CLOUD_URL"]);
     set_env_alias_if_absent(
-        NTERACT_PUBLISH_AUTH_PROVIDER_ENV,
-        &["NOTEBOOK_CLOUD_AUTH_PROVIDER"],
+        NTERACT_CLOUD_URL_ENV,
+        &[NOTEBOOK_CLOUD_URL_ENV, NTERACT_PUBLISH_URL_ENV],
+    );
+    set_env_alias_if_absent(
+        NTERACT_CLOUD_AUTH_PROVIDER_ENV,
+        &[
+            NOTEBOOK_CLOUD_AUTH_PROVIDER_ENV,
+            NTERACT_PUBLISH_AUTH_PROVIDER_ENV,
+        ],
     );
 }
 
@@ -1492,7 +1445,7 @@ mod tests {
     #[test]
     fn nteract_api_key_env_uses_preview_provider_header() {
         let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
-        let token = anaconda_token();
+        let token = "api-key-token".to_string();
         let auth = resolve_publish_auth_with_env(&args, |name| {
             (name == NTERACT_API_KEY_ENV).then(|| token.clone())
         })
@@ -1509,24 +1462,9 @@ mod tests {
     #[test]
     fn publish_bearer_env_uses_preview_provider_header() {
         let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let token = "publish-token".to_string();
         let auth = resolve_publish_auth_with_env(&args, |name| {
-            (name == NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV).then(|| "publish-token".to_string())
-        })
-        .unwrap();
-
-        assert_eq!(auth.bearer_token.as_deref(), Some("publish-token"));
-        assert_eq!(
-            auth.auth_provider.as_deref(),
-            Some(ANACONDA_API_KEY_AUTH_PROVIDER)
-        );
-    }
-
-    #[test]
-    fn anaconda_api_key_alias_env_uses_preview_provider_header() {
-        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
-        let token = anaconda_token();
-        let auth = resolve_publish_auth_with_env(&args, |name| {
-            (name == ANACONDA_API_KEY_ENV).then(|| token.clone())
+            (name == NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN_ENV).then(|| token.clone())
         })
         .unwrap();
 
@@ -1556,9 +1494,9 @@ mod tests {
     }
 
     #[test]
-    fn publish_bearer_env_ignores_stale_env_dev_token() {
+    fn publish_bearer_env_ignores_smoke_dev_token_env() {
         let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
-        let token = anaconda_token();
+        let token = "api-key-token".to_string();
         let auth = resolve_publish_auth_with_env(&args, |name| match name {
             NTERACT_API_KEY_ENV => Some(token.clone()),
             "NOTEBOOK_CLOUD_DEV_TOKEN" => Some("stale-dev-token".to_string()),
@@ -1572,11 +1510,17 @@ mod tests {
 
     #[test]
     fn explicit_dev_token_conflicts_with_publish_bearer_env() {
-        let args =
-            Args::try_parse_from(["runt-publish", "--dev-token", "dev-token", "topic.ipynb"])
-                .unwrap();
+        let args = Args::try_parse_from([
+            "runt-publish",
+            "--url",
+            "http://127.0.0.1:8787",
+            "--dev-token",
+            "dev-token",
+            "topic.ipynb",
+        ])
+        .unwrap();
         let error = resolve_publish_auth_with_env(&args, |name| {
-            (name == NTERACT_API_KEY_ENV).then(|| anaconda_token())
+            (name == NTERACT_API_KEY_ENV).then(|| "api-key-token".to_string())
         })
         .unwrap_err();
 
@@ -1584,17 +1528,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_legacy_runt_key_from_publish_env() {
-        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
-        let error = resolve_publish_auth_with_env(&args, |name| {
-            (name == NTERACT_API_KEY_ENV).then(|| legacy_runt_token())
-        })
-        .unwrap_err();
+    fn explicit_dev_token_is_local_only() {
+        let args =
+            Args::try_parse_from(["runt-publish", "--dev-token", "dev-token", "topic.ipynb"])
+                .unwrap();
+        let error = resolve_publish_auth_with_env(&args, |_| None).unwrap_err();
 
         assert!(
-            error.to_string().contains("old runt/intheloop API key"),
+            error
+                .to_string()
+                .contains("--dev-token is only for local notebook-cloud development"),
             "{error:#}"
         );
+
+        let local_args = Args::try_parse_from([
+            "runt-publish",
+            "--url",
+            "http://localhost:8787",
+            "--dev-token",
+            "dev-token",
+            "topic.ipynb",
+        ])
+        .unwrap();
+        let auth = resolve_publish_auth_with_env(&local_args, |_| None).unwrap();
+
+        assert_eq!(auth.dev_token.as_deref(), Some("dev-token"));
+        assert_eq!(auth.bearer_token, None);
     }
 
     #[test]
@@ -1619,34 +1578,15 @@ mod tests {
     #[test]
     fn parses_quoted_publish_env_values() {
         assert_eq!(
-            parse_env_line("export ANACONDA_API_KEY=\"abc.def\""),
-            Some((ANACONDA_API_KEY_ENV.to_string(), "abc.def".to_string()))
+            parse_env_line("export NTERACT_API_KEY=\"abc.def\""),
+            Some((NTERACT_API_KEY_ENV.to_string(), "abc.def".to_string()))
         );
         assert_eq!(
-            parse_env_line("NOTEBOOK_CLOUD_URL=https://preview.runt.run # preview"),
+            parse_env_line("NTERACT_CLOUD_URL=https://preview.runt.run # preview"),
             Some((
-                "NOTEBOOK_CLOUD_URL".to_string(),
+                NTERACT_CLOUD_URL_ENV.to_string(),
                 "https://preview.runt.run".to_string()
             ))
         );
-    }
-
-    fn anaconda_token() -> String {
-        jwt_with_payload(json!({"ver": "api:1", "jti": "key"}))
-    }
-
-    fn legacy_runt_token() -> String {
-        jwt_with_payload(json!({
-            "ver": "japikey-v1",
-            "iss": "http://localhost:8787/api/api-keys/key-id",
-            "scopes": ["runt:read", "runt:execute"]
-        }))
-    }
-
-    fn jwt_with_payload(payload: Value) -> String {
-        format!(
-            "header.{}.signature",
-            URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes())
-        )
     }
 }
