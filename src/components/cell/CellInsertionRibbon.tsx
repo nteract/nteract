@@ -184,7 +184,9 @@ export function CellInsertionRibbon({
           terminal && "pt-0.5",
           forceActionsVisible
             ? "opacity-100"
-            : "opacity-0 group-hover/adder:opacity-100 group-hover/adder:delay-75 group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
+            : isOpen
+              ? "pointer-events-auto opacity-100 delay-75"
+              : "pointer-events-none opacity-0 transition-none",
         )}
       >
         <span
