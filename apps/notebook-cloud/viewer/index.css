@@ -109,6 +109,37 @@ body {
   line-height: 1.2;
 }
 
+.cloud-edit-mode-placeholder {
+  display: inline-flex;
+  width: min(16rem, 54vw);
+  max-width: min(16rem, 54vw);
+  height: 2rem;
+  min-width: 8rem;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  padding: 0.125rem;
+  color: color-mix(in srgb, var(--foreground) 18%, transparent);
+}
+
+.cloud-edit-mode-placeholder > span {
+  height: 1.5rem;
+  flex: 1 1 0;
+  border-radius: 4px;
+  background: currentColor;
+  opacity: 0.42;
+}
+
+.cloud-edit-mode-placeholder > span:first-child {
+  flex-basis: 4.25rem;
+}
+
+.cloud-edit-mode-placeholder > span:last-child {
+  flex-basis: 5.5rem;
+}
+
 .cloud-presence-stack {
   display: inline-flex;
   align-items: center;

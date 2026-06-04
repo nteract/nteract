@@ -142,6 +142,7 @@ import "./index.css";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
 const CLOUD_ACCESS_REQUEST_POLL_INTERVAL_MS = 10_000;
+const CLOUD_EMPTY_ROOM_GRACE_MS = 900;
 
 setLoggerHost({
   debug: () => {},
@@ -712,6 +713,7 @@ function NotebookViewer({
         ? "edit"
         : "view",
   );
+  const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
   const blobResolver = useMemo(
     () =>
       createNotebookCloudBlobResolver({
@@ -1223,6 +1225,12 @@ function NotebookViewer({
       selectedInteractionMode,
     ],
   );
+  const editAccessPending =
+    !connectionError &&
+    status.kind === "loading" &&
+    !canAcceptCellMutations &&
+    selectedInteractionMode === "edit" &&
+    (authState.requestedScope === "editor" || authState.requestedScope === "owner");
   const canWriteCellSource = useCallback(
     (cellId: string) => {
       const cell = cellsByIdRef.current.get(cellId);
@@ -1240,6 +1248,17 @@ function NotebookViewer({
   const packageEnvironmentManager = cloudNotebookEnvironmentManager(
     notebookViewModel.packages.sections,
   );
+  useEffect(() => {
+    if (status.kind !== "empty" || notebookCellIds.length > 0) {
+      setEmptyRoomGraceElapsed(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setEmptyRoomGraceElapsed(true);
+    }, CLOUD_EMPTY_ROOM_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [notebookCellIds.length, status.kind]);
   const requestCloudMaterialization = useCallback((liveRuntime: CloudSyncRuntime) => {
     materializeLiveRuntimeRef.current?.(liveRuntime);
   }, []);
@@ -1522,6 +1541,7 @@ function NotebookViewer({
             authState={authState}
             interaction={shellCapabilities.interaction ?? null}
             accessLevel={shellCapabilities.access.level}
+            accessPending={editAccessPending}
             onModeChange={setSelectedInteractionMode}
             onRequestEditAccess={requestCloudEditAccess}
           />
@@ -1555,6 +1575,8 @@ function NotebookViewer({
   });
   const notebookViewIsLoading =
     status.kind === "loading" ||
+    editAccessPending ||
+    (status.kind === "empty" && notebookCellIds.length === 0 && !emptyRoomGraceElapsed) ||
     (Boolean(connectionError) && !notebookHasReadableSnapshot) ||
     (shellCapabilities.canEditStructure &&
       notebookCellIds.length === 0 &&
@@ -2154,12 +2176,14 @@ function CloudSharingControls({
 function CloudNotebookEditModeButton({
   authState,
   accessLevel,
+  accessPending,
   interaction,
   onModeChange,
   onRequestEditAccess,
 }: {
   authState: CloudPrototypeAuthState;
   accessLevel: NotebookShellCapabilities["access"]["level"];
+  accessPending: boolean;
   interaction: NotebookInteractionModeProjection | null;
   onModeChange: (mode: NotebookInteractionMode) => void;
   onRequestEditAccess: () => void;
@@ -2170,6 +2194,10 @@ function CloudNotebookEditModeButton({
     (!interaction?.canRequestEdit && interaction?.activeMode !== "edit")
   ) {
     return null;
+  }
+
+  if (accessPending) {
+    return <CloudNotebookEditModePlaceholder />;
   }
 
   return (
@@ -2185,6 +2213,20 @@ function CloudNotebookEditModeButton({
         onModeChange(mode);
       }}
     />
+  );
+}
+
+function CloudNotebookEditModePlaceholder() {
+  return (
+    <div
+      className="cloud-edit-mode-placeholder"
+      aria-busy="true"
+      aria-label="Loading notebook access"
+      role="status"
+    >
+      <span aria-hidden="true" />
+      <span aria-hidden="true" />
+    </div>
   );
 }
 

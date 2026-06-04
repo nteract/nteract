@@ -243,6 +243,19 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /selectedMode: selectedInteractionMode/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
+  assert.match(sourceText, /const editAccessPending =/);
+  assert.match(
+    sourceText,
+    /status\.kind === "loading"[\s\S]*!canAcceptCellMutations[\s\S]*authState\.requestedScope === "editor"/,
+  );
+  assert.match(sourceText, /accessPending=\{editAccessPending\}/);
+  assert.match(
+    sourceText,
+    /if \(accessPending\) \{\s+return <CloudNotebookEditModePlaceholder \/>;\s+\}/,
+  );
+  assert.match(sourceText, /function CloudNotebookEditModePlaceholder\(\)/);
+  assert.match(cssText, /\.cloud-edit-mode-placeholder \{[\s\S]*height: 2rem;/);
+  assert.match(cssText, /\.cloud-edit-mode-placeholder > span \{[\s\S]*height: 1\.5rem;/);
   assert.match(
     sourceText,
     /if \(mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner"\) \{/,
@@ -318,6 +331,12 @@ test("cloud live materialization skips empty room handles before resolving outpu
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
+  assert.match(sourceText, /const CLOUD_EMPTY_ROOM_GRACE_MS = 900;/);
+  assert.match(sourceText, /const \[emptyRoomGraceElapsed, setEmptyRoomGraceElapsed\]/);
+  assert.match(
+    sourceText,
+    /status\.kind === "empty" && notebookCellIds\.length === 0 && !emptyRoomGraceElapsed/,
+  );
   assert.match(sourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
   assert.match(
     sourceText,
