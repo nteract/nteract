@@ -7,6 +7,7 @@ import type { MarkdownCell as MarkdownCellType } from "../../types";
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let mockIsFocused = false;
+let mockEditorSelectionHead = 0;
 const isolatedFrameProps: Array<Record<string, unknown>> = [];
 let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 let lastFrameDoubleClick: (() => void) | undefined;
@@ -84,14 +85,39 @@ vi.mock("@/components/isolated", async () => {
 });
 
 vi.mock("@/components/cell/CellContainer", () => ({
-  CellContainer: ({ codeContent }: { codeContent: React.ReactNode }) => <div>{codeContent}</div>,
+  CellContainer: ({
+    codeContent,
+    rightGutterContent,
+  }: {
+    codeContent: React.ReactNode;
+    rightGutterContent?: React.ReactNode;
+  }) => (
+    <div>
+      {rightGutterContent}
+      {codeContent}
+    </div>
+  ),
 }));
 
 vi.mock("@/components/editor/codemirror-editor", () => ({
   CodeMirrorEditor: React.forwardRef(function CodeMirrorEditor(
     props: { keyMap?: Array<{ key: string; run: () => boolean }> },
-    _ref,
+    ref,
   ) {
+    React.useImperativeHandle(ref, () => ({
+      focus: vi.fn(),
+      setCursorPosition: vi.fn(),
+      getEditor: () => ({
+        state: {
+          selection: {
+            main: {
+              head: mockEditorSelectionHead,
+            },
+          },
+        },
+      }),
+    }));
+
     return (
       <div
         data-testid="markdown-editor"
@@ -250,6 +276,7 @@ describe("MarkdownCell theme sync", () => {
     mockDarkMode = false;
     mockColorTheme = undefined;
     mockIsFocused = false;
+    mockEditorSelectionHead = 0;
     isolatedFrameProps.length = 0;
     lastFrameMouseUp = undefined;
     lastFrameDoubleClick = undefined;
@@ -608,8 +635,40 @@ describe("MarkdownCell theme sync", () => {
       />,
     );
 
-    fireEvent.click(getByRole("button", { name: "Mark task complete" }));
+    fireEvent.click(getByRole("checkbox", { name: "Incomplete task" }));
 
     expect(onUpdateSource).toHaveBeenCalledWith("- [x] ship checkboxes");
+  });
+
+  it("carries the latest markdown source cursor into projected preview", async () => {
+    mockIsFocused = true;
+    mockEditorSelectionHead = 8;
+
+    const { container, getByLabelText, getByTestId, getByTitle } = render(
+      <MarkdownCell cell={makeTaskCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.click(getByTitle("Edit"));
+
+    await waitFor(() => {
+      expect(preview.className).toContain("hidden");
+    });
+
+    fireEvent.keyDown(getByTestId("markdown-editor"), {
+      key: "Enter",
+      ctrlKey: true,
+    });
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+
+    expect(container.querySelector('[data-source-active="true"]')).toHaveTextContent(
+      "ship checkboxes",
+    );
+    expect(container.querySelector('[data-source-active-run="true"]')).toHaveTextContent(
+      "ship checkboxes",
+    );
   });
 });

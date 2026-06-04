@@ -44,6 +44,8 @@ export interface CodeMirrorEditorProps {
   language?: SupportedLanguage;
   /** Callback when content changes (for non-CRDT consumers; CRDT bridge handles sync directly) */
   onValueChange?: (value: string) => void;
+  /** Callback when the primary cursor/selection head changes */
+  onSelectionChange?: (position: number) => void;
   /** Auto-focus on mount */
   autoFocus?: boolean;
   /** Callback when editor gains focus */
@@ -93,6 +95,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
       initialValue = "",
       language = "python",
       onValueChange,
+      onSelectionChange,
       autoFocus = false,
       onFocus,
       onBlur,
@@ -115,6 +118,8 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
     // Stable refs for callbacks so the updateListener closure doesn't go stale.
     const onValueChangeRef = useRef(onValueChange);
     onValueChangeRef.current = onValueChange;
+    const onSelectionChangeRef = useRef(onSelectionChange);
+    onSelectionChangeRef.current = onSelectionChange;
 
     // Compartments for dynamic reconfiguration without recreating the view.
     const langCompartment = useRef(new Compartment());
@@ -205,6 +210,10 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
       if (!container) return;
 
       const updateListener = EditorView.updateListener.of((vu) => {
+        if (vu.selectionSet) {
+          onSelectionChangeRef.current?.(vu.state.selection.main.head);
+        }
+
         if (!vu.docChanged) return;
 
         // Fire onValueChange only for local edits — skip transactions

@@ -231,7 +231,9 @@ export const MarkdownCell = memo(function MarkdownCell({
   );
 
   const [editing, setEditing] = useState(!readOnly && cell.source === "");
+  const [activeSourcePosition, setActiveSourcePosition] = useState<number | undefined>();
   const editorRef = useRef<CodeMirrorEditorRef>(null);
+  const previewSourcePositionRef = useRef<number | undefined>(undefined);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
   const frameRef = useRef<IsolatedFrameHandle>(null);
@@ -333,6 +335,18 @@ export const MarkdownCell = memo(function MarkdownCell({
     setEditing(true);
   }, [onFocus, readOnly]);
 
+  const noteEditorSourcePosition = useCallback((position: number) => {
+    previewSourcePositionRef.current = position;
+  }, []);
+
+  const revealEditorSourcePosition = useCallback(() => {
+    const view = editorRef.current?.getEditor();
+    const position = view?.state.selection.main.head ?? previewSourcePositionRef.current;
+    if (typeof position !== "number") return;
+    previewSourcePositionRef.current = position;
+    setActiveSourcePosition(position);
+  }, []);
+
   const releasePreviewFrameInteraction = useCallback(() => {
     setPreviewFrameInteractionActive(false);
   }, []);
@@ -387,9 +401,10 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   const handleBlur = useCallback(() => {
     if (cell.source.trim()) {
+      revealEditorSourcePosition();
       setEditing(false);
     }
-  }, [cell.source]);
+  }, [cell.source, revealEditorSourcePosition]);
 
   // Render markdown content when iframe is ready
   const handleFrameReady = useCallback(async () => {
@@ -649,6 +664,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       {
         key: "Ctrl-Enter",
         run: () => {
+          revealEditorSourcePosition();
           setEditing(false);
           return true;
         },
@@ -658,6 +674,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         key: "Escape",
         run: () => {
           if (cell.source.trim()) {
+            revealEditorSourcePosition();
             setEditing(false);
           }
           return true;
@@ -691,6 +708,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     [
       navigationKeyMap,
       cell.source,
+      revealEditorSourcePosition,
       applyInlineFormatting,
       applyLinkFormatting,
       applyQuoteFormatting,
@@ -770,6 +788,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 language="markdown"
                 lineWrapping
                 onBlur={handleBlur}
+                onSelectionChange={noteEditorSourcePosition}
                 keyMap={keyMap}
                 extensions={[crdtBridgeExt, ...searchExtensions]}
                 placeholder="Enter markdown..."
@@ -801,6 +820,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 onTaskCheckedChange={
                   readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
                 }
+                activeSourcePosition={activeSourcePosition}
               />
             ) : (
               <div
