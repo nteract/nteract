@@ -10,6 +10,7 @@ export type NotebookActorSourceProvider =
   | "dev"
   | "jupyterhub"
   | "local"
+  | "outerbounds"
   | "oidc";
 
 export interface NotebookActorPrincipal {

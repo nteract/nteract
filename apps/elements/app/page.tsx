@@ -7,6 +7,7 @@ import {
   FileCode2,
   Frame,
   IdCard,
+  ListPlus,
   PackageCheck,
   Palette,
   PanelLeft,
@@ -14,144 +15,229 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  SquareCode,
   TextCursorInput,
+  ToggleLeft,
+  Workflow,
+  type LucideIcon,
 } from "lucide-react";
-import { RailOutlineExample } from "@/components/rail-outline-example";
 
-const entries = [
+interface CatalogEntry {
+  title: string;
+  description: string;
+  href: string;
+  icon: LucideIcon;
+}
+
+interface CatalogGroup {
+  title: string;
+  entries: readonly CatalogEntry[];
+}
+
+const catalogGroups = [
   {
-    title: "Notebook outline",
-    description: "A rail-first reading surface for long notebooks.",
-    href: "/docs/notebook-outline",
-    icon: PanelLeft,
+    title: "Shell",
+    entries: [
+      {
+        title: "Notebook shell capabilities",
+        description: "Host capability facts for shared notebook chrome.",
+        href: "/docs/notebook-shell-capabilities",
+        icon: ToggleLeft,
+      },
+      {
+        title: "Cloud notebook shell",
+        description: "Presence, sync, workstations, sharing, mode, and auth.",
+        href: "/docs/cloud-notebook-shell",
+        icon: Cloud,
+      },
+      {
+        title: "Compute placement",
+        description: "Rail, environment, and connect-flow options for workstations.",
+        href: "/docs/compute-placement",
+        icon: Workflow,
+      },
+      {
+        title: "Notebook toolbar",
+        description: "Runtime and command toolbar state across hosts.",
+        href: "/docs/notebook-toolbar-surfaces",
+        icon: PanelTop,
+      },
+      {
+        title: "Notebook outline",
+        description: "Rail-first navigation for long notebooks.",
+        href: "/docs/notebook-outline",
+        icon: PanelLeft,
+      },
+      {
+        title: "Identity and environment",
+        description: "Actors, access state, runtime, and package context.",
+        href: "/docs/identity-environment-surfaces",
+        icon: IdCard,
+      },
+    ],
   },
   {
-    title: "Notebook toolbar",
-    description: "Runtime-state matrix for the current notebook toolbar.",
-    href: "/docs/notebook-toolbar-surfaces",
-    icon: PanelTop,
+    title: "Cells",
+    entries: [
+      {
+        title: "Cell anatomy",
+        description: "Inventory map for current nteract cells.",
+        href: "/docs/cell-anatomy",
+        icon: FileCode2,
+      },
+      {
+        title: "Cell execution language",
+        description: "Execution language and cell source states.",
+        href: "/docs/cell-execution-language",
+        icon: SquareCode,
+      },
+      {
+        title: "Cell insertion affordances",
+        description: "Insertion ribbons and add-cell controls.",
+        href: "/docs/cell-insertion-affordances",
+        icon: ListPlus,
+      },
+      {
+        title: "Editor surfaces",
+        description: "CodeMirror fixtures for notebook source editing.",
+        href: "/docs/editor-surfaces",
+        icon: TextCursorInput,
+      },
+      {
+        title: "Search surfaces",
+        description: "Find and history search over fixture notebook state.",
+        href: "/docs/search-surfaces",
+        icon: Search,
+      },
+    ],
   },
   {
-    title: "Cloud notebook shell",
-    description: "Presence, sync, mode, sharing, and auth composed around the shared shell.",
-    href: "/docs/cloud-notebook-shell",
-    icon: Cloud,
+    title: "Runtime",
+    entries: [
+      {
+        title: "Runtime surfaces",
+        description: "Trust and environment decisions with fixture state.",
+        href: "/docs/runtime-surfaces",
+        icon: ShieldCheck,
+      },
+      {
+        title: "Package managers",
+        description: "Dependency headers and package-state controls.",
+        href: "/docs/package-manager-surfaces",
+        icon: PackageCheck,
+      },
+      {
+        title: "Read-only notebooks",
+        description: "Hosted notebook cells through shared components.",
+        href: "/docs/read-only-notebook-surfaces",
+        icon: BookOpen,
+      },
+    ],
   },
   {
-    title: "Package managers",
-    description: "Dependency headers and package-state controls from the notebook app.",
-    href: "/docs/package-manager-surfaces",
-    icon: PackageCheck,
+    title: "Rendering",
+    entries: [
+      {
+        title: "Output renderers",
+        description: "Runtime-free fixtures for output components.",
+        href: "/docs/output-renderers",
+        icon: Boxes,
+      },
+      {
+        title: "Output isolation",
+        description: "Frame policy, host context, and MCP output mapping.",
+        href: "/docs/isolated-output-surfaces",
+        icon: Frame,
+      },
+      {
+        title: "Widget surfaces",
+        description: "Fixture-backed ipywidget controls and adapter notes.",
+        href: "/docs/widget-surfaces",
+        icon: SlidersHorizontal,
+      },
+      {
+        title: "Theme surfaces",
+        description: "Classic and cream palettes under shared tokens.",
+        href: "/docs/theme-surfaces",
+        icon: Palette,
+      },
+    ],
   },
-  {
-    title: "Identity and environment",
-    description: "Notebook actors, access state, runtime, and package context.",
-    href: "/docs/identity-environment-surfaces",
-    icon: IdCard,
-  },
-  {
-    title: "Cell anatomy",
-    description: "Inventory map for current nteract cells.",
-    href: "/docs/cell-anatomy",
-    icon: FileCode2,
-  },
-  {
-    title: "Editor surfaces",
-    description: "CodeMirror fixtures for notebook source editing.",
-    href: "/docs/editor-surfaces",
-    icon: TextCursorInput,
-  },
-  {
-    title: "Search surfaces",
-    description: "Global find and history search with fixture-backed notebook state.",
-    href: "/docs/search-surfaces",
-    icon: Search,
-  },
-  {
-    title: "Output renderers",
-    description: "Runtime-free fixtures for current nteract output components.",
-    href: "/docs/output-renderers",
-    icon: Boxes,
-  },
-  {
-    title: "Output isolation",
-    description: "Frame policy, host context, and MCP output mapping surfaces.",
-    href: "/docs/isolated-output-surfaces",
-    icon: Frame,
-  },
-  {
-    title: "Read-only notebooks",
-    description: "Hosted and cloud notebook cells rendered through shared components.",
-    href: "/docs/read-only-notebook-surfaces",
-    icon: BookOpen,
-  },
-  {
-    title: "Runtime surfaces",
-    description: "Trust and environment decisions with fixture state.",
-    href: "/docs/runtime-surfaces",
-    icon: ShieldCheck,
-  },
-  {
-    title: "Theme surfaces",
-    description: "Classic and cream notebook palettes under shared tokens.",
-    href: "/docs/theme-surfaces",
-    icon: Palette,
-  },
-  {
-    title: "Widget surfaces",
-    description: "Fixture-backed ipywidget controls and adapter notes.",
-    href: "/docs/widget-surfaces",
-    icon: SlidersHorizontal,
-  },
-];
+] satisfies readonly CatalogGroup[];
+
+const catalogCount = catalogGroups.reduce((count, group) => count + group.entries.length, 0);
 
 export default function Home() {
   return (
     <main className="min-h-dvh bg-fd-background text-fd-foreground">
-      <section className="mx-auto grid max-w-6xl gap-10 px-6 py-12 lg:grid-cols-[0.9fr_1.1fr] lg:py-16">
-        <div className="flex flex-col justify-center">
-          <p className="text-sm font-medium text-fd-muted-foreground">nteract/nteract</p>
-          <h1 className="mt-3 text-4xl font-semibold tracking-normal text-fd-foreground sm:text-5xl">
-            Elements
-          </h1>
-          <p className="mt-5 max-w-xl text-base leading-7 text-fd-muted-foreground">
-            A small in-repo catalog for notebook UI and rendering work. This is the path forward for
-            examples that used to live around nteract/elements.
-          </p>
-          <div className="mt-7 flex flex-wrap gap-3">
+      <div className="mx-auto max-w-6xl px-6 py-8 lg:py-10">
+        <header className="flex flex-col gap-5 border-b border-fd-border pb-6 md:flex-row md:items-end md:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
+              nteract/nteract
+            </p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-normal text-fd-foreground">
+              Elements
+            </h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-fd-muted-foreground">
+              {catalogCount} production-backed notebook surfaces for shell, cells, runtime, and
+              rendering work.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2">
             <Link
               href="/docs"
-              className="inline-flex h-10 items-center gap-2 rounded-md bg-fd-primary px-4 text-sm font-medium text-fd-primary-foreground"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-fd-primary px-3 text-sm font-medium text-fd-primary-foreground"
             >
-              Open catalog
-              <ArrowRight className="size-4" aria-hidden="true" />
+              Docs
+              <ArrowRight className="size-3.5" aria-hidden="true" />
             </Link>
             <Link
               href="https://github.com/nteract/nteract"
-              className="inline-flex h-10 items-center rounded-md border border-fd-border px-4 text-sm font-medium text-fd-foreground"
+              className="inline-flex h-9 items-center rounded-md border border-fd-border px-3 text-sm font-medium text-fd-foreground transition-colors hover:bg-fd-muted/40"
             >
               GitHub
             </Link>
           </div>
-        </div>
-        <RailOutlineExample />
-      </section>
+        </header>
 
-      <section className="border-t border-fd-border bg-fd-muted/20">
-        <div className="mx-auto grid max-w-6xl gap-4 px-6 py-8 md:grid-cols-2 lg:grid-cols-3">
-          {entries.map((entry) => (
-            <Link
-              key={entry.title}
-              href={entry.href}
-              className="rounded-lg border border-fd-border bg-fd-background p-4 transition-colors hover:bg-fd-muted/40"
-            >
-              <entry.icon className="mb-4 size-5 text-fd-muted-foreground" />
-              <h2 className="text-sm font-semibold">{entry.title}</h2>
-              <p className="mt-2 text-sm leading-6 text-fd-muted-foreground">{entry.description}</p>
-            </Link>
+        <section className="grid gap-x-8 gap-y-7 py-7 lg:grid-cols-2">
+          {catalogGroups.map((group) => (
+            <section key={group.title} aria-labelledby={`${group.title.toLowerCase()}-group`}>
+              <h2
+                id={`${group.title.toLowerCase()}-group`}
+                className="text-xs font-semibold uppercase tracking-normal text-fd-muted-foreground"
+              >
+                {group.title}
+              </h2>
+              <div className="mt-3 grid gap-2">
+                {group.entries.map((entry) => (
+                  <CatalogLink key={entry.href} entry={entry} />
+                ))}
+              </div>
+            </section>
           ))}
-        </div>
-      </section>
+        </section>
+      </div>
     </main>
+  );
+}
+
+function CatalogLink({ entry }: { entry: CatalogEntry }) {
+  const Icon = entry.icon;
+  return (
+    <Link
+      href={entry.href}
+      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-fd-border bg-fd-background px-3 py-2.5 transition-colors hover:bg-fd-muted/40"
+    >
+      <Icon className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-semibold">{entry.title}</span>
+        <span className="mt-0.5 block truncate text-xs text-fd-muted-foreground">
+          {entry.description}
+        </span>
+      </span>
+      <ArrowRight className="size-3.5 text-fd-muted-foreground" aria-hidden="true" />
+    </Link>
   );
 }
