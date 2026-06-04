@@ -106,8 +106,10 @@ so the publisher sends `X-Notebook-Cloud-Auth-Provider: anaconda-api-key` for
 `NTERACT_API_KEY`. The Worker trusts the `whoami` response, not unverified JWT
 payload fields: owner publish requests require `cloud:write` in the validated
 API-key scopes. Existing token values can be reused only if they validate that
-way. `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remains a compatibility alias. Use
-`--env-file path/to/.env` when running from a different checkout.
+way. Put those values in `NTERACT_API_KEY`; `ANACONDA_API_KEY` is intentionally
+not a public publish env name. `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remains a
+compatibility alias. Use `--env-file path/to/.env` when running from a
+different checkout.
 
 ## Viewer Runtime OIDC Config
 

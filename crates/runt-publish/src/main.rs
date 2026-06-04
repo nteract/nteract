@@ -565,6 +565,11 @@ fn resolve_publish_auth_with_env(
     }
 
     let Some((bearer_token, source)) = bearer else {
+        if dev_token.is_none() && !is_loopback_cloud_url(&args.cloud_url) {
+            bail!(
+                "hosted publishing requires {NTERACT_API_KEY_ENV} or --bearer-token; use a loopback URL for local dev publishing"
+            );
+        }
         return Ok(PublishAuth {
             dev_token: dev_token.map(|(token, _)| token),
             bearer_token: None,
@@ -1437,7 +1442,9 @@ mod tests {
 
     #[test]
     fn default_cloud_url_targets_preview() {
-        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let args = with_env_var_removed(NTERACT_CLOUD_URL_ENV, || {
+            Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap()
+        });
 
         assert_eq!(args.cloud_url, DEFAULT_CLOUD_URL);
     }
@@ -1505,6 +1512,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(auth.bearer_token.as_deref(), Some(token.as_str()));
+        assert_eq!(auth.dev_token, None);
+    }
+
+    #[test]
+    fn hosted_publish_requires_bearer_auth() {
+        let args = Args::try_parse_from(["runt-publish", "topic.ipynb"]).unwrap();
+        let error = resolve_publish_auth_with_env(&args, |_| None).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("hosted publishing requires NTERACT_API_KEY"),
+            "{error:#}"
+        );
+
+        let local_args = Args::try_parse_from([
+            "runt-publish",
+            "--url",
+            "http://127.0.0.1:8787",
+            "topic.ipynb",
+        ])
+        .unwrap();
+        let auth = resolve_publish_auth_with_env(&local_args, |_| None).unwrap();
+
+        assert_eq!(auth.bearer_token, None);
         assert_eq!(auth.dev_token, None);
     }
 
@@ -1588,5 +1620,19 @@ mod tests {
                 "https://preview.runt.run".to_string()
             ))
         );
+    }
+
+    fn with_env_var_removed<T>(name: &str, f: impl FnOnce() -> T) -> T {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os(name);
+        std::env::remove_var(name);
+        let result = f();
+        if let Some(value) = previous {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+        result
     }
 }

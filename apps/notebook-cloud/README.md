@@ -261,7 +261,9 @@ a different deployment, loads publish-related values from `.env`, and maps
 The Worker validates the token through Anaconda `whoami`; the validated
 `cloud:write` scope, not unverified JWT payload claims, is what authorizes owner
 publishes. Existing token values can be reused if they pass that validation.
-`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remains accepted as a compatibility alias:
+Put those values in `NTERACT_API_KEY`; `ANACONDA_API_KEY` is intentionally not a
+public publish env name. `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remains accepted
+as a compatibility alias:
 
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
