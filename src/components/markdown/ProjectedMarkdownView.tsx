@@ -450,7 +450,6 @@ function renderLatex(latex: string, displayMode: boolean): string | null {
       displayMode,
       strict: katexStrict,
       throwOnError: false,
-      trust: true,
     });
   } catch {
     return null;

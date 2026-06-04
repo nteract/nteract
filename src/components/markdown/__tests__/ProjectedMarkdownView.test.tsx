@@ -97,6 +97,43 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector(".katex-display")).not.toBeNull();
   });
 
+  it("does not trust projected math commands that can shape host DOM", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 26],
+              sourceSpanUtf16: [0, 26],
+              syntaxSpans: [],
+              text: "\\htmlClass{owned}{x}",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: "\\htmlClass{owned}{x}",
+              renderedTextUtf16: [0, 20],
+              semantic: "math-source",
+              sourceSpanByte: [1, 25],
+              sourceSpanUtf16: [1, 25],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(document.querySelector(".katex")).not.toBeNull();
+    expect(document.querySelector(".owned")).toBeNull();
+  });
+
   it("preserves task checkboxes and inline text semantics", () => {
     render(
       <ProjectedMarkdownView
