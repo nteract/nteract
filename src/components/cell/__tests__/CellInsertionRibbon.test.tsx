@@ -68,12 +68,15 @@ describe("CellInsertionRibbon", () => {
     const addMarkdownButton = screen.getByTitle("Add markdown cell");
 
     expect(actions).toHaveAttribute("aria-hidden", "true");
+    expect(actions).toHaveClass("pointer-events-none");
+    expect(actions).toHaveClass("transition-none");
     expect(addCodeButton).toHaveAttribute("tabindex", "-1");
     expect(addMarkdownButton).toHaveAttribute("tabindex", "-1");
 
     fireEvent.pointerEnter(adder!);
 
     expect(actions).not.toHaveAttribute("aria-hidden");
+    expect(actions).toHaveClass("pointer-events-auto");
     expect(addCodeButton).toHaveAttribute("tabindex", "0");
     expect(addMarkdownButton).toHaveAttribute("tabindex", "0");
   });
