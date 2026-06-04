@@ -136,6 +136,8 @@ import {
 } from "./widget-runtime";
 import "./index.css";
 
+const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
+
 setLoggerHost({
   debug: () => {},
   info: () => {},
@@ -1470,6 +1472,8 @@ function NotebookViewer({
             onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
             markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
             outputHostContext={outputHostContext}
+            deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
+            deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
             autoFocusFirstCell={false}
           />
         </CrdtBridgeProvider>

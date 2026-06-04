@@ -90,6 +90,8 @@ interface CodeCellProps {
   readOnly?: boolean;
   canExecute?: boolean;
   outputHostContext?: NteractEmbedHostContextPatch;
+  deferOutputIsolatedFrameUntilVisible?: boolean;
+  deferredOutputIsolatedFrameRootMargin?: string;
 }
 
 export interface HiddenGroupCellSummary {
@@ -336,6 +338,8 @@ export const CodeCell = memo(function CodeCell({
   readOnly = false,
   canExecute = !readOnly,
   outputHostContext,
+  deferOutputIsolatedFrameUntilVisible = false,
+  deferredOutputIsolatedFrameRootMargin,
 }: CodeCellProps) {
   // Read transient UI state from the store
   const isFocused = useIsCellFocused(cell.id);
@@ -758,7 +762,9 @@ export const CodeCell = memo(function CodeCell({
               outputs={outputs}
               cellId={cell.id}
               executionCount={executionCount}
-              preloadIframe
+              preloadIframe={!deferOutputIsolatedFrameUntilVisible}
+              deferIsolatedFrameUntilVisible={deferOutputIsolatedFrameUntilVisible}
+              deferredIsolatedFrameRootMargin={deferredOutputIsolatedFrameRootMargin}
               searchQuery={searchQuery}
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}

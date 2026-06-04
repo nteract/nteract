@@ -78,6 +78,8 @@ export interface NotebookViewProps {
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
   outputHostContext?: NteractEmbedHostContextPatch;
+  deferOutputIsolatedFramesUntilVisible?: boolean;
+  deferredOutputIsolatedFrameRootMargin?: string;
   autoFocusFirstCell?: boolean;
 }
 
@@ -350,6 +352,8 @@ function NotebookViewContent({
   onSetCellOutputsHidden,
   markdownHeadingAnchorsByCellId,
   outputHostContext,
+  deferOutputIsolatedFramesUntilVisible = false,
+  deferredOutputIsolatedFrameRootMargin,
   autoFocusFirstCell = true,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
@@ -870,6 +874,8 @@ function NotebookViewContent({
             readOnly={!canEditCodeCellSources}
             canExecute={canExecuteCells}
             outputHostContext={outputHostContext}
+            deferOutputIsolatedFrameUntilVisible={deferOutputIsolatedFramesUntilVisible}
+            deferredOutputIsolatedFrameRootMargin={deferredOutputIsolatedFrameRootMargin}
             onToggleSourceHidden={
               canMutateCells && onSetCellSourceHidden
                 ? (hidden: boolean) => onSetCellSourceHidden(cell.id, hidden)
@@ -976,6 +982,8 @@ function NotebookViewContent({
       canMutateCells,
       canExecuteCells,
       outputHostContext,
+      deferOutputIsolatedFramesUntilVisible,
+      deferredOutputIsolatedFrameRootMargin,
       outputFocusedCellId,
       focusCell,
       handleOutputFocusChange,
