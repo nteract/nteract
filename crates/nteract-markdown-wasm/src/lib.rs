@@ -115,7 +115,10 @@ fn collect_block(
         block_id: block.id.clone(),
         inline_index: 0,
         item_checked: None,
+        item_depth: None,
         item_index: None,
+        item_ordered: None,
+        item_path: Vec::new(),
         image_alt: None,
         image_src: None,
         image_title: None,
@@ -142,26 +145,7 @@ fn collect_block(
         NodeKind::Paragraph | NodeKind::Blockquote | NodeKind::TableCell => {
             collect_children(source, &mut context, &block.children, "text");
         }
-        NodeKind::List => {
-            for (item_index, item) in block.children.iter().enumerate() {
-                let before = context.runs.len();
-                context.item_checked = item.attrs.checked;
-                context.item_index = Some(item_index);
-                collect_children(source, &mut context, &item.children, "list-item");
-                if let Some(first_run) = context.runs.get(before) {
-                    context.syntax_spans.push(WasmSyntaxSpan::new(
-                        position_index,
-                        item.span.start,
-                        first_run.source_span_byte[0],
-                        Some(first_run.inline_id.clone()),
-                        0,
-                        "block-boundary",
-                    ));
-                }
-            }
-            context.item_checked = None;
-            context.item_index = None;
-        }
+        NodeKind::List => collect_list(source, &mut context, block, 0),
         NodeKind::Table => collect_table(source, &mut context, block),
         NodeKind::CodeBlock => collect_code_block(source, &mut context, block),
         NodeKind::MathBlock => {
@@ -280,6 +264,46 @@ fn collect_table(source: &str, context: &mut RunContext<'_>, block: &ProjectedNo
     context.table_cell_index = None;
     context.table_cell_header = None;
     context.table_cell_align = None;
+}
+
+fn collect_list(source: &str, context: &mut RunContext<'_>, list: &ProjectedNode, depth: usize) {
+    for (item_index, item) in list.children.iter().enumerate() {
+        if item.kind != NodeKind::ListItem {
+            collect_inline(source, context, item, "list-item");
+            continue;
+        }
+
+        let previous_checked = context.item_checked;
+        let previous_depth = context.item_depth;
+        let previous_index = context.item_index;
+        let previous_ordered = context.item_ordered;
+        let previous_path_len = context.item_path.len();
+        let before = context.runs.len();
+
+        context.item_checked = item.attrs.checked;
+        context.item_depth = Some(depth);
+        context.item_index = Some(item_index);
+        context.item_ordered = list.attrs.ordered;
+        context.item_path.push(item_index);
+        collect_children(source, context, &item.children, "list-item");
+
+        if let Some(first_run) = context.runs.get(before) {
+            context.syntax_spans.push(WasmSyntaxSpan::new(
+                context.position_index,
+                item.span.start,
+                first_run.source_span_byte[0],
+                Some(first_run.inline_id.clone()),
+                0,
+                "block-boundary",
+            ));
+        }
+
+        context.item_path.truncate(previous_path_len);
+        context.item_checked = previous_checked;
+        context.item_depth = previous_depth;
+        context.item_index = previous_index;
+        context.item_ordered = previous_ordered;
+    }
 }
 
 fn collect_children(
@@ -458,6 +482,7 @@ fn collect_inline(
             context.image_alt = previous_alt;
             context.image_title = previous_title;
         }
+        NodeKind::List => collect_list(source, context, node, context.item_path.len()),
         _ => collect_children(source, context, &node.children, semantic),
     }
 }
@@ -665,7 +690,10 @@ struct RunContext<'a> {
     image_title: Option<String>,
     inline_index: usize,
     item_checked: Option<bool>,
+    item_depth: Option<usize>,
     item_index: Option<usize>,
+    item_ordered: Option<bool>,
+    item_path: Vec<usize>,
     link_href: Option<String>,
     link_title: Option<String>,
     position_index: &'a PositionIndex,
@@ -698,7 +726,20 @@ impl RunContext<'_> {
             image_title: self.image_title.clone(),
             inline_id,
             item_checked: self.item_checked,
+            item_depth: self.item_depth,
             item_index: self.item_index,
+            item_ordered: self.item_ordered,
+            item_path: if self.item_path.is_empty() {
+                None
+            } else {
+                Some(
+                    self.item_path
+                        .iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join("."),
+                )
+            },
             link_href: self.link_href.clone(),
             link_title: self.link_title.clone(),
             rendered_html,
@@ -728,7 +769,10 @@ struct WasmRun {
     image_title: Option<String>,
     inline_id: String,
     item_checked: Option<bool>,
+    item_depth: Option<usize>,
     item_index: Option<usize>,
+    item_ordered: Option<bool>,
+    item_path: Option<String>,
     link_href: Option<String>,
     link_title: Option<String>,
     rendered_html: Option<String>,
@@ -765,6 +809,20 @@ impl WasmRun {
         output.push_str("\"listItemIndex\":");
         push_json_option_usize(output, self.item_index);
         output.push(',');
+        if let Some(depth) = self.item_depth {
+            output.push_str("\"listItemDepth\":");
+            output.push_str(&depth.to_string());
+            output.push(',');
+        }
+        if let Some(ordered) = self.item_ordered {
+            output.push_str("\"listItemOrdered\":");
+            output.push_str(if ordered { "true" } else { "false" });
+            output.push(',');
+        }
+        if let Some(path) = &self.item_path {
+            push_json_key_string(output, "listItemPath", path);
+            output.push(',');
+        }
         if let Some(href) = &self.link_href {
             push_json_key_string(output, "href", href);
             output.push(',');
@@ -1172,6 +1230,22 @@ mod tests {
         assert!(json.contains("\"renderedText\":\"waiting\""));
         assert!(json.contains("\"listItemChecked\":false"));
         assert!(json.contains("\"renderedText\":\"regular\""));
+    }
+
+    #[test]
+    fn projects_nested_list_paths_for_host_rendering() {
+        let json = project_to_json("- parent\n  - [ ] child\n    1. grandchild\n");
+
+        assert!(json.contains("\"renderedText\":\"parent\""));
+        assert!(json.contains("\"listItemPath\":\"0\""));
+        assert!(json.contains("\"renderedText\":\"child\""));
+        assert!(json.contains("\"listItemDepth\":1"));
+        assert!(json.contains("\"listItemPath\":\"0.0\""));
+        assert!(json.contains("\"listItemChecked\":false"));
+        assert!(json.contains("\"renderedText\":\"grandchild\""));
+        assert!(json.contains("\"listItemDepth\":2"));
+        assert!(json.contains("\"listItemOrdered\":true"));
+        assert!(json.contains("\"listItemPath\":\"0.0.0\""));
     }
 
     #[test]

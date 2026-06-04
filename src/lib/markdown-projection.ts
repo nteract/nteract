@@ -37,6 +37,9 @@ export interface MarkdownProjectionRun {
   inlineId: string;
   listItemIndex: number | null;
   listItemChecked?: boolean;
+  listItemDepth?: number;
+  listItemOrdered?: boolean;
+  listItemPath?: string;
   href?: string;
   title?: string;
   renderedHtml?: string;

@@ -101,39 +101,14 @@ function ProjectedMarkdownBlock({
 
   if (block.kind === "list") {
     const items = groupListRuns(runs);
-    const List = block.ordered || block.element === "ol" ? "ol" : "ul";
-    const allItemsAreTasks =
-      items.length > 0 && items.every(({ checked }) => checked !== undefined);
+    const ordered = block.ordered || block.element === "ol";
     return (
-      <List
-        className={cn(
-          "my-3 pl-6 leading-relaxed",
-          List === "ol" ? "list-decimal" : "list-disc",
-          allItemsAreTasks && "list-none pl-0",
-        )}
-      >
-        {items.map(({ checked, key, runs, taskRun }) => (
-          <li
-            key={key}
-            className={cn(
-              "my-1",
-              checked !== undefined && "flex min-w-0 list-none items-start gap-2",
-            )}
-          >
-            {checked !== undefined ? (
-              <TaskCheckbox
-                checked={checked}
-                onToggle={
-                  taskRun && onTaskCheckedChange
-                    ? () => onTaskCheckedChange(taskRun, !checked)
-                    : undefined
-                }
-              />
-            ) : null}
-            <span className="min-w-0 leading-relaxed">{renderRuns(runs, onLinkClick)}</span>
-          </li>
-        ))}
-      </List>
+      <ProjectedList
+        items={items}
+        ordered={ordered}
+        onLinkClick={onLinkClick}
+        onTaskCheckedChange={onTaskCheckedChange}
+      />
     );
   }
 
@@ -205,24 +180,153 @@ function headingClass(element: string) {
   return "mt-2 mb-1 text-sm leading-tight font-medium text-muted-foreground";
 }
 
-function groupListRuns(runs: MarkdownProjectionRun[]) {
-  const groups = new Map<number, MarkdownProjectionRun[]>();
+interface ProjectedListItem {
+  checked?: boolean;
+  children: ProjectedListItem[];
+  key: string;
+  ordered?: boolean;
+  runs: MarkdownProjectionRun[];
+  taskRun?: MarkdownProjectionRun;
+}
+
+function ProjectedList({
+  items,
+  ordered,
+  onLinkClick,
+  onTaskCheckedChange,
+}: {
+  items: ProjectedListItem[];
+  ordered: boolean;
+  onLinkClick?: (url: string) => void;
+  onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
+}) {
+  const List = ordered ? "ol" : "ul";
+  const allItemsAreTasks = items.length > 0 && items.every(({ checked }) => checked !== undefined);
+
+  return (
+    <List
+      className={cn(
+        "my-3 pl-6 leading-relaxed",
+        ordered ? "list-decimal" : "list-disc",
+        allItemsAreTasks && "list-none pl-0",
+      )}
+    >
+      {items.map((item) => (
+        <ProjectedListItem
+          key={item.key}
+          item={item}
+          onLinkClick={onLinkClick}
+          onTaskCheckedChange={onTaskCheckedChange}
+        />
+      ))}
+    </List>
+  );
+}
+
+function ProjectedListItem({
+  item,
+  onLinkClick,
+  onTaskCheckedChange,
+}: {
+  item: ProjectedListItem;
+  onLinkClick?: (url: string) => void;
+  onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
+}) {
+  const taskRun = item.taskRun;
+  const checked = item.checked;
+  const content = (
+    <>
+      {checked !== undefined ? (
+        <TaskCheckbox
+          checked={checked}
+          onToggle={
+            taskRun && onTaskCheckedChange
+              ? () => onTaskCheckedChange(taskRun, !checked)
+              : undefined
+          }
+        />
+      ) : null}
+      <span className="min-w-0 leading-relaxed">{renderRuns(item.runs, onLinkClick)}</span>
+    </>
+  );
+
+  return (
+    <li
+      className={cn(
+        "my-1",
+        item.checked !== undefined && "list-none",
+        item.checked !== undefined && item.children.length === 0
+          ? "flex min-w-0 items-start gap-2"
+          : null,
+      )}
+    >
+      {item.checked !== undefined && item.children.length > 0 ? (
+        <div className="flex min-w-0 items-start gap-2">{content}</div>
+      ) : (
+        content
+      )}
+      {item.children.length > 0 ? (
+        <ProjectedList
+          items={item.children}
+          ordered={item.children[0]?.ordered ?? false}
+          onLinkClick={onLinkClick}
+          onTaskCheckedChange={onTaskCheckedChange}
+        />
+      ) : null}
+    </li>
+  );
+}
+
+function groupListRuns(runs: MarkdownProjectionRun[]): ProjectedListItem[] {
+  const groups = new Map<string, MarkdownProjectionRun[]>();
+  const itemOrder: string[] = [];
   for (const run of runs) {
     const itemIndex = run.listItemIndex ?? 0;
-    const group = groups.get(itemIndex);
+    const itemPath = run.listItemPath ?? String(itemIndex);
+    const group = groups.get(itemPath);
     if (group) {
       group.push(run);
     } else {
-      groups.set(itemIndex, [run]);
+      groups.set(itemPath, [run]);
+      itemOrder.push(itemPath);
     }
   }
 
-  return Array.from(groups, ([key, runs]) => ({
-    checked: runs.find((run) => run.listItemChecked !== undefined)?.listItemChecked,
-    key,
-    runs,
-    taskRun: runs.find((run) => run.listItemChecked !== undefined),
-  }));
+  const items = new Map<string, ProjectedListItem>();
+  for (const key of itemOrder) {
+    const runs = groups.get(key) ?? [];
+    const taskRun = runs.find((run) => run.listItemChecked !== undefined);
+    items.set(key, {
+      checked: taskRun?.listItemChecked,
+      children: [],
+      key,
+      ordered: runs.find((run) => run.listItemOrdered !== undefined)?.listItemOrdered,
+      runs,
+      taskRun,
+    });
+  }
+
+  const roots: ProjectedListItem[] = [];
+  for (const key of itemOrder) {
+    const item = items.get(key);
+    if (!item) continue;
+
+    const parentKey = parentListItemPath(key);
+    const parent = parentKey ? items.get(parentKey) : undefined;
+    if (parent) {
+      parent.children.push(item);
+    } else {
+      roots.push(item);
+    }
+  }
+
+  return roots;
+}
+
+function parentListItemPath(path: string): string | null {
+  const index = path.lastIndexOf(".");
+  if (index === -1) return null;
+  return path.slice(0, index);
 }
 
 function TaskCheckbox({ checked, onToggle }: { checked: boolean; onToggle?: () => void }) {

@@ -379,6 +379,83 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("regular")).toBeInTheDocument();
   });
 
+  it("renders nested projected lists under their parent items", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 72, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 48],
+              sourceSpanUtf16: [0, 48],
+              syntaxSpans: [],
+              text: "parent child grandchild",
+            },
+          ],
+          runs: [
+            {
+              blockId: "list",
+              inlineId: "parent",
+              listItemDepth: 0,
+              listItemIndex: 0,
+              listItemOrdered: false,
+              listItemPath: "0",
+              renderedText: "parent",
+              renderedTextUtf16: [0, 6],
+              semantic: "list-item",
+              sourceSpanByte: [2, 8],
+              sourceSpanUtf16: [2, 8],
+            },
+            {
+              blockId: "list",
+              inlineId: "child",
+              listItemChecked: false,
+              listItemDepth: 1,
+              listItemIndex: 0,
+              listItemOrdered: false,
+              listItemPath: "0.0",
+              renderedText: "child",
+              renderedTextUtf16: [6, 11],
+              semantic: "list-item",
+              sourceSpanByte: [15, 20],
+              sourceSpanUtf16: [15, 20],
+            },
+            {
+              blockId: "list",
+              inlineId: "grandchild",
+              listItemDepth: 2,
+              listItemIndex: 0,
+              listItemOrdered: true,
+              listItemPath: "0.0.0",
+              renderedText: "grandchild",
+              renderedTextUtf16: [11, 21],
+              semantic: "list-item",
+              sourceSpanByte: [27, 37],
+              sourceSpanUtf16: [27, 37],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const rootList = document.querySelector('[data-slot="projected-markdown-output"] > ul');
+    const parentItem = screen.getByText("parent").closest("li");
+    const childItem = screen.getByText("child").closest("li");
+    const grandchildItem = screen.getByText("grandchild").closest("li");
+    expect(parentItem).not.toBeNull();
+    expect(childItem).not.toBeNull();
+    expect(grandchildItem).not.toBeNull();
+    expect(parentItem).toContainElement(childItem);
+    expect(childItem).toContainElement(grandchildItem);
+    expect(rootList?.tagName).toBe("UL");
+    expect(grandchildItem?.parentElement?.tagName).toBe("OL");
+    expect(screen.getByRole("checkbox", { name: "Incomplete task" })).not.toBeChecked();
+  });
+
   it("renders projected tables as host table elements", () => {
     render(
       <ProjectedMarkdownView
