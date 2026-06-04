@@ -47,9 +47,7 @@ test.describe("notebook rail outline", () => {
     await expect(validateHeading).toHaveAttribute("aria-current", "location");
   });
 
-  test("scrolls to a nested heading inside a markdown cell through the iframe bridge", async ({
-    page,
-  }) => {
+  test("scrolls to a nested heading inside a projected markdown cell", async ({ page }) => {
     const notebookId = crypto.randomUUID();
     await openNotebookRoom(page, notebookId);
     await waitForKernelStatus(page, "idle", 120_000);
@@ -71,7 +69,7 @@ test.describe("notebook rail outline", () => {
     await waitForCellCount(page, 2);
 
     const childHeading = page
-      .frameLocator('iframe[data-slot="isolated-frame"][name^="md-"]')
+      .locator('[data-cell-type="markdown"]')
       .getByRole("heading", { name: "Deep child" });
     await expect(childHeading).toBeAttached();
     const beforeClickY = (await childHeading.boundingBox())?.y ?? Infinity;

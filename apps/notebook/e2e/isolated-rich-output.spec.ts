@@ -59,7 +59,9 @@ test.describe("isolated rich output rendering", () => {
     expect(isolatedLogs.join("\n")).not.toContain("renderer-error");
   });
 
-  test("renders markdown cells and markdown outputs in isolated iframes", async ({ page }) => {
+  test("renders markdown cells and markdown outputs through the projected markdown view", async ({
+    page,
+  }) => {
     test.setTimeout(180_000);
 
     const isolatedLogs: string[] = [];
@@ -89,16 +91,14 @@ test.describe("isolated rich output rendering", () => {
     await markdownEditor.click();
     await markdownEditor.press("Control+Enter");
 
-    const markdownFrame = markdownCell.frameLocator('[data-slot="isolated-frame"]');
-    await expect(markdownFrame.locator("body")).toContainText("Rendered Markdown Cell", {
+    const markdownPreview = markdownCell.getByLabel("Markdown cell content");
+    await expect(markdownPreview).toContainText("Rendered Markdown Cell", {
       timeout: 60_000,
     });
-    await expect(markdownFrame.locator("body")).toContainText("cell item", {
+    await expect(markdownPreview).toContainText("cell item", {
       timeout: 60_000,
     });
-    await expect
-      .poll(() => isolatedRootHeight(markdownCell), { timeout: 30_000 })
-      .toBeGreaterThan(20);
+    await expect(markdownCell.locator('[data-slot="isolated-frame"]')).toHaveCount(0);
 
     const codeCell = await ensureCodeCell(page);
     await setCellSource(
@@ -111,14 +111,13 @@ test.describe("isolated rich output rendering", () => {
     await executeCell(codeCell);
     await waitForKernelStatus(page, "idle", 120_000);
 
-    const outputFrame = codeCell.frameLocator('[data-slot="isolated-frame"]');
-    await expect(outputFrame.locator("body")).toContainText("Markdown Output", {
+    const outputArea = codeCell.locator('[data-slot="output-area"]');
+    await expect(outputArea.getByRole("heading", { name: "Markdown Output" })).toBeVisible({
       timeout: 60_000,
     });
-    await expect(outputFrame.locator("body")).toContainText("output item", {
+    await expect(outputArea).toContainText("output item", {
       timeout: 60_000,
     });
-    await expect.poll(() => isolatedRootHeight(codeCell), { timeout: 30_000 }).toBeGreaterThan(20);
 
     const logs = isolatedLogs.join("\n");
     expect(logs).not.toContain("rendered-empty-after-paint");
