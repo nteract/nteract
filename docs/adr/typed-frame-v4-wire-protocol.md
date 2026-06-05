@@ -107,15 +107,12 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
 
-The caps and warns are duplicated across crates: `notebook_wire::frame_size_limits` (Rust), `packages/runtimed/src/transport.ts::frameSizeLimits` (TS). Three contract tests cover the split:
+The caps and warns are defined in `notebook_wire::frame_size_limits` and generated into `packages/runtimed/src/wire-constants.ts` by `cargo run -p notebook-protocol --bin generate-runtimed-types`. JS consumers import `FrameType`, `MAX_FRAME_SIZE`, `MAX_CONTROL_FRAME_SIZE`, and `frameSizeLimits` through `packages/runtimed/src/transport.ts`, but the values come from the Rust source of truth.
 
-- `crates/notebook-protocol/src/protocol.rs::typescript_protocol_contract_matches_rust_wire_discriminants` (`:1512`) compares **discriminant bytes** against a generated TS contract artifact.
-- `crates/notebook-protocol/src/connection.rs::frame_size_limits_cover_every_known_frame_type` (`:530`) asserts every known type has a tighter cap than the 100 MiB outer ceiling and that warn is strictly less than cap.
-- `crates/notebook-protocol/src/protocol.rs::frame_size_limits_match_typescript` compares each Rust cap and warn against the TypeScript `frameSizeLimits` table.
+Two tests cover the generated surface:
 
-The tables are still hand-mirrored. WP-12 tracks the deeper fix: expose the
-Rust table to JS consumers so the duplicate TS table and contract test can
-eventually disappear.
+- `crates/notebook-protocol/src/typescript.rs::generated_typescript_bindings_are_current` asserts generated TS files, including `wire-constants.ts`, are current.
+- `crates/notebook-protocol/src/connection.rs::frame_size_limits_cover_every_known_frame_type` asserts every known Rust type has a tighter cap than the 100 MiB outer ceiling and that warn is strictly less than cap.
 
 ### Why the cap-first protocol matters
 

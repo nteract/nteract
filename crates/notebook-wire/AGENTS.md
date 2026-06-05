@@ -111,7 +111,7 @@ After the handshake, frames carry a leading type byte:
 
 | Source of truth | File |
 |-----------------|------|
-| `FrameType` constants and caps | `crates/notebook-wire/src/lib.rs`, mirrored in `packages/runtimed/src/transport.ts` |
+| `FrameType` constants and caps | `crates/notebook-wire/src/lib.rs`, generated into `packages/runtimed/src/wire-constants.ts` |
 | Frontend `NotebookRequest` / `NotebookResponse` unions | `packages/runtimed/src/request-types.ts` |
 | Discriminant lists + exhaustiveness checks | `packages/runtimed/src/protocol-contract.ts` |
 | Rust ↔ TS contract test | `crates/notebook-protocol/src/protocol.rs` |
