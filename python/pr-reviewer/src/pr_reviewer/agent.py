@@ -45,6 +45,10 @@ class OpencodeRunResult:
     text: str
     session_id: str | None
     cost_usd: float | None
+    raw_metadata: dict[str, Any] | None = None
+
+
+DIRECT_BEDROCK_FALLBACK_REASON = "opencode produced empty text output"
 
 
 def build_opencode_env(config: ReviewerConfig, config_dir: Path) -> dict[str, str]:
@@ -168,7 +172,29 @@ def build_infra_uncertain_report(
         workspace=str(workspace.path),
         cost_usd=run.cost_usd,
         raw_result=run.text,
+        raw_metadata=run.raw_metadata,
     )
+
+
+async def communicate_with_timeout(
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout_seconds: float,
+    timeout_label: str,
+    stdin: bytes | None = None,
+) -> tuple[bytes, bytes]:
+    try:
+        if stdin is None:
+            return await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+        return await asyncio.wait_for(proc.communicate(stdin), timeout=timeout_seconds)
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        try:
+            proc.kill()
+        finally:
+            await proc.wait()
+        raise RuntimeError(
+            f"{timeout_label} timed out after {timeout_seconds:.1f} seconds"
+        ) from exc
 
 
 async def run_opencode(
@@ -198,24 +224,137 @@ async def run_opencode(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")),
-                timeout=config.effective_timeout_seconds(),
-            )
-        except (TimeoutError, asyncio.TimeoutError) as exc:
-            proc.kill()
-            await proc.wait()
-            raise RuntimeError(
-                f"opencode timed out after {config.effective_timeout_seconds():.1f} seconds"
-            ) from exc
+        stdout_bytes, stderr_bytes = await communicate_with_timeout(
+            proc,
+            stdin=prompt.encode("utf-8"),
+            timeout_seconds=config.effective_timeout_seconds(),
+            timeout_label="opencode",
+        )
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         if proc.returncode != 0:
             raise RuntimeError(
                 f"opencode exited with status {proc.returncode}: {stderr.strip() or stdout.strip()}"
             )
-        return parse_opencode_events(stdout)
+        result = parse_opencode_events(stdout)
+        if not result.text and config.model.startswith("amazon-bedrock/"):
+            return await run_bedrock_direct(
+                prompt,
+                config=config,
+                fallback_reason=DIRECT_BEDROCK_FALLBACK_REASON,
+                opencode_session_id=result.session_id,
+            )
+        return result
+
+
+async def run_bedrock_direct(
+    prompt: str,
+    *,
+    config: ReviewerConfig,
+    fallback_reason: str,
+    opencode_session_id: str | None,
+) -> OpencodeRunResult:
+    model_id = config.model.removeprefix("amazon-bedrock/")
+    with tempfile.TemporaryDirectory(prefix="pr-review-bedrock-") as temp_dir:
+        temp_path = Path(temp_dir)
+        request_path = temp_path / "request.json"
+        response_path = temp_path / "response.json"
+        request_path.write_text(
+            json.dumps(
+                {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 4096,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": prompt}],
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
+        command = [
+            "aws",
+            "bedrock-runtime",
+            "invoke-model",
+            "--region",
+            config.aws_region,
+            "--model-id",
+            model_id,
+            "--body",
+            f"fileb://{request_path}",
+            str(response_path),
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await communicate_with_timeout(
+            proc,
+            timeout_seconds=config.effective_timeout_seconds(),
+            timeout_label="direct Bedrock invoke",
+        )
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"direct Bedrock invoke exited with status {proc.returncode}: "
+                f"{stderr.strip() or stdout.strip()} "
+                f"(fallback reason: {fallback_reason})"
+            )
+        try:
+            response = json.loads(response_path.read_text())
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "direct Bedrock invoke succeeded but did not create a response file "
+                f"(fallback reason: {fallback_reason})"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"direct Bedrock invoke returned invalid JSON (fallback reason: {fallback_reason})"
+            ) from exc
+        if not isinstance(response, dict):
+            raise RuntimeError(
+                "direct Bedrock invoke response JSON was not an object "
+                f"(fallback reason: {fallback_reason})"
+            )
+        content = response.get("content")
+        if not isinstance(content, list):
+            raise RuntimeError(
+                "direct Bedrock invoke response did not include a content list "
+                f"(fallback reason: {fallback_reason})"
+            )
+        text = "".join(
+            item["text"]
+            for item in content
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ).strip()
+        if not text:
+            raise RuntimeError(
+                "direct Bedrock invoke returned no text content "
+                f"(fallback reason: {fallback_reason})"
+            )
+        usage = response.get("usage")
+        cost_usd = 0.0 if isinstance(usage, dict) else None
+        session_id = response.get("id") if isinstance(response.get("id"), str) else None
+        return OpencodeRunResult(
+            text=text,
+            session_id=session_id,
+            cost_usd=cost_usd,
+            raw_metadata={
+                "fallback": {
+                    "reason": fallback_reason,
+                    "from": "opencode",
+                    "to": "aws bedrock-runtime invoke-model",
+                    "opencode_session_id": opencode_session_id,
+                    "bedrock_model_id": model_id,
+                }
+            },
+        )
 
 
 async def run_review(
@@ -255,6 +394,7 @@ async def run_review(
         workspace=str(workspace.path),
         cost_usd=run.cost_usd,
         raw_result=run.text,
+        raw_metadata=run.raw_metadata,
     )
 
 
@@ -297,6 +437,7 @@ async def run_architecture_review(
         workspace=str(workspace.path),
         cost_usd=run.cost_usd,
         raw_result=run.text,
+        raw_metadata=run.raw_metadata,
     )
 
 

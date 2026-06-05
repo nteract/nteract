@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
 def build_doctor_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pr-review doctor",
-        description="Smoke-test opencode model access.",
+        description="Smoke-test reviewer model access.",
     )
     add_common_args(parser, default_max_turns=DEFAULT_DOCTOR_MAX_TURNS)
     return parser
@@ -50,7 +50,7 @@ def add_common_args(parser: argparse.ArgumentParser, *, default_max_turns: int |
         "--timeout-seconds",
         type=float,
         default=None,
-        help="Hard wall-clock timeout for the opencode subprocess.",
+        help="Hard wall-clock timeout for the model subprocess.",
     )
 
 
@@ -157,7 +157,7 @@ def run_doctor_command(args: argparse.Namespace) -> int:
     if result.strip().rstrip(".") != "OK":
         print(f"doctor returned unexpected response: {result!r}", file=sys.stderr)
         return INFRA_ERROR
-    print(f"opencode smoke test OK: model={config.model} region={config.aws_region}")
+    print(f"reviewer model smoke test OK: model={config.model} region={config.aws_region}")
     return CLEAR
 
 

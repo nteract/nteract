@@ -47,6 +47,7 @@ class ReviewReport:
     workspace: str | None = None
     cost_usd: float | None = None
     raw_result: str | None = None
+    raw_metadata: dict[str, Any] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)

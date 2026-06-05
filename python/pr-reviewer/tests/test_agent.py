@@ -252,6 +252,167 @@ def test_run_opencode_passes_prompt_on_stdin(monkeypatch, tmp_path: Path) -> Non
     assert calls[1] == ("stdin", b"large prompt")
 
 
+def test_run_opencode_falls_back_to_direct_bedrock_when_empty(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    class FakeProcess:
+        def __init__(self, command: tuple[str, ...]) -> None:
+            self.command = command
+            self.returncode = 0
+
+        async def communicate(self, *args: bytes) -> tuple[bytes, bytes]:
+            calls.append(("communicate", self.command, args))
+            if self.command[0] == "aws":
+                response_path = Path(self.command[-1])
+                response_path.write_text(
+                    json.dumps(
+                        {
+                            "id": "msg-direct",
+                            "content": [{"type": "text", "text": "DIRECT_OK"}],
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        }
+                    )
+                )
+                return b"{}", b""
+            return (
+                b'{"type":"step_finish","sessionID":"ses-empty","part":{"type":"step-finish","cost":0}}\n',
+                b"",
+            )
+
+    async def fake_create_subprocess_exec(*command: str, **kwargs: object) -> FakeProcess:
+        calls.append(("command", command, kwargs))
+        return FakeProcess(command)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    config = ReviewerConfig(
+        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        aws_region="us-east-1",
+    )
+
+    result = asyncio.run(agent.run_opencode("prompt", cwd=tmp_path, config=config))
+
+    assert result.text == "DIRECT_OK"
+    assert result.session_id == "msg-direct"
+    assert result.raw_metadata == {
+        "fallback": {
+            "reason": agent.DIRECT_BEDROCK_FALLBACK_REASON,
+            "from": "opencode",
+            "to": "aws bedrock-runtime invoke-model",
+            "opencode_session_id": "ses-empty",
+            "bedrock_model_id": "us.anthropic.claude-opus-4-8",
+        }
+    }
+    aws_command = calls[2][1]
+    assert aws_command[:5] == (
+        "aws",
+        "bedrock-runtime",
+        "invoke-model",
+        "--region",
+        "us-east-1",
+    )
+    assert "us.anthropic.claude-opus-4-8" in aws_command
+
+
+def test_run_opencode_reports_direct_bedrock_failure_reason(monkeypatch, tmp_path: Path) -> None:
+    class FakeProcess:
+        def __init__(self, command: tuple[str, ...]) -> None:
+            self.command = command
+            self.returncode = 1 if command[0] == "aws" else 0
+
+        async def communicate(self, *args: bytes) -> tuple[bytes, bytes]:
+            if self.command[0] == "aws":
+                return b"", b"AccessDeniedException"
+            return (
+                b'{"type":"step_finish","sessionID":"ses-empty","part":{"type":"step-finish","cost":0}}\n',
+                b"",
+            )
+
+    async def fake_create_subprocess_exec(*command: str, **kwargs: object) -> FakeProcess:
+        return FakeProcess(command)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    config = ReviewerConfig(
+        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        aws_region="us-east-1",
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(agent.run_opencode("prompt", cwd=tmp_path, config=config))
+
+    assert "direct Bedrock invoke exited with status 1: AccessDeniedException" in str(
+        exc_info.value
+    )
+    assert "fallback reason: opencode produced empty text output" in str(exc_info.value)
+
+
+def test_run_bedrock_direct_rejects_malformed_response(monkeypatch) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"{}", b""
+
+    async def fake_create_subprocess_exec(*command: str, **kwargs: object) -> FakeProcess:
+        response_path = Path(command[-1])
+        response_path.write_text(json.dumps({"content": [{"type": "tool_use"}]}))
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    config = ReviewerConfig(
+        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        aws_region="us-east-1",
+    )
+
+    with pytest.raises(RuntimeError, match="direct Bedrock invoke returned no text content"):
+        asyncio.run(
+            agent.run_bedrock_direct(
+                "prompt",
+                config=config,
+                fallback_reason=agent.DIRECT_BEDROCK_FALLBACK_REASON,
+                opencode_session_id="ses-empty",
+            )
+        )
+
+
+def test_run_bedrock_direct_times_out_and_kills_process(monkeypatch) -> None:
+    calls = []
+
+    class FakeProcess:
+        returncode = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(10)
+            return b"", b""
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+        async def wait(self) -> None:
+            calls.append("wait")
+
+    async def fake_create_subprocess_exec(*command: str, **kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    config = ReviewerConfig(
+        model="amazon-bedrock/us.anthropic.claude-opus-4-8",
+        aws_region="us-east-1",
+        timeout_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError, match="direct Bedrock invoke timed out after 0.0 seconds"):
+        asyncio.run(
+            agent.run_bedrock_direct(
+                "prompt",
+                config=config,
+                fallback_reason=agent.DIRECT_BEDROCK_FALLBACK_REASON,
+                opencode_session_id="ses-empty",
+            )
+        )
+
+    assert calls == ["kill", "wait"]
+
+
 def test_run_opencode_times_out_and_kills_process(monkeypatch, tmp_path: Path) -> None:
     calls = []
 

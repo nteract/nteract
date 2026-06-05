@@ -35,5 +35,8 @@ opencode normally, then select a model using opencode's provider/model format.
 `AWS_REGION` can come from the environment or `--aws-region`, and credentials
 come from the AWS SDK credential chain used by opencode's Bedrock provider.
 
-The default model is `amazon-bedrock/global.anthropic.claude-opus-4-6-v1`.
+The default model is `amazon-bedrock/us.anthropic.claude-opus-4-8`.
 Set `PR_REVIEWER_OPENCODE=/path/to/opencode` to use a non-default binary.
+If opencode's Bedrock adapter returns an empty response for an `amazon-bedrock/`
+model, the reviewer falls back to a direct `aws bedrock-runtime invoke-model`
+call with the same model ID.

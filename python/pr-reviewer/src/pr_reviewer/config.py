@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-DEFAULT_MODEL = "amazon-bedrock/global.anthropic.claude-opus-4-6-v1"
+DEFAULT_MODEL = "amazon-bedrock/us.anthropic.claude-opus-4-8"
 DEFAULT_OPENCODE_PATH = "opencode"
 DEFAULT_AWS_REGION = "us-east-1"
 DEFAULT_DOCTOR_MAX_TURNS = 1

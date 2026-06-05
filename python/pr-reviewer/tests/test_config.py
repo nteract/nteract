@@ -4,7 +4,7 @@ from pr_reviewer.config import DEFAULT_MODEL, ReviewerConfig, estimate_review_tu
 def test_config_sets_default_opencode_model() -> None:
     config = ReviewerConfig(model=DEFAULT_MODEL, aws_region="us-west-2")
 
-    assert config.model == "amazon-bedrock/global.anthropic.claude-opus-4-6-v1"
+    assert config.model == "amazon-bedrock/us.anthropic.claude-opus-4-8"
     assert config.aws_region == "us-west-2"
     assert not hasattr(config, "effort")
     assert not hasattr(config, "setting_sources")
