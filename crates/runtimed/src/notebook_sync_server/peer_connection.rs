@@ -18,6 +18,8 @@ use runtime_doc::RuntimeLifecycle;
 /// If `skip_capabilities` is true, the ProtocolCapabilities frame is not sent.
 /// This is used for OpenNotebook/CreateNotebook handshakes where the protocol
 /// is already communicated in the NotebookConnectionInfo response.
+/// If `typed_capabilities` is true, the capabilities bootstrap is carried in a
+/// typed SessionControl frame instead of a standalone untyped JSON frame.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_notebook_sync_connection<R, W>(
     reader: R,
@@ -31,6 +33,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
     skip_capabilities: bool,
+    typed_capabilities: bool,
     needs_load: Option<PathBuf>,
     // True if this is a newly-created notebook at a non-existent path.
     // Used to enable auto-launch for notebooks created via `runt notebook newfile.ipynb`.
@@ -245,7 +248,15 @@ where
                 connection_identity.actor_label().as_str(),
                 connection_identity.scope().as_str(),
             );
-        connection::send_json_frame(&mut writer, &caps).await?;
+        if typed_capabilities {
+            connection::send_typed_bootstrap_frame(
+                &mut writer,
+                &connection::ConnectionBootstrap::protocol_capabilities(caps),
+            )
+            .await?;
+        } else {
+            connection::send_json_frame(&mut writer, &caps).await?;
+        }
     }
 
     // Generate peer_id here so it's available for cleanup regardless of

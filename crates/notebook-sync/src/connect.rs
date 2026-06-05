@@ -25,7 +25,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 use notebook_protocol::connection::{
-    self, Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4,
+    self, ConnectionBootstrap, Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4,
 };
 use notebook_protocol::protocol::NotebookBroadcast;
 
@@ -186,6 +186,7 @@ pub async fn connect_with_options(
     let handshake = Handshake::NotebookSync {
         notebook_id: notebook_id.clone(),
         protocol: Some(PROTOCOL_V4.to_string()),
+        typed_bootstrap: Some(true),
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
         initial_metadata: initial_metadata.clone(),
         operator: operator_from_actor_label(actor_label),
@@ -194,11 +195,10 @@ pub async fn connect_with_options(
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive protocol capabilities
-    let caps_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)?;
+    // Receive protocol capabilities. New daemons respond with a typed
+    // SessionControl bootstrap; old daemons ignore typed_bootstrap and send the
+    // legacy untyped JSON frame.
+    let caps = recv_typed_capabilities(&mut reader).await?;
     check_daemon_protocol_version(&caps);
 
     // Start from the standard notebook skeleton so the background sync task
@@ -237,17 +237,17 @@ pub async fn connect_open(
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
         path: path.to_string_lossy().to_string(),
+        typed_bootstrap: Some(true),
         operator: operator_from_actor_label(actor_label),
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive connection info
-    let info_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let info: NotebookConnectionInfo = serde_json::from_slice(&info_data)?;
+    // Receive connection info. New daemons respond with a typed SessionControl
+    // bootstrap; old daemons ignore typed_bootstrap and send the legacy untyped
+    // JSON frame.
+    let info = recv_typed_connection_info(&mut reader).await?;
 
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
@@ -357,17 +357,17 @@ async fn connect_create_inner(
         package_manager,
         environment_mode,
         dependencies,
+        typed_bootstrap: Some(true),
         operator: operator_from_actor_label(actor_label),
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive connection info
-    let info_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let info: NotebookConnectionInfo = serde_json::from_slice(&info_data)?;
+    // Receive connection info. New daemons respond with a typed SessionControl
+    // bootstrap; old daemons ignore typed_bootstrap and send the legacy untyped
+    // JSON frame.
+    let info = recv_typed_connection_info(&mut reader).await?;
 
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
@@ -512,17 +512,14 @@ pub async fn connect_open_relay_with_operator(
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
         path: path.to_string_lossy().to_string(),
+        typed_bootstrap: Some(true),
         operator,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive connection info
-    let info_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let info: NotebookConnectionInfo = serde_json::from_slice(&info_data)?;
+    let info = recv_typed_connection_info(&mut reader).await?;
 
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
@@ -603,17 +600,14 @@ pub async fn connect_create_relay_with_operator(
         package_manager,
         environment_mode,
         dependencies,
+        typed_bootstrap: Some(true),
         operator,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive connection info
-    let info_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let info: NotebookConnectionInfo = serde_json::from_slice(&info_data)?;
+    let info = recv_typed_connection_info(&mut reader).await?;
 
     if let Some(ref error) = info.error {
         return Err(SyncError::Protocol(error.clone()));
@@ -661,6 +655,7 @@ pub async fn connect_relay_with_operator(
     let handshake = Handshake::NotebookSync {
         notebook_id: notebook_id.clone(),
         protocol: Some(PROTOCOL_V4.to_string()),
+        typed_bootstrap: Some(true),
         initial_metadata: None,
         working_dir: None,
         operator,
@@ -669,12 +664,7 @@ pub async fn connect_relay_with_operator(
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive protocol capabilities (v4 handshake)
-    let caps_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)
-        .map_err(|e| SyncError::Protocol(format!("Parse capabilities: {}", e)))?;
+    let caps = recv_typed_capabilities(&mut reader).await?;
     check_daemon_protocol_version(&caps);
 
     info!(
@@ -737,6 +727,53 @@ where
     handle
 }
 
+async fn recv_typed_connection_info<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<NotebookConnectionInfo, SyncError> {
+    let frame = recv_bootstrap_frame(reader).await?;
+    if is_typed_bootstrap_frame(&frame) {
+        match parse_typed_bootstrap_payload(&frame[1..])? {
+            ConnectionBootstrap::NotebookConnectionInfo { info } => Ok(info),
+            ConnectionBootstrap::ProtocolCapabilities { .. } => Err(SyncError::Protocol(
+                "Expected notebook connection info, got protocol capabilities".into(),
+            )),
+        }
+    } else {
+        serde_json::from_slice(&frame)
+            .map_err(|e| SyncError::Protocol(format!("Parse connection info: {}", e)))
+    }
+}
+
+async fn recv_typed_capabilities<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<ProtocolCapabilities, SyncError> {
+    let frame = recv_bootstrap_frame(reader).await?;
+    if is_typed_bootstrap_frame(&frame) {
+        match parse_typed_bootstrap_payload(&frame[1..])? {
+            ConnectionBootstrap::ProtocolCapabilities { capabilities } => Ok(capabilities),
+            ConnectionBootstrap::NotebookConnectionInfo { info } => Ok(info.capabilities),
+        }
+    } else {
+        serde_json::from_slice(&frame)
+            .map_err(|e| SyncError::Protocol(format!("Parse capabilities: {}", e)))
+    }
+}
+
+async fn recv_bootstrap_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, SyncError> {
+    connection::recv_frame(reader)
+        .await?
+        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))
+}
+
+fn is_typed_bootstrap_frame(frame: &[u8]) -> bool {
+    frame.first().copied() == Some(connection::NotebookFrameType::SessionControl as u8)
+}
+
+fn parse_typed_bootstrap_payload(payload: &[u8]) -> Result<ConnectionBootstrap, SyncError> {
+    serde_json::from_slice(payload)
+        .map_err(|e| SyncError::Protocol(format!("Parse typed bootstrap: {}", e)))
+}
+
 /// Log version info from a daemon's `ProtocolCapabilities` response.
 ///
 /// Warns on protocol version mismatch but does not error — the preamble
@@ -760,5 +797,60 @@ fn check_daemon_protocol_version(caps: &ProtocolCapabilities) {
 
     if let Some(ref ver) = caps.daemon_version {
         debug!("[notebook-sync] Connected to daemon version {}", ver);
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn recv_typed_capabilities_accepts_legacy_json_frame() {
+        let expected = ProtocolCapabilities::v4(Some("2.5.2+old".into()))
+            .with_identity("local:kyle/desktop:legacy", "owner");
+        let mut buf = Vec::new();
+        connection::send_json_frame(&mut buf, &expected)
+            .await
+            .unwrap();
+
+        let mut reader = std::io::Cursor::new(buf);
+        let actual = recv_typed_capabilities(&mut reader).await.unwrap();
+
+        assert_eq!(actual.protocol, expected.protocol);
+        assert_eq!(
+            actual.actor_label.as_deref(),
+            Some("local:kyle/desktop:legacy")
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_typed_connection_info_accepts_session_control_bootstrap() {
+        let expected = NotebookConnectionInfo {
+            capabilities: ProtocolCapabilities::v4(Some("2.5.2+new".into()))
+                .with_identity("local:kyle/desktop:typed", "owner"),
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 3,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: true,
+            notebook_path: None,
+        };
+        let mut buf = Vec::new();
+        connection::send_typed_bootstrap_frame(
+            &mut buf,
+            &ConnectionBootstrap::notebook_connection_info(expected.clone()),
+        )
+        .await
+        .unwrap();
+
+        let mut reader = std::io::Cursor::new(buf);
+        let actual = recv_typed_connection_info(&mut reader).await.unwrap();
+
+        assert_eq!(actual.notebook_id, expected.notebook_id);
+        assert_eq!(actual.cell_count, expected.cell_count);
+        assert_eq!(
+            actual.capabilities.actor_label.as_deref(),
+            Some("local:kyle/desktop:typed")
+        );
     }
 }
