@@ -11,6 +11,7 @@ import {
 } from "./helpers";
 import {
   MARKDOWN_CELL_PARITY_SOURCE,
+  MARKDOWN_HEAVY_PARITY_SOURCE,
   MARKDOWN_OUTPUT_PARITY_CODE,
 } from "./fixtures/markdown-parity";
 import { McpPeer } from "./mcp-peer";
@@ -68,6 +69,38 @@ test.describe("markdown parity", () => {
     await expect
       .poll(async () => (await deepHeading.boundingBox())?.y ?? Infinity)
       .toBeLessThan((page.viewportSize()?.height ?? 720) - 32);
+  });
+
+  test("renders a markdown-heavy notebook surface with stable document geometry", async ({
+    page,
+  }) => {
+    const markdownCell = await createParityMarkdownCell(page, MARKDOWN_HEAVY_PARITY_SOURCE);
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "MathNet-Derived");
+
+    await expect(markdownCell.locator('[data-slot="isolated-frame"]')).toHaveCount(0);
+    await expect(renderedMarkdown).toContainText("27,817");
+    await expect(renderedMarkdown.getByRole("heading", { name: "What we measure" })).toBeVisible();
+    await expect(renderedMarkdown.getByRole("table")).toContainText("topic_path");
+    await expect
+      .poll(() => renderedMarkdown.locator(".katex").count(), { timeout: 30_000 })
+      .toBeGreaterThanOrEqual(2);
+
+    await expect
+      .poll(() => markdownVisualMetrics(renderedMarkdown), { timeout: 30_000 })
+      .toMatchObject({
+        blockquoteHasQuietRule: true,
+        codeUsesMonoFont: true,
+        h1LargerThanH2: true,
+        h2LargerThanParagraph: true,
+        noHorizontalOverflow: true,
+        paragraphLineHeightComfortable: true,
+        tableWithinSurface: true,
+      });
+
+    test.info().attach("markdown-heavy-projected-surface", {
+      body: await renderedMarkdown.screenshot(),
+      contentType: "image/png",
+    });
   });
 
   test("keeps text selection separate from markdown interactions", async ({ page }) => {
@@ -443,5 +476,46 @@ async function dragSelectRenderedText(locator: Locator): Promise<string> {
   return await locator.evaluate((element) => {
     const selection = element.ownerDocument.defaultView?.getSelection();
     return selection?.toString() ?? "";
+  });
+}
+
+async function markdownVisualMetrics(locator: Locator) {
+  return await locator.evaluate((element) => {
+    const root = element as HTMLElement;
+    const h1 = root.querySelector("h1") as HTMLElement | null;
+    const h2 = root.querySelector("h2") as HTMLElement | null;
+    const paragraph = root.querySelector("p") as HTMLElement | null;
+    const blockquote = root.querySelector("blockquote") as HTMLElement | null;
+    const code = root.querySelector("pre code") as HTMLElement | null;
+    const table = root.querySelector("table") as HTMLElement | null;
+
+    const fontSize = (node: HTMLElement | null) =>
+      node ? Number.parseFloat(getComputedStyle(node).fontSize) : 0;
+    const lineHeightRatio = (node: HTMLElement | null) => {
+      if (!node) return 0;
+      const style = getComputedStyle(node);
+      const lineHeight = Number.parseFloat(style.lineHeight);
+      const size = Number.parseFloat(style.fontSize);
+      return lineHeight / size;
+    };
+    const rootBox = root.getBoundingClientRect();
+    const tableBox = table?.getBoundingClientRect();
+    const blockquoteStyle = blockquote ? getComputedStyle(blockquote) : null;
+
+    return {
+      blockquoteHasQuietRule: Boolean(
+        blockquoteStyle &&
+        Number.parseFloat(blockquoteStyle.borderLeftWidth) >= 2 &&
+        Number.parseFloat(blockquoteStyle.paddingLeft) >= 8,
+      ),
+      codeUsesMonoFont: Boolean(code && getComputedStyle(code).fontFamily.includes("mono")),
+      h1LargerThanH2: fontSize(h1) > fontSize(h2),
+      h2LargerThanParagraph: fontSize(h2) > fontSize(paragraph),
+      noHorizontalOverflow: root.scrollWidth <= root.clientWidth + 1,
+      paragraphLineHeightComfortable: lineHeightRatio(paragraph) >= 1.45,
+      tableWithinSurface: Boolean(
+        tableBox && tableBox.left >= rootBox.left && tableBox.right <= rootBox.right + 1,
+      ),
+    };
   });
 }
