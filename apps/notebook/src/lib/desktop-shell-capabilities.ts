@@ -10,6 +10,7 @@ import type {
 import {
   notebookRoomAccessLevelCanEditDocument,
   notebookRoomAccessLevelFromConnectionScope,
+  projectNotebookShellCapabilities,
   projectNotebookRoomEditAccess,
 } from "runtimed";
 
@@ -62,32 +63,44 @@ export function desktopNotebookShellCapabilities({
     actorLabel: canWriteRuntimeState ? localActor : null,
     identityLabel: null,
   };
-
-  return {
-    canRead: accessLevel !== "none",
-    canEditMarkdown: canWriteDocument,
-    canEditCells: canWriteDocument,
-    canEditStructure: canWriteDocument,
-    canRequestEdit: false,
-    canExecute: sessionReady && canWriteDocument,
-    canToggleCode: true,
-    canViewPackages: true,
-    canManagePackages: canWriteDocument,
-    canManageSharing:
-      Boolean(hostCapabilities?.canManageSharing) && accessLevel === "owner" && source === "cloud",
+  const projection = projectNotebookShellCapabilities({
     interaction,
-    access: {
-      ...access,
-      actor: notebookActorProjectionFromAccess(access),
-    },
+    access,
     auth: {
       canSignIn: false,
       canUseAuthenticatedIdentity: source === "cloud" && Boolean(localActor),
       needsAttention: false,
     },
+    runtime,
+    controls: {
+      canToggleCode: true,
+    },
+    execution: {
+      available: sessionReady,
+      requiresDocumentEditPermission: true,
+      requiresDocumentMutationSupport: true,
+    },
+    packages: {
+      canView: true,
+      canManage: true,
+      manageRequiresDocumentMutationSupport: true,
+    },
+    sharing: {
+      canManage: Boolean(hostCapabilities?.canManageSharing),
+      requiredAccessLevels: ["owner"],
+      requiredSources: ["cloud"],
+    },
+  });
+
+  return {
+    ...projection,
+    access: {
+      ...projection.access,
+      actor: notebookActorProjectionFromAccess(projection.access, projection.auth),
+    },
     runtime: {
-      ...runtime,
-      actor: notebookActorProjectionFromRuntime(runtime),
+      ...projection.runtime,
+      actor: notebookActorProjectionFromRuntime(projection.runtime, projection.auth),
     },
   };
 }

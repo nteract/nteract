@@ -176,6 +176,27 @@ export {
   type ProjectNotebookRoomEditAccessOptions,
 } from "./notebook-edit-access";
 
+// Notebook shell capability projection
+export {
+  projectNotebookShellCapabilities,
+  readOnlyNotebookShellCapabilities,
+  type NotebookActorOperator,
+  type NotebookActorPrincipal,
+  type NotebookActorProjection,
+  type NotebookActorSourceProvider,
+  type NotebookShellAccessCapabilities,
+  type NotebookShellAccessLevel,
+  type NotebookShellAccessSource,
+  type NotebookShellAuthCapabilities,
+  type NotebookShellCapabilities,
+  type NotebookShellControlPolicy,
+  type NotebookShellExecutionPolicy,
+  type NotebookShellPackagePolicy,
+  type NotebookShellRuntimeCapabilities,
+  type NotebookShellSharingPolicy,
+  type ProjectNotebookShellCapabilitiesOptions,
+} from "./notebook-shell-capabilities";
+
 // Notebook interaction projection
 export {
   createNotebookInteractionStore,
