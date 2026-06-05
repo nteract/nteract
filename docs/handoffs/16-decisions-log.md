@@ -405,10 +405,54 @@ the existing `Error`/`Shutdown` terminal states in the meantime); (2) the
 rather than a DO-internal watchdog; the recommended DO-internal design needs no policy
 change. Decide (2) when 3d's mechanism is chosen.
 
-## Phase 3 remaining plan (3d, 3f)
+## Phase 3f req #6: writer-error recovery (the headless half of 3f)
+
+34. **3f is split: req #6 (writer-error must not kill the kernel on a recoverable
+    transport) lands now; req #5 (inbound request channel) defers — it needs the
+    3d worker.** req #5 routes interrupt/restart `RuntimeAgentRequest`s from the
+    cloud room to the agent, which requires a hosted REQUEST dispatch on the
+    DurableObject (3d, NEEDS US). req #6 is pure Rust in `runtime_agent` and is the
+    last place a transient cloud blip still destroys a healthy kernel after 3a:
+    the two outbound (writer) `select!` arms — the `state_changed_rx`
+    RuntimeStateSync send and the `async_response_rx` reply send — `break` the loop
+    (→ kernel shutdown) on a single `send_frame` error.
+
+35. **On a recoverable transport, a writer send error reconnects + resyncs instead
+    of `break`ing; the UDS path keeps the historical teardown byte-for-byte.** A
+    new writer-only helper `reconnect_after_writer_error` applies the shared flap
+    floor, calls `reconnect_with_backoff`, and stamps `last_recoverable_reconnect`
+    (so writer-triggered reconnects share the read arms' throttle). Both writer
+    arms now branch on `transport.clean_eof_is_recoverable()`: `false` (UDS) →
+    `break` exactly as before; `true` (cloud) → drop source, reconnect, reset
+    `coordinator_sync_state`, kick `state_kick_tx`, continue. Why no explicit
+    buffer-and-replay (the analysis's "buffer the change and replay"): the failed
+    RuntimeStateSync delta is *durable in the local doc*, and the fresh sync state
+    + resync kick re-send it on reconnect — **Automerge's own resync IS the replay**,
+    the same mechanism the framing-error arm has always relied on (decision #22/3a).
+    The one genuinely-lost item is the one-shot `async_response` reply envelope
+    (not re-derived by resync), but its *effect* (env progress/state from
+    SyncEnvironment) is in the RuntimeStateDoc and does resync; only the reply
+    envelope is dropped — acceptable, and documented at the site. A dedicated
+    egress buffer was considered and rejected as redundant with Automerge resync
+    and a new source of ordering bugs. 3 unit tests on the helper (recover+stamp,
+    give-up propagation, the UDS discriminant the loop branches on); the read arms
+    are left byte-for-byte unchanged.
+
+Phase 3f(req #6) verification: `cargo test -p runtimed` 891 lib (was 888) +
+integration suites green (UDS unchanged); `cargo xtask lint --fix` clean; clippy
+`-D warnings` clean.
+
+**NEEDS US (3f req #5):** the inbound request channel — needs the 3d DurableObject
+hosted REQUEST dispatch to deliver interrupt/restart `RuntimeAgentRequest`s to the
+cloud agent. Detection of the kernel-side *effect* already survives (decision/req
+analysis); only the trigger path is missing, and it can't be built or verified
+without the worker (3d) + a live room. Build it alongside 3d.
+
+## Phase 3 remaining plan (3d, 3f req #5)
 
 Ordered by the lifecycle analysis. 3a (req #1), 3b (req #2), 3c CODE (doc-actor
-identity), and 3e model half (`last_seen`) are done. Remaining, in dependency order:
+identity), 3e model half (`last_seen`), and 3f req #6 (writer-error recovery) are
+done. Remaining (both need the cloud worker + live verification = NEEDS US):
 
 - **3d: cloud-room DurableObject watchdog (reqs #3, #7; the safety net the daemon can't
   provide).** TypeScript in `apps/notebook-cloud/`. Thread peer **scope** through
@@ -425,9 +469,7 @@ identity), and 3e model half (`last_seen`) are done. Remaining, in dependency or
   policy.rs:403-405 relaxation if an Owner-peer-push design is chosen instead) land *with*
   3d under live verification.
 
-- **3f: inbound request channel (req #5) + terminal-delta buffering (req #6).** Route
-  interrupt/restart `RuntimeAgentRequest`s to the cloud agent (hosted REQUEST dispatch), and
-  don't `break` the agent loop on a single writer error (`runtime_agent.rs` outbound arm);
-  buffer and replay across a blip. 3f's req #6 is partly addressed by 3a (the loop no longer
-  tears down on a clean close), but the writer-error `break` in the `state_changed_rx` arm
-  remains.
+- **3f req #5: inbound request channel.** Route interrupt/restart
+  `RuntimeAgentRequest`s to the cloud agent via the 3d DurableObject hosted REQUEST
+  dispatch. req #6 (don't tear the kernel down on a writer error) is DONE
+  (decisions #34–#35); req #5's trigger path needs the worker + a live room.
