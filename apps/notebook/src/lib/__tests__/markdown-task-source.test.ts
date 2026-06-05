@@ -58,6 +58,40 @@ describe("toggleMarkdownTaskMarker", () => {
     ).toBe("- [ ] first\n- [ ] second\n- [x] third");
   });
 
+  it("checks a nested task marker without touching parent or sibling tasks", () => {
+    const source = "- parent\n  - [ ] child\n    - [x] grandchild";
+    const plan = projectMarkdownPlan(source);
+    const childRun = plan?.runs.find((run) => run.renderedText === "child");
+
+    expect(childRun).toEqual(
+      expect.objectContaining({
+        listItemChecked: false,
+        listItemDepth: 1,
+        semantic: "list-item",
+      }),
+    );
+    expect(toggleMarkdownTaskMarker(source, childRun!, true)).toBe(
+      "- parent\n  - [x] child\n    - [x] grandchild",
+    );
+  });
+
+  it("unchecks a nested grandchild task marker without touching ancestors", () => {
+    const source = "- parent\n  - [ ] child\n    - [x] grandchild";
+    const plan = projectMarkdownPlan(source);
+    const grandchildRun = plan?.runs.find((run) => run.renderedText === "grandchild");
+
+    expect(grandchildRun).toEqual(
+      expect.objectContaining({
+        listItemChecked: true,
+        listItemDepth: 2,
+        semantic: "list-item",
+      }),
+    );
+    expect(toggleMarkdownTaskMarker(source, grandchildRun!, false)).toBe(
+      "- parent\n  - [ ] child\n    - [ ] grandchild",
+    );
+  });
+
   it("returns null when the source span does not include a task marker", () => {
     expect(
       toggleMarkdownTaskMarker("- regular list item", { sourceSpanUtf16: [0, 19] }, true),
