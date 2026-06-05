@@ -84,6 +84,88 @@ describe("remoteChangesFromTextAttributions", () => {
 });
 
 describe("createCrdtBridge capability gating", () => {
+  it("coalesces local source store updates while keeping sync notifications", async () => {
+    let source = "hello";
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () =>
+        ({
+          splice_source: (
+            _cellId: string,
+            index: number,
+            deleteCount: number,
+            text: string,
+          ) => {
+            source = `${source.slice(0, index)}${text}${source.slice(index + deleteCount)}`;
+            return true;
+          },
+          get_cell_source: () => source,
+        }) as never,
+      cellId: "cell-a",
+      onSourceChanged: (nextSource) => calls.push(`store:${nextSource}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "hello",
+        extensions: [bridge.extension],
+      }),
+    });
+    views.push(view);
+
+    view.dispatch({ changes: { from: 5, insert: "!" } });
+    view.dispatch({ changes: { from: 6, insert: "?" } });
+
+    expect(view.state.doc.toString()).toBe("hello!?");
+    expect(calls).toEqual(["sync", "sync"]);
+
+    await Promise.resolve();
+
+    expect(calls).toEqual(["sync", "sync", "store:hello!?"]);
+  });
+
+  it("drops pending coalesced store updates after imperative source replacement", async () => {
+    let source = "hello";
+    const calls: string[] = [];
+    const bridge = createCrdtBridge({
+      getHandle: () =>
+        ({
+          splice_source: (
+            _cellId: string,
+            index: number,
+            deleteCount: number,
+            text: string,
+          ) => {
+            source = `${source.slice(0, index)}${text}${source.slice(index + deleteCount)}`;
+            return true;
+          },
+          update_source: (_cellId: string, nextSource: string) => {
+            source = nextSource;
+            return true;
+          },
+          get_cell_source: () => source,
+        }) as never,
+      cellId: "cell-a",
+      onSourceChanged: (nextSource) => calls.push(`store:${nextSource}`),
+      onSyncNeeded: () => calls.push("sync"),
+    });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "hello",
+        extensions: [bridge.extension],
+      }),
+    });
+    views.push(view);
+
+    view.dispatch({ changes: { from: 5, insert: "!" } });
+    expect(bridge.replaceSource("external")).toBe(true);
+
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toBe("external");
+    expect(calls).toEqual(["sync", "store:external", "sync"]);
+  });
+
   it("reconciles outbound editor transactions when the host cannot write", () => {
     const calls: string[] = [];
     const bridge = createCrdtBridge({

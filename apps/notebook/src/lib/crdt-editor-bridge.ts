@@ -166,6 +166,9 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
   // The plugin sets `currentView` on create; the bridge reads it for inbound.
   let currentView: EditorView | null = null;
   let isProcessingOutbound = false;
+  let pendingSource: string | null = null;
+  let sourceChangeScheduled = false;
+  let destroyed = false;
 
   // ── ViewPlugin (outbound path) ───────────────────────────────────
 
@@ -290,16 +293,17 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
         if (aborted) {
           const source = handle.get_cell_source(cellId) ?? "";
           scheduleEditorReconcile(vu.view, source);
-          onSourceChanged(source);
+          notifySourceChangedNow(source);
           onSyncNeeded();
           return;
         }
 
         // Read the full source back from WASM for the cell store.
-        // This is cheap — single O(n) text read — and keeps the store
-        // in sync for non-CM consumers (cell list, find, etc.).
+        // Coalesce the React store notification so multi-transaction edits
+        // (IME, paired insertions, autocomplete) do not force repeated cell
+        // re-renders before the browser can paint the accepted CodeMirror text.
         const source = handle.get_cell_source(cellId) ?? "";
-        onSourceChanged(source);
+        notifySourceChangedSoon(source);
         onSyncNeeded();
       } finally {
         isProcessingOutbound = false;
@@ -308,6 +312,7 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
 
     destroy() {
       currentView = null;
+      destroyed = true;
     }
   }
 
@@ -322,6 +327,26 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
 
   function scheduleEditorReconcile(view: EditorView, source: string): void {
     queueMicrotask(() => reconcileEditorToSource(view, source));
+  }
+
+  function notifySourceChangedSoon(source: string): void {
+    pendingSource = source;
+    if (sourceChangeScheduled) return;
+    sourceChangeScheduled = true;
+    queueMicrotask(() => {
+      sourceChangeScheduled = false;
+      if (destroyed) return;
+      const source = pendingSource;
+      pendingSource = null;
+      if (source !== null) {
+        onSourceChanged(source);
+      }
+    });
+  }
+
+  function notifySourceChangedNow(source: string): void {
+    pendingSource = null;
+    onSourceChanged(source);
   }
 
   function reconcileEditorToSource(view: EditorView, source: string): void {
@@ -452,7 +477,7 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
     applyFullSource(source);
 
     // 3. Update the cell store for non-CM consumers.
-    onSourceChanged(source);
+    notifySourceChangedNow(source);
 
     // 4. Trigger sync to daemon.
     onSyncNeeded();
