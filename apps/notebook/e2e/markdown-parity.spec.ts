@@ -119,6 +119,22 @@ test.describe("markdown parity", () => {
       timeout: 60_000,
     });
     await expect(renderedMarkdown).not.toContainText("Original rendered text.");
+
+    await doubleClickRenderedMarkdown(markdownCell);
+    await expect(editor).toBeVisible({ timeout: 10_000 });
+
+    await setCellSource(
+      markdownCell,
+      "# Editable parity heading\n\nSecond rendered text after another edit.",
+    );
+    await expect.poll(() => getCellSource(markdownCell)).toContain("Second rendered text");
+
+    await editor.press("Control+Enter");
+    await expect(editor).toBeHidden({ timeout: 10_000 });
+    await expect(renderedMarkdown).toContainText("Second rendered text after another edit.", {
+      timeout: 60_000,
+    });
+    await expect(renderedMarkdown).not.toContainText("Updated rendered text after edit.");
   });
 
   test("renders a newly inserted markdown cell after editing through the UI", async ({ page }) => {
