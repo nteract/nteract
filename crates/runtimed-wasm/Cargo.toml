@@ -29,6 +29,7 @@ getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] 
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 console_error_panic_hook = "0.1"
 hex = "0.4"
+uuid = { version = "1", features = ["v4", "js"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
