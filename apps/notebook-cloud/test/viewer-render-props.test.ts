@@ -121,6 +121,10 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
 test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
+  const sharingSourcePath = new URL("../viewer/sharing-controls.tsx", import.meta.url);
+  const sharingSourceText = readFileSync(sharingSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
 
@@ -143,6 +147,13 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
+  assert.match(sourceText, /from "\.\/sharing-controls"/);
+  assert.match(sourceText, /publicLink=\{publicNotebookLink\}/);
+  assert.doesNotMatch(sourceText, /function CloudSharingControls/);
+  assert.doesNotMatch(
+    sourceText,
+    /buildCloudShareAccessRows\(\{ acl, invites, accessRequests \}\)/,
+  );
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
   assert.match(sourceText, /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState\) \? \(/);
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
@@ -158,7 +169,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /shouldShowPackageEnvironmentSummary \? \([\s\S]*<EnvironmentSummary/);
   assert.match(sourceText, /autoFocusFirstCell=\{false\}/);
   assert.match(
-    sourceText,
+    sessionSourceText,
     /const presenceStoreRef = useRef<CloudViewerPresenceStore \| null>\(null\)/,
   );
   assert.match(
@@ -175,27 +186,34 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.doesNotMatch(sourceText, /useState\(initialCloudViewerPresence\)/);
   assert.doesNotMatch(sourceText, /setPresence\(/);
   assert.doesNotMatch(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
-  assert.match(sourceText, /Public link, collaborators, pending invites, and edit requests\./);
+  assert.match(sharingSourceText, /export function CloudSharingControls/);
   assert.match(
-    sourceText,
+    sharingSourceText,
+    /Public link, collaborators, pending invites, and edit requests\./,
+  );
+  assert.match(
+    sharingSourceText,
     /const accessSummary = useMemo\(\(\) => cloudShareAccessSummary\(accessRows\)/,
   );
-  assert.match(sourceText, /<div className="cloud-share-current-heading">/);
-  assert.match(sourceText, /<div className="cloud-share-row-actions">/);
+  assert.match(sharingSourceText, /<div className="cloud-share-current-heading">/);
+  assert.match(sharingSourceText, /<div className="cloud-share-row-actions">/);
   assert.match(
-    sourceText,
+    sharingSourceText,
     /<span className="cloud-share-state" data-tone=\{row\.stateTone \?\? undefined\}>/,
   );
-  assert.match(sourceText, /Can view this notebook without signing in/);
-  assert.match(sourceText, /Only invited people can open this notebook/);
-  assert.match(sourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
-  assert.match(sourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
-  assert.match(sourceText, /buildCloudShareAccessRows\(\{ acl, invites, accessRequests \}\)/);
+  assert.match(sharingSourceText, /Can view this notebook without signing in/);
+  assert.match(sharingSourceText, /Only invited people can open this notebook/);
+  assert.match(sharingSourceText, /const copyLinkLabel =[\s\S]*"Copy link"/);
+  assert.match(sharingSourceText, /const compactCopyLinkLabel =[\s\S]*"Copy"/);
   assert.match(
-    sourceText,
+    sharingSourceText,
+    /buildCloudShareAccessRows\(\{ acl, invites, accessRequests \}\)/,
+  );
+  assert.match(
+    sharingSourceText,
     /accessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
   );
-  assert.match(sourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
+  assert.match(sharingSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
   assert.match(
     sourceText,
     /function CloudPresenceStatus[\s\S]*const presence = useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\);[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);/,
