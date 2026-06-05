@@ -364,7 +364,15 @@ export class RoomMaterializer {
 }
 
 export function isMaterializedSyncFrame(type: FrameTypeValue): boolean {
-  return type === FrameType.AUTOMERGE_SYNC || type === FrameType.RUNTIME_STATE_SYNC;
+  // REQUEST routes through the room host too: an editor/owner ExecuteCell is
+  // turned into a queued execution by the host (the one peer that may create
+  // execution intent), whose outbound runtime-state frames then reach peers.
+  // Without this it would fall through to broadcast and never be dispatched.
+  return (
+    type === FrameType.AUTOMERGE_SYNC ||
+    type === FrameType.RUNTIME_STATE_SYNC ||
+    type === FrameType.REQUEST
+  );
 }
 
 export function typedFrameFromRoomHostOutbound(frame: RoomHostOutboundFrame): Uint8Array {

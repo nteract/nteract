@@ -576,6 +576,9 @@ impl RoomHostHandle {
             frame_types::RUNTIME_STATE_SYNC => {
                 self.receive_runtime_state_sync(peer_id, principal, runtime_scope, payload)?
             }
+            frame_types::REQUEST => {
+                self.receive_request(peer_id, principal, can_write_notebook, payload)?
+            }
             _ => RoomHostFrameResult::empty(),
         };
 
@@ -742,6 +745,119 @@ impl RoomHostHandle {
         if changed {
             self.queue_runtime_state_sync_for_other_peers(peer_id, &mut result.outbound)?;
         }
+        Ok(result)
+    }
+
+    /// Handle a NotebookRequest frame (`frame_types::REQUEST`).
+    ///
+    /// The hosted room only acts on cell-execution requests: an editor/owner
+    /// asks to run a cell, and the room host (the one peer that can create
+    /// execution intent) writes the queued execution into RuntimeStateDoc for an
+    /// attached `runtime_peer` to pick up. Other request kinds (LaunchKernel,
+    /// RunAllCells, kernel lifecycle) are local-daemon concerns and are ignored
+    /// here so they leave the room unchanged rather than erroring the peer.
+    fn receive_request(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write_notebook: bool,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, JsError> {
+        if !can_write_notebook {
+            return Err(JsError::new(
+                "connection scope cannot submit execution requests",
+            ));
+        }
+        let request: serde_json::Value = serde_json::from_slice(payload)
+            .map_err(|e| JsError::new(&format!("decode request: {e}")))?;
+        match request.get("action").and_then(|v| v.as_str()) {
+            // Guarded and unguarded both create the execution; the observed-heads
+            // causal guard is deferred (see ADR run-cell follow-ups).
+            Some("execute_cell") | Some("execute_cell_guarded") => {
+                self.handle_execute_cell(&request, peer_id, principal)
+            }
+            _ => Ok(RoomHostFrameResult::empty()),
+        }
+    }
+
+    /// Create a queued execution for an ExecuteCell request and broadcast it.
+    fn handle_execute_cell(
+        &mut self,
+        request: &serde_json::Value,
+        peer_id: &str,
+        principal: &str,
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let cell_id = request
+            .get("cell_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| JsError::new("ExecuteCell request missing cell_id"))?;
+
+        let cell = self
+            .doc
+            .get_cell(cell_id)
+            .ok_or_else(|| JsError::new(&format!("cell not found: {cell_id}")))?;
+        if cell.cell_type != "code" {
+            return Err(JsError::new(&format!(
+                "cannot execute non-code cell {cell_id} (type {})",
+                cell.cell_type
+            )));
+        }
+
+        let execution_id = request
+            .get("execution_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // Derive the queue seq from the document so it stays monotonic across
+        // Durable Object hibernation/reload. An in-memory counter would reset to
+        // 0 on reload and produce duplicate seqs / reordered execution.
+        let next_seq = self
+            .state_doc
+            .read_state()
+            .executions
+            .values()
+            .filter_map(|exec| exec.seq)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+
+        // submitted_by uses the authenticated principal, never a client-supplied
+        // label, so an execution cannot be attributed to another user. The call
+        // is idempotent: Ok(false) means the execution_id already exists.
+        let created = self
+            .state_doc
+            .create_execution_with_source_provenance(
+                &execution_id,
+                &cell.source,
+                next_seq,
+                Some(principal),
+                Some(cell_id),
+            )
+            .map_err(|e| JsError::new(&format!("create execution: {e}")))?;
+        if !created {
+            return Err(JsError::new(&format!(
+                "execution_id already exists: {execution_id}"
+            )));
+        }
+
+        // Point the cell at its execution, matching the daemon's ExecuteCell path.
+        self.doc
+            .set_execution_id(cell_id, Some(&execution_id))
+            .map_err(|e| JsError::new(&format!("stamp execution_id on cell: {e}")))?;
+
+        // Broadcast the new queued execution (RuntimeStateDoc) and the cell's
+        // execution_id pointer (NotebookDoc) to the sender and all other peers.
+        let mut result = RoomHostFrameResult {
+            changed: true,
+            notebook_changed: true,
+            runtime_state_changed: true,
+            outbound: Vec::new(),
+        };
+        self.queue_runtime_state_sync_for_peer(peer_id, true, &mut result.outbound)?;
+        self.queue_runtime_state_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        self.queue_notebook_sync_for_peer(peer_id, true, &mut result.outbound)?;
+        self.queue_notebook_sync_for_other_peers(peer_id, &mut result.outbound)?;
         Ok(result)
     }
 
