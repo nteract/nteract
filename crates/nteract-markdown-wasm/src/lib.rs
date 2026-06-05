@@ -1230,6 +1230,20 @@ mod tests {
     }
 
     #[test]
+    fn projects_bare_tex_environments_as_display_math() {
+        let json = project_to_json(
+            "\\begin{align}\na^2 + b^2 &= c^2 \\\\\n\\sin^2(\\theta) + \\cos^2(\\theta) &= 1\n\\end{align}\n\n\\begin{equation*}\nx = y\n\\end{equation*}",
+        );
+
+        assert_eq!(json.matches("\"kind\":\"math\"").count(), 2);
+        assert!(json.contains("\"semantic\":\"math-source\""));
+        assert!(json.contains("\"renderedText\":\"\\\\begin{align}"));
+        assert!(json.contains("\\\\end{align}"));
+        assert!(json.contains("\"renderedText\":\"\\\\begin{equation*}"));
+        assert!(json.contains("\\\\end{equation*}"));
+    }
+
+    #[test]
     fn projects_table_rows_cells_and_alignment() {
         let json = project_to_json("| metric | value |\n| --- | ---: |\n| rows | 128 |\n");
 

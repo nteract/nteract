@@ -50,6 +50,36 @@ describe("markdown projection", () => {
     expect(plan?.blocks.map((block) => block.kind)).toContain("math");
   });
 
+  it("projects bare Jupyter TeX environments as display math", () => {
+    const source = [
+      "\\begin{align}",
+      "a^2 + b^2 &= c^2 \\\\",
+      "\\sin^2(\\theta) + \\cos^2(\\theta) &= 1",
+      "\\end{align}",
+      "",
+      "\\begin{equation*}",
+      "x = y",
+      "\\end{equation*}",
+    ].join("\n");
+    const plan = projectMarkdownPlan(source);
+
+    expect(plan?.blocks.map((block) => block.kind)).toEqual(["math", "math"]);
+    expect(plan?.blocks.map((block) => block.text)).toEqual([
+      [
+        "\\begin{align}",
+        "a^2 + b^2 &= c^2 \\\\",
+        "\\sin^2(\\theta) + \\cos^2(\\theta) &= 1",
+        "\\end{align}",
+      ].join("\n"),
+      "\\begin{equation*}\nx = y\n\\end{equation*}",
+    ]);
+    expect(
+      plan?.runs
+        .filter((run) => run.semantic === "math-source")
+        .map((run) => run.renderedText),
+    ).toEqual(plan?.blocks.map((block) => block.text));
+  });
+
   it("keeps projected raw HTML markup out of the host DOM without forcing iframe fallback", () => {
     const plan = projectMarkdownPlan("alpha <i>wow</i> omega");
 
