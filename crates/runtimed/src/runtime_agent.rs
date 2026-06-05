@@ -109,17 +109,111 @@ pub async fn run_runtime_agent(
         socket_path.display()
     );
 
-    // -- 1. Connect to daemon socket ----------------------------------------
-
-    // The sync wire is abstracted behind `FrameTransport`: the daemon uses the
-    // UDS (Windows named-pipe) transport, while a hosted runtime peer will swap
-    // in a cloud-WebSocket transport without touching the loop below. `connect`
-    // owns the transport-specific dial + handshake.
+    // The daemon socket transport. The sync wire is abstracted behind
+    // `FrameTransport`; the cloud-WebSocket path swaps in a different transport
+    // (`run_cloud_runtime_agent`) without touching the agent loop below.
     let transport =
         UdsFrameTransport::new(&socket_path, &notebook_id, &runtime_agent_id, &blob_root);
+
+    // The UDS actor label is the daemon-supplied `runtime_agent_id`, resolved
+    // up front and independent of the (just-connected) transport. This keeps
+    // the desktop/daemon path byte-for-byte unchanged: the resolver returns the
+    // exact value the bootstrap used inline before the cloud-path extraction.
+    run_runtime_agent_on_transport(transport, notebook_id, blob_root, move |_| {
+        Ok(runtime_agent_id)
+    })
+    .await
+}
+
+/// Run the runtime agent against a hosted cloud room over a WebSocket transport.
+///
+/// The daemon-managed kernel is unchanged; only the sync wire differs from
+/// [`run_runtime_agent`]. The cloud room only reveals its authenticated
+/// principal in the `cloud_room_ready` handshake, so the doc-actor label is
+/// resolved *after* connect, as `<principal>/<operator>:<nonce>`:
+///
+/// - **principal** — `transport.principal()`, the authenticated identity the
+///   room's `validate_room_notebook_change_actors` requires every change to be
+///   authored under (decision #6); authoring under anything else is silently
+///   dropped by the room.
+/// - **operator** — a human-readable role suffix (e.g. `agent:runt`) so the
+///   room can tell which of a principal's agents authored a change.
+/// - **nonce** — a per-process random suffix. Reusing one actor label across
+///   separate doc instances collides at `(actor, seq 1)` → Automerge
+///   `DuplicateSeqNumber` when the room syncs the prior change back, exactly the
+///   hazard the `runt-cloud-peer` spike documented.
+///
+/// CODE-ONLY (Phase 3c): this builds and unit-tests the spawn path behind the
+/// transport gate; the live cross-machine re-proof (a preview room + the
+/// explicit `runtime_peer` ACL row, decision #9) is deferred — see the decision
+/// log's NEEDS-US note.
+pub async fn run_cloud_runtime_agent(
+    config: notebook_cloud_transport::CloudWsConfig,
+    operator: String,
+    blob_root: PathBuf,
+) -> anyhow::Result<()> {
+    let notebook_id = config.notebook_id.clone();
+    info!(
+        "[runtime-agent] Starting cloud runtime_agent notebook_id={} url={} scope={}",
+        notebook_id,
+        notebook_cloud_transport::build_ws_url(&config.cloud_url, &notebook_id),
+        config.scope,
+    );
+
+    let transport = notebook_cloud_transport::CloudWsFrameTransport::new(config);
+
+    run_runtime_agent_on_transport(transport, notebook_id, blob_root, move |t| {
+        let principal = t.principal().ok_or_else(|| {
+            anyhow::anyhow!("cloud transport has no principal after connect (no cloud_room_ready)")
+        })?;
+        Ok(cloud_actor_label(principal, &operator))
+    })
+    .await
+}
+
+/// Build the cloud doc-actor label `<principal>/<operator>:<nonce>`.
+///
+/// Split out so the label scheme is unit-testable without a live room. The
+/// nonce makes the label unique per process (see [`run_cloud_runtime_agent`]
+/// for why reuse is unsafe).
+fn cloud_actor_label(principal: &str, operator: &str) -> String {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    format!("{principal}/{operator}:{}", &nonce[..8])
+}
+
+/// Run the runtime agent over an arbitrary [`FrameTransport`].
+///
+/// The desktop/daemon path ([`run_runtime_agent`]) and the cloud path
+/// ([`run_cloud_runtime_agent`]) both funnel here; only the transport and the
+/// doc-actor label differ. Everything below — the kernel drive, the queue, the
+/// RuntimeStateDoc writes, the lifecycle handling, and the reconnect/resync
+/// dance — is identical across transports by construction.
+///
+/// `resolve_actor` produces the Automerge actor label the agent authors its
+/// RuntimeStateDoc under, given the *connected* transport. It runs after
+/// `connect()` because a cloud transport only learns its room principal from
+/// the `cloud_room_ready` handshake; the UDS path ignores the transport and
+/// returns the daemon-supplied id. The actor label matters for the cloud room:
+/// its `validate_room_notebook_change_actors` drops any change whose principal
+/// differs from the authenticated one, so a cloud agent must author under
+/// `<principal>/<operator>` (decision #6). Authoring under the wrong actor is
+/// silent — the room discards every change and convergence stalls.
+async fn run_runtime_agent_on_transport<T, F>(
+    transport: T,
+    notebook_id: String,
+    blob_root: PathBuf,
+    resolve_actor: F,
+) -> anyhow::Result<()>
+where
+    T: FrameTransport,
+    F: FnOnce(&T) -> anyhow::Result<String>,
+{
+    // -- 1. Connect ---------------------------------------------------------
+
+    // `connect` owns the transport-specific dial + handshake/auth.
     let (mut frame_source, mut frame_sink) = transport.connect().await?;
 
-    info!("[runtime-agent] Connected to daemon, handshake sent");
+    info!("[runtime-agent] Connected, handshake sent");
 
     // The transport hands back a cancel-safe `FrameSource` (backed by a
     // dedicated `FramedReader` actor) so the busy `select!` below stays
@@ -128,6 +222,14 @@ pub async fn run_runtime_agent(
     // captured in production logs as `frame too large: 538976288 bytes`.
 
     // -- 2. Bootstrap RuntimeStateDoc ---------------------------------------
+
+    // Resolve the doc-actor label now that the transport is connected (a cloud
+    // transport's principal is known only post-handshake).
+    let runtime_agent_id = resolve_actor(&transport)?;
+    info!(
+        "[runtime-agent] Bootstrapping notebook_id={} as actor {}",
+        notebook_id, runtime_agent_id
+    );
 
     let state_doc = RuntimeStateDoc::try_new_with_actor(&runtime_agent_id)
         .map_err(|e| anyhow::anyhow!("create runtime-agent state doc: {e}"))?;
@@ -1958,6 +2060,72 @@ mod tests {
             err.to_string().contains("mock dial refused"),
             "last error is preserved: {err}"
         );
+    }
+
+    // -- cloud doc-actor label (Phase 3c) ---------------------------------
+
+    #[test]
+    fn cloud_actor_label_has_principal_operator_and_nonce() {
+        let label = cloud_actor_label("anaconda:alice", "agent:runt");
+        // <principal>/<operator>:<8-hex-nonce>
+        let (prefix, nonce) = label.rsplit_once(':').expect("has nonce suffix");
+        assert_eq!(prefix, "anaconda:alice/agent:runt");
+        assert_eq!(nonce.len(), 8, "8-char nonce: {label}");
+        assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
+        // The principal (which itself contains a colon) is preserved ahead of
+        // the operator, so the room's principal check sees the right identity.
+        assert!(label.starts_with("anaconda:alice/"));
+    }
+
+    #[test]
+    fn cloud_actor_label_is_unique_per_call() {
+        // Reusing a label across doc instances collides at (actor, seq 1) ->
+        // Automerge DuplicateSeqNumber; the nonce must differ per call.
+        let a = cloud_actor_label("p", "op");
+        let b = cloud_actor_label("p", "op");
+        assert_ne!(a, b);
+    }
+
+    /// The cloud actor resolver (the closure `run_cloud_runtime_agent` passes
+    /// into `run_runtime_agent_on_transport`) must error rather than silently
+    /// author under a wrong actor when the transport never observed a
+    /// `cloud_room_ready` principal. Exercise that resolver shape directly
+    /// against a fresh (unconnected) cloud transport.
+    #[test]
+    fn cloud_actor_resolver_errors_without_principal() {
+        use notebook_cloud_transport::{CloudAuth, CloudWsConfig, CloudWsFrameTransport};
+        let transport = CloudWsFrameTransport::new(CloudWsConfig {
+            cloud_url: "https://preview.runt.run".into(),
+            notebook_id: "abc".into(),
+            scope: "runtime_peer".into(),
+            auth: CloudAuth::OidcBearer { token: "t".into() },
+        });
+        let operator = "agent:runt".to_string();
+        // Mirror the resolver body in run_cloud_runtime_agent.
+        let resolved: anyhow::Result<String> = (|t: &CloudWsFrameTransport| {
+            let principal = t
+                .principal()
+                .ok_or_else(|| anyhow::anyhow!("cloud transport has no principal after connect"))?;
+            Ok(cloud_actor_label(principal, &operator))
+        })(&transport);
+        assert!(
+            resolved.is_err(),
+            "no principal before connect -> resolver errors, not a bogus actor"
+        );
+    }
+
+    /// The UDS resolver is a pure pass-through of the daemon-supplied id,
+    /// independent of the transport — the property that keeps the desktop path
+    /// byte-for-byte unchanged after the cloud-path extraction.
+    #[test]
+    fn uds_actor_resolver_returns_daemon_id_verbatim() {
+        let id = "runtime-agent:nb-42".to_string();
+        let resolver = {
+            let id = id.clone();
+            move |_t: &FlakyTransport| -> anyhow::Result<String> { Ok(id) }
+        };
+        let resolved = resolver(&FlakyTransport::new(0)).unwrap();
+        assert_eq!(resolved, id);
     }
 
     /// Minimal mock kernel for testing queue/state logic without ZeroMQ.
