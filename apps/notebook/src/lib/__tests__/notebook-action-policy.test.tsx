@@ -49,6 +49,7 @@ function createPolicyOptions(
       queued: [],
     } satisfies NotebookResponse),
     getProjectEnvironmentFilePath: () => undefined,
+    resetDismissedEnvBuildDetails: vi.fn(),
     showEnvBuildDialog: vi.fn(),
     ...overrides,
   };
@@ -160,5 +161,25 @@ describe("useNotebookActionPolicy", () => {
 
     expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
     expect(options.syncEnvironment).toHaveBeenCalledWith({ observed_heads: ["head-1"] });
+  });
+
+  it("clears dismissed env-build details before creating an environment", async () => {
+    const events: string[] = [];
+    const options = createPolicyOptions({
+      resetDismissedEnvBuildDetails: vi.fn(() => events.push("reset-dismissed")),
+      approveProjectEnvironment: vi.fn(async () => {
+        events.push("approve-environment");
+        return response("ok");
+      }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleEnvBuildCreate();
+    });
+
+    expect(options.resetDismissedEnvBuildDetails).toHaveBeenCalledTimes(1);
+    expect(events.slice(0, 2)).toEqual(["reset-dismissed", "approve-environment"]);
+    expect(options.showEnvBuildDialog).not.toHaveBeenCalled();
   });
 });
