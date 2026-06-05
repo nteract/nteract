@@ -2517,6 +2517,7 @@ impl Daemon {
             Handshake::NotebookSync {
                 notebook_id,
                 protocol,
+                typed_bootstrap,
                 working_dir,
                 initial_metadata,
                 operator,
@@ -2648,6 +2649,7 @@ impl Daemon {
                     working_dir_path,
                     initial_metadata,
                     false, // Send ProtocolCapabilities for direct NotebookSync handshake
+                    typed_bootstrap.unwrap_or(false),
                     None,  // No streaming load for direct NotebookSync handshake
                     false, // Not a newly-created notebook at path
                     connection_identity,
@@ -2655,9 +2657,19 @@ impl Daemon {
                 )
                 .await
             }
-            Handshake::OpenNotebook { path, operator } => {
-                self.handle_open_notebook(stream, path, operator, client_protocol_version)
-                    .await
+            Handshake::OpenNotebook {
+                path,
+                typed_bootstrap,
+                operator,
+            } => {
+                self.handle_open_notebook(
+                    stream,
+                    path,
+                    typed_bootstrap.unwrap_or(false),
+                    operator,
+                    client_protocol_version,
+                )
+                .await
             }
             Handshake::CreateNotebook {
                 runtime,
@@ -2667,6 +2679,7 @@ impl Daemon {
                 package_manager,
                 environment_mode,
                 dependencies,
+                typed_bootstrap,
                 operator,
             } => {
                 self.handle_create_notebook(
@@ -2678,6 +2691,7 @@ impl Daemon {
                     package_manager,
                     environment_mode,
                     dependencies,
+                    typed_bootstrap.unwrap_or(false),
                     operator,
                     client_protocol_version,
                 )
@@ -2731,6 +2745,7 @@ impl Daemon {
         self: Arc<Self>,
         stream: S,
         path: String,
+        typed_bootstrap: bool,
         operator: Option<String>,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
@@ -2738,7 +2753,8 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use notebook_protocol::connection::{
-            send_json_frame, NotebookConnectionInfo, ProtocolCapabilities,
+            send_json_frame, send_typed_bootstrap_frame, ConnectionBootstrap,
+            NotebookConnectionInfo, ProtocolCapabilities,
         };
 
         info!("[runtimed] OpenNotebook requested for {}", path);
@@ -2767,6 +2783,7 @@ impl Daemon {
         async fn send_error_response<W: AsyncWrite + Unpin>(
             writer: &mut W,
             error: String,
+            typed_bootstrap: bool,
         ) -> anyhow::Result<()> {
             let response = NotebookConnectionInfo {
                 capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
@@ -2777,7 +2794,15 @@ impl Daemon {
                 ephemeral: false,
                 notebook_path: None,
             };
-            send_json_frame(writer, &response).await?;
+            if typed_bootstrap {
+                send_typed_bootstrap_frame(
+                    writer,
+                    &ConnectionBootstrap::notebook_connection_info(response),
+                )
+                .await?;
+            } else {
+                send_json_frame(writer, &response).await?;
+            }
             Ok(())
         }
 
@@ -2790,6 +2815,7 @@ impl Daemon {
                      Untitled notebooks must reconnect via notebook_id, not OpenNotebook path.",
                     path
                 ),
+                typed_bootstrap,
             )
             .await?;
             return Ok(());
@@ -2820,6 +2846,7 @@ impl Daemon {
                         send_error_response(
                             &mut writer,
                             format!("Directory '{}' is not writable: {}", path, e),
+                            typed_bootstrap,
                         )
                         .await?;
                         return Ok(());
@@ -2836,6 +2863,7 @@ impl Daemon {
                         None,
                         None,
                         vec![],
+                        typed_bootstrap,
                         operator,
                         client_protocol_version,
                     )
@@ -2867,6 +2895,7 @@ impl Daemon {
                 send_error_response(
                     &mut writer,
                     format!("Cannot access notebook '{}': {}", path, e),
+                    typed_bootstrap,
                 )
                 .await?;
                 return Ok(());
@@ -2909,6 +2938,7 @@ impl Daemon {
                     send_error_response(
                         &mut writer,
                         format!("Cannot resolve notebook path '{}': {}", path, e),
+                        typed_bootstrap,
                     )
                     .await?;
                     return Ok(());
@@ -3005,6 +3035,7 @@ impl Daemon {
                 send_error_response(
                     &mut writer,
                     format!("Failed to create notebook '{}': {}", path, e),
+                    typed_bootstrap,
                 )
                 .await?;
                 return Ok(());
@@ -3064,7 +3095,15 @@ impl Daemon {
             ephemeral: false,
             notebook_path: Some(notebook_id.clone()),
         };
-        send_json_frame(&mut writer, &response).await?;
+        if typed_bootstrap {
+            send_typed_bootstrap_frame(
+                &mut writer,
+                &ConnectionBootstrap::notebook_connection_info(response),
+            )
+            .await?;
+        } else {
+            send_json_frame(&mut writer, &response).await?;
+        }
 
         // working_dir derived from path's parent directory
         let working_dir_path = path_buf.parent().map(|p| p.to_path_buf());
@@ -3084,6 +3123,7 @@ impl Daemon {
             working_dir_path,
             None, // No initial_metadata - doc is already populated
             true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
+            false,
             needs_load,
             created_new_at_path, // Enable auto-launch for notebooks created at non-existent paths
             connection_identity,
@@ -3108,6 +3148,7 @@ impl Daemon {
         package_manager: Option<notebook_protocol::connection::PackageManager>,
         environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
         dependencies: Vec<String>,
+        typed_bootstrap: bool,
         operator: Option<String>,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
@@ -3115,7 +3156,8 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use notebook_protocol::connection::{
-            send_json_frame, NotebookConnectionInfo, ProtocolCapabilities,
+            send_json_frame, send_typed_bootstrap_frame, ConnectionBootstrap,
+            NotebookConnectionInfo, ProtocolCapabilities,
         };
 
         info!(
@@ -3210,7 +3252,15 @@ impl Daemon {
                 ephemeral: false,
                 notebook_path: None,
             };
-            send_json_frame(&mut writer, &response).await?;
+            if typed_bootstrap {
+                send_typed_bootstrap_frame(
+                    &mut writer,
+                    &ConnectionBootstrap::notebook_connection_info(response),
+                )
+                .await?;
+            } else {
+                send_json_frame(&mut writer, &response).await?;
+            }
             let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
             return Ok(());
         }
@@ -3278,7 +3328,15 @@ impl Daemon {
             ephemeral,
             notebook_path,
         };
-        send_json_frame(&mut writer, &response).await?;
+        if typed_bootstrap {
+            send_typed_bootstrap_frame(
+                &mut writer,
+                &ConnectionBootstrap::notebook_connection_info(response),
+            )
+            .await?;
+        } else {
+            send_json_frame(&mut writer, &response).await?;
+        }
 
         // working_dir for untitled notebooks (used for project file detection)
         let working_dir_path = working_dir.map(std::path::PathBuf::from);
@@ -3298,8 +3356,9 @@ impl Daemon {
             default_python_env,
             self.clone(),
             working_dir_path,
-            None,  // No initial_metadata - doc is already populated
-            true,  // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
+            None, // No initial_metadata - doc is already populated
+            true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
+            false,
             None,  // No streaming load - doc was just created with empty cell
             false, // UUID-based new notebook, handled by is_new_notebook check
             connection_identity,

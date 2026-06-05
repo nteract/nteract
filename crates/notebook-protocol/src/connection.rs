@@ -17,8 +17,8 @@ pub use framing::{
 };
 
 pub use handshake::{
-    Handshake, NotebookConnectionInfo, ProtocolCapabilities, PutBlobCapability, PROTOCOL_V4,
-    PROTOCOL_VERSION,
+    recv_typed_bootstrap_frame, send_typed_bootstrap_frame, ConnectionBootstrap, Handshake,
+    NotebookConnectionInfo, ProtocolCapabilities, PutBlobCapability, PROTOCOL_V4, PROTOCOL_VERSION,
 };
 
 #[cfg(windows)]
@@ -162,6 +162,7 @@ mod tests {
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
             protocol: None,
+            typed_bootstrap: None,
             working_dir: None,
             initial_metadata: None,
             operator: None,
@@ -173,6 +174,7 @@ mod tests {
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
             protocol: Some(PROTOCOL_V4.into()),
+            typed_bootstrap: None,
             working_dir: None,
             initial_metadata: None,
             operator: None,
@@ -187,6 +189,7 @@ mod tests {
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             protocol: Some(PROTOCOL_V4.into()),
+            typed_bootstrap: None,
             working_dir: Some("/home/user/project".into()),
             initial_metadata: None,
             operator: None,
@@ -201,6 +204,7 @@ mod tests {
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
             protocol: Some(PROTOCOL_V4.into()),
+            typed_bootstrap: None,
             working_dir: None,
             initial_metadata: None,
             operator: Some("agent:codex:s1".into()),
@@ -214,6 +218,7 @@ mod tests {
         // OpenNotebook
         let json = serde_json::to_string(&Handshake::OpenNotebook {
             path: "/home/user/notebook.ipynb".into(),
+            typed_bootstrap: None,
             operator: None,
         })
         .unwrap();
@@ -231,6 +236,7 @@ mod tests {
             package_manager: None,
             environment_mode: None,
             dependencies: vec![],
+            typed_bootstrap: None,
             operator: None,
         })
         .unwrap();
@@ -245,6 +251,7 @@ mod tests {
             package_manager: None,
             environment_mode: None,
             dependencies: vec![],
+            typed_bootstrap: None,
             operator: None,
         })
         .unwrap();
@@ -262,6 +269,7 @@ mod tests {
             package_manager: None,
             environment_mode: None,
             dependencies: vec![],
+            typed_bootstrap: None,
             operator: None,
         })
         .unwrap();
@@ -278,12 +286,24 @@ mod tests {
             package_manager: None,
             environment_mode: Some(CreateNotebookEnvironmentMode::Notebook),
             dependencies: vec![],
+            typed_bootstrap: None,
             operator: None,
         })
         .unwrap();
         assert_eq!(
             json,
             r#"{"channel":"create_notebook","runtime":"python","working_dir":"/home/user/project","environment_mode":"notebook"}"#
+        );
+
+        let json = serde_json::to_string(&Handshake::OpenNotebook {
+            path: "/home/user/notebook.ipynb".into(),
+            typed_bootstrap: Some(true),
+            operator: None,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"open_notebook","path":"/home/user/notebook.ipynb","typed_bootstrap":true}"#
         );
     }
 
@@ -406,6 +426,45 @@ mod tests {
         );
         assert!(put_blob.multipart);
         assert!(put_blob.ephemeral_supported);
+    }
+
+    #[tokio::test]
+    async fn typed_bootstrap_roundtrips_over_session_control_frame() {
+        let info = NotebookConnectionInfo {
+            capabilities: ProtocolCapabilities::v4(Some("0.1.0+abc123".into()))
+                .with_identity("local:kyle/desktop:7f3a", "owner"),
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 5,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: true,
+            notebook_path: None,
+        };
+        let bootstrap = ConnectionBootstrap::notebook_connection_info(info.clone());
+
+        let mut buf = Vec::new();
+        send_typed_bootstrap_frame(&mut buf, &bootstrap)
+            .await
+            .unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let decoded = recv_typed_bootstrap_frame(&mut cursor)
+            .await
+            .unwrap()
+            .unwrap();
+        match decoded {
+            ConnectionBootstrap::NotebookConnectionInfo { info: decoded_info } => {
+                assert_eq!(decoded_info.notebook_id, info.notebook_id);
+                assert_eq!(decoded_info.cell_count, info.cell_count);
+                assert_eq!(
+                    decoded_info.capabilities.actor_label.as_deref(),
+                    Some("local:kyle/desktop:7f3a")
+                );
+            }
+            ConnectionBootstrap::ProtocolCapabilities { .. } => {
+                panic!("expected notebook connection info bootstrap")
+            }
+        }
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@ const HEALTH_PATH = "/__nteract_dev_relay/health";
 const WS_PATH = "/__nteract_dev_relay/ws";
 const MAGIC = [0xc0, 0xde, 0x01, 0xac] as const;
 const PROTOCOL_VERSION = 4;
+const FRAME_TYPE_SESSION_CONTROL = 0x07;
 const MAX_FRAME_SIZE = 100 * 1024 * 1024;
 const RELAY_AUTH_POLICY = {
   token_required: true,
@@ -28,6 +29,22 @@ interface DaemonInfoJson {
 
 interface RelayOptions {
   repoRoot: string;
+}
+
+interface NotebookConnectionInfoJson {
+  notebook_id?: string;
+  cell_count?: number;
+  needs_trust_approval?: boolean;
+  error?: string;
+  ephemeral?: boolean;
+  notebook_path?: string | null;
+  runtime?: string;
+  actor_label?: string;
+  connection_scope?: string;
+  capabilities?: {
+    actor_label?: string;
+    connection_scope?: string;
+  };
 }
 
 class LengthPrefixedFrames {
@@ -180,7 +197,7 @@ function isAuthorizedRelayUpgrade(req: IncomingMessage, url: URL, token: string)
 function relayHandshake(url: URL, repoRoot: string): Record<string, unknown> {
   const notebookPath = url.searchParams.get("path");
   if (notebookPath) {
-    return { channel: "open_notebook", path: notebookPath };
+    return { channel: "open_notebook", path: notebookPath, typed_bootstrap: true };
   }
 
   const notebookId = url.searchParams.get("notebook_id");
@@ -191,10 +208,27 @@ function relayHandshake(url: URL, repoRoot: string): Record<string, unknown> {
     channel: "create_notebook",
     runtime,
     working_dir: workingDir,
+    typed_bootstrap: true,
     ...(environmentMode ? { environment_mode: environmentMode } : {}),
     ...(notebookId ? { notebook_id: notebookId } : {}),
     ephemeral: true,
   };
+}
+
+function parseNotebookConnectionInfo(frame: Buffer): NotebookConnectionInfoJson {
+  if (frame[0] !== FRAME_TYPE_SESSION_CONTROL) {
+    return JSON.parse(frame.toString("utf8")) as NotebookConnectionInfoJson;
+  }
+
+  const bootstrap = JSON.parse(frame.subarray(1).toString("utf8")) as {
+    type?: string;
+  } & NotebookConnectionInfoJson;
+  if (bootstrap.type !== "notebook_connection_info") {
+    throw new Error(`unexpected typed bootstrap: ${bootstrap.type ?? "missing type"}`);
+  }
+
+  const { type: _type, ...info } = bootstrap;
+  return info;
 }
 
 function control(ws: WebSocket, value: unknown): void {
@@ -267,21 +301,7 @@ async function handleRelayConnection(
     writePreamble(daemon);
     writeFrame(daemon, JSON.stringify(relayHandshake(url, repoRoot)));
     const infoFrame = await frames.readFrame();
-    const info = JSON.parse(infoFrame.toString("utf8")) as {
-      notebook_id?: string;
-      cell_count?: number;
-      needs_trust_approval?: boolean;
-      error?: string;
-      ephemeral?: boolean;
-      notebook_path?: string | null;
-      runtime?: string;
-      actor_label?: string;
-      connection_scope?: string;
-      capabilities?: {
-        actor_label?: string;
-        connection_scope?: string;
-      };
-    };
+    const info = parseNotebookConnectionInfo(infoFrame);
 
     if (info.error) throw new Error(info.error);
     const actorLabel = info.actor_label ?? info.capabilities?.actor_label;

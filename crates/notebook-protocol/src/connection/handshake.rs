@@ -1,8 +1,10 @@
 //! Connection handshake data structures.
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::env::{CreateNotebookEnvironmentMode, PackageManager};
+use super::framing::{self, NotebookFrameType};
 
 /// Channel handshake — the first frame on every connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +24,10 @@ pub enum Handshake {
         /// Protocol version requested by client (`v4`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         protocol: Option<String>,
+        /// When true, the daemon sends the connection bootstrap as a typed
+        /// SessionControl frame instead of a standalone untyped JSON frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        typed_bootstrap: Option<bool>,
         /// Working directory for untitled notebooks (used for project file detection).
         /// When a notebook_id is a UUID (untitled), this provides the directory context
         /// for finding pyproject.toml, pixi.toml, or environment.yaml.
@@ -44,6 +50,10 @@ pub enum Handshake {
     OpenNotebook {
         /// Path to the .ipynb file.
         path: String,
+        /// When true, the daemon sends `NotebookConnectionInfo` as a typed
+        /// SessionControl frame instead of a standalone untyped JSON frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        typed_bootstrap: Option<bool>,
         /// Self-declared operator suffix for the authenticated actor label.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         operator: Option<String>,
@@ -95,6 +105,10 @@ pub enum Handshake {
         /// Dependencies to seed into notebook metadata before auto-launch.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dependencies: Vec<String>,
+        /// When true, the daemon sends `NotebookConnectionInfo` as a typed
+        /// SessionControl frame instead of a standalone untyped JSON frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        typed_bootstrap: Option<bool>,
         /// Self-declared operator suffix for the authenticated actor label.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         operator: Option<String>,
@@ -212,4 +226,59 @@ pub struct NotebookConnectionInfo {
     /// when `notebook_id_hint` resolves to a room that already has a path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notebook_path: Option<String>,
+}
+
+/// Typed bootstrap payload carried on `NotebookFrameType::SessionControl`.
+///
+/// Unix streams still need length-prefix framing, but relay-style clients can
+/// opt into this envelope so all post-handshake connection metadata rides the
+/// same typed-frame channel used by WebSocket transports.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConnectionBootstrap {
+    ProtocolCapabilities {
+        #[serde(flatten)]
+        capabilities: ProtocolCapabilities,
+    },
+    NotebookConnectionInfo {
+        #[serde(flatten)]
+        info: NotebookConnectionInfo,
+    },
+}
+
+impl ConnectionBootstrap {
+    pub fn protocol_capabilities(capabilities: ProtocolCapabilities) -> Self {
+        Self::ProtocolCapabilities { capabilities }
+    }
+
+    pub fn notebook_connection_info(info: NotebookConnectionInfo) -> Self {
+        Self::NotebookConnectionInfo { info }
+    }
+}
+
+/// Send a typed connection bootstrap frame.
+pub async fn send_typed_bootstrap_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    bootstrap: &ConnectionBootstrap,
+) -> anyhow::Result<()> {
+    framing::send_typed_json_frame(writer, NotebookFrameType::SessionControl, bootstrap).await
+}
+
+/// Receive and parse a typed connection bootstrap frame.
+pub async fn recv_typed_bootstrap_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> anyhow::Result<Option<ConnectionBootstrap>> {
+    let Some(frame) = framing::recv_typed_frame(reader).await? else {
+        return Ok(None);
+    };
+
+    if frame.frame_type != NotebookFrameType::SessionControl {
+        anyhow::bail!(
+            "expected SessionControl bootstrap frame, got {:?}",
+            frame.frame_type
+        );
+    }
+
+    let bootstrap = serde_json::from_slice(&frame.payload)?;
+    Ok(Some(bootstrap))
 }
