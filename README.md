@@ -1,6 +1,6 @@
 # nteract
 
-A fast, modern toolkit for Jupyter notebooks. Native desktop app with instant startup, realtime sync across windows and agents, and intelligent environment management.
+nteract is a local-first notebook environment where humans, kernels, and AI agents can work against the same live document. It ships as a native desktop app with instant startup, realtime sync across windows and programmatic clients, and managed local environments.
 
 Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [jupyter-protocol](https://crates.io/crates/jupyter-protocol).
 
@@ -25,6 +25,13 @@ The `runt` CLI and `runtimed` Python bindings ship with the app and stay up to d
 | `runtimed` | Background daemon — environment pools, notebook sync, kernel execution |
 | `runt` | CLI for managing kernels, notebooks, and the daemon |
 | `runtimed` (Python) | Python bindings for the daemon (ships with the app) |
+
+## Runtime model
+
+nteract stores notebook content in an Automerge-backed document and keeps live kernel state in an explicit runtime state document. The daemon owns kernel processes, execution queues, output capture, and the write path for execution results.
+
+Execution requests name a synced `cell_id`; the daemon reads the cell source from the shared document, records queue and status changes in runtime state, and writes outputs through the same model. The desktop app, CLI, MCP server, and agent clients use that path, so programmatic control observes the same notebook state a human is editing.
+
 ## MCP Server
 
 The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans in real-time — watching the notebook update live in the desktop app while the agent works.

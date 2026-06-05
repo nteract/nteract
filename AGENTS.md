@@ -4,6 +4,10 @@
 
 This is a map. Subsystem details live in nested `AGENTS.md` files next to code, auto-loaded rules live in `.claude/rules/`, and repository skills live in `.agents/skills/`. Claude reads the same skills through the `.claude/skills` symlink. Run `cargo xtask help` for build commands.
 
+## Project positioning
+
+nteract is a local-first, agent-ready notebook environment where humans, kernels, and AI agents work against the same live document. Describe that in concrete system terms: Automerge-backed notebook state, explicit runtime state, daemon-owned kernels, outputs, and execution, and programmatic control through the same runtime model. Avoid broad AI slogans; prefer the mechanics users and developers can verify.
+
 ## Skills
 
 Use `.agents/skills/` when the task matches:
@@ -75,6 +79,10 @@ Stream output may use bounded, lossy periodic flushes, but ordering boundaries c
 Output widget replay is not the durable record; RuntimeStateDoc is. Kernel-facing `SendCommUpdate` replay from IOPub must be non-blocking and best-effort so a full bounded work queue cannot delay later lifecycle status.
 
 `update_display_data` is transient display churn. Coalesce it by `display_id` off the IOPub hot path, but flush pending display updates after `KernelIdle` and before `ExecutionDone` so terminal runtime state still follows durable output state.
+
+### Execution references synced cell IDs
+
+Execution that belongs to notebook state should reference a synced `cell_id`. Create or edit the cell in the Automerge document, wait for sync as needed, then execute by `cell_id`. Do not bypass the document with side-channel code strings or ad hoc code payloads; otherwise peers can execute source that is not the live notebook content.
 
 ## Notebook files
 
