@@ -41,6 +41,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -56,6 +57,19 @@ use tracing::{debug, info, warn};
 /// First-byte constant for the session-control channel (`cloud_room_ready`
 /// arrives here). Re-export of the wire constant for local readability.
 const SESSION_CONTROL: u8 = notebook_wire::frame_types::SESSION_CONTROL;
+
+/// How long [`CloudWsFrameTransport::connect`] waits for the room to reach the
+/// `cloud_room_ready` / `cloud_frame_rejected` state after a successful WS
+/// upgrade, before giving up with a `TimedOut` connect error.
+///
+/// Without this bound a room that completes the upgrade but never sends a
+/// terminal control frame and never closes the socket would hang `connect`
+/// forever. Because every reconnect attempt calls `connect` with no per-attempt
+/// timeout of its own, that hang would also wedge the whole
+/// `reconnect_with_backoff` recovery path. Returning a connect error instead
+/// lets the agent's backoff loop retry (or, after its bounded attempts, exit
+/// cleanly) rather than block indefinitely on one wedged room.
+const READY_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -178,6 +192,57 @@ fn classify_ready_control(payload: &[u8]) -> ReadyControl {
             ReadyControl::Rejected(reason)
         }
         _ => ReadyControl::Other,
+    }
+}
+
+/// Read frames from `source` until the room reaches a terminal ready state,
+/// returning the authenticated principal from `cloud_room_ready`.
+///
+/// Data frames that arrive before the room is ready are pushed onto `buffered`
+/// so the caller can replay them to the agent after the handshake — the
+/// connect-time wait never drops a frame. A `cloud_frame_rejected` is surfaced
+/// as a `PermissionDenied` error (the room refusing the attach over a control
+/// frame rather than an HTTP status); a clean close before ready is an
+/// `UnexpectedEof`.
+///
+/// This helper has no deadline of its own — [`CloudWsFrameTransport::connect`]
+/// wraps it in [`READY_WAIT_TIMEOUT`] so a room that upgrades the WS but never
+/// sends a terminal control frame can't hang the connect forever. It is generic
+/// over [`FrameSource`] so the timeout and rejection paths are unit-testable
+/// against a mock source.
+async fn wait_for_ready<S: FrameSource>(
+    source: &mut S,
+    buffered: &mut VecDeque<TypedNotebookFrame>,
+) -> std::io::Result<String> {
+    loop {
+        match source.recv_frame().await {
+            Some(Ok(frame)) if frame.frame_type as u8 == SESSION_CONTROL => {
+                match classify_ready_control(&frame.payload) {
+                    ReadyControl::Ready(principal) => return Ok(principal),
+                    ReadyControl::Rejected(reason) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            format!("room rejected attach before ready: {reason}"),
+                        ));
+                    }
+                    ReadyControl::Other => {
+                        debug!(
+                            "[cloud-transport] control frame before ready ({} bytes): {}",
+                            frame.payload.len(),
+                            String::from_utf8_lossy(&frame.payload)
+                        );
+                    }
+                }
+            }
+            Some(Ok(frame)) => buffered.push_back(frame),
+            Some(Err(e)) => return Err(e),
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed before cloud_room_ready",
+                ));
+            }
+        }
     }
 }
 
@@ -375,42 +440,32 @@ impl CloudWsFrameTransport {
             pending: VecDeque::new(),
         };
 
-        // Read up to `cloud_room_ready`, surfacing the principal. Buffer any
-        // data frames that arrive first so the agent loop sees them after the
-        // ready handshake without loss. A `cloud_frame_rejected` during this
-        // window is the room refusing the attach (auth/ACL) over a control
-        // frame rather than an HTTP status; surface its reason rather than
-        // hanging until the socket closes.
-        let principal = loop {
-            match source.recv_frame().await {
-                Some(Ok(frame)) if frame.frame_type as u8 == SESSION_CONTROL => {
-                    match classify_ready_control(&frame.payload) {
-                        ReadyControl::Ready(principal) => break principal,
-                        ReadyControl::Rejected(reason) => {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::PermissionDenied,
-                                format!("room rejected attach before ready: {reason}"),
-                            ));
-                        }
-                        ReadyControl::Other => {
-                            debug!(
-                                "[cloud-transport] control frame before ready ({} bytes): {}",
-                                frame.payload.len(),
-                                String::from_utf8_lossy(&frame.payload)
-                            );
-                        }
-                    }
-                }
-                Some(Ok(frame)) => source.pending.push_back(frame),
-                Some(Err(e)) => return Err(e),
-                None => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "connection closed before cloud_room_ready",
-                    ));
-                }
+        // Read up to `cloud_room_ready`, surfacing the principal — but bound the
+        // wait. A room that upgrades the WS yet never sends a terminal control
+        // frame and never closes would otherwise hang `connect` (and, through
+        // `reconnect_with_backoff`, the whole recovery path) forever. On timeout
+        // return a `TimedOut` connect error so the agent retries rather than
+        // blocks. Data frames that arrive before ready are buffered in
+        // `source.pending` and replayed to the agent after the handshake.
+        let mut buffered = VecDeque::new();
+        let principal = match tokio::time::timeout(
+            READY_WAIT_TIMEOUT,
+            wait_for_ready(&mut source, &mut buffered),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "room did not send cloud_room_ready within {}s",
+                        READY_WAIT_TIMEOUT.as_secs()
+                    ),
+                ));
             }
         };
+        source.pending = buffered;
 
         info!("[cloud-transport] room ready; principal={principal}");
         let sink = CloudWsSink { sink };
@@ -627,5 +682,141 @@ mod tests {
             },
         });
         assert!(t.clean_eof_is_recoverable());
+    }
+
+    // -- ready-wait helper tests ------------------------------------------
+    //
+    // `wait_for_ready` is the inner loop `connect` wraps in `READY_WAIT_TIMEOUT`.
+    // Testing it (and the timeout) against a mock `FrameSource` exercises the
+    // hang/rejection/buffering paths without a live room.
+
+    /// A scripted [`FrameSource`]: yields a queue of frames, then either ends
+    /// the stream (`None`) or, if `hang` is set, blocks forever — modelling a
+    /// room that upgraded the WS but never sends a terminal control frame.
+    struct ScriptedSource {
+        frames: VecDeque<std::io::Result<TypedNotebookFrame>>,
+        hang: bool,
+    }
+
+    impl ScriptedSource {
+        fn yielding(frames: Vec<std::io::Result<TypedNotebookFrame>>) -> Self {
+            Self {
+                frames: frames.into(),
+                hang: false,
+            }
+        }
+
+        /// Yields `frames`, then hangs forever instead of ending the stream.
+        fn then_hang(frames: Vec<std::io::Result<TypedNotebookFrame>>) -> Self {
+            Self {
+                frames: frames.into(),
+                hang: true,
+            }
+        }
+    }
+
+    impl FrameSource for ScriptedSource {
+        async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+            if let Some(frame) = self.frames.pop_front() {
+                return Some(frame);
+            }
+            if self.hang {
+                std::future::pending::<()>().await;
+            }
+            None
+        }
+    }
+
+    fn control_frame(json: serde_json::Value) -> TypedNotebookFrame {
+        TypedNotebookFrame {
+            frame_type: NotebookFrameType::SessionControl,
+            payload: serde_json::to_vec(&json).unwrap(),
+        }
+    }
+
+    fn data_frame(payload: &[u8]) -> TypedNotebookFrame {
+        TypedNotebookFrame {
+            frame_type: NotebookFrameType::AutomergeSync,
+            payload: payload.to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_returns_principal_and_buffers_pre_ready_data() {
+        // A data frame arrives before `cloud_room_ready`; it must be buffered
+        // (replayed to the agent later), not dropped, and the principal parsed.
+        let mut source = ScriptedSource::yielding(vec![
+            Ok(data_frame(b"early sync bytes")),
+            Ok(control_frame(serde_json::json!({
+                "type": "cloud_room_ready",
+                "actor_label": "anaconda:alice/agent:runt:7f3a",
+            }))),
+        ]);
+        let mut buffered = VecDeque::new();
+        let principal = wait_for_ready(&mut source, &mut buffered).await.unwrap();
+        assert_eq!(principal, "anaconda:alice");
+        assert_eq!(buffered.len(), 1, "pre-ready data frame is buffered");
+        assert_eq!(buffered[0].payload, b"early sync bytes");
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_surfaces_rejection() {
+        let mut source = ScriptedSource::yielding(vec![Ok(control_frame(serde_json::json!({
+            "type": "cloud_frame_rejected",
+            "reason": "principal lacks runtime_peer ACL row",
+        })))]);
+        let mut buffered = VecDeque::new();
+        let err = wait_for_ready(&mut source, &mut buffered)
+            .await
+            .expect_err("rejection is an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_clean_eof_before_ready_is_unexpected_eof() {
+        let mut source = ScriptedSource::yielding(vec![]);
+        let mut buffered = VecDeque::new();
+        let err = wait_for_ready(&mut source, &mut buffered)
+            .await
+            .expect_err("EOF before ready is an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    /// The keystone gap-1 test: a room that upgrades the WS but never sends a
+    /// terminal control frame and never closes must NOT hang `connect`. The
+    /// `READY_WAIT_TIMEOUT` wrapper turns the hang into a `TimedOut` error so
+    /// `reconnect_with_backoff` can retry. Uses paused time so the test is
+    /// instant and deterministic.
+    #[tokio::test(start_paused = true)]
+    async fn ready_wait_times_out_on_a_silent_room() {
+        // Sends one non-terminal control frame, then hangs forever.
+        let mut source = ScriptedSource::then_hang(vec![Ok(control_frame(serde_json::json!({
+            "type": "cloud_frame_accepted",
+        })))]);
+        let mut buffered = VecDeque::new();
+
+        let result = tokio::time::timeout(
+            READY_WAIT_TIMEOUT,
+            wait_for_ready(&mut source, &mut buffered),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a room that never sends cloud_room_ready must time out, not hang"
+        );
+
+        // And the connect-time mapping turns that elapsed into a TimedOut io
+        // error (the shape `reconnect_with_backoff` treats as a failed connect).
+        let mapped: std::io::Result<String> = match result {
+            Ok(inner) => inner,
+            Err(_elapsed) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "room did not send cloud_room_ready",
+            )),
+        };
+        assert_eq!(
+            mapped.expect_err("timed out").kind(),
+            std::io::ErrorKind::TimedOut
+        );
     }
 }

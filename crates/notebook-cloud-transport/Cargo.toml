@@ -20,4 +20,4 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tracing = "0.1"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
