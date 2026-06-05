@@ -1,4 +1,4 @@
-import type { Env, ExecutionContext, ExportedHandler, R2Object } from "./cloudflare-types.ts";
+import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
 import type { BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
@@ -79,6 +79,13 @@ import {
   type WorkerRouteMatch,
   type WorkerRoute,
 } from "./worker-routing.ts";
+import {
+  immutableR2ObjectHeadResponse,
+  immutableR2ObjectResponse,
+  json,
+  withBrowserSecurityHeaders,
+  withCors,
+} from "./http-responses.ts";
 
 export { NotebookRoom };
 
@@ -672,12 +679,7 @@ async function routeSnapshot(
       return json({ error: "snapshot not found" }, 404);
     }
 
-    const headers = new Headers({
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Type": object.httpMetadata?.contentType ?? "application/octet-stream",
-      ETag: object.httpEtag,
-    });
-    return withCors(new Response(object.body, { headers }));
+    return immutableR2ObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -800,12 +802,7 @@ async function routeRuntimeSnapshot(
       return json({ error: "runtime snapshot not found" }, 404);
     }
 
-    const headers = new Headers({
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Type": object.httpMetadata?.contentType ?? "application/octet-stream",
-      ETag: object.httpEtag,
-    });
-    return withCors(new Response(object.body, { headers }));
+    return immutableR2ObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -1688,8 +1685,7 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    const headers = blobHeaders(object);
-    return withCors(new Response(null, { headers }));
+    return immutableR2ObjectHeadResponse(object);
   }
 
   if (request.method === "GET") {
@@ -1724,7 +1720,7 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    const response = withCors(new Response(object.body, { headers: blobHeaders(object) }));
+    const response = immutableR2ObjectResponse(object, { includeContentLength: true });
     if (cache) {
       response.headers.set("X-Notebook-Cloud-Blob-Cache", "miss");
       ctx.waitUntil(
@@ -1821,15 +1817,6 @@ async function routeBlob(
   });
 
   return json({ ok: true, key, size: body.byteLength }, 201);
-}
-
-function blobHeaders(object: R2Object): Headers {
-  return new Headers({
-    "Cache-Control": "public, max-age=31536000, immutable",
-    "Content-Length": object.size.toString(),
-    "Content-Type": object.httpMetadata?.contentType ?? "application/octet-stream",
-    ETag: object.httpEtag,
-  });
 }
 
 type CloudflareCacheStorage = CacheStorage & { default?: Cache };
@@ -2155,15 +2142,6 @@ async function authorizePublishOrCreate(
   return authorizeIdentityOrResponse(env, notebookId, identity, "owner");
 }
 
-function json(value: unknown, status = 200): Response {
-  return withCors(
-    new Response(JSON.stringify(value), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    }),
-  );
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -2171,47 +2149,6 @@ function errorMessage(error: unknown): string {
 async function sha256Hex(body: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", body);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function withCors(response: Response): Response {
-  response.headers.set("Access-Control-Allow-Origin", "*");
-  response.headers.set("Access-Control-Allow-Methods", "DELETE, GET, HEAD, POST, PUT, OPTIONS");
-  response.headers.set(
-    "Access-Control-Allow-Headers",
-    `Authorization, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, X-Runtime-State-Doc-Id, ${DEV_AUTH_TOKEN_HEADER}`,
-  );
-  return response;
-}
-
-function withBrowserSecurityHeaders(response: Response, contentSecurityPolicy?: string): Response {
-  response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("Referrer-Policy", "no-referrer");
-  response.headers.set(
-    "Permissions-Policy",
-    [
-      "accelerometer=()",
-      "autoplay=()",
-      "camera=()",
-      "display-capture=()",
-      "encrypted-media=()",
-      "fullscreen=()",
-      "geolocation=()",
-      "gyroscope=()",
-      "magnetometer=()",
-      "microphone=()",
-      "midi=()",
-      "payment=()",
-      "picture-in-picture=()",
-      "publickey-credentials-get=()",
-      "screen-wake-lock=()",
-      "usb=()",
-      "xr-spatial-tracking=()",
-    ].join(", "),
-  );
-  if (contentSecurityPolicy) {
-    response.headers.set("Content-Security-Policy", contentSecurityPolicy);
-  }
-  return response;
 }
 
 function viewerContentSecurityPolicy(env: Env): string {
