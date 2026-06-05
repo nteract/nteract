@@ -353,7 +353,14 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
             copy_text.clear();
         }
         mdast::Node::Paragraph(_) => {
-            kind = NodeKind::Paragraph;
+            if let Some(math_source) = bare_display_tex_environment(context.source, &span) {
+                kind = NodeKind::MathBlock;
+                text = math_source.to_string();
+                copy_text = math_source.to_string();
+                children.clear();
+            } else {
+                kind = NodeKind::Paragraph;
+            }
         }
         mdast::Node::Heading(heading) => {
             kind = NodeKind::Heading;
@@ -753,6 +760,52 @@ fn source_slice<'a>(source: &'a str, span: &SourceSpan) -> &'a str {
     source.get(span.start..span.end).unwrap_or("")
 }
 
+fn bare_display_tex_environment<'a>(source: &'a str, span: &SourceSpan) -> Option<&'a str> {
+    let trimmed = source_slice(source, span).trim();
+    let environment = tex_environment_name(trimmed)?;
+    if !is_supported_display_tex_environment(environment) {
+        return None;
+    }
+    let closing = format!("\\end{{{environment}}}");
+    if trimmed.ends_with(&closing) {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+fn tex_environment_name(source: &str) -> Option<&str> {
+    let rest = source.strip_prefix("\\begin{")?;
+    let end = rest.find('}')?;
+    let environment = &rest[..end];
+    if environment.is_empty() {
+        None
+    } else {
+        Some(environment)
+    }
+}
+
+fn is_supported_display_tex_environment(environment: &str) -> bool {
+    matches!(
+        environment,
+        "align"
+            | "align*"
+            | "aligned"
+            | "alignedat"
+            | "alignedat*"
+            | "array"
+            | "equation"
+            | "equation*"
+            | "eqnarray"
+            | "eqnarray*"
+            | "gather"
+            | "gather*"
+            | "multline"
+            | "multline*"
+            | "split"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,6 +879,55 @@ mod tests {
         assert_eq!(plan.blocks[3].kind, NodeKind::MathBlock);
         assert_eq!(plan.blocks[3].fallback.copy_text, "x = y");
         assert_eq!(plan.measurement.confidence, MeasurementConfidence::Low);
+    }
+
+    #[test]
+    fn projects_bare_jupyter_tex_environments_as_math_blocks() {
+        let source = [
+            "\\begin{align}",
+            "a^2 + b^2 &= c^2 \\\\",
+            "\\sin^2(\\theta) + \\cos^2(\\theta) &= 1",
+            "\\end{align}",
+            "",
+            "\\begin{equation*}",
+            "\\left( \\sum_{k=1}^n a_k b_k \\right)^2 \\leq \\left( \\sum_{k=1}^n a_k^2 \\right) \\left( \\sum_{k=1}^n b_k^2 \\right)",
+            "\\end{equation*}",
+            "",
+            "\\begin{array}{cc}",
+            "a & b \\\\",
+            "c & d",
+            "\\end{array}",
+        ]
+        .join("\n");
+        let plan = project_markdown(&source).unwrap();
+
+        assert_eq!(plan.blocks.len(), 3);
+        assert!(plan
+            .blocks
+            .iter()
+            .all(|block| block.kind == NodeKind::MathBlock));
+        assert_eq!(
+            plan.blocks[0].fallback.copy_text,
+            source.lines().take(4).collect::<Vec<_>>().join("\n")
+        );
+        assert!(plan.blocks[1]
+            .fallback
+            .copy_text
+            .starts_with("\\begin{equation*}"));
+        assert!(plan.blocks[2]
+            .fallback
+            .copy_text
+            .starts_with("\\begin{array}{cc}"));
+        assert_eq!(plan.measurement.confidence, MeasurementConfidence::Low);
+    }
+
+    #[test]
+    fn keeps_mixed_tex_environment_prose_as_markdown_text() {
+        let plan = project_markdown("Before \\begin{align}x&=y\\end{align} after").unwrap();
+
+        assert_eq!(plan.blocks.len(), 1);
+        assert_eq!(plan.blocks[0].kind, NodeKind::Paragraph);
+        assert!(contains_kind(&plan.blocks[0], NodeKind::Text));
     }
 
     #[test]
