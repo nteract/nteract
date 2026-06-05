@@ -1789,6 +1789,7 @@ mod tests {
     use crate::output_prep::queue_command_channels;
     use crate::protocol::CompletionItem;
     use anyhow::Result;
+    use notebook_protocol::connection::TypedNotebookFrame;
     use notebook_protocol::protocol::{BlobDurability, LaunchedEnvConfig};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -1850,6 +1851,112 @@ mod tests {
         assert_eq!(
             reconnect_floor_delay(true, Some(Duration::from_secs(1)), Duration::from_secs(1)),
             None
+        );
+    }
+
+    // -- reconnect_with_backoff against a mock transport ------------------
+    //
+    // 3a made the reconnect *mechanism* generic over `FrameTransport`; 3b
+    // verifies it: a transport whose `connect` fails N times then succeeds must
+    // recover (within the bounded attempts), and one that always fails must give
+    // up so a genuinely-gone room lets the agent exit rather than spin forever.
+
+    /// Empty source: always clean-EOF. Enough to satisfy the `(Source, Sink)`
+    /// return type; these tests exercise `connect`, not frame flow.
+    #[derive(Debug)]
+    struct NullSource;
+    impl FrameSource for NullSource {
+        async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+            None
+        }
+    }
+
+    /// Sink that drops every frame.
+    #[derive(Debug)]
+    struct NullSink;
+    impl FrameSink for NullSink {
+        async fn send_frame(&mut self, _: NotebookFrameType, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A `FrameTransport` whose `connect` fails the first `fail_before` calls
+    /// (with a `ConnectionRefused` io error, the shape a dial failure takes),
+    /// then succeeds. Counts total connect attempts.
+    struct FlakyTransport {
+        fail_before: u32,
+        attempts: std::sync::atomic::AtomicU32,
+        recoverable: bool,
+    }
+
+    impl FlakyTransport {
+        fn new(fail_before: u32) -> Self {
+            Self {
+                fail_before,
+                attempts: std::sync::atomic::AtomicU32::new(0),
+                recoverable: true,
+            }
+        }
+        fn attempts(&self) -> u32 {
+            self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl FrameTransport for FlakyTransport {
+        type Source = NullSource;
+        type Sink = NullSink;
+
+        async fn connect(&self) -> std::io::Result<(Self::Source, Self::Sink)> {
+            let n = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.fail_before {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "mock dial refused",
+                ))
+            } else {
+                Ok((NullSource, NullSink))
+            }
+        }
+
+        fn clean_eof_is_recoverable(&self) -> bool {
+            self.recoverable
+        }
+    }
+
+    /// Fails fewer times than `MAX_ATTEMPTS` (10), so backoff recovers. Paused
+    /// time so the exponential sleeps don't make the test slow.
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_with_backoff_recovers_after_transient_failures() {
+        let transport = FlakyTransport::new(3);
+        let result = reconnect_with_backoff(&transport).await;
+        assert!(result.is_ok(), "should recover after 3 transient failures");
+        // 3 failed + 1 success.
+        assert_eq!(transport.attempts(), 4);
+    }
+
+    /// Fails on the last possible attempt boundary: 9 failures then success on
+    /// the 10th (== MAX_ATTEMPTS) still recovers.
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_with_backoff_recovers_on_final_attempt() {
+        let transport = FlakyTransport::new(9);
+        assert!(reconnect_with_backoff(&transport).await.is_ok());
+        assert_eq!(transport.attempts(), 10);
+    }
+
+    /// A transport that always fails exhausts MAX_ATTEMPTS (10) and returns the
+    /// last error, so the agent can exit rather than spin forever.
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_with_backoff_gives_up_after_max_attempts() {
+        let transport = FlakyTransport::new(u32::MAX);
+        let err = reconnect_with_backoff(&transport)
+            .await
+            .expect_err("always-failing transport gives up");
+        assert_eq!(transport.attempts(), 10, "exactly MAX_ATTEMPTS tries");
+        assert!(
+            err.to_string().contains("mock dial refused"),
+            "last error is preserved: {err}"
         );
     }
 
