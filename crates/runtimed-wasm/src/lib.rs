@@ -25,7 +25,8 @@ use nteract_identity::{ActorLabel, ConnectionScope, Operator, Principal};
 use runtime_doc::{
     diff_output_ids_in_place, output_ids_for_execution, runtime_state_policy_snapshot,
     validate_runtime_state_sync_scope, ExecutionState, ExecutionViewChangeset,
-    ExecutionViewProjector, RuntimeState, RuntimeStateDoc, RuntimeStateWriteScope,
+    ExecutionViewProjector, RuntimeLifecycle, RuntimeState, RuntimeStateDoc,
+    RuntimeStateWriteScope,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -525,6 +526,40 @@ impl RoomHostHandle {
         self.runtime_peer_states.remove(peer_id);
     }
 
+    /// Reconcile the authoritative RuntimeStateDoc after the room's
+    /// `runtime_peer` has departed and not returned within the grace period.
+    ///
+    /// This is the room-side safety net the daemon structurally cannot provide:
+    /// when the runtime peer (the daemon) vanishes, it is the very actor that
+    /// would otherwise terminalize in-flight work, so no surviving participant
+    /// and no daemon-side code can correct the doc (lifecycle-analysis reqs #3,
+    /// #7). Left alone, running/queued executions spin forever and the kernel
+    /// shows a phantom-live status to every viewer.
+    ///
+    /// Concretely it: marks all in-flight (`running`/`queued`) executions
+    /// failed, clears the queue, and — if the kernel still reads as live
+    /// (`Running`/a starting phase) — flips lifecycle to `Error` with an
+    /// `error_details` note. It deliberately does NOT touch an already-terminal
+    /// kernel (`Error`/`Shutdown`/`NotStarted`), so a clean shutdown that raced
+    /// the disconnect is not relabeled.
+    ///
+    /// Authoring here is *direct* on the room host's `state_doc`, which does not
+    /// pass through `validate_runtime_state_sync_scope` (that gates only incoming
+    /// peer sync); the room host is the authoritative writer for this document,
+    /// so no policy relaxation is required (see #16 decision log #32).
+    ///
+    /// The Worker is expected to call this from a DurableObject `alarm()` armed
+    /// when the last `runtime_peer` leaves and disarmed if one rejoins within the
+    /// grace window — so a transient blip reconnects rather than reconciles.
+    /// `reason` is a short human string folded into `error_details`. Returns the
+    /// outbound sync frames to broadcast to remaining peers (empty if nothing
+    /// changed — the call is idempotent, so a second alarm is a safe no-op).
+    pub fn reconcile_runtime_peer_gone(&mut self, reason: &str) -> Result<JsValue, JsError> {
+        let result = self.reconcile_runtime_peer_gone_inner(reason)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize reconcile result: {e}")))
+    }
+
     /// Generate current sync frames for a peer.
     ///
     /// The Worker calls this immediately after accepting a socket and after the
@@ -986,6 +1021,72 @@ impl RoomHostHandle {
         }
         Ok(())
     }
+
+    /// Native-testable core of [`Self::reconcile_runtime_peer_gone`]. Returns the
+    /// result struct directly (the public method wraps it for the WASM boundary)
+    /// so the reconciliation logic can be unit-tested with plain `cargo test`.
+    fn reconcile_runtime_peer_gone_inner(
+        &mut self,
+        reason: &str,
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let heads_before = self.state_doc.get_heads();
+
+        // 1. Terminalize in-flight executions (running + queued) and clear the
+        //    queue, so viewers stop seeing perpetually-spinning cells and the
+        //    idempotency guard in handle_execute_cell no longer suppresses
+        //    re-runs of the orphaned work.
+        self.state_doc
+            .mark_inflight_executions_failed()
+            .map_err(|e| JsError::new(&format!("reconcile executions: {e}")))?;
+        self.state_doc
+            .set_queue(None, &[])
+            .map_err(|e| JsError::new(&format!("reconcile queue: {e}")))?;
+
+        // 2. Flip a still-live kernel to Error. Leave an already-terminal kernel
+        //    (Error/Shutdown/NotStarted) untouched so a clean shutdown that raced
+        //    the disconnect is not relabeled. "Live" = Running or any starting
+        //    phase the dead peer last published.
+        let lifecycle = self.state_doc.read_state().kernel.lifecycle;
+        if lifecycle_is_live(&lifecycle) {
+            let details = format!("runtime peer disconnected: {reason}");
+            self.state_doc
+                .set_lifecycle_with_error_details(&RuntimeLifecycle::Error, None, Some(&details))
+                .map_err(|e| JsError::new(&format!("reconcile lifecycle: {e}")))?;
+        }
+
+        let changed = self.state_doc.get_heads() != heads_before;
+        let mut result = RoomHostFrameResult {
+            changed,
+            notebook_changed: false,
+            runtime_state_changed: changed,
+            outbound: Vec::new(),
+        };
+        // Broadcast the reconciled state to every remaining peer. Passing an
+        // empty `changed_peer_id` means "exclude no one" — the departed peer is
+        // already gone from `runtime_peer_states`, so this reaches exactly the
+        // survivors (viewers/editors) that need the corrected doc.
+        if changed {
+            self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+}
+
+/// Whether a kernel lifecycle still reads as "alive" — i.e. a viewer would see
+/// a running or starting kernel. Used by the disconnect watchdog to decide
+/// whether to flip to `Error` (only meaningful from a live state; an already
+/// terminal `Error`/`Shutdown`/`NotStarted` is left as-is).
+fn lifecycle_is_live(lifecycle: &RuntimeLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        RuntimeLifecycle::Running(_)
+            | RuntimeLifecycle::AwaitingTrust
+            | RuntimeLifecycle::AwaitingEnvBuild
+            | RuntimeLifecycle::Resolving
+            | RuntimeLifecycle::PreparingEnv
+            | RuntimeLifecycle::Launching
+            | RuntimeLifecycle::Connecting
+    )
 }
 
 fn room_peer_sync_state(can_write: bool) -> sync::State {
@@ -3336,6 +3437,121 @@ mod tests {
         assert!(!seeded_again);
         assert_eq!(host.doc.cell_count(), 1);
         assert!(host.doc.get_cell("cell-second").is_none());
+    }
+
+    // -- runtime_peer-gone reconciliation (Phase 3d watchdog core) --------
+
+    use runtime_doc::KernelActivity;
+
+    /// Build a host whose RuntimeStateDoc looks like a live runtime peer left
+    /// mid-flight: kernel Running(Busy), one running + one queued execution.
+    fn host_with_inflight_work() -> RoomHostHandle {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let sd = &mut host.state_doc;
+        sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))
+            .unwrap();
+        sd.create_execution_with_source("exec-running", "x = 1", 0)
+            .unwrap();
+        sd.set_execution_running("exec-running").unwrap();
+        sd.create_execution_with_source("exec-queued", "y = 2", 1)
+            .unwrap();
+        sd.set_queue(
+            Some(&runtime_doc::QueueEntry {
+                execution_id: "exec-running".into(),
+            }),
+            &[runtime_doc::QueueEntry {
+                execution_id: "exec-queued".into(),
+            }],
+        )
+        .unwrap();
+        host
+    }
+
+    #[test]
+    fn reconcile_runtime_peer_gone_terminalizes_inflight_and_errors_live_kernel() {
+        let mut host = host_with_inflight_work();
+
+        let result = host
+            .reconcile_runtime_peer_gone_inner("daemon dropped")
+            .expect("reconcile ok");
+        assert!(result.changed, "reconciliation changed the doc");
+        assert!(result.runtime_state_changed);
+
+        let state = host.state_doc.read_state();
+        // Both in-flight executions are now terminal (error), not spinning.
+        assert_eq!(state.executions["exec-running"].status, "error");
+        assert_eq!(state.executions["exec-queued"].status, "error");
+        // Queue drained so the idempotency guard can't suppress re-runs.
+        assert!(state.queue.executing.is_none());
+        assert!(state.queue.queued.is_empty());
+        // Phantom-live kernel flipped to Error with a diagnostic note.
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            state.kernel.error_details.as_deref(),
+            Some("runtime peer disconnected: daemon dropped")
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_peer_gone_is_idempotent() {
+        let mut host = host_with_inflight_work();
+        let first = host
+            .reconcile_runtime_peer_gone_inner("blip")
+            .expect("first reconcile");
+        assert!(first.changed);
+
+        // A second alarm (e.g. the grace timer re-firing) is a safe no-op:
+        // everything is already terminal, so nothing changes and no frames are
+        // broadcast.
+        let second = host
+            .reconcile_runtime_peer_gone_inner("blip")
+            .expect("second reconcile");
+        assert!(!second.changed, "second reconcile is a no-op");
+        assert!(second.outbound.is_empty());
+    }
+
+    #[test]
+    fn reconcile_runtime_peer_gone_does_not_relabel_a_clean_shutdown() {
+        // A clean shutdown that raced the disconnect: kernel already Shutdown,
+        // no in-flight work. Reconciliation must leave the terminal lifecycle
+        // intact rather than rewriting it to Error.
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Shutdown)
+            .unwrap();
+
+        let result = host
+            .reconcile_runtime_peer_gone_inner("late disconnect")
+            .expect("reconcile ok");
+        assert!(!result.changed, "nothing to reconcile on a clean shutdown");
+        assert_eq!(
+            host.state_doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Shutdown,
+            "a clean shutdown is not relabeled to Error"
+        );
+    }
+
+    #[test]
+    fn reconcile_broadcasts_to_remaining_peers() {
+        let mut host = host_with_inflight_work();
+        // A surviving viewer peer is registered for runtime-state sync.
+        host.runtime_peer_states
+            .insert("viewer-1".to_string(), room_peer_sync_state(false));
+
+        let result = host
+            .reconcile_runtime_peer_gone_inner("gone")
+            .expect("reconcile ok");
+        assert!(result.changed);
+        assert!(
+            result
+                .outbound
+                .iter()
+                .any(|f| f.peer_id == "viewer-1"
+                    && f.frame_type == frame_types::RUNTIME_STATE_SYNC),
+            "the reconciled state is broadcast to the surviving viewer"
+        );
     }
 
     #[test]

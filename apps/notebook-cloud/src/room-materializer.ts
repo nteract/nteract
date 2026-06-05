@@ -62,6 +62,14 @@ export class RoomMaterializer {
     });
   }
 
+  /// Reconcile the authoritative RuntimeStateDoc after the room's runtime_peer
+  /// has departed without returning. Terminalizes in-flight executions and flips
+  /// a phantom-live kernel to Error, returning the sync frames to broadcast to
+  /// the surviving peers. See `RoomHostHandle::reconcile_runtime_peer_gone`.
+  async reconcileRuntimePeerGone(reason: string): Promise<RoomHostFrameResult> {
+    return this.withHost((host) => normalizeResult(host.reconcile_runtime_peer_gone(reason)));
+  }
+
   async receiveFrame(peer: RoomPeer, frame: TypedFrame): Promise<RoomHostFrameResult> {
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);

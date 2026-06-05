@@ -62,6 +62,12 @@ export interface DurableObjectStorage {
     limit?: number;
     reverse?: boolean;
   }): Promise<Map<string, T>>;
+  // Alarm API (Cloudflare-provided). Optional here so the existing fake
+  // storage in tests need not implement it; the runtime_peer-gone watchdog
+  // feature-detects these before arming.
+  setAlarm?(scheduledTime: number | Date): Promise<void>;
+  getAlarm?(): Promise<number | null>;
+  deleteAlarm?(): Promise<void>;
 }
 
 export interface D1Database {
