@@ -182,6 +182,53 @@ Phase 3a verification: `cargo test -p runtimed` passes 944 (UDS default unchange
 `cargo test -p notebook-protocol` 89; `cargo test -p notebook-cloud-transport` 12; clippy
 clean across all three; `cargo fmt --check` clean.
 
+## Phase 3b warm-up: two connect-hardening gaps pullfrog flagged on #3411
+
+24. **Bounded ready-wait timeout in `CloudWsFrameTransport::connect`
+    (`READY_WAIT_TIMEOUT`, 30s).** The connect-time `cloud_room_ready` wait
+    blocked on `recv_frame()` with no deadline: a room that completes the WS
+    upgrade but never sends `cloud_room_ready`/`cloud_frame_rejected` and never
+    closes would hang `connect` forever — and since `reconnect_with_backoff`
+    calls `connect()` with no per-attempt timeout of its own, the whole recovery
+    path would wedge on one silent room. Fix: the ready loop is extracted into a
+    `wait_for_ready<S: FrameSource>` helper (no deadline of its own, so it's
+    unit-testable against a mock source) that `connect` wraps in
+    `tokio::time::timeout(READY_WAIT_TIMEOUT, …)`; on elapse it returns a
+    `TimedOut` io error, which `reconnect_with_backoff` already treats as a
+    failed connect and retries. Alternative considered: a per-frame idle timeout
+    rather than a total deadline — rejected as more complex and unnecessary, since
+    a room mid-handshake either reaches a terminal control frame promptly or is
+    wedged. Extracting the helper also fixed a latent bug: the old loop pushed
+    pre-ready data frames back into `source.pending` while *reading via*
+    `source.recv_frame()` (which pops `pending` first), so the buffer now uses a
+    separate deque assigned into `pending` only after ready. 4 new unit tests
+    (timeout under `start_paused`, rejection, clean-EOF-before-ready, pre-ready
+    data buffering); `notebook-cloud-transport` now 16 tests.
+
+25. **Flap floor extended to the framing-error reconnect arm
+    (`RECOVERABLE_RECONNECT_FLOOR`, renamed from `CLEAN_EOF_RECONNECT_FLOOR`).**
+    Phase 3a (decision #23) added the 1s reconnect floor only to the clean-EOF
+    (`None`) arm. The framing-error (`Some(Err)`) arm plus `reconnect_with_backoff`
+    only sleep between *failed* connects, so a cloud room that accepts the
+    connection and then errors the stream every cycle would spin reconnects at RTT
+    rate (a self-inflicted DoS on the room) — the same hazard #23 fixed for clean
+    EOF, on the other arm. Fix: a pure `reconnect_floor_delay(recoverable,
+    since_last_reconnect, floor) -> Option<Duration>` helper, called by *both*
+    arms; the timestamp variable is renamed `last_recoverable_reconnect` and set
+    after every recoverable reconnect. The helper returns `None` immediately when
+    `!recoverable`, so the UDS framing-error path is byte-for-byte unchanged (no
+    sleep, never records a timestamp) — verified by the 944→881-lib runtimed suite
+    staying green and a dedicated `floor_never_delays_a_non_recoverable_transport`
+    test. Alternative considered: a separate accept-then-immediate-error counter
+    per arm — rejected; a single shared floor on the combined reconnect rate is
+    simpler and is exactly the throttle wanted regardless of which failure mode
+    recurs. 4 new unit tests for the policy.
+
+Phase 3b warm-up verification: `cargo test -p notebook-cloud-transport` 16;
+`cargo test -p runtimed` 881 lib + integration suites green (UDS unchanged);
+`cargo xtask lint --fix` clean; clippy `-D warnings` clean on both crates. No new
+workspace crate (no bump-targets change).
+
 ## Phase 3 remaining plan (3b+)
 
 Ordered by the lifecycle analysis. 3a (req #1) is done. Remaining, in dependency order:
