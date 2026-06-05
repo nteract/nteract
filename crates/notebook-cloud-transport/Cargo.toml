@@ -1,0 +1,23 @@
+[package]
+name = "notebook-cloud-transport"
+version = "0.1.0"
+edition.workspace = true
+description = "Cloud-WebSocket FrameTransport for the runtime agent (dials a hosted notebook room as a runtime peer)"
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+futures-util = "0.3"
+notebook-protocol = { path = "../notebook-protocol" }
+notebook-wire = { path = "../notebook-wire" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

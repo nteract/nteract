@@ -4820,6 +4820,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook-cloud-transport"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "notebook-protocol",
+ "notebook-wire",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "notebook-doc"
 version = "0.4.2"
 dependencies = [
