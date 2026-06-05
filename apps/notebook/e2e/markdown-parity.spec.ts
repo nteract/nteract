@@ -52,11 +52,12 @@ test.describe("markdown parity", () => {
     await expect(renderedMarkdown.locator("pre")).toContainText("highlighted code block");
 
     await activateRenderedMarkdown(markdownCell);
-    const selectionText = await selectRenderedText(
+    const copyText = await copyRenderedText(
       page,
       renderedMarkdown.locator("p", { hasText: "Selectable paragraph for copy behavior" }),
     );
-    expect(selectionText).toContain("Selectable paragraph");
+    expect(copyText.selection).toContain("Selectable paragraph");
+    expect(copyText.clipboard).toContain("Selectable paragraph");
 
     await page.getByLabel("Outline").click();
     await page.getByRole("link", { name: "Deep parity section" }).click();
@@ -86,11 +87,12 @@ test.describe("markdown parity", () => {
       .poll(() => outputMarkdown.locator(".katex").count(), { timeout: 30_000 })
       .toBeGreaterThanOrEqual(2);
 
-    const selectionText = await selectRenderedText(
+    const copyText = await copyRenderedText(
       page,
       outputMarkdown.locator("p", { hasText: "Selectable output paragraph" }),
     );
-    expect(selectionText).toContain("Selectable output");
+    expect(copyText.selection).toContain("Selectable output");
+    expect(copyText.clipboard).toContain("Selectable output");
   });
 
   test("round-trips rendered markdown through double-click edit and render", async ({ page }) => {
@@ -237,4 +239,21 @@ async function selectRenderedText(_page: Page, locator: Locator): Promise<string
   await locator.scrollIntoViewIfNeeded();
   await locator.selectText({ force: true });
   return locator.evaluate(() => window.getSelection()?.toString() ?? "");
+}
+
+async function copyRenderedText(
+  page: Page,
+  locator: Locator,
+): Promise<{ clipboard: string; selection: string }> {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+
+  const selection = await selectRenderedText(page, locator);
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+C" : "Control+C");
+
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 5_000 })
+    .not.toBe("");
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+
+  return { clipboard, selection };
 }
