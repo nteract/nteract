@@ -23,3 +23,8 @@ notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 automerge = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+# Kernel hosting: drive a local Jupyter kernel directly over ZMQ (the daemon's
+# JupyterKernel is welded to daemon-only shared state, so we reuse the protocol
+# crates instead). See docs/adr/remote-workstation-doc-agents.md.
+jupyter-protocol = { workspace = true }
+jupyter-zmq-client = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }

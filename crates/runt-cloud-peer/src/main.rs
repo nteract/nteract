@@ -36,6 +36,8 @@ use tokio_tungstenite::{
 };
 use tracing::{info, warn};
 
+mod kernel_host;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "runt-cloud-peer",
@@ -87,6 +89,19 @@ struct Cli {
     /// Auto-close after this many seconds (0 = run until disconnected).
     #[arg(long, default_value_t = 20)]
     seconds: u64,
+
+    /// Self-test the local kernel-drive layer: launch a python kernel, run a
+    /// cell (the --add-cell source, or a default), and log IOPub. No cloud.
+    #[arg(long)]
+    host_kernel: bool,
+
+    /// Python interpreter for the hosted kernel (must have ipykernel).
+    #[arg(long, default_value = "python3")]
+    python: String,
+
+    /// Optional VIRTUAL_ENV to export for the hosted kernel.
+    #[arg(long)]
+    venv: Option<String>,
 }
 
 fn load_token(cli: &Cli) -> Result<String> {
@@ -130,6 +145,17 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Standalone kernel-drive self-test: no cloud, no token. Proves the local
+    // launch + execute + IOPub layer before wiring it into the room loop.
+    if cli.host_kernel {
+        let source = cli
+            .add_cell
+            .as_deref()
+            .unwrap_or("print('hello from runt-cloud-peer kernel host')");
+        return kernel_host::self_test(&cli.python, cli.venv.as_deref(), source).await;
+    }
+
     let token = load_token(&cli)?;
     let ws_url = build_ws_url(&cli.cloud_url, &cli.notebook_id);
     info!(
