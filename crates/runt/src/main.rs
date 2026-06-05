@@ -4,6 +4,7 @@
 extern crate runtimed_client as runtimed;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::ffi::OsString;
 use std::time::Duration;
 use tabled::{settings::Style, Table, Tabled};
 
@@ -209,6 +210,12 @@ enum Commands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+    },
+    /// Publish a notebook snapshot pair to hosted nteract cloud.
+    #[command(hide = true, disable_help_flag = true, disable_help_subcommand = true)]
+    Publish {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
     },
     // =========================================================================
     // Hidden aliases for backwards compatibility (deprecated)
@@ -522,6 +529,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             full_outputs,
             json,
         }) => inspect_notebook(&path, full_outputs, json).await?,
+        Some(Commands::Publish { args }) => publish_notebook(args).await?,
 
         // Top-level convenience aliases
         Some(Commands::Status { json }) => daemon_command(DaemonCommands::Status { json }).await?,
@@ -578,6 +586,13 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn publish_notebook(args: Vec<OsString>) -> Result<()> {
+    let mut publish_args = Vec::with_capacity(args.len() + 1);
+    publish_args.push(OsString::from("runt publish"));
+    publish_args.extend(args);
+    runt_publish::run_from_args(publish_args).await
 }
 
 async fn run_mcp_server(no_show: bool) -> Result<()> {

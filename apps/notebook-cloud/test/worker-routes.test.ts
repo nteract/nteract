@@ -562,6 +562,100 @@ describe("Worker artifact routes", () => {
     });
   });
 
+  it("creates a hosted publish target with a generated notebook id", async (t) => {
+    const token = anacondaApiKeyToken();
+    const env = fakeEnv(anacondaApiKeyEnv());
+
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          email: "rgbkrk@gmail.com",
+          firstName: "Kyle",
+          lastName: "Kelley",
+          userId: "fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+          scopes: ["cloud:write"],
+        }),
+      ),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+          "X-Operator": "agent:runt-publish",
+          "X-Scope": "owner",
+        },
+        body: JSON.stringify({
+          vanity_name: "markdown-harness",
+          source_notebook_id: "332dd3e3-b1d5-4d16-8ad6-16919b3157d1",
+          source_notebook_name: "Markdown Harness",
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 201);
+    const body = (await response.json()) as {
+      endpoints: Record<string, string>;
+      notebook_id: string;
+      source_notebook_id: string;
+      source_notebook_name: string;
+      vanity_name: string;
+      viewer_url: string;
+    };
+    assert.match(body.notebook_id, /^[0-9A-HJKMNP-TV-Z]{26}$/);
+    assert.equal(body.vanity_name, "markdown-harness");
+    assert.equal(body.source_notebook_id, "332dd3e3-b1d5-4d16-8ad6-16919b3157d1");
+    assert.equal(body.source_notebook_name, "Markdown Harness");
+    assert.equal(body.viewer_url, `https://cloud.test/n/${body.notebook_id}/markdown-harness`);
+    assert.equal(body.endpoints.catalog, `/api/n/${body.notebook_id}`);
+
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "anaconda-api-key",
+      principalNamespace: "user:anaconda",
+      email: "rgbkrk@gmail.com",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
+    assert.equal(env.DB.notebooks.get(body.notebook_id)?.owner_principal, accountPrincipal);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === body.notebook_id &&
+          row.subject === accountPrincipal &&
+          row.scope === "owner",
+      ),
+      true,
+    );
+  });
+
+  it("rejects viewer publish target creation", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ vanity_name: "readonly" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "viewer cannot create notebooks" });
+    assert.equal(env.DB.notebooks.size, 0);
+  });
+
   it("authorizes OIDC and API-key transports through one canonical account ACL", async (t) => {
     const apiKeyToken = anacondaApiKeyToken();
     const { env: oidcEnv, token: oidcToken } = await oidcTokenFixture({
@@ -1665,10 +1759,12 @@ describe("Worker artifact routes", () => {
       new Request("http://localhost/n/race-demo/sync?user=bob&operator=desktop:b&scope=owner"),
     );
 
-    await createNotebookWithOwnerAcl(env, "race-demo", alice);
-    await createNotebookWithOwnerAcl(env, "race-demo", bob);
+    const aliceCreate = await createNotebookWithOwnerAcl(env, "race-demo", alice);
+    const bobCreate = await createNotebookWithOwnerAcl(env, "race-demo", bob);
 
     assert.deepEqual(env.DB.batchSizes.slice(-2), [2, 2]);
+    assert.deepEqual(aliceCreate, { ownerPrincipal: "user:dev:alice", created: true });
+    assert.deepEqual(bobCreate, { ownerPrincipal: "user:dev:bob", created: false });
     assert.equal(env.DB.notebooks.get("race-demo")?.owner_principal, "user:dev:alice");
     assert.equal(
       (await getNotebookAclRowsForPrincipal(env, "race-demo", "user:dev:alice")).length,
@@ -3321,7 +3417,7 @@ class FakeD1Statement implements D1PreparedStatement {
       const updatedAt = maybeUpdatedAt ?? createdAtOrUpdatedAt;
       const existing = this.db.notebooks.get(id);
       if (existing && this.query.includes("DO NOTHING")) {
-        return okResult();
+        return okResult(undefined, { changes: 0 });
       }
       this.db.notebooks.set(id, {
         id,
@@ -3331,6 +3427,7 @@ class FakeD1Statement implements D1PreparedStatement {
         updated_at: updatedAt,
         latest_revision_id: existing?.latest_revision_id ?? null,
       });
+      return okResult(undefined, { changes: 1 });
     } else if (this.query.includes("INSERT INTO notebook_revisions")) {
       const [
         id,

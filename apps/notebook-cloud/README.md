@@ -148,6 +148,30 @@ verifies the catalog revision. By default it creates and executes a small
 `ShadenA/MathNet` Polars notebook. Set `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>`
 to publish an already-open live notebook room instead.
 
+The hidden `runt publish` CLI follows the same source-room idea but lets the
+cloud allocate the hosted notebook id. It first posts the requested vanity name
+and local source identity to `/api/n`, then uploads blobs and snapshot bytes to
+the returned target:
+
+```bash
+runt publish --source-notebook-id <local-room-uuid> --vanity-name markdown-harness
+```
+
+For local `.ipynb` files, pass the path as `SOURCE`; the CLI opens it through
+the daemon, derives the default vanity segment from the filename, and still lets
+the cloud allocate the hosted id:
+
+```bash
+runt publish ./examples/markdown-harness.ipynb
+```
+
+Hosted publishing uses `NTERACT_CLOUD_URL` for the cloud origin and
+`NTERACT_API_KEY` for bearer auth. `NTERACT_PUBLISH_URL`,
+`NOTEBOOK_CLOUD_URL`, and `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remain accepted
+aliases while the alpha publishing surface is settling. `NOTEBOOK_CLOUD_NOTEBOOK_ID`
+only applies to the local npm publish scripts above; `runt publish` always asks
+the cloud to allocate the hosted notebook id.
+
 `smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
 the returned viewer URL and exported notebook/runtime heads, then runs
 `smoke:hosted` against that exact notebook while asserting the catalog latest
@@ -254,7 +278,7 @@ Authorization: Bearer <NTERACT_API_KEY>
 X-Notebook-Cloud-Auth-Provider: anaconda-api-key
 ```
 
-`runt-publish` treats this as publish bearer auth. It defaults to the current
+`runt publish` treats this as publish bearer auth. It defaults to the current
 hosted staging URL, `https://preview.runt.run`, accepts `NTERACT_CLOUD_URL` for
 a different deployment, loads publish-related values from `.env`, and maps
 `NTERACT_API_KEY` to the current provider header automatically.
@@ -268,7 +292,20 @@ as a compatibility alias:
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
 NTERACT_API_KEY=... \
-cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
+runt publish --vanity-name topic-viz ./topic-viz.ipynb
+```
+
+Each hosted publish reserves a cloud notebook id before uploading snapshots. The
+cloud generates that id as a ULID; the vanity name only controls the readable
+path segment. To publish an already-open daemon room, pass its notebook UUID
+instead of a file path, or use `--source-notebook-id`. This exports the active
+session's `NotebookDoc` and `RuntimeStateDoc` snapshot pair, so executed outputs
+and widget/runtime state are included:
+
+```bash
+NTERACT_CLOUD_URL=https://preview.runt.run \
+NTERACT_API_KEY=... \
+runt publish --source-notebook-id <open-notebook-uuid> --vanity-name markdown-harness
 ```
 
 See `docs/adr/hosted-direct-oidc-demo-runbook.md`.

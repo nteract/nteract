@@ -464,20 +464,25 @@ export async function revokeNotebookAclRow(
   return d1Changes(result) > 0;
 }
 
+export interface CreateNotebookWithOwnerAclResult {
+  ownerPrincipal: string;
+  created: boolean;
+}
+
 export async function createNotebookWithOwnerAcl(
   env: Env,
   notebookId: string,
   identity: AuthenticatedConnection,
-): Promise<string> {
+): Promise<CreateNotebookWithOwnerAclResult> {
   if (!env.DB) {
-    return identity.principal;
+    return { ownerPrincipal: identity.principal, created: true };
   }
 
   await ensureCatalogSchema(env);
   const now = new Date().toISOString();
   const ownerSubject =
     (await getCanonicalPrincipalForTransport(env, identity.principal)) ?? identity.principal;
-  await env.DB.batch([
+  const [notebookInsertResult] = await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO notebooks (id, owner_principal, created_at, updated_at)
          VALUES (?, ?, ?, ?)
@@ -490,7 +495,10 @@ export async function createNotebookWithOwnerAcl(
       timestamp: now,
     }),
   ]);
-  return ownerSubject;
+  return {
+    ownerPrincipal: ownerSubject,
+    created: d1Changes(notebookInsertResult) > 0,
+  };
 }
 
 export async function getCanonicalPrincipalForTransport(
