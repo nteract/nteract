@@ -1,4 +1,4 @@
-import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
+import type { Env, ExecutionContext, ExportedHandler, R2Object } from "./cloudflare-types.ts";
 import type { BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
@@ -184,7 +184,8 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   },
   {
     match: routePath("/api/n/:notebookId/blobs/:hash"),
-    handler: ({ params }, request, env) => routeBlob(request, env, params.notebookId, params.hash),
+    handler: ({ params }, request, env, ctx) =>
+      routeBlob(request, env, ctx, params.notebookId, params.hash),
   },
 ];
 
@@ -1473,6 +1474,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function routeBlob(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
   notebookId: string,
   hash: string,
 ): Promise<Response> {
@@ -1495,12 +1497,7 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    const headers = new Headers({
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Length": object.size.toString(),
-      "Content-Type": object.httpMetadata?.contentType ?? "application/octet-stream",
-      ETag: object.httpEtag,
-    });
+    const headers = blobHeaders(object);
     return withCors(new Response(null, { headers }));
   }
 
@@ -1509,6 +1506,21 @@ async function routeBlob(
     if (identity instanceof Response) {
       return identity;
     }
+    const cache = cloudflareDefaultCache();
+    const cacheKey = blobCacheKey(request);
+    const cached = cache ? await matchBlobCache(cache, cacheKey, notebookId, hash) : null;
+    if (cached) {
+      cloudLog("debug", "blob.read.cache_hit", {
+        notebook_id: notebookId,
+        hash,
+        counter: "blob_read_cache_hits",
+        counter_delta: 1,
+      });
+      const cachedResponse = withCors(new Response(cached.body, cached));
+      cachedResponse.headers.set("X-Notebook-Cloud-Blob-Cache", "hit");
+      return cachedResponse;
+    }
+
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
       cloudLog("warn", "blob.read.missing", {
@@ -1521,13 +1533,22 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    const headers = new Headers({
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Length": object.size.toString(),
-      "Content-Type": object.httpMetadata?.contentType ?? "application/octet-stream",
-      ETag: object.httpEtag,
-    });
-    return withCors(new Response(object.body, { headers }));
+    const response = withCors(new Response(object.body, { headers: blobHeaders(object) }));
+    if (cache) {
+      response.headers.set("X-Notebook-Cloud-Blob-Cache", "miss");
+      ctx.waitUntil(
+        cache.put(cacheKey, response.clone()).catch((error) => {
+          cloudLog("warn", "blob.read.cache_put_failed", {
+            notebook_id: notebookId,
+            hash,
+            error: errorMessage(error),
+            counter: "blob_read_cache_put_failures",
+            counter_delta: 1,
+          });
+        }),
+      );
+    }
+    return response;
   }
 
   if (request.method !== "PUT") {
@@ -1609,6 +1630,48 @@ async function routeBlob(
   });
 
   return json({ ok: true, key, size: body.byteLength }, 201);
+}
+
+function blobHeaders(object: R2Object): Headers {
+  return new Headers({
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "Content-Length": object.size.toString(),
+    "Content-Type": object.httpMetadata?.contentType ?? "application/octet-stream",
+    ETag: object.httpEtag,
+  });
+}
+
+type CloudflareCacheStorage = CacheStorage & { default?: Cache };
+
+function cloudflareDefaultCache(): Cache | null {
+  const cacheStorage = (globalThis as { caches?: CloudflareCacheStorage }).caches;
+  return cacheStorage?.default ?? null;
+}
+
+async function matchBlobCache(
+  cache: Cache,
+  cacheKey: Request,
+  notebookId: string,
+  hash: string,
+): Promise<Response | null> {
+  try {
+    return (await cache.match(cacheKey)) ?? null;
+  } catch (error) {
+    cloudLog("warn", "blob.read.cache_match_failed", {
+      notebook_id: notebookId,
+      hash,
+      error: errorMessage(error),
+      counter: "blob_read_cache_match_failures",
+      counter_delta: 1,
+    });
+    return null;
+  }
+}
+
+function blobCacheKey(request: Request): Request {
+  const url = new URL(request.url);
+  url.search = "";
+  return new Request(url.toString(), { method: "GET" });
 }
 
 interface NotebookAclPayload {

@@ -861,6 +861,7 @@ function NotebookViewer({
             onInitialCells(syncCells) {
               if (syncCells.length === 0) return;
               markCloudViewerLoadMilestone("snapshot-initial-cells");
+              preloadSiftWasm(syncCells);
               setCells(syncCells);
               setStatus({
                 kind: "loading",
