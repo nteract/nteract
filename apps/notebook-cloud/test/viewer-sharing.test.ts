@@ -160,6 +160,13 @@ describe("cloud viewer sharing client", () => {
     assert.equal(first[1], second[1]);
     assert.equal(Object.isFrozen(first), true);
     assert.equal(Object.isFrozen(first[0]), true);
+    if (first[0]?.kind !== "acl") {
+      throw new Error("expected first sharing row to be an ACL row");
+    }
+    assert.equal(Object.isFrozen(first[0].acl), true);
+    assert.equal(Object.isFrozen(first[0].acl.display), true);
+    acl[0].updated_at = "2026-06-01T00:00:00.000Z";
+    assert.equal(first[0].acl.updated_at, "2026-05-28T00:00:00.000Z");
     assert.notEqual(first, changed);
     assert.notEqual(first[0], changed[0]);
   });

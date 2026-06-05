@@ -154,7 +154,7 @@ export function buildCloudShareAccessRows(input: {
       cachedCloudShareAccessRow(rowKey, () => ({
         id,
         kind: "acl",
-        acl,
+        acl: stableCloudNotebookAclRow(acl),
         label,
         detail,
         title,
@@ -190,7 +190,7 @@ export function buildCloudShareAccessRows(input: {
       cachedCloudShareAccessRow(rowKey, () => ({
         id,
         kind: "invite",
-        invite,
+        invite: stableCloudNotebookInvite(invite),
         label,
         detail,
         title,
@@ -226,7 +226,7 @@ export function buildCloudShareAccessRows(input: {
       cachedCloudShareAccessRow(rowKey, () => ({
         id,
         kind: "access_request",
-        accessRequest: request,
+        accessRequest: stableCloudNotebookAccessRequest(request),
         label,
         detail,
         title,
@@ -461,6 +461,20 @@ function cloudNotebookAclRowCacheKey(row: CloudNotebookAclRow): string {
   ]);
 }
 
+function stableCloudNotebookAclRow(row: CloudNotebookAclRow): CloudNotebookAclRow {
+  const display = row.display ? stableCloudShareDisplay(row.display) : undefined;
+  return Object.freeze({
+    notebook_id: row.notebook_id,
+    subject_kind: row.subject_kind,
+    subject: row.subject,
+    scope: row.scope,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    created_by_actor_label: row.created_by_actor_label,
+    ...(display ? { display } : {}),
+  });
+}
+
 function cloudNotebookInviteCacheKey(invite: CloudNotebookInvite): string {
   return stableCacheKey([
     invite.id,
@@ -480,6 +494,26 @@ function cloudNotebookInviteCacheKey(invite: CloudNotebookInvite): string {
   ]);
 }
 
+function stableCloudNotebookInvite(invite: CloudNotebookInvite): CloudNotebookInvite {
+  const display = invite.display ? stableCloudShareDisplay(invite.display) : undefined;
+  return Object.freeze({
+    id: invite.id,
+    notebook_id: invite.notebook_id,
+    email: invite.email,
+    provider_hint: invite.provider_hint,
+    scope: invite.scope,
+    status: invite.status,
+    invited_by_actor_label: invite.invited_by_actor_label,
+    accepted_by_principal: invite.accepted_by_principal,
+    created_at: invite.created_at,
+    expires_at: invite.expires_at,
+    accepted_at: invite.accepted_at,
+    revoked_at: invite.revoked_at,
+    revoked_by_actor_label: invite.revoked_by_actor_label,
+    ...(display ? { display } : {}),
+  });
+}
+
 function cloudNotebookAccessRequestCacheKey(request: CloudNotebookAccessRequest): string {
   return stableCacheKey([
     request.id,
@@ -496,6 +530,25 @@ function cloudNotebookAccessRequestCacheKey(request: CloudNotebookAccessRequest)
   ]);
 }
 
+function stableCloudNotebookAccessRequest(
+  request: CloudNotebookAccessRequest,
+): CloudNotebookAccessRequest {
+  const display = request.display ? stableCloudShareDisplay(request.display) : undefined;
+  return Object.freeze({
+    id: request.id,
+    notebook_id: request.notebook_id,
+    requester_principal: request.requester_principal,
+    scope: request.scope,
+    status: request.status,
+    requested_by_actor_label: request.requested_by_actor_label,
+    resolved_by_actor_label: request.resolved_by_actor_label,
+    created_at: request.created_at,
+    updated_at: request.updated_at,
+    resolved_at: request.resolved_at,
+    ...(display ? { display } : {}),
+  });
+}
+
 function cloudShareDisplayCacheKey(display: CloudShareDisplay | undefined): string | null {
   if (!display) return null;
   if (display.kind === "principal") {
@@ -505,4 +558,8 @@ function cloudShareDisplayCacheKey(display: CloudShareDisplay | undefined): stri
     return stableCacheKey([display.kind, display.label, display.email]);
   }
   return stableCacheKey([display.kind, display.label]);
+}
+
+function stableCloudShareDisplay<Display extends CloudShareDisplay>(display: Display): Display {
+  return Object.freeze({ ...display }) as Display;
 }

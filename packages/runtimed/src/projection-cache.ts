@@ -25,5 +25,7 @@ export function setBoundedCacheValue<K, V>(
 }
 
 export function stableCacheKey(parts: readonly unknown[]): string {
-  return JSON.stringify(parts);
+  return JSON.stringify(parts, (_key, value) =>
+    value === undefined ? { __runtimedProjectionCacheKey: "undefined" } : value,
+  );
 }
