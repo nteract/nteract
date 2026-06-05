@@ -448,26 +448,73 @@ cloud agent. Detection of the kernel-side *effect* already survives (decision/re
 analysis); only the trigger path is missing, and it can't be built or verified
 without the worker (3d) + a live room. Build it alongside 3d.
 
-## Phase 3 remaining plan (3d, 3f req #5)
+## Phase 3d (CODE): cloud-room DurableObject watchdog
 
-Ordered by the lifecycle analysis. 3a (req #1), 3b (req #2), 3c CODE (doc-actor
-identity), 3e model half (`last_seen`), and 3f req #6 (writer-error recovery) are
-done. Remaining (both need the cloud worker + live verification = NEEDS US):
+36. **3d's DO-internal watchdog is built and unit-tested; the deploy + the
+    live peer-drop re-proof are NEEDS US.** Implements the safety net the daemon
+    structurally cannot provide (reqs #3, #7): when the room's `runtime_peer`
+    (the daemon) vanishes, the room itself terminalizes the orphaned state. Three
+    layers, each verifiable headlessly:
+    - **Rust (`runtimed-wasm`): `RoomHostHandle::reconcile_runtime_peer_gone(reason)`**
+      — the reconciliation mutator `RoomHostHandle` previously lacked. Marks all
+      in-flight (`running`/`queued`) executions failed, clears the queue, and flips
+      a *still-live* kernel (`Running`/any starting phase) to `Error` with an
+      `error_details` note — leaving an already-terminal `Error`/`Shutdown`/`NotStarted`
+      untouched so a clean shutdown that raced the disconnect isn't relabeled. Then
+      broadcasts the corrected state to surviving peers. Authoring is **direct** on
+      the room host's `state_doc`, which doesn't pass through
+      `validate_runtime_state_sync_scope` (decision #32), so no policy relaxation is
+      needed. Native-testable via `reconcile_runtime_peer_gone_inner` (rlib `cargo
+      test`, no wasm/node): 4 tests (terminalize+error, idempotent no-op,
+      clean-shutdown-not-relabeled, broadcast-to-survivors).
+    - **TS materializer**: `reconcileRuntimePeerGone(reason)` forwards to the wasm
+      mutator and normalizes the result.
+    - **TS DurableObject (`notebook-room.ts`)**: a `runtime_peer`-departure watchdog.
+      `removePeer` and the attach path now branch on `peer.identity.scope`; when the
+      last `runtime_peer` leaves, `refreshRuntimePeerWatch` arms a DO `alarm()`
+      `RUNTIME_PEER_GONE_GRACE_MS` (30s) out and persists the notebook id under
+      `RUNTIME_PEER_WATCH_KEY`; a `runtime_peer` rejoining inside the window disarms
+      it. `alarm()` re-checks membership (no-op if a peer returned), else reconciles
+      and broadcasts. The grace window is what makes a transient blip recover rather
+      than terminalize. The `DurableObjectStorage` type gained optional
+      `setAlarm`/`getAlarm`/`deleteAlarm` (Cloudflare-provided; optional so test
+      fakes need not implement them, and the watchdog feature-detects before arming).
+      3 node tests (arm+fire reconciles, rejoin disarms, present-peer fired-alarm
+      no-op) with an alarm-capable fake state.
 
-- **3d: cloud-room DurableObject watchdog (reqs #3, #7; the safety net the daemon can't
-  provide).** TypeScript in `apps/notebook-cloud/`. Thread peer **scope** through
-  `removePeer` → `room-materializer.removePeer` → `RoomHostHandle.remove_peer`
-  (`notebook-room.ts:635`, `runtimed-wasm/src/lib.rs:523`), give `RoomHostHandle` a
-  reconciliation mutator (it has none), and use a DO `alarm()` with a grace period to
-  terminalize running/queued executions and flip lifecycle when a `runtime_peer` departs.
+37. **Scope threading was simpler than the plan anticipated: the DO already had
+    `peer.identity.scope` at every `removePeer`/attach site, so it did NOT need to be
+    threaded through `room-materializer.removePeer` → `RoomHostHandle.remove_peer`.**
+    The original plan (and lifecycle-analysis req #3 bullet 1) assumed the watchdog
+    had to learn the departing peer's scope by passing it down through those layers,
+    because `removePeer(peerId)` is scope-blind. But the *decision* — "was that a
+    runtime_peer? then arm the watchdog" — is made in the DO, which holds the full
+    `Peer` (incl. `identity.scope`). The sync-state cleanup in `remove_peer(peer_id)`
+    genuinely only needs the id, so it's left unchanged. Avoiding the unnecessary
+    signature churn through two layers keeps the diff smaller and the wasm boundary
+    stable.
 
-  3d note: prefer the DO-internal `alarm()` watchdog authoring directly on the room
-  host's `state_doc`. That write path does **not** go through `validate_runtime_state_sync_scope`
-  (which gates only incoming peer sync, `runtimed-wasm/src/lib.rs:715`), so it needs no
-  policy relaxation (decision #32). The `last_seen` model field it reads is already done
-  (decision #33). The remaining 3e halves (the `Disconnected` variant, and the
-  policy.rs:403-405 relaxation if an Owner-peer-push design is chosen instead) land *with*
-  3d under live verification.
+Phase 3d verification: `cargo test -p runtimed-wasm` 26 (was 22, +4 reconciliation);
+`node --import tsx --test test/notebook-room.test.ts` 19 (+3 watchdog);
+`test/room-materializer.test.ts` 25 pass / 4 fail — the 4 failures are a
+**pre-existing environmental baseline** (published-snapshot fixtures; reproduced on a
+clean `origin/main` worktree, unrelated to this change); `tsc --noEmit` clean; clippy
+`-D warnings` clean.
+
+**NEEDS US (3d):** (1) deploy the worker to preview (the `alarm()` handler + the
+`DurableObjectStorage` alarm methods only execute on a real Cloudflare DO; the unit
+tests use a fake clock/storage). (2) Live peer-drop re-proof: with a real runtime_peer
+attached to a preview room running a cell, kill the peer, and confirm after the 30s
+grace the viewer sees the spinning cell go to error and the kernel flip to Error —
+and that a reconnect *within* 30s does NOT terminalize. (3) Tune `RUNTIME_PEER_GONE_GRACE_MS`
+against real reconnect latencies. None of this is possible without the preview deploy +
+creds this session lacks. The code is gated behind the alarm API feature-detect, so a
+storage backend without alarms (or the desktop/UDS path) is unaffected.
+
+## Phase 3 remaining (3f req #5 only)
+
+3a (req #1), 3b (req #2), 3c CODE (doc-actor identity), 3d CODE (watchdog), 3e model
+half (`last_seen`), and 3f req #6 (writer-error recovery) are done. Remaining:
 
 - **3f req #5: inbound request channel.** Route interrupt/restart
   `RuntimeAgentRequest`s to the cloud agent via the 3d DurableObject hosted REQUEST

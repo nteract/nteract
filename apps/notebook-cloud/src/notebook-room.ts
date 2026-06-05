@@ -52,6 +52,18 @@ interface PeerAttachment {
 
 const MAX_STORED_FRAMES = 500;
 
+/// Grace window after the last `runtime_peer` leaves before the room reconciles
+/// its in-flight state (lifecycle-analysis reqs #3/#7). Tolerates a transient
+/// disconnect/reconnect (idle eviction, network blip) without terminalizing a
+/// kernel that is about to come back: if a `runtime_peer` rejoins inside the
+/// window the alarm is disarmed.
+const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
+
+/// Storage key holding the notebook id whose `runtime_peer` departure armed the
+/// reconciliation alarm. Persisted so a DO that hibernates between the alarm
+/// being set and firing still knows which room to reconcile.
+const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
+
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
   private readonly pendingRemovals = new Map<string, { notebookId: string; peer: Peer }>();
@@ -99,6 +111,11 @@ export class NotebookRoom {
 
     this.acceptPeerSocket(notebookId, peer);
     this.peers.set(peer.id, peer);
+    // A runtime_peer (re)joining cancels any pending reconciliation alarm: the
+    // kernel host is back, so its in-flight state must not be terminalized.
+    if (identity.scope === "runtime_peer") {
+      this.refreshRuntimePeerWatch(notebookId);
+    }
     cloudLog("info", "room.connection.accepted", {
       notebook_id: notebookId,
       peer_id: peer.id,
@@ -671,6 +688,100 @@ export class NotebookRoom {
       room_peer_count: this.peers.size,
       timestamp: new Date().toISOString(),
     });
+
+    // A runtime_peer departure is the one failure the daemon can't self-correct
+    // (its death IS the trigger). Arm the reconciliation watchdog if it left no
+    // runtime_peer behind.
+    if (peer.identity.scope === "runtime_peer") {
+      this.refreshRuntimePeerWatch(notebookId);
+    }
+  }
+
+  /// Whether any currently-attached peer is a `runtime_peer`.
+  private hasRuntimePeer(): boolean {
+    for (const peer of this.peers.values()) {
+      if (peer.identity.scope === "runtime_peer") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Arm or disarm the runtime_peer-gone reconciliation alarm to match current
+  /// membership: arm (grace window) when no `runtime_peer` is attached, disarm
+  /// when one is present. Called when a `runtime_peer` joins or leaves. A no-op
+  /// where the storage backend doesn't expose the alarm API (e.g. test fakes).
+  private refreshRuntimePeerWatch(notebookId: string): void {
+    const storage = this.state.storage;
+    if (!storage.setAlarm || !storage.deleteAlarm) {
+      return;
+    }
+    this.state.waitUntil(
+      (async () => {
+        try {
+          if (this.hasRuntimePeer()) {
+            await storage.deleteAlarm?.();
+            await storage.delete(RUNTIME_PEER_WATCH_KEY);
+            return;
+          }
+          await storage.put(RUNTIME_PEER_WATCH_KEY, notebookId);
+          await storage.setAlarm?.(Date.now() + RUNTIME_PEER_GONE_GRACE_MS);
+        } catch (error) {
+          cloudLog("warn", "room.runtime_peer_watch.refresh_failed", {
+            notebook_id: notebookId,
+            error: errorMessage(error),
+          });
+        }
+      })(),
+    );
+  }
+
+  /// DurableObject alarm handler. Fires `RUNTIME_PEER_GONE_GRACE_MS` after the
+  /// last `runtime_peer` left. If one has since rejoined, it's a no-op (the blip
+  /// recovered). Otherwise it reconciles the room's authoritative RuntimeStateDoc
+  /// — terminalizing orphaned executions and flipping a phantom-live kernel to
+  /// Error — and broadcasts the corrected state to the surviving peers.
+  async alarm(): Promise<void> {
+    const storage = this.state.storage;
+    const notebookId = await storage.get<string>(RUNTIME_PEER_WATCH_KEY);
+    if (!notebookId) {
+      return;
+    }
+    await storage.delete(RUNTIME_PEER_WATCH_KEY);
+
+    if (this.hasRuntimePeer()) {
+      cloudLog("info", "room.runtime_peer_watch.recovered", {
+        notebook_id: notebookId,
+        counter: "runtime_peer_gone_recovered",
+        counter_delta: 1,
+      });
+      return;
+    }
+
+    try {
+      const result = await this.materializerFor(notebookId).reconcileRuntimePeerGone(
+        "runtime peer left the room and did not return within the grace window",
+      );
+      if (result.changed) {
+        this.deliverRoomHostFrames(notebookId, result);
+        this.state.waitUntil(
+          this.materializerFor(notebookId)
+            .checkpoint()
+            .catch(() => undefined),
+        );
+      }
+      cloudLog("info", "room.runtime_peer_watch.reconciled", {
+        notebook_id: notebookId,
+        changed: result.changed,
+        counter: "runtime_peer_gone_reconciled",
+        counter_delta: 1,
+      });
+    } catch (error) {
+      cloudLog("error", "room.runtime_peer_watch.reconcile_failed", {
+        notebook_id: notebookId,
+        error: errorMessage(error),
+      });
+    }
   }
 }
 
