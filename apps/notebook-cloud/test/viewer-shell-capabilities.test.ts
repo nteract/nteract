@@ -183,6 +183,25 @@ test("cloud shell capabilities keep requested edit pending until the room grants
   assert.equal(capabilities.access.level, "viewer");
 });
 
+test("cloud shell capabilities suppress editor mode while a requested edit reconnect is pending", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "viewer",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    canAcceptCellMutations: false,
+    editAccessRequestPending: true,
+  });
+
+  assert.equal(capabilities.canEditMarkdown, false);
+  assert.equal(capabilities.canEditCells, false);
+  assert.equal(capabilities.canEditStructure, false);
+  assert.equal(capabilities.canRequestEdit, true);
+  assert.equal(capabilities.interaction?.selectedMode, "view");
+  assert.equal(capabilities.interaction?.activeMode, "view");
+  assert.equal(capabilities.interaction?.state, "viewing");
+});
+
 test("cloud shell capabilities grant owners full cell, structure, and sharing control", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "owner"),

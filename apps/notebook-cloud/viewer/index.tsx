@@ -66,6 +66,7 @@ import {
 } from "./collaborator-auth";
 import { createCloudNotebookCellId } from "./cloud-cell-id";
 import { useCloudViewerSession, type CloudViewerConfig } from "./cloud-viewer-session";
+import { projectCloudNotebookEditAccess } from "./edit-access";
 import { cloudNotebookShellCapabilities } from "./shell-capabilities";
 import {
   CrdtBridgeProvider,
@@ -738,10 +739,26 @@ function NotebookViewer({
     Boolean(connectionPeerId) &&
     !connectionError &&
     (status.kind === "ready" || status.kind === "empty");
-  const requestedEditAccess =
-    authState.requestedScope === "editor" || authState.requestedScope === "owner";
-  const editAccessPending =
-    !connectionError && status.kind === "loading" && !canAcceptCellMutations && requestedEditAccess;
+  const editAccessRequestPending = !connectionError && status.kind === "loading";
+  const roomEditAccess = useMemo(
+    () =>
+      projectCloudNotebookEditAccess({
+        authState,
+        connectionScope,
+        selectedMode: selectedInteractionMode,
+        canAcceptCellMutations,
+        editAccessRequestPending,
+      }),
+    [
+      authState,
+      canAcceptCellMutations,
+      connectionScope,
+      editAccessRequestPending,
+      selectedInteractionMode,
+    ],
+  );
+  const requestedEditAccess = roomEditAccess.requestedDocumentEditAccess;
+  const editAccessPending = roomEditAccess.editAccessPending;
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
@@ -749,8 +766,9 @@ function NotebookViewer({
         connectionScope,
         connectionActorLabel,
         hasCodeCells: codeCellCount > 0,
-        selectedMode: editAccessPending ? "view" : selectedInteractionMode,
+        selectedMode: selectedInteractionMode,
         canAcceptCellMutations,
+        editAccessRequestPending,
         hostCapabilities: config.hostCapabilities,
       }),
     [
@@ -760,7 +778,7 @@ function NotebookViewer({
       config.hostCapabilities,
       connectionActorLabel,
       connectionScope,
-      editAccessPending,
+      editAccessRequestPending,
       selectedInteractionMode,
     ],
   );

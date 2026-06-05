@@ -186,6 +186,41 @@ describe("desktopNotebookShellCapabilities", () => {
     });
   });
 
+  it("maps unknown non-null connection scopes to no document access", () => {
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:alice/desktop:window",
+      connectionScope: "surprise",
+    });
+
+    expect(capabilities.access).toMatchObject({
+      level: "none",
+      source: "cloud",
+      actorLabel: "user:anaconda:alice/desktop:window",
+    });
+    expect(capabilities.canRead).toBe(false);
+    expect(capabilities.canEditMarkdown).toBe(false);
+    expect(capabilities.canEditCells).toBe(false);
+    expect(capabilities.canEditStructure).toBe(false);
+    expect(capabilities.canExecute).toBe(false);
+    expect(capabilities.canManagePackages).toBe(false);
+    expect(capabilities.interaction).toMatchObject({
+      selectedMode: "view",
+      activeMode: "view",
+      state: "viewing",
+      canEditMarkdown: false,
+      canEditCells: false,
+      canEditStructure: false,
+    });
+    expect(capabilities.runtime).toMatchObject({
+      canWriteRuntimeState: false,
+      connected: false,
+      source: "cloud",
+      actorLabel: null,
+    });
+  });
+
   it("keeps runtime peer authority separate from document editing access", () => {
     const capabilities = desktopNotebookShellCapabilities({
       canAcceptCellMutations: false,

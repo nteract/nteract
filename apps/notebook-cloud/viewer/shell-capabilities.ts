@@ -3,24 +3,28 @@ import {
   notebookActorProjectionFromRuntime,
 } from "@/components/notebook/actor-projection";
 import type { NotebookShellCapabilities } from "@/components/notebook/capabilities";
-import {
-  createNotebookInteractionModeProjection,
-  type NotebookInteractionMode,
-} from "@/components/notebook/interaction-mode";
+import type { NotebookEditMode } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
+import { projectCloudNotebookEditAccess } from "./edit-access";
 
 export interface CloudNotebookShellCapabilityInput {
   authState: CloudPrototypeAuthState;
   connectionScope: string | null;
   connectionActorLabel?: string | null;
   hasCodeCells: boolean;
-  selectedMode?: NotebookInteractionMode;
+  selectedMode?: NotebookEditMode;
   /**
    * Whether the hosted live room is connected and the NotebookDoc materialized
    * enough to accept local cell/source mutations. Access can grant editing
    * before the local host is ready to safely write.
    */
   canAcceptCellMutations?: boolean;
+  /**
+   * Whether the host is reconnecting with a requested document edit scope.
+   * While pending, the shared edit-mode control stays visually in view mode
+   * even though the requested room scope remains editor/owner.
+   */
+  editAccessRequestPending?: boolean;
   /**
    * Whether an execution runtime is attached to the room. The hosted prototype
    * has no kernel provider yet, so this defaults false and run controls stay
@@ -43,33 +47,23 @@ export function cloudNotebookShellCapabilities({
   hasCodeCells,
   selectedMode = "view",
   canAcceptCellMutations = true,
+  editAccessRequestPending = false,
   runtimeAvailable = false,
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
-  const accessLevel = cloudConnectionAccessLevel(connectionScope);
+  const interaction = projectCloudNotebookEditAccess({
+    authState,
+    connectionScope,
+    selectedMode,
+    canAcceptCellMutations,
+    editAccessRequestPending,
+  });
+  const accessLevel = interaction.accessLevel;
   const isRuntimePeer = connectionScope === "runtime_peer";
   const authenticated = authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
   const identityLabel = cloudIdentityDisplayLabel(authState);
   const identityImageUrl = cloudIdentityImageUrl(authState);
-  const interaction = createNotebookInteractionModeProjection({
-    selectedMode,
-    permission: {
-      // Editors get full collaborative cell editing (markdown/code/raw source +
-      // add/delete/move). This mirrors the room host's editor write surface; the
-      // server still rejects notebook-level metadata edits from non-owners
-      // (validate_editor_notebook_changes in runtimed-wasm).
-      canEditMarkdown: accessLevel === "editor" || accessLevel === "owner",
-      canEditCells: accessLevel === "editor" || accessLevel === "owner",
-      canEditStructure: accessLevel === "editor" || accessLevel === "owner",
-    },
-    hostSupport: {
-      canEditMarkdown: canAcceptCellMutations,
-      canEditCells: canAcceptCellMutations,
-      canEditStructure: canAcceptCellMutations,
-      canRequestEdit: authState.mode === "dev" || authState.mode === "oidc",
-    },
-  });
   const auth = {
     canSignIn: authState.mode !== "oidc",
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
@@ -85,7 +79,7 @@ export function cloudNotebookShellCapabilities({
   // Executing a cell needs both an attached runtime and document write
   // authority. The room has no kernel provider yet, so runtimeAvailable
   // defaults false and run controls stay hidden.
-  const canExecute = runtimeAvailable && (accessLevel === "editor" || accessLevel === "owner");
+  const canExecute = runtimeAvailable && interaction.hasDocumentEditPermission;
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
     connected: isRuntimePeer,
@@ -124,15 +118,6 @@ export function cloudNotebookShellCapabilities({
       actor: runtimeActor,
     },
   };
-}
-
-function cloudConnectionAccessLevel(
-  connectionScope: string | null,
-): NotebookShellCapabilities["access"]["level"] {
-  if (connectionScope === "owner" || connectionScope === "editor" || connectionScope === "viewer") {
-    return connectionScope;
-  }
-  return "viewer";
 }
 
 function cloudIdentityDisplayLabel(authState: CloudPrototypeAuthState): string | null {

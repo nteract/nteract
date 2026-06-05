@@ -155,6 +155,27 @@ export {
   type ProjectNotebookOutlineOptions,
 } from "./notebook-outline";
 
+// Notebook edit access projection
+export {
+  isNotebookRoomAccessLevel,
+  isNotebookRoomConnectionScope,
+  notebookRoomAccessLevelCanEditDocument,
+  notebookRoomAccessLevelFromConnectionScope,
+  projectNotebookEditAccess,
+  projectNotebookRoomEditAccess,
+  type NotebookEditAccessProjection,
+  type NotebookEditHostSupport,
+  type NotebookEditMode,
+  type NotebookEditPermission,
+  type NotebookEditState,
+  type NotebookRoomAccessLevel,
+  type NotebookRoomConnectionScope,
+  type NotebookRoomEditAccessProjection,
+  type NotebookRoomRequestedScope,
+  type ProjectNotebookEditAccessOptions,
+  type ProjectNotebookRoomEditAccessOptions,
+} from "./notebook-edit-access";
+
 // Notebook interaction projection
 export {
   createNotebookInteractionStore,

@@ -2,12 +2,16 @@ import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
 } from "@/components/notebook/actor-projection";
-import { createNotebookInteractionModeProjection } from "@/components/notebook/interaction-mode";
 import type {
   NotebookShellAccessLevel,
   NotebookShellAccessSource,
   NotebookShellCapabilities,
 } from "@/components/notebook/capabilities";
+import {
+  notebookRoomAccessLevelCanEditDocument,
+  notebookRoomAccessLevelFromConnectionScope,
+  projectNotebookRoomEditAccess,
+} from "runtimed";
 
 export interface DesktopNotebookShellCapabilityInput {
   canAcceptCellMutations: boolean;
@@ -29,25 +33,18 @@ export function desktopNotebookShellCapabilities({
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
   const source = desktopAccessSourceFromActor(connectionScope, localActor);
   const isRuntimePeer = connectionScope === "runtime_peer";
-  const hasDocumentEditPermission = accessLevel === "editor" || accessLevel === "owner";
+  const hasDocumentEditPermission = notebookRoomAccessLevelCanEditDocument(accessLevel);
+  const interaction = projectNotebookRoomEditAccess({
+    accessLevel,
+    requestedScope: accessLevel === "none" ? null : accessLevel,
+    selectedMode: hasDocumentEditPermission ? "edit" : "view",
+    canAcceptDocumentMutations: canAcceptCellMutations,
+    canRequestEdit: false,
+  });
   const canWriteDocument =
-    canAcceptCellMutations && hasDocumentEditPermission;
+    interaction.canEditMarkdown && interaction.canEditCells && interaction.canEditStructure;
   const canWriteRuntimeState =
     sessionReady && (isRuntimePeer || (source === "local" && canWriteDocument));
-  const interaction = createNotebookInteractionModeProjection({
-    selectedMode: hasDocumentEditPermission ? "edit" : "view",
-    permission: {
-      canEditMarkdown: hasDocumentEditPermission,
-      canEditCells: hasDocumentEditPermission,
-      canEditStructure: hasDocumentEditPermission,
-    },
-    hostSupport: {
-      canEditMarkdown: canAcceptCellMutations,
-      canEditCells: canAcceptCellMutations,
-      canEditStructure: canAcceptCellMutations,
-      canRequestEdit: false,
-    },
-  });
   const access = {
     level: accessLevel,
     source,
@@ -98,13 +95,10 @@ export function desktopNotebookShellCapabilities({
 function desktopAccessLevelFromConnectionScope(
   connectionScope: string | null,
 ): NotebookShellAccessLevel {
-  if (connectionScope === "viewer" || connectionScope === "editor" || connectionScope === "owner") {
-    return connectionScope;
+  if (connectionScope === null) {
+    return "owner";
   }
-  if (connectionScope === "runtime_peer") {
-    return "viewer";
-  }
-  return "owner";
+  return notebookRoomAccessLevelFromConnectionScope(connectionScope, "none");
 }
 
 function desktopAccessSourceFromActor(
