@@ -1,5 +1,12 @@
 import { lazy, type ReactNode, Suspense } from "react";
 import { getRenderer } from "@/lib/renderer-registry";
+import {
+  canRenderMarkdownProjectionInHost,
+  MARKDOWN_PROJECTION_MIME_TYPE,
+  markdownProjectionPlanFromMimeData,
+  projectMarkdownPlan,
+} from "../../lib/markdown-projection";
+import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
 import { AnsiOutput } from "./ansi-output";
 import { TracebackOutput } from "./traceback-output";
 import { isSafeForMainDom } from "./safe-mime-types";
@@ -16,6 +23,7 @@ export type { MimeType } from "./mime-priority";
 const MarkdownOutput = lazy(() =>
   import("./markdown-output").then((m) => ({ default: m.MarkdownOutput })),
 );
+const MathOutput = lazy(() => import("./math-output").then((m) => ({ default: m.MathOutput })));
 const HtmlOutput = lazy(() => import("./html-output").then((m) => ({ default: m.HtmlOutput })));
 const ImageOutput = lazy(() => import("./image-output").then((m) => ({ default: m.ImageOutput })));
 const SvgOutput = lazy(() => import("./svg-output").then((m) => ({ default: m.SvgOutput })));
@@ -231,6 +239,16 @@ export function MediaRouter({
   }
 
   const renderBuiltIn = () => {
+    const markdownPlan =
+      mimeType === MARKDOWN_PROJECTION_MIME_TYPE
+        ? markdownProjectionPlanFromMimeData(content)
+        : mimeType === "text/markdown"
+          ? projectMarkdownPlan(String(content))
+          : null;
+    if (markdownPlan && canRenderMarkdownProjectionInHost(markdownPlan)) {
+      return <ProjectedMarkdownView plan={markdownPlan} className={className} />;
+    }
+
     // ISOLATION GUARD: Only types in the safe-list can render in the main DOM.
     // Everything else requires iframe isolation for security.
     const needsIsolation = !isSafeForMainDom(mimeType);
@@ -256,6 +274,14 @@ export function MediaRouter({
     // Text/Markdown (only renders when in iframe)
     if (mimeType === "text/markdown") {
       return <MarkdownOutput content={String(content)} className={className} />;
+    }
+
+    if (mimeType === MARKDOWN_PROJECTION_MIME_TYPE && data["text/markdown"] != null) {
+      return <MarkdownOutput content={String(data["text/markdown"])} className={className} />;
+    }
+
+    if (mimeType === "text/latex") {
+      return <MathOutput content={String(content)} className={className} />;
     }
 
     // HTML (only renders when in iframe)

@@ -2,6 +2,12 @@ import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { DEFAULT_PRIORITY, selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
+import {
+  canRenderMarkdownProjectionInHost,
+  MARKDOWN_PROJECTION_MIME_TYPE,
+  markdownProjectionPlanFromMimeData,
+  projectMarkdownPlan,
+} from "../../lib/markdown-projection";
 
 export type OutputLane = "dom" | "static-frame" | "interactive-frame" | "sift-frame" | "vega-frame";
 
@@ -103,11 +109,34 @@ export function outputUsesWidget(
   return mimeType === "application/vnd.jupyter.widget-view+json";
 }
 
+function outputMarkdownCanRenderInHost(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  const mimeType = selectedOutputMimeType(output, priority);
+  if (output.output_type !== "execute_result" && output.output_type !== "display_data") {
+    return false;
+  }
+
+  if (mimeType === MARKDOWN_PROJECTION_MIME_TYPE) {
+    return canRenderMarkdownProjectionInHost(
+      markdownProjectionPlanFromMimeData(output.data[MARKDOWN_PROJECTION_MIME_TYPE]),
+    );
+  }
+
+  if (mimeType !== "text/markdown") return false;
+  const content = output.data["text/markdown"];
+  return canRenderMarkdownProjectionInHost(projectMarkdownPlan(String(content ?? "")));
+}
+
 export function outputNeedsIsolation(
   output: JupyterOutput,
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
   const mimeType = selectedOutputMimeType(output, priority);
+  if (mimeType === "text/markdown" || mimeType === MARKDOWN_PROJECTION_MIME_TYPE) {
+    return !outputMarkdownCanRenderInHost(output, priority);
+  }
   return mimeType !== null && !isSafeForMainDom(mimeType);
 }
 

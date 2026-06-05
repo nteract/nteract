@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
+import {
+  MARKDOWN_PROJECTION_MIME_TYPE,
+  setMarkdownProjectionProjector,
+} from "@/lib/markdown-projection";
 import {
   anyOutputNeedsIsolation,
   hasWidgetOutputs,
@@ -12,6 +16,60 @@ import {
   selectedOutputMimeType,
   splitOutputSegments,
 } from "../output-lane-policy";
+
+let restoreMarkdownProjector: (() => void) | undefined;
+
+function withMarkdownProjection(blockKind: string) {
+  restoreMarkdownProjector?.();
+  restoreMarkdownProjector = setMarkdownProjectionProjector((source) =>
+    JSON.stringify(makeMarkdownProjectionPlan({ blockKind, source })),
+  );
+}
+
+function makeMarkdownProjectionPlan({
+  blockKind,
+  source = "# hi",
+}: {
+  blockKind: string;
+  source?: string;
+}) {
+  return {
+    version: 1,
+    engine: "test",
+    byteLength: source.length,
+    utf16Length: source.length,
+    measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+    blocks: [
+      {
+        anchorSlug: blockKind === "heading" ? "hi" : undefined,
+        blockId: "b0",
+        blockIndex: 0,
+        element: blockKind === "heading" ? "h1" : "div",
+        kind: blockKind,
+        measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+        sourceSpanByte: [0, source.length],
+        sourceSpanUtf16: [0, source.length],
+        syntaxSpans: [],
+        text: source.replace(/^#+\s*/, ""),
+      },
+    ],
+    runs:
+      blockKind === "isolated"
+        ? []
+        : [
+            {
+              blockId: "b0",
+              inlineId: "r0",
+              listItemIndex: null,
+              renderedText: source.replace(/^#+\s*/, ""),
+              renderedTextUtf16: [0, source.length],
+              semantic: "text",
+              sourceSpanByte: [0, source.length],
+              sourceSpanUtf16: [0, source.length],
+            },
+          ],
+  };
+}
 
 function streamOutput(text = "hello\n"): JupyterOutput {
   return {
@@ -32,6 +90,11 @@ function displayOutput(output_id: string, data: Record<string, unknown>): Jupyte
 }
 
 describe("output lane policy", () => {
+  afterEach(() => {
+    restoreMarkdownProjector?.();
+    restoreMarkdownProjector = undefined;
+  });
+
   it("selects richer Sift bytes before text fallbacks", () => {
     const output = displayOutput("table-output", {
       "text/html": "<table></table>",
@@ -45,10 +108,45 @@ describe("output lane policy", () => {
     expect(outputSegmentLane(output)).toBe("sift-frame");
   });
 
-  it("classifies static and interactive iframe outputs separately", () => {
+  it("renders projected markdown outputs in the host DOM when the plan is safe", () => {
+    withMarkdownProjection("heading");
+
     expect(outputSegmentLane(displayOutput("markdown-output", { "text/markdown": "# hi" }))).toBe(
-      "static-frame",
+      "dom",
     );
+    expect(
+      anyOutputNeedsIsolation([displayOutput("markdown-output", { "text/markdown": "# hi" })]),
+    ).toBe(false);
+  });
+
+  it("renders projected nteract markdown plans in the host DOM when safe", () => {
+    expect(
+      outputSegmentLane(
+        displayOutput("markdown-plan-output", {
+          [MARKDOWN_PROJECTION_MIME_TYPE]: makeMarkdownProjectionPlan({ blockKind: "heading" }),
+        }),
+      ),
+    ).toBe("dom");
+  });
+
+  it("renders text/latex outputs in the host DOM", () => {
+    expect(outputSegmentLane(displayOutput("latex-output", { "text/latex": "$x^2$" }))).toBe("dom");
+    expect(
+      anyOutputNeedsIsolation([displayOutput("latex-output", { "text/latex": "$x^2$" })]),
+    ).toBe(false);
+  });
+
+  it("keeps markdown outputs with isolated blocks in the DOM fast path", () => {
+    withMarkdownProjection("isolated");
+
+    expect(
+      outputSegmentLane(
+        displayOutput("markdown-html-output", { "text/markdown": "<div>hi</div>" }),
+      ),
+    ).toBe("dom");
+  });
+
+  it("classifies interactive iframe outputs separately", () => {
     expect(
       outputSegmentLane(displayOutput("plotly-output", { "application/vnd.plotly.v1+json": {} })),
     ).toBe("interactive-frame");
@@ -67,6 +165,7 @@ describe("output lane policy", () => {
   });
 
   it("keeps Vega/Altair charts standalone instead of coalescing with sibling document outputs", () => {
+    withMarkdownProjection("isolated");
     const markdown = displayOutput("markdown-1", { "text/markdown": "# heading" });
     const vegaOne = displayOutput("vega-1", {
       "application/vnd.vegalite.v5+json": { mark: "circle" },
@@ -77,11 +176,7 @@ describe("output lane policy", () => {
 
     const segments = splitOutputSegments([markdown, vegaOne, vegaTwo]);
 
-    expect(segments.map((segment) => segment.lane)).toEqual([
-      "static-frame",
-      "vega-frame",
-      "vega-frame",
-    ]);
+    expect(segments.map((segment) => segment.lane)).toEqual(["dom", "vega-frame", "vega-frame"]);
     expect(segments.map((segment) => segment.outputs.map((output) => output.output_id))).toEqual([
       ["markdown-1"],
       ["vega-1"],

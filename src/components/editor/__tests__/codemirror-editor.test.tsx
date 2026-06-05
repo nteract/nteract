@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { EditorState } from "@codemirror/state";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "../codemirror-editor";
@@ -65,6 +65,32 @@ describe("CodeMirrorEditor", () => {
 
     expect(content.getAttribute("contenteditable")).toBe("false");
     expect(editorView?.state.facet(EditorState.readOnly)).toBe(true);
+  });
+
+  it("reports primary cursor position changes", async () => {
+    const ref = createRef<CodeMirrorEditorRef>();
+    const onSelectionChange = vi.fn();
+
+    render(
+      <CodeMirrorEditor
+        ref={ref}
+        initialValue="first value"
+        onSelectionChange={onSelectionChange}
+        theme="light"
+      />,
+    );
+
+    const editorView = await waitFor(() => {
+      const view = ref.current?.getEditor();
+      expect(view).not.toBeNull();
+      return view;
+    });
+
+    act(() => {
+      editorView?.dispatch({ selection: { anchor: 5 } });
+    });
+
+    expect(onSelectionChange).toHaveBeenCalledWith(5);
   });
 
   it("keeps read-only CodeMirror content in sync with value changes", async () => {

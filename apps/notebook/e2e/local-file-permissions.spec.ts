@@ -52,7 +52,21 @@ test.describe("local file permissions", () => {
       await expect(page.getByTestId("run-all-button")).toHaveCount(0);
       await expect(page.getByTestId("restart-kernel-button")).toHaveCount(0);
 
-      await expect(page.locator('[data-cell-type="markdown"]')).toContainText("Read-only fixture");
+      const markdownCell = page.locator('[data-cell-type="markdown"]').first();
+      await expect(markdownCell).toContainText("Read-only fixture");
+      await expect(markdownCell.getByRole("button", { name: "Edit markdown" })).toHaveCount(0);
+
+      const markdownPreview = markdownCell.getByLabel("Markdown cell content");
+      await expect(markdownPreview).toContainText("read-only task");
+      await markdownPreview.dblclick();
+      await expect(markdownCell.locator('.cm-content[contenteditable="true"]')).toHaveCount(0);
+
+      const taskCheckbox = markdownPreview.getByRole("checkbox", {
+        name: "Incomplete task: read-only task",
+      });
+      await expect(taskCheckbox).toBeDisabled();
+      await expect(taskCheckbox).not.toBeChecked();
+
       await expect(page.locator('[data-cell-type="code"] .cm-content')).toHaveAttribute(
         "contenteditable",
         "false",

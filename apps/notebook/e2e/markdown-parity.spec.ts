@@ -1,5 +1,6 @@
-import { expect, test, type FrameLocator, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
+  ensureMarkdownCell,
   executeCell,
   getCellSource,
   openNotebookRoom,
@@ -10,6 +11,7 @@ import {
 } from "./helpers";
 import {
   MARKDOWN_CELL_PARITY_SOURCE,
+  MARKDOWN_HEAVY_PARITY_SOURCE,
   MARKDOWN_OUTPUT_PARITY_CODE,
 } from "./fixtures/markdown-parity";
 import { McpPeer } from "./mcp-peer";
@@ -26,13 +28,12 @@ test.describe("markdown parity", () => {
     page,
   }) => {
     const markdownCell = await createParityMarkdownCell(page, MARKDOWN_CELL_PARITY_SOURCE);
-    const renderedMarkdown = renderedMarkdownSurface(markdownCell);
-    const renderedBody = renderedMarkdown.locator("body");
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Markdown parity heading");
 
     await expect(
       renderedMarkdown.getByRole("heading", { name: "Markdown parity heading" }),
     ).toBeVisible({ timeout: 60_000 });
-    await expect(renderedBody).toContainText("Selectable paragraph for copy behavior");
+    await expect(renderedMarkdown).toContainText("Selectable paragraph for copy behavior");
     await expect(renderedMarkdown.getByText("strong text")).toBeVisible();
     await expect(renderedMarkdown.getByText("inline code")).toBeVisible();
     await expect(renderedMarkdown.getByRole("table")).toContainText("pandas");
@@ -45,18 +46,21 @@ test.describe("markdown parity", () => {
     await expect(taskCheckboxes.nth(0)).toBeChecked();
     await expect(taskCheckboxes.nth(1)).not.toBeChecked();
 
-    // The parity contract is safety, not iframe usage: raw HTML from markdown
-    // must not become live DOM in the parent notebook surface.
+    // The parity contract is safety and fast host rendering: raw HTML from
+    // markdown must not become live DOM in the parent notebook surface. Simple
+    // inline wrappers may contribute escaped text, but never elements or attrs.
     await expect(markdownCell.locator("#markdown-parity-raw-html")).toHaveCount(0);
+    await expect(renderedMarkdown.getByText("raw html becomes text")).toBeVisible();
 
     await expect(renderedMarkdown.locator("pre")).toContainText("highlighted code block");
 
     await activateRenderedMarkdown(markdownCell);
-    const selectionText = await selectRenderedText(
+    const copyText = await copyRenderedText(
       page,
       renderedMarkdown.locator("p", { hasText: "Selectable paragraph for copy behavior" }),
     );
-    expect(selectionText).toContain("Selectable paragraph");
+    expect(copyText.selection).toContain("Selectable paragraph");
+    expect(copyText.clipboard).toContain("Selectable paragraph");
 
     await page.getByLabel("Outline").click();
     await page.getByRole("link", { name: "Deep parity section" }).click();
@@ -67,31 +71,173 @@ test.describe("markdown parity", () => {
       .toBeLessThan((page.viewportSize()?.height ?? 720) - 32);
   });
 
+  test("renders a markdown-heavy notebook surface with stable document geometry", async ({
+    page,
+  }) => {
+    const markdownCell = await createParityMarkdownCell(page, MARKDOWN_HEAVY_PARITY_SOURCE);
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "MathNet-Derived");
+
+    await expect(markdownCell.locator('[data-slot="isolated-frame"]')).toHaveCount(0);
+    await expect(renderedMarkdown).toContainText("27,817");
+    await expect(renderedMarkdown.getByRole("heading", { name: "What we measure" })).toBeVisible();
+    await expect(renderedMarkdown.getByRole("table")).toContainText("topic_path");
+    await expect
+      .poll(() => renderedMarkdown.locator(".katex").count(), { timeout: 30_000 })
+      .toBeGreaterThanOrEqual(2);
+
+    await expect
+      .poll(() => markdownVisualMetrics(renderedMarkdown), { timeout: 30_000 })
+      .toMatchObject({
+        blockquoteHasQuietRule: true,
+        codeUsesMonoFont: true,
+        h1LargerThanH2: true,
+        h2LargerThanParagraph: true,
+        noHorizontalOverflow: true,
+        paragraphLineHeightComfortable: true,
+        tableWithinSurface: true,
+      });
+
+    test.info().attach("markdown-heavy-projected-surface", {
+      body: await renderedMarkdown.screenshot(),
+      contentType: "image/png",
+    });
+  });
+
+  test("keeps text selection separate from markdown interactions", async ({ page }) => {
+    const markdownCell = await createParityMarkdownCell(
+      page,
+      [
+        "# Interaction parity",
+        "",
+        "Drag across this [selection link](#selection-should-not-navigate) without editing.",
+        "",
+        "- [ ] selection should not toggle this task",
+      ].join("\n"),
+    );
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Interaction parity");
+
+    const urlBeforeSelection = page.url();
+    const taskCheckbox = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task complete: selection should not toggle this task",
+    });
+    await expect(taskCheckbox).not.toBeChecked();
+
+    const paragraph = renderedMarkdown.locator("p", {
+      hasText: "Drag across this selection link",
+    });
+    const selection = await dragSelectRenderedText(paragraph);
+    expect(selection).toContain("selection link");
+
+    await expect(markdownCell.locator('.cm-content[contenteditable="true"]')).toBeHidden();
+    await expect(taskCheckbox).not.toBeChecked();
+    expect(page.url()).toBe(urlBeforeSelection);
+  });
+
+  test("keeps projected task toggles reconciled with markdown source", async ({ page }) => {
+    const markdownCell = await createParityMarkdownCell(
+      page,
+      [
+        "# Task projection parity",
+        "",
+        "- [ ] parent task",
+        "  - [ ] child task",
+        "- [x] completed task",
+      ].join("\n"),
+    );
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Task projection parity");
+
+    const childTask = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task complete: child task",
+    });
+    await expect(childTask).not.toBeChecked();
+
+    await clickProjectedTaskCheckbox(childTask);
+
+    const updatedChildTask = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task incomplete: child task",
+    });
+    await expect(updatedChildTask).toBeChecked();
+    await expect
+      .poll(() => getCellSource(markdownCell), { timeout: 30_000 })
+      .toContain("  - [x] child task");
+
+    await clickProjectedTaskCheckbox(updatedChildTask);
+
+    const revertedChildTask = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task complete: child task",
+    });
+    await expect(revertedChildTask).not.toBeChecked();
+    await expect
+      .poll(() => getCellSource(markdownCell), { timeout: 30_000 })
+      .toContain("  - [ ] child task");
+  });
+
+  test("keeps projected markdown view keyboard focus compatible with cell navigation", async ({
+    page,
+  }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
+    const firstCellId = await mcp.createCell(
+      "# Keyboard focus one\n\nFirst rendered cell.",
+      "markdown",
+    );
+    const secondCellId = await mcp.createCell(
+      "# Keyboard focus two\n\nSecond rendered cell.",
+      "markdown",
+    );
+    await waitForCellCount(page, 3);
+
+    const markdownCells = page.locator('[data-cell-type="markdown"]');
+    const firstMarkdown = markdownCells.filter({ hasText: "Keyboard focus one" });
+    const secondMarkdown = markdownCells.filter({ hasText: "Keyboard focus two" });
+    await renderedMarkdownSurface(firstMarkdown, "Keyboard focus one");
+    await renderedMarkdownSurface(secondMarkdown, "Keyboard focus two");
+
+    const firstPreview = firstMarkdown.getByLabel("Markdown cell content");
+    await firstPreview.focus();
+    await expect.poll(() => activeCellId(page)).toBe(firstCellId);
+
+    await page.keyboard.press("Enter");
+    const firstEditor = firstMarkdown.locator('.cm-content[contenteditable="true"]');
+    await expect(firstEditor).toBeVisible({ timeout: 10_000 });
+
+    await firstEditor.press("Control+Enter");
+    await expect(firstEditor).toBeHidden({ timeout: 10_000 });
+
+    await firstPreview.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(() => activeCellId(page)).toBe(secondCellId);
+    await expect(secondMarkdown.getByLabel("Markdown cell content")).toBeFocused();
+  });
+
   test("renders selectable markdown outputs without changing output routing semantics", async ({
     page,
   }) => {
     const codeCell = await createParityCodeCell(page, MARKDOWN_OUTPUT_PARITY_CODE);
     await executeCell(codeCell);
 
-    const outputMarkdown = renderedMarkdownSurface(codeCell);
-    const outputBody = outputMarkdown.locator("body");
+    const outputMarkdown = await renderedMarkdownSurface(codeCell, "Markdown output parity");
 
     await expect(
       outputMarkdown.getByRole("heading", { name: "Markdown output parity" }),
     ).toBeVisible({
       timeout: 60_000,
     });
-    await expect(outputBody).toContainText("Selectable output paragraph");
+    await expect(outputMarkdown).toContainText("Selectable output paragraph");
     await expect(outputMarkdown.getByRole("table")).toContainText("markdown");
     await expect
       .poll(() => outputMarkdown.locator(".katex").count(), { timeout: 30_000 })
       .toBeGreaterThanOrEqual(2);
 
-    const selectionText = await selectRenderedText(
+    const copyText = await copyRenderedText(
       page,
       outputMarkdown.locator("p", { hasText: "Selectable output paragraph" }),
     );
-    expect(selectionText).toContain("Selectable output");
+    expect(copyText.selection).toContain("Selectable output");
+    expect(copyText.clipboard).toContain("Selectable output");
   });
 
   test("round-trips rendered markdown through double-click edit and render", async ({ page }) => {
@@ -99,7 +245,7 @@ test.describe("markdown parity", () => {
       page,
       "# Editable parity heading\n\nOriginal rendered text.",
     );
-    const renderedMarkdown = renderedMarkdownSurface(markdownCell);
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Editable parity heading");
     await expect(
       renderedMarkdown.getByRole("heading", { name: "Editable parity heading" }),
     ).toBeVisible({ timeout: 60_000 });
@@ -116,29 +262,93 @@ test.describe("markdown parity", () => {
 
     await editor.press("Control+Enter");
     await expect(editor).toBeHidden({ timeout: 10_000 });
-    await expect(renderedMarkdown.locator("body")).toContainText(
-      "Updated rendered text after edit.",
-      {
-        timeout: 60_000,
-      },
+    await expect(renderedMarkdown).toContainText("Updated rendered text after edit.", {
+      timeout: 60_000,
+    });
+    await expect(renderedMarkdown).not.toContainText("Original rendered text.");
+
+    await doubleClickRenderedMarkdown(markdownCell);
+    await expect(editor).toBeVisible({ timeout: 10_000 });
+
+    await setCellSource(
+      markdownCell,
+      "# Editable parity heading\n\nSecond rendered text after another edit.",
     );
-    await expect(renderedMarkdown.locator("body")).not.toContainText("Original rendered text.");
+    await expect.poll(() => getCellSource(markdownCell)).toContain("Second rendered text");
+
+    await editor.press("Control+Enter");
+    await expect(editor).toBeHidden({ timeout: 10_000 });
+    await expect(renderedMarkdown).toContainText("Second rendered text after another edit.", {
+      timeout: 60_000,
+    });
+    await expect(renderedMarkdown).not.toContainText("Updated rendered text after edit.");
+  });
+
+  test("renders a newly inserted markdown cell after editing through the UI", async ({ page }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    const markdownCell = await ensureMarkdownCell(page);
+    const editor = markdownCell.locator('.cm-content[contenteditable="true"]');
+    await expect(editor).toBeVisible({ timeout: 10_000 });
+
+    await setCellSource(
+      markdownCell,
+      "# Inserted markdown parity\n\nhello from the inserted markdown cell",
+    );
+    await expect.poll(() => getCellSource(markdownCell)).toContain("hello from the inserted");
+
+    await editor.press("Control+Enter");
+    await expect(editor).toBeHidden({ timeout: 10_000 });
+
+    const renderedMarkdown = await renderedMarkdownSurface(
+      markdownCell,
+      "Inserted markdown parity",
+    );
+    await expect(renderedMarkdown).toContainText("hello from the inserted markdown cell", {
+      timeout: 60_000,
+    });
+    await expect(renderedMarkdown).not.toContainText("Enter markdown");
+  });
+
+  test("reconciles remote markdown source updates while rendered", async ({ page }) => {
+    const { cell: markdownCell, cellId } = await createParityMarkdownCellWithId(
+      page,
+      "# Remote markdown parity\n\nOriginal remote text.",
+    );
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Remote markdown parity");
+
+    await expect(renderedMarkdown).toContainText("Original remote text.", { timeout: 60_000 });
+
+    await mcp!.setCell(cellId, "# Remote markdown parity\n\nUpdated by the MCP peer.");
+
+    await expect
+      .poll(() => getCellSource(markdownCell), { timeout: 30_000 })
+      .toContain("Updated by the MCP peer");
+    await expect(renderedMarkdown).toContainText("Updated by the MCP peer.", { timeout: 60_000 });
+    await expect(renderedMarkdown).not.toContainText("Original remote text.");
   });
 });
 
 async function createParityMarkdownCell(page: Page, source: string): Promise<Locator> {
+  return (await createParityMarkdownCellWithId(page, source)).cell;
+}
+
+async function createParityMarkdownCellWithId(
+  page: Page,
+  source: string,
+): Promise<{ cell: Locator; cellId: string }> {
   const notebookId = crypto.randomUUID();
   await openNotebookRoom(page, notebookId);
-  await waitForKernelStatus(page, "idle", 120_000);
 
   mcp = await McpPeer.start();
   await mcp.connectNotebook(notebookId);
-  await mcp.createCell(source, "markdown");
+  const cellId = await mcp.createCell(source, "markdown");
   await waitForCellCount(page, 2);
 
   const markdownCell = page.locator('[data-cell-type="markdown"]').first();
   await expect(markdownCell).toBeVisible();
-  return markdownCell;
+  return { cell: markdownCell, cellId };
 }
 
 async function createParityCodeCell(page: Page, source: string): Promise<Locator> {
@@ -153,15 +363,57 @@ async function createParityCodeCell(page: Page, source: string): Promise<Locator
   return await waitForCodeCellContaining(page, "Markdown output parity");
 }
 
-function renderedMarkdownSurface(markdownCell: Locator): FrameLocator {
-  // Current markdown rendering lives in an isolated frame. Keep the dependency
-  // at this boundary so projected/main-DOM markdown can swap this helper
-  // without rewriting the conformance assertions above.
-  return markdownCell.frameLocator('[data-slot="isolated-frame"]');
+async function renderedMarkdownSurface(
+  markdownCell: Locator,
+  headingName: string,
+): Promise<Locator> {
+  // Keep the host-vs-iframe dependency at this boundary. Projected markdown
+  // renders in the host DOM; legacy markdown can still render inside the
+  // isolated frame.
+  const projected = markdownCell.locator('[data-slot="projected-markdown-output"]');
+  const isolatedBody = markdownCell.frameLocator('[data-slot="isolated-frame"]').locator("body");
+
+  await expect
+    .poll(
+      async () => {
+        if (await projected.getByRole("heading", { name: headingName }).isVisible()) {
+          return "projected";
+        }
+        if (await isolatedBody.getByRole("heading", { name: headingName }).isVisible()) {
+          return "isolated";
+        }
+        return "none";
+      },
+      { timeout: 60_000 },
+    )
+    .not.toBe("none");
+
+  if (await projected.getByRole("heading", { name: headingName }).isVisible()) {
+    return projected;
+  }
+  return isolatedBody;
 }
 
 async function activateRenderedMarkdown(markdownCell: Locator): Promise<void> {
   await markdownCell.getByLabel("Markdown cell content").focus();
+}
+
+async function clickProjectedTaskCheckbox(input: Locator): Promise<void> {
+  await input.evaluate((element) => {
+    const checkboxLabel = element.closest<HTMLElement>(
+      '[data-slot="projected-markdown-task-checkbox"]',
+    );
+    checkboxLabel?.click();
+  });
+}
+
+async function activeCellId(page: Page): Promise<string | null> {
+  return await page.evaluate(() => {
+    const activeElement = document.activeElement;
+    return (
+      activeElement?.closest('[data-slot="cell-container"]')?.getAttribute("data-cell-id") ?? null
+    );
+  });
 }
 
 async function doubleClickRenderedMarkdown(markdownCell: Locator): Promise<void> {
@@ -171,6 +423,99 @@ async function doubleClickRenderedMarkdown(markdownCell: Locator): Promise<void>
 
 async function selectRenderedText(_page: Page, locator: Locator): Promise<string> {
   await locator.scrollIntoViewIfNeeded();
-  await locator.selectText({ force: true });
-  return locator.evaluate(() => window.getSelection()?.toString() ?? "");
+  return await locator.evaluate((element) => {
+    const document = element.ownerDocument;
+    const window = document.defaultView;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+
+    const selection = window?.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    window?.focus();
+
+    return selection?.toString() ?? "";
+  });
+}
+
+async function copyRenderedText(
+  page: Page,
+  locator: Locator,
+): Promise<{ clipboard: string; selection: string }> {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+
+  const selection = await selectRenderedText(page, locator);
+  const copiedFromSelection = await locator
+    .evaluate((element) => element.ownerDocument.execCommand("copy"))
+    .catch(() => false);
+  if (!copiedFromSelection) {
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+C" : "Control+C");
+  }
+
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 5_000 })
+    .not.toBe("");
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+
+  return { clipboard, selection };
+}
+
+async function dragSelectRenderedText(locator: Locator): Promise<string> {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return "";
+
+  const page = locator.page();
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + 4, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 4, y, { steps: 12 });
+  await page.mouse.up();
+
+  return await locator.evaluate((element) => {
+    const selection = element.ownerDocument.defaultView?.getSelection();
+    return selection?.toString() ?? "";
+  });
+}
+
+async function markdownVisualMetrics(locator: Locator) {
+  return await locator.evaluate((element) => {
+    const root = element as HTMLElement;
+    const h1 = root.querySelector("h1") as HTMLElement | null;
+    const h2 = root.querySelector("h2") as HTMLElement | null;
+    const paragraph = root.querySelector("p") as HTMLElement | null;
+    const blockquote = root.querySelector("blockquote") as HTMLElement | null;
+    const code = root.querySelector("pre code") as HTMLElement | null;
+    const table = root.querySelector("table") as HTMLElement | null;
+
+    const fontSize = (node: HTMLElement | null) =>
+      node ? Number.parseFloat(getComputedStyle(node).fontSize) : 0;
+    const lineHeightRatio = (node: HTMLElement | null) => {
+      if (!node) return 0;
+      const style = getComputedStyle(node);
+      const lineHeight = Number.parseFloat(style.lineHeight);
+      const size = Number.parseFloat(style.fontSize);
+      return lineHeight / size;
+    };
+    const rootBox = root.getBoundingClientRect();
+    const tableBox = table?.getBoundingClientRect();
+    const blockquoteStyle = blockquote ? getComputedStyle(blockquote) : null;
+
+    return {
+      blockquoteHasQuietRule: Boolean(
+        blockquoteStyle &&
+        Number.parseFloat(blockquoteStyle.borderLeftWidth) >= 2 &&
+        Number.parseFloat(blockquoteStyle.paddingLeft) >= 8,
+      ),
+      codeUsesMonoFont: Boolean(code && getComputedStyle(code).fontFamily.includes("mono")),
+      h1LargerThanH2: fontSize(h1) > fontSize(h2),
+      h2LargerThanParagraph: fontSize(h2) > fontSize(paragraph),
+      noHorizontalOverflow: root.scrollWidth <= root.clientWidth + 1,
+      paragraphLineHeightComfortable: lineHeightRatio(paragraph) >= 1.45,
+      tableWithinSurface: Boolean(
+        tableBox && tableBox.left >= rootBox.left && tableBox.right <= rootBox.right + 1,
+      ),
+    };
+  });
 }

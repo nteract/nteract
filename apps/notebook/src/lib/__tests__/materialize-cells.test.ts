@@ -8,6 +8,7 @@ import {
   resolveOutput,
   reuseOutputsIfUnchanged,
 } from "../materialize-cells";
+import { setMarkdownProjectionProjector } from "../markdown-projection";
 import { resetRuntimeState, setRuntimeState } from "../runtime-state";
 import { DEFAULT_RUNTIME_STATE } from "runtimed";
 
@@ -17,12 +18,30 @@ import { DEFAULT_RUNTIME_STATE } from "runtimed";
 
 const mockFetch =
   vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
+let restoreMarkdownProjectionProjector: (() => void) | undefined;
 
 beforeEach(() => {
   vi.stubGlobal("fetch", mockFetch);
+  restoreMarkdownProjectionProjector = setMarkdownProjectionProjector((source) =>
+    JSON.stringify({
+      version: 1,
+      engine: "test",
+      byteLength: source.length,
+      utf16Length: source.length,
+      measurement: {
+        estimatedHeight: 24,
+        confidence: "medium",
+        width: 720,
+      },
+      blocks: [],
+      runs: [],
+    }),
+  );
 });
 
 afterEach(() => {
+  restoreMarkdownProjectionProjector?.();
+  restoreMarkdownProjectionProjector = undefined;
   mockFetch.mockReset();
   vi.unstubAllGlobals();
   resetRuntimeState();
@@ -474,12 +493,136 @@ describe("cellSnapshotsToNotebookCells", () => {
 
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
     expect(cells).toHaveLength(1);
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "# Title",
-      metadata: {},
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "# Title",
+        metadata: {},
+      }),
+    );
+    expect(cells[0]).toHaveProperty("markdownProjection");
+    if (cells[0].cell_type === "markdown") {
+      expect(cells[0].markdownProjection?.version).toBe(1);
+    }
+  });
+
+  it("projects task and math semantics during markdown materialization", async () => {
+    restoreMarkdownProjectionProjector?.();
+    restoreMarkdownProjectionProjector = setMarkdownProjectionProjector((source) =>
+      JSON.stringify({
+        version: 1,
+        engine: "test",
+        byteLength: source.length,
+        utf16Length: source.length,
+        measurement: {
+          estimatedHeight: 72,
+          confidence: "high",
+          width: 720,
+        },
+        blocks: [
+          {
+            blockId: "tasks",
+            blockIndex: 0,
+            element: "ul",
+            kind: "list",
+            measurement: {
+              estimatedHeight: 48,
+              confidence: "high",
+              width: 720,
+            },
+            sourceSpanByte: [0, 23],
+            sourceSpanUtf16: [0, 23],
+            syntaxSpans: [],
+            text: "done waiting",
+          },
+          {
+            blockId: "math",
+            blockIndex: 1,
+            element: "p",
+            kind: "paragraph",
+            measurement: {
+              estimatedHeight: 24,
+              confidence: "high",
+              width: 720,
+            },
+            sourceSpanByte: [25, source.length],
+            sourceSpanUtf16: [25, source.length],
+            syntaxSpans: [],
+            text: "E = mc^2",
+          },
+        ],
+        runs: [
+          {
+            blockId: "tasks",
+            inlineId: "done",
+            listItemChecked: true,
+            listItemIndex: 0,
+            renderedText: "done",
+            renderedTextUtf16: [0, 4],
+            semantic: "list-item",
+            sourceSpanByte: [0, 10],
+            sourceSpanUtf16: [0, 10],
+          },
+          {
+            blockId: "tasks",
+            inlineId: "waiting",
+            listItemChecked: false,
+            listItemIndex: 1,
+            renderedText: "waiting",
+            renderedTextUtf16: [0, 7],
+            semantic: "list-item",
+            sourceSpanByte: [11, 23],
+            sourceSpanUtf16: [11, 23],
+          },
+          {
+            blockId: "math",
+            inlineId: "math-inline",
+            listItemIndex: null,
+            renderedText: "E = mc^2",
+            renderedTextUtf16: [1, 9],
+            semantic: "math-source",
+            sourceSpanByte: [26, 34],
+            sourceSpanUtf16: [26, 34],
+          },
+        ],
+      }),
+    );
+
+    const snap = markdownSnapshot("m1", "- [x] done\n- [ ] waiting\n\n$E = mc^2$");
+
+    const asyncCells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    const syncCells = cellSnapshotsToNotebookCellsSync([snap], new Map());
+
+    for (const cell of [asyncCells[0], syncCells[0]]) {
+      expect(cell).toEqual(
+        expect.objectContaining({
+          id: "m1",
+          cell_type: "markdown",
+          source: "- [x] done\n- [ ] waiting\n\n$E = mc^2$",
+        }),
+      );
+
+      if (cell?.cell_type !== "markdown") {
+        throw new Error("expected markdown cell");
+      }
+
+      expect(cell.markdownProjection?.blocks.map((block) => block.kind)).toEqual([
+        "list",
+        "paragraph",
+      ]);
+      expect(
+        cell.markdownProjection?.runs.map((run) => ({
+          checked: run.listItemChecked,
+          semantic: run.semantic,
+          text: run.renderedText,
+        })),
+      ).toEqual([
+        { checked: true, semantic: "list-item", text: "done" },
+        { checked: false, semantic: "list-item", text: "waiting" },
+        { checked: undefined, semantic: "math-source", text: "E = mc^2" },
+      ]);
+    }
   });
 
   it("preserves resolved markdown assets", async () => {
@@ -488,13 +631,16 @@ describe("cellSnapshotsToNotebookCells", () => {
     });
 
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "![x](attachment:image.png)",
-      metadata: {},
-      resolvedAssets: { "attachment:image.png": "abc123" },
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "![x](attachment:image.png)",
+        metadata: {},
+        resolvedAssets: { "attachment:image.png": "abc123" },
+      }),
+    );
+    expect(cells[0]).toHaveProperty("markdownProjection");
   });
 
   it("preserves resolved markdown assets during sync materialization", () => {
@@ -503,13 +649,16 @@ describe("cellSnapshotsToNotebookCells", () => {
     });
 
     const cells = cellSnapshotsToNotebookCellsSync([snap], new Map());
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "![x](images/foo.png)",
-      metadata: {},
-      resolvedAssets: { "images/foo.png": "abc123" },
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "![x](images/foo.png)",
+        metadata: {},
+        resolvedAssets: { "images/foo.png": "abc123" },
+      }),
+    );
+    expect(cells[0]).toHaveProperty("markdownProjection");
   });
 
   it("converts a raw cell", async () => {
@@ -833,12 +982,14 @@ describe("cellSnapshotsToNotebookCells", () => {
     const snap = markdownSnapshot("m1", "text");
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
 
-    expect(cells[0]).toEqual({
-      id: "m1",
-      cell_type: "markdown",
-      source: "text",
-      metadata: {},
-    });
+    expect(cells[0]).toEqual(
+      expect.objectContaining({
+        id: "m1",
+        cell_type: "markdown",
+        source: "text",
+        metadata: {},
+      }),
+    );
     expect(cells[0]).not.toHaveProperty("outputs");
     expect(cells[0]).not.toHaveProperty("execution_count");
   });

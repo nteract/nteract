@@ -1,4 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
+import type { MarkdownProjectionPlan } from "../../../lib/markdown-projection";
 
 export type NotebookCellMetadata = Record<string, unknown>;
 
@@ -40,6 +41,7 @@ export interface NotebookStoreMarkdownCell {
   id: string;
   source: string;
   metadata: NotebookCellMetadata;
+  markdownProjection?: MarkdownProjectionPlan;
   resolvedAssets?: Record<string, string>;
 }
 
@@ -286,7 +288,15 @@ export function updateCellById(
 ): void {
   const cell = _cellMap.get(id);
   if (!cell) return;
-  const updated = updater(cell);
+  let updated = updater(cell);
+  if (
+    cell.cell_type === "markdown" &&
+    updated.cell_type === "markdown" &&
+    updated.source !== cell.source &&
+    updated.markdownProjection === cell.markdownProjection
+  ) {
+    updated = { ...updated, markdownProjection: undefined };
+  }
   if (cellsEqual(cell, updated)) return;
   const chromeChanged = !cellChromeEqual(cell, updated);
   _cellMap.set(id, updated);

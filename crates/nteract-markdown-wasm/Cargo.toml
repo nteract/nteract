@@ -1,0 +1,11 @@
+[package]
+name = "nteract-markdown-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nteract-markdown-engine = { path = "../nteract-markdown-engine" }

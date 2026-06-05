@@ -47,11 +47,12 @@ const expectedSourceText =
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
 const expectedPresenceTitle = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE ?? "participant";
-const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", []);
-const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS", [
+const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", [
   "MathNet topic visualization",
   "Loading the slice",
   "Schema at a glance",
+]);
+const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS", [
   "PROBLEM_MARKDOWN",
 ]);
 const expectedCatalogOwnerPrincipal =

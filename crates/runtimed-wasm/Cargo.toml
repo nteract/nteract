@@ -14,6 +14,7 @@ automerge = { workspace = true }
 notebook-doc = { path = "../notebook-doc" }
 notebook-wire = { path = "../notebook-wire" }
 nteract-identity = { path = "../nteract-identity", default-features = false }
+nteract-markdown-wasm = { path = "../nteract-markdown-wasm" }
 runtime-doc = { path = "../runtime-doc" }
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }

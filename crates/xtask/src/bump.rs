@@ -124,6 +124,16 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "crates/nteract-markdown-engine/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/nteract-markdown-wasm/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
         path: "crates/runtimed-wasm/Cargo.toml",
         format: Format::Toml,
         matches: 1,

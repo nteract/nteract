@@ -59,6 +59,8 @@ use notebook_doc::mime::{
 use crate::blob_store::BlobStore;
 use crate::output_redaction::OutputRedactor;
 
+const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
+
 /// MIME types whose `ContentRef::Blob` outputs are externalized as
 /// [`BLOB_REF_MIME`] entries in saved `.ipynb` files instead of being
 /// re-inlined as base64.
@@ -1214,7 +1216,36 @@ async fn convert_data_bundle(
         result.insert(mime_type, content_ref);
     }
 
+    maybe_insert_markdown_projection(&mut result, blob_store, threshold).await?;
+
     Ok(result)
+}
+
+async fn maybe_insert_markdown_projection(
+    data: &mut HashMap<String, ContentRef>,
+    blob_store: &BlobStore,
+    threshold: usize,
+) -> io::Result<()> {
+    if data.contains_key(MARKDOWN_PROJECTION_MIME) {
+        return Ok(());
+    }
+
+    let Some(markdown_ref) = data.get("text/markdown") else {
+        return Ok(());
+    };
+    let markdown = match markdown_ref {
+        ContentRef::Inline { inline } => inline.as_str(),
+        // Avoid a blob-store read on the hot output path. Blob-backed
+        // markdown can still project in the frontend after normal ContentRef
+        // resolution; small inline markdown gets the zero-fetch plan sibling.
+        ContentRef::Blob { .. } => return Ok(()),
+    };
+    let plan_json = nteract_markdown_wasm::project_to_json(markdown);
+    data.insert(
+        MARKDOWN_PROJECTION_MIME.to_string(),
+        ContentRef::from_data(&plan_json, MARKDOWN_PROJECTION_MIME, blob_store, threshold).await?,
+    );
+    Ok(())
 }
 
 /// Resolve a data bundle of ContentRefs back to string values.
@@ -1248,6 +1279,10 @@ async fn resolve_data_bundle(
     }
 
     for (mime_type, content_ref) in data {
+        if mime_type == MARKDOWN_PROJECTION_MIME {
+            continue;
+        }
+
         // Spec 2: externalize whitelisted binary blobs as a BLOB_REF_MIME
         // entry instead of re-inlining them as base64 in the .ipynb.
         // Non-whitelisted MIMEs (images, PDFs, HTML, audio, video) keep
@@ -2313,6 +2348,98 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(manifest, OutputManifest::DisplayData { .. }));
+    }
+
+    #[tokio::test]
+    async fn markdown_display_data_adds_projected_plan_sibling() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/markdown": "- [x] ship it\n\n$z^2$",
+                "text/plain": "ship it"
+            },
+            "metadata": {}
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::DisplayData { data, .. } = manifest else {
+            panic!("expected DisplayData");
+        };
+
+        assert!(data.contains_key("text/markdown"));
+        let projected = data
+            .get(MARKDOWN_PROJECTION_MIME)
+            .expect("projected markdown sibling");
+        let plan = projected.resolve(&store).await.unwrap();
+        let plan_json: Value = serde_json::from_str(&plan).unwrap();
+        assert_eq!(plan_json["version"], 1);
+        let runs = plan_json["runs"].as_array().expect("projected runs");
+        assert!(
+            runs.iter()
+                .any(|run| run["listItemChecked"] == Value::Bool(true)),
+            "projected plan should preserve checked task semantics: {plan_json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn markdown_projection_mime_stays_out_of_saved_notebooks() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "execute_result",
+            "execution_count": 7,
+            "data": {
+                "text/markdown": "# Report\n\n- [ ] follow up"
+            },
+            "metadata": {}
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
+        assert_eq!(
+            resolved["data"]["text/markdown"],
+            "# Report\n\n- [ ] follow up"
+        );
+        assert!(
+            resolved["data"].get(MARKDOWN_PROJECTION_MIME).is_none(),
+            "internal projection MIME must not be serialized to .ipynb"
+        );
+    }
+
+    #[tokio::test]
+    async fn blob_markdown_waits_for_frontend_projection_after_resolution() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/markdown": "- [x] blob-backed"
+            },
+            "metadata": {}
+        });
+
+        let manifest = create_manifest(&output, &store, 0).await.unwrap();
+        let OutputManifest::DisplayData { data, .. } = manifest else {
+            panic!("expected DisplayData");
+        };
+
+        assert!(matches!(
+            data.get("text/markdown"),
+            Some(ContentRef::Blob { .. })
+        ));
+        assert!(
+            !data.contains_key(MARKDOWN_PROJECTION_MIME),
+            "manifest creation should not fetch blob markdown just to project it"
+        );
     }
 
     #[tokio::test]

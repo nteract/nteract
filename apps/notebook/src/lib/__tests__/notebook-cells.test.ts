@@ -95,6 +95,31 @@ describe("updateCellById", () => {
     expect(getCellById("b")?.source).toBe("keep");
   });
 
+  it("clears stale markdown projections when markdown source changes", () => {
+    replaceNotebookCells([
+      {
+        ...markdownCell("a", "- [ ] old"),
+        markdownProjection: {
+          version: 1,
+          engine: "test",
+          byteLength: 8,
+          utf16Length: 8,
+          measurement: { estimatedHeight: 24, confidence: "high", width: 720 },
+          blocks: [],
+          runs: [],
+        },
+      },
+    ]);
+
+    updateCellById("a", (cell) =>
+      cell.cell_type === "markdown" ? { ...cell, source: "- [x] old" } : cell,
+    );
+
+    const cell = getCellById("a");
+    expect(cell?.source).toBe("- [x] old");
+    expect(cell?.cell_type === "markdown" ? cell.markdownProjection : null).toBeUndefined();
+  });
+
   it("is a no-op for non-existent IDs", () => {
     replaceNotebookCells([codeCell("a")]);
     updateCellById("nonexistent", (c) => ({ ...c, source: "boom" }));

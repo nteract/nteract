@@ -7,9 +7,112 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import initMarkdownWasm from "../../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import {
+  MARKDOWN_PROJECTION_MIME_TYPE,
+  setMarkdownProjectionProjector,
+} from "@/lib/markdown-projection";
 import { MediaProvider } from "../media-provider";
 import { DEFAULT_PRIORITY, getSelectedMimeType, MediaRouter } from "../media-router";
+
+let restoreMarkdownProjector: (() => void) | undefined;
+const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
+
+beforeAll(async () => {
+  const wasmBytes = readFileSync(
+    join(process.cwd(), "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm"),
+  );
+  await initMarkdownWasm({
+    module_or_path: wasmBytes.buffer.slice(
+      wasmBytes.byteOffset,
+      wasmBytes.byteOffset + wasmBytes.byteLength,
+    ),
+  });
+});
+
+function withMarkdownProjection({
+  isolated = false,
+  text = "Test",
+}: {
+  isolated?: boolean;
+  text?: string;
+} = {}) {
+  restoreMarkdownProjector?.();
+  restoreMarkdownProjector = setMarkdownProjectionProjector((source) =>
+    JSON.stringify(makeMarkdownProjectionPlan({ isolated, source, text })),
+  );
+}
+
+function makeMarkdownProjectionPlan({
+  isolated = false,
+  source = "# Test",
+  text = "Test",
+}: {
+  isolated?: boolean;
+  source?: string;
+  text?: string;
+}) {
+  return {
+    version: 1,
+    engine: "test",
+    byteLength: source.length,
+    utf16Length: source.length,
+    measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+    blocks: [
+      {
+        anchorSlug: isolated ? undefined : "test",
+        blockId: "b0",
+        blockIndex: 0,
+        element: isolated ? "div" : "h1",
+        kind: isolated ? "isolated" : "heading",
+        measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+        sourceSpanByte: [0, source.length],
+        sourceSpanUtf16: [0, source.length],
+        syntaxSpans: [],
+        text,
+      },
+    ],
+    runs: isolated
+      ? []
+      : [
+          {
+            blockId: "b0",
+            inlineId: "r0",
+            listItemIndex: null,
+            renderedText: text,
+            renderedTextUtf16: [0, text.length],
+            semantic: "text",
+            sourceSpanByte: [0, source.length],
+            sourceSpanUtf16: [0, source.length],
+          },
+        ],
+  };
+}
+
+afterEach(() => {
+  restoreMarkdownProjector?.();
+  restoreMarkdownProjector = undefined;
+
+  if (originalMatchMedia) {
+    Object.defineProperty(window, "matchMedia", originalMatchMedia);
+  } else {
+    delete (window as Partial<Window>).matchMedia;
+  }
+});
+
+beforeEach(() => {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  });
+});
 
 describe("getSelectedMimeType", () => {
   describe("priority-based selection", () => {
@@ -53,6 +156,14 @@ describe("getSelectedMimeType", () => {
         "text/markdown": "# Hello",
       };
       expect(getSelectedMimeType(data)).toBe("text/markdown");
+    });
+
+    it("returns projected nteract markdown over source markdown", () => {
+      const data = {
+        "text/markdown": "# Hello",
+        [MARKDOWN_PROJECTION_MIME_TYPE]: makeMarkdownProjectionPlan({ text: "Hello" }),
+      };
+      expect(getSelectedMimeType(data)).toBe(MARKDOWN_PROJECTION_MIME_TYPE);
     });
   });
 
@@ -290,7 +401,91 @@ describe("MediaRouter component", () => {
       warnSpy.mockRestore();
     });
 
-    it("renders empty wrapper for text/markdown", () => {
+    it("renders projected text/markdown in the host DOM when safe", () => {
+      withMarkdownProjection({ text: "Test" });
+
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/markdown": "# Test" }} />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByRole("heading", { name: "Test" })).toBeInTheDocument();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+    });
+
+    it("renders WASM-projected task checkboxes from text/markdown outputs in the host DOM", () => {
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/markdown": "- [x] done\n- [ ] waiting" }} />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByRole("checkbox", { name: "Completed task: done" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Incomplete task: waiting" })).not.toBeChecked();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+      expect(container.querySelector("iframe")).toBeNull();
+    });
+
+    it("renders WASM-projected math from text/markdown outputs in the host DOM", () => {
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/markdown": "Inline $x^2$.\n\n$$\n\\int_0^1 x dx\n$$" }} />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByText(/Inline/)).toBeInTheDocument();
+      expect(container.querySelector(".katex")).not.toBeNull();
+      expect(container.querySelector(".katex-display")).not.toBeNull();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+      expect(container.querySelector("iframe")).toBeNull();
+    });
+
+    it("renders text/latex outputs in the host DOM", async () => {
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/latex": "$x^2$" }} />
+        </MediaProvider>,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('[data-slot="math-output"]')).not.toBeNull();
+      });
+      expect(container.querySelector(".katex")).not.toBeNull();
+      expect(container.querySelector("iframe")).toBeNull();
+    });
+
+    it("renders host text/latex without trusted KaTeX HTML commands", async () => {
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/latex": String.raw`\href{javascript:alert(1)}{x}` }} />
+        </MediaProvider>,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('[data-slot="math-output"]')).not.toBeNull();
+      });
+      expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
+      expect(container.querySelector("iframe")).toBeNull();
+    });
+
+    it("renders projected nteract markdown plans in the host DOM when safe", () => {
+      const { container } = render(
+        <MediaProvider>
+          <MediaRouter
+            data={{
+              [MARKDOWN_PROJECTION_MIME_TYPE]: makeMarkdownProjectionPlan({ text: "Projected" }),
+            }}
+          />
+        </MediaProvider>,
+      );
+
+      expect(screen.getByRole("heading", { name: "Projected" })).toBeInTheDocument();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+    });
+
+    it("renders projected markdown in the host DOM while omitting isolated blocks", () => {
+      withMarkdownProjection({ isolated: true });
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       const { container } = render(
@@ -300,7 +495,9 @@ describe("MediaRouter component", () => {
       );
       const wrapper = container.firstChild as HTMLElement;
       expect(wrapper).toHaveAttribute("data-slot", "media-router");
-      expect(wrapper.children.length).toBe(0);
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+      expect(container.querySelector('[data-slot="isolated-frame"]')).toBeNull();
+      expect(screen.queryByText("Test")).not.toBeInTheDocument();
 
       warnSpy.mockRestore();
     });

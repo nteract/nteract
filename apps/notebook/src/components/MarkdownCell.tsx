@@ -1,7 +1,8 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { Pencil } from "lucide-react";
+import { Check, Pencil } from "lucide-react";
 import {
   memo,
+  type MouseEvent,
   type PointerEvent,
   type ReactNode,
   useCallback,
@@ -20,7 +21,14 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
 import { findVerticalScrollAncestor } from "@/components/isolated/scroll-boundary";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
+import { ProjectedMarkdownView } from "./markdown/ProjectedMarkdownView";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
+import {
+  canRenderMarkdownProjectionInHost,
+  type MarkdownProjectionRun,
+  projectedMarkdownPreviewHeight,
+  projectMarkdownPlan,
+} from "../lib/markdown-projection";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
@@ -42,6 +50,7 @@ import {
 } from "@/components/cell/markdown-heading-navigation";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
+import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
@@ -51,6 +60,13 @@ const handleIframeError = (err: { message: string; stack?: string }) =>
 const EMPTY_HEADING_ANCHORS: readonly MarkdownHeadingAnchor[] = [];
 const MARKDOWN_PREVIEW_MIN_HEIGHT = 24;
 const MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT = 720;
+
+function cssEscape(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return value.replace(/["\\]/g, "\\$&");
+}
 
 function formatPluginLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -103,6 +119,7 @@ interface MarkdownCellProps {
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
+  onUpdateSource?: (source: string) => void;
   isLastCell?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
@@ -122,6 +139,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   onFocusPrevious,
   onFocusNext,
   onInsertCellAfter,
+  onUpdateSource,
   isLastCell = false,
   dragHandleProps,
   isDragging,
@@ -202,14 +220,60 @@ export const MarkdownCell = memo(function MarkdownCell({
   }, []);
 
   const [editing, setEditing] = useState(!readOnly && cell.source === "");
+  const [draftPreviewSource, setDraftPreviewSource] = useState<string | null>(null);
+  const [activeSourcePosition, setActiveSourcePosition] = useState<number | undefined>();
   const editorRef = useRef<CodeMirrorEditorRef>(null);
+  const previewSourcePositionRef = useRef<number | undefined>(undefined);
   const presence = usePresenceContext();
-  const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
+  const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
-  const previewMinHeight = useMemo(() => estimateMarkdownPreviewHeight(cell.source), [cell.source]);
+  const [previewFrameReadyGeneration, setPreviewFrameReadyGeneration] = useState(0);
+  const previewSource = draftPreviewSource ?? cell.source;
+
+  useEffect(() => {
+    if (draftPreviewSource !== null && cell.source === draftPreviewSource) {
+      setDraftPreviewSource(null);
+    }
+  }, [cell.source, draftPreviewSource]);
+
+  const markdownProjection = useMemo(
+    () =>
+      draftPreviewSource !== null
+        ? projectMarkdownPlan(draftPreviewSource)
+        : (cell.markdownProjection ?? projectMarkdownPlan(cell.source)),
+    [cell.markdownProjection, cell.source, draftPreviewSource],
+  );
+  const canRenderProjectionInHost = canRenderMarkdownProjectionInHost(markdownProjection);
+  const previewMinHeight = useMemo(
+    () =>
+      projectedMarkdownPreviewHeight(
+        markdownProjection,
+        estimateMarkdownPreviewHeight(previewSource),
+        {
+          maxHeight: MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT,
+          minHeight: MARKDOWN_PREVIEW_MIN_HEIGHT,
+        },
+      ),
+    [previewSource, markdownProjection],
+  );
+
+  const handleTaskCheckedChange = useCallback(
+    (run: MarkdownProjectionRun, checked: boolean) => {
+      if (readOnly || !onUpdateSource) return;
+
+      const nextSource = toggleMarkdownTaskMarker(previewSource, run, checked);
+      if (nextSource === null || nextSource === previewSource) return;
+
+      setDraftPreviewSource(nextSource);
+      if (!bridge.replaceSource(nextSource)) {
+        onUpdateSource(nextSource);
+      }
+    },
+    [bridge, onUpdateSource, previewSource, readOnly],
+  );
 
   // Register EditorView with the cursor registry when in edit mode.
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -270,15 +334,16 @@ export const MarkdownCell = memo(function MarkdownCell({
   colorThemeRef.current = colorTheme;
 
   const blobResolver = useBlobResolver();
-  const markdownMetadata = useMemo(
-    () =>
-      headingAnchors.length > 0
-        ? {
-            nteractMarkdownHeadingAnchors: headingAnchors,
-          }
-        : undefined,
-    [headingAnchors],
-  );
+  const markdownMetadata = useMemo(() => {
+    if (headingAnchors.length === 0 && !markdownProjection) {
+      return undefined;
+    }
+
+    return {
+      ...(headingAnchors.length > 0 ? { nteractMarkdownHeadingAnchors: headingAnchors } : {}),
+      ...(markdownProjection ? { nteractMarkdownProjection: markdownProjection } : {}),
+    };
+  }, [headingAnchors, markdownProjection]);
 
   const handleDoubleClick = useCallback(() => {
     if (readOnly) return;
@@ -286,6 +351,41 @@ export const MarkdownCell = memo(function MarkdownCell({
     setPreviewFrameInteractionActive(false);
     setEditing(true);
   }, [onFocus, readOnly]);
+
+  const noteEditorSourcePosition = useCallback((position: number) => {
+    previewSourcePositionRef.current = position;
+  }, []);
+
+  const getCurrentEditorSource = useCallback(() => {
+    return editorRef.current?.getEditor()?.state.doc.toString() ?? cell.source;
+  }, [cell.source]);
+
+  const revealEditorSourcePosition = useCallback(() => {
+    const view = editorRef.current?.getEditor();
+    const position = view?.state.selection.main.head ?? previewSourcePositionRef.current;
+    if (typeof position !== "number") return;
+    previewSourcePositionRef.current = position;
+    setActiveSourcePosition(position);
+  }, []);
+
+  const exitEditingToPreview = useCallback(
+    (options?: { allowEmpty?: boolean }) => {
+      const source = getCurrentEditorSource();
+      if (!source.trim() && !options?.allowEmpty) return;
+      setDraftPreviewSource(source);
+      revealEditorSourcePosition();
+      setEditing(false);
+    },
+    [getCurrentEditorSource, revealEditorSourcePosition],
+  );
+
+  const handleRenderMarkdownMouseDown = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      exitEditingToPreview({ allowEmpty: true });
+    },
+    [exitEditingToPreview],
+  );
 
   const releasePreviewFrameInteraction = useCallback(() => {
     setPreviewFrameInteractionActive(false);
@@ -325,7 +425,7 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   // Derived boundary flag: re-run the focus effect only when source crosses
   // empty↔non-empty, not on every keystroke.
-  const hasContent = cell.source.trim().length > 0;
+  const hasContent = previewSource.trim().length > 0;
   useEffect(() => {
     if (readOnly) {
       setEditing(false);
@@ -340,84 +440,118 @@ export const MarkdownCell = memo(function MarkdownCell({
   }, [hasContent, isFocused, editing, readOnly]);
 
   const handleBlur = useCallback(() => {
-    if (cell.source.trim()) {
-      setEditing(false);
-    }
-  }, [cell.source]);
+    exitEditingToPreview();
+  }, [exitEditingToPreview]);
 
-  // Render markdown content when iframe is ready
-  const handleFrameReady = useCallback(async () => {
-    if (!frameRef.current || !cell.source) return;
-    // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
-    frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
-    // Clear injected set — a reloaded iframe has a fresh renderer registry
-    injectedLibsRef.current.clear();
-    // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
-    try {
-      await injectPluginsForMimes(frameRef.current, ["text/markdown"], injectedLibsRef.current);
-    } catch (error) {
-      logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
-      frameRef.current.render({
-        mimeType: "text/plain",
-        data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
-        outputId: `markdown-error:${cell.id}`,
+  const renderMarkdownPreviewFrame = useCallback(
+    async (frame: IsolatedFrameHandle | null = frameRef.current) => {
+      if (canRenderProjectionInHost) return;
+      if (!frame || !previewSource) return;
+
+      // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves).
+      frame.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
+
+      try {
+        await injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current);
+      } catch (error) {
+        logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
+        if (frameRef.current !== frame) return;
+        frame.render({
+          mimeType: "text/plain",
+          data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+          outputId: `markdown-error:${cell.id}`,
+          cellId: cell.id,
+          replace: true,
+        });
+        return;
+      }
+
+      if (frameRef.current !== frame) return;
+      const processedSource = rewriteMarkdownAssetRefs(
+        previewSource,
+        cell.resolvedAssets,
+        blobResolver,
+      );
+      frame.render({
+        mimeType: "text/markdown",
+        data: processedSource,
+        metadata: markdownMetadata,
+        outputId: `markdown:${cell.id}`,
         cellId: cell.id,
         replace: true,
       });
-      return;
-    }
-    const processedSource = rewriteMarkdownAssetRefs(
-      cell.source,
+    },
+    [
+      canRenderProjectionInHost,
+      previewSource,
+      cell.id,
       cell.resolvedAssets,
       blobResolver,
-    );
-    frameRef.current.render({
-      mimeType: "text/markdown",
-      data: processedSource,
-      metadata: markdownMetadata,
-      outputId: `markdown:${cell.id}`,
-      cellId: cell.id,
-      replace: true,
-    });
-  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver, markdownMetadata]);
+      markdownMetadata,
+    ],
+  );
+
+  // Render markdown content when iframe is ready.
+  const handleFrameReady = useCallback(() => {
+    if (canRenderProjectionInHost) return;
+    const frame = frameRef.current;
+    if (!frame || !previewSource) return;
+
+    // Clear injected set — a reloaded iframe has a fresh renderer registry.
+    injectedLibsRef.current.clear();
+    setPreviewFrameReadyGeneration((generation) => generation + 1);
+    void renderMarkdownPreviewFrame(frame);
+  }, [canRenderProjectionInHost, previewSource, renderMarkdownPreviewFrame]);
 
   // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
-    if (frameRef.current?.isReady && cell.source) {
-      const frame = frameRef.current;
-      // Inject markdown renderer plugin (idempotent) then render
-      injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current)
-        .then(() => {
-          const processedSource = rewriteMarkdownAssetRefs(
-            cell.source,
-            cell.resolvedAssets,
-            blobResolver,
-          );
-          frame.render({
-            mimeType: "text/markdown",
-            data: processedSource,
-            metadata: markdownMetadata,
-            outputId: `markdown:${cell.id}`,
-            cellId: cell.id,
-            replace: true,
-          });
-        })
-        .catch((error) => {
-          logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
-          frame.render({
-            mimeType: "text/plain",
-            data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
-            outputId: `markdown-error:${cell.id}`,
-            cellId: cell.id,
-            replace: true,
-          });
-        });
-    }
-  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver, markdownMetadata]);
+    if (canRenderProjectionInHost) return;
+    if (!previewSource) return;
+    const frame = frameRef.current;
+    if (!frame?.isReady && previewFrameReadyGeneration === 0) return;
+
+    void renderMarkdownPreviewFrame(frame);
+  }, [
+    canRenderProjectionInHost,
+    previewSource,
+    previewFrameReadyGeneration,
+    renderMarkdownPreviewFrame,
+  ]);
 
   const scrollToHeading = useCallback(
     async (headingAnchorId: string, options?: { behavior?: ScrollBehavior }) => {
-      if (editing || !headingAnchorId || !frameRef.current?.isReady) return false;
+      if (editing || !headingAnchorId) return false;
+
+      const hostHeading = viewRef.current?.querySelector<HTMLElement>(
+        `[id="${cssEscape(headingAnchorId)}"]`,
+      );
+      if (hostHeading) {
+        const behavior = options?.behavior ?? "smooth";
+        const topPadding = 16;
+        const scrollContainer = findVerticalScrollAncestor(hostHeading);
+
+        if (scrollContainer) {
+          const containerRect = scrollContainer.getBoundingClientRect();
+          const headingRect = hostHeading.getBoundingClientRect();
+          scrollContainer.scrollTo({
+            top: Math.max(
+              0,
+              scrollContainer.scrollTop + headingRect.top - containerRect.top - topPadding,
+            ),
+            behavior,
+          });
+          return true;
+        }
+
+        const headingRect = hostHeading.getBoundingClientRect();
+        window.scrollTo({
+          top: Math.max(0, window.scrollY + headingRect.top - topPadding),
+          behavior,
+        });
+        return true;
+      }
+
+      if (!frameRef.current?.isReady) return false;
 
       const measurement = await frameRef.current.measureElement(headingAnchorId);
       if (!isMeasuredElementFound(measurement)) return false;
@@ -501,7 +635,9 @@ export const MarkdownCell = memo(function MarkdownCell({
         return;
       }
       // For markdown, close edit mode first
-      if (cell.source.trim()) {
+      const source = getCurrentEditorSource();
+      if (source.trim()) {
+        setDraftPreviewSource(source);
         setEditing(false);
       }
       if (isLastCell && onInsertCellAfter) {
@@ -510,7 +646,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         onFocusNext(cursorPosition);
       }
     },
-    [cell.source, isLastCell, onFocusNext, onInsertCellAfter, readOnly],
+    [getCurrentEditorSource, isLastCell, onFocusNext, onInsertCellAfter, readOnly],
   );
 
   // Remote cursors extension (stable — no deps that change)
@@ -556,7 +692,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       {
         key: "Ctrl-Enter",
         run: () => {
-          setEditing(false);
+          exitEditingToPreview({ allowEmpty: true });
           return true;
         },
       },
@@ -564,9 +700,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       {
         key: "Escape",
         run: () => {
-          if (cell.source.trim()) {
-            setEditing(false);
-          }
+          exitEditingToPreview();
           return true;
         },
       },
@@ -597,7 +731,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     ],
     [
       navigationKeyMap,
-      cell.source,
+      exitEditingToPreview,
       applyInlineFormatting,
       applyLinkFormatting,
       applyQuoteFormatting,
@@ -620,10 +754,10 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   // Forward search query to the markdown iframe
   useEffect(() => {
-    if (!editing && frameRef.current?.isReady) {
+    if (!editing && !canRenderProjectionInHost && frameRef.current?.isReady) {
       frameRef.current.search(searchQuery || "");
     }
-  }, [searchQuery, editing]);
+  }, [searchQuery, editing, canRenderProjectionInHost]);
 
   // Focus view section when cell becomes focused but not editing
   useEffect(() => {
@@ -647,7 +781,19 @@ export const MarkdownCell = memo(function MarkdownCell({
       isDragging={isDragging}
       rightGutterContent={
         readOnly ? null : editing ? (
-          rightGutterContent
+          <div className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              tabIndex={-1}
+              onMouseDown={handleRenderMarkdownMouseDown}
+              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+              title="View rendered markdown"
+              aria-label="View rendered markdown"
+            >
+              <Check className="h-3.5 w-3.5" />
+            </button>
+            {rightGutterContent}
+          </div>
         ) : (
           <div className="flex flex-col gap-0.5">
             <button
@@ -677,6 +823,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 language="markdown"
                 lineWrapping
                 onBlur={handleBlur}
+                onSelectionChange={noteEditorSourcePosition}
                 keyMap={keyMap}
                 extensions={[crdtBridgeExt, ...searchExtensions]}
                 placeholder="Enter markdown..."
@@ -700,34 +847,46 @@ export const MarkdownCell = memo(function MarkdownCell({
             onPointerDown={handlePreviewWrapperPointerDown}
             onKeyDown={handleViewKeyDown}
           >
-            {/* Always render IsolatedFrame to preload it (hidden when no content) */}
-            <div
-              className={cell.source ? undefined : "hidden"}
-              onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
-            >
-              <IsolatedFrame
-                ref={frameRef}
-                name={`md-${cell.id}`}
-                darkMode={darkMode}
-                colorTheme={colorTheme}
-                hostContext={outputHostContext}
-                minHeight={previewMinHeight}
-                autoHeight
-                scrollPassthrough={!previewFrameInteractionActive}
-                allowWheelBoundaryScroll={previewFrameInteractionActive}
-                revealOnRender
-                reserveHeightOnReveal
-                onReady={handleFrameReady}
+            {previewSource && canRenderProjectionInHost && markdownProjection ? (
+              <ProjectedMarkdownView
+                plan={markdownProjection}
+                headingAnchors={headingAnchors}
                 onLinkClick={handleLinkClick}
-                onMouseDown={activatePreviewFrameInteraction}
-                onMouseUp={handlePreviewFrameMouseUp}
-                onDoubleClick={handleDoubleClick}
-                onError={handleIframeError}
-                onDiagnostic={logNotebookIsolatedDiagnostic}
-                className="w-full"
+                onTaskCheckedChange={
+                  readOnly || !onUpdateSource ? undefined : handleTaskCheckedChange
+                }
+                activeSourcePosition={activeSourcePosition}
               />
-            </div>
-            {!cell.source && <p className="text-muted-foreground italic">Double-click to edit</p>}
+            ) : (
+              <div
+                className={previewSource ? undefined : "hidden"}
+                onPointerDown={handlePreviewWrapperPointerDown}
+                onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
+              >
+                <IsolatedFrame
+                  ref={frameRef}
+                  name={`md-${cell.id}`}
+                  darkMode={darkMode}
+                  colorTheme={colorTheme}
+                  hostContext={outputHostContext}
+                  minHeight={previewMinHeight}
+                  autoHeight
+                  scrollPassthrough={!previewFrameInteractionActive}
+                  allowWheelBoundaryScroll={previewFrameInteractionActive}
+                  revealOnRender
+                  reserveHeightOnReveal
+                  onReady={handleFrameReady}
+                  onLinkClick={handleLinkClick}
+                  onMouseDown={activatePreviewFrameInteraction}
+                  onMouseUp={handlePreviewFrameMouseUp}
+                  onDoubleClick={handleDoubleClick}
+                  onError={handleIframeError}
+                  onDiagnostic={logNotebookIsolatedDiagnostic}
+                  className="w-full"
+                />
+              </div>
+            )}
+            {!previewSource && <p className="text-muted-foreground italic">Double-click to edit</p>}
           </div>
         </>
       }

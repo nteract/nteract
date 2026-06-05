@@ -28,7 +28,7 @@ function MarkdownRenderer({ data, metadata }: RendererProps) {
 }
 
 function LatexRenderer({ data }: RendererProps) {
-  return <MathOutput content={String(data)} />;
+  return <MathOutput content={String(data)} trust />;
 }
 
 export function install(ctx: {
