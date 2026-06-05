@@ -4,7 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    # Draft PR pushes run the same Build checks as ready PRs. Do not rerun the
+    # workflow on ready_for_review; that event cancels useful in-flight draft CI
+    # through the PR concurrency group and makes checks appear to start only
+    # after a PR leaves draft.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
   schedule:
     - cron: "23 10 * * *"
