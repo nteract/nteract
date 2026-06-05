@@ -11,19 +11,15 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}
-  # PR smoke runs only report skips, so stale PR pushes can cancel. Main and
-  # manual smoke runs are post-merge signal and should not be replaced while
-  # pending.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ format('{0}-{1}-{2}', github.workflow, github.ref, github.run_id) }}
+  # Main and manual smoke runs are post-merge signal and should not be replaced
+  # while pending.
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,13 +30,11 @@ jobs:
     name: Windows (build + install + smoke)
     runs-on: windows-latest
     timeout-minutes: 75
-    # Push-to-main + manual dispatch only. The Windows leg currently runs
-    # ~32 minutes (cargo build + NSIS bundling + smoke). Gating PRs on it
-    # would tax every diff, including frontend-only changes that have no
-    # Windows surface. We run it post-merge and surface failures via
-    # Discord (#windows) so the team can react fast without blocking
-    # unrelated PRs.
-    if: github.event_name != 'pull_request'
+    # The Windows leg currently runs ~32 minutes (cargo build + NSIS bundling
+    # + smoke). Gating PRs on it would tax every diff, including frontend-only
+    # changes that have no Windows surface. We run it post-merge and surface
+    # failures via Discord (#windows) so the team can react fast without
+    # blocking unrelated PRs.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -410,7 +404,6 @@ jobs:
     timeout-minutes: 60
     # Keep this native smoke off per-commit PR CI. It still runs after merge
     # and can be queued manually when a PR needs the extra signal.
-    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
         with:
