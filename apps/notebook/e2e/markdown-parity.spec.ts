@@ -71,6 +71,36 @@ test.describe("markdown parity", () => {
       .toBeLessThan((page.viewportSize()?.height ?? 720) - 32);
   });
 
+  test("keeps text selection separate from markdown interactions", async ({ page }) => {
+    const markdownCell = await createParityMarkdownCell(
+      page,
+      [
+        "# Interaction parity",
+        "",
+        "Drag across this [selection link](#selection-should-not-navigate) without editing.",
+        "",
+        "- [ ] selection should not toggle this task",
+      ].join("\n"),
+    );
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Interaction parity");
+
+    const urlBeforeSelection = page.url();
+    const taskCheckbox = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task complete: selection should not toggle this task",
+    });
+    await expect(taskCheckbox).not.toBeChecked();
+
+    const paragraph = renderedMarkdown.locator("p", {
+      hasText: "Drag across this selection link",
+    });
+    const selection = await dragSelectRenderedText(paragraph);
+    expect(selection).toContain("selection link");
+
+    await expect(markdownCell.locator('.cm-content[contenteditable="true"]')).toBeHidden();
+    await expect(taskCheckbox).not.toBeChecked();
+    expect(page.url()).toBe(urlBeforeSelection);
+  });
+
   test("renders selectable markdown outputs without changing output routing semantics", async ({
     page,
   }) => {
@@ -298,4 +328,23 @@ async function copyRenderedText(
   const clipboard = await page.evaluate(() => navigator.clipboard.readText());
 
   return { clipboard, selection };
+}
+
+async function dragSelectRenderedText(locator: Locator): Promise<string> {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return "";
+
+  const page = locator.page();
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + 4, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 4, y, { steps: 12 });
+  await page.mouse.up();
+
+  return await locator.evaluate((element) => {
+    const selection = element.ownerDocument.defaultView?.getSelection();
+    return selection?.toString() ?? "";
+  });
 }
