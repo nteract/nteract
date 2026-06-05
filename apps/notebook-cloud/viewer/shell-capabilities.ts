@@ -1,9 +1,11 @@
 import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
-} from "@/components/notebook/actor-projection";
-import type { NotebookShellCapabilities } from "@/components/notebook/capabilities";
-import { projectNotebookShellCapabilities, type NotebookEditMode } from "runtimed";
+  notebookActorProjectionWithPrincipalImage,
+  projectNotebookShellCapabilities,
+  type NotebookEditMode,
+  type NotebookShellCapabilities,
+} from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { projectCloudNotebookEditAccess } from "./edit-access";
 
@@ -105,17 +107,13 @@ export function cloudNotebookShellCapabilities({
       requiresAuthenticatedIdentity: true,
     },
   });
-  const accessActor = withCloudIdentityImage(
+  const accessActor = notebookActorProjectionWithPrincipalImage(
     notebookActorProjectionFromAccess(projection.access, projection.auth),
-    {
-      imageUrl: identityImageUrl,
-    },
+    identityImageUrl,
   );
-  const runtimeActor = withCloudIdentityImage(
+  const runtimeActor = notebookActorProjectionWithPrincipalImage(
     notebookActorProjectionFromRuntime(projection.runtime, projection.auth),
-    {
-      imageUrl: identityImageUrl,
-    },
+    identityImageUrl,
   );
 
   return {
@@ -154,19 +152,4 @@ function compactEmailLabel(value: string | null | undefined): string | null {
   }
   const match = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/.exec(trimmed);
   return match?.[1] ?? null;
-}
-
-function withCloudIdentityImage<
-  T extends ReturnType<typeof notebookActorProjectionFromAccess> | null,
->(actor: T, { imageUrl }: { imageUrl: string | null }): T {
-  if (!actor || !imageUrl) {
-    return actor;
-  }
-  return {
-    ...actor,
-    principal: {
-      ...actor.principal,
-      imageUrl,
-    },
-  };
 }

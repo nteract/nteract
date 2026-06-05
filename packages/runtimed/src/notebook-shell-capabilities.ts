@@ -3,43 +3,18 @@ import type {
   NotebookRoomAccessLevel,
   NotebookRoomEditAccessProjection,
 } from "./notebook-edit-access";
+import type { NotebookActorProjection } from "./notebook-actor-projection";
+
+export type {
+  NotebookActorOperator,
+  NotebookActorPrincipal,
+  NotebookActorProjection,
+  NotebookActorSourceProvider,
+} from "./notebook-actor-projection";
 
 export type NotebookShellAccessLevel = NotebookRoomAccessLevel;
 
 export type NotebookShellAccessSource = "cloud" | "local" | "fixture" | "unknown";
-
-export type NotebookActorSourceProvider =
-  | "anonymous"
-  | "anaconda"
-  | "dev"
-  | "jupyterhub"
-  | "local"
-  | "outerbounds"
-  | "oidc";
-
-export interface NotebookActorPrincipal {
-  id: string;
-  label: string;
-  imageUrl?: string | null;
-  source?: {
-    provider: NotebookActorSourceProvider;
-    namespace: string;
-  };
-}
-
-export interface NotebookActorOperator {
-  id: string;
-  kind: string;
-  label: string;
-}
-
-export interface NotebookActorProjection {
-  actorLabel: string;
-  principal: NotebookActorPrincipal;
-  operator: NotebookActorOperator;
-  scope?: "viewer" | "editor" | "runtime_peer" | "owner";
-  status?: "active" | "attention" | "idle" | "offline";
-}
 
 export interface NotebookShellAccessCapabilities {
   /**
