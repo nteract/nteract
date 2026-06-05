@@ -49,6 +49,7 @@ describe("RoomHostHandle", () => {
     const ownerResult = host.receive_peer_frame(
       "peer-owner",
       "user:dev:alice",
+      "user:dev:alice/test",
       "owner",
       true,
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -106,6 +107,7 @@ describe("RoomHostHandle", () => {
     const result = host.receive_peer_frame(
       "peer-owner",
       "user:dev:alice",
+      "user:dev:alice/test",
       "owner",
       true,
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -181,6 +183,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-editor",
           "user:dev:bob",
+          "user:dev:bob/test",
           "editor",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -203,6 +206,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-editor",
           "user:dev:bob",
+          "user:dev:bob/test",
           "editor",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -224,6 +228,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-alice",
           "user:dev:alice",
+          "user:dev:alice/test",
           "owner",
           true,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -245,6 +250,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-viewer",
           "user:dev:alice",
+          "user:dev:alice/test",
           "viewer",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -275,6 +281,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-runtime",
           "user:dev:runtime-service",
+          "user:dev:runtime-service/test",
           "runtime_peer",
           false,
           encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
@@ -318,6 +325,7 @@ describe("RoomHostHandle", () => {
     const result = host.receive_peer_frame(
       "peer-runtime",
       "user:dev:runtime-service",
+      "user:dev:runtime-service/test",
       "runtime_peer",
       false,
       encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
@@ -374,6 +382,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-runtime",
           "user:dev:runtime-service",
+          "user:dev:runtime-service/test",
           "runtime_peer",
           false,
           encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
@@ -403,6 +412,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-runtime",
           "user:dev:runtime-service",
+          "user:dev:runtime-service/test",
           "runtime_peer",
           false,
           encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
@@ -432,6 +442,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-runtime",
           "user:dev:runtime-service",
+          "user:dev:runtime-service/test",
           "runtime_peer",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -1183,6 +1194,7 @@ function syncHostWithClient(
       const next = host.receive_peer_frame(
         peerId,
         principal,
+        `${principal}/test`,
         scope,
         canWriteAllNotebookChanges,
         reply,
@@ -1209,6 +1221,7 @@ function applyClientChangesToHost(
   host.receive_peer_frame(
     peerId,
     principal,
+    `${principal}/test`,
     scope,
     canWriteAllNotebookChanges,
     encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
@@ -1482,6 +1495,7 @@ function syncRuntimeHostWithClient(
     const reply = host.receive_peer_frame(
       peerId,
       principal,
+      `${principal}/test`,
       scope,
       canWriteAllNotebookChanges,
       encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, initial),
@@ -1506,6 +1520,7 @@ function syncRuntimeHostWithClient(
       const next = host.receive_peer_frame(
         peerId,
         principal,
+        `${principal}/test`,
         scope,
         canWriteAllNotebookChanges,
         reply,
@@ -1539,6 +1554,7 @@ function syncRuntimeHostWithRuntimePeer(
       const next = host.receive_peer_frame(
         peerId,
         principal,
+        `${principal}/test`,
         scope,
         canWriteAllNotebookChanges,
         reply,

@@ -70,6 +70,7 @@ export class RoomMaterializer {
         host.receive_peer_frame(
           peer.id,
           peer.identity.principal,
+          peer.identity.actorLabel,
           peer.identity.scope,
           canWriteAllNotebookChanges,
           encoded,
