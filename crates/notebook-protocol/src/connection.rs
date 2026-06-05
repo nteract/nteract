@@ -7,6 +7,7 @@ mod env;
 mod framing;
 mod handshake;
 mod pipe;
+mod transport;
 
 pub use env::{CreateNotebookEnvironmentMode, EnvSource, LaunchSpec, PackageManager};
 
@@ -23,6 +24,10 @@ pub use handshake::{
 
 #[cfg(windows)]
 pub use pipe::{connect_named_pipe_client, is_retryable_named_pipe_connect_error, ERROR_PIPE_BUSY};
+
+pub use transport::{
+    FrameSink, FrameSource, FrameTransport, FramedReaderSource, UdsFrameTransport, WriterFrameSink,
+};
 
 #[cfg(test)]
 mod tests {

@@ -61,3 +61,47 @@ commit alongside the code that realizes each decision. Newest at the bottom.
 ## Appended by subsequent sessions
 
 <!-- Add entries here as you make decisions. Format: N. **Decision.** Alternative. Why. -->
+
+### Phase 1 session (2026-06-05, lab2, branch `quod/16-frame-transport`)
+
+11. **Split the transport into `FrameSource` (recv) + `FrameSink` (send) halves, plus a
+    `FrameTransport` connector that yields the pair — not the single
+    `recv_frame`/`send_frame` object the handoff sketched.** Alternative: one
+    `trait FrameTransport { recv_frame(&mut self); send_frame(&mut self); }` held in one
+    variable. Why: the agent's `tokio::select!` awaits the recv future in one arm
+    (borrowing the read half for the whole `select!`) while other arms call send in their
+    bodies. A single `&mut self` object makes those two borrows conflict; the existing code
+    only compiles because `framed_reader` and `writer` are *separate* variables. Keeping
+    two halves preserves that structure exactly and is the minimal, behavior-preserving
+    shape. The connector (`connect() -> (Source, Sink)`) owns the transport-specific
+    dial+handshake, which is what `reconnect_with_backoff` needs.
+
+12. **Traits use `async fn` in trait consumed through generics, not `#[async_trait]` or
+    `Box<dyn>`.** Alternative: `Box<dyn FrameTransport>` for runtime polymorphism. Why:
+    matches the neighbouring `KernelConnection` pattern in `runtimed`, keeps
+    `notebook-protocol` free of an `async-trait` dependency (stays wasm-safe and
+    dependency-light per decision #3), and the agent has exactly one transport per process
+    so monomorphisation at the single call site is free. The cloud transport (Phase 2) is a
+    second impl selected at construction, not at runtime per-call.
+
+13. **`UdsFrameTransport::connect` normalises the `send_json_frame` anyhow error to
+    `io::Error::other`.** Alternative: make the trait's `connect` return `anyhow::Error`.
+    Why: keeps the whole transport surface io-typed (`recv_frame`/`send_frame` are already
+    `io::Result`), and the only error source is the effectively-impossible serialization
+    failure of a `Handshake`. The message text is preserved; the sole caller
+    (`main.rs`) only Displays it. Verified non-lossy by adversarial review.
+
+14. **`FramedReader` capacity (16) hoisted to a named const `FRAME_READER_CAPACITY` in the
+    transport module.** Why: the value was duplicated as a literal at the initial-connect
+    and reconnect sites in `runtime_agent`; centralising it in the one place that now spawns
+    the reader removes the duplication without changing the value.
+
+Phase 1 verification (the contract): `cargo test -p runtimed` → 944 passed, 0 failed
+(incl. `tokio_mutex_lint` and `tokio_select_cancel_safe` CI lints); `cargo clippy -p
+runtimed --all-targets` and `-p notebook-protocol --all-targets` clean; `cargo build
+--workspace` clean; `cargo fmt --check` clean. Net diff: +48/-97 in runtime_agent +
+new transport.rs. Adversarial subagent review found zero behavioral differences.
+
+Note for Phase 2: `/tmp/stage-oidc.txt` **is present on lab2**, so the live cross-machine
+re-proof is runnable from this host once the cloud transport lands. `pi`/`opencode` CLIs
+are **not** installed here — used a spawned subagent for adversarial review instead.

@@ -35,8 +35,7 @@ use std::sync::Arc;
 
 use notebook_doc::presence::PresenceState;
 use notebook_protocol::connection::{
-    send_json_frame, send_preamble, send_typed_frame, FramedReader, Handshake, NotebookFrameType,
-    PackageManager,
+    FrameSink, FrameSource, FrameTransport, NotebookFrameType, PackageManager, UdsFrameTransport,
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use runtime_doc::{CommDocEntry, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
@@ -79,17 +78,21 @@ pub async fn run_runtime_agent(
 
     // -- 1. Connect to daemon socket ----------------------------------------
 
-    let (reader, mut writer) =
-        connect_and_handshake(&socket_path, &notebook_id, &runtime_agent_id, &blob_root).await?;
+    // The sync wire is abstracted behind `FrameTransport`: the daemon uses the
+    // UDS (Windows named-pipe) transport, while a hosted runtime peer will swap
+    // in a cloud-WebSocket transport without touching the loop below. `connect`
+    // owns the transport-specific dial + handshake.
+    let transport =
+        UdsFrameTransport::new(&socket_path, &notebook_id, &runtime_agent_id, &blob_root);
+    let (mut frame_source, mut frame_sink) = transport.connect().await?;
 
     info!("[runtime-agent] Connected to daemon, handshake sent");
 
-    // Hand the read half to a dedicated FramedReader actor so the busy
-    // `select!` below stays cancel-safe — `recv_typed_frame`'s
-    // `read_exact` calls would otherwise drop bytes mid-read whenever
-    // another arm wins, producing the runtime-agent ↔ daemon desync
+    // The transport hands back a cancel-safe `FrameSource` (backed by a
+    // dedicated `FramedReader` actor) so the busy `select!` below stays
+    // cancel-safe — a direct `read_exact` would otherwise drop bytes mid-read
+    // whenever another arm wins, producing the runtime-agent ↔ daemon desync
     // captured in production logs as `frame too large: 538976288 bytes`.
-    let mut framed_reader = FramedReader::spawn(reader, 16);
 
     // -- 2. Bootstrap RuntimeStateDoc ---------------------------------------
 
@@ -154,7 +157,7 @@ pub async fn run_runtime_agent(
     loop {
         tokio::select! {
             // Read frames from daemon socket (cancel-safe via FramedReader actor)
-            maybe_frame = framed_reader.recv() => {
+            maybe_frame = frame_source.recv_frame() => {
                 match maybe_frame {
                     Some(Ok(typed_frame)) => {
                         match typed_frame.frame_type {
@@ -207,7 +210,7 @@ pub async fn run_runtime_agent(
                                     {
                                         if inflight_sync.is_some() {
                                             if let Err(e) = send_runtime_agent_response(
-                                                &mut writer,
+                                                &mut frame_sink,
                                                 envelope.id.clone(),
                                                 RuntimeAgentResponse::Error {
                                                     error: "Environment sync already in progress"
@@ -279,7 +282,7 @@ pub async fn run_runtime_agent(
                                     );
                                     if is_launch_or_restart && inflight_sync.is_some() {
                                         if let Err(e) = send_runtime_agent_response(
-                                            &mut writer,
+                                            &mut frame_sink,
                                             envelope.id.clone(),
                                             RuntimeAgentResponse::Error {
                                                 error: "Environment sync in progress; retry after it completes"
@@ -327,7 +330,7 @@ pub async fn run_runtime_agent(
 
                                     // Only send response for queries (not commands)
                                     if !is_command {
-                                        send_runtime_agent_response(&mut writer, id, response).await?;
+                                        send_runtime_agent_response(&mut frame_sink, id, response).await?;
                                     }
                                 }
                             }
@@ -488,8 +491,7 @@ pub async fn run_runtime_agent(
                                             }
                                         };
                                     if let Some(encoded) = reply_encoded {
-                                        let _ = send_typed_frame(
-                                            &mut writer,
+                                        let _ = frame_sink.send_frame(
                                             NotebookFrameType::RuntimeStateSync,
                                             &encoded,
                                         ).await;
@@ -528,20 +530,13 @@ pub async fn run_runtime_agent(
                              (kernel stays running)",
                             e
                         );
-                        // Drop the old framed reader before reconnecting so
-                        // its background task exits cleanly.
-                        drop(framed_reader);
-                        match reconnect_with_backoff(
-                            &socket_path,
-                            &notebook_id,
-                            &runtime_agent_id,
-                            &blob_root,
-                        )
-                        .await
-                        {
-                            Ok((new_reader, new_writer)) => {
-                                framed_reader = FramedReader::spawn(new_reader, 16);
-                                writer = new_writer;
+                        // Drop the old source before reconnecting so its
+                        // background reader task exits cleanly.
+                        drop(frame_source);
+                        match reconnect_with_backoff(&transport).await {
+                            Ok((new_source, new_sink)) => {
+                                frame_source = new_source;
+                                frame_sink = new_sink;
                                 // The daemon creates a fresh sync state for
                                 // each connection; match that or the doc
                                 // won't converge.
@@ -633,8 +628,7 @@ pub async fn run_runtime_agent(
                         }
                     };
                 if let Some(encoded) = encoded {
-                    if let Err(e) = send_typed_frame(
-                        &mut writer,
+                    if let Err(e) = frame_sink.send_frame(
                         NotebookFrameType::RuntimeStateSync,
                         &encoded,
                     ).await {
@@ -647,7 +641,7 @@ pub async fn run_runtime_agent(
             // Responses from long-running spawned tasks (SyncEnvironment).
             Some(envelope) = async_response_rx.recv() => {
                 inflight_sync = None;
-                if let Err(e) = send_runtime_agent_response_envelope(&mut writer, envelope).await {
+                if let Err(e) = send_runtime_agent_response_envelope(&mut frame_sink, envelope).await {
                     warn!("[runtime-agent] Failed to send async response: {}", e);
                     break;
                 }
@@ -665,94 +659,44 @@ pub async fn run_runtime_agent(
     Ok(())
 }
 
-/// Concrete reader/writer halves returned by connect helpers.
-#[cfg(unix)]
-type AgentReader = tokio::io::ReadHalf<tokio::net::UnixStream>;
-#[cfg(unix)]
-type AgentWriter = tokio::io::WriteHalf<tokio::net::UnixStream>;
-#[cfg(windows)]
-type AgentReader = tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>;
-#[cfg(windows)]
-type AgentWriter = tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>;
-
-async fn send_runtime_agent_response(
-    writer: &mut AgentWriter,
+async fn send_runtime_agent_response<S: FrameSink>(
+    sink: &mut S,
     id: String,
     response: RuntimeAgentResponse,
 ) -> anyhow::Result<()> {
     send_runtime_agent_response_envelope(
-        writer,
+        sink,
         notebook_protocol::protocol::RuntimeAgentResponseEnvelope { id, response },
     )
     .await
 }
 
-async fn send_runtime_agent_response_envelope(
-    writer: &mut AgentWriter,
+async fn send_runtime_agent_response_envelope<S: FrameSink>(
+    sink: &mut S,
     envelope: notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
 ) -> anyhow::Result<()> {
     let json = serde_json::to_vec(&envelope)?;
-    send_typed_frame(writer, NotebookFrameType::Response, &json).await?;
+    sink.send_frame(NotebookFrameType::Response, &json).await?;
     Ok(())
 }
 
-/// Open a stream to the daemon socket and perform the RuntimeAgent
-/// handshake. Extracted from the main startup path so the reconnect
-/// path on framing errors can reuse it without duplicating handshake
-/// logic.
-async fn connect_and_handshake(
-    socket_path: &std::path::Path,
-    notebook_id: &str,
-    runtime_agent_id: &str,
-    blob_root: &std::path::Path,
-) -> anyhow::Result<(AgentReader, AgentWriter)> {
-    #[cfg(unix)]
-    let stream = tokio::net::UnixStream::connect(socket_path).await?;
-
-    #[cfg(windows)]
-    let stream = {
-        notebook_protocol::connection::connect_named_pipe_client(
-            socket_path,
-            std::time::Duration::from_secs(2),
-        )
-        .await?
-    };
-
-    let (reader, mut writer) = tokio::io::split(stream);
-
-    send_preamble(&mut writer).await?;
-    send_json_frame(
-        &mut writer,
-        &Handshake::RuntimeAgent {
-            notebook_id: notebook_id.to_string(),
-            runtime_agent_id: runtime_agent_id.to_string(),
-            blob_root: blob_root.display().to_string(),
-        },
-    )
-    .await?;
-
-    Ok((reader, writer))
-}
-
-/// Attempt to reconnect to the daemon with exponential backoff.
+/// Attempt to reconnect via the transport with exponential backoff.
 ///
 /// Called after a framing error on the existing sync stream. Preserves
 /// the kernel state by staying alive across transient socket trouble
 /// (rogue client writing to the socket, daemon restart, etc.). Gives up
 /// after a bounded number of attempts so a genuinely-gone daemon still
-/// lets the agent exit rather than spin forever.
-async fn reconnect_with_backoff(
-    socket_path: &std::path::Path,
-    notebook_id: &str,
-    runtime_agent_id: &str,
-    blob_root: &std::path::Path,
-) -> anyhow::Result<(AgentReader, AgentWriter)> {
+/// lets the agent exit rather than spin forever. The transport owns the
+/// dial + handshake, so this stays transport-agnostic.
+async fn reconnect_with_backoff<T: FrameTransport>(
+    transport: &T,
+) -> anyhow::Result<(T::Source, T::Sink)> {
     const MAX_ATTEMPTS: u32 = 10;
     const BASE_DELAY_MS: u64 = 100;
 
-    let mut last_err: Option<anyhow::Error> = None;
+    let mut last_err: Option<std::io::Error> = None;
     for attempt in 1..=MAX_ATTEMPTS {
-        match connect_and_handshake(socket_path, notebook_id, runtime_agent_id, blob_root).await {
+        match transport.connect().await {
             Ok(pair) => return Ok(pair),
             Err(e) => {
                 let delay = BASE_DELAY_MS.saturating_mul(1 << (attempt - 1).min(6));
@@ -765,7 +709,9 @@ async fn reconnect_with_backoff(
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("reconnect gave up with no last error")))
+    Err(last_err
+        .map(anyhow::Error::from)
+        .unwrap_or_else(|| anyhow::anyhow!("reconnect gave up with no last error")))
 }
 
 async fn queue_synced_executions<K: KernelConnection>(
