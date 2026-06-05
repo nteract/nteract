@@ -105,3 +105,19 @@ new transport.rs. Adversarial subagent review found zero behavioral differences.
 Note for Phase 2: `/tmp/stage-oidc.txt` **is present on lab2**, so the live cross-machine
 re-proof is runnable from this host once the cloud transport lands. `pi`/`opencode` CLIs
 are **not** installed here — used a spawned subagent for adversarial review instead.
+
+15. **Push to fork `quillaid/desktop` and open the PR against the `nteract/nteract`
+    handoff branch from there.** Alternative: push the branch directly to `origin`
+    (nteract/nteract), as the prior `quod/*` branches were. Why: the `quillaid` git
+    identity this run commits under has **no push access** to `nteract/nteract`
+    (`{push:false, pull:true, triage:true}`); both HTTPS and SSH pushes 403. The existing
+    `quod/*` branches were pushed by Kyle (repo owner), not reproducible here. GitHub's
+    fork of `nteract/nteract` under this account already exists as `quillaid/desktop`
+    (a rename of the fork; `push:true`), so the standard fork-PR flow is the only headless
+    path. **Phase 1 PR: nteract/nteract#3409** (base `quod/runtime-agent-transport-handoff`,
+    head `quillaid:quod/16-frame-transport`). A `fork` git remote
+    (`git@github.com:quillaid/desktop.git`) is configured in the worktree for subsequent
+    phase pushes. The takeback session (if it has direct push) may re-push these branches
+    to `origin` and retarget the PRs; optimize for the reviewable trail, not remote
+    identity. Stack Phase 2 on `quod/16-frame-transport` and PR it against this same branch
+    or #3409's head.
