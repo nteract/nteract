@@ -122,6 +122,126 @@ const SHELL_CAPABILITIES_CACHE = new Map<string, NotebookShellCapabilities>();
 const SHELL_PART_CACHE_LIMIT = 256;
 const SHELL_CAPABILITIES_CACHE_LIMIT = 512;
 
+type ProjectionCacheFieldReaders<T extends object> = {
+  readonly [K in keyof T]-?: (projection: T) => unknown;
+};
+
+function projectionCacheKey<T extends object>(
+  projection: T,
+  readers: ProjectionCacheFieldReaders<T>,
+): string {
+  return stableCacheKey(projectionCacheKeyParts(projection, readers));
+}
+
+function projectionCacheKeyParts<T extends object>(
+  projection: T,
+  readers: ProjectionCacheFieldReaders<T>,
+): unknown[] {
+  return (Object.values(readers) as Array<(projection: T) => unknown>).map((readField) =>
+    readField(projection),
+  );
+}
+
+function optionalProjectionCacheKey<T extends object>(
+  projection: T | null | undefined,
+  readers: ProjectionCacheFieldReaders<T>,
+  absentValue: unknown,
+): string {
+  return stableCacheKey(
+    (Object.values(readers) as Array<(projection: T) => unknown>).map((readField) =>
+      projection === null || projection === undefined ? absentValue : readField(projection),
+    ),
+  );
+}
+
+const NOTEBOOK_EDIT_ACCESS_CACHE_FIELDS = {
+  selectedMode: (interaction) => interaction.selectedMode,
+  activeMode: (interaction) => interaction.activeMode,
+  state: (interaction) => interaction.state,
+  canRequestEdit: (interaction) => interaction.canRequestEdit,
+  canEditMarkdown: (interaction) => interaction.canEditMarkdown,
+  canEditCells: (interaction) => interaction.canEditCells,
+  canEditStructure: (interaction) => interaction.canEditStructure,
+} satisfies ProjectionCacheFieldReaders<NotebookEditAccessProjection>;
+const NOTEBOOK_ROOM_EDIT_ACCESS_CACHE_FIELDS = {
+  selectedMode: (interaction) => interaction.selectedMode,
+  activeMode: (interaction) => interaction.activeMode,
+  state: (interaction) => interaction.state,
+  canRequestEdit: (interaction) => interaction.canRequestEdit,
+  canEditMarkdown: (interaction) => interaction.canEditMarkdown,
+  canEditCells: (interaction) => interaction.canEditCells,
+  canEditStructure: (interaction) => interaction.canEditStructure,
+  inputSelectedMode: (interaction) => interaction.inputSelectedMode,
+  accessLevel: (interaction) => interaction.accessLevel,
+  requestedScope: (interaction) => interaction.requestedScope,
+  hasDocumentEditPermission: (interaction) => interaction.hasDocumentEditPermission,
+  selectedDocumentEditMode: (interaction) => interaction.selectedDocumentEditMode,
+  requestedDocumentEditAccess: (interaction) => interaction.requestedDocumentEditAccess,
+  editAccessPending: (interaction) => interaction.editAccessPending,
+} satisfies ProjectionCacheFieldReaders<NotebookRoomEditAccessProjection>;
+const NOTEBOOK_SHELL_CAPABILITIES_CACHE_FIELDS = {
+  canRead: (capabilities) => capabilities.canRead,
+  canEditMarkdown: (capabilities) => capabilities.canEditMarkdown,
+  canEditCells: (capabilities) => capabilities.canEditCells,
+  canEditStructure: (capabilities) => capabilities.canEditStructure,
+  canRequestEdit: (capabilities) => capabilities.canRequestEdit,
+  canExecute: (capabilities) => capabilities.canExecute,
+  canToggleCode: (capabilities) => capabilities.canToggleCode,
+  canViewPackages: (capabilities) => capabilities.canViewPackages,
+  canManagePackages: (capabilities) => capabilities.canManagePackages,
+  canManageSharing: (capabilities) => capabilities.canManageSharing,
+  interaction: (capabilities) => notebookShellOptionalInteractionCacheKey(capabilities.interaction),
+  access: (capabilities) => notebookShellAccessCacheKey(capabilities.access),
+  auth: (capabilities) => notebookShellAuthCacheKey(capabilities.auth),
+  runtime: (capabilities) => notebookShellRuntimeCacheKey(capabilities.runtime),
+} satisfies ProjectionCacheFieldReaders<NotebookShellCapabilities>;
+const NOTEBOOK_SHELL_ACCESS_CACHE_FIELDS = {
+  level: (access) => access.level,
+  source: (access) => access.source,
+  isPublic: (access) => access.isPublic,
+  actorLabel: (access) => access.actorLabel,
+  identityLabel: (access) => access.identityLabel,
+  actor: (access) => notebookActorProjectionCacheKey(access.actor),
+} satisfies ProjectionCacheFieldReaders<NotebookShellAccessCapabilities>;
+const NOTEBOOK_SHELL_AUTH_CACHE_FIELDS = {
+  canSignIn: (auth) => auth.canSignIn,
+  canUseAuthenticatedIdentity: (auth) => auth.canUseAuthenticatedIdentity,
+  needsAttention: (auth) => auth.needsAttention,
+} satisfies ProjectionCacheFieldReaders<NotebookShellAuthCapabilities>;
+const NOTEBOOK_SHELL_RUNTIME_CACHE_FIELDS = {
+  canWriteRuntimeState: (runtime) => runtime.canWriteRuntimeState,
+  connected: (runtime) => runtime.connected,
+  executionAvailable: (runtime) => runtime.executionAvailable,
+  source: (runtime) => runtime.source,
+  actorLabel: (runtime) => runtime.actorLabel,
+  identityLabel: (runtime) => runtime.identityLabel,
+  actor: (runtime) => notebookActorProjectionCacheKey(runtime.actor),
+} satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeCapabilities>;
+const NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS = {
+  actorLabel: (actor) => actor.actorLabel,
+  principal: (actor) => notebookActorPrincipalCacheKey(actor.principal),
+  operator: (actor) => notebookActorOperatorCacheKey(actor.operator),
+  scope: (actor) => actor.scope ?? null,
+  status: (actor) => actor.status ?? null,
+} satisfies ProjectionCacheFieldReaders<NotebookActorProjection>;
+const NOTEBOOK_ACTOR_PRINCIPAL_CACHE_FIELDS = {
+  id: (principal) => principal.id,
+  label: (principal) => principal.label,
+  imageUrl: (principal) => principal.imageUrl ?? null,
+  source: (principal) => notebookActorPrincipalSourceCacheKey(principal.source),
+} satisfies ProjectionCacheFieldReaders<NotebookActorProjection["principal"]>;
+const NOTEBOOK_ACTOR_PRINCIPAL_SOURCE_CACHE_FIELDS = {
+  provider: (source) => source.provider,
+  namespace: (source) => source.namespace ?? null,
+} satisfies ProjectionCacheFieldReaders<
+  NonNullable<NotebookActorProjection["principal"]["source"]>
+>;
+const NOTEBOOK_ACTOR_OPERATOR_CACHE_FIELDS = {
+  id: (operator) => operator.id,
+  kind: (operator) => operator.kind,
+  label: (operator) => operator.label,
+} satisfies ProjectionCacheFieldReaders<NotebookActorProjection["operator"]>;
+
 const READ_ONLY_INTERACTION: NotebookEditAccessProjection = Object.freeze({
   selectedMode: "view",
   activeMode: "view",
@@ -222,26 +342,7 @@ export function projectNotebookShellCapabilities({
     auth: authCapabilities,
     sharing,
   });
-  const cacheKey = stableCacheKey([
-    canRead,
-    interaction.canEditMarkdown,
-    interaction.canEditCells,
-    interaction.canEditStructure,
-    interaction.canRequestEdit,
-    canExecute,
-    canToggleCode,
-    canViewPackages,
-    canManagePackages,
-    canManageSharing,
-    notebookShellInteractionCacheKey(interaction),
-    notebookShellAccessCacheKey(accessCapabilities),
-    notebookShellAuthCacheKey(authCapabilities),
-    notebookShellRuntimeCacheKey(runtimeCapabilities),
-  ]);
-  const cached = getBoundedCacheValue(SHELL_CAPABILITIES_CACHE, cacheKey);
-  if (cached) return cached;
-
-  const capabilities = Object.freeze({
+  const projectedCapabilities: NotebookShellCapabilities = {
     canRead,
     canEditMarkdown: interaction.canEditMarkdown,
     canEditCells: interaction.canEditCells,
@@ -256,7 +357,12 @@ export function projectNotebookShellCapabilities({
     access: accessCapabilities,
     auth: authCapabilities,
     runtime: runtimeCapabilities,
-  });
+  };
+  const cacheKey = notebookShellCapabilitiesCacheKey(projectedCapabilities);
+  const cached = getBoundedCacheValue(SHELL_CAPABILITIES_CACHE, cacheKey);
+  if (cached) return cached;
+
+  const capabilities = Object.freeze(projectedCapabilities);
   setBoundedCacheValue(
     SHELL_CAPABILITIES_CACHE,
     cacheKey,
@@ -351,58 +457,37 @@ function stableNotebookShellRuntimeCapabilities(
   return stableRuntime;
 }
 
+function notebookShellCapabilitiesCacheKey(capabilities: NotebookShellCapabilities): string {
+  return projectionCacheKey(capabilities, NOTEBOOK_SHELL_CAPABILITIES_CACHE_FIELDS);
+}
+
 function notebookShellInteractionCacheKey(
   interaction: NotebookEditAccessProjection | NotebookRoomEditAccessProjection,
 ): string {
-  const roomFields =
-    "accessLevel" in interaction
-      ? [
-          interaction.inputSelectedMode,
-          interaction.accessLevel,
-          interaction.requestedScope,
-          interaction.hasDocumentEditPermission,
-          interaction.selectedDocumentEditMode,
-          interaction.requestedDocumentEditAccess,
-          interaction.editAccessPending,
-        ]
-      : [];
-  return stableCacheKey([
-    interaction.selectedMode,
-    interaction.activeMode,
-    interaction.state,
-    interaction.canRequestEdit,
-    interaction.canEditMarkdown,
-    interaction.canEditCells,
-    interaction.canEditStructure,
-    ...roomFields,
-  ]);
+  if ("accessLevel" in interaction) {
+    return projectionCacheKey(interaction, NOTEBOOK_ROOM_EDIT_ACCESS_CACHE_FIELDS);
+  }
+  return projectionCacheKey(interaction, NOTEBOOK_EDIT_ACCESS_CACHE_FIELDS);
+}
+
+function notebookShellOptionalInteractionCacheKey(
+  interaction: NotebookEditAccessProjection | NotebookRoomEditAccessProjection | null | undefined,
+): string {
+  if (interaction === undefined) return "undefined";
+  if (interaction === null) return "null";
+  return notebookShellInteractionCacheKey(interaction);
 }
 
 function notebookShellAccessCacheKey(access: NotebookShellAccessCapabilities): string {
-  return stableCacheKey([
-    access.level,
-    access.source,
-    access.isPublic,
-    access.actorLabel,
-    access.identityLabel,
-    notebookActorProjectionCacheKey(access.actor),
-  ]);
+  return projectionCacheKey(access, NOTEBOOK_SHELL_ACCESS_CACHE_FIELDS);
 }
 
 function notebookShellAuthCacheKey(auth: NotebookShellAuthCapabilities): string {
-  return stableCacheKey([auth.canSignIn, auth.canUseAuthenticatedIdentity, auth.needsAttention]);
+  return projectionCacheKey(auth, NOTEBOOK_SHELL_AUTH_CACHE_FIELDS);
 }
 
 function notebookShellRuntimeCacheKey(runtime: NotebookShellRuntimeCapabilities): string {
-  return stableCacheKey([
-    runtime.canWriteRuntimeState,
-    runtime.connected,
-    runtime.executionAvailable,
-    runtime.source,
-    runtime.actorLabel,
-    runtime.identityLabel,
-    notebookActorProjectionCacheKey(runtime.actor),
-  ]);
+  return projectionCacheKey(runtime, NOTEBOOK_SHELL_RUNTIME_CACHE_FIELDS);
 }
 
 function notebookActorProjectionCacheKey(
@@ -410,17 +495,19 @@ function notebookActorProjectionCacheKey(
 ): string {
   if (actor === undefined) return "undefined";
   if (actor === null) return "null";
-  return stableCacheKey([
-    actor.actorLabel,
-    actor.principal.id,
-    actor.principal.label,
-    actor.principal.imageUrl ?? null,
-    actor.principal.source?.provider ?? null,
-    actor.principal.source?.namespace ?? null,
-    actor.operator.id,
-    actor.operator.kind,
-    actor.operator.label,
-    actor.scope ?? null,
-    actor.status ?? null,
-  ]);
+  return projectionCacheKey(actor, NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS);
+}
+
+function notebookActorPrincipalCacheKey(actor: NotebookActorProjection["principal"]): string {
+  return projectionCacheKey(actor, NOTEBOOK_ACTOR_PRINCIPAL_CACHE_FIELDS);
+}
+
+function notebookActorPrincipalSourceCacheKey(
+  source: NotebookActorProjection["principal"]["source"],
+): string {
+  return optionalProjectionCacheKey(source, NOTEBOOK_ACTOR_PRINCIPAL_SOURCE_CACHE_FIELDS, null);
+}
+
+function notebookActorOperatorCacheKey(actor: NotebookActorProjection["operator"]): string {
+  return projectionCacheKey(actor, NOTEBOOK_ACTOR_OPERATOR_CACHE_FIELDS);
 }
