@@ -51,9 +51,11 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
 test("cloud projects live cells into the NotebookView stores", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
   assert.match(
-    sourceText,
+    sessionSourceText,
     /useLayoutEffect\(\(\) => \{[\s\S]*cellsRef\.current = cells;[\s\S]*projectCloudCellsIntoNotebookViewStores\(cells\);/,
   );
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
@@ -143,6 +145,8 @@ test("cloud passes shared NotebookView source and output visibility handlers", (
 test("cloud wires shared presence and cleans projected store entries", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
   const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
   const bridgeSourceText = readFileSync(bridgeSourcePath, "utf8");
 
@@ -159,7 +163,7 @@ test("cloud wires shared presence and cleans projected store entries", () => {
     /sendSelectionPresence\(\s+cellId,\s+anchorLine,\s+anchorCol,\s+headLine,\s+headCol,/,
   );
   assert.match(sourceText, /sendInteractionPresence\(target\)/);
-  assert.match(sourceText, /resetCloudViewStoreProjection\(\)/);
+  assert.match(sessionSourceText, /resetCloudViewStoreProjection/);
   assert.match(bridgeSourceText, /@\/components\/notebook\/state\/cell-store/);
   assert.match(bridgeSourceText, /@\/components\/notebook\/state\/execution-store/);
   assert.match(bridgeSourceText, /@\/components\/notebook\/state\/output-store/);
@@ -246,18 +250,16 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
-  assert.match(sourceText, /selectedMode: editAccessPending \? "view" : selectedInteractionMode/);
+  assert.match(sourceText, /projectCloudNotebookEditAccess/);
+  assert.match(sourceText, /selectedMode: selectedInteractionMode/);
+  assert.match(sourceText, /editAccessRequestPending/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
-  assert.match(sourceText, /const editAccessPending =/);
   assert.match(
     sourceText,
-    /const requestedEditAccess =\s+authState\.requestedScope === "editor" \|\|\s+authState\.requestedScope === "owner"/,
+    /const requestedEditAccess = roomEditAccess\.requestedDocumentEditAccess/,
   );
-  assert.match(
-    sourceText,
-    /status\.kind === "loading"[\s\S]*!canAcceptCellMutations[\s\S]*requestedEditAccess/,
-  );
+  assert.match(sourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
   assert.match(sourceText, /accessPending=\{editAccessPending\}/);
   assert.match(sourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
   assert.match(sourceText, /disabled=\{accessPending\}/);
@@ -365,6 +367,8 @@ test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
 test("cloud live materialization skips empty room handles before resolving outputs", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
   assert.match(sourceText, /const CLOUD_EMPTY_ROOM_GRACE_MS = 900;/);
   assert.match(sourceText, /const \[emptyRoomGraceElapsed, setEmptyRoomGraceElapsed\]/);
@@ -372,9 +376,9 @@ test("cloud live materialization skips empty room handles before resolving outpu
     sourceText,
     /status\.kind === "empty" && notebookCellIds\.length === 0 && !emptyRoomGraceElapsed/,
   );
-  assert.match(sourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
+  assert.match(sessionSourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
   assert.match(
-    sourceText,
+    sessionSourceText,
     /if \(rawCellCount === 0 && \(!snapshotResolvedRef\.current \|\| cellsRef\.current\.length > 0\)\) \{\s+return;\s+\}\s+const materialized = await materializeCloudNotebookView/,
   );
 });
