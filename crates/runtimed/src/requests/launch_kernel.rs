@@ -26,17 +26,16 @@ fn overlay_env_vars(overlay: &Arc<ShellEnvOverlay>) -> std::collections::HashMap
     overlay.build_kernel_env_vars(&daemon_path)
 }
 use crate::notebook_sync_server::{
-    acquire_prewarmed_env_with_capture, build_launched_config, captured_env_for_runtime,
-    captured_env_source_override, check_and_broadcast_sync_state, check_inline_deps,
-    extract_pixi_toml_deps, format_conda_env_yml_build_details, get_inline_conda_channels,
-    get_inline_conda_deps, get_inline_conda_python, get_inline_uv_deps, get_inline_uv_prerelease,
-    get_inline_uv_requires_python, missing_conda_env_yml_decision,
+    acquire_prewarmed_env_with_capture, build_launched_config, captured_env_disk_state,
+    captured_env_for_runtime, captured_env_source_override, check_and_broadcast_sync_state,
+    check_inline_deps, extract_pixi_toml_deps, format_conda_env_yml_build_details,
+    get_inline_conda_channels, get_inline_conda_deps, get_inline_conda_python, get_inline_uv_deps,
+    get_inline_uv_prerelease, get_inline_uv_requires_python, missing_conda_env_yml_decision,
     project_environment_build_approved, promote_inline_deps_to_project,
     publish_environment_launch_error, publish_kernel_state_presence, reset_starting_state,
     reset_starting_state_with_outcome, resolve_metadata_snapshot,
     send_runtime_agent_request_with_kernel_ports, try_conda_pool_for_inline_deps,
-    try_uv_pool_for_inline_deps, unified_env_on_disk, CapturedEnvRuntime, NotebookRoom,
-    ResetOutcome,
+    try_uv_pool_for_inline_deps, CapturedEnvRuntime, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
@@ -1477,11 +1476,11 @@ pub(crate) async fn handle(
     let captured_env_for_config = match resolved_env_source.as_str() {
         "uv:prewarmed" => {
             captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Uv)
-                .filter(|c| unified_env_on_disk(c).is_some())
+                .filter(|c| captured_env_disk_state(c).is_captured_route())
         }
         "conda:prewarmed" => {
             captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Conda)
-                .filter(|c| unified_env_on_disk(c).is_some())
+                .filter(|c| captured_env_disk_state(c).is_captured_route())
         }
         _ => None,
     };

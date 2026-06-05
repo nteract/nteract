@@ -1647,25 +1647,62 @@ pub(crate) fn captured_env_for_runtime(
     }
 }
 
-/// Check whether a captured env exists on disk at the unified-hash path.
-/// Returns the cache path + python path if present.
-pub(crate) fn unified_env_on_disk(captured: &CapturedEnv) -> Option<(PathBuf, PathBuf)> {
-    unified_env_on_disk_in(
+/// Typed on-disk lifecycle state for a captured unified environment.
+///
+/// `Missing` preserves the historical fallback path: metadata with an env_id
+/// but no matching unified directory is ambiguous (GC'd capture vs. fresh
+/// inline-deps notebook). `Partial` means the derived directory exists but the
+/// expected Python executable is absent, so callers must route it through the
+/// backend's captured repair path. `Usable` is the same cache-hit candidate the
+/// old `unified_env_on_disk(...).is_some()` predicate accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CapturedEnvDiskState {
+    Missing {
+        env_path: PathBuf,
+        python_path: PathBuf,
+    },
+    Partial {
+        env_path: PathBuf,
+        python_path: PathBuf,
+    },
+    Usable {
+        env_path: PathBuf,
+        python_path: PathBuf,
+    },
+}
+
+impl CapturedEnvDiskState {
+    pub(crate) fn env_path(&self) -> &Path {
+        match self {
+            Self::Missing { env_path, .. }
+            | Self::Partial { env_path, .. }
+            | Self::Usable { env_path, .. } => env_path,
+        }
+    }
+
+    pub(crate) fn is_captured_route(&self) -> bool {
+        matches!(self, Self::Partial { .. } | Self::Usable { .. })
+    }
+}
+
+/// Resolve the typed on-disk state at the captured env's unified-hash path.
+pub(crate) fn captured_env_disk_state(captured: &CapturedEnv) -> CapturedEnvDiskState {
+    captured_env_disk_state_in(
         captured,
         &kernel_env::uv::default_cache_dir_uv(),
         &kernel_env::conda::default_cache_dir_conda(),
     )
 }
 
-/// Test-friendly form of [`unified_env_on_disk`] that accepts explicit
+/// Test-friendly form of [`captured_env_disk_state`] that accepts explicit
 /// cache dirs instead of using the channel defaults. The production call
 /// site always passes the defaults; tests pass tmpdirs.
-fn unified_env_on_disk_in(
+pub(crate) fn captured_env_disk_state_in(
     captured: &CapturedEnv,
     uv_cache_dir: &Path,
     conda_cache_dir: &Path,
-) -> Option<(PathBuf, PathBuf)> {
-    match captured {
+) -> CapturedEnvDiskState {
+    let (env_path, python_path) = match captured {
         CapturedEnv::Uv { deps, env_id } => {
             let hash = kernel_env::uv::compute_unified_env_hash(deps, env_id);
             let venv_path = uv_cache_dir.join(&hash);
@@ -1675,11 +1712,7 @@ fn unified_env_on_disk_in(
             #[cfg(not(target_os = "windows"))]
             let python_path = venv_path.join("bin").join("python");
 
-            if python_path.exists() {
-                Some((venv_path, python_path))
-            } else {
-                None
-            }
+            (venv_path, python_path)
         }
         CapturedEnv::Conda { deps, env_id } => {
             let hash = kernel_env::conda::compute_unified_env_hash(deps, env_id);
@@ -1690,11 +1723,24 @@ fn unified_env_on_disk_in(
             #[cfg(not(target_os = "windows"))]
             let python_path = env_path.join("bin").join("python");
 
-            if python_path.exists() {
-                Some((env_path, python_path))
-            } else {
-                None
-            }
+            (env_path, python_path)
+        }
+    };
+
+    if !env_path.exists() {
+        CapturedEnvDiskState::Missing {
+            env_path,
+            python_path,
+        }
+    } else if python_path.exists() {
+        CapturedEnvDiskState::Usable {
+            env_path,
+            python_path,
+        }
+    } else {
+        CapturedEnvDiskState::Partial {
+            env_path,
+            python_path,
         }
     }
 }
@@ -1723,12 +1769,9 @@ pub(crate) fn should_preserve_env_on_eviction(
     }
     for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
         if let Some(captured) = captured_env_for_runtime(metadata, runtime) {
-            if let Some((venv, _)) =
-                unified_env_on_disk_in(&captured, uv_cache_dir, conda_cache_dir)
-            {
-                if venv == env_path {
-                    return true;
-                }
+            let disk_state = captured_env_disk_state_in(&captured, uv_cache_dir, conda_cache_dir);
+            if disk_state.is_captured_route() && disk_state.env_path() == env_path {
+                return true;
             }
         }
     }
@@ -1843,7 +1886,7 @@ pub(crate) fn captured_env_source_override(
 /// path using legacy hashing. Same deps still dedup across notebooks; they
 /// just lose per-notebook env_id isolation for that rebuild.
 fn is_captured(captured: &CapturedEnv) -> bool {
-    unified_env_on_disk(captured).is_some()
+    captured_env_disk_state(captured).is_captured_route()
 }
 
 /// Like `captured_env_source_override` but also returns the full
@@ -1856,12 +1899,28 @@ fn resolve_captured_env_override(
     Option<notebook_protocol::connection::EnvSource>,
     Option<CapturedEnv>,
 ) {
+    resolve_captured_env_override_in(
+        metadata_snapshot,
+        &kernel_env::uv::default_cache_dir_uv(),
+        &kernel_env::conda::default_cache_dir_conda(),
+    )
+}
+
+pub(crate) fn resolve_captured_env_override_in(
+    metadata_snapshot: Option<&NotebookMetadataSnapshot>,
+    uv_cache_dir: &Path,
+    conda_cache_dir: &Path,
+) -> (
+    Option<notebook_protocol::connection::EnvSource>,
+    Option<CapturedEnv>,
+) {
     use notebook_protocol::connection::{EnvSource, PackageManager};
     let Some(snap) = metadata_snapshot else {
         return (None, None);
     };
     if let Some(captured) = captured_env_for_runtime(Some(snap), CapturedEnvRuntime::Uv) {
-        if is_captured(&captured) {
+        if captured_env_disk_state_in(&captured, uv_cache_dir, conda_cache_dir).is_captured_route()
+        {
             return (
                 Some(EnvSource::Prewarmed(PackageManager::Uv)),
                 Some(captured),
@@ -1869,7 +1928,8 @@ fn resolve_captured_env_override(
         }
     }
     if let Some(captured) = captured_env_for_runtime(Some(snap), CapturedEnvRuntime::Conda) {
-        if is_captured(&captured) {
+        if captured_env_disk_state_in(&captured, uv_cache_dir, conda_cache_dir).is_captured_route()
+        {
             return (
                 Some(EnvSource::Prewarmed(PackageManager::Conda)),
                 Some(captured),
@@ -1917,20 +1977,22 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
         crate::inline_env::RuntimeDocProgressHandler::new(room.state.clone()),
     );
 
-    // Reopen path: if the notebook has an env_id and the unified-hash env
-    // exists on disk, route through prepare_environment_unified for an
-    // instant cache hit. Captured deps + env_id → same env across reopens.
+    // Reopen/repair path: if the notebook has an env_id and the unified-hash
+    // env directory is present on disk, route through prepare_environment_unified.
+    // Usable dirs are the instant cache-hit path; partial dirs enter the
+    // backend's captured repair path. Captured deps + env_id → same env across
+    // reopens.
     //
     // Uses the FULL dep-shape from metadata (requires-python, prerelease,
     // channels, python pin) so the hash matches what the capture step wrote,
     // even after the user edits one of those resolver-affecting fields.
     //
-    // `is_captured` checks for the env on disk — deps-present-but-disk-absent
-    // falls through to the pool-take + capture path. That covers both fresh
-    // notebooks (empty deps) and GC'd captured envs (non-empty deps with no
-    // on-disk presence). The GC'd case accepts a rebuild via the normal
-    // inline path rather than routing through unified hashing, to avoid
-    // conflating "captured" with "user added inline deps before first launch."
+    // `is_captured` accepts Partial and Usable disk states. Missing falls
+    // through to the pool-take + capture path. That covers both fresh notebooks
+    // (empty deps) and GC'd captured envs (non-empty deps with no on-disk
+    // presence). The GC'd case accepts a rebuild via the normal inline path
+    // rather than routing through unified hashing, to avoid conflating
+    // "captured" with "user added inline deps before first launch."
     if let Some(captured) = captured_env_for_runtime(metadata_snapshot, runtime) {
         if is_captured(&captured) {
             match &captured {
