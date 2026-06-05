@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   projectNotebookRoomEditAccess,
   projectNotebookShellCapabilities,
@@ -7,6 +7,11 @@ import {
   type NotebookShellAuthCapabilities,
   type NotebookShellRuntimeCapabilities,
 } from "../src";
+import { clearNotebookShellCapabilitiesCachesForTests } from "../src/notebook-shell-capabilities";
+
+beforeEach(() => {
+  clearNotebookShellCapabilitiesCachesForTests();
+});
 
 function access(
   overrides: Partial<NotebookShellAccessCapabilities> = {},
@@ -180,5 +185,56 @@ describe("projectNotebookShellCapabilities", () => {
       access: { level: "viewer", source: "unknown" },
       runtime: { connected: false, executionAvailable: false },
     });
+    expect(Object.isFrozen(readOnlyNotebookShellCapabilities)).toBe(true);
+    expect(Object.isFrozen(readOnlyNotebookShellCapabilities.access)).toBe(true);
+    expect(Object.isFrozen(readOnlyNotebookShellCapabilities.auth)).toBe(true);
+    expect(Object.isFrozen(readOnlyNotebookShellCapabilities.runtime)).toBe(true);
+  });
+
+  it("returns stable frozen capabilities for equivalent shell inputs", () => {
+    const interaction = projectNotebookRoomEditAccess({
+      accessLevel: "editor",
+      requestedScope: "editor",
+      selectedMode: "edit",
+      canAcceptDocumentMutations: true,
+      canRequestEdit: true,
+    });
+    const first = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ level: "editor", actorLabel: "user:anaconda:alice/browser:viewer" }),
+      auth: auth({ canUseAuthenticatedIdentity: true }),
+      runtime: runtime({ connected: true, executionAvailable: true }),
+      execution: { available: true, requiresDocumentEditPermission: true },
+      packages: { canView: true, canManage: true, manageRequiresDocumentMutationSupport: true },
+      sharing: {
+        canManage: true,
+        requiresAuthenticatedIdentity: true,
+        requiredAccessLevels: ["editor", "owner"],
+        requiredSources: ["cloud"],
+      },
+    });
+    const second = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ level: "editor", actorLabel: "user:anaconda:alice/browser:viewer" }),
+      auth: auth({ canUseAuthenticatedIdentity: true }),
+      runtime: runtime({ connected: true, executionAvailable: true }),
+      execution: { available: true, requiresDocumentEditPermission: true },
+      packages: { canView: true, canManage: true, manageRequiresDocumentMutationSupport: true },
+      sharing: {
+        canManage: true,
+        requiresAuthenticatedIdentity: true,
+        requiredAccessLevels: ["editor", "owner"],
+        requiredSources: ["cloud"],
+      },
+    });
+
+    expect(first).toBe(second);
+    expect(first.access).toBe(second.access);
+    expect(first.auth).toBe(second.auth);
+    expect(first.runtime).toBe(second.runtime);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.access)).toBe(true);
+    expect(Object.isFrozen(first.auth)).toBe(true);
+    expect(Object.isFrozen(first.runtime)).toBe(true);
   });
 });

@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
+  clearNotebookEditAccessProjectionCachesForTests,
   notebookRoomAccessLevelFromConnectionScope,
   projectNotebookEditAccess,
   projectNotebookRoomEditAccess,
 } from "../src/notebook-edit-access";
+
+beforeEach(() => {
+  clearNotebookEditAccessProjectionCachesForTests();
+});
 
 describe("projectNotebookEditAccess", () => {
   it("keeps a user-selected view mode read-only even when edit permission exists", () => {
@@ -106,6 +111,40 @@ describe("projectNotebookEditAccess", () => {
       canEditStructure: false,
     });
   });
+
+  it("returns a stable frozen object for equivalent edit inputs", () => {
+    const first = projectNotebookEditAccess({
+      selectedMode: "edit",
+      permission: {
+        canEditMarkdown: true,
+        canEditCells: true,
+        canEditStructure: true,
+      },
+      hostSupport: {
+        canEditMarkdown: true,
+        canEditCells: false,
+        canEditStructure: true,
+        canRequestEdit: true,
+      },
+    });
+    const second = projectNotebookEditAccess({
+      selectedMode: "edit",
+      permission: {
+        canEditMarkdown: true,
+        canEditCells: true,
+        canEditStructure: true,
+      },
+      hostSupport: {
+        canEditMarkdown: true,
+        canEditCells: false,
+        canEditStructure: true,
+        canRequestEdit: true,
+      },
+    });
+
+    expect(first).toBe(second);
+    expect(Object.isFrozen(first)).toBe(true);
+  });
 });
 
 describe("projectNotebookRoomEditAccess", () => {
@@ -198,6 +237,28 @@ describe("projectNotebookRoomEditAccess", () => {
       canEditCells: false,
       canEditStructure: false,
     });
+  });
+
+  it("returns a stable frozen object for equivalent room edit inputs", () => {
+    const first = projectNotebookRoomEditAccess({
+      accessLevel: "viewer",
+      requestedScope: "editor",
+      selectedMode: "edit",
+      canAcceptDocumentMutations: false,
+      canRequestEdit: true,
+      editAccessRequestPending: true,
+    });
+    const second = projectNotebookRoomEditAccess({
+      accessLevel: "viewer",
+      requestedScope: "editor",
+      selectedMode: "edit",
+      canAcceptDocumentMutations: false,
+      canRequestEdit: true,
+      editAccessRequestPending: true,
+    });
+
+    expect(first).toBe(second);
+    expect(Object.isFrozen(first)).toBe(true);
   });
 });
 
