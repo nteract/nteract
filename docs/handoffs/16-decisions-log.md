@@ -279,23 +279,80 @@ OIDC token actually expires and the refresher mints a new one. Fold this into
 the 3c cross-machine re-proof (same creds/deploy). Nothing in 3b changes the
 static-token path, so this is a forward-looking validation, not a regression risk.
 
-## Phase 3 remaining plan (3c+)
+## Phase 3c (CODE ONLY): daemon spawn path + doc-actor identity
 
-Ordered by the lifecycle analysis. 3a (req #1) and 3b (req #2) are done. Remaining, in dependency order:
+29. **Premise (b) of the original 3c plan — "swap the daemon's stripping receive
+    for `receive_sync_message_with_changes`" — was a misreading; the agent is
+    ALREADY consumer-side, and the swap would be a regression. Dropped.** The
+    plan assumed the agent's receive path
+    (`runtime_agent.rs` RuntimeStateSync arm → `receive_sync_and_foreign_comms_recovering`)
+    *strips* incoming changes the way the server-toward-viewer
+    `RuntimeStateDoc::receive_sync_message` (doc.rs:2980) does. It does not. Reading
+    `receive_sync_and_foreign_comms` (doc.rs:3127-3219): it calls **raw**
+    `self.doc.sync().receive_sync_message` (doc.rs:3140), which *applies* every
+    incoming change to the main doc, and then additionally computes a
+    *foreign-comms* fork purely for kernel-echo suppression (the doc comment at
+    3120-3122 states it outright: "The main doc still absorbs every applied change
+    (including kernel echoes)"). So the agent already has the consumer semantics a
+    cloud peer needs. Swapping it for plain `receive_sync_message_with_changes`
+    would *lose* the per-change `rt:kernel:` echo filter and re-introduce the
+    widget-amplification loop that method was written to break — a regression, not
+    a fix. Verified by code-read + the existing echo-suppression tests. Net: 3c's
+    real surface is only premise (a), the doc-actor identity.
 
-- **3c: daemon spawn path + doc-actor identity + consumer-side receive (the integration).**
-  Add a `run_runtime_agent`-equivalent (or a parameter) that builds a `CloudWsFrameTransport`
-  instead of `UdsFrameTransport`. Two agent-loop changes gated on this path: (a) author the
-  RuntimeStateDoc (and NotebookDoc if synced) under the `cloud_room_ready` principal
-  (`transport.principal()`), as `<principal>/<operator>`, not the daemon's `runtime_agent_id`,
-  else the room's `validate_room_notebook_change_actors` drops every change (decision #6).
-  (b) Apply incoming RuntimeStateSync with `receive_sync_message_with_changes` (consumer
-  semantics) rather than the daemon's `receive_sync_and_foreign_comms_recovering` (which strips
-  incoming changes). Gate (a)/(b) on a transport-kind discriminant so the UDS path is untouched.
-  This is where the live cross-machine re-proof runs: spawn the daemon's real `runtime_agent`
-  against a preview room as `runtime_peer` (needs the explicit `runtime_peer` ACL row,
-  decision #9) and confirm a cloud-submitted cell runs on the daemon-managed kernel and renders
-  in the viewer, through the *real* agent, not the spike.
+30. **The spawn path is a generic inner `run_runtime_agent_on_transport<T, F>`
+    that both entry points funnel through; the transport-kind discriminant is a
+    `resolve_actor: FnOnce(&T) -> Result<String>` closure, not a runtime enum or a
+    trait method.** `run_runtime_agent` (UDS) passes `move |_| Ok(runtime_agent_id)`
+    — the resolver ignores the transport and returns the daemon-supplied id, the
+    exact value the bootstrap used inline before, so the desktop/daemon path is
+    byte-for-byte unchanged (verified: full runtimed suite green, 884→888 only by
+    added tests). `run_cloud_runtime_agent` builds a `CloudWsFrameTransport` and
+    passes a resolver that reads `transport.principal()` *after* connect. Why a
+    closure, not an enum discriminant in the loop: the only thing that actually
+    differs by transport is the actor label, and it's needed exactly once at
+    bootstrap; a closure localises that one difference without threading a
+    `TransportKind` through the 1400-line loop or widening `FrameTransport`.
+    Alternative considered: resolve the actor *before* connect — impossible for
+    cloud, the principal is only known from `cloud_room_ready`, which is why the
+    resolver runs post-`connect()`.
+
+31. **Cloud doc-actor label is `<principal>/<operator>:<nonce>` via
+    `cloud_actor_label`.** Principal from `transport.principal()` (the room's
+    authenticated identity; `validate_room_notebook_change_actors` drops changes
+    authored under anything else — decision #6). Operator is a caller-supplied
+    role suffix (e.g. `agent:runt`). The nonce is a per-process random suffix
+    because reusing one actor label across separate doc instances collides at
+    `(actor, seq 1)` → Automerge `DuplicateSeqNumber` when the room syncs the prior
+    change back (the exact hazard the `runt-cloud-peer` spike documented). The
+    resolver *errors* if the principal is absent rather than authoring under a bogus
+    actor, since a wrong actor fails silently (the room discards every change).
+    Unit-tested: label format/uniqueness, the no-principal error path, and the UDS
+    pass-through property.
+
+Phase 3c verification: `cargo test -p runtimed` 888 lib (was 884) + integration
+suites green (UDS byte-for-byte unchanged); `cargo test -p xtask` 28 (bump-targets
+guard green — `notebook-cloud-transport` was already registered, now also a
+`runtimed` dep); `cargo xtask lint --fix` clean; clippy `-D warnings` clean.
+
+**NEEDS US (3c):** the live cross-machine re-proof. `run_cloud_runtime_agent` is
+built and unit-tested behind the transport gate, but nothing yet *calls* it from a
+CLI/daemon command, and it has never run against a real room. To close req #2/#3
+end-to-end an interactive session with creds must: (1) deploy a preview room (or
+use an existing one) and grant the agent's principal the explicit `runtime_peer`
+ACL row (decision #9); (2) wire a CLI subcommand (e.g. `runtimed cloud-runtime-agent
+--cloud-url --notebook-id --operator`, plus a `CloudAuth` source) — trivial, but
+left out here since it can't be verified headlessly; (3) spawn it as `runtime_peer`
+and confirm a cloud-submitted cell runs on the daemon-managed kernel and renders in
+the viewer, through the *real* agent (not the `runt-cloud-peer` spike); (4) exercise
+the 3b token-refresher against an actually-expiring token. None of this is possible
+without preview deploy + staging creds, which this autonomous session does not have.
+The code path is additive and gated, so it cannot affect the desktop/daemon path.
+
+## Phase 3 remaining plan (3d+)
+
+Ordered by the lifecycle analysis. 3a (req #1), 3b (req #2), and 3c CODE (doc-actor
+identity; live re-proof is NEEDS-US) are done. Remaining, in dependency order:
 
 - **3d: cloud-room DurableObject watchdog (reqs #3, #7; the safety net the daemon can't
   provide).** TypeScript in `apps/notebook-cloud/`. Thread peer **scope** through

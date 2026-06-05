@@ -26,6 +26,7 @@ nteract-telemetry = { path = "../nteract-telemetry" }
 nteract-markdown-wasm = { path = "../nteract-markdown-wasm" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-wire = { path = "../notebook-wire" }
+notebook-cloud-transport = { path = "../notebook-cloud-transport" }
 nteract-identity = { path = "../nteract-identity" }
 tokio = { workspace = true }
 serde = { workspace = true }
