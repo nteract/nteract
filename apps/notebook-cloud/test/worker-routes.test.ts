@@ -851,6 +851,112 @@ describe("Worker artifact routes", () => {
     });
   });
 
+  it("caches authorized immutable blob reads at the Worker edge", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "blob-cache-demo");
+    seedAcl(env, {
+      notebookId: "blob-cache-demo",
+      subject: "user:dev:alice",
+      scope: "viewer",
+    });
+    const body = new Uint8Array([9, 8, 7, 6]);
+    const hash = await sha256Hex(body);
+    const key = blobKey("blob-cache-demo", hash);
+    await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+      httpMetadata: { contentType: "application/vnd.apache.arrow.stream" },
+    });
+    const storedResponses = new Map<string, Response>();
+    const restoreCaches = installGlobalCaches({
+      default: {
+        async match(request: Request) {
+          return storedResponses.get(request.url)?.clone();
+        },
+        async put(request: Request, response: Response) {
+          storedResponses.set(request.url, response.clone());
+        },
+      } as unknown as Cache,
+    });
+    const waitUntilPromises: Promise<unknown>[] = [];
+
+    try {
+      const first = await blobGet(
+        env,
+        `/api/n/blob-cache-demo/blobs/${hash}?viewer_session=first`,
+        fakeContextWithWaitUntil(waitUntilPromises),
+      );
+      assert.equal(first.status, 200);
+      assert.equal(first.headers.get("X-Notebook-Cloud-Blob-Cache"), "miss");
+      assert.deepEqual(new Uint8Array(await first.arrayBuffer()), body);
+      await Promise.all(waitUntilPromises);
+
+      const second = await blobGet(
+        env,
+        `/api/n/blob-cache-demo/blobs/${hash}?viewer_session=second`,
+      );
+      assert.equal(second.status, 200);
+      assert.equal(second.headers.get("X-Notebook-Cloud-Blob-Cache"), "hit");
+      assert.deepEqual(new Uint8Array(await second.arrayBuffer()), body);
+      assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.getKeys, [key]);
+
+      const anonymous = await worker.fetch(
+        new Request(
+          new URL(
+            `/api/n/blob-cache-demo/blobs/${hash}?viewer_session=anonymous`,
+            "http://localhost",
+          ),
+        ),
+        env,
+        fakeContext(),
+      );
+      assert.equal(anonymous.status, 404);
+      assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.getKeys, [key]);
+    } finally {
+      restoreCaches();
+    }
+  });
+
+  it("falls back to R2 when the Worker edge cache match fails", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "blob-cache-fallback-demo");
+    seedAcl(env, {
+      notebookId: "blob-cache-fallback-demo",
+      subject: "user:dev:alice",
+      scope: "viewer",
+    });
+    const body = new Uint8Array([1, 3, 3, 7]);
+    const hash = await sha256Hex(body);
+    const key = blobKey("blob-cache-fallback-demo", hash);
+    await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+      httpMetadata: { contentType: "application/octet-stream" },
+    });
+    const restoreCaches = installGlobalCaches({
+      default: {
+        async match() {
+          throw new Error("cache unavailable");
+        },
+        async put() {
+          return undefined;
+        },
+      } as unknown as Cache,
+    });
+    const waitUntilPromises: Promise<unknown>[] = [];
+
+    try {
+      const response = await blobGet(
+        env,
+        `/api/n/blob-cache-fallback-demo/blobs/${hash}`,
+        fakeContextWithWaitUntil(waitUntilPromises),
+      );
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("X-Notebook-Cloud-Blob-Cache"), "miss");
+      assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body);
+      await Promise.all(waitUntilPromises);
+      assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.getKeys, [key]);
+    } finally {
+      restoreCaches();
+    }
+  });
+
   it("rejects blob uploads whose path hash does not match the bytes", async () => {
     const env = fakeEnv();
     seedNotebook(env, "runtime-demo");
@@ -2551,6 +2657,24 @@ async function accessRequestItemRequest(
   );
 }
 
+async function blobGet(
+  env: FakeEnv,
+  pathname: string,
+  ctx: ExecutionContext = fakeContext(),
+): Promise<Response> {
+  return worker.fetch(
+    new Request(new URL(pathname, "http://localhost"), {
+      headers: {
+        "X-User": "alice",
+        "X-Operator": "desktop:test",
+        "X-Scope": "viewer",
+      },
+    }),
+    env,
+    ctx,
+  );
+}
+
 async function scopedPut(
   env: FakeEnv,
   pathname: string,
@@ -2685,6 +2809,30 @@ function fakeContext(): ExecutionContext {
   return {
     waitUntil: () => undefined,
     passThroughOnException: () => undefined,
+  };
+}
+
+function fakeContextWithWaitUntil(promises: Promise<unknown>[]): ExecutionContext {
+  return {
+    waitUntil: (promise) => {
+      promises.push(promise);
+    },
+    passThroughOnException: () => undefined,
+  };
+}
+
+function installGlobalCaches(cachesValue: { default: Cache }): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "caches");
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: cachesValue,
+  });
+  return () => {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "caches", descriptor);
+    } else {
+      delete (globalThis as { caches?: unknown }).caches;
+    }
   };
 }
 
@@ -3553,8 +3701,10 @@ function okResult<T = unknown>(results?: T[], meta: Record<string, unknown> = {}
 
 class FakeR2Bucket implements R2Bucket {
   readonly objects = new Map<string, FakeR2Object>();
+  readonly getKeys: string[] = [];
 
   async get(key: string): Promise<R2ObjectBody | null> {
+    this.getKeys.push(key);
     return this.objects.get(key) ?? null;
   }
 
