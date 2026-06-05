@@ -4,8 +4,6 @@ import {
   deriveRuntimeKind,
   notebookCellAnchorId,
   resolveNotebookOutlineSelection,
-  type DependencyGuard,
-  type GuardedNotebookProvenance,
   NotebookClient,
   type NotebookOutlineItem,
   putBlob,
@@ -76,7 +74,7 @@ import { useNotebookCellUIStateBridge } from "@/components/notebook/state/cell-u
 import { startCursorDispatch } from "./lib/cursor-registry";
 import { desktopNotebookShellCapabilities } from "./lib/desktop-shell-capabilities";
 import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kernel-status";
-import { type PendingTrustAction } from "./lib/trust-actions";
+import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
@@ -118,14 +116,6 @@ function focusRailCollapseButtonWhenStageIsHidden(
     '[data-slot="notebook-rail-collapse-button"]',
   );
   requestAnimationFrame(() => collapseButton?.focus());
-}
-
-function isLaunchErrorHandledByRuntimeBanner(error: string): boolean {
-  return (
-    error.includes("ipykernel not found in pixi.toml") ||
-    error.includes("ipykernel not found in prepared ") ||
-    error.includes("environment.yml declares conda env")
-  );
 }
 
 /**
@@ -403,17 +393,9 @@ function AppContent() {
   const stageHadFocusBeforeRailTakeoverRef = useRef(false);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
-  const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
   const [dismissedEnvBuildDetails, setDismissedEnvBuildDetails] = useState<string | null>(null);
-  const [envBuildCreating, setEnvBuildCreating] = useState(false);
-  const [pendingTrustAction, setPendingTrustAction] = useState<PendingTrustAction | null>(null);
-  const pendingTrustActionRef = useRef<PendingTrustAction | null>(null);
-  const [trustActionNotice, setTrustActionNotice] = useState<string | null>(null);
-  const [trustApprovalHandoffPending, setTrustApprovalHandoffPending] = useState(false);
   const [clearingDeps, setClearingDeps] = useState(false);
-  // Track when sync/restart just completed for success feedback
-  const [justSynced, setJustSynced] = useState(false);
   // Per-error-instance dismissal for the kernel-launch error banner.
   // Stores the `errorDetails` string the user dismissed; cleared
   // whenever the kernel transitions out of Error (so the next failure
@@ -474,15 +456,6 @@ function AppContent() {
     approveTrust,
   } = useTrust();
 
-  // Track pending kernel start that was blocked by trust dialog
-  const pendingKernelStartRef = useRef(false);
-
-  // Guard against concurrent Run All / Restart & Run All operations (#982)
-  const runAllInFlightRef = useRef(false);
-
-  // Guard against duplicate per-cell execute requests (rapid Shift+Enter)
-  const executingCellsRef = useRef(new Set<string>());
-
   // Full runtime state from the daemon. Feeds the env-manager + runtime
   // derivers below and the path read further down. Single subscription
   // point; the derivers are pure and don't add re-renders.
@@ -508,13 +481,6 @@ function AppContent() {
   // without a getTitle-then-setTitle round-trip that would race with the
   // concurrent Rust-side title update from `applyPathChanged`.
   const [titleBase, setTitleBase] = useState<string | null>(null);
-
-  // Auto-clear justSynced after 3 seconds
-  useEffect(() => {
-    if (!justSynced) return;
-    const timer = setTimeout(() => setJustSynced(false), 3000);
-    return () => clearTimeout(timer);
-  }, [justSynced]);
 
   // UV Dependency management
   const {
@@ -612,20 +578,6 @@ function AppContent() {
   const envSource = kernelInfo.envSource ?? null;
 
   useEffect(() => {
-    if (!trustApprovalHandoffPending) return;
-    if (
-      kernelStatus !== KERNEL_STATUS.AWAITING_TRUST &&
-      kernelStatus !== KERNEL_STATUS.NOT_STARTED
-    ) {
-      setTrustApprovalHandoffPending(false);
-      return;
-    }
-
-    const timeout = setTimeout(() => setTrustApprovalHandoffPending(false), 10_000);
-    return () => clearTimeout(timeout);
-  }, [kernelStatus, trustApprovalHandoffPending]);
-
-  useEffect(() => {
     if (lifecycle.lifecycle !== "AwaitingEnvBuild") {
       setEnvBuildDialogOpen(false);
       setDismissedEnvBuildDetails(null);
@@ -635,13 +587,6 @@ function AppContent() {
       setEnvBuildDialogOpen(true);
     }
   }, [dismissedEnvBuildDetails, errorDetails, lifecycle.lifecycle]);
-
-  const { kernelStatus: displayKernelStatus, statusKey: displayStatusKey } =
-    getTrustApprovalHandoffDisplayStatus({
-      pending: trustApprovalHandoffPending,
-      kernelStatus,
-      statusKey,
-    });
 
   // Clear banner dismissal whenever the kernel leaves Error or the
   // details text changes, so the next failure re-presents the banner
@@ -1014,378 +959,70 @@ function AppContent() {
     return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
   }, []);
 
-  const setBlockedTrustAction = useCallback((action: PendingTrustAction | null) => {
-    pendingTrustActionRef.current = action;
-    setPendingTrustAction(action);
+  const getObservedHeads = useCallback(() => getHandle()?.get_heads_hex() ?? [], [getHandle]);
+
+  const showEnvBuildDialog = useCallback(() => {
+    setDismissedEnvBuildDetails(null);
+    setEnvBuildDialogOpen(true);
   }, []);
 
-  const captureNotebookProvenance = useCallback((): GuardedNotebookProvenance | null => {
-    const observedHeads = getHandle()?.get_heads_hex() ?? [];
-    if (observedHeads.length === 0) return null;
-    return { observed_heads: observedHeads };
-  }, [getHandle]);
-
-  const captureExecuteTrustAction = useCallback(
-    (cellId: string): PendingTrustAction | null => {
-      const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
-      if (!cell || cell.cell_type !== "code") return null;
-      const provenance = captureNotebookProvenance();
-      if (!provenance) return null;
-      return {
-        kind: "execute_cell",
-        cellId: cell.id,
-        provenance,
-      };
-    },
-    [captureNotebookProvenance],
-  );
-
-  const captureRunAllTrustAction = useCallback((): PendingTrustAction | null => {
-    const provenance = captureNotebookProvenance();
-    if (!provenance) return null;
-    return {
-      kind: "run_all",
-      provenance,
-    };
-  }, [captureNotebookProvenance]);
-
-  const captureSyncTrustAction = useCallback((): PendingTrustAction | null => {
-    const provenance = captureNotebookProvenance();
-    if (!provenance) return null;
-    return {
-      kind: "sync_deps",
-      provenance: {
-        observed_heads: provenance.observed_heads,
-      },
-    };
-  }, [captureNotebookProvenance]);
-
-  // Check trust and start kernel if trusted, otherwise show dialog.
-  // Returns true if kernel was started, false if trust dialog opened or error.
-  const tryStartKernel = useCallback(
-    async (blockedAction: PendingTrustAction | null = null): Promise<boolean> => {
-      if (!shellCapabilities.canExecute) {
-        logger.debug("[App] tryStartKernel: execute capability unavailable, skipping");
-        return false;
-      }
-      // Fail-closed until the daemon has confirmed first RuntimeStateSync.
-      // Before that, `runtimeState.trust.status` is the default and cannot
-      // gate an install. Buttons are disabled in this state, but keyboard
-      // shortcuts and menu routes still call in — so guard here too.
-      if (!sessionReady) {
-        logger.debug("[App] tryStartKernel: session not ready, skipping");
-        return false;
-      }
-
-      // Re-check trust status (may have changed)
-      const info = await checkTrust();
-      if (!info) return false;
-
-      if (info.status === "trusted" || info.status === "no_dependencies") {
-        setBlockedTrustAction(null);
-        // Trusted - launch kernel via daemon
-        // Both kernel_type and env_source use "auto" - daemon detects from Automerge doc
-        const response = await launchKernel("auto", "auto");
-        if (response.result === "error") {
-          logger.error("[App] tryStartKernel: daemon error", response.error);
-          return false;
-        }
-        if (response.result === "guard_rejected") {
-          setTrustActionNotice(response.reason);
-          return false;
-        }
-        envProgress.reset();
-        return true;
-      }
-      // Untrusted - show dialog and mark pending start
-      pendingKernelStartRef.current = true;
-      setBlockedTrustAction(blockedAction);
-      setTrustDialogOpen(true);
-      return false;
-    },
-    [
-      sessionReady,
-      shellCapabilities.canExecute,
-      checkTrust,
-      launchKernel,
-      envProgress,
-      setBlockedTrustAction,
-      setTrustActionNotice,
-    ],
-  );
-
-  const performTrustedSyncDeps = useCallback(
-    async (guard?: DependencyGuard): Promise<boolean> => {
-      // For UV or Conda inline deps with only additions, try hot-sync first
-      const isUvInline = envSource === "uv:inline";
-      const isCondaInline = envSource === "conda:inline";
-      const hasOnlyAdditions =
-        envSyncState?.diff?.added?.length && !envSyncState?.diff?.removed?.length;
-
-      if ((isUvInline || isCondaInline) && hasOnlyAdditions) {
-        logger.debug("[App] Trying hot-sync for additions");
-        const response = await syncEnvironment(guard);
-
-        if (response.result === "sync_environment_complete") {
-          logger.debug("[App] Hot-sync succeeded:", response.synced_packages);
-          envProgress.reset();
-          setJustSynced(true);
-          return true;
-        }
-
-        if (response.result === "guard_rejected") {
-          setTrustActionNotice(response.reason);
-          envProgress.reset();
-          return false;
-        }
-
-        if (response.result === "sync_environment_failed" && !response.needs_restart) {
-          // Error but doesn't need restart (e.g., package cannot resolve).
-          // The runtime agent already wrote EnvProgressPhase::Error into
-          // RuntimeStateDoc before replying, so keep the local progress
-          // banner visible instead of dismissing it.
-          logger.error("[App] Hot-sync failed:", {
-            error: response.error,
-            envSource,
-            packages: envSyncState?.diff?.added,
-          });
-          return false;
-        }
-
-        // needs_restart or other error - fall through to restart flow
-        logger.debug("[App] Hot-sync requires restart, falling back");
-      }
-
-      // Restart flow - deps are already trusted from check above
-      await shutdownKernel();
-      const started = await tryStartKernel();
-      if (started) {
-        envProgress.reset();
-        setJustSynced(true);
-      }
-      return started;
-    },
-    [envSource, envSyncState, envProgress, syncEnvironment, shutdownKernel, tryStartKernel],
-  );
-
-  // Handler to sync deps - tries hot-sync for UV additions, falls back to restart
-  // Always checks trust before any operation that installs packages
-  const handleSyncDeps = useCallback(async (): Promise<boolean> => {
-    // Fail-closed until the daemon has pushed initial RuntimeStateSync.
-    // Hot-sync and restart both install packages; can't run either if we
-    // don't have authoritative trust state yet.
-    if (!sessionReady) {
-      logger.debug("[App] handleSyncDeps: session not ready, skipping");
-      return false;
+  const getProjectEnvironmentFilePath = useCallback(() => {
+    if (
+      runtimeState.project_context.state === "Detected" &&
+      runtimeState.project_context.project_file.kind === "EnvironmentYml"
+    ) {
+      return runtimeState.project_context.project_file.absolute_path;
     }
+    return undefined;
+  }, [runtimeState.project_context]);
 
-    // Reset any previous error state before attempting
-    envProgress.reset();
-
-    if (!(await flushSync())) {
-      logger.warn("[App] handleSyncDeps: source sync failed, skipping");
-      return false;
-    }
-    const blockedAction = captureSyncTrustAction();
-
-    // Check trust first - required before any package installation (hot-sync or restart)
-    const info = await checkTrust();
-    if (!info) return false;
-
-    if (info.status !== "trusted" && info.status !== "no_dependencies") {
-      // Untrusted - show dialog, let user approve before any installation
-      pendingKernelStartRef.current = true;
-      setBlockedTrustAction(blockedAction);
-      setTrustDialogOpen(true);
-      return false;
-    }
-
-    // Trusted - proceed with sync/restart
-    return performTrustedSyncDeps();
-  }, [
-    sessionReady,
-    captureSyncTrustAction,
-    checkTrust,
-    envProgress,
-    flushSync,
-    performTrustedSyncDeps,
-    setBlockedTrustAction,
-  ]);
-
-  // Restart and run all cells
-  const restartAndRunAll = useCallback(async () => {
-    // Same fail-closed reasoning as handleRestartKernel: don't shut
-    // down before first RuntimeStateSync.
-    if (!sessionReady) {
-      logger.debug("[App] restartAndRunAll: session not ready, skipping");
-      return;
-    }
-    if (runAllInFlightRef.current) {
-      logger.debug("[App] restartAndRunAll: already in flight, skipping");
-      return;
-    }
-    runAllInFlightRef.current = true;
-    try {
-      // Flush pending source sync so daemon has latest code
-      if (!(await flushSync())) {
-        logger.warn("[App] restartAndRunAll: source sync failed, skipping");
-        return;
-      }
-
-      // Shutdown existing kernel
-      await shutdownKernel();
-
-      // Start kernel - returns false if not started (e.g., trust dialog)
-      const kernelStarted = await tryStartKernel(captureRunAllTrustAction());
-      if (!kernelStarted) {
-        logger.debug("[App] restartAndRunAll: kernel not started, skipping");
-        return;
-      }
-
-      // Daemon reads cell sources from Automerge doc and queues them
-      const response = await daemonRunAllCells();
-      if (response.result === "error") {
-        logger.error("[App] restartAndRunAll: daemon error", response.error);
-      } else if (response.result === "no_kernel") {
-        logger.warn("[App] restartAndRunAll: no kernel available");
-      }
-    } finally {
-      runAllInFlightRef.current = false;
-    }
-  }, [
-    sessionReady,
-    flushSync,
-    shutdownKernel,
+  const {
+    envBuildCreating,
+    handleEnvBuildCreate,
+    handleExecuteCell,
+    handleRestartAndRunAll,
+    handleRestartKernel,
+    handleRunAllCells,
+    handleStartKernel,
+    handleStartKernelWithPyproject,
+    handleSyncDeps,
+    handleTrustApprove,
+    handleTrustApproveOnly,
+    handleTrustDecline,
+    handleTrustDialogOpenChange,
+    hasPendingTrustAction,
+    justSynced,
+    openTrustDialogForKernelStart,
+    setTrustActionNotice,
+    trustActionNotice,
+    trustApprovalHandoffPending,
+    trustApproveLabel,
+    trustApproveOnlyLabel,
+    trustDialogDescription,
+    trustDialogOpen,
     tryStartKernel,
-    captureRunAllTrustAction,
-    daemonRunAllCells,
-  ]);
-
-  const runTrustApprovedAction = useCallback(
-    async (action: PendingTrustAction | null) => {
-      if (!action) return;
-
-      if (action.kind === "execute_cell") {
-        const response = await executeCellGuarded(action.cellId, action.provenance);
-        if (response.result === "guard_rejected") {
-          setTrustApprovalHandoffPending(false);
-          setTrustActionNotice(response.reason);
-        } else if (response.result === "error") {
-          logger.error("[App] guarded execute after trust approval failed:", response.error);
-          setTrustApprovalHandoffPending(false);
-          setTrustActionNotice(response.error);
-        } else if (response.result === "no_kernel") {
-          setTrustApprovalHandoffPending(false);
-          setTrustActionNotice("Kernel was not ready. Run the cell again when startup finishes.");
-        }
-        return;
-      }
-
-      if (action.kind === "sync_deps") {
-        await performTrustedSyncDeps(action.provenance);
-        return;
-      }
-
-      const response = await runAllCellsGuarded(action.provenance);
-      if (response.result === "guard_rejected") {
-        setTrustApprovalHandoffPending(false);
-        setTrustActionNotice(response.reason);
-      } else if (response.result === "error") {
-        logger.error("[App] guarded Run All after trust approval failed:", response.error);
-        setTrustApprovalHandoffPending(false);
-        setTrustActionNotice(response.error);
-      } else if (response.result === "no_kernel") {
-        setTrustApprovalHandoffPending(false);
-        setTrustActionNotice("Kernel was not ready. Run all cells again when startup finishes.");
-      }
-    },
-    [executeCellGuarded, performTrustedSyncDeps, runAllCellsGuarded],
-  );
-
-  const handleTrustApprovedLaunch = useCallback(
-    async (action: PendingTrustAction | null) => {
-      if (!sessionReady) {
-        logger.debug("[App] handleTrustApprovedLaunch: session not ready, skipping");
-        return;
-      }
-      try {
-        const response = await launchKernel("auto", "auto");
-        if (response.result === "error") {
-          logger.error("[App] kernel launch after trust approval failed:", response.error);
-          setTrustApprovalHandoffPending(false);
-          if (!isLaunchErrorHandledByRuntimeBanner(response.error)) {
-            setTrustActionNotice(response.error);
-          }
-          return;
-        }
-        if (response.result === "guard_rejected") {
-          setTrustApprovalHandoffPending(false);
-          setTrustActionNotice(response.reason);
-          return;
-        }
-        await runTrustApprovedAction(action);
-      } catch (e) {
-        logger.error("[App] kernel launch after trust approval failed:", e);
-        setTrustApprovalHandoffPending(false);
-        setTrustActionNotice(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [sessionReady, launchKernel, runTrustApprovedAction, setTrustActionNotice],
-  );
-
-  // Handle trust approval from dialog
-  const handleTrustApprove = useCallback(async () => {
-    const action = pendingTrustActionRef.current;
-    const success = await approveTrust(
-      action ? { observedHeads: action.provenance.observed_heads } : undefined,
-    );
-    if (success && pendingKernelStartRef.current) {
-      pendingKernelStartRef.current = false;
-      setTrustApprovalHandoffPending(true);
-      setBlockedTrustAction(null);
-      if (action?.kind === "sync_deps") {
-        void runTrustApprovedAction(action);
-      } else {
-        void handleTrustApprovedLaunch(action);
-      }
-    }
-    return success;
-  }, [approveTrust, handleTrustApprovedLaunch, runTrustApprovedAction, setBlockedTrustAction]);
-
-  const handleTrustApproveOnly = useCallback(async () => {
-    const action = pendingTrustActionRef.current;
-    const success = await approveTrust(
-      action ? { observedHeads: action.provenance.observed_heads } : undefined,
-    );
-    if (success && pendingKernelStartRef.current) {
-      pendingKernelStartRef.current = false;
-      setTrustApprovalHandoffPending(true);
-      setBlockedTrustAction(null);
-      if (action?.kind !== "sync_deps") {
-        void handleTrustApprovedLaunch(null);
-      }
-    }
-    return success;
-  }, [approveTrust, handleTrustApprovedLaunch, setBlockedTrustAction]);
-
-  // Handle trust decline from dialog
-  const handleTrustDecline = useCallback(() => {
-    pendingKernelStartRef.current = false;
-    setTrustApprovalHandoffPending(false);
-    setBlockedTrustAction(null);
-    // User declined - don't start kernel, just close dialog
-  }, [setBlockedTrustAction]);
-
-  const handleTrustDialogOpenChange = useCallback(
-    (open: boolean) => {
-      setTrustDialogOpen(open);
-      if (!open) {
-        pendingKernelStartRef.current = false;
-        setBlockedTrustAction(null);
-      }
-    },
-    [setBlockedTrustAction],
-  );
+  } = useNotebookActionPolicy({
+    canExecute: shellCapabilities.canExecute,
+    sessionReady,
+    kernelStatus,
+    envSource,
+    envSyncState,
+    getObservedHeads,
+    resetEnvProgress: envProgress.reset,
+    flushSync,
+    checkTrust,
+    approveTrust,
+    launchKernel,
+    executeCell,
+    executeCellGuarded,
+    shutdownKernel,
+    syncEnvironment,
+    approveProjectEnvironment,
+    runAllCells: daemonRunAllCells,
+    runAllCellsGuarded,
+    getProjectEnvironmentFilePath,
+    showEnvBuildDialog,
+  });
 
   const handleEnvBuildDialogOpenChange = useCallback(
     (open: boolean) => {
@@ -1397,124 +1034,12 @@ function AppContent() {
     [errorDetails],
   );
 
-  const handleEnvBuildCreate = useCallback(async () => {
-    setDismissedEnvBuildDetails(null);
-    setEnvBuildCreating(true);
-    try {
-      const projectFilePath =
-        runtimeState.project_context.state === "Detected" &&
-        runtimeState.project_context.project_file.kind === "EnvironmentYml"
-          ? runtimeState.project_context.project_file.absolute_path
-          : undefined;
-      const approval = await approveProjectEnvironment(projectFilePath);
-      if (approval.result === "error") {
-        logger.error("[App] approveProjectEnvironment failed", approval.error);
-        setEnvBuildDialogOpen(true);
-        return;
-      }
-      const started = await tryStartKernel();
-      if (!started) {
-        setEnvBuildDialogOpen(true);
-      }
-    } finally {
-      setEnvBuildCreating(false);
-    }
-  }, [approveProjectEnvironment, runtimeState.project_context, tryStartKernel]);
-
-  // Start kernel explicitly with pyproject.toml (user action from DependencyHeader)
-  const handleStartKernelWithPyproject = useCallback(async () => {
-    if (!shellCapabilities.canExecute) {
-      logger.debug(
-        "[App] handleStartKernelWithPyproject: execute capability unavailable, skipping",
-      );
-      return;
-    }
-    if (!sessionReady) {
-      logger.debug("[App] handleStartKernelWithPyproject: session not ready, skipping");
-      return;
-    }
-    const response = await launchKernel("python", "uv:pyproject");
-    if (response.result === "error") {
-      logger.error("[App] handleStartKernelWithPyproject: daemon error", response.error);
-    } else if (response.result === "guard_rejected") {
-      setTrustActionNotice(response.reason);
-    }
-  }, [sessionReady, shellCapabilities.canExecute, launchKernel, setTrustActionNotice]);
-
-  const handleExecuteCell = useCallback(
-    async (cellId: string) => {
-      if (!shellCapabilities.canExecute) {
-        logger.debug("[App] handleExecuteCell: execute capability unavailable, skipping");
-        return;
-      }
-      // Fail-closed until the daemon has confirmed first RuntimeStateSync.
-      // If a runtime agent is already alive from a prior session,
-      // `execute_cell` would otherwise queue into RuntimeStateDoc before
-      // we've verified trust (see crates/runtimed/src/requests/execute_cell.rs).
-      if (!sessionReady) {
-        logger.debug("[App] handleExecuteCell: session not ready, skipping");
-        return;
-      }
-
-      // Resolve cell up front before awaiting sync operations.
-      const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
-      if (!cell || cell.cell_type !== "code") return;
-
-      // Dedup guard: skip if this cell already has an execute in flight.
-      if (executingCellsRef.current.has(cellId)) {
-        logger.debug("[App] handleExecuteCell: already in flight for", cellId);
-        return;
-      }
-      executingCellsRef.current.add(cellId);
-
-      try {
-        // Starting a fresh execution updates the cell's execution_id pointer,
-        // and output rendering follows that pointer.
-
-        // Start kernel via daemon if not running or awaiting trust, then queue cell.
-        if (
-          kernelStatus === KERNEL_STATUS.NOT_STARTED ||
-          kernelStatus === KERNEL_STATUS.AWAITING_TRUST
-        ) {
-          const started = await tryStartKernel(captureExecuteTrustAction(cellId));
-          // Only block execution when trust approval is pending.
-          // For startup races (e.g. daemon already auto-starting), still try execute.
-          if (!started && pendingKernelStartRef.current) return;
-        }
-        const response = await executeCell(cellId);
-        if (response.result === "error") {
-          logger.error("[App] handleExecuteCell: daemon error", response.error);
-        } else if (response.result === "no_kernel") {
-          // Kernel died — try to restart and retry once.
-          logger.warn("[App] handleExecuteCell: no kernel, attempting restart");
-          const restarted = await tryStartKernel();
-          if (restarted) {
-            const retry = await executeCell(cellId);
-            if (retry.result === "error") {
-              logger.error("[App] handleExecuteCell: daemon error after restart", retry.error);
-            } else if (retry.result === "no_kernel") {
-              logger.error("[App] handleExecuteCell: still no kernel after restart");
-            }
-          }
-        }
-      } finally {
-        // Brief guard to absorb accidental double-taps. The daemon
-        // queues correctly either way, so this only needs to catch
-        // the sub-150ms "same keypress fired twice" case.
-        setTimeout(() => {
-          executingCellsRef.current.delete(cellId);
-        }, 150);
-      }
-    },
-    [
-      sessionReady,
-      shellCapabilities.canExecute,
+  const { kernelStatus: displayKernelStatus, statusKey: displayStatusKey } =
+    getTrustApprovalHandoffDisplayStatus({
+      pending: trustApprovalHandoffPending,
       kernelStatus,
-      tryStartKernel,
-      captureExecuteTrustAction,
-      executeCell,
-    ],
-  );
+      statusKey,
+    });
 
   const handleAddCell = useCallback(
     (type: "code" | "markdown" | "raw", afterCellId?: string | null) => {
@@ -1526,100 +1051,6 @@ function AppContent() {
     },
     [addCell, shellCapabilities.canEditStructure],
   );
-
-  // Wrapper for toolbar's start kernel - uses trust check before starting
-  const handleStartKernel = useCallback(
-    async (_name: string) => {
-      await tryStartKernel();
-    },
-    [tryStartKernel],
-  );
-
-  // Restart kernel (shutdown then start)
-  const handleRestartKernel = useCallback(async () => {
-    if (!shellCapabilities.canExecute) {
-      logger.debug("[App] handleRestartKernel: execute capability unavailable, skipping");
-      return;
-    }
-    // Fail-closed until first RuntimeStateSync. Shutdown writes
-    // RuntimeLifecycle::Shutdown via the runtime-agent request path, so
-    // firing it against a still-syncing session would mutate kernel
-    // state before we've seen the authoritative snapshot — and the
-    // follow-up tryStartKernel would then no-op, leaving the kernel
-    // stopped.
-    if (!sessionReady) {
-      logger.debug("[App] handleRestartKernel: session not ready, skipping");
-      return;
-    }
-    await shutdownKernel();
-    await tryStartKernel();
-  }, [sessionReady, shellCapabilities.canExecute, shutdownKernel, tryStartKernel]);
-
-  const handleRunAllCells = useCallback(async () => {
-    if (!shellCapabilities.canExecute) {
-      logger.debug("[App] handleRunAllCells: execute capability unavailable, skipping");
-      return;
-    }
-    // Fail-closed until first RuntimeStateSync. Same reasoning as
-    // handleExecuteCell: if a runtime agent is already alive, the daemon
-    // would queue into RuntimeStateDoc before we've verified trust.
-    if (!sessionReady) {
-      logger.debug("[App] handleRunAllCells: session not ready, skipping");
-      return;
-    }
-
-    if (runAllInFlightRef.current) {
-      logger.debug("[App] handleRunAllCells: already in flight, skipping");
-      return;
-    }
-    runAllInFlightRef.current = true;
-    try {
-      // Start kernel via daemon if not running or awaiting trust
-      if (
-        kernelStatus === KERNEL_STATUS.NOT_STARTED ||
-        kernelStatus === KERNEL_STATUS.AWAITING_TRUST ||
-        kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD
-      ) {
-        if (kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD) {
-          setDismissedEnvBuildDetails(null);
-          setEnvBuildDialogOpen(true);
-          return;
-        }
-        const started = await tryStartKernel(captureRunAllTrustAction());
-        if (!started) {
-          logger.debug("[App] handleRunAllCells: kernel not started, skipping");
-          return;
-        }
-      }
-
-      // Daemon reads cell sources from Automerge doc and queues them
-      const response = await daemonRunAllCells();
-      if (response.result === "error") {
-        logger.error("[App] handleRunAllCells: daemon error", response.error);
-      } else if (response.result === "no_kernel") {
-        logger.warn("[App] handleRunAllCells: no kernel available");
-      }
-    } finally {
-      runAllInFlightRef.current = false;
-    }
-  }, [
-    sessionReady,
-    shellCapabilities.canExecute,
-    kernelStatus,
-    tryStartKernel,
-    captureRunAllTrustAction,
-    daemonRunAllCells,
-  ]);
-
-  const handleRestartAndRunAll = useCallback(async () => {
-    if (!shellCapabilities.canExecute) {
-      logger.debug("[App] handleRestartAndRunAll: execute capability unavailable, skipping");
-      return;
-    }
-    // The daemon clears visible outputs by moving cells to fresh execution
-    // pointers before queuing, then ensureKernelStarted restarts the kernel.
-    await restartAndRunAll();
-  }, [restartAndRunAll, shellCapabilities.canExecute]);
 
   // Cmd+S keyboard shortcut. The native menu item is routed through
   // host.commands.run("notebook.save") by the Tauri menu bridge.
@@ -1888,20 +1319,6 @@ function AppContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const trustApproveLabel =
-    pendingTrustAction?.kind === "execute_cell"
-      ? "Trust and Run Cell"
-      : pendingTrustAction?.kind === "run_all"
-        ? "Trust and Run All"
-        : pendingTrustAction?.kind === "sync_deps"
-          ? "Trust and Sync"
-          : undefined;
-  const trustApproveOnlyLabel =
-    pendingTrustAction?.kind === "sync_deps" ? "Trust Notebook" : "Trust & Start";
-  const trustDialogDescription = pendingTrustAction
-    ? "This notebook wants to install packages. Approve them before running code."
-    : undefined;
-
   return (
     <PresenceProvider peerId={peerIdRef.current} peerLabel={peerLabel} actorLabel={localActor}>
       <div className="flex h-full flex-col bg-background overflow-hidden">
@@ -1945,13 +1362,7 @@ function AppContent() {
           !trustApprovalHandoffPending &&
           (kernelStatus === KERNEL_STATUS.NOT_STARTED ||
             kernelStatus === KERNEL_STATUS.AWAITING_TRUST) && (
-            <UntrustedBanner
-              onReviewClick={() => {
-                pendingKernelStartRef.current = true;
-                setBlockedTrustAction(null);
-                setTrustDialogOpen(true);
-              }}
-            />
+            <UntrustedBanner onReviewClick={openTrustDialogForKernelStart} />
           )}
         {trustActionNotice && (
           <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
@@ -2028,7 +1439,7 @@ function AppContent() {
           trustInfo={trustInfo}
           typosquatWarnings={typosquatWarnings}
           onApprove={handleTrustApprove}
-          onApproveOnly={pendingTrustAction ? handleTrustApproveOnly : undefined}
+          onApproveOnly={hasPendingTrustAction ? handleTrustApproveOnly : undefined}
           onDecline={handleTrustDecline}
           loading={trustLoading}
           daemonMode={true}
