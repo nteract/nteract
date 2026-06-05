@@ -140,6 +140,47 @@ test.describe("markdown parity", () => {
       .toContain("  - [ ] child task");
   });
 
+  test("keeps projected markdown view keyboard focus compatible with cell navigation", async ({
+    page,
+  }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
+    const firstCellId = await mcp.createCell(
+      "# Keyboard focus one\n\nFirst rendered cell.",
+      "markdown",
+    );
+    const secondCellId = await mcp.createCell(
+      "# Keyboard focus two\n\nSecond rendered cell.",
+      "markdown",
+    );
+    await waitForCellCount(page, 3);
+
+    const markdownCells = page.locator('[data-cell-type="markdown"]');
+    const firstMarkdown = markdownCells.filter({ hasText: "Keyboard focus one" });
+    const secondMarkdown = markdownCells.filter({ hasText: "Keyboard focus two" });
+    await renderedMarkdownSurface(firstMarkdown, "Keyboard focus one");
+    await renderedMarkdownSurface(secondMarkdown, "Keyboard focus two");
+
+    const firstPreview = firstMarkdown.getByLabel("Markdown cell content");
+    await firstPreview.focus();
+    await expect.poll(() => activeCellId(page)).toBe(firstCellId);
+
+    await page.keyboard.press("Enter");
+    const firstEditor = firstMarkdown.locator('.cm-content[contenteditable="true"]');
+    await expect(firstEditor).toBeVisible({ timeout: 10_000 });
+
+    await firstEditor.press("Control+Enter");
+    await expect(firstEditor).toBeHidden({ timeout: 10_000 });
+
+    await firstPreview.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(() => activeCellId(page)).toBe(secondCellId);
+    await expect(secondMarkdown.getByLabel("Markdown cell content")).toBeFocused();
+  });
+
   test("renders selectable markdown outputs without changing output routing semantics", async ({
     page,
   }) => {
@@ -331,6 +372,15 @@ async function clickProjectedTaskCheckbox(input: Locator): Promise<void> {
       '[data-slot="projected-markdown-task-checkbox"]',
     );
     checkboxLabel?.click();
+  });
+}
+
+async function activeCellId(page: Page): Promise<string | null> {
+  return await page.evaluate(() => {
+    const activeElement = document.activeElement;
+    return (
+      activeElement?.closest('[data-slot="cell-container"]')?.getAttribute("data-cell-id") ?? null
+    );
   });
 }
 
