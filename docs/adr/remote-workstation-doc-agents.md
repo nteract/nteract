@@ -555,6 +555,51 @@ The smallest valuable PR should avoid kernel execution:
 That slice gives the product a real "workstation is online" signal without
 prematurely deciding the hosted execution dispatch protocol.
 
+## Implementation status (2026-06-05): outbound WS sync client
+
+Step 7 (the outbound `runtime_peer` sync client) has a working first cut:
+`crates/runt-cloud-peer`, a standalone CLI that dials `wss://<host>/n/<id>/sync`,
+authenticates on the upgrade, and runs Automerge sync for both the NotebookDoc
+and the RuntimeStateDoc over the typed-frame v4 stream, reusing `notebook-doc`
+and `runtime-doc` directly. It is the role the Outerbounds workstation will
+eventually play; for now it runs locally to prove the path against live preview.
+
+Verified against the deployed preview: the client authenticates with a staging
+Anaconda OIDC bearer (`Authorization: Bearer`, no subprotocol), reserves a room
+via `POST /api/n`, attaches as `owner`, and drives a NotebookDoc edit (adds a
+code cell) that the room accepts and converges on. The cell renders in the
+hosted viewer.
+
+Load-bearing findings:
+
+- **Change actor must match the authenticated principal.** The room host
+  (`validate_room_notebook_change_actors`, `crates/runtimed-wasm/src/lib.rs`)
+  rejects any change whose actor principal differs from the connection's
+  authenticated principal. Author the doc as `<principal>/<operator>`, taking
+  `<principal>` from the room's `cloud_room_ready` frame. A mismatched actor is
+  silently dropped: the change never lands and sync never converges (the room
+  keeps re-advertising that it lacks the change). Use a unique operator per run,
+  or two doc instances reusing one actor collide at `(actor, seq 1)` (automerge
+  `DuplicateSeqNumber`).
+- **Header-bearer auth, not subprotocol.** Non-browser peers send
+  `Authorization: Bearer` + `X-Scope`; offering a `Sec-WebSocket-Protocol` the
+  room will not echo trips tungstenite's "server sent no subprotocol".
+- **Bootstrap, do not scaffold.** The client `bootstrap()`s genesis only; the
+  room owns the `cells`/`metadata` maps and we receive them before editing
+  (invariant #2 in `crates/notebook-doc/AGENTS.md`).
+
+Remaining for "run a cell" (the runtime half), not yet built:
+
+- **Hosted execution dispatch.** The room host drops `REQUEST` frames
+  (`receive_peer_frame` returns empty), and no scope can create an execution via
+  sync. Port the daemon's `ExecuteCell` dispatch
+  (`create_execution_with_source_provenance`) into `runtimed-wasm` so a run
+  request becomes a queued execution. Requires a preview redeploy.
+- **Kernel-hosting runtime peer.** Add a mode to `runt-cloud-peer` that attaches
+  as `runtime_peer` (explicit ACL row via `POST /api/n/:id/acl`), watches
+  RuntimeStateDoc for queued executions, runs them in a Jupyter kernel (reusing
+  `runtime_agent` machinery), and streams `running -> outputs -> done` back.
+
 ## Open questions
 
 1. Is a workstation target personal to the API-key principal, shareable within a
