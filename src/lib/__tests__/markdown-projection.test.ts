@@ -8,6 +8,13 @@ import {
   projectMarkdownPlan,
 } from "../markdown-projection";
 
+function readMarkdownFixture(name: string): string {
+  return readFileSync(
+    join(process.cwd(), "src/lib/__tests__/fixtures", name),
+    "utf8",
+  );
+}
+
 describe("markdown projection", () => {
   beforeAll(async () => {
     const wasmBytes = readFileSync(
@@ -78,6 +85,72 @@ describe("markdown projection", () => {
         .filter((run) => run.semantic === "math-source")
         .map((run) => run.renderedText),
     ).toEqual(plan?.blocks.map((block) => block.text));
+  });
+
+  it("projects mixed prose and bare TeX environments into ordered blocks", () => {
+    const source = readMarkdownFixture("mixed-tex-proof.md");
+    const plan = projectMarkdownPlan(source);
+
+    expect(plan?.blocks.map((block) => ({
+      kind: block.kind,
+      text: block.text,
+    }))).toEqual([
+      {
+        kind: "heading",
+        text: "A tidy little proof",
+      },
+      {
+        kind: "paragraph",
+        text: "Suppose sqrt(2) is rational, so \\sqrt{2}=p/q for integers in lowest terms.",
+      },
+      {
+        kind: "math",
+        text: [
+          "\\begin{align}",
+          "\\sqrt{2} &= \\frac{p}{q} \\\\",
+          "2q^2 &= p^2",
+          "\\end{align}",
+        ].join("\n"),
+      },
+      {
+        kind: "paragraph",
+        text: "The equation shows p is even, so write p = 2k.",
+      },
+      {
+        kind: "math",
+        text: "\\begin{equation}\nq^2 = 2k^2\n\\end{equation}",
+      },
+      {
+        kind: "paragraph",
+        text: "Now q is even too, contradicting that p/q was in lowest terms.",
+      },
+      {
+        kind: "list",
+        text: "Plain prose stays paragraph text.Bare TeX environments become math blocks.",
+      },
+    ]);
+    expect(
+      plan?.runs
+        .filter((run) => run.semantic === "math-source")
+        .map((run) => run.renderedText),
+    ).toEqual([
+      "\\sqrt{2}=p/q",
+      [
+        "\\begin{align}",
+        "\\sqrt{2} &= \\frac{p}{q} \\\\",
+        "2q^2 &= p^2",
+        "\\end{align}",
+      ].join("\n"),
+      "\\begin{equation}\nq^2 = 2k^2\n\\end{equation}",
+    ]);
+    expect(
+      plan?.runs
+        .filter((run) => run.semantic === "list-item")
+        .map((run) => run.renderedText),
+    ).toEqual([
+      "Plain prose stays paragraph text.",
+      "Bare TeX environments become math blocks.",
+    ]);
   });
 
   it("keeps projected raw HTML markup out of the host DOM without forcing iframe fallback", () => {
