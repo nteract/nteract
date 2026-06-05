@@ -7,6 +7,7 @@
     "renderer-plugins": "cargo xtask renderer-plugins",
     "build:viewer": "vp build -c vite.config.ts && node scripts/copy-viewer-assets.mjs",
     "build": "pnpm run wasm && pnpm run renderer-plugins && pnpm run build:viewer",
+    "pretypecheck": "cargo xtask wasm-ensure",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run wasm && node --import tsx --test test/*.test.ts test/*.test.mjs",
     "test:renderer-parity": "playwright test -c playwright.render-parity.config.ts",
