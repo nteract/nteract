@@ -1,8 +1,5 @@
 import type { SessionControlMessage } from "../src/protocol";
-import {
-  notebookActorIdentityFromProjection,
-  notebookActorProjectionFromLabel,
-} from "@/components/notebook/actor-projection";
+import { notebookActorIdentityFromProjection, notebookActorProjectionFromLabel } from "runtimed";
 
 export type CloudViewerPresenceConnection = "connecting" | "connected" | "disconnected";
 

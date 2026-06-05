@@ -176,14 +176,35 @@ export {
   type ProjectNotebookRoomEditAccessOptions,
 } from "./notebook-edit-access";
 
+// Notebook actor projection
+export {
+  friendlyNotebookActorLabel,
+  friendlyNotebookOperatorLabel,
+  notebookActorIdentityFromAccess,
+  notebookActorIdentityFromProjection,
+  notebookActorIdentityFromRuntime,
+  notebookActorProjectionFromAccess,
+  notebookActorProjectionFromLabel,
+  notebookActorProjectionFromRuntime,
+  notebookActorProjectionWithPrincipalImage,
+  parseNotebookActorLabel,
+  parseNotebookOperatorLabel,
+  splitNotebookActorPrincipalOperator,
+  type NotebookActorIdentity,
+  type NotebookActorKind,
+  type NotebookActorOperator,
+  type NotebookActorPrincipal,
+  type NotebookActorProjection,
+  type NotebookActorProjectionFromLabelOptions,
+  type NotebookActorSourceProvider,
+  type ParsedNotebookActorKind,
+  type ParsedNotebookActorLabel,
+} from "./notebook-actor-projection";
+
 // Notebook shell capability projection
 export {
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
-  type NotebookActorOperator,
-  type NotebookActorPrincipal,
-  type NotebookActorProjection,
-  type NotebookActorSourceProvider,
   type NotebookShellAccessCapabilities,
   type NotebookShellAccessLevel,
   type NotebookShellAccessSource,

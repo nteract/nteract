@@ -1,6 +1,8 @@
 export {
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
+  type NotebookActorIdentity,
+  type NotebookActorKind,
   type NotebookActorOperator,
   type NotebookActorPrincipal,
   type NotebookActorProjection,
@@ -17,23 +19,3 @@ export {
   type NotebookShellSharingPolicy,
   type ProjectNotebookShellCapabilitiesOptions,
 } from "runtimed";
-
-export type NotebookActorKind =
-  | "agent"
-  | "human"
-  | "local"
-  | "public"
-  | "runtime"
-  | "system"
-  | "unknown";
-
-export interface NotebookActorIdentity {
-  id: string;
-  label: string;
-  detail: string | null;
-  kind: NotebookActorKind;
-  imageUrl?: string | null;
-  status?: "active" | "attention" | "idle" | "offline";
-  principalLabel?: string | null;
-  operatorLabel?: string | null;
-}

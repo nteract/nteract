@@ -1,17 +1,13 @@
 import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
-} from "@/components/notebook/actor-projection";
-import type {
-  NotebookShellAccessLevel,
-  NotebookShellAccessSource,
-  NotebookShellCapabilities,
-} from "@/components/notebook/capabilities";
-import {
   notebookRoomAccessLevelCanEditDocument,
   notebookRoomAccessLevelFromConnectionScope,
   projectNotebookShellCapabilities,
   projectNotebookRoomEditAccess,
+  type NotebookShellAccessLevel,
+  type NotebookShellAccessSource,
+  type NotebookShellCapabilities,
 } from "runtimed";
 
 export interface DesktopNotebookShellCapabilityInput {

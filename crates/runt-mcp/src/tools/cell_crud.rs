@@ -163,6 +163,8 @@ pub async fn create_cell(
         return super::build_execution_result(&result, &handle, server).await;
     }
 
+    confirm_document_sync(&handle, "create_cell").await?;
+
     tool_success(&format!("Created cell: {cell_id}"))
 }
 
@@ -219,6 +221,8 @@ pub async fn set_cell(
             .map_err(|e| McpError::internal_error(format!("Failed to set cell type: {e}"), None))?;
     }
 
+    confirm_document_sync(&handle, "set_cell").await?;
+
     let current_type = handle.get_cell_type(cell_id).unwrap_or_default();
     if and_run && current_type == "code" {
         let result = execution::execute_and_wait(
@@ -255,6 +259,8 @@ pub async fn delete_cell(
         .delete_cell(cell_id)
         .map_err(|e| McpError::internal_error(format!("Failed to delete cell: {e}"), None))?;
 
+    confirm_document_sync(&handle, "delete_cell").await?;
+
     let result = serde_json::json!({ "cell_id": cell_id, "deleted": true });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
@@ -283,6 +289,8 @@ pub async fn move_cell(
 
     let peer_label = server.get_peer_label().await;
     crate::presence::emit_focus(&handle, cell_id, &peer_label).await;
+
+    confirm_document_sync(&handle, "move_cell").await?;
 
     let result = serde_json::json!({
         "cell_id": cell_id,
@@ -336,8 +344,22 @@ pub async fn clear_outputs(
         }
     };
 
+    if cleared > 0 {
+        confirm_document_sync(&handle, "clear_outputs").await?;
+    }
+
     let result = serde_json::json!({ "cleared": cleared });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
+async fn confirm_document_sync(
+    handle: &notebook_sync::handle::DocHandle,
+    action: &str,
+) -> Result<(), McpError> {
+    handle
+        .confirm_sync()
+        .await
+        .map_err(|e| McpError::internal_error(format!("Failed to sync after {action}: {e}"), None))
 }
 
 fn explicit_after_cell_id_arg(

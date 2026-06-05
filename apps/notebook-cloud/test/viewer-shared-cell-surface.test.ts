@@ -204,7 +204,7 @@ test("cloud identity chrome renders through the shared actor projection surface"
 
   assert.match(sourceText, /notebookActorProjectionFromAccess/);
   assert.match(sourceText, /notebookActorProjectionFromRuntime/);
-  assert.match(sourceText, /const accessActor = withCloudIdentityImage/);
+  assert.match(sourceText, /const accessActor = notebookActorProjectionWithPrincipalImage/);
   assert.match(sourceText, /actor: accessActor/);
   assert.match(sourceText, /actor: runtimeActor/);
 });
