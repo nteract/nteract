@@ -86,6 +86,40 @@ pub enum CloudAuth {
     Dev { token: String, user: String },
 }
 
+impl CloudAuth {
+    /// Return a copy of this auth with its credential replaced by `token`,
+    /// preserving the variant (and the `Dev` user label). Used by the
+    /// token-refresher path so a reconnect re-auths with a freshly-minted token
+    /// without changing the auth *kind* the room expects.
+    fn with_token(&self, token: String) -> Self {
+        match self {
+            CloudAuth::OidcBearer { .. } => CloudAuth::OidcBearer { token },
+            CloudAuth::AnacondaApiKey { .. } => CloudAuth::AnacondaApiKey { token },
+            CloudAuth::Dev { user, .. } => CloudAuth::Dev {
+                token,
+                user: user.clone(),
+            },
+        }
+    }
+}
+
+/// A closure the transport calls *before each connect* to obtain a fresh
+/// credential, replacing the static token in [`CloudWsConfig::auth`].
+///
+/// The cloud auth token is static for a single short session today, but a
+/// long-lived runtime peer outlives its OIDC token's expiry: every reconnect
+/// (idle eviction, blip) must re-auth, and a reconnect that re-presents an
+/// expired token is rejected at the upgrade, so `reconnect_with_backoff` would
+/// burn all its attempts and give up. A refresher lets the agent mint a fresh
+/// token per connect. `None` (the default) keeps the static-token behavior. The
+/// closure is `async` (refresh is typically a network round-trip) and its error
+/// surfaces as a connect error so the backoff loop retries.
+pub type TokenRefresher = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Connection parameters for a cloud room. Immutable for the life of the
 /// transport, so [`CloudWsFrameTransport::connect`] can be called repeatedly on
 /// reconnect.
@@ -333,16 +367,36 @@ pub struct CloudWsFrameTransport {
     /// Principal from the most recent `cloud_room_ready`. Set on first connect;
     /// reconnects to the same room re-observe the same principal.
     principal: Arc<std::sync::OnceLock<String>>,
+    /// Optional per-connect token refresher. `None` keeps the static token from
+    /// `config.auth`. When set, `connect` calls it before each dial and re-auths
+    /// with the returned token so a long-lived peer survives token expiry across
+    /// reconnects.
+    refresher: Option<TokenRefresher>,
 }
 
 impl CloudWsFrameTransport {
-    /// Build a transport for `config`.
+    /// Build a transport for `config` with the static token in `config.auth`.
     pub fn new(config: CloudWsConfig) -> Self {
         let ws_url = build_ws_url(&config.cloud_url, &config.notebook_id);
         Self {
             config,
             ws_url,
             principal: Arc::new(std::sync::OnceLock::new()),
+            refresher: None,
+        }
+    }
+
+    /// Build a transport that mints a fresh credential before every connect via
+    /// `refresher`, replacing the token in `config.auth` (the variant and any
+    /// `Dev` user label are preserved). Use for long-lived runtime peers whose
+    /// OIDC token would otherwise expire mid-session and fail every reconnect.
+    pub fn with_token_refresher(config: CloudWsConfig, refresher: TokenRefresher) -> Self {
+        let ws_url = build_ws_url(&config.cloud_url, &config.notebook_id);
+        Self {
+            config,
+            ws_url,
+            principal: Arc::new(std::sync::OnceLock::new()),
+            refresher: Some(refresher),
         }
     }
 
@@ -358,10 +412,26 @@ impl CloudWsFrameTransport {
         self.principal.get().map(String::as_str)
     }
 
-    /// Apply the auth headers for `config.auth` to the upgrade request.
+    /// Resolve the credential to present on the next connect: the refresher's
+    /// fresh token (re-wrapped in `config.auth`'s variant) if one is configured,
+    /// else the static `config.auth` unchanged.
+    async fn effective_auth(&self) -> std::io::Result<CloudAuth> {
+        match &self.refresher {
+            Some(refresh) => {
+                let token = refresh().await.map_err(|e| {
+                    std::io::Error::new(e.kind(), format!("token refresh failed: {e}"))
+                })?;
+                Ok(self.config.auth.with_token(token))
+            }
+            None => Ok(self.config.auth.clone()),
+        }
+    }
+
+    /// Apply the auth headers for `auth` to the upgrade request.
     fn apply_auth_headers(
         &self,
         request: &mut tokio_tungstenite::tungstenite::handshake::client::Request,
+        auth: &CloudAuth,
     ) -> anyhow::Result<()> {
         let h = request.headers_mut();
         // No Sec-WebSocket-Protocol: the credential rides Authorization /
@@ -370,7 +440,7 @@ impl CloudWsFrameTransport {
             HeaderName::from_static("x-scope"),
             HeaderValue::from_str(&self.config.scope)?,
         );
-        match &self.config.auth {
+        match auth {
             CloudAuth::Dev { token, user } => {
                 h.insert(
                     HeaderName::from_static("x-notebook-cloud-dev-token"),
@@ -405,12 +475,13 @@ impl CloudWsFrameTransport {
     /// and the room principal. The [`FrameTransport::connect`] impl delegates
     /// here and caches the principal.
     async fn connect_cloud(&self) -> std::io::Result<(CloudWsSource, CloudWsSink, String)> {
+        let auth = self.effective_auth().await?;
         let mut request = self
             .ws_url
             .as_str()
             .into_client_request()
             .map_err(|e| std::io::Error::other(format!("build upgrade request: {e}")))?;
-        self.apply_auth_headers(&mut request)
+        self.apply_auth_headers(&mut request, &auth)
             .map_err(|e| std::io::Error::other(format!("apply auth headers: {e}")))?;
 
         info!(
@@ -682,6 +753,85 @@ mod tests {
             },
         });
         assert!(t.clean_eof_is_recoverable());
+    }
+
+    // -- token-refresher tests --------------------------------------------
+
+    #[test]
+    fn with_token_preserves_variant_and_dev_user() {
+        assert!(matches!(
+            CloudAuth::OidcBearer { token: "old".into() }.with_token("new".into()),
+            CloudAuth::OidcBearer { token } if token == "new"
+        ));
+        assert!(matches!(
+            CloudAuth::AnacondaApiKey { token: "old".into() }.with_token("new".into()),
+            CloudAuth::AnacondaApiKey { token } if token == "new"
+        ));
+        // Dev keeps its user label, swaps only the token.
+        match (CloudAuth::Dev {
+            token: "old".into(),
+            user: "alice".into(),
+        })
+        .with_token("new".into())
+        {
+            CloudAuth::Dev { token, user } => {
+                assert_eq!(token, "new");
+                assert_eq!(user, "alice");
+            }
+            _ => panic!("expected Dev"),
+        }
+    }
+
+    fn test_config() -> CloudWsConfig {
+        CloudWsConfig {
+            cloud_url: "https://preview.runt.run".into(),
+            notebook_id: "abc".into(),
+            scope: "runtime_peer".into(),
+            auth: CloudAuth::OidcBearer {
+                token: "static-tok".into(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_auth_uses_static_token_without_refresher() {
+        let t = CloudWsFrameTransport::new(test_config());
+        match t.effective_auth().await.unwrap() {
+            CloudAuth::OidcBearer { token } => assert_eq!(token, "static-tok"),
+            _ => panic!("expected OidcBearer"),
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_auth_uses_refreshed_token_when_set() {
+        let refresher: TokenRefresher =
+            Arc::new(|| Box::pin(async { Ok("fresh-tok".to_string()) }));
+        let t = CloudWsFrameTransport::with_token_refresher(test_config(), refresher);
+        match t.effective_auth().await.unwrap() {
+            // Variant preserved (still OIDC), token replaced with the fresh one.
+            CloudAuth::OidcBearer { token } => assert_eq!(token, "fresh-tok"),
+            _ => panic!("expected OidcBearer"),
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_auth_surfaces_refresher_error() {
+        let refresher: TokenRefresher = Arc::new(|| {
+            Box::pin(async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "token endpoint said no",
+                ))
+            })
+        });
+        let t = CloudWsFrameTransport::with_token_refresher(test_config(), refresher);
+        let err = t
+            .effective_auth()
+            .await
+            .expect_err("refresher error surfaces");
+        // Kind is preserved so the agent can distinguish auth failures; the
+        // backoff loop treats any connect error as retryable.
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     // -- ready-wait helper tests ------------------------------------------
