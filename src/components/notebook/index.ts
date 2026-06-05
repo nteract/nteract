@@ -15,6 +15,7 @@ export {
   notebookActorProjectionFromRuntime,
 } from "./actor-projection";
 export {
+  projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
   type NotebookActorIdentity,
   type NotebookActorKind,
@@ -27,7 +28,12 @@ export {
   type NotebookShellAccessSource,
   type NotebookShellAuthCapabilities,
   type NotebookShellCapabilities,
+  type NotebookShellControlPolicy,
+  type NotebookShellExecutionPolicy,
+  type NotebookShellPackagePolicy,
   type NotebookShellRuntimeCapabilities,
+  type NotebookShellSharingPolicy,
+  type ProjectNotebookShellCapabilitiesOptions,
 } from "./capabilities";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";

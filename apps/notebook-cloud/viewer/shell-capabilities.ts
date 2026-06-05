@@ -3,7 +3,7 @@ import {
   notebookActorProjectionFromRuntime,
 } from "@/components/notebook/actor-projection";
 import type { NotebookShellCapabilities } from "@/components/notebook/capabilities";
-import type { NotebookEditMode } from "runtimed";
+import { projectNotebookShellCapabilities, type NotebookEditMode } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { projectCloudNotebookEditAccess } from "./edit-access";
 
@@ -76,10 +76,6 @@ export function cloudNotebookShellCapabilities({
     actorLabel: connectionActorLabel,
     identityLabel,
   };
-  // Executing a cell needs both an attached runtime and document write
-  // authority. The room has no kernel provider yet, so runtimeAvailable
-  // defaults false and run controls stay hidden.
-  const canExecute = runtimeAvailable && interaction.hasDocumentEditPermission;
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
     connected: isRuntimePeer,
@@ -88,33 +84,48 @@ export function cloudNotebookShellCapabilities({
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
     identityLabel: isRuntimePeer ? identityLabel : null,
   };
-  const accessActor = withCloudIdentityImage(notebookActorProjectionFromAccess(access, auth), {
-    imageUrl: identityImageUrl,
+  const projection = projectNotebookShellCapabilities({
+    interaction,
+    access,
+    auth,
+    runtime,
+    controls: {
+      canToggleCode: hasCodeCells,
+    },
+    execution: {
+      available: runtimeAvailable,
+      requiresDocumentEditPermission: true,
+    },
+    packages: {
+      canView: true,
+      canManage: false,
+    },
+    sharing: {
+      canManage: Boolean(hostCapabilities?.canManageSharing),
+      requiresAuthenticatedIdentity: true,
+    },
   });
-  const runtimeActor = withCloudIdentityImage(notebookActorProjectionFromRuntime(runtime, auth), {
-    imageUrl: identityImageUrl,
-  });
+  const accessActor = withCloudIdentityImage(
+    notebookActorProjectionFromAccess(projection.access, projection.auth),
+    {
+      imageUrl: identityImageUrl,
+    },
+  );
+  const runtimeActor = withCloudIdentityImage(
+    notebookActorProjectionFromRuntime(projection.runtime, projection.auth),
+    {
+      imageUrl: identityImageUrl,
+    },
+  );
 
   return {
-    canRead: true,
-    canEditMarkdown: interaction.canEditMarkdown,
-    canEditCells: interaction.canEditCells,
-    canEditStructure: interaction.canEditStructure,
-    canRequestEdit: interaction.canRequestEdit,
-    canExecute,
-    canToggleCode: hasCodeCells,
-    canViewPackages: true,
-    canManagePackages: false,
-    canManageSharing:
-      Boolean(hostCapabilities?.canManageSharing) && auth.canUseAuthenticatedIdentity,
-    interaction,
+    ...projection,
     access: {
-      ...access,
+      ...projection.access,
       actor: accessActor,
     },
-    auth,
     runtime: {
-      ...runtime,
+      ...projection.runtime,
       actor: runtimeActor,
     },
   };
