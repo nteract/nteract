@@ -166,21 +166,46 @@ test.describe("markdown parity", () => {
     });
     await expect(renderedMarkdown).not.toContainText("Enter markdown");
   });
+
+  test("reconciles remote markdown source updates while rendered", async ({ page }) => {
+    const { cell: markdownCell, cellId } = await createParityMarkdownCellWithId(
+      page,
+      "# Remote markdown parity\n\nOriginal remote text.",
+    );
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Remote markdown parity");
+
+    await expect(renderedMarkdown).toContainText("Original remote text.", { timeout: 60_000 });
+
+    await mcp!.setCell(cellId, "# Remote markdown parity\n\nUpdated by the MCP peer.");
+
+    await expect
+      .poll(() => getCellSource(markdownCell), { timeout: 30_000 })
+      .toContain("Updated by the MCP peer");
+    await expect(renderedMarkdown).toContainText("Updated by the MCP peer.", { timeout: 60_000 });
+    await expect(renderedMarkdown).not.toContainText("Original remote text.");
+  });
 });
 
 async function createParityMarkdownCell(page: Page, source: string): Promise<Locator> {
+  return (await createParityMarkdownCellWithId(page, source)).cell;
+}
+
+async function createParityMarkdownCellWithId(
+  page: Page,
+  source: string,
+): Promise<{ cell: Locator; cellId: string }> {
   const notebookId = crypto.randomUUID();
   await openNotebookRoom(page, notebookId);
   await waitForKernelStatus(page, "idle", 120_000);
 
   mcp = await McpPeer.start();
   await mcp.connectNotebook(notebookId);
-  await mcp.createCell(source, "markdown");
+  const cellId = await mcp.createCell(source, "markdown");
   await waitForCellCount(page, 2);
 
   const markdownCell = page.locator('[data-cell-type="markdown"]').first();
   await expect(markdownCell).toBeVisible();
-  return markdownCell;
+  return { cell: markdownCell, cellId };
 }
 
 async function createParityCodeCell(page: Page, source: string): Promise<Locator> {
