@@ -1,8 +1,4 @@
-import {
-  getBoundedCacheValue,
-  setBoundedCacheValue,
-  stableCacheKey,
-} from "runtimed/src/projection-cache";
+import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "runtimed";
 
 export type CloudShareScope = "viewer" | "editor" | "runtime_peer" | "owner";
 export type CloudShareInviteScope = "viewer" | "editor";
@@ -114,6 +110,45 @@ const SHARE_ACCESS_ROW_CACHE = new Map<string, CloudShareAccessRow>();
 const SHARE_ACCESS_ROWS_CACHE = new Map<string, CloudShareAccessRow[]>();
 const SHARE_ACCESS_ROW_CACHE_LIMIT = 512;
 const SHARE_ACCESS_ROWS_CACHE_LIMIT = 128;
+const CLOUD_NOTEBOOK_ACL_ROW_FIELDS = {
+  notebook_id: true,
+  subject_kind: true,
+  subject: true,
+  scope: true,
+  created_at: true,
+  updated_at: true,
+  created_by_actor_label: true,
+  display: true,
+} satisfies Record<keyof CloudNotebookAclRow, true>;
+const CLOUD_NOTEBOOK_INVITE_FIELDS = {
+  id: true,
+  notebook_id: true,
+  email: true,
+  provider_hint: true,
+  scope: true,
+  status: true,
+  invited_by_actor_label: true,
+  accepted_by_principal: true,
+  created_at: true,
+  expires_at: true,
+  accepted_at: true,
+  revoked_at: true,
+  revoked_by_actor_label: true,
+  display: true,
+} satisfies Record<keyof CloudNotebookInvite, true>;
+const CLOUD_NOTEBOOK_ACCESS_REQUEST_FIELDS = {
+  id: true,
+  notebook_id: true,
+  requester_principal: true,
+  scope: true,
+  status: true,
+  requested_by_actor_label: true,
+  resolved_by_actor_label: true,
+  created_at: true,
+  updated_at: true,
+  resolved_at: true,
+  display: true,
+} satisfies Record<keyof CloudNotebookAccessRequest, true>;
 
 export function clearCloudShareAccessRowsCachesForTests(): void {
   SHARE_ACCESS_ROW_CACHE.clear();
@@ -449,6 +484,7 @@ function cachedCloudShareAccessRows(
 }
 
 function cloudNotebookAclRowCacheKey(row: CloudNotebookAclRow): string {
+  void CLOUD_NOTEBOOK_ACL_ROW_FIELDS;
   return stableCacheKey([
     row.notebook_id,
     row.subject_kind,
@@ -462,6 +498,7 @@ function cloudNotebookAclRowCacheKey(row: CloudNotebookAclRow): string {
 }
 
 function stableCloudNotebookAclRow(row: CloudNotebookAclRow): CloudNotebookAclRow {
+  void CLOUD_NOTEBOOK_ACL_ROW_FIELDS;
   const display = row.display ? stableCloudShareDisplay(row.display) : undefined;
   return Object.freeze({
     notebook_id: row.notebook_id,
@@ -476,6 +513,7 @@ function stableCloudNotebookAclRow(row: CloudNotebookAclRow): CloudNotebookAclRo
 }
 
 function cloudNotebookInviteCacheKey(invite: CloudNotebookInvite): string {
+  void CLOUD_NOTEBOOK_INVITE_FIELDS;
   return stableCacheKey([
     invite.id,
     invite.notebook_id,
@@ -495,6 +533,7 @@ function cloudNotebookInviteCacheKey(invite: CloudNotebookInvite): string {
 }
 
 function stableCloudNotebookInvite(invite: CloudNotebookInvite): CloudNotebookInvite {
+  void CLOUD_NOTEBOOK_INVITE_FIELDS;
   const display = invite.display ? stableCloudShareDisplay(invite.display) : undefined;
   return Object.freeze({
     id: invite.id,
@@ -515,6 +554,7 @@ function stableCloudNotebookInvite(invite: CloudNotebookInvite): CloudNotebookIn
 }
 
 function cloudNotebookAccessRequestCacheKey(request: CloudNotebookAccessRequest): string {
+  void CLOUD_NOTEBOOK_ACCESS_REQUEST_FIELDS;
   return stableCacheKey([
     request.id,
     request.notebook_id,
@@ -533,6 +573,7 @@ function cloudNotebookAccessRequestCacheKey(request: CloudNotebookAccessRequest)
 function stableCloudNotebookAccessRequest(
   request: CloudNotebookAccessRequest,
 ): CloudNotebookAccessRequest {
+  void CLOUD_NOTEBOOK_ACCESS_REQUEST_FIELDS;
   const display = request.display ? stableCloudShareDisplay(request.display) : undefined;
   return Object.freeze({
     id: request.id,
