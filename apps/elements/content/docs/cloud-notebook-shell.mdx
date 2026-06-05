@@ -1,18 +1,23 @@
 ---
 title: Cloud notebook shell
-description: A fluid cloud notebook chrome mockup for presence, access, sync, mode, and auth.
+description: A fluid cloud notebook chrome mockup for presence, access, sync, workstations, mode, and auth.
 ---
 
 import { CloudNotebookShellExample } from "@/components/cloud-notebook-shell-example";
 
 Cloud notebooks reuse the document shell, rail, cells, and output language from
 desktop. The host adds the cloud concerns: who is here, whether the document is
-connected, who can share, which mode I am in, and which account is active.
+connected, which workstation is attached, who can share, which mode I am in, and
+which account is active.
 
 This mockup keeps those concerns out of runtime state. The app row carries the
 document title plus room, sync, access, mode, and account context; the notebook
 row stays the shared `NotebookCommandToolbar` for cell insertion,
 package/runtime language, and execution controls.
+
+The workstation mock treats JupyterHub and Outerbounds as providers for the same
+nteract workstation object. A workstation registers first as a doc agent, then
+attaches to the room as a `runtime_peer` only when selected for execution.
 
 <CloudNotebookShellExample />
 
@@ -35,6 +40,11 @@ package/runtime language, and execution controls.
   not from `RuntimeStateDoc`.
 - Runtime state should describe language and execution capability only; cloud
   transport should not be folded into the Python badge.
+- Workstation state should be visible in cloud chrome because target selection
+  is room state. Provider-specific discovery can later appear in the shared
+  Content rail without making the rail decide runtime attachment.
+- Current-Python workstations should show Python execution without a managed
+  environment badge or package mutation promise.
 - Presence copy should name the room population only and sit near sharing.
   View/edit state already has its own control, so labels like
   `2 here now, viewing` are redundant.
@@ -68,6 +78,7 @@ package/runtime language, and execution controls.
 | Presence          | `NotebookPresenceStatus` | room participant projection                 |
 | View/edit mode    | `NotebookEditModeButton` | ACL plus selected interaction mode          |
 | Notebook commands | `NotebookCommandToolbar` | runtime, package, and cell action callbacks |
+| Workstation       | cloud slot               | selected target, provider, attach status    |
 | Connection        | cloud slot               | room transport health                       |
 | Sharing           | cloud slot               | invite and ACL actions                      |
 | Account           | identity slot            | signed-in user and auth attention state     |

@@ -23,6 +23,8 @@ layers:
 - `runtime-peer-and-blob-authority-audit.md` clarifies that `runtime_peer` is
   the room role, `RuntimeAgent` is local daemon machinery, and `PutBlob` is not
   runtime topology.
+- `remote-workstation-doc-agents.md` specializes the dial-home workstation/doc
+  agent path for JupyterHub, Outerbounds Workstations, and `preview.runt.run`.
 
 The old notebook-URI direction was useful because it recognized that a notebook
 room needs a stable address and that daemons should not independently mutate the

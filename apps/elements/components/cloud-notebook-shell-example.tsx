@@ -35,6 +35,8 @@ import {
   NotebookPackageSummaryPanel,
   NotebookPresenceStatus,
   notebookActorIdentityFromAccess,
+  type NotebookCommandRuntimeState,
+  type NotebookCommandToolbarStatus,
   type NotebookActorIdentity,
   type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
@@ -75,6 +77,14 @@ const activePeople: NotebookActorIdentity[] = [
 ];
 
 const shellStates = [
+  {
+    title: "Workstation ready",
+    description: "The room has selected a workstation target and the toolbar can run cells.",
+    scenarioId: "cloud-workstation-ready" as const,
+    connection: "live" as const,
+    mode: "edit" as const,
+    people: activePeople,
+  },
   {
     title: "Owner editing",
     description: "Presence and sync stay app-level while the notebook row owns language.",
@@ -159,9 +169,94 @@ const cloudStateRows = [
   },
 ];
 
+type WorkstationTargetState = "ready" | "available" | "attaching" | "disconnected";
+
+interface WorkstationTarget {
+  id: string;
+  name: string;
+  provider: "outerbounds" | "jupyterhub" | "local";
+  detail: string;
+  environment: string;
+  status: WorkstationTargetState;
+  statusLabel: string;
+  selected: boolean;
+  actionLabel: string;
+}
+
+const workstationTargets = [
+  {
+    id: "outerbounds-forecast-gpu",
+    name: "Forecast GPU",
+    provider: "outerbounds",
+    detail: "Outerbounds Workstation",
+    environment: "Current Python",
+    status: "ready",
+    statusLabel: "Ready",
+    selected: true,
+    actionLabel: "Attached",
+  },
+  {
+    id: "hub-lab-kyle",
+    name: "JupyterLab server",
+    provider: "jupyterhub",
+    detail: "JupyterHub workstation",
+    environment: "Python 3 kernelspec",
+    status: "available",
+    statusLabel: "Online",
+    selected: false,
+    actionLabel: "Attach",
+  },
+  {
+    id: "desktop-ssh-lab",
+    name: "SSH lab bridge",
+    provider: "local",
+    detail: "Desktop remote bridge",
+    environment: "Daemon managed",
+    status: "disconnected",
+    statusLabel: "Offline",
+    selected: false,
+    actionLabel: "Reconnect",
+  },
+] satisfies readonly WorkstationTarget[];
+
+const activeWorkstationTarget =
+  workstationTargets.find((target) => target.selected) ?? workstationTargets[0]!;
+
+const workstationFlowRows = [
+  {
+    label: "Register",
+    owner: "Doc agent",
+    state: "heartbeat",
+    detail: "Provider process dials home and reports workstation capabilities.",
+  },
+  {
+    label: "Select",
+    owner: "Room host",
+    state: "target",
+    detail: "The room records the active workstation separately from document access.",
+  },
+  {
+    label: "Attach",
+    owner: "Runtime peer",
+    state: "scoped",
+    detail: "The doc agent opens a room WebSocket with runtime_peer authority.",
+  },
+  {
+    label: "Execute",
+    owner: "Coordinator",
+    state: "accepted work",
+    detail: "The room creates execution intent before the workstation runs code.",
+  },
+] satisfies Array<{
+  label: string;
+  owner: string;
+  state: string;
+  detail: string;
+}>;
+
 export function CloudNotebookShellExample() {
   return (
-    <ElementsNotebookEnvironment scenarioId="cloud-owner" initialRailCollapsed>
+    <ElementsNotebookEnvironment scenarioId="cloud-workstation-ready" initialRailCollapsed>
       <CloudNotebookShellExampleContent />
     </ElementsNotebookEnvironment>
   );
@@ -228,6 +323,8 @@ function CloudNotebookShellExampleContent() {
       </section>
 
       <CloudEntrySurface />
+
+      <CloudWorkstationSurface />
 
       <CloudAuthHandoffSurface />
 
@@ -365,6 +462,7 @@ function CloudAppToolbar({
       utilityControls={
         <>
           <CloudConnectionPill state={connection} compact />
+          <WorkstationTargetPill target={activeWorkstationTarget} compact />
           <CloudPresence people={people} compact />
         </>
       }
@@ -411,9 +509,9 @@ function CloudNotebookToolbar({
       <NotebookCommandToolbar
         capabilities={capabilities}
         runtime="python"
-        environmentManager="uv"
-        environmentOutOfSync={scenario.packageState.syncState.status === "dirty"}
-        runtimeStatus={null}
+        environmentManager={cloudEnvironmentManager(scenario)}
+        environmentOutOfSync={cloudEnvironmentOutOfSync(scenario)}
+        runtimeStatus={cloudRuntimeStatus(scenario)}
         addAfterCellId={firstRunnableCell?.id ?? cellIds[cellIds.length - 1] ?? null}
         onAddCell={noop}
         onStartRuntime={noop}
@@ -425,6 +523,35 @@ function CloudNotebookToolbar({
       />
     </div>
   );
+}
+
+function cloudEnvironmentManager(scenario: ElementsNotebookScenario) {
+  return scenario.id === "cloud-workstation-ready" ? null : "uv";
+}
+
+function cloudEnvironmentOutOfSync(scenario: ElementsNotebookScenario): boolean {
+  return (
+    scenario.id !== "cloud-workstation-ready" && scenario.packageState.syncState.status === "dirty"
+  );
+}
+
+function cloudRuntimeStatus(
+  scenario: ElementsNotebookScenario,
+): NotebookCommandToolbarStatus | null {
+  if (!scenario.capabilities.runtime.connected) {
+    return null;
+  }
+
+  const state: NotebookCommandRuntimeState = scenario.capabilities.canExecute ? "idle" : "unknown";
+  const label =
+    scenario.id === "cloud-workstation-ready" ? "Current Python" : scenario.runtimeLabel;
+
+  return {
+    state,
+    label,
+    ariaLabel: `Runtime: ${label}`,
+    title: scenario.runtimeLabel,
+  };
 }
 
 function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabilities): boolean {
@@ -554,6 +681,33 @@ function CloudConnectionPill({
   );
 }
 
+function WorkstationTargetPill({
+  compact,
+  target,
+}: {
+  compact: boolean;
+  target: WorkstationTarget;
+}) {
+  const tone = workstationTargetTone(target.status);
+  return (
+    <span
+      className={cn(
+        "inline-flex h-7 max-w-[min(18rem,34vw)] items-center gap-1.5 rounded-md px-1.5 text-xs font-medium",
+        tone.className,
+        compact && "max-[560px]:max-w-[8.5rem]",
+      )}
+      title={`${target.name}: ${target.detail}, ${target.environment}, ${target.statusLabel}`}
+      aria-label={`Workstation target: ${target.name}, ${target.statusLabel}`}
+    >
+      <Radio className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="truncate">{target.name}</span>
+      <span className="hidden shrink-0 text-[11px] font-normal opacity-70 md:inline">
+        {target.environment}
+      </span>
+    </span>
+  );
+}
+
 function CloudShareMenu({ compact }: { compact: boolean }) {
   return (
     <button
@@ -565,6 +719,174 @@ function CloudShareMenu({ compact }: { compact: boolean }) {
       {compact ? <span className="sr-only">Share</span> : <span>Share</span>}
     </button>
   );
+}
+
+function CloudWorkstationSurface() {
+  return (
+    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+      <div className="border-b border-fd-border p-4">
+        <div className="flex items-center gap-2">
+          <Radio className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+          <h2 className="text-sm font-semibold">Workstations</h2>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+          JupyterHub and Outerbounds both appear as nteract workstations; provider adapters own
+          connection details while the room owns target selection.
+        </p>
+      </div>
+
+      <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+        <section
+          className="grid content-start gap-4 border-l-2 border-emerald-500/70 bg-emerald-500/[0.07] py-3 pl-4 pr-3"
+          aria-label="Active workstation target"
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <CheckCircle2
+              className="mt-0.5 size-5 shrink-0 text-emerald-700 dark:text-emerald-300"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-semibold">{activeWorkstationTarget.name}</h3>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {activeWorkstationTarget.detail} - {activeWorkstationTarget.environment}
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <WorkstationMetric label="Provider" value="Outerbounds" />
+            <WorkstationMetric label="Runtime" value="Current Python" />
+            <WorkstationMetric label="Doc agent" value="Online" />
+            <WorkstationMetric label="Room role" value="runtime_peer" />
+          </div>
+          <button
+            type="button"
+            className="inline-flex h-8 w-max items-center gap-1.5 rounded-md bg-foreground px-3 text-sm font-medium text-background"
+          >
+            <Play className="size-3.5" fill="currentColor" aria-hidden="true" />
+            Run selected cell
+          </button>
+        </section>
+
+        <section className="min-w-0" aria-label="Available workstation targets">
+          <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-background text-foreground">
+            {workstationTargets.map((target) => (
+              <WorkstationTargetRow key={target.id} target={target} />
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section className="border-t border-fd-border px-4 py-3" aria-label="Workstation flow">
+        <div className="grid gap-3 lg:grid-cols-4">
+          {workstationFlowRows.map((row) => (
+            <div
+              key={row.label}
+              className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2 border-l border-border/70 pl-3 first:border-l-0 first:pl-0 max-lg:border-l-0 max-lg:border-t max-lg:pt-3 max-lg:first:border-t-0 max-lg:first:pt-0"
+            >
+              <Cloud className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h3 className="truncate text-sm font-semibold">{row.label}</h3>
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    {row.state}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-xs font-medium text-muted-foreground">{row.owner}</div>
+                <p className="m-0 mt-1 text-xs leading-5 text-muted-foreground">{row.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function WorkstationMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-md border border-emerald-500/20 bg-background/70 px-2 py-1.5">
+      <div className="truncate text-[10px] font-medium uppercase tracking-normal text-muted-foreground">
+        {label}
+      </div>
+      <div className="truncate text-xs font-semibold text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function WorkstationTargetRow({ target }: { target: WorkstationTarget }) {
+  const tone = workstationTargetTone(target.status);
+  const StatusIcon = tone.icon;
+  return (
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2 px-4 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
+      <StatusIcon className={cn("mt-0.5 size-4 shrink-0", tone.iconClassName)} aria-hidden="true" />
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <h3 className="truncate text-sm font-semibold">{target.name}</h3>
+          <span className={cn("text-xs font-medium", tone.textClassName)}>
+            {target.statusLabel}
+          </span>
+        </div>
+        <div className="mt-0.5 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span>{target.detail}</span>
+          <span>{target.environment}</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        className={cn(
+          "col-start-2 inline-flex h-8 w-max items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors sm:col-start-auto",
+          target.selected
+            ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        )}
+      >
+        {target.selected ? (
+          <CheckCircle2 className="size-3.5" aria-hidden="true" />
+        ) : (
+          <Radio className="size-3.5" aria-hidden="true" />
+        )}
+        {target.actionLabel}
+      </button>
+    </div>
+  );
+}
+
+function workstationTargetTone(status: WorkstationTargetState): {
+  className: string;
+  icon: LucideIcon;
+  iconClassName: string;
+  textClassName: string;
+} {
+  switch (status) {
+    case "ready":
+      return {
+        className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        icon: CheckCircle2,
+        iconClassName: "text-emerald-700 dark:text-emerald-300",
+        textClassName: "text-emerald-700 dark:text-emerald-300",
+      };
+    case "available":
+      return {
+        className: "bg-blue-500/10 text-blue-700 dark:text-blue-300",
+        icon: Radio,
+        iconClassName: "text-blue-700 dark:text-blue-300",
+        textClassName: "text-blue-700 dark:text-blue-300",
+      };
+    case "attaching":
+      return {
+        className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        icon: Clock3,
+        iconClassName: "text-amber-700 dark:text-amber-300",
+        textClassName: "text-amber-700 dark:text-amber-300",
+      };
+    case "disconnected":
+      return {
+        className: "bg-muted text-muted-foreground",
+        icon: WifiOff,
+        iconClassName: "text-muted-foreground",
+        textClassName: "text-muted-foreground",
+      };
+  }
 }
 
 function CloudEntrySurface() {

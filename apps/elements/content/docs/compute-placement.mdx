@@ -1,0 +1,26 @@
+---
+title: Compute placement
+description: Placement alternatives for connecting compute sources to a notebook room.
+---
+
+import { ComputePlacementExample } from "@/components/compute-placement-example";
+
+Available compute and the current notebook environment are different surfaces.
+Local Desktop, registered workstations, and SSH/direct access are sources a room
+can choose from. The environment describes the attached interpreter, kernelspec,
+packages, and readiness for the current notebook after a source is selected.
+
+This page keeps those options in one fixture so the placement can be judged
+against the same notebook shell.
+
+<ComputePlacementExample />
+
+## Current read
+
+- The selected compute target is room state.
+- The attached interpreter or kernelspec is environment state for the current
+  notebook.
+- Launching and provider auth want a connect flow, even if the connected target
+  later appears in the rail or environment panel.
+- Local Desktop, registered workstations, and SSH have different security and
+  protocol boundaries even when they can all become compute targets.

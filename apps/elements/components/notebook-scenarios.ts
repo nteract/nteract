@@ -31,6 +31,7 @@ export type ElementsNotebookScenarioId =
   | "cloud-public-viewer"
   | "cloud-editor"
   | "cloud-owner"
+  | "cloud-workstation-ready"
   | "agent-on-behalf"
   | "credential-attention"
   | "multi-operator"
@@ -492,6 +493,18 @@ const jupyterHubRuntimeActor = actorProjection({
   operatorId: "runtime:jupyterhub",
   operatorKind: "runtime",
   operatorLabel: "JupyterHub",
+  scope: "runtime_peer",
+});
+
+const outerboundsWorkstationActor = actorProjection({
+  actorLabel: "user:anaconda:kyle/workstation:outerbounds:forecast-gpu",
+  principalId: "user:anaconda:kyle",
+  principalLabel: "Kyle",
+  provider: "outerbounds",
+  namespace: "outerbounds",
+  operatorId: "workstation:outerbounds:forecast-gpu",
+  operatorKind: "workstation",
+  operatorLabel: "Outerbounds Workstation",
   scope: "runtime_peer",
 });
 
@@ -1068,6 +1081,55 @@ export const elementsNotebookScenarios: Record<
         source: "cloud",
         actorLabel: null,
         identityLabel: null,
+      },
+    },
+  }),
+  "cloud-workstation-ready": createScenario({
+    id: "cloud-workstation-ready",
+    title: "Cloud workstation ready",
+    eyebrow: "workstation fixture",
+    summary:
+      "A hosted owner has selected an nteract workstation backed by Outerbounds current Python.",
+    runtimeLabel: "Outerbounds workstation - current Python",
+    runtimeStatus: "ready",
+    packageSummary: "current Python - package mutation disabled",
+    packageSourceLabel: "provider current Python",
+    syncLabel: "Workstation target ready",
+    syncStatus: "synced",
+    trustLabel: "Environment owned by workstation",
+    trustStatus: "not_required",
+    capabilities: {
+      canRead: true,
+      canEditMarkdown: true,
+      canEditCells: true,
+      canEditStructure: true,
+      canRequestEdit: false,
+      canExecute: true,
+      canToggleCode: true,
+      canViewPackages: true,
+      canManagePackages: false,
+      canManageSharing: true,
+      access: {
+        level: "owner",
+        source: "cloud",
+        isPublic: false,
+        actorLabel: cloudOwnerActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: cloudOwnerActor,
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        canWriteRuntimeState: true,
+        connected: true,
+        executionAvailable: true,
+        source: "cloud",
+        actorLabel: outerboundsWorkstationActor.actorLabel,
+        identityLabel: "Kyle",
+        actor: outerboundsWorkstationActor,
       },
     },
   }),
