@@ -349,10 +349,66 @@ the 3b token-refresher against an actually-expiring token. None of this is possi
 without preview deploy + staging creds, which this autonomous session does not have.
 The code path is additive and gated, so it cannot affect the desktop/daemon path.
 
-## Phase 3 remaining plan (3d+)
+## Phase 3e: liveness model (`last_seen`) — the headless half of req #4
 
-Ordered by the lifecycle analysis. 3a (req #1), 3b (req #2), and 3c CODE (doc-actor
-identity; live re-proof is NEEDS-US) are done. Remaining, in dependency order:
+32. **3e is reordered ahead of 3d, and split: the headless model half
+    (`last_seen`) lands now; the `Disconnected` variant + the policy relaxation
+    defer to land *with* 3d under live verification.** The original plan put 3d
+    (watchdog) before 3e and called 3e the thing that "gates 3d being legal." Two
+    findings reshaped that:
+    - **The watchdog's own write path does NOT go through the
+      `validate_runtime_state_sync_scope` policy, so the policy relaxation is not
+      actually on 3d's critical path.** `validate_runtime_state_sync_scope`
+      (policy.rs:115) and its `validate_comm_state_only_runtime_delta` deadlock
+      (policy.rs:403-405) gate only *incoming peer sync frames* — they run in
+      `RoomHostHandle::receive_runtime_state_sync` (`runtimed-wasm/src/lib.rs:715`)
+      before applying a peer's sync message. A DO-internal `alarm()` watchdog that
+      authors *directly* on the room host's `state_doc` (the recommended 3d design,
+      and the only place the net can live since the daemon's death is the trigger)
+      bypasses that check entirely. The relaxation matters only for an alternative
+      "Owner peer pushes the reconciliation" design — which 3d should avoid for
+      exactly this reason. So 3e's policy half is deferred, not blocking.
+    - **A new `RuntimeLifecycle::Disconnected` variant has a ~28-Rust-file + TS
+      blast radius and its payoff is viewer-facing UX**, verifiable only against a
+      deployed viewer (NEEDS US). Landing it unattended-and-unverified is higher
+      risk than the watchdog needs. The lifecycle analysis explicitly sanctions a
+      `last_seen` timestamp as the *alternative* form of req #4(b); that is the
+      low-risk, fully-headless piece the watchdog actually reads.
+
+33. **`last_seen: Option<String>` on `KernelState` (doc.rs), with a `set_last_seen`
+    setter and `read_state` wiring.** ISO-8601 timestamp the runtime peer was last
+    observed present, for the watchdog's staleness decision and for viewers to tell
+    "peer reporting" from "peer silent since T". Design points:
+    - **Not added to the frozen genesis scaffold** (`RUNTIME_STATE_GENESIS_V2_BYTES`),
+      so a fresh doc reads `None` and the `runtime_state_genesis_artifact_matches_scaffold`
+      test stays green — no genesis re-bake, no schema-version bump. Purely additive
+      on the serde model (`#[serde(default)]`), so `..Default::default()` call sites
+      in `runtimed-node`/`runtimed-py` are unaffected.
+    - **Clears to CRDT `Null` → reads back `None`** (like `last_saved`), *not* the
+      empty-string "scaffolded but unset" convention of `error_reason`/`error_details`,
+      because a liveness field has no meaningful "" state.
+    - **Idempotent**: re-stamping the current value is a no-op (no head churn), since
+      a watchdog/peer stamps it frequently and must not trigger spurious sync rounds.
+    - **No policy change needed yet**: `last_seen` lives under `state.kernel`, so the
+      existing kernel-ownership rules already make it `runtime_peer`-writable and
+      editor-blocked — pinned by a `last_seen_is_runtime_peer_writable_but_blocked_for_editor`
+      test. The runtime peer stamps its own liveness; the room-host watchdog writes
+      directly (bypassing the sync policy per #32).
+    5 unit tests; runtime-doc 215 (was 211) + genesis tests green; dependent crates
+    (`runtimed` 888, `notebook-sync`, `runtimed-py`, `runtimed-node`) green; clippy clean.
+
+**NEEDS US (3e deferred halves):** (1) the `RuntimeLifecycle::Disconnected` variant —
+defer to land with 3d so its viewer UX is validated against a live deployed viewer in
+the same pass (the watchdog can already express "stale" via `last_seen` + flipping to
+the existing `Error`/`Shutdown` terminal states in the meantime); (2) the
+`policy.rs:403-405` relaxation — only needed if 3d is ever built as an Owner-peer-push
+rather than a DO-internal watchdog; the recommended DO-internal design needs no policy
+change. Decide (2) when 3d's mechanism is chosen.
+
+## Phase 3 remaining plan (3d, 3f)
+
+Ordered by the lifecycle analysis. 3a (req #1), 3b (req #2), 3c CODE (doc-actor
+identity), and 3e model half (`last_seen`) are done. Remaining, in dependency order:
 
 - **3d: cloud-room DurableObject watchdog (reqs #3, #7; the safety net the daemon can't
   provide).** TypeScript in `apps/notebook-cloud/`. Thread peer **scope** through
@@ -361,12 +417,13 @@ identity; live re-proof is NEEDS-US) are done. Remaining, in dependency order:
   reconciliation mutator (it has none), and use a DO `alarm()` with a grace period to
   terminalize running/queued executions and flip lifecycle when a `runtime_peer` departs.
 
-- **3e: policy relaxation (req #4; gates 3d being legal).** `crates/runtime-doc/src/policy.rs:403-405`
-  blocks editor/owner from writing `state.kernel` ("daemon-owned"). The watchdog (room host)
-  needs a *narrow* authority to terminalize lifecycle on `runtime_peer` departure. Recommended:
-  both (a) a scoped relaxation for the lifecycle-to-terminal transition, and (b) a model-level
-  `Disconnected` `RuntimeLifecycle` / `last_seen` on `KernelState`
-  (`crates/runtime-doc/src/types.rs:272`) so viewers distinguish gone-but-recoverable from dead.
+  3d note: prefer the DO-internal `alarm()` watchdog authoring directly on the room
+  host's `state_doc`. That write path does **not** go through `validate_runtime_state_sync_scope`
+  (which gates only incoming peer sync, `runtimed-wasm/src/lib.rs:715`), so it needs no
+  policy relaxation (decision #32). The `last_seen` model field it reads is already done
+  (decision #33). The remaining 3e halves (the `Disconnected` variant, and the
+  policy.rs:403-405 relaxation if an Owner-peer-push design is chosen instead) land *with*
+  3d under live verification.
 
 - **3f: inbound request channel (req #5) + terminal-delta buffering (req #6).** Route
   interrupt/restart `RuntimeAgentRequest`s to the cloud agent (hosted REQUEST dispatch), and
