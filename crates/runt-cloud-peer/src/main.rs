@@ -78,6 +78,12 @@ struct Cli {
     #[arg(long)]
     add_cell: Option<String>,
 
+    /// After the added cell converges, send an ExecuteCell request for it and
+    /// log the executions that appear in the RuntimeStateDoc (verifies the
+    /// hosted ExecuteCell dispatch). Requires --add-cell.
+    #[arg(long)]
+    run_cell: bool,
+
     /// Auto-close after this many seconds (0 = run until disconnected).
     #[arg(long, default_value_t = 20)]
     seconds: u64,
@@ -187,6 +193,8 @@ async fn main() -> Result<()> {
     let mut rt: Option<RuntimeStateDoc> = None;
     let mut rt_peer = sync::State::new();
     let mut edited = false;
+    let mut added_cell_id: Option<String> = None;
+    let mut requested = false;
     let deadline =
         (cli.seconds > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(cli.seconds));
     loop {
@@ -224,7 +232,12 @@ async fn main() -> Result<()> {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                if control.get("type").and_then(|t| t.as_str()) != Some("cloud_room_ready") {
+                let ctl_type = control.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if ctl_type != "cloud_room_ready" {
+                    // Surface rejections/errors (skip the per-frame accept flood).
+                    if ctl_type != "cloud_frame_accepted" {
+                        info!("control: {}", String::from_utf8_lossy(payload));
+                    }
                     continue;
                 }
                 if nb.is_some() {
@@ -291,16 +304,35 @@ async fn main() -> Result<()> {
                         if nb_doc.add_cell_after(&cell_id, "code", None).is_ok() {
                             let _ = nb_doc.update_source(&cell_id, source);
                             edited = true;
+                            added_cell_id = Some(cell_id.clone());
                             info!("added code cell {cell_id} ({} chars)", source.len());
                         }
                     }
                 }
 
-                if let Some(reply) = nb_doc.generate_sync_message(&mut nb_peer) {
+                let reply = nb_doc.generate_sync_message(&mut nb_peer);
+                let converged = reply.is_none();
+                if let Some(reply) = reply {
                     ws.send(WsMessage::Binary(
                         frame(frame_types::AUTOMERGE_SYNC, &reply.encode()).into(),
                     ))
                     .await?;
+                }
+
+                // Once the added cell has converged to the room, ask the room to
+                // run it. The room's ExecuteCell dispatch creates the queued
+                // execution in RuntimeStateDoc, which we observe in the 0x05 arm.
+                if converged && edited && cli.run_cell && !requested {
+                    if let Some(cell_id) = &added_cell_id {
+                        let req =
+                            serde_json::json!({ "action": "execute_cell", "cell_id": cell_id });
+                        let body =
+                            serde_json::to_vec(&req).map_err(|e| anyhow!("encode request: {e}"))?;
+                        ws.send(WsMessage::Binary(frame(frame_types::REQUEST, &body).into()))
+                            .await?;
+                        requested = true;
+                        info!("sent ExecuteCell request for {cell_id}");
+                    }
                 }
             }
             frame_types::RUNTIME_STATE_SYNC => {
@@ -317,6 +349,26 @@ async fn main() -> Result<()> {
                         frame(frame_types::RUNTIME_STATE_SYNC, &m.encode()).into(),
                     ))
                     .await?;
+                }
+                // Surface any executions the room created (verifies dispatch).
+                let state = rt_doc.read_state();
+                if !state.executions.is_empty() {
+                    let mut ids: Vec<&String> = state.executions.keys().collect();
+                    ids.sort();
+                    for id in ids {
+                        let ex = &state.executions[id];
+                        let src: String = ex
+                            .source
+                            .as_deref()
+                            .unwrap_or("")
+                            .chars()
+                            .take(40)
+                            .collect();
+                        info!(
+                            "execution {id}: status={} seq={:?} source={src:?}",
+                            ex.status, ex.seq
+                        );
+                    }
                 }
             }
             other => info!("frame 0x{other:02x} ({} bytes)", payload.len()),
