@@ -229,18 +229,59 @@ Phase 3b warm-up verification: `cargo test -p notebook-cloud-transport` 16;
 `cargo xtask lint --fix` clean; clippy `-D warnings` clean on both crates. No new
 workspace crate (no bump-targets change).
 
-## Phase 3 remaining plan (3b+)
+## Phase 3b: WS reconnect/re-auth + full-resync on cloud reconnect (req #2)
 
-Ordered by the lifecycle analysis. 3a (req #1) is done. Remaining, in dependency order:
+26. **The reconnect *mechanism* was already complete after 3a; 3b adds the
+    re-auth seam and the missing test coverage.** `reconnect_with_backoff` is
+    generic over `FrameTransport` and the cloud `connect()` re-dials + re-reads
+    `cloud_room_ready`; both reconnect arms (clean-EOF and framing-error) already
+    reset `coordinator_sync_state` and fire `state_kick_tx` (verified by
+    inspection at `runtime_agent.rs` — the kick drives a full RuntimeStateDoc
+    re-send on *every* recoverable reconnect, cloud included, because the kick is
+    transport-agnostic). So 3b is two concrete deliverables, not a rewrite:
+    a fresh-token seam and unit tests for the backoff loop.
 
-- **3b: WS reconnect/re-auth + full-resync on cloud reconnect (req #2).**
-  `reconnect_with_backoff` is already generic over `FrameTransport`, and the cloud `connect()`
-  re-dials, re-auths, and re-reads `cloud_room_ready`, so the *mechanism* exists. What's
-  missing is verifying the resync kick (`state_kick_tx`) drives a full RuntimeStateDoc re-send
-  after a cloud reconnect, and that re-auth uses a *fresh* token if the original expired (the
-  `CloudAuth` is currently a static token; a token-provider closure may be needed for
-  long-lived sessions). Unit-test the reconnect arm with a mock `FrameTransport` whose
-  `connect` fails N times then succeeds.
+27. **Re-auth uses an optional `TokenRefresher` closure, not a widened
+    `CloudAuth`.** `CloudAuth` holds a *static* token, fine for a short session
+    but wrong for a long-lived peer: its OIDC token expires mid-session, and a
+    reconnect that re-presents the expired token is rejected at the upgrade, so
+    `reconnect_with_backoff` would burn all 10 attempts and give up. Fix:
+    `CloudWsFrameTransport::with_token_refresher(config, refresher)` takes an
+    `async` closure (`TokenRefresher = Arc<dyn Fn() -> Future<io::Result<String>>>`)
+    that the transport calls *before each connect* via `effective_auth()`; the
+    returned token is re-wrapped in the configured auth variant by
+    `CloudAuth::with_token` (preserving the variant and any `Dev` user label).
+    `None` (the default `new()`) keeps the static-token behavior byte-for-byte.
+    Alternative considered: store an `Arc<Mutex<String>>` the agent mutates —
+    rejected; a pull-on-connect closure has no lock-ordering hazard and keeps the
+    refresh policy (cache, retry, endpoint) entirely on the agent side. The
+    closure's error surfaces as a connect error (kind preserved) so the backoff
+    loop treats it as a retryable failed connect. Wiring this into a daemon spawn
+    path is 3c; this PR ships the seam + tests only.
+
+28. **`reconnect_with_backoff` is unit-tested with a mock `FlakyTransport`.** A
+    `FrameTransport` whose `connect` fails the first N calls (with
+    `ConnectionRefused`) then succeeds, counting attempts. Three tests under
+    `start_paused` time (so the exponential sleeps are instant): recovers after 3
+    transient failures (4 total attempts), recovers on the final allowed attempt
+    (9 fail → success on the 10th), and gives up after exactly `MAX_ATTEMPTS`
+    (10) with the last error preserved so a genuinely-gone room lets the agent
+    exit rather than spin forever.
+
+Phase 3b verification: `cargo test -p notebook-cloud-transport` 20 (was 16);
+`cargo test -p runtimed` 884 lib (was 881) + integration suites green (UDS
+unchanged); `cargo xtask lint --fix` clean; clippy `-D warnings` clean on both.
+No new workspace crate.
+
+**NEEDS US (3b):** the token-refresher seam is unit-tested but has no live
+re-auth proof — that needs a long-lived session against a preview room where an
+OIDC token actually expires and the refresher mints a new one. Fold this into
+the 3c cross-machine re-proof (same creds/deploy). Nothing in 3b changes the
+static-token path, so this is a forward-looking validation, not a regression risk.
+
+## Phase 3 remaining plan (3c+)
+
+Ordered by the lifecycle analysis. 3a (req #1) and 3b (req #2) are done. Remaining, in dependency order:
 
 - **3c: daemon spawn path + doc-actor identity + consumer-side receive (the integration).**
   Add a `run_runtime_agent`-equivalent (or a parameter) that builds a `CloudWsFrameTransport`
