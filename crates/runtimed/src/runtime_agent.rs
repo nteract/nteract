@@ -841,8 +841,44 @@ where
                         NotebookFrameType::RuntimeStateSync,
                         &encoded,
                     ).await {
-                        warn!("[runtime-agent] Failed to send RuntimeStateSync: {}", e);
-                        break;
+                        // A writer send error over a recoverable (cloud) sink is
+                        // a blip, not the daemon going away: tearing down here
+                        // would kill a healthy kernel over a transient WS error
+                        // (lifecycle-analysis req #6). Reconnect and resync — the
+                        // delta that just failed to send is durable in the local
+                        // doc, and the fresh sync state + resync kick re-send it,
+                        // so Automerge's own resync IS the replay. The UDS path
+                        // keeps the historical teardown (break).
+                        if !transport.clean_eof_is_recoverable() {
+                            warn!("[runtime-agent] Closing after RuntimeStateSync send failure: {}", e);
+                            break;
+                        }
+                        warn!(
+                            "[runtime-agent] RuntimeStateSync send failed: {} — reconnecting \
+                             (kernel stays running)",
+                            e
+                        );
+                        drop(frame_source);
+                        match reconnect_after_writer_error(
+                            &transport,
+                            &mut last_recoverable_reconnect,
+                        ).await {
+                            Ok((new_source, new_sink)) => {
+                                frame_source = new_source;
+                                frame_sink = new_sink;
+                                coordinator_sync_state = automerge::sync::State::new();
+                                let _ = state_kick_tx.send(());
+                                info!("[runtime-agent] Reconnected after send failure");
+                                continue;
+                            }
+                            Err(reconnect_err) => {
+                                error!(
+                                    "[runtime-agent] Reconnect failed after retries: {}",
+                                    reconnect_err
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -851,8 +887,44 @@ where
             Some(envelope) = async_response_rx.recv() => {
                 inflight_sync = None;
                 if let Err(e) = send_runtime_agent_response_envelope(&mut frame_sink, envelope).await {
-                    warn!("[runtime-agent] Failed to send async response: {}", e);
-                    break;
+                    // Same recoverable-transport policy as the RuntimeStateSync
+                    // arm: a cloud writer blip must not tear down a healthy
+                    // kernel (req #6). Unlike a state delta, this response is not
+                    // re-derived by resync, so it is lost across the reconnect —
+                    // acceptable: the SyncEnvironment effect is already in the
+                    // RuntimeStateDoc (env progress/state), which the resync kick
+                    // re-sends; only the one-shot reply envelope is dropped. UDS
+                    // keeps the historical teardown.
+                    if !transport.clean_eof_is_recoverable() {
+                        warn!("[runtime-agent] Closing after async response send failure: {}", e);
+                        break;
+                    }
+                    warn!(
+                        "[runtime-agent] Async response send failed: {} — reconnecting \
+                         (kernel stays running)",
+                        e
+                    );
+                    drop(frame_source);
+                    match reconnect_after_writer_error(
+                        &transport,
+                        &mut last_recoverable_reconnect,
+                    ).await {
+                        Ok((new_source, new_sink)) => {
+                            frame_source = new_source;
+                            frame_sink = new_sink;
+                            coordinator_sync_state = automerge::sync::State::new();
+                            let _ = state_kick_tx.send(());
+                            info!("[runtime-agent] Reconnected after async response send failure");
+                            continue;
+                        }
+                        Err(reconnect_err) => {
+                            error!(
+                                "[runtime-agent] Reconnect failed after retries: {}",
+                                reconnect_err
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -921,6 +993,32 @@ async fn reconnect_with_backoff<T: FrameTransport>(
     Err(last_err
         .map(anyhow::Error::from)
         .unwrap_or_else(|| anyhow::anyhow!("reconnect gave up with no last error")))
+}
+
+/// Reconnect a *recoverable* transport after a writer-side send error,
+/// applying the shared flap floor and recording the reconnect time.
+///
+/// Used by the outbound (writer) `select!` arms. The read arms inline their
+/// own reconnect (they additionally rebuild echo-suppression/comm-forward
+/// state), so this stays a writer-only helper: floor → `reconnect_with_backoff`
+/// → stamp `last_recoverable_reconnect`. Callers must have already checked
+/// `transport.clean_eof_is_recoverable()`, since the UDS path tears down on a
+/// writer error rather than reconnecting (lifecycle-analysis req #6). Returns
+/// the fresh `(Source, Sink)` or the give-up error from `reconnect_with_backoff`.
+async fn reconnect_after_writer_error<T: FrameTransport>(
+    transport: &T,
+    last_recoverable_reconnect: &mut Option<tokio::time::Instant>,
+) -> anyhow::Result<(T::Source, T::Sink)> {
+    if let Some(wait) = reconnect_floor_delay(
+        transport.clean_eof_is_recoverable(),
+        last_recoverable_reconnect.map(|t| t.elapsed()),
+        RECOVERABLE_RECONNECT_FLOOR,
+    ) {
+        tokio::time::sleep(wait).await;
+    }
+    let pair = reconnect_with_backoff(transport).await?;
+    *last_recoverable_reconnect = Some(tokio::time::Instant::now());
+    Ok(pair)
 }
 
 async fn queue_synced_executions<K: KernelConnection>(
@@ -2002,6 +2100,11 @@ mod tests {
         fn attempts(&self) -> u32 {
             self.attempts.load(std::sync::atomic::Ordering::SeqCst)
         }
+        /// Set the clean-EOF/recoverable discriminant (default `true`).
+        fn with_recoverable(mut self, recoverable: bool) -> Self {
+            self.recoverable = recoverable;
+            self
+        }
     }
 
     impl FrameTransport for FlakyTransport {
@@ -2060,6 +2163,52 @@ mod tests {
             err.to_string().contains("mock dial refused"),
             "last error is preserved: {err}"
         );
+    }
+
+    // -- writer-error recovery (Phase 3f req #6) --------------------------
+    //
+    // On a recoverable transport, a writer send error must reconnect + stamp the
+    // flap-floor timestamp (so it shares the read arms' throttle), not tear the
+    // kernel down. The agent loop checks `clean_eof_is_recoverable()` before
+    // calling the helper; these tests cover the recover path and that the stamp
+    // is recorded for the floor.
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_after_writer_error_recovers_and_stamps() {
+        let transport = FlakyTransport::new(2); // 2 transient failures, then ok
+        let mut last: Option<tokio::time::Instant> = None;
+        let result = reconnect_after_writer_error(&transport, &mut last).await;
+        assert!(result.is_ok(), "recoverable writer error reconnects");
+        assert_eq!(transport.attempts(), 3, "2 failed + 1 success");
+        assert!(
+            last.is_some(),
+            "a successful writer-error reconnect stamps the flap-floor timestamp"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_after_writer_error_propagates_give_up() {
+        // Even on a recoverable transport, an always-failing dial gives up after
+        // MAX_ATTEMPTS so the agent can exit rather than spin; the timestamp is
+        // left unstamped since no reconnect succeeded.
+        let transport = FlakyTransport::new(u32::MAX);
+        let mut last: Option<tokio::time::Instant> = None;
+        let err = reconnect_after_writer_error(&transport, &mut last)
+            .await
+            .expect_err("always-failing transport gives up");
+        assert!(err.to_string().contains("mock dial refused"));
+        assert_eq!(transport.attempts(), 10);
+        assert!(last.is_none(), "no stamp when no reconnect succeeded");
+    }
+
+    /// The UDS discriminant (`recoverable == false`) is what the agent loop
+    /// checks *before* calling the helper, so a UDS writer error never reaches
+    /// the reconnect path — it breaks the loop. Pin that the discriminant the
+    /// loop branches on is wired through the mock the way the agent reads it.
+    #[test]
+    fn non_recoverable_transport_reports_clean_eof_not_recoverable() {
+        let transport = FlakyTransport::new(0).with_recoverable(false);
+        assert!(!transport.clean_eof_is_recoverable());
     }
 
     // -- cloud doc-actor label (Phase 3c) ---------------------------------
