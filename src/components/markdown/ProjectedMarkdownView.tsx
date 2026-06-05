@@ -219,8 +219,7 @@ function ProjectedMarkdownBlock({
 }
 
 const sourceActiveBlockClass = "";
-const sourceActiveRunClass =
-  "rounded-sm bg-primary/10 ring-1 ring-primary/20 ring-offset-1 ring-offset-background";
+const sourceActiveRunClass = "";
 
 function headingAnchorForBlock(
   block: MarkdownProjectionBlock,
