@@ -57,6 +57,13 @@ describe("markdown projection", () => {
     expect(canRenderMarkdownProjectionInHost(plan)).toBe(false);
   });
 
+  it("keeps projected raw HTML blocks out of the host renderer", () => {
+    const plan = projectMarkdownPlan('<button id="raw">raw html stays isolated</button>');
+
+    expect(plan?.runs.some((run) => run.semantic === "isolated-placeholder")).toBe(true);
+    expect(canRenderMarkdownProjectionInHost(plan)).toBe(false);
+  });
+
   it("maps source cursor positions back to projected rendered blocks and runs", () => {
     const source = "# Heading\n\nA paragraph with **focus**.\n\n- [ ] checkbox\n";
     const plan = projectMarkdownPlan(source);

@@ -144,7 +144,7 @@ export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan |
 
   return (
     plan.blocks.every((block) => block.kind !== "isolated") &&
-    plan.runs.every((run) => !run.renderedHtml)
+    plan.runs.every((run) => !run.renderedHtml && run.semantic !== "isolated-placeholder")
   );
 }
 

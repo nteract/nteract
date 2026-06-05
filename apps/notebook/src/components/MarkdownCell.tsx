@@ -230,6 +230,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
+  const [previewFrameReadyGeneration, setPreviewFrameReadyGeneration] = useState(0);
   const previewSource = draftPreviewSource ?? cell.source;
 
   useEffect(() => {
@@ -440,93 +441,79 @@ export const MarkdownCell = memo(function MarkdownCell({
     exitEditingToPreview();
   }, [exitEditingToPreview]);
 
-  // Render markdown content when iframe is ready
-  const handleFrameReady = useCallback(async () => {
-    if (canRenderProjectionInHost) return;
-    const frame = frameRef.current;
-    if (!frame || !previewSource) return;
-    // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
-    frame.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
-    // Clear injected set — a reloaded iframe has a fresh renderer registry
-    injectedLibsRef.current.clear();
-    // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
-    try {
-      await injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current);
-    } catch (error) {
-      logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
+  const renderMarkdownPreviewFrame = useCallback(
+    async (frame: IsolatedFrameHandle | null = frameRef.current) => {
+      if (canRenderProjectionInHost) return;
+      if (!frame || !previewSource) return;
+
+      // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves).
+      frame.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
+
+      try {
+        await injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current);
+      } catch (error) {
+        logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
+        if (frameRef.current !== frame) return;
+        frame.render({
+          mimeType: "text/plain",
+          data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+          outputId: `markdown-error:${cell.id}`,
+          cellId: cell.id,
+          replace: true,
+        });
+        return;
+      }
+
       if (frameRef.current !== frame) return;
+      const processedSource = rewriteMarkdownAssetRefs(
+        previewSource,
+        cell.resolvedAssets,
+        blobResolver,
+      );
       frame.render({
-        mimeType: "text/plain",
-        data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
-        outputId: `markdown-error:${cell.id}`,
+        mimeType: "text/markdown",
+        data: processedSource,
+        metadata: markdownMetadata,
+        outputId: `markdown:${cell.id}`,
         cellId: cell.id,
         replace: true,
       });
-      return;
-    }
-    if (frameRef.current !== frame) return;
-    const processedSource = rewriteMarkdownAssetRefs(
+    },
+    [
+      canRenderProjectionInHost,
       previewSource,
+      cell.id,
       cell.resolvedAssets,
       blobResolver,
-    );
-    frame.render({
-      mimeType: "text/markdown",
-      data: processedSource,
-      metadata: markdownMetadata,
-      outputId: `markdown:${cell.id}`,
-      cellId: cell.id,
-      replace: true,
-    });
-  }, [
-    canRenderProjectionInHost,
-    previewSource,
-    cell.id,
-    cell.resolvedAssets,
-    blobResolver,
-    markdownMetadata,
-  ]);
+      markdownMetadata,
+    ],
+  );
+
+  // Render markdown content when iframe is ready.
+  const handleFrameReady = useCallback(() => {
+    if (canRenderProjectionInHost) return;
+    const frame = frameRef.current;
+    if (!frame || !previewSource) return;
+
+    // Clear injected set — a reloaded iframe has a fresh renderer registry.
+    injectedLibsRef.current.clear();
+    setPreviewFrameReadyGeneration((generation) => generation + 1);
+    void renderMarkdownPreviewFrame(frame);
+  }, [canRenderProjectionInHost, previewSource, renderMarkdownPreviewFrame]);
 
   // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
     if (canRenderProjectionInHost) return;
-    if (frameRef.current?.isReady && previewSource) {
-      const frame = frameRef.current;
-      // Inject markdown renderer plugin (idempotent) then render
-      injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current)
-        .then(() => {
-          const processedSource = rewriteMarkdownAssetRefs(
-            previewSource,
-            cell.resolvedAssets,
-            blobResolver,
-          );
-          frame.render({
-            mimeType: "text/markdown",
-            data: processedSource,
-            metadata: markdownMetadata,
-            outputId: `markdown:${cell.id}`,
-            cellId: cell.id,
-            replace: true,
-          });
-        })
-        .catch((error) => {
-          logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
-          frame.render({
-            mimeType: "text/plain",
-            data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
-            outputId: `markdown-error:${cell.id}`,
-            cellId: cell.id,
-            replace: true,
-          });
-        });
-    }
+    if (!previewSource) return;
+    const frame = frameRef.current;
+    if (!frame?.isReady && previewFrameReadyGeneration === 0) return;
+
+    void renderMarkdownPreviewFrame(frame);
   }, [
     canRenderProjectionInHost,
     previewSource,
-    cell.id,
-    cell.resolvedAssets,
-    blobResolver,
-    markdownMetadata,
+    previewFrameReadyGeneration,
+    renderMarkdownPreviewFrame,
   ]);
 
   const scrollToHeading = useCallback(

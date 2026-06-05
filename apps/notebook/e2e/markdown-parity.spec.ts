@@ -48,6 +48,9 @@ test.describe("markdown parity", () => {
     // The parity contract is safety, not iframe usage: raw HTML from markdown
     // must not become live DOM in the parent notebook surface.
     await expect(markdownCell.locator("#markdown-parity-raw-html")).toHaveCount(0);
+    await expect(
+      renderedMarkdown.getByRole("button", { name: "raw html stays isolated" }),
+    ).toBeVisible();
 
     await expect(renderedMarkdown.locator("pre")).toContainText("highlighted code block");
 
@@ -142,7 +145,6 @@ test.describe("markdown parity", () => {
   test("renders a newly inserted markdown cell after editing through the UI", async ({ page }) => {
     const notebookId = crypto.randomUUID();
     await openNotebookRoom(page, notebookId);
-    await waitForKernelStatus(page, "idle", 120_000);
 
     const markdownCell = await ensureMarkdownCell(page);
     const editor = markdownCell.locator('.cm-content[contenteditable="true"]');
@@ -196,7 +198,6 @@ async function createParityMarkdownCellWithId(
 ): Promise<{ cell: Locator; cellId: string }> {
   const notebookId = crypto.randomUUID();
   await openNotebookRoom(page, notebookId);
-  await waitForKernelStatus(page, "idle", 120_000);
 
   mcp = await McpPeer.start();
   await mcp.connectNotebook(notebookId);
@@ -262,8 +263,19 @@ async function doubleClickRenderedMarkdown(markdownCell: Locator): Promise<void>
 
 async function selectRenderedText(_page: Page, locator: Locator): Promise<string> {
   await locator.scrollIntoViewIfNeeded();
-  await locator.selectText({ force: true });
-  return locator.evaluate(() => window.getSelection()?.toString() ?? "");
+  return await locator.evaluate((element) => {
+    const document = element.ownerDocument;
+    const window = document.defaultView;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+
+    const selection = window?.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    window?.focus();
+
+    return selection?.toString() ?? "";
+  });
 }
 
 async function copyRenderedText(
@@ -273,7 +285,12 @@ async function copyRenderedText(
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 
   const selection = await selectRenderedText(page, locator);
-  await page.keyboard.press(process.platform === "darwin" ? "Meta+C" : "Control+C");
+  const copiedFromSelection = await locator
+    .evaluate((element) => element.ownerDocument.execCommand("copy"))
+    .catch(() => false);
+  if (!copiedFromSelection) {
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+C" : "Control+C");
+  }
 
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 5_000 })
