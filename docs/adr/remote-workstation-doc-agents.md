@@ -555,6 +555,76 @@ The smallest valuable PR should avoid kernel execution:
 That slice gives the product a real "workstation is online" signal without
 prematurely deciding the hosted execution dispatch protocol.
 
+## Implementation status (2026-06-05): outbound WS sync client
+
+Step 7 (the outbound `runtime_peer` sync client) has a working first cut:
+`crates/runt-cloud-peer`, a standalone CLI that dials `wss://<host>/n/<id>/sync`,
+authenticates on the upgrade, and runs Automerge sync for both the NotebookDoc
+and the RuntimeStateDoc over the typed-frame v4 stream, reusing `notebook-doc`
+and `runtime-doc` directly. It is the role the Outerbounds workstation will
+eventually play; for now it runs locally to prove the path against live preview.
+
+Verified against the deployed preview: the client authenticates with a staging
+Anaconda OIDC bearer (`Authorization: Bearer`, no subprotocol), reserves a room
+via `POST /api/n`, attaches as `owner`, and drives a NotebookDoc edit (adds a
+code cell) that the room accepts and converges on. The cell renders in the
+hosted viewer.
+
+Load-bearing findings:
+
+- **Change actor must match the authenticated principal.** The room host
+  (`validate_room_notebook_change_actors`, `crates/runtimed-wasm/src/lib.rs`)
+  rejects any change whose actor principal differs from the connection's
+  authenticated principal. Author the doc as `<principal>/<operator>`, taking
+  `<principal>` from the room's `cloud_room_ready` frame. A mismatched actor is
+  silently dropped: the change never lands and sync never converges (the room
+  keeps re-advertising that it lacks the change). Use a unique operator per run,
+  or two doc instances reusing one actor collide at `(actor, seq 1)` (automerge
+  `DuplicateSeqNumber`).
+- **Header-bearer auth, not subprotocol.** Non-browser peers send
+  `Authorization: Bearer` + `X-Scope`; offering a `Sec-WebSocket-Protocol` the
+  room will not echo trips tungstenite's "server sent no subprotocol".
+- **Bootstrap, do not scaffold.** The client `bootstrap()`s genesis only; the
+  room owns the `cells`/`metadata` maps and we receive them before editing
+  (invariant #2 in `crates/notebook-doc/AGENTS.md`).
+
+Built since (the runtime half):
+
+- **Hosted execution dispatch (#3399).** The room host turns an editor/owner
+  `ExecuteCell` `REQUEST` into a queued execution in RuntimeStateDoc
+  (`create_execution_with_source_provenance`), stamps the cell's `execution_id`,
+  and broadcasts both docs. Execution intent is created only by the room host:
+  clients request, the host writes (the RuntimeStateDoc policy forbids non-host
+  execution creation over sync). Idempotent on a double-run, and attributed to
+  the submitter's full `principal/operator` actor label. `--run-cell` here drives
+  it and observes the queued execution; verified end-to-end against preview. The
+  consumer-side receive on this client uses `receive_sync_message_with_changes`,
+  not the daemon-authoritative `receive_sync_message` (which strips incoming
+  changes) - otherwise the room's queued execution never lands locally.
+
+Remaining for "run a cell", not yet built:
+
+- **Request/response contract.** The cloud room acks `REQUEST` frames with
+  `cloud_frame_accepted` but does not emit a `RESPONSE` envelope, so await-based
+  callers (the viewer's `await executeCell`, which waits on `sendRequest` by id)
+  do not resolve. Needs cloud-room request/response plumbing (a `cell_queued` /
+  structured-error response keyed by the request id).
+- **Kernel-hosting runtime peer.** Add a mode to `runt-cloud-peer` that attaches
+  as `runtime_peer` (explicit `runtime_peer` ACL row via `POST /api/n/:id/acl` -
+  owner alone is insufficient; `aclRowsCoverScope` special-cases the scope),
+  watches RuntimeStateDoc for queued executions, runs them in a Jupyter kernel,
+  and streams `running -> outputs -> done` back. Verified seam: do **not** depend
+  on the daemon's `JupyterKernel` (welded to daemon-only `KernelSharedRefs` -
+  BlobStore, broadcast channels, RuntimeStateHandle). Build a thin launch+drive
+  loop on the published `jupyter-protocol` + `jupyter-zmq-client` crates plus
+  `runtime-doc` (already a dependency): spawn `python -m ipykernel_launcher -f
+  <conn>` (`bootstrap_dx` off, stock launcher, no launcher cache), set the
+  execute_request `msg_id = execution_id` so IOPub `parent_header.msg_id` routes
+  outputs back, and write `set_execution_running` / `append_output` /
+  `set_execution_done` onto the owned RuntimeStateDoc, then
+  `generate_sync_message` to push back. Mirror the daemon's write order and the
+  control-plane/output-transport separation invariant.
+
 ## Open questions
 
 1. Is a workstation target personal to the API-key principal, shareable within a
