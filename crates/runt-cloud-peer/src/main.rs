@@ -16,6 +16,7 @@
 //!   principal. So we bootstrap the docs with `<principal>/<operator>` taken
 //!   from the room's `cloud_room_ready` frame, not an arbitrary actor.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -23,9 +24,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use automerge::sync;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
+use jupyter_protocol::{JupyterMessage, JupyterMessageContent};
 use notebook_doc::{NotebookDoc, TextEncoding};
 use notebook_wire::frame_types;
-use runtime_doc::RuntimeStateDoc;
+use runtime_doc::{KernelActivity, RuntimeLifecycle, RuntimeStateDoc};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{
@@ -90,8 +92,14 @@ struct Cli {
     #[arg(long, default_value_t = 20)]
     seconds: u64,
 
-    /// Self-test the local kernel-drive layer: launch a python kernel, run a
-    /// cell (the --add-cell source, or a default), and log IOPub. No cloud.
+    /// Standalone self-test of the local kernel-drive layer: launch a python
+    /// kernel, run a cell (the --add-cell source, or a default), log IOPub, and
+    /// exit. No cloud connection.
+    #[arg(long)]
+    kernel_self_test: bool,
+
+    /// Host a kernel for the room as a runtime_peer: run queued executions on a
+    /// local kernel and stream outputs back. Use with --scope runtime_peer.
     #[arg(long)]
     host_kernel: bool,
 
@@ -135,6 +143,127 @@ fn frame(frame_type: u8, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// Read the next IOPub message from an optional kernel. Pends forever when no
+/// kernel is present, so it's an inert `select!` arm until a kernel launches.
+async fn next_iopub(kernel: &mut Option<kernel_host::Kernel>) -> Option<JupyterMessage> {
+    match kernel.as_mut() {
+        Some(k) => k.iopub.read().await.ok(),
+        None => std::future::pending().await,
+    }
+}
+
+/// Mint an output_id (required by `append_output`) and append an nbformat output.
+fn append_kernel_output(
+    rt_doc: &mut RuntimeStateDoc,
+    execution_id: &str,
+    mut nbformat: serde_json::Value,
+) -> Result<()> {
+    nbformat["output_id"] = serde_json::Value::String(uuid::Uuid::new_v4().to_string());
+    rt_doc
+        .append_output(execution_id, &nbformat)
+        .map_err(|e| anyhow!("append_output: {e}"))?;
+    Ok(())
+}
+
+/// Apply one IOPub message to the local RuntimeStateDoc, routing by
+/// `parent_header.msg_id == execution_id`. Returns the encoded
+/// RUNTIME_STATE_SYNC frame to push to the room when the doc changed.
+fn apply_iopub(
+    msg: &JupyterMessage,
+    rt_doc: &mut RuntimeStateDoc,
+    rt_peer: &mut sync::State,
+    errored: &mut HashSet<String>,
+) -> Result<Option<Vec<u8>>> {
+    let Some(eid) = msg.parent_header.as_ref().map(|h| h.msg_id.clone()) else {
+        return Ok(None);
+    };
+    let mut changed = false;
+    match &msg.content {
+        JupyterMessageContent::ExecuteInput(input) => {
+            rt_doc
+                .set_execution_count(&eid, input.execution_count.0 as i64)
+                .map_err(|e| anyhow!("set_execution_count: {e}"))?;
+            changed = true;
+        }
+        JupyterMessageContent::Status(status) => match status.execution_state {
+            jupyter_protocol::ExecutionState::Busy => {
+                rt_doc
+                    .set_activity(KernelActivity::Busy)
+                    .map_err(|e| anyhow!("set_activity: {e}"))?;
+                changed = true;
+            }
+            jupyter_protocol::ExecutionState::Idle => {
+                rt_doc
+                    .set_activity(KernelActivity::Idle)
+                    .map_err(|e| anyhow!("set_activity: {e}"))?;
+                // No-op if eid is a non-execution parent (e.g. kernel_info).
+                let success = !errored.remove(&eid);
+                rt_doc
+                    .set_execution_done(&eid, success)
+                    .map_err(|e| anyhow!("set_execution_done: {e}"))?;
+                changed = true;
+            }
+            _ => {}
+        },
+        JupyterMessageContent::ErrorOutput(_) => {
+            errored.insert(eid.clone());
+            if let Some(nb) = kernel_host::content_to_nbformat(&msg.content) {
+                append_kernel_output(rt_doc, &eid, nb)?;
+                changed = true;
+            }
+        }
+        other => {
+            if let Some(nb) = kernel_host::content_to_nbformat(other) {
+                append_kernel_output(rt_doc, &eid, nb)?;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        Ok(rt_doc
+            .generate_sync_message(rt_peer)
+            .map(|m| frame(frame_types::RUNTIME_STATE_SYNC, &m.encode())))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Dispatch any queued executions the room created to the local kernel:
+/// queued -> running, then `execute_request`. Returns the RUNTIME_STATE_SYNC
+/// frame carrying the running transitions, if any.
+async fn dispatch_queued(
+    rt_doc: &mut RuntimeStateDoc,
+    rt_peer: &mut sync::State,
+    kernel: &mut kernel_host::Kernel,
+    dispatched: &mut HashSet<String>,
+) -> Result<Option<Vec<u8>>> {
+    let mut any = false;
+    for (eid, exec) in rt_doc.get_queued_executions() {
+        if dispatched.contains(&eid) {
+            continue;
+        }
+        let Some(source) = exec.source.clone() else {
+            continue; // the room must populate source on the queued execution
+        };
+        rt_doc
+            .set_execution_running(&eid)
+            .map_err(|e| anyhow!("set_execution_running: {e}"))?;
+        kernel
+            .execute(&eid, exec.cell_id.as_deref(), &source)
+            .await?;
+        dispatched.insert(eid.clone());
+        any = true;
+        info!("dispatched queued execution {eid} to kernel");
+    }
+    if any {
+        Ok(rt_doc
+            .generate_sync_message(rt_peer)
+            .map(|m| frame(frame_types::RUNTIME_STATE_SYNC, &m.encode())))
+    } else {
+        Ok(None)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -148,7 +277,7 @@ async fn main() -> Result<()> {
 
     // Standalone kernel-drive self-test: no cloud, no token. Proves the local
     // launch + execute + IOPub layer before wiring it into the room loop.
-    if cli.host_kernel {
+    if cli.kernel_self_test {
         let source = cli
             .add_cell
             .as_deref()
@@ -235,32 +364,60 @@ async fn main() -> Result<()> {
     let mut edited = false;
     let mut added_cell_id: Option<String> = None;
     let mut requested = false;
+    // Kernel-host (runtime_peer) state: the local kernel, the executions we've
+    // already dispatched to it, and which ones produced an error output.
+    let mut kernel: Option<kernel_host::Kernel> = None;
+    let mut dispatched: HashSet<String> = HashSet::new();
+    let mut errored: HashSet<String> = HashSet::new();
     let deadline =
         (cli.seconds > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(cli.seconds));
+
+    enum Ev {
+        Frame(Vec<u8>),
+        Iopub(JupyterMessage),
+        Closed,
+        Deadline,
+    }
     loop {
-        let msg = match deadline {
-            Some(d) => match tokio::time::timeout_at(d, ws.next()).await {
-                Ok(Some(m)) => m,
-                Ok(None) => break,
-                Err(_) => {
-                    info!("duration elapsed ({}s), closing", cli.seconds);
-                    break;
+        let ev = tokio::select! {
+            biased;
+            _ = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending::<()>().await,
                 }
+            } => Ev::Deadline,
+            m = ws.next() => match m {
+                Some(Ok(msg)) if msg.is_binary() => Ev::Frame(msg.into_data().to_vec()),
+                Some(Ok(msg)) if msg.is_close() => Ev::Closed,
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(e).context("websocket read"),
+                None => Ev::Closed,
             },
-            None => match ws.next().await {
-                Some(m) => m,
-                None => break,
+            io = next_iopub(&mut kernel), if kernel.is_some() => match io {
+                Some(msg) => Ev::Iopub(msg),
+                None => Ev::Closed,
             },
         };
-        let msg = msg.context("websocket read")?;
-        if !msg.is_binary() {
-            if msg.is_close() {
-                warn!("server closed the connection: {msg:?}");
+        let data = match ev {
+            Ev::Deadline => {
+                info!("duration elapsed ({}s), closing", cli.seconds);
                 break;
             }
-            continue;
-        }
-        let data = msg.into_data();
+            Ev::Closed => {
+                warn!("connection closed");
+                break;
+            }
+            Ev::Iopub(msg) => {
+                if let Some(rt_doc) = rt.as_mut() {
+                    if let Some(out) = apply_iopub(&msg, rt_doc, &mut rt_peer, &mut errored)? {
+                        ws.send(WsMessage::Binary(out.into())).await?;
+                    }
+                }
+                continue;
+            }
+            Ev::Frame(d) => d,
+        };
         let Some((&ftype, payload)) = data.split_first() else {
             warn!("empty frame");
             continue;
@@ -324,6 +481,34 @@ async fn main() -> Result<()> {
                 }
                 nb = Some(nb_doc);
                 rt = Some(rt_doc);
+
+                // Host a kernel for this room: launch it, mark the runtime
+                // Running(Idle), and push that so the viewer sees a live kernel.
+                // Queued executions are then dispatched in the RUNTIME_STATE_SYNC
+                // arm and their outputs stream back via the IOPub select arm.
+                if cli.host_kernel && kernel.is_none() {
+                    match kernel_host::Kernel::launch(&cli.python, cli.venv.as_deref()).await {
+                        Ok(mut k) => {
+                            if let Err(e) = k.wait_until_ready(Duration::from_secs(30)).await {
+                                warn!("kernel did not become ready: {e}");
+                            }
+                            if let Some(rt_doc) = rt.as_mut() {
+                                rt_doc
+                                    .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+                                    .map_err(|e| anyhow!("set_lifecycle: {e}"))?;
+                                if let Some(m) = rt_doc.generate_sync_message(&mut rt_peer) {
+                                    ws.send(WsMessage::Binary(
+                                        frame(frame_types::RUNTIME_STATE_SYNC, &m.encode()).into(),
+                                    ))
+                                    .await?;
+                                }
+                            }
+                            kernel = Some(k);
+                            info!("hosting kernel as runtime_peer; ready for queued executions");
+                        }
+                        Err(e) => warn!("kernel launch failed: {e}"),
+                    }
+                }
             }
             frame_types::AUTOMERGE_SYNC => {
                 let Some(nb_doc) = nb.as_mut() else {
@@ -419,9 +604,20 @@ async fn main() -> Result<()> {
                             .take(40)
                             .collect();
                         info!(
-                            "execution {id}: status={} seq={:?} source={src:?}",
-                            ex.status, ex.seq
+                            "execution {id}: status={} seq={:?} outputs={} source={src:?}",
+                            ex.status,
+                            ex.seq,
+                            ex.outputs.len()
                         );
+                    }
+                }
+
+                // Hosted-kernel runtime_peer: run any newly-queued executions.
+                if let Some(k) = kernel.as_mut() {
+                    if let Some(out) =
+                        dispatch_queued(rt_doc, &mut rt_peer, k, &mut dispatched).await?
+                    {
+                        ws.send(WsMessage::Binary(out.into())).await?;
                     }
                 }
             }
