@@ -173,6 +173,28 @@ credential or a short-lived room attachment ticket minted by the hosted service.
 The Durable Object authorizes the connection against the room ACL and provider
 bounds before accepting it.
 
+The attachment-ticket path is load-bearing for non-dev provider workstations.
+The current hosted identity layer validates dev credentials, Anaconda OIDC, and
+Anaconda API keys; it does not treat an Outerbounds or JupyterHub workstation's
+native credential as room authority. The minimum ticket contract should be:
+
+- notebook-host-issued, not provider-token passthrough;
+- signed by the hosted control plane or atomically stored and consumed by the
+  room Durable Object;
+- audience-bound to the target `/n/<notebook-id>/sync` attachment;
+- scoped to `runtime_peer`;
+- bound to notebook id, workstation id, runtime-peer principal, operator,
+  expiry, and nonce or connection id;
+- expires within seconds and is single use; and
+- maps to a principal that still needs an explicit `runtime_peer` ACL row.
+
+For early dev, a seeded `runtime_peer` ACL row plus
+`X-Notebook-Cloud-Dev-Token` and `X-Scope: runtime_peer` can stand in for this
+ticket. Before non-dev deployment, the ticket signer, audience, principal
+mapping, lifetime, and replay behavior should move into
+`hosted-credential-transport.md` alongside the existing service-token runtime
+peer open question.
+
 This preserves the existing hosted authority model:
 
 - Browser, desktop, or agent connections create notebook edits and execution
@@ -198,9 +220,16 @@ For `ExecuteCell`:
 5. The runtime peer runs the cell and updates only allowed runtime fields:
    kernel lifecycle, queue progress, status transitions, outputs, and blob refs.
 
-The existing runtime-doc policy already points in this direction: runtime peers
-may update accepted executions and queue projection, but they may not create
-execution records, rewrite room-host-owned fields, or edit `NotebookDoc`.
+The existing runtime-doc policy already enforces the runtime-peer side of this
+split. `validate_runtime_peer_runtime_delta` in
+`crates/runtime-doc/src/policy.rs` lets runtime peers update accepted
+executions and the queue projection, but rejects attempts to create execution
+records, rewrite room-host-owned fields, or edit `NotebookDoc`.
+
+The hosted room dispatch side is still v1 build work for workstations. The room
+host must define how editor/owner requests become queued RuntimeStateDoc
+execution records for the active target, and how the active runtime peer is
+selected for those accepted executions.
 
 Kernel lifecycle requests should follow the same split. The room host accepts
 `LaunchKernel`, `RestartKernel`, `InterruptExecution`, and `ShutdownKernel`
@@ -283,6 +312,15 @@ current-Python runtime process:
 The adapter may eventually become a native mode inside `runtimed`, but the v1
 contract should be clear before folding it into the daemon.
 
+One part of that v1 contract is net-new: an outbound authenticated
+`runtime_peer` sync client. The current Rust connection paths use local Unix
+sockets or Windows named pipes and `Handshake::RuntimeAgent`; there is no
+`wss://preview.runt.run/n/<id>/sync` dialer, remote `runtime_peer` handshake, or
+hosted credential/ticket presentation path in `runtimed` today. The writer side
+can reuse generic `AsyncWrite` plumbing, but the dialer, read path, auth
+handshake, reconnect behavior, and revocation close path need to be explicit
+implementation items rather than hidden inside the adapter step.
+
 ## Decision 7: Target selection is explicit room state
 
 Hosted rooms need an explicit active workstation target, distinct from access
@@ -310,6 +348,14 @@ Open detail: this state can live in a small room-host-owned portion of
 `SessionControl`. If it affects execution behavior or late-join rendering, it
 should become durable room-host-owned runtime state rather than only an
 ephemeral control message.
+
+Because target readiness affects execution dispatch and late joiners, the v1
+default should be room-host-owned runtime state. The doc agent may report
+provider facts over the control channel, but the room host writes the selected
+target, readiness, disconnect, and current-Python environment projection that
+viewers render. That keeps the design aligned with the current policy: `env`
+and other deployment facts are room-host/daemon-owned fields, not fields a
+`runtime_peer` may mutate directly.
 
 ## Decision 8: Content discovery and runtime attachment stay separate
 
@@ -459,20 +505,29 @@ Notebook contents flow over the room WebSocket after room authorization.
 5. **Catalog projection.** Project registered workstations into host-owned
    catalog data that can later feed PR #3380's Content rail contract, without
    making the rail responsible for runtime authority.
-6. **Room target selection.** Add owner/editor-controlled target selection for a
+6. **Attachment-ticket contract.** Define the notebook-host-issued
+   room-attachment ticket or equivalent non-dev service credential in
+   `hosted-credential-transport.md`, including signer, audience, principal
+   mapping, TTL, single-use semantics, and revocation hooks.
+7. **Outbound runtime-peer sync client.** Add a minimal authenticated
+   `wss://.../n/<id>/sync` client for doc agents, including credential/ticket
+   presentation, a remote runtime-peer handshake or equivalent, reconnect, and
+   revocation close behavior. Prove attach/detach and state sync before
+   executing cells.
+8. **Room target selection.** Add owner/editor-controlled target selection for a
    hosted room plus session-control/status messages that let the UI show the
    selected target and readiness.
-7. **Runtime peer attachment.** Let the control plane command the doc agent to
+9. **Runtime peer attachment.** Let the control plane command the doc agent to
    open a room WebSocket as `runtime_peer`, initially proving attach/detach and
    state sync without executing cells.
-8. **Hosted request dispatch.** Implement room-host handling for
+10. **Hosted request dispatch.** Implement room-host handling for
    `LaunchKernel`, `ExecuteCell`, `RunAllCells`, `InterruptExecution`, and
    `ShutdownKernel` against the active workstation target. The room host
    creates execution intent before the runtime peer sees work.
-9. **Remote execution adapter.** Bridge accepted hosted execution entries to a
+11. **Remote execution adapter.** Bridge accepted hosted execution entries to a
    colocated daemon or lightweight current-Python runtime agent and mirror
    progress/output/blob refs back to the hosted room.
-10. **End-to-end smoke.** Run provider-specific smokes:
+12. **End-to-end smoke.** Run provider-specific smokes:
     - Outerbounds: register target, attach to a `preview.runt.run` room,
       execute `socket.gethostname()` / `platform.platform()`, and verify the
       output came from the workstation.
