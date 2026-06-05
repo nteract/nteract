@@ -498,10 +498,13 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
   if (!notebookId) {
     return json({ error: "could not allocate notebook id" }, 500);
   }
-  const ownerPrincipal = await createNotebookWithOwnerAcl(env, notebookId, identity);
+  const notebookCreation = await createNotebookWithOwnerAcl(env, notebookId, identity);
+  if (!notebookCreation.created) {
+    return json({ error: "could not allocate notebook id" }, 500);
+  }
   cloudLog("info", "notebook.created", {
     notebook_id: notebookId,
-    owner_principal: ownerPrincipal,
+    owner_principal: notebookCreation.ownerPrincipal,
     actor_label: identity.actorLabel,
     source_notebook_id: sourceNotebookId,
     source_notebook_name: sourceNotebookName,
@@ -2076,14 +2079,16 @@ async function authorizePublishOrCreate(
     return authorizeIdentityOrResponse(env, notebookId, identity, "owner");
   }
 
-  const ownerPrincipal = await createNotebookWithOwnerAcl(env, notebookId, identity);
-  cloudLog("info", "notebook.created", {
-    notebook_id: notebookId,
-    owner_principal: ownerPrincipal,
-    actor_label: identity.actorLabel,
-    counter: "notebooks_created",
-    counter_delta: 1,
-  });
+  const notebookCreation = await createNotebookWithOwnerAcl(env, notebookId, identity);
+  if (notebookCreation.created) {
+    cloudLog("info", "notebook.created", {
+      notebook_id: notebookId,
+      owner_principal: notebookCreation.ownerPrincipal,
+      actor_label: identity.actorLabel,
+      counter: "notebooks_created",
+      counter_delta: 1,
+    });
+  }
   return authorizeIdentityOrResponse(env, notebookId, identity, "owner");
 }
 

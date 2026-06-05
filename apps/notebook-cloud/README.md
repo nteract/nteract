@@ -168,7 +168,9 @@ runt publish ./examples/markdown-harness.ipynb
 Hosted publishing uses `NTERACT_CLOUD_URL` for the cloud origin and
 `NTERACT_API_KEY` for bearer auth. `NTERACT_PUBLISH_URL`,
 `NOTEBOOK_CLOUD_URL`, and `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remain accepted
-aliases while the alpha publishing surface is settling.
+aliases while the alpha publishing surface is settling. `NOTEBOOK_CLOUD_NOTEBOOK_ID`
+only applies to the local npm publish scripts above; `runt publish` always asks
+the cloud to allocate the hosted notebook id.
 
 `smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
 the returned viewer URL and exported notebook/runtime heads, then runs

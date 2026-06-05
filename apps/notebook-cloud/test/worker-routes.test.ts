@@ -1653,10 +1653,12 @@ describe("Worker artifact routes", () => {
       new Request("http://localhost/n/race-demo/sync?user=bob&operator=desktop:b&scope=owner"),
     );
 
-    await createNotebookWithOwnerAcl(env, "race-demo", alice);
-    await createNotebookWithOwnerAcl(env, "race-demo", bob);
+    const aliceCreate = await createNotebookWithOwnerAcl(env, "race-demo", alice);
+    const bobCreate = await createNotebookWithOwnerAcl(env, "race-demo", bob);
 
     assert.deepEqual(env.DB.batchSizes.slice(-2), [2, 2]);
+    assert.deepEqual(aliceCreate, { ownerPrincipal: "user:dev:alice", created: true });
+    assert.deepEqual(bobCreate, { ownerPrincipal: "user:dev:bob", created: false });
     assert.equal(env.DB.notebooks.get("race-demo")?.owner_principal, "user:dev:alice");
     assert.equal(
       (await getNotebookAclRowsForPrincipal(env, "race-demo", "user:dev:alice")).length,
@@ -3267,7 +3269,7 @@ class FakeD1Statement implements D1PreparedStatement {
       const updatedAt = maybeUpdatedAt ?? createdAtOrUpdatedAt;
       const existing = this.db.notebooks.get(id);
       if (existing && this.query.includes("DO NOTHING")) {
-        return okResult();
+        return okResult(undefined, { changes: 0 });
       }
       this.db.notebooks.set(id, {
         id,
@@ -3277,6 +3279,7 @@ class FakeD1Statement implements D1PreparedStatement {
         updated_at: updatedAt,
         latest_revision_id: existing?.latest_revision_id ?? null,
       });
+      return okResult(undefined, { changes: 1 });
     } else if (this.query.includes("INSERT INTO notebook_revisions")) {
       const [
         id,
