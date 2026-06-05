@@ -283,6 +283,32 @@ describe("desktopNotebookShellCapabilities", () => {
     expect(localWithSharingHost.canManageSharing).toBe(false);
   });
 
+  it("returns stable frozen capabilities for equivalent desktop inputs", () => {
+    const input = {
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:alice/desktop:window",
+      connectionScope: "owner",
+      hostCapabilities: { canManageSharing: true },
+    };
+    const first = desktopNotebookShellCapabilities(input);
+    const second = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "user:anaconda:alice/desktop:window",
+      connectionScope: "owner",
+      hostCapabilities: { canManageSharing: true },
+    });
+
+    expect(first).toBe(second);
+    expect(first.access).toBe(second.access);
+    expect(first.auth).toBe(second.auth);
+    expect(first.runtime).toBe(second.runtime);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.access)).toBe(true);
+    expect(Object.isFrozen(first.runtime)).toBe(true);
+  });
+
   it("projects desktop agent actors without treating desktop as a single human", () => {
     const capabilities = desktopNotebookShellCapabilities({
       canAcceptCellMutations: true,

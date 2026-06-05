@@ -218,6 +218,9 @@ export {
   type ProjectNotebookShellCapabilitiesOptions,
 } from "./notebook-shell-capabilities";
 
+// Projection cache helpers
+export { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
+
 // Notebook interaction projection
 export {
   createNotebookInteractionStore,

@@ -343,6 +343,42 @@ test("cloud shell capabilities prefer OIDC display names and pictures over raw e
   assert.equal(capabilities.access.actor?.principal.imageUrl, "https://profiles.example/alice.png");
 });
 
+test("cloud shell capabilities return stable frozen objects for equivalent inputs", () => {
+  const oidcClaims = {
+    sub: "anaconda-user-123",
+    email: "alice@example.com",
+    email_verified: true,
+    name: "Alice Example",
+    picture: "https://profiles.example/alice.png",
+  };
+  const first = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner", oidcClaims),
+    connectionScope: "owner",
+    connectionActorLabel: "user:anaconda:alice/browser:tab",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+    hostCapabilities: { canManageSharing: true },
+  });
+  const second = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner", { ...oidcClaims }),
+    connectionScope: "owner",
+    connectionActorLabel: "user:anaconda:alice/browser:tab",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+    hostCapabilities: { canManageSharing: true },
+  });
+
+  assert.equal(first, second);
+  assert.equal(first.access, second.access);
+  assert.equal(first.auth, second.auth);
+  assert.equal(first.runtime, second.runtime);
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(first.access), true);
+  assert.equal(Object.isFrozen(first.runtime), true);
+});
+
 test("cloud shell capabilities keep runtime peer authority separate from document access", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc"),

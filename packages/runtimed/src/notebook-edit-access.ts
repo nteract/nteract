@@ -1,3 +1,5 @@
+import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
+
 export type NotebookEditMode = "view" | "edit";
 export type NotebookEditState = "viewing" | "requested" | "editing";
 
@@ -50,6 +52,16 @@ export interface ProjectNotebookRoomEditAccessOptions {
   editAccessRequestPending?: boolean;
 }
 
+const EDIT_ACCESS_CACHE = new Map<string, NotebookEditAccessProjection>();
+const ROOM_EDIT_ACCESS_CACHE = new Map<string, NotebookRoomEditAccessProjection>();
+const EDIT_ACCESS_CACHE_LIMIT = 128;
+const ROOM_EDIT_ACCESS_CACHE_LIMIT = 256;
+
+export function clearNotebookEditAccessProjectionCachesForTests(): void {
+  EDIT_ACCESS_CACHE.clear();
+  ROOM_EDIT_ACCESS_CACHE.clear();
+}
+
 export function projectNotebookEditAccess({
   hostSupport,
   permission,
@@ -69,18 +81,34 @@ export function projectNotebookEditAccess({
     : canActivateEdit
       ? "editing"
       : "requested";
+  const canEditMarkdown =
+    activeMode === "edit" && permission.canEditMarkdown && hostSupport.canEditMarkdown;
+  const canEditCells = activeMode === "edit" && permission.canEditCells && hostSupport.canEditCells;
+  const canEditStructure =
+    activeMode === "edit" && permission.canEditStructure && hostSupport.canEditStructure;
+  const cacheKey = stableCacheKey([
+    selectedMode,
+    activeMode,
+    state,
+    hostSupport.canRequestEdit,
+    canEditMarkdown,
+    canEditCells,
+    canEditStructure,
+  ]);
+  const cached = getBoundedCacheValue(EDIT_ACCESS_CACHE, cacheKey);
+  if (cached) return cached;
 
-  return {
+  const projection = Object.freeze({
     selectedMode,
     activeMode,
     state,
     canRequestEdit: hostSupport.canRequestEdit,
-    canEditMarkdown:
-      activeMode === "edit" && permission.canEditMarkdown && hostSupport.canEditMarkdown,
-    canEditCells: activeMode === "edit" && permission.canEditCells && hostSupport.canEditCells,
-    canEditStructure:
-      activeMode === "edit" && permission.canEditStructure && hostSupport.canEditStructure,
-  };
+    canEditMarkdown,
+    canEditCells,
+    canEditStructure,
+  });
+  setBoundedCacheValue(EDIT_ACCESS_CACHE, cacheKey, projection, EDIT_ACCESS_CACHE_LIMIT);
+  return projection;
 }
 
 export function projectNotebookRoomEditAccess({
@@ -111,8 +139,26 @@ export function projectNotebookRoomEditAccess({
       canRequestEdit,
     },
   });
+  const cacheKey = stableCacheKey([
+    interaction.selectedMode,
+    interaction.activeMode,
+    interaction.state,
+    interaction.canRequestEdit,
+    interaction.canEditMarkdown,
+    interaction.canEditCells,
+    interaction.canEditStructure,
+    selectedMode,
+    accessLevel,
+    requestedScope,
+    hasDocumentEditPermission,
+    selectedDocumentEditMode,
+    requestedDocumentEditAccess,
+    editAccessPending,
+  ]);
+  const cached = getBoundedCacheValue(ROOM_EDIT_ACCESS_CACHE, cacheKey);
+  if (cached) return cached;
 
-  return {
+  const projection = Object.freeze({
     ...interaction,
     inputSelectedMode: selectedMode,
     accessLevel,
@@ -121,7 +167,9 @@ export function projectNotebookRoomEditAccess({
     selectedDocumentEditMode,
     requestedDocumentEditAccess,
     editAccessPending,
-  };
+  });
+  setBoundedCacheValue(ROOM_EDIT_ACCESS_CACHE, cacheKey, projection, ROOM_EDIT_ACCESS_CACHE_LIMIT);
+  return projection;
 }
 
 export function notebookRoomAccessLevelCanEditDocument(

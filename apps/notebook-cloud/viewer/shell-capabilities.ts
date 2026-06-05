@@ -86,11 +86,26 @@ export function cloudNotebookShellCapabilities({
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
     identityLabel: isRuntimePeer ? identityLabel : null,
   };
-  const projection = projectNotebookShellCapabilities({
+  const accessActor = notebookActorProjectionWithPrincipalImage(
+    notebookActorProjectionFromAccess(access, auth),
+    identityImageUrl,
+  );
+  const runtimeActor = notebookActorProjectionWithPrincipalImage(
+    notebookActorProjectionFromRuntime(runtime, auth),
+    identityImageUrl,
+  );
+
+  return projectNotebookShellCapabilities({
     interaction,
-    access,
+    access: {
+      ...access,
+      actor: accessActor,
+    },
     auth,
-    runtime,
+    runtime: {
+      ...runtime,
+      actor: runtimeActor,
+    },
     controls: {
       canToggleCode: hasCodeCells,
     },
@@ -107,26 +122,6 @@ export function cloudNotebookShellCapabilities({
       requiresAuthenticatedIdentity: true,
     },
   });
-  const accessActor = notebookActorProjectionWithPrincipalImage(
-    notebookActorProjectionFromAccess(projection.access, projection.auth),
-    identityImageUrl,
-  );
-  const runtimeActor = notebookActorProjectionWithPrincipalImage(
-    notebookActorProjectionFromRuntime(projection.runtime, projection.auth),
-    identityImageUrl,
-  );
-
-  return {
-    ...projection,
-    access: {
-      ...projection.access,
-      actor: accessActor,
-    },
-    runtime: {
-      ...projection.runtime,
-      actor: runtimeActor,
-    },
-  };
 }
 
 function cloudIdentityDisplayLabel(authState: CloudPrototypeAuthState): string | null {

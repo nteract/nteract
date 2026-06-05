@@ -42,6 +42,11 @@ export function desktopNotebookShellCapabilities({
     interaction.canEditMarkdown && interaction.canEditCells && interaction.canEditStructure;
   const canWriteRuntimeState =
     sessionReady && (isRuntimePeer || (source === "local" && canWriteDocument));
+  const auth = {
+    canSignIn: false,
+    canUseAuthenticatedIdentity: source === "cloud" && Boolean(localActor),
+    needsAttention: false,
+  };
   const access = {
     level: accessLevel,
     source,
@@ -59,15 +64,17 @@ export function desktopNotebookShellCapabilities({
     actorLabel: canWriteRuntimeState ? localActor : null,
     identityLabel: null,
   };
-  const projection = projectNotebookShellCapabilities({
+  return projectNotebookShellCapabilities({
     interaction,
-    access,
-    auth: {
-      canSignIn: false,
-      canUseAuthenticatedIdentity: source === "cloud" && Boolean(localActor),
-      needsAttention: false,
+    access: {
+      ...access,
+      actor: notebookActorProjectionFromAccess(access, auth),
     },
-    runtime,
+    auth,
+    runtime: {
+      ...runtime,
+      actor: notebookActorProjectionFromRuntime(runtime, auth),
+    },
     controls: {
       canToggleCode: true,
     },
@@ -87,18 +94,6 @@ export function desktopNotebookShellCapabilities({
       requiredSources: ["cloud"],
     },
   });
-
-  return {
-    ...projection,
-    access: {
-      ...projection.access,
-      actor: notebookActorProjectionFromAccess(projection.access, projection.auth),
-    },
-    runtime: {
-      ...projection.runtime,
-      actor: notebookActorProjectionFromRuntime(projection.runtime, projection.auth),
-    },
-  };
 }
 
 function desktopAccessLevelFromConnectionScope(
