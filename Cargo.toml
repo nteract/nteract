@@ -13,6 +13,7 @@ members = [
     "crates/notebook-doc",
     "crates/runtime-doc",
     "crates/notebook-protocol",
+    "crates/notebook-cloud-transport",
     "crates/notebook-sync",
     "crates/nteract-identity",
     "crates/nteract-telemetry",
