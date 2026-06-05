@@ -961,10 +961,14 @@ function AppContent() {
 
   const getObservedHeads = useCallback(() => getHandle()?.get_heads_hex() ?? [], [getHandle]);
 
-  const showEnvBuildDialog = useCallback(() => {
+  const resetDismissedEnvBuildDetails = useCallback(() => {
     setDismissedEnvBuildDetails(null);
-    setEnvBuildDialogOpen(true);
   }, []);
+
+  const showEnvBuildDialog = useCallback(() => {
+    resetDismissedEnvBuildDetails();
+    setEnvBuildDialogOpen(true);
+  }, [resetDismissedEnvBuildDetails]);
 
   const getProjectEnvironmentFilePath = useCallback(() => {
     if (
@@ -1021,6 +1025,7 @@ function AppContent() {
     runAllCells: daemonRunAllCells,
     runAllCellsGuarded,
     getProjectEnvironmentFilePath,
+    resetDismissedEnvBuildDetails,
     showEnvBuildDialog,
   });
 

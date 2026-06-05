@@ -44,6 +44,7 @@ interface NotebookActionPolicyOptions {
   runAllCells: () => Promise<NotebookResponse>;
   runAllCellsGuarded: (provenance: GuardedNotebookProvenance) => Promise<NotebookResponse>;
   getProjectEnvironmentFilePath: () => string | undefined;
+  resetDismissedEnvBuildDetails: () => void;
   showEnvBuildDialog: () => void;
 }
 
@@ -162,6 +163,7 @@ export function useNotebookActionPolicy({
   runAllCells,
   runAllCellsGuarded,
   getProjectEnvironmentFilePath,
+  resetDismissedEnvBuildDetails,
   showEnvBuildDialog,
 }: NotebookActionPolicyOptions) {
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
@@ -514,6 +516,7 @@ export function useNotebookActionPolicy({
   }, [setBlockedTrustAction]);
 
   const handleEnvBuildCreate = useCallback(async () => {
+    resetDismissedEnvBuildDetails();
     setEnvBuildCreating(true);
     try {
       const approval = await approveProjectEnvironment(getProjectEnvironmentFilePath());
@@ -529,7 +532,13 @@ export function useNotebookActionPolicy({
     } finally {
       setEnvBuildCreating(false);
     }
-  }, [approveProjectEnvironment, getProjectEnvironmentFilePath, showEnvBuildDialog, tryStartKernel]);
+  }, [
+    approveProjectEnvironment,
+    getProjectEnvironmentFilePath,
+    resetDismissedEnvBuildDetails,
+    showEnvBuildDialog,
+    tryStartKernel,
+  ]);
 
   const handleStartKernelWithPyproject = useCallback(async () => {
     if (!canExecute) {
