@@ -28,7 +28,7 @@ const rendererAssetsWorker: ExportedHandler<RendererAssetsEnv> = {
     const assetUrl = new URL(request.url);
     assetUrl.pathname = assetPathname;
     const response = await env.ASSETS.fetch(new Request(assetUrl, request));
-    return withRendererAssetCors(new Response(response.body, response), { immutable: true });
+    return withRendererAssetCors(new Response(response.body, response), { revalidate: true });
   },
 };
 
@@ -70,14 +70,20 @@ function json(value: unknown, status = 200): Response {
 
 function withRendererAssetCors(
   response: Response,
-  options: { immutable?: boolean } = {},
+  options: { revalidate?: boolean } = {},
 ): Response {
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   response.headers.set("Access-Control-Allow-Headers", "Content-Type");
   response.headers.set("Timing-Allow-Origin", "*");
-  if (options.immutable && response.ok) {
-    response.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  // Renderer assets ship under stable, un-hashed filenames (runtimed_wasm_bg.wasm,
+  // runtimed_wasm.js, isolated-renderer.js), so each load must revalidate against
+  // the etag. `immutable` here pinned a stale WASM in every browser for a year
+  // across deploys, skewing fresh viewer JS against an old WASM (a missing
+  // encode_interaction_presence export). If these ever get content-hashed
+  // filenames, immutable becomes safe again.
+  if (options.revalidate && response.ok) {
+    response.headers.set("Cache-Control", "public, max-age=0, must-revalidate");
   }
   return response;
 }
