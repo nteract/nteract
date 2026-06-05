@@ -290,14 +290,15 @@ as a compatibility alias:
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
 NTERACT_API_KEY=... \
-runt publish --id topic-viz --vanity-name topic-viz ./topic-viz.ipynb
+runt publish --vanity-name topic-viz ./topic-viz.ipynb
 ```
 
-To publish an already-open daemon room, pass its notebook UUID instead of a
-file path, or use `--source-notebook-id`. This exports the active session's
-`NotebookDoc` and `RuntimeStateDoc` snapshot pair, so executed outputs and
-widget/runtime state are included. When `--id` is omitted for an active source,
-the hosted notebook id is generated as a ULID:
+Each hosted publish reserves a cloud notebook id before uploading snapshots. The
+cloud generates that id as a ULID; the vanity name only controls the readable
+path segment. To publish an already-open daemon room, pass its notebook UUID
+instead of a file path, or use `--source-notebook-id`. This exports the active
+session's `NotebookDoc` and `RuntimeStateDoc` snapshot pair, so executed outputs
+and widget/runtime state are included:
 
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
