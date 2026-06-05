@@ -4,6 +4,35 @@ A trail of the non-obvious calls behind making the daemon's `runtime_agent`
 transport-agnostic, so a future reader understands *why*. One entry per
 decision: what, the alternative, why.
 
+## PR stack status (2026-06-05)
+
+Phases 1–3a merged via #3411 (squashed into `main`). The work below is a stack of
+six PRs against `main`, each on the `quillaid/desktop` fork, base-chained in order
+(each stacked on the previous; review the *last* commit of each until the lower ones
+merge). All are pure-Rust or Rust+TS, fully unit-tested, with the desktop/UDS path
+left byte-for-byte unchanged. Every PR carries a STATUS section.
+
+| PR | Branch | Phase | What | NEEDS US |
+|----|--------|-------|------|----------|
+| #3413 | `quod/16-phase3b-connect-hardening` | 3b warm-up | cloud ready-wait timeout + framing-error flap floor (2 pullfrog gaps) | none |
+| #3414 | `quod/16-phase3b-reconnect-reauth` | 3b | `TokenRefresher` re-auth seam + `reconnect_with_backoff` tests | live re-auth proof |
+| #3417 | `quod/16-phase3c-spawn-path` | 3c CODE | `run_cloud_runtime_agent` spawn path + principal-derived doc actor | live cross-machine re-proof; CLI wiring |
+| #3418 | `quod/16-phase3e-policy-model` | 3e model | `kernel.last_seen` liveness heartbeat | `Disconnected` variant + policy relaxation (defer w/ 3d) |
+| #3419 | `quod/16-phase3f-writer-recovery` | 3f req #6 | writer-error reconnects instead of killing the kernel | — (req #5 inbound channel needs 3d) |
+| #3420 | `quod/16-phase3d-room-watchdog` | 3d CODE | DO `runtime_peer`-gone watchdog + `reconcile_runtime_peer_gone` | worker deploy + live peer-drop re-proof |
+
+CI: all Rust checks (Clippy, Rust Tests, Lint, runtimed-node) green on every PR. A
+**Browser E2E (Playwright)** flake intermittently fails #3414/#3417 — it's a frontend
+job unrelated to these Rust/TS-cloud changes (the shared base #3413 and sibling #3418
+passed it); needs a maintainer rerun (fork PRs can't self-rerun). The 4
+`room-materializer.test.ts` failures on #3420 are a pre-existing environmental baseline
+(reproduced on clean `origin/main`).
+
+**Only remaining headless-incomplete item:** 3f req #5 (inbound request channel) — it
+needs the 3d worker's hosted REQUEST dispatch + a live room, so it's NEEDS US, not
+buildable here. Everything else in the #16 plan is code-complete behind transport gates;
+what's left is the set of NEEDS-US live/deploy steps consolidated below per phase.
+
 ## Design
 
 1. **Make `runtime_agent` transport-agnostic; do not reimplement the kernel drive.**
