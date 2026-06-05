@@ -161,7 +161,21 @@ async fn main() -> Result<()> {
                     HeaderValue::from_str(&cli.user)?,
                 );
             }
-            // oidc-bearer and anaconda-api-key both present as a bearer.
+            // The Anaconda API-key path is also a bearer, but the cloud identity
+            // router only treats a bearer as an API key when the provider
+            // selector header is present; without it the key is parsed as OIDC
+            // and rejected.
+            "anaconda-api-key" => {
+                h.insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&format!("Bearer {token}"))?,
+                );
+                h.insert(
+                    HeaderName::from_static("x-notebook-cloud-auth-provider"),
+                    HeaderValue::from_static("anaconda-api-key"),
+                );
+            }
+            // oidc-bearer (default): plain bearer.
             _ => {
                 h.insert(
                     HeaderName::from_static("authorization"),
@@ -302,10 +316,19 @@ async fn main() -> Result<()> {
                         let cell_id =
                             format!("cell-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
                         if nb_doc.add_cell_after(&cell_id, "code", None).is_ok() {
-                            let _ = nb_doc.update_source(&cell_id, source);
-                            edited = true;
-                            added_cell_id = Some(cell_id.clone());
-                            info!("added code cell {cell_id} ({} chars)", source.len());
+                            // Only consider the cell added once its source is set.
+                            // Swallowing this would sync (and potentially run) an
+                            // empty cell while logging success.
+                            match nb_doc.update_source(&cell_id, source) {
+                                Ok(_) => {
+                                    edited = true;
+                                    added_cell_id = Some(cell_id.clone());
+                                    info!("added code cell {cell_id} ({} chars)", source.len());
+                                }
+                                Err(e) => {
+                                    warn!("update_source for {cell_id} failed: {e}; will retry");
+                                }
+                            }
                         }
                     }
                 }
@@ -379,6 +402,10 @@ async fn main() -> Result<()> {
             other => info!("frame 0x{other:02x} ({} bytes)", payload.len()),
         }
     }
+
+    // Close the socket cleanly so the room records a normal disconnect rather
+    // than a dropped connection. Best-effort: the server may have closed first.
+    let _ = ws.close(None).await;
 
     Ok(())
 }
