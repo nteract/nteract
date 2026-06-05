@@ -588,17 +588,42 @@ Load-bearing findings:
   room owns the `cells`/`metadata` maps and we receive them before editing
   (invariant #2 in `crates/notebook-doc/AGENTS.md`).
 
-Remaining for "run a cell" (the runtime half), not yet built:
+Built since (the runtime half):
 
-- **Hosted execution dispatch.** The room host drops `REQUEST` frames
-  (`receive_peer_frame` returns empty), and no scope can create an execution via
-  sync. Port the daemon's `ExecuteCell` dispatch
-  (`create_execution_with_source_provenance`) into `runtimed-wasm` so a run
-  request becomes a queued execution. Requires a preview redeploy.
+- **Hosted execution dispatch (#3399).** The room host turns an editor/owner
+  `ExecuteCell` `REQUEST` into a queued execution in RuntimeStateDoc
+  (`create_execution_with_source_provenance`), stamps the cell's `execution_id`,
+  and broadcasts both docs. Execution intent is created only by the room host:
+  clients request, the host writes (the RuntimeStateDoc policy forbids non-host
+  execution creation over sync). Idempotent on a double-run, and attributed to
+  the submitter's full `principal/operator` actor label. `--run-cell` here drives
+  it and observes the queued execution; verified end-to-end against preview. The
+  consumer-side receive on this client uses `receive_sync_message_with_changes`,
+  not the daemon-authoritative `receive_sync_message` (which strips incoming
+  changes) - otherwise the room's queued execution never lands locally.
+
+Remaining for "run a cell", not yet built:
+
+- **Request/response contract.** The cloud room acks `REQUEST` frames with
+  `cloud_frame_accepted` but does not emit a `RESPONSE` envelope, so await-based
+  callers (the viewer's `await executeCell`, which waits on `sendRequest` by id)
+  do not resolve. Needs cloud-room request/response plumbing (a `cell_queued` /
+  structured-error response keyed by the request id).
 - **Kernel-hosting runtime peer.** Add a mode to `runt-cloud-peer` that attaches
-  as `runtime_peer` (explicit ACL row via `POST /api/n/:id/acl`), watches
-  RuntimeStateDoc for queued executions, runs them in a Jupyter kernel (reusing
-  `runtime_agent` machinery), and streams `running -> outputs -> done` back.
+  as `runtime_peer` (explicit `runtime_peer` ACL row via `POST /api/n/:id/acl` -
+  owner alone is insufficient; `aclRowsCoverScope` special-cases the scope),
+  watches RuntimeStateDoc for queued executions, runs them in a Jupyter kernel,
+  and streams `running -> outputs -> done` back. Verified seam: do **not** depend
+  on the daemon's `JupyterKernel` (welded to daemon-only `KernelSharedRefs` -
+  BlobStore, broadcast channels, RuntimeStateHandle). Build a thin launch+drive
+  loop on the published `jupyter-protocol` + `jupyter-zmq-client` crates plus
+  `runtime-doc` (already a dependency): spawn `python -m ipykernel_launcher -f
+  <conn>` (`bootstrap_dx` off, stock launcher, no launcher cache), set the
+  execute_request `msg_id = execution_id` so IOPub `parent_header.msg_id` routes
+  outputs back, and write `set_execution_running` / `append_output` /
+  `set_execution_done` onto the owned RuntimeStateDoc, then
+  `generate_sync_message` to push back. Mirror the daemon's write order and the
+  control-plane/output-transport separation invariant.
 
 ## Open questions
 
