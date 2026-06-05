@@ -90,7 +90,7 @@ Severity legend:
 | ID | Smell | Severity | Where |
 |----|-------|----------|-------|
 | KE-1 | Captured env has no user-initiated rebuild/reset surface. Daemon lifecycle owns automatic repair, but lacks a `ResetNotebookEnvironment { RebuildSame | RefreshDefaults }` request for manual recovery and defaults refresh. | Design | `crates/runtimed/src/requests/`, `apps/notebook/src/components/DependencyHeader.tsx` |
-| CEL-1 | Captured environment lifecycle ADR requires typed disk states (`Missing`, `Partial`, `Usable`), but current source-resolution still uses the boolean-ish `unified_env_on_disk(...) -> Option<(PathBuf, PathBuf)>` path and filters launch config on `.is_some()`. This makes partial-dir routing and repair look accepted before it is implemented. | Design | `crates/runtimed/src/notebook_sync_server/metadata.rs`, `crates/runtimed/src/requests/launch_kernel.rs`, `docs/adr/captured-environment-lifecycle.md` |
+| ~~CEL-1~~ | **Done** in quill/lab1/miles/cel1-env-state. Captured unified env disk state is now typed as `Missing`, `Partial`, or `Usable`; source-resolution, launch-config filtering, and eviction preservation consume the typed state instead of probing `unified_env_on_disk(...).is_some()`. `Missing` preserves the previous fallback path, while both `Partial` and `Usable` route through captured prewarmed/unified handling so partial dirs reach captured repair and usable dirs remain cache hits. Guarded by UV and Conda tests for Missing/Partial/Usable disk states. | Done | `crates/runtimed/src/notebook_sync_server/metadata.rs`, `crates/runtimed/src/requests/launch_kernel.rs`, `docs/adr/captured-environment-lifecycle.md` |
 
 ## Blob storage
 
@@ -114,10 +114,10 @@ Severity legend:
 
 **Status legend:** Done = landed; Refuted = examined and rejected with rationale; Inline / Targeted / Design = open.
 
-- **Done:** WP-1, WP-2, WP-3, WP-5, WP-9, EP-2, EP-7, EP-12, BS-1, BS-8, BS-11, SE-1. Twelve landed across #2813, cleanup/inline-pass, targeted cleanup stacks, and the SE-1 read-side fix.
+- **Done:** WP-1, WP-2, WP-3, WP-5, WP-9, EP-2, EP-7, EP-12, BS-1, BS-8, BS-11, SE-1, CEL-1. Thirteen landed across #2813, cleanup/inline-pass, targeted cleanup stacks, the SE-1 read-side fix, and CEL-1 typed captured-env disk state.
 - **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
 - **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, WP-12, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2, HCA-1. Nineteen open.
-- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-5, 3D-6, 3D-7, 3D-8, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-4, HCA-5, HCA-6, KE-1, CEL-1. Twenty-nine open.
+- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-5, 3D-6, 3D-7, 3D-8, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-4, HCA-5, HCA-6, KE-1. Twenty-eight open.
 
 ## Next steps
 

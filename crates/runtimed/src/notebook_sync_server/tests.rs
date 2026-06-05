@@ -6520,7 +6520,7 @@ fn captured_env_source_override_returns_none_for_fresh_notebook_empty_deps() {
 
 /// Given a tmpdir pretending to be the UV cache, materialise a fake
 /// venv at `{cache}/{hash}/bin/python` for the given captured env so
-/// `unified_env_on_disk_in` finds it.
+/// `captured_env_disk_state_in` reports it as usable.
 fn materialise_fake_uv_venv(
     deps: &kernel_env::UvDependencies,
     env_id: &str,
@@ -6535,6 +6535,193 @@ fn materialise_fake_uv_venv(
     std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
     std::fs::write(&python_path, b"#!/bin/sh\n").unwrap();
     venv_path
+}
+
+fn materialise_fake_conda_env(
+    deps: &kernel_env::CondaDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+) -> PathBuf {
+    let hash = kernel_env::conda::compute_unified_env_hash(deps, env_id);
+    let env_path = cache_dir.join(&hash);
+    #[cfg(target_os = "windows")]
+    let python_path = env_path.join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let python_path = env_path.join("bin").join("python");
+    std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+    std::fs::write(&python_path, b"#!/bin/sh\n").unwrap();
+    env_path
+}
+
+fn materialise_partial_uv_venv(
+    deps: &kernel_env::UvDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+) -> PathBuf {
+    let hash = kernel_env::uv::compute_unified_env_hash(deps, env_id);
+    let venv_path = cache_dir.join(&hash);
+    std::fs::create_dir_all(&venv_path).unwrap();
+    venv_path
+}
+
+fn materialise_partial_conda_env(
+    deps: &kernel_env::CondaDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+) -> PathBuf {
+    let hash = kernel_env::conda::compute_unified_env_hash(deps, env_id);
+    let env_path = cache_dir.join(&hash);
+    std::fs::create_dir_all(&env_path).unwrap();
+    env_path
+}
+
+#[test]
+fn captured_env_disk_state_classifies_uv_missing_partial_usable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let uv_cache = tmp.path().join("uv");
+    let conda_cache = tmp.path().join("conda");
+    std::fs::create_dir_all(&uv_cache).unwrap();
+    std::fs::create_dir_all(&conda_cache).unwrap();
+
+    let deps = kernel_env::UvDependencies {
+        dependencies: vec!["pandas".to_string()],
+        requires_python: Some(">=3.11".to_string()),
+        prerelease: None,
+    };
+    let env_id = "uv-disk-state";
+    let captured = CapturedEnv::Uv {
+        deps: deps.clone(),
+        env_id: env_id.to_string(),
+    };
+
+    let missing = captured_env_disk_state_in(&captured, &uv_cache, &conda_cache);
+    assert!(matches!(missing, CapturedEnvDiskState::Missing { .. }));
+    assert!(!missing.is_captured_route());
+
+    let partial_path = materialise_partial_uv_venv(&deps, env_id, &uv_cache);
+    let partial = captured_env_disk_state_in(&captured, &uv_cache, &conda_cache);
+    assert!(matches!(partial, CapturedEnvDiskState::Partial { .. }));
+    assert_eq!(partial.env_path(), partial_path.as_path());
+    assert!(partial.is_captured_route());
+
+    let usable_path = materialise_fake_uv_venv(&deps, env_id, &uv_cache);
+    let usable = captured_env_disk_state_in(&captured, &uv_cache, &conda_cache);
+    assert!(matches!(usable, CapturedEnvDiskState::Usable { .. }));
+    assert_eq!(usable.env_path(), usable_path.as_path());
+    assert!(usable.is_captured_route());
+}
+
+#[test]
+fn captured_env_disk_state_classifies_conda_missing_partial_usable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let uv_cache = tmp.path().join("uv");
+    let conda_cache = tmp.path().join("conda");
+    std::fs::create_dir_all(&uv_cache).unwrap();
+    std::fs::create_dir_all(&conda_cache).unwrap();
+
+    let deps = kernel_env::CondaDependencies {
+        dependencies: vec!["scipy".to_string()],
+        channels: vec!["conda-forge".to_string()],
+        python: Some("3.11".to_string()),
+        env_id: None,
+    };
+    let env_id = "conda-disk-state";
+    let captured = CapturedEnv::Conda {
+        deps: deps.clone(),
+        env_id: env_id.to_string(),
+    };
+
+    let missing = captured_env_disk_state_in(&captured, &uv_cache, &conda_cache);
+    assert!(matches!(missing, CapturedEnvDiskState::Missing { .. }));
+    assert!(!missing.is_captured_route());
+
+    let partial_path = materialise_partial_conda_env(&deps, env_id, &conda_cache);
+    let partial = captured_env_disk_state_in(&captured, &uv_cache, &conda_cache);
+    assert!(matches!(partial, CapturedEnvDiskState::Partial { .. }));
+    assert_eq!(partial.env_path(), partial_path.as_path());
+    assert!(partial.is_captured_route());
+
+    let usable_path = materialise_fake_conda_env(&deps, env_id, &conda_cache);
+    let usable = captured_env_disk_state_in(&captured, &uv_cache, &conda_cache);
+    assert!(matches!(usable, CapturedEnvDiskState::Usable { .. }));
+    assert_eq!(usable.env_path(), usable_path.as_path());
+    assert!(usable.is_captured_route());
+}
+
+#[test]
+fn captured_env_source_override_in_routes_uv_partial_and_usable_but_not_missing() {
+    use notebook_protocol::connection::{EnvSource, PackageManager};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let uv_cache = tmp.path().join("uv");
+    let conda_cache = tmp.path().join("conda");
+    std::fs::create_dir_all(&uv_cache).unwrap();
+    std::fs::create_dir_all(&conda_cache).unwrap();
+
+    let mut snap = NotebookMetadataSnapshot::default();
+    snap.runt.env_id = Some("uv-override-disk-state".to_string());
+    snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+        dependencies: vec!["pandas".to_string()],
+        requires_python: Some(">=3.11".to_string()),
+        prerelease: None,
+    });
+
+    let missing = resolve_captured_env_override_in(Some(&snap), &uv_cache, &conda_cache);
+    assert_eq!(missing.0, None);
+    assert!(missing.1.is_none());
+
+    let captured = captured_env_for_runtime(Some(&snap), CapturedEnvRuntime::Uv).unwrap();
+    let CapturedEnv::Uv { deps, env_id } = captured else {
+        unreachable!("runtime-specific lookup returned UV capture");
+    };
+
+    materialise_partial_uv_venv(&deps, &env_id, &uv_cache);
+    let partial = resolve_captured_env_override_in(Some(&snap), &uv_cache, &conda_cache);
+    assert_eq!(partial.0, Some(EnvSource::Prewarmed(PackageManager::Uv)));
+    assert!(matches!(partial.1, Some(CapturedEnv::Uv { .. })));
+
+    materialise_fake_uv_venv(&deps, &env_id, &uv_cache);
+    let usable = resolve_captured_env_override_in(Some(&snap), &uv_cache, &conda_cache);
+    assert_eq!(usable.0, Some(EnvSource::Prewarmed(PackageManager::Uv)));
+    assert!(matches!(usable.1, Some(CapturedEnv::Uv { .. })));
+}
+
+#[test]
+fn captured_env_source_override_in_routes_conda_partial_and_usable_but_not_missing() {
+    use notebook_protocol::connection::{EnvSource, PackageManager};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let uv_cache = tmp.path().join("uv");
+    let conda_cache = tmp.path().join("conda");
+    std::fs::create_dir_all(&uv_cache).unwrap();
+    std::fs::create_dir_all(&conda_cache).unwrap();
+
+    let mut snap = NotebookMetadataSnapshot::default();
+    snap.runt.env_id = Some("conda-override-disk-state".to_string());
+    snap.runt.conda = Some(notebook_doc::metadata::CondaInlineMetadata {
+        dependencies: vec!["scipy".to_string()],
+        channels: vec!["conda-forge".to_string()],
+        python: Some("3.11".to_string()),
+    });
+
+    let missing = resolve_captured_env_override_in(Some(&snap), &uv_cache, &conda_cache);
+    assert_eq!(missing.0, None);
+    assert!(missing.1.is_none());
+
+    let captured = captured_env_for_runtime(Some(&snap), CapturedEnvRuntime::Conda).unwrap();
+    let CapturedEnv::Conda { deps, env_id } = captured else {
+        unreachable!("runtime-specific lookup returned Conda capture");
+    };
+
+    materialise_partial_conda_env(&deps, &env_id, &conda_cache);
+    let partial = resolve_captured_env_override_in(Some(&snap), &uv_cache, &conda_cache);
+    assert_eq!(partial.0, Some(EnvSource::Prewarmed(PackageManager::Conda)));
+    assert!(matches!(partial.1, Some(CapturedEnv::Conda { .. })));
+
+    materialise_fake_conda_env(&deps, &env_id, &conda_cache);
+    let usable = resolve_captured_env_override_in(Some(&snap), &uv_cache, &conda_cache);
+    assert_eq!(usable.0, Some(EnvSource::Prewarmed(PackageManager::Conda)));
+    assert!(matches!(usable.1, Some(CapturedEnv::Conda { .. })));
 }
 
 #[test]
@@ -6900,24 +7087,6 @@ async fn rename_env_dir_noop_when_no_captured_metadata() {
 
     assert_eq!(returned, some_path);
     assert!(some_path.exists());
-}
-
-/// Given a tmpdir pretending to be the Conda cache, materialise a
-/// fake env at `{cache}/{hash}/bin/python`.
-fn materialise_fake_conda_env(
-    deps: &kernel_env::CondaDependencies,
-    env_id: &str,
-    cache_dir: &Path,
-) -> PathBuf {
-    let hash = kernel_env::conda::compute_unified_env_hash(deps, env_id);
-    let env_path = cache_dir.join(&hash);
-    #[cfg(target_os = "windows")]
-    let python_path = env_path.join("python.exe");
-    #[cfg(not(target_os = "windows"))]
-    let python_path = env_path.join("bin").join("python");
-    std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
-    std::fs::write(&python_path, b"#!/bin/sh\n").unwrap();
-    env_path
 }
 
 /// Regression: conda-only notebook with env_id set must not route
