@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildCloudShareAccessRows,
+  clearCloudShareAccessRowsCachesForTests,
   cloudShareAccessSummary,
   hasPublicViewerAccess,
   normalizeShareInviteEmail,
@@ -123,6 +124,44 @@ describe("cloud viewer sharing client", () => {
       rows.map((row) => row.title),
       ["user:dev:fixture", "user:anaconda:alice%40example.com"],
     );
+  });
+
+  it("returns stable frozen rows for equivalent sharing payloads", () => {
+    clearCloudShareAccessRowsCachesForTests();
+    const acl = [
+      aclRow({
+        subject: "user:anaconda:alice",
+        scope: "owner",
+        display: {
+          kind: "principal",
+          label: "Alice Owner",
+          principal: "user:anaconda:alice",
+          email: "alice@example.com",
+        },
+      }),
+    ];
+    const invites = [inviteRow({ id: "invite-stable", email: "bob@example.com" })];
+    const accessRequests = [accessRequestRow({ id: "request-stable" })];
+
+    const first = buildCloudShareAccessRows({ acl, invites, accessRequests });
+    const second = buildCloudShareAccessRows({
+      acl: [{ ...acl[0], display: acl[0].display ? { ...acl[0].display } : undefined }],
+      invites: [{ ...invites[0] }],
+      accessRequests: [{ ...accessRequests[0] }],
+    });
+    const changed = buildCloudShareAccessRows({
+      acl: [{ ...acl[0], updated_at: "2026-05-29T00:00:00.000Z" }],
+      invites,
+      accessRequests,
+    });
+
+    assert.equal(first, second);
+    assert.equal(first[0], second[0]);
+    assert.equal(first[1], second[1]);
+    assert.equal(Object.isFrozen(first), true);
+    assert.equal(Object.isFrozen(first[0]), true);
+    assert.notEqual(first, changed);
+    assert.notEqual(first[0], changed[0]);
   });
 
   it("keeps share invite email validation in the viewer before owner mutations", () => {

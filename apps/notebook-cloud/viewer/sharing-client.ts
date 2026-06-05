@@ -1,3 +1,9 @@
+import {
+  getBoundedCacheValue,
+  setBoundedCacheValue,
+  stableCacheKey,
+} from "runtimed/src/projection-cache";
+
 export type CloudShareScope = "viewer" | "editor" | "runtime_peer" | "owner";
 export type CloudShareInviteScope = "viewer" | "editor";
 export type CloudInviteStatus = "pending" | "accepted" | "revoked" | "expired";
@@ -104,66 +110,137 @@ export type CloudShareAccessRow =
       removable: boolean;
     };
 
+const SHARE_ACCESS_ROW_CACHE = new Map<string, CloudShareAccessRow>();
+const SHARE_ACCESS_ROWS_CACHE = new Map<string, CloudShareAccessRow[]>();
+const SHARE_ACCESS_ROW_CACHE_LIMIT = 512;
+const SHARE_ACCESS_ROWS_CACHE_LIMIT = 128;
+
+export function clearCloudShareAccessRowsCachesForTests(): void {
+  SHARE_ACCESS_ROW_CACHE.clear();
+  SHARE_ACCESS_ROWS_CACHE.clear();
+}
+
 export function buildCloudShareAccessRows(input: {
   acl: CloudNotebookAclRow[];
   invites: CloudNotebookInvite[];
   accessRequests?: CloudNotebookAccessRequest[];
 }): CloudShareAccessRow[] {
   const rows: CloudShareAccessRow[] = [];
+  const rowKeys: string[] = [];
 
   for (const acl of [...input.acl].sort(compareAclRows)) {
-    rows.push({
-      id: `acl:${acl.subject_kind}:${acl.subject}:${acl.scope}`,
-      kind: "acl",
-      acl,
-      label: labelForAcl(acl),
-      detail: detailForAcl(acl),
-      title: titleForAcl(acl),
-      scope: acl.scope,
-      badge: scopeLabel(acl.scope),
-      stateLabel: acl.subject_kind === "public" ? "Enabled" : null,
-      stateTone: acl.subject_kind === "public" ? "success" : null,
-      removable: acl.subject_kind === "public" || acl.scope !== "owner",
-    });
+    const id = `acl:${acl.subject_kind}:${acl.subject}:${acl.scope}`;
+    const label = labelForAcl(acl);
+    const detail = detailForAcl(acl);
+    const title = titleForAcl(acl);
+    const badge = scopeLabel(acl.scope);
+    const stateLabel = acl.subject_kind === "public" ? "Enabled" : null;
+    const stateTone = acl.subject_kind === "public" ? "success" : null;
+    const removable = acl.subject_kind === "public" || acl.scope !== "owner";
+    const rowKey = stableCacheKey([
+      "acl",
+      cloudNotebookAclRowCacheKey(acl),
+      id,
+      label,
+      detail,
+      title,
+      acl.scope,
+      badge,
+      stateLabel,
+      stateTone,
+      removable,
+    ]);
+    rows.push(
+      cachedCloudShareAccessRow(rowKey, () => ({
+        id,
+        kind: "acl",
+        acl,
+        label,
+        detail,
+        title,
+        scope: acl.scope,
+        badge,
+        stateLabel,
+        stateTone,
+        removable,
+      })),
+    );
+    rowKeys.push(rowKey);
   }
 
   for (const invite of input.invites.filter((candidate) => candidate.status === "pending")) {
-    rows.push({
-      id: `invite:${invite.id}`,
-      kind: "invite",
-      invite,
-      label: displayEmail(invite.display?.label || invite.email),
-      detail: invite.provider_hint
-        ? `Pending invite via ${invite.provider_hint}`
-        : "Pending invite",
-      title: invite.email,
-      scope: invite.scope,
-      badge: scopeLabel(invite.scope),
-      stateLabel: "Pending",
-      stateTone: "pending",
-      removable: true,
-    });
+    const id = `invite:${invite.id}`;
+    const label = displayEmail(invite.display?.label || invite.email);
+    const detail = invite.provider_hint
+      ? `Pending invite via ${invite.provider_hint}`
+      : "Pending invite";
+    const title = invite.email;
+    const badge = scopeLabel(invite.scope);
+    const rowKey = stableCacheKey([
+      "invite",
+      cloudNotebookInviteCacheKey(invite),
+      id,
+      label,
+      detail,
+      title,
+      invite.scope,
+      badge,
+    ]);
+    rows.push(
+      cachedCloudShareAccessRow(rowKey, () => ({
+        id,
+        kind: "invite",
+        invite,
+        label,
+        detail,
+        title,
+        scope: invite.scope,
+        badge,
+        stateLabel: "Pending",
+        stateTone: "pending",
+        removable: true,
+      })),
+    );
+    rowKeys.push(rowKey);
   }
 
   for (const request of (input.accessRequests ?? []).filter(
     (candidate) => candidate.status === "pending",
   )) {
-    rows.push({
-      id: `access-request:${request.id}`,
-      kind: "access_request",
-      accessRequest: request,
-      label: labelForAccessRequest(request),
-      detail: "Requested edit access",
-      title: titleForAccessRequest(request),
-      scope: request.scope,
-      badge: scopeLabel(request.scope),
-      stateLabel: "Requested",
-      stateTone: "pending",
-      removable: false,
-    });
+    const id = `access-request:${request.id}`;
+    const label = labelForAccessRequest(request);
+    const detail = "Requested edit access";
+    const title = titleForAccessRequest(request);
+    const badge = scopeLabel(request.scope);
+    const rowKey = stableCacheKey([
+      "access_request",
+      cloudNotebookAccessRequestCacheKey(request),
+      id,
+      label,
+      detail,
+      title,
+      request.scope,
+      badge,
+    ]);
+    rows.push(
+      cachedCloudShareAccessRow(rowKey, () => ({
+        id,
+        kind: "access_request",
+        accessRequest: request,
+        label,
+        detail,
+        title,
+        scope: request.scope,
+        badge,
+        stateLabel: "Requested",
+        stateTone: "pending",
+        removable: false,
+      })),
+    );
+    rowKeys.push(rowKey);
   }
 
-  return rows;
+  return cachedCloudShareAccessRows(rowKeys, rows);
 }
 
 export function cloudShareAccessSummary(rows: CloudShareAccessRow[]): string | null {
@@ -339,4 +416,93 @@ function compareAclRows(a: CloudNotebookAclRow, b: CloudNotebookAclRow): number 
   const rankDelta = rank(a) - rank(b);
   if (rankDelta !== 0) return rankDelta;
   return `${labelForAcl(a)}:${a.scope}`.localeCompare(`${labelForAcl(b)}:${b.scope}`);
+}
+
+function cachedCloudShareAccessRow<Row extends CloudShareAccessRow>(
+  cacheKey: string,
+  createRow: () => Row,
+): Row {
+  const cached = getBoundedCacheValue(SHARE_ACCESS_ROW_CACHE, cacheKey);
+  if (cached) return cached as Row;
+
+  const row = Object.freeze(createRow()) as Row;
+  setBoundedCacheValue(SHARE_ACCESS_ROW_CACHE, cacheKey, row, SHARE_ACCESS_ROW_CACHE_LIMIT);
+  return row;
+}
+
+function cachedCloudShareAccessRows(
+  rowKeys: readonly string[],
+  rows: readonly CloudShareAccessRow[],
+): CloudShareAccessRow[] {
+  const cacheKey = stableCacheKey(rowKeys);
+  const cached = getBoundedCacheValue(SHARE_ACCESS_ROWS_CACHE, cacheKey);
+  if (cached) return cached;
+
+  const stableRows = Object.freeze([...rows]) as CloudShareAccessRow[];
+  setBoundedCacheValue(
+    SHARE_ACCESS_ROWS_CACHE,
+    cacheKey,
+    stableRows,
+    SHARE_ACCESS_ROWS_CACHE_LIMIT,
+  );
+  return stableRows;
+}
+
+function cloudNotebookAclRowCacheKey(row: CloudNotebookAclRow): string {
+  return stableCacheKey([
+    row.notebook_id,
+    row.subject_kind,
+    row.subject,
+    row.scope,
+    row.created_at,
+    row.updated_at,
+    row.created_by_actor_label,
+    cloudShareDisplayCacheKey(row.display),
+  ]);
+}
+
+function cloudNotebookInviteCacheKey(invite: CloudNotebookInvite): string {
+  return stableCacheKey([
+    invite.id,
+    invite.notebook_id,
+    invite.email,
+    invite.provider_hint,
+    invite.scope,
+    invite.status,
+    invite.invited_by_actor_label,
+    invite.accepted_by_principal,
+    invite.created_at,
+    invite.expires_at,
+    invite.accepted_at,
+    invite.revoked_at,
+    invite.revoked_by_actor_label,
+    cloudShareDisplayCacheKey(invite.display),
+  ]);
+}
+
+function cloudNotebookAccessRequestCacheKey(request: CloudNotebookAccessRequest): string {
+  return stableCacheKey([
+    request.id,
+    request.notebook_id,
+    request.requester_principal,
+    request.scope,
+    request.status,
+    request.requested_by_actor_label,
+    request.resolved_by_actor_label,
+    request.created_at,
+    request.updated_at,
+    request.resolved_at,
+    cloudShareDisplayCacheKey(request.display),
+  ]);
+}
+
+function cloudShareDisplayCacheKey(display: CloudShareDisplay | undefined): string | null {
+  if (!display) return null;
+  if (display.kind === "principal") {
+    return stableCacheKey([display.kind, display.label, display.principal, display.email]);
+  }
+  if (display.kind === "pending_invite") {
+    return stableCacheKey([display.kind, display.label, display.email]);
+  }
+  return stableCacheKey([display.kind, display.label]);
 }
