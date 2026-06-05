@@ -121,6 +121,75 @@ const SHELL_RUNTIME_CACHE = new Map<string, NotebookShellRuntimeCapabilities>();
 const SHELL_CAPABILITIES_CACHE = new Map<string, NotebookShellCapabilities>();
 const SHELL_PART_CACHE_LIMIT = 256;
 const SHELL_CAPABILITIES_CACHE_LIMIT = 512;
+const NOTEBOOK_EDIT_ACCESS_FIELDS = {
+  selectedMode: true,
+  activeMode: true,
+  state: true,
+  canRequestEdit: true,
+  canEditMarkdown: true,
+  canEditCells: true,
+  canEditStructure: true,
+} satisfies Record<keyof NotebookEditAccessProjection, true>;
+const NOTEBOOK_ROOM_EDIT_ACCESS_FIELDS = {
+  selectedMode: true,
+  activeMode: true,
+  state: true,
+  canRequestEdit: true,
+  canEditMarkdown: true,
+  canEditCells: true,
+  canEditStructure: true,
+  inputSelectedMode: true,
+  accessLevel: true,
+  requestedScope: true,
+  hasDocumentEditPermission: true,
+  selectedDocumentEditMode: true,
+  requestedDocumentEditAccess: true,
+  editAccessPending: true,
+} satisfies Record<keyof NotebookRoomEditAccessProjection, true>;
+const NOTEBOOK_SHELL_ACCESS_FIELDS = {
+  level: true,
+  source: true,
+  isPublic: true,
+  actorLabel: true,
+  identityLabel: true,
+  actor: true,
+} satisfies Record<keyof NotebookShellAccessCapabilities, true>;
+const NOTEBOOK_SHELL_AUTH_FIELDS = {
+  canSignIn: true,
+  canUseAuthenticatedIdentity: true,
+  needsAttention: true,
+} satisfies Record<keyof NotebookShellAuthCapabilities, true>;
+const NOTEBOOK_SHELL_RUNTIME_FIELDS = {
+  canWriteRuntimeState: true,
+  connected: true,
+  executionAvailable: true,
+  source: true,
+  actorLabel: true,
+  identityLabel: true,
+  actor: true,
+} satisfies Record<keyof NotebookShellRuntimeCapabilities, true>;
+const NOTEBOOK_ACTOR_PROJECTION_FIELDS = {
+  actorLabel: true,
+  principal: true,
+  operator: true,
+  scope: true,
+  status: true,
+} satisfies Record<keyof NotebookActorProjection, true>;
+const NOTEBOOK_ACTOR_PRINCIPAL_FIELDS = {
+  id: true,
+  label: true,
+  imageUrl: true,
+  source: true,
+} satisfies Record<keyof NotebookActorProjection["principal"], true>;
+const NOTEBOOK_ACTOR_PRINCIPAL_SOURCE_FIELDS = {
+  provider: true,
+  namespace: true,
+} satisfies Record<keyof NonNullable<NotebookActorProjection["principal"]["source"]>, true>;
+const NOTEBOOK_ACTOR_OPERATOR_FIELDS = {
+  id: true,
+  kind: true,
+  label: true,
+} satisfies Record<keyof NotebookActorProjection["operator"], true>;
 
 const READ_ONLY_INTERACTION: NotebookEditAccessProjection = Object.freeze({
   selectedMode: "view",
@@ -299,6 +368,7 @@ function notebookShellCanManageSharing({
 function stableNotebookShellAccessCapabilities(
   access: NotebookShellAccessCapabilities,
 ): NotebookShellAccessCapabilities {
+  void NOTEBOOK_SHELL_ACCESS_FIELDS;
   const cacheKey = notebookShellAccessCacheKey(access);
   const cached = getBoundedCacheValue(SHELL_ACCESS_CACHE, cacheKey);
   if (cached) return cached;
@@ -318,6 +388,7 @@ function stableNotebookShellAccessCapabilities(
 function stableNotebookShellAuthCapabilities(
   auth: NotebookShellAuthCapabilities,
 ): NotebookShellAuthCapabilities {
+  void NOTEBOOK_SHELL_AUTH_FIELDS;
   const cacheKey = notebookShellAuthCacheKey(auth);
   const cached = getBoundedCacheValue(SHELL_AUTH_CACHE, cacheKey);
   if (cached) return cached;
@@ -334,6 +405,7 @@ function stableNotebookShellAuthCapabilities(
 function stableNotebookShellRuntimeCapabilities(
   runtime: NotebookShellRuntimeCapabilities,
 ): NotebookShellRuntimeCapabilities {
+  void NOTEBOOK_SHELL_RUNTIME_FIELDS;
   const cacheKey = notebookShellRuntimeCacheKey(runtime);
   const cached = getBoundedCacheValue(SHELL_RUNTIME_CACHE, cacheKey);
   if (cached) return cached;
@@ -354,6 +426,8 @@ function stableNotebookShellRuntimeCapabilities(
 function notebookShellInteractionCacheKey(
   interaction: NotebookEditAccessProjection | NotebookRoomEditAccessProjection,
 ): string {
+  void NOTEBOOK_EDIT_ACCESS_FIELDS;
+  void NOTEBOOK_ROOM_EDIT_ACCESS_FIELDS;
   const roomFields =
     "accessLevel" in interaction
       ? [
@@ -379,6 +453,7 @@ function notebookShellInteractionCacheKey(
 }
 
 function notebookShellAccessCacheKey(access: NotebookShellAccessCapabilities): string {
+  void NOTEBOOK_SHELL_ACCESS_FIELDS;
   return stableCacheKey([
     access.level,
     access.source,
@@ -390,10 +465,12 @@ function notebookShellAccessCacheKey(access: NotebookShellAccessCapabilities): s
 }
 
 function notebookShellAuthCacheKey(auth: NotebookShellAuthCapabilities): string {
+  void NOTEBOOK_SHELL_AUTH_FIELDS;
   return stableCacheKey([auth.canSignIn, auth.canUseAuthenticatedIdentity, auth.needsAttention]);
 }
 
 function notebookShellRuntimeCacheKey(runtime: NotebookShellRuntimeCapabilities): string {
+  void NOTEBOOK_SHELL_RUNTIME_FIELDS;
   return stableCacheKey([
     runtime.canWriteRuntimeState,
     runtime.connected,
@@ -408,6 +485,10 @@ function notebookShellRuntimeCacheKey(runtime: NotebookShellRuntimeCapabilities)
 function notebookActorProjectionCacheKey(
   actor: NotebookActorProjection | null | undefined,
 ): string {
+  void NOTEBOOK_ACTOR_PROJECTION_FIELDS;
+  void NOTEBOOK_ACTOR_PRINCIPAL_FIELDS;
+  void NOTEBOOK_ACTOR_PRINCIPAL_SOURCE_FIELDS;
+  void NOTEBOOK_ACTOR_OPERATOR_FIELDS;
   if (actor === undefined) return "undefined";
   if (actor === null) return "null";
   return stableCacheKey([
