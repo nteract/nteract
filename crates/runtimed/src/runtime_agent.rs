@@ -53,13 +53,38 @@ use crate::protocol::QueueEntry;
 mod echo_suppression;
 use echo_suppression::EchoSuppressor;
 
-/// Minimum interval between clean-EOF reconnect cycles on a recoverable
-/// transport. `reconnect_with_backoff` only delays between *failed* connects;
-/// this floor stops a sink that accepts a connection and then immediately
-/// closes cleanly (a flapping/evicting cloud room) from spinning a reconnect
-/// storm at network-RTT rate. Unused by the UDS transport (which tears down on
-/// clean EOF rather than reconnecting).
-const CLEAN_EOF_RECONNECT_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
+/// Minimum interval between reconnect cycles on a recoverable transport,
+/// covering *both* recoverable-failure arms: a clean EOF and a stream framing
+/// error. `reconnect_with_backoff` only delays between *failed* connects, so a
+/// room that accepts the connection and then immediately ends the stream every
+/// cycle — by closing cleanly (clean-EOF arm) or by erroring the stream
+/// (framing-error arm) — would otherwise spin a reconnect storm at network-RTT
+/// rate, a self-inflicted DoS on the room. The floor throttles the combined
+/// reconnect rate regardless of which failure mode recurs. Unused by the UDS
+/// transport (which tears down on clean EOF, and whose framing-error reconnect
+/// is gated out of the floor by `clean_eof_is_recoverable() == false`).
+const RECOVERABLE_RECONNECT_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long to sleep before a reconnect to enforce [`RECOVERABLE_RECONNECT_FLOOR`].
+///
+/// Pure so the flap-floor policy is unit-testable away from the agent's
+/// `select!` loop. Returns `None` (reconnect immediately) when the transport is
+/// not recoverable — keeping the UDS path's framing-error reconnect byte-for-byte
+/// unchanged — or when enough time has already elapsed since the last
+/// recoverable reconnect. Otherwise returns the remaining time to wait out.
+fn reconnect_floor_delay(
+    recoverable: bool,
+    since_last_reconnect: Option<std::time::Duration>,
+    floor: std::time::Duration,
+) -> Option<std::time::Duration> {
+    if !recoverable {
+        return None;
+    }
+    match since_last_reconnect {
+        Some(since) if since < floor => Some(floor - since),
+        _ => None,
+    }
+}
 
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
@@ -136,11 +161,13 @@ pub async fn run_runtime_agent(
     let mut kernel_state = KernelState::new(state.clone());
     let mut seen_execution_ids = HashSet::new();
     let mut echo_suppressor = EchoSuppressor::default();
-    // Timestamp of the last clean-EOF reconnect, used to enforce a floor
-    // between reconnect cycles on a recoverable (cloud) transport so a flapping
-    // sink can't drive a reconnect storm. Only set/read on that path; `None` on
-    // the UDS transport, which never reconnects on clean EOF.
-    let mut last_clean_reconnect: Option<tokio::time::Instant> = None;
+    // Timestamp of the last recoverable reconnect (clean EOF *or* framing
+    // error), used to enforce a floor between reconnect cycles on a recoverable
+    // (cloud) transport so a flapping sink can't drive a reconnect storm. Set
+    // after every recoverable reconnect arm; stays `None` on the UDS transport,
+    // whose framing-error reconnect is gated out of the floor and which never
+    // reconnects on clean EOF.
+    let mut last_recoverable_reconnect: Option<tokio::time::Instant> = None;
     let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>> = None;
     let mut work_rx: Option<mpsc::Receiver<WorkCommand>> = None;
 
@@ -543,6 +570,20 @@ pub async fn run_runtime_agent(
                              (kernel stays running)",
                             e
                         );
+                        // Flap floor. `reconnect_with_backoff` only sleeps
+                        // between *failed* connects, so a cloud room that
+                        // accepts the connection and then immediately errors the
+                        // stream every cycle would spin a reconnect storm at
+                        // network-RTT rate. Gated on the recoverable transport so
+                        // the UDS framing-error reconnect is byte-for-byte
+                        // unchanged. (lifecycle-analysis: cloud DoS-avoidance)
+                        if let Some(wait) = reconnect_floor_delay(
+                            transport.clean_eof_is_recoverable(),
+                            last_recoverable_reconnect.map(|t| t.elapsed()),
+                            RECOVERABLE_RECONNECT_FLOOR,
+                        ) {
+                            tokio::time::sleep(wait).await;
+                        }
                         // Drop the old source before reconnecting so its
                         // background reader task exits cleanly.
                         drop(frame_source);
@@ -558,6 +599,11 @@ pub async fn run_runtime_agent(
                                 // everything the kernel produced while we
                                 // were disconnected.
                                 let _ = state_kick_tx.send(());
+                                // Track for the flap floor (recoverable only;
+                                // the UDS path leaves this `None`).
+                                if transport.clean_eof_is_recoverable() {
+                                    last_recoverable_reconnect = Some(tokio::time::Instant::now());
+                                }
                                 info!("[runtime-agent] Reconnected to daemon");
                                 continue;
                             }
@@ -588,13 +634,15 @@ pub async fn run_runtime_agent(
                         // accepts the connection and then immediately closes
                         // cleanly every time (a flapping/evicting cloud room)
                         // would otherwise spin a reconnect storm at network-RTT
-                        // rate. If the previous clean reconnect was very recent,
-                        // wait out the floor before redialing.
-                        if let Some(last) = last_clean_reconnect {
-                            let since = last.elapsed();
-                            if since < CLEAN_EOF_RECONNECT_FLOOR {
-                                tokio::time::sleep(CLEAN_EOF_RECONNECT_FLOOR - since).await;
-                            }
+                        // rate. Shared with the framing-error arm via
+                        // `reconnect_floor_delay` so the combined reconnect rate
+                        // is throttled regardless of which failure mode recurs.
+                        if let Some(wait) = reconnect_floor_delay(
+                            transport.clean_eof_is_recoverable(),
+                            last_recoverable_reconnect.map(|t| t.elapsed()),
+                            RECOVERABLE_RECONNECT_FLOOR,
+                        ) {
+                            tokio::time::sleep(wait).await;
                         }
                         warn!(
                             "[runtime-agent] Sync sink closed cleanly — reconnecting \
@@ -607,7 +655,7 @@ pub async fn run_runtime_agent(
                                 frame_sink = new_sink;
                                 coordinator_sync_state = automerge::sync::State::new();
                                 let _ = state_kick_tx.send(());
-                                last_clean_reconnect = Some(tokio::time::Instant::now());
+                                last_recoverable_reconnect = Some(tokio::time::Instant::now());
                                 info!("[runtime-agent] Reconnected after clean close");
                                 continue;
                             }
@@ -1743,6 +1791,67 @@ mod tests {
     use anyhow::Result;
     use notebook_protocol::protocol::{BlobDurability, LaunchedEnvConfig};
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    // -- reconnect flap-floor policy --------------------------------------
+    //
+    // `reconnect_floor_delay` is the shared throttle for both recoverable
+    // reconnect arms (clean EOF and framing error). The UDS path must never be
+    // delayed; the cloud path must be throttled when reconnects recur inside the
+    // floor.
+
+    #[test]
+    fn floor_never_delays_a_non_recoverable_transport() {
+        // The UDS path (clean_eof_is_recoverable == false): even a reconnect one
+        // nanosecond ago must not delay, so its framing-error reconnect is
+        // byte-for-byte unchanged.
+        assert_eq!(
+            reconnect_floor_delay(false, Some(Duration::from_nanos(1)), Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            reconnect_floor_delay(false, None, Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn floor_does_not_delay_first_recoverable_reconnect() {
+        // No prior reconnect recorded -> no wait (the first failure reconnects
+        // immediately; the floor only throttles *recurring* flaps).
+        assert_eq!(
+            reconnect_floor_delay(true, None, Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn floor_delays_a_recurring_recoverable_flap() {
+        // A recoverable reconnect 200ms ago, 1s floor -> wait out the remaining
+        // 800ms before redialing.
+        assert_eq!(
+            reconnect_floor_delay(
+                true,
+                Some(Duration::from_millis(200)),
+                Duration::from_secs(1),
+            ),
+            Some(Duration::from_millis(800))
+        );
+    }
+
+    #[test]
+    fn floor_does_not_delay_once_floor_has_elapsed() {
+        // Last reconnect comfortably older than the floor -> reconnect now.
+        assert_eq!(
+            reconnect_floor_delay(true, Some(Duration::from_secs(5)), Duration::from_secs(1)),
+            None
+        );
+        // Exactly at the floor is also "elapsed" (not strictly less than).
+        assert_eq!(
+            reconnect_floor_delay(true, Some(Duration::from_secs(1)), Duration::from_secs(1)),
+            None
+        );
+    }
 
     /// Minimal mock kernel for testing queue/state logic without ZeroMQ.
     struct MockKernel;
