@@ -45,12 +45,11 @@ test.describe("markdown parity", () => {
     await expect(taskCheckboxes.nth(0)).toBeChecked();
     await expect(taskCheckboxes.nth(1)).not.toBeChecked();
 
-    // The parity contract is safety, not iframe usage: raw HTML from markdown
-    // must not become live DOM in the parent notebook surface.
+    // The parity contract is safety and fast host rendering: raw HTML from
+    // markdown must not become live DOM in the parent notebook surface. Simple
+    // inline wrappers may contribute escaped text, but never elements or attrs.
     await expect(markdownCell.locator("#markdown-parity-raw-html")).toHaveCount(0);
-    await expect(
-      renderedMarkdown.getByRole("button", { name: "raw html stays isolated" }),
-    ).toBeVisible();
+    await expect(renderedMarkdown.getByText("raw html becomes text")).toBeVisible();
 
     await expect(renderedMarkdown.locator("pre")).toContainText("highlighted code block");
 
@@ -336,8 +335,8 @@ async function renderedMarkdownSurface(
   headingName: string,
 ): Promise<Locator> {
   // Keep the host-vs-iframe dependency at this boundary. Projected markdown
-  // renders in the host DOM; unsafe fallback and legacy markdown render inside
-  // the isolated frame.
+  // renders in the host DOM; legacy markdown can still render inside the
+  // isolated frame.
   const projected = markdownCell.locator('[data-slot="projected-markdown-output"]');
   const isolatedBody = markdownCell.frameLocator('[data-slot="isolated-frame"]').locator("body");
 

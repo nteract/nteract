@@ -136,14 +136,14 @@ describe("output lane policy", () => {
     ).toBe(false);
   });
 
-  it("keeps markdown outputs with isolated blocks in static iframes", () => {
+  it("keeps markdown outputs with isolated blocks in the DOM fast path", () => {
     withMarkdownProjection("isolated");
 
     expect(
       outputSegmentLane(
         displayOutput("markdown-html-output", { "text/markdown": "<div>hi</div>" }),
       ),
-    ).toBe("static-frame");
+    ).toBe("dom");
   });
 
   it("classifies interactive iframe outputs separately", () => {
@@ -176,11 +176,7 @@ describe("output lane policy", () => {
 
     const segments = splitOutputSegments([markdown, vegaOne, vegaTwo]);
 
-    expect(segments.map((segment) => segment.lane)).toEqual([
-      "static-frame",
-      "vega-frame",
-      "vega-frame",
-    ]);
+    expect(segments.map((segment) => segment.lane)).toEqual(["dom", "vega-frame", "vega-frame"]);
     expect(segments.map((segment) => segment.outputs.map((output) => output.output_id))).toEqual([
       ["markdown-1"],
       ["vega-1"],

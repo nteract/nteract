@@ -140,12 +140,7 @@ export function findMarkdownProjectionAtSourcePosition(
 }
 
 export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan | null): boolean {
-  if (!plan) return false;
-
-  return (
-    plan.blocks.every((block) => block.kind !== "isolated") &&
-    plan.runs.every((run) => !run.renderedHtml && run.semantic !== "isolated-placeholder")
-  );
+  return plan != null;
 }
 
 export function markdownProjectionPlanFromMimeData(data: unknown): MarkdownProjectionPlan | null {

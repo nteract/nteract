@@ -50,18 +50,18 @@ describe("markdown projection", () => {
     expect(plan?.blocks.map((block) => block.kind)).toContain("math");
   });
 
-  it("keeps projected raw HTML out of the host renderer", () => {
+  it("keeps projected raw HTML markup out of the host DOM without forcing iframe fallback", () => {
     const plan = projectMarkdownPlan("alpha <i>wow</i> omega");
 
     expect(plan?.runs.some((run) => run.renderedHtml)).toBe(true);
-    expect(canRenderMarkdownProjectionInHost(plan)).toBe(false);
+    expect(canRenderMarkdownProjectionInHost(plan)).toBe(true);
   });
 
-  it("keeps projected raw HTML blocks out of the host renderer", () => {
-    const plan = projectMarkdownPlan('<button id="raw">raw html stays isolated</button>');
+  it("keeps projected raw HTML blocks host-renderable as omitted placeholders", () => {
+    const plan = projectMarkdownPlan('<button id="raw">raw html stays omitted</button>');
 
     expect(plan?.runs.some((run) => run.semantic === "isolated-placeholder")).toBe(true);
-    expect(canRenderMarkdownProjectionInHost(plan)).toBe(false);
+    expect(canRenderMarkdownProjectionInHost(plan)).toBe(true);
   });
 
   it("maps source cursor positions back to projected rendered blocks and runs", () => {

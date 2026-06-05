@@ -849,7 +849,7 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector("pre code span")).not.toBeNull();
   });
 
-  it("renders safe projected inline HTML as document markup", () => {
+  it("renders projected inline HTML as plain text", () => {
     render(
       <ProjectedMarkdownView
         plan={plan({
@@ -893,12 +893,12 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    const shortcut = screen.getByText("K");
-    expect(shortcut.tagName).toBe("KBD");
-    expect(shortcut).toHaveAttribute("title", "shortcut");
+    expect(screen.getByText("K and note")).toBeInTheDocument();
+    expect(document.querySelector("kbd")).toBeNull();
+    expect(document.querySelector("[title='shortcut']")).toBeNull();
   });
 
-  it("falls back to text for unsafe projected inline HTML", () => {
+  it("renders unsafe projected inline HTML as plain text", () => {
     render(
       <ProjectedMarkdownView
         plan={plan({
@@ -934,6 +934,64 @@ describe("ProjectedMarkdownView", () => {
 
     expect(screen.getByText("unsafe")).toBeInTheDocument();
     expect(document.querySelector("[onclick]")).toBeNull();
+  });
+
+  it("omits isolated projected HTML blocks", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "html",
+              blockIndex: 0,
+              element: "div",
+              kind: "isolated",
+              measurement: { estimatedHeight: 32, confidence: "low", width: 720 },
+              sourceSpanByte: [0, 32],
+              sourceSpanUtf16: [0, 32],
+              syntaxSpans: [],
+              text: "[isolated active HTML region]",
+            },
+            {
+              blockId: "p0",
+              blockIndex: 1,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [34, 45],
+              sourceSpanUtf16: [34, 45],
+              syntaxSpans: [],
+              text: "after html",
+            },
+          ],
+          runs: [
+            {
+              blockId: "html",
+              inlineId: "html-placeholder",
+              listItemIndex: null,
+              renderedText: "[isolated active HTML region]",
+              renderedTextUtf16: [0, 29],
+              semantic: "isolated-placeholder",
+              sourceSpanByte: [0, 32],
+              sourceSpanUtf16: [0, 32],
+            },
+            {
+              blockId: "p0",
+              inlineId: "text",
+              listItemIndex: null,
+              renderedText: "after html",
+              renderedTextUtf16: [0, 10],
+              semantic: "text",
+              sourceSpanByte: [34, 45],
+              sourceSpanUtf16: [34, 45],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.queryByText("[isolated active HTML region]")).toBeNull();
+    expect(screen.getByText("after html")).toBeInTheDocument();
   });
 
   it("renders projected images in the host document", () => {

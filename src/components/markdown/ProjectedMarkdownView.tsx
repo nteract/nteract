@@ -190,6 +190,10 @@ function ProjectedMarkdownBlock({
     );
   }
 
+  if (block.kind === "isolated") {
+    return null;
+  }
+
   if (block.kind === "paragraph") {
     return (
       <p
@@ -651,8 +655,12 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
     return <ProjectedImage run={run} />;
   }
 
-  if (run.semantic === "html-fragment" && run.renderedHtml) {
-    return <ProjectedInlineHtml html={run.renderedHtml} fallbackText={text} />;
+  if (run.semantic === "html-fragment") {
+    return text || null;
+  }
+
+  if (run.semantic === "isolated-placeholder") {
+    return null;
   }
 
   if (!text) return null;
@@ -682,64 +690,6 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
   if (run.semantic === "link-label") return text;
 
   return text;
-}
-
-const SAFE_INLINE_HTML_TAGS = new Set([
-  "b",
-  "em",
-  "i",
-  "kbd",
-  "mark",
-  "s",
-  "small",
-  "span",
-  "strong",
-  "sub",
-  "sup",
-  "u",
-]);
-
-function ProjectedInlineHtml({ fallbackText, html }: { fallbackText: string; html: string }) {
-  const safeHtml = sanitizeProjectedInlineHtml(html);
-
-  if (!safeHtml) {
-    return fallbackText ? <span>{fallbackText}</span> : null;
-  }
-
-  return <span dangerouslySetInnerHTML={{ __html: safeHtml }} />;
-}
-
-function sanitizeProjectedInlineHtml(html: string): string | null {
-  if (typeof document === "undefined" || !html.trim()) return null;
-
-  const template = document.createElement("template");
-  template.innerHTML = html;
-
-  const validateNode = (node: Node): boolean => {
-    if (node.nodeType === Node.TEXT_NODE) return true;
-    if (node.nodeType !== Node.ELEMENT_NODE) return false;
-
-    const element = node as Element;
-    if (!SAFE_INLINE_HTML_TAGS.has(element.tagName.toLowerCase())) {
-      return false;
-    }
-
-    for (const attr of Array.from(element.attributes)) {
-      const name = attr.name.toLowerCase();
-      const allowedName = name === "class" || name === "title" || name.startsWith("data-");
-      if (!allowedName || /[<>]/.test(attr.value)) {
-        return false;
-      }
-    }
-
-    return Array.from(element.childNodes).every(validateNode);
-  };
-
-  if (!Array.from(template.content.childNodes).every(validateNode)) {
-    return null;
-  }
-
-  return template.innerHTML;
 }
 
 function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {

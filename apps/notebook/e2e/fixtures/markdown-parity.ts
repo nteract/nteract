@@ -19,7 +19,7 @@ export const MARKDOWN_CELL_PARITY_SOURCE = [
   "a^2 + b^2 = c^2",
   "$$",
   "",
-  '<button id="markdown-parity-raw-html">raw html stays isolated</button>',
+  '<button id="markdown-parity-raw-html">raw html becomes text</button>',
   "",
   "```python",
   "print('highlighted code block')",
