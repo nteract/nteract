@@ -341,8 +341,13 @@ async fn main() -> Result<()> {
                 };
                 let incoming = sync::Message::decode(payload)
                     .map_err(|e| anyhow!("decode runtime-state sync: {e}"))?;
+                // Use the change-accepting receive: this peer is a *consumer*
+                // of the room's authoritative RuntimeStateDoc, like a frontend.
+                // The plain receive_sync_message() strips incoming changes
+                // (daemon-authoritative semantics), which silently discards the
+                // room's queued executions and stalls convergence.
                 rt_doc
-                    .receive_sync_message(&mut rt_peer, incoming)
+                    .receive_sync_message_with_changes(&mut rt_peer, incoming)
                     .map_err(|e| anyhow!("apply runtime-state sync: {e}"))?;
                 if let Some(m) = rt_doc.generate_sync_message(&mut rt_peer) {
                     ws.send(WsMessage::Binary(
