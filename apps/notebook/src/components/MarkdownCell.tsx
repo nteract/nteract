@@ -225,7 +225,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const previewSourcePositionRef = useRef<number | undefined>(undefined);
   const presence = usePresenceContext();
-  const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
+  const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
@@ -268,9 +268,11 @@ export const MarkdownCell = memo(function MarkdownCell({
       if (nextSource === null || nextSource === previewSource) return;
 
       setDraftPreviewSource(nextSource);
-      onUpdateSource(nextSource);
+      if (!bridge.replaceSource(nextSource)) {
+        onUpdateSource(nextSource);
+      }
     },
-    [onUpdateSource, previewSource, readOnly],
+    [bridge, onUpdateSource, previewSource, readOnly],
   );
 
   // Register EditorView with the cursor registry when in edit mode.

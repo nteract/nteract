@@ -163,7 +163,7 @@ vi.mock("../../hooks/useCellKeyboardNavigation", () => ({
 }));
 
 vi.mock("../../hooks/useCrdtBridge", () => ({
-  useCrdtBridge: () => ({ extension: [] }),
+  useCrdtBridge: () => ({ extension: [], bridge: { replaceSource: () => false } }),
 }));
 
 vi.mock("../../lib/blob-port", () => ({

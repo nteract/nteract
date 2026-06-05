@@ -101,6 +101,45 @@ test.describe("markdown parity", () => {
     expect(page.url()).toBe(urlBeforeSelection);
   });
 
+  test("keeps projected task toggles reconciled with markdown source", async ({ page }) => {
+    const markdownCell = await createParityMarkdownCell(
+      page,
+      [
+        "# Task projection parity",
+        "",
+        "- [ ] parent task",
+        "  - [ ] child task",
+        "- [x] completed task",
+      ].join("\n"),
+    );
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "Task projection parity");
+
+    const childTask = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task complete: child task",
+    });
+    await expect(childTask).not.toBeChecked();
+
+    await clickProjectedTaskCheckbox(childTask);
+
+    const updatedChildTask = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task incomplete: child task",
+    });
+    await expect(updatedChildTask).toBeChecked();
+    await expect
+      .poll(() => getCellSource(markdownCell), { timeout: 30_000 })
+      .toContain("  - [x] child task");
+
+    await clickProjectedTaskCheckbox(updatedChildTask);
+
+    const revertedChildTask = renderedMarkdown.getByRole("checkbox", {
+      name: "Mark task complete: child task",
+    });
+    await expect(revertedChildTask).not.toBeChecked();
+    await expect
+      .poll(() => getCellSource(markdownCell), { timeout: 30_000 })
+      .toContain("  - [ ] child task");
+  });
+
   test("renders selectable markdown outputs without changing output routing semantics", async ({
     page,
   }) => {
@@ -284,6 +323,15 @@ async function renderedMarkdownSurface(
 
 async function activateRenderedMarkdown(markdownCell: Locator): Promise<void> {
   await markdownCell.getByLabel("Markdown cell content").focus();
+}
+
+async function clickProjectedTaskCheckbox(input: Locator): Promise<void> {
+  await input.evaluate((element) => {
+    const checkboxLabel = element.closest<HTMLElement>(
+      '[data-slot="projected-markdown-task-checkbox"]',
+    );
+    checkboxLabel?.click();
+  });
 }
 
 async function doubleClickRenderedMarkdown(markdownCell: Locator): Promise<void> {
