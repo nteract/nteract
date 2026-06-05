@@ -609,21 +609,57 @@ Remaining for "run a cell", not yet built:
   callers (the viewer's `await executeCell`, which waits on `sendRequest` by id)
   do not resolve. Needs cloud-room request/response plumbing (a `cell_queued` /
   structured-error response keyed by the request id).
-- **Kernel-hosting runtime peer.** Add a mode to `runt-cloud-peer` that attaches
-  as `runtime_peer` (explicit `runtime_peer` ACL row via `POST /api/n/:id/acl` -
-  owner alone is insufficient; `aclRowsCoverScope` special-cases the scope),
-  watches RuntimeStateDoc for queued executions, runs them in a Jupyter kernel,
-  and streams `running -> outputs -> done` back. Verified seam: do **not** depend
-  on the daemon's `JupyterKernel` (welded to daemon-only `KernelSharedRefs` -
-  BlobStore, broadcast channels, RuntimeStateHandle). Build a thin launch+drive
-  loop on the published `jupyter-protocol` + `jupyter-zmq-client` crates plus
-  `runtime-doc` (already a dependency): spawn `python -m ipykernel_launcher -f
-  <conn>` (`bootstrap_dx` off, stock launcher, no launcher cache), set the
-  execute_request `msg_id = execution_id` so IOPub `parent_header.msg_id` routes
-  outputs back, and write `set_execution_running` / `append_output` /
-  `set_execution_done` onto the owned RuntimeStateDoc, then
-  `generate_sync_message` to push back. Mirror the daemon's write order and the
-  control-plane/output-transport separation invariant.
+## Kernel hosting: proof, then the production shape
+
+A standalone kernel-host spike is built and verified end-to-end (`runt-cloud-peer
+--host-kernel --scope runtime_peer`). It launches `python -m ipykernel_launcher`
+on self-chosen ports, drives it over `jupyter-protocol` + `jupyter-zmq-client`,
+and streams `set_execution_running` / `append_output` / `set_execution_done` onto
+its RuntimeStateDoc, pushed back to the room. Against live preview, a queued
+execution runs and the driver observes queued -> running -> outputs (stdout +
+execute_result) -> done.
+
+**Treat that spike as a proof, not the production driver.** Its job was to de-risk
+the uncertain half: the cloud wire (runtime_peer attach + the room's ExecuteCell
+dispatch + the full lifecycle round-trip over WS). That now works. But its kernel
+drive (`kernel_host.rs`) reimplements what the daemon already does well, and it
+hardcodes a python path instead of using the daemon's environments / pools /
+launcher cache. Do not grow it into the product.
+
+**Production shape (the daemon stays the launcher; the agent's transport goes
+pluggable):**
+
+- **Workstation endpoint on the daemon.** A workstation is an endpoint you pick
+  compute from: it *lists the environments it has* and, on demand, *allocates and
+  starts a runtime in env X for room Y*. That is a daemon capability plus a small
+  control surface (the "receiver"), built on the existing env pool + launcher,
+  not a reimplementation.
+- **`runtime_agent` becomes transport-agnostic.** It already drives the kernel
+  and syncs RuntimeStateDoc/NotebookDoc over the *same* typed-frame v4 protocol
+  the cloud room speaks. The reusable core (the `select!` loop,
+  `queue_synced_executions`, the RuntimeStateSync apply/generate, the
+  `KernelConnection` drive) is transport-independent. The coupling is narrow and
+  extractable into a `FrameTransport` trait:
+  - `AgentReader`/`AgentWriter` (`runtime_agent.rs:670,672`) are `UnixStream`
+    halves;
+  - `connect_and_handshake` (`:703`) connects the socket and sends
+    `Handshake::RuntimeAgent`;
+  - `send_typed_frame` / `recv_typed_frame` use the daemon's length-preamble
+    framing.
+  The cloud impl differs only in transport (WS), auth (the `Authorization` +
+  `X-Scope` upgrade + `cloud_room_ready` instead of `Handshake::RuntimeAgent`),
+  and framing (one typed frame per WS binary message, no preamble). The kernel,
+  `RuntimeStateHandle`, and `BlobStore` stay daemon-side; only the sync sink
+  swaps.
+- **runt-cloud-peer's keepable value is that WS transport** (dial + Anaconda auth
+  + the typed-frame wire + the consumer-side `receive_sync_message_with_changes`).
+  It becomes the cloud `FrameTransport` impl the daemon's `runtime_agent` writes
+  to. `kernel_host.rs` retires.
+
+This refactor touches the daemon (and therefore desktop), so it is a deliberate
+change, not a drop-in. The runtime_peer ACL requirement holds either way: an
+explicit `runtime_peer` ACL row via `POST /api/n/:id/acl` (owner alone is 403;
+`aclRowsCoverScope` special-cases the scope).
 
 ## Open questions
 
