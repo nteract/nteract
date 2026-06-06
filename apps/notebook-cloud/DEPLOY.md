@@ -20,6 +20,12 @@ main Worker with `wrangler.toml`. The top-level `wrangler.toml` is the prototype
 config (custom domain `preview.runt.run`, `DEPLOYMENT_ENV=prototype`), so there
 is no `--env` flag.
 
+Keep the renderer-assets deploy ahead of the main Worker. The viewer loads
+content-hashed runtime WASM from the main Worker's
+`/assets/runtime-wasm-assets.json`, and compatibility copies are also posted to
+the renderer-assets Worker. Shipping only the main Worker can leave browser tabs
+running new viewer JavaScript against stale sidecar WASM.
+
 ## Verify
 
 ```bash
@@ -36,6 +42,11 @@ pnpm run deploy:check
   `wrangler whoami` should show `workers (write)`, `d1 (write)`, and
   `workers_routes (write)`.
 - A Rust toolchain and `cargo xtask` for the WASM build.
+- `wrangler.toml` keeps the Anaconda API-key userinfo URL on the same staging
+  origin as the OIDC issuer:
+  `https://auth.stage.anaconda.com/api/auth/sessions/whoami`. A production
+  `anaconda.com` whoami endpoint rejects staging-minted API keys even though the
+  OIDC path still works.
 
 ## Scope
 

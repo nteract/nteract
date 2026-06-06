@@ -434,17 +434,31 @@ pnpm --workspace-root exec wrangler d1 migrations apply nteract-notebook-cloud-p
   --remote
 ```
 
-Deploy with:
+Deploy changed notebook-cloud Worker assets with:
 
 ```bash
 printf "%s" "$NOTEBOOK_CLOUD_DEV_TOKEN" \
   | pnpm --workspace-root exec wrangler secret put NOTEBOOK_CLOUD_DEV_TOKEN \
       --config apps/notebook-cloud/wrangler.toml
-pnpm --dir apps/notebook-cloud build
-pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.renderer-assets.toml
-pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.output-document.toml
-pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
+pnpm --dir apps/notebook-cloud run deploy
 ```
+
+`pnpm run deploy` builds the viewer and runtime WASM assets, deploys
+`wrangler.renderer-assets.toml`, then deploys `wrangler.toml`. Keep that order:
+the viewer reads the content-hashed runtime WASM manifest from the main Worker,
+and the renderer-assets Worker carries compatibility copies for sidecar loading.
+Deploy the output document Worker separately only when `dist-output-document` or
+`wrangler.output-document.toml` changes:
+
+```bash
+pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.output-document.toml
+```
+
+The preview config intentionally validates Anaconda API keys against
+`https://auth.stage.anaconda.com/api/auth/sessions/whoami`, matching the staging
+OIDC issuer. Pointing that value at production `anaconda.com` makes
+staging-minted keys fail with `Anaconda API key validation failed` while OIDC
+continues to work.
 
 ## Operational observability
 

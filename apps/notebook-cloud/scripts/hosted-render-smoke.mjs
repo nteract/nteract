@@ -33,7 +33,8 @@ import { catalogApiUrlForViewer, isRenderCacheApiUrl } from "./hosted-render-smo
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
 const DEFAULT_OUTPUT_DOCUMENT_ORIGIN = "https://preview.runtusercontent.com";
-const DEFAULT_CATALOG_OWNER_PRINCIPAL = "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375";
+const DEFAULT_CATALOG_OWNER_PRINCIPAL =
+  "account:user%3Aanaconda:email:b0204af7084bdb0f271f1fe243bea5973fe07e0264939605e1570ecb1604b3f0";
 const DEFAULT_LATEST_REVISION_ACTOR_LABEL =
   "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0/agent:runt-publish";
 
@@ -43,7 +44,7 @@ const expectedRendererAssetOrigin =
 const expectedOutputDocumentOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_OUTPUT_DOCUMENT_ORIGIN ?? DEFAULT_OUTPUT_DOCUMENT_ORIGIN;
 const expectedSourceText =
-  process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "from datasets import load_dataset";
+  process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "import plotly.graph_objects as go";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
 const expectedPresenceTitle = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE ?? "participant";
