@@ -5,7 +5,7 @@ import {
   projectCloudWidgetComms,
   type ProjectCloudWidgetCommsOptions,
 } from "../viewer/widget-comm-projection.ts";
-import type { SnapshotWidgetComm } from "../src/widget-comms.ts";
+import type { SnapshotWidgetComm } from "runtimed";
 
 describe("cloud widget runtime projection", () => {
   it("does not delete previously projected models when async projection is cancelled", async () => {

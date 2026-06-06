@@ -3,7 +3,7 @@ import type { ReadOnlyNotebookCellData } from "../../../../src/components/cell/R
 import type { SupportedLanguage } from "../../../../src/components/editor/languages";
 import type { NteractEmbedHostContextPatch } from "../../../../src/components/isolated/host-context";
 import { resolveCell, type RenderCell, type ResolvedCell } from "../../viewer/render-resolution.ts";
-import type { SnapshotWidgetComm } from "../../src/widget-comms.ts";
+import type { SnapshotWidgetComm } from "runtimed";
 
 const ARROW_BLOB_HASH = "sha256:10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f";
 

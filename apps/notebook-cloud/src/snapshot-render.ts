@@ -1,11 +1,11 @@
 import type { BlobResolver } from "runtimed";
-import { collectBlobUrls } from "./blob-refs.ts";
-import { loadSnapshotPair } from "./runtimed-wasm.ts";
 import {
   resolveSnapshotWidgetComms,
   snapshotWidgetCommsFromRuntimeAndCommsState,
   type SnapshotWidgetComm,
-} from "./widget-comms.ts";
+} from "runtimed";
+import { collectBlobUrls } from "./blob-refs.ts";
+import { loadSnapshotPair } from "./runtimed-wasm.ts";
 
 export interface SnapshotRender {
   schema_version: 1;
