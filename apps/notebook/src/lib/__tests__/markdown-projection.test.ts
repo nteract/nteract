@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../wasm/runtimed-wasm/runtimed_wasm.js", () => ({
   project_markdown_json: vi.fn(() => {
@@ -14,8 +14,19 @@ describe("markdown projection", () => {
     module = await import("../markdown-projection");
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("can use a host-initialized markdown projector", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
     expect(module.projectMarkdownPlan("# Title")).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain(
+      "markdown projector is not initialized",
+    );
 
     const restore = module.setMarkdownProjectionProjector((source) =>
       JSON.stringify({
@@ -67,5 +78,14 @@ describe("markdown projection", () => {
 
     restore();
     expect(module.projectMarkdownPlan("# Title")).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the missing-projector fallback safe without a process global", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("process", undefined);
+
+    expect(module.projectMarkdownPlan("# Title")).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });

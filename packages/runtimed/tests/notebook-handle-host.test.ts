@@ -93,6 +93,33 @@ describe("NotebookHandleHost", () => {
     expect(slot.current).toBeNull();
   });
 
+  it("calls a readiness factory for each bootstrap attempt", async () => {
+    const calls: string[] = [];
+    const handle = createHandle("ready", calls);
+    const slot: NotebookHandleSlot = { current: null };
+    const ready = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("wasm init failed"))
+      .mockResolvedValueOnce(undefined);
+
+    const host = new NotebookHandleHost({
+      actorLabel: () => "human:test",
+      createHandle: vi.fn(() => handle),
+      publishHandle: vi.fn((publishedHandle) =>
+        calls.push(publishedHandle ? "publish:ready" : "publish:null"),
+      ),
+      ready,
+      slot,
+    });
+
+    await expect(host.bootstrap()).rejects.toThrow("wasm init failed");
+    await expect(host.bootstrap()).resolves.toBe(true);
+
+    expect(ready).toHaveBeenCalledTimes(2);
+    expect(slot.current).toBe(handle);
+    expect(calls).toEqual(["publish:null", "mime:ready", "publish:ready"]);
+  });
+
   it("does not clear a newer bootstrap that replaces it during blob-port refresh", async () => {
     const calls: string[] = [];
     const blobPortResolvers: Array<(port: number | null) => void> = [];

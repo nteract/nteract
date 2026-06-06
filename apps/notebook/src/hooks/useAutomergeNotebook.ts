@@ -37,11 +37,12 @@ import {
   shouldPreserveBootstrapProjection,
 } from "../lib/bootstrap-preservation";
 import { startNotebookSyncStoreBridge } from "../lib/notebook-sync-store-bridge";
-import type { JupyterOutput, NotebookCell } from "../types";
-import init, {
+import {
   encode_heartbeat_presence,
+  ensureNotebookWasmReady,
   NotebookHandle,
-} from "../wasm/runtimed-wasm/runtimed_wasm.js";
+} from "../lib/runtimed-wasm";
+import type { JupyterOutput, NotebookCell } from "../types";
 
 /**
  * Matches `notebook_doc::presence::DEFAULT_HEARTBEAT_MS`.
@@ -50,9 +51,15 @@ import init, {
  */
 const PRESENCE_HEARTBEAT_INTERVAL_MS = 15_000;
 
-const wasmReady: Promise<void> = init().then(() => {
-  logger.info("[automerge-notebook] WASM initialized");
-});
+let loggedWasmReady = false;
+
+function waitForNotebookWasmReady(): Promise<void> {
+  return ensureNotebookWasmReady().then(() => {
+    if (loggedWasmReady) return;
+    loggedWasmReady = true;
+    logger.info("[automerge-notebook] WASM initialized");
+  });
+}
 
 function scopeAllowsNotebookWrite(scope: string | null): boolean {
   return scope === null || scope === "editor" || scope === "owner";
@@ -128,7 +135,7 @@ export function useNotebook() {
         createHandle: (actorLabel) => NotebookHandle.create_empty_with_actor(actorLabel),
         getBlobPort,
         publishHandle: setNotebookHandle,
-        ready: wasmReady,
+        ready: waitForNotebookWasmReady,
         refreshBlobPort,
         slot: handleRef,
       }),

@@ -10,6 +10,7 @@ import { setKernelCompletionHost } from "./lib/kernel-completion";
 import { logger, setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
 import { setOpenUrlHost } from "./lib/open-url";
+import { ensureNotebookWasmReady } from "./lib/runtimed-wasm";
 
 // Register built-in widget components
 import "@/components/widgets/controls";
@@ -123,6 +124,14 @@ async function boot() {
   };
 
   void attachTauriDevLogMirror();
+  try {
+    await ensureNotebookWasmReady();
+  } catch (error: unknown) {
+    logger.warn(
+      "[main] failed to initialize runtimed WASM during app boot; rendering app shell without preinitialized notebook WASM",
+      error,
+    );
+  }
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

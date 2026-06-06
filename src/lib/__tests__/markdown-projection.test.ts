@@ -1,4 +1,6 @@
-import initMarkdownWasm from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import initMarkdownWasm, {
+  project_markdown_json,
+} from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
@@ -27,6 +29,7 @@ describe("markdown projection", () => {
         wasmBytes.byteOffset + wasmBytes.byteLength,
       ),
     });
+    setMarkdownProjectionProjector(project_markdown_json);
   });
 
   it("projects GFM task state from literal markdown source", () => {

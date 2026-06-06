@@ -10,7 +10,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import initMarkdownWasm from "../../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import initMarkdownWasm, {
+  project_markdown_json,
+} from "../../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 import {
   MARKDOWN_PROJECTION_MIME_TYPE,
   setMarkdownProjectionProjector,
@@ -31,6 +33,7 @@ beforeAll(async () => {
       wasmBytes.byteOffset + wasmBytes.byteLength,
     ),
   });
+  setMarkdownProjectionProjector(project_markdown_json);
 });
 
 function withMarkdownProjection({

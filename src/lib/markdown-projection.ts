@@ -1,5 +1,3 @@
-import { project_markdown_json } from "../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
-
 export const MARKDOWN_PROJECTION_MIME_TYPE =
   "application/vnd.nteract.markdown+json";
 
@@ -7,8 +5,9 @@ type MarkdownProjectionProjector = (source: string) => string;
 
 const MARKDOWN_PROJECTION_CACHE_LIMIT = 128;
 
-let markdownProjectionProjector: MarkdownProjectionProjector = project_markdown_json;
+let markdownProjectionProjector: MarkdownProjectionProjector | null = null;
 const markdownProjectionCache = new Map<string, MarkdownProjectionPlan>();
+let warnedMissingMarkdownProjectionProjector = false;
 
 export interface MarkdownProjectionMeasurement {
   readonly estimatedHeight: number;
@@ -99,6 +98,11 @@ export function setMarkdownProjectionProjector(
 
 export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | null {
   if (!source.trim()) return null;
+  if (!markdownProjectionProjector) {
+    warnMissingMarkdownProjectionProjector();
+    return null;
+  }
+
   const cached = markdownProjectionCache.get(source);
   if (cached) {
     markdownProjectionCache.delete(source);
@@ -116,6 +120,18 @@ export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | nu
   } catch {
     return null;
   }
+}
+
+function warnMissingMarkdownProjectionProjector(): void {
+  if (warnedMissingMarkdownProjectionProjector) return;
+  warnedMissingMarkdownProjectionProjector = true;
+  const isProduction =
+    typeof process !== "undefined" && process.env?.NODE_ENV === "production";
+  if (isProduction) return;
+
+  console.warn(
+    "[markdown-projection] markdown projector is not initialized; host must call setMarkdownProjectionProjector() before projection.",
+  );
 }
 
 function cacheMarkdownProjectionPlan(
