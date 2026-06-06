@@ -55,6 +55,19 @@ describe("NotebookView shell capabilities", () => {
     );
   });
 
+  it("routes in-place code execution away from tail-follow scrolling", () => {
+    const sourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),
+      "utf8",
+    );
+
+    expect(sourceText).toMatch(
+      /const suppressTailFollowForInPlaceExecution = useCallback\(\(\) => \{[\s\S]*tailPinnedRef\.current = false;[\s\S]*cancelTailScrollFrame\(\);[\s\S]*\},/,
+    );
+    expect(sourceText).toMatch(/onExecute=\{executeCellOrHiddenGroup\}/);
+    expect(sourceText).toMatch(/onExecuteInPlace=\{executeCellInPlaceOrHiddenGroup\}/);
+  });
+
   it("does not create cells from a transient empty sync state", () => {
     const sourceText = readFileSync(
       join(process.cwd(), "apps/notebook/src/components/NotebookView.tsx"),

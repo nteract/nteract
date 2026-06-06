@@ -625,6 +625,17 @@ function NotebookViewContent({
     return () => window.cancelAnimationFrame(frame);
   }, [focusCell, hiddenGroups, materializeVersion, outputStructureVersion]);
 
+  const cancelTailScrollFrame = useCallback(() => {
+    if (tailScrollFrameRef.current === null) return;
+    window.cancelAnimationFrame(tailScrollFrameRef.current);
+    tailScrollFrameRef.current = null;
+  }, []);
+
+  const suppressTailFollowForInPlaceExecution = useCallback(() => {
+    tailPinnedRef.current = false;
+    cancelTailScrollFrame();
+  }, [cancelTailScrollFrame]);
+
   // Prevent horizontal scroll drift (can happen during text selection) and
   // remember whether the user is already reading at the notebook tail.
   useEffect(() => {
@@ -686,12 +697,9 @@ function NotebookViewContent({
 
   useEffect(() => {
     return () => {
-      if (tailScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(tailScrollFrameRef.current);
-        tailScrollFrameRef.current = null;
-      }
+      cancelTailScrollFrame();
     };
-  }, []);
+  }, [cancelTailScrollFrame]);
 
   // If outputs or trailing cells arrive while the user is already at the
   // notebook tail, keep the tail anchored so last-cell outputs do not grow
@@ -845,6 +853,10 @@ function NotebookViewContent({
             onExecuteCell(cell.id);
           }
         };
+        const executeCellInPlaceOrHiddenGroup = () => {
+          suppressTailFollowForInPlaceExecution();
+          executeCellOrHiddenGroup();
+        };
 
         return (
           <CodeCell
@@ -863,6 +875,7 @@ function NotebookViewContent({
             outputDimmed={outputFocusedCellId !== null && outputFocusedCellId !== cell.id}
             onOutputFocusChange={(focused) => handleOutputFocusChange(cell.id, focused)}
             onExecute={executeCellOrHiddenGroup}
+            onExecuteInPlace={executeCellInPlaceOrHiddenGroup}
             onInterrupt={onInterruptKernel}
             onDelete={canMutateCells ? () => onDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}
@@ -976,6 +989,7 @@ function NotebookViewContent({
     [
       runtime,
       focusInteractionTarget,
+      suppressTailFollowForInPlaceExecution,
       onExecuteCell,
       onInterruptKernel,
       onDeleteCell,

@@ -73,6 +73,8 @@ interface CodeCellProps {
   onToggleSourceHidden?: (hidden: boolean) => void;
   /** Callback to toggle outputs visibility (JupyterLab convention) */
   onToggleOutputsHidden?: (hidden: boolean) => void;
+  /** Executes without moving focus to another cell or following the notebook tail. */
+  onExecuteInPlace?: () => void;
   /** Number of consecutive fully-hidden cells in this group (including this one) */
   hiddenGroupCount?: number;
   /** Callback to expand all cells in a hidden group */
@@ -328,6 +330,7 @@ export const CodeCell = memo(function CodeCell({
   isDragging,
   onToggleSourceHidden,
   onToggleOutputsHidden,
+  onExecuteInPlace,
   hiddenGroupCount,
   onExpandHiddenGroup,
   hiddenGroupCellIds,
@@ -468,6 +471,13 @@ export const CodeCell = memo(function CodeCell({
     onExecute();
   }, [canExecute, onExecute]);
 
+  const handleExecuteInPlace = useCallback(() => {
+    if (!canExecute) {
+      return;
+    }
+    (onExecuteInPlace ?? onExecute)();
+  }, [canExecute, onExecute, onExecuteInPlace]);
+
   const handleHiddenDisclosureKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (
@@ -495,6 +505,7 @@ export const CodeCell = memo(function CodeCell({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
     onFocusNext: handleFocusNextOrCreate,
     onExecute: canExecute ? handleExecute : undefined,
+    onExecuteInPlace: canExecute ? handleExecuteInPlace : undefined,
     onExecuteAndInsert:
       canExecute && onInsertCellAfter
         ? () => {
