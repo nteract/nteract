@@ -30,6 +30,7 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
+  NotebookWorkstationsPanel,
   shouldShowNotebookDocumentCommandToolbar,
   type NotebookEnvironmentManager,
   type NotebookInteractionMode,
@@ -1102,6 +1103,14 @@ function NotebookViewer({
       collapsed={railCollapsed}
       selectedOutlineItemId={selectedOutlineItemId}
       packagesSummary={null}
+      workstationsSummary={
+        shellCapabilities.runtime.executionAvailable
+          ? "Ready"
+          : shellCapabilities.runtime.connected
+            ? "Attached"
+            : "Offline"
+      }
+      workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}

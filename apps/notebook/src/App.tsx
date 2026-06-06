@@ -38,6 +38,7 @@ import {
   KernelLaunchErrorBanner,
   NotebookDocumentRail,
   NotebookDocumentShell,
+  NotebookWorkstationsPanel,
   PoolErrorBanner,
   shouldShowKernelLaunchErrorBanner,
   TrustDialog,
@@ -1479,10 +1480,18 @@ function AppContent() {
               selectedOutlineItemId={selectedOutlineItemId}
               selectedOutlineCellId={focusedCellId}
               packagesSummary={railPackageSummary}
+              workstationsSummary={
+                shellCapabilities.runtime.executionAvailable
+                  ? "Ready"
+                  : shellCapabilities.runtime.connected
+                    ? "Attached"
+                    : "Offline"
+              }
               onActivePanelChange={handleRailPanelChange}
               onCollapsedChange={setRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
+              workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
               packagesPanel={
                 <NotebookPackagesPanel readOnly={!shellCapabilities.canManagePackages}>
                   {runtime === "python" && hasUvDependencies && hasCondaDependencies && (

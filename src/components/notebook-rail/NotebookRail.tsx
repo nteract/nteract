@@ -1,4 +1,4 @@
-import { ListTree, Package } from "lucide-react";
+import { Cpu, ListTree, Package } from "lucide-react";
 import { useMemo, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   buildNotebookOutlineTree,
@@ -15,13 +15,14 @@ import {
 } from "@/components/rail";
 import { cn } from "@/lib/utils";
 
-export type NotebookRailPanelId = "outline" | "packages";
+export type NotebookRailPanelId = "outline" | "packages" | "workstations";
 
 export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = RAIL_TAKEOVER_MEDIA_QUERY;
 export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = RAIL_TAKEOVER_STAGE_CLASS_NAME;
 export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES = RAIL_TAKEOVER_PANEL_CLASS_NAMES;
 const NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,18rem)] min-w-60";
 const NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,17rem)] min-w-60";
+const NOTEBOOK_RAIL_WORKSTATIONS_PANEL_CLASS_NAME = "w-[clamp(16rem,22vw,19rem)] min-w-64";
 
 export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
@@ -33,6 +34,8 @@ export interface NotebookRailProps {
   selectedOutlineCellId?: string | null;
   packagesSummary?: string | null;
   packagesPanel: ReactNode;
+  workstationsSummary?: string | null;
+  workstationsPanel?: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
@@ -41,7 +44,7 @@ export interface NotebookRailProps {
   className?: string;
 }
 
-const railButtons: Array<RailItem<NotebookRailPanelId>> = [
+const baseRailButtons: Array<RailItem<NotebookRailPanelId>> = [
   { id: "outline", label: "Outline", icon: ListTree },
   { id: "packages", label: "Packages", icon: Package },
 ];
@@ -56,6 +59,8 @@ export function NotebookRail({
   selectedOutlineCellId = null,
   packagesSummary = null,
   packagesPanel,
+  workstationsSummary = null,
+  workstationsPanel,
   onActivePanelChange,
   onCollapsedChange,
   onSelectOutlineItem,
@@ -63,12 +68,27 @@ export function NotebookRail({
   getOutlineItemHref,
   className,
 }: NotebookRailProps) {
-  const title = activePanelId === "outline" ? "Outline" : "Packages";
-  const summary = activePanelId === "packages" ? packagesSummary : null;
+  const railButtons = workstationsPanel
+    ? [...baseRailButtons, { id: "workstations" as const, label: "Workstations", icon: Cpu }]
+    : baseRailButtons;
+  const title =
+    activePanelId === "packages"
+      ? "Packages"
+      : activePanelId === "workstations"
+        ? "Workstations"
+        : "Outline";
+  const summary =
+    activePanelId === "packages"
+      ? packagesSummary
+      : activePanelId === "workstations"
+        ? workstationsSummary
+        : null;
   const panelClassName =
     activePanelId === "packages"
       ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
-      : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME;
+      : activePanelId === "workstations"
+        ? NOTEBOOK_RAIL_WORKSTATIONS_PANEL_CLASS_NAME
+        : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME;
 
   return (
     <Rail
@@ -98,8 +118,10 @@ export function NotebookRail({
           onNavigateItem={onNavigateOutlineItem}
           getItemHref={getOutlineItemHref}
         />
-      ) : (
+      ) : activePanelId === "packages" ? (
         packagesPanel
+      ) : (
+        workstationsPanel
       )}
     </Rail>
   );
