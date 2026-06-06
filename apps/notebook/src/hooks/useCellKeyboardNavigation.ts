@@ -6,6 +6,7 @@ interface UseCellKeyboardNavigationOptions {
   onFocusPrevious: (cursorPosition: "start" | "end") => void;
   onFocusNext: (cursorPosition: "start" | "end") => void;
   onExecute?: () => void;
+  onExecuteInPlace?: () => void;
   onExecuteAndInsert?: () => void;
   onDelete?: () => void;
   /** Cell ID for debug logging */
@@ -24,6 +25,7 @@ export function useCellKeyboardNavigation({
   onFocusPrevious,
   onFocusNext,
   onExecute,
+  onExecuteInPlace,
   onExecuteAndInsert,
   onDelete,
   cellId,
@@ -32,6 +34,7 @@ export function useCellKeyboardNavigation({
   const onFocusPreviousRef = useRef(onFocusPrevious);
   const onFocusNextRef = useRef(onFocusNext);
   const onExecuteRef = useRef(onExecute);
+  const onExecuteInPlaceRef = useRef(onExecuteInPlace);
   const onExecuteAndInsertRef = useRef(onExecuteAndInsert);
   const onDeleteRef = useRef(onDelete);
   const cellIdRef = useRef(cellId);
@@ -40,6 +43,7 @@ export function useCellKeyboardNavigation({
   onFocusPreviousRef.current = onFocusPrevious;
   onFocusNextRef.current = onFocusNext;
   onExecuteRef.current = onExecute;
+  onExecuteInPlaceRef.current = onExecuteInPlace;
   onExecuteAndInsertRef.current = onExecuteAndInsert;
   onDeleteRef.current = onDelete;
   cellIdRef.current = cellId;
@@ -107,14 +111,14 @@ export function useCellKeyboardNavigation({
             {
               key: "Mod-Enter",
               run: () => {
-                onExecuteRef.current?.();
+                (onExecuteInPlaceRef.current ?? onExecuteRef.current)?.();
                 return true;
               },
             },
             {
               key: "Ctrl-Enter",
               run: () => {
-                onExecuteRef.current?.();
+                (onExecuteInPlaceRef.current ?? onExecuteRef.current)?.();
                 return true;
               },
             },
@@ -133,6 +137,6 @@ export function useCellKeyboardNavigation({
         : []),
     ],
     // Only recreate if the presence of optional callbacks changes
-    [!!onExecute, !!onExecuteAndInsert, !!onDelete],
+    [!!onExecute, !!onExecuteInPlace, !!onExecuteAndInsert, !!onDelete],
   );
 }
