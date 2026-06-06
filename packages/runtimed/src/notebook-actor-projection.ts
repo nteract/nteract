@@ -4,6 +4,7 @@ import type {
   NotebookShellAuthCapabilities,
   NotebookShellRuntimeCapabilities,
 } from "./notebook-shell-capabilities";
+import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
 export type ParsedNotebookActorKind = "agent" | "runtime" | "system";
 
@@ -470,31 +471,6 @@ function stableNotebookActorOperator(
   const operator = Object.freeze({ id, kind, label });
   setBoundedCacheValue(OPERATOR_CACHE, cacheKey, operator, ACTOR_PART_CACHE_LIMIT);
   return operator;
-}
-
-function getBoundedCacheValue<K, V>(cache: Map<K, V>, key: K): V | undefined {
-  const cached = cache.get(key);
-  if (cached === undefined) return undefined;
-
-  cache.delete(key);
-  cache.set(key, cached);
-  return cached;
-}
-
-function setBoundedCacheValue<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
-  if (cache.has(key)) {
-    cache.delete(key);
-  } else if (cache.size >= limit) {
-    const oldestKey = cache.keys().next().value;
-    if (oldestKey !== undefined) {
-      cache.delete(oldestKey);
-    }
-  }
-  cache.set(key, value);
-}
-
-function stableCacheKey(parts: readonly unknown[]): string {
-  return JSON.stringify(parts);
 }
 
 function withAuthStatus(
