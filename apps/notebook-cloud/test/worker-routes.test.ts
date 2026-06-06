@@ -88,7 +88,8 @@ describe("Worker artifact routes", () => {
   it("reports Anaconda API key readiness without exposing configured values", async () => {
     const env = fakeEnv({
       NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "user:anaconda",
-      NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
+      NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL:
+        "https://auth.stage.anaconda.com/api/auth/sessions/whoami",
     });
 
     const response = await worker.fetch(
@@ -656,6 +657,139 @@ describe("Worker artifact routes", () => {
           row.scope === "owner",
       ),
       true,
+    );
+  });
+
+  it("lists notebooks visible to the authenticated principal", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "old-owned");
+    seedNotebook(env, "new-owned");
+    seedNotebook(env, "editor-shared");
+    seedNotebook(env, "hidden");
+    const newOwned = env.DB.notebooks.get("new-owned");
+    const editorShared = env.DB.notebooks.get("editor-shared");
+    assert.ok(newOwned);
+    assert.ok(editorShared);
+    newOwned.updated_at = "2026-05-24T00:00:00.000Z";
+    editorShared.title = "Editor Shared";
+    editorShared.updated_at = "2026-05-23T00:00:00.000Z";
+    seedAcl(env, { notebookId: "old-owned", subject: "user:dev:alice", scope: "viewer" });
+    seedAcl(env, { notebookId: "old-owned", subject: "user:dev:alice", scope: "owner" });
+    seedAcl(env, { notebookId: "new-owned", subject: "user:dev:alice", scope: "owner" });
+    seedAcl(env, { notebookId: "editor-shared", subject: "user:dev:alice", scope: "editor" });
+    seedAcl(env, { notebookId: "hidden", subject: "user:dev:bob", scope: "owner" });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n?limit=2", {
+        headers: {
+          "X-User": "alice",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      notebooks: Array<{
+        endpoints: Record<string, string>;
+        notebook_id: string;
+        scope: NotebookAclRow["scope"];
+        title: string | null;
+        viewer_url: string;
+      }>;
+      ok: boolean;
+    };
+    assert.equal(body.ok, true);
+    assert.deepEqual(
+      body.notebooks.map((notebook) => [notebook.notebook_id, notebook.scope]),
+      [
+        ["new-owned", "owner"],
+        ["editor-shared", "editor"],
+      ],
+    );
+    assert.equal(body.notebooks[1]?.title, "Editor Shared");
+    assert.equal(body.notebooks[1]?.viewer_url, "http://localhost/n/editor-shared/Editor%20Shared");
+    assert.equal(body.notebooks[1]?.endpoints.catalog, "/api/n/editor-shared");
+  });
+
+  it("requires sign-in before listing notebooks", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "public-demo");
+    seedAcl(env, {
+      notebookId: "public-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: "sign in to list notebooks" });
+  });
+
+  it("lists notebooks through canonical Anaconda account ACLs", async (t) => {
+    const token = anacondaApiKeyToken({ jti: "list-notebooks-canonical-account" });
+    const env = fakeEnv(anacondaApiKeyEnv());
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          email: "rgbkrk@gmail.com",
+          firstName: "Kyle",
+          lastName: "Kelley",
+          userId: "fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+          scopes: ["cloud:read"],
+        }),
+      ),
+    );
+    const accountPrincipal = await canonicalAccountPrincipalForProfile({
+      provider: "anaconda-api-key",
+      principalNamespace: "user:anaconda",
+      email: "rgbkrk@gmail.com",
+      emailVerified: true,
+    });
+    assert.ok(accountPrincipal);
+    seedNotebook(env, "canonical-list-demo");
+    const notebook = env.DB.notebooks.get("canonical-list-demo");
+    assert.ok(notebook);
+    notebook.owner_principal = accountPrincipal;
+    seedAcl(env, {
+      notebookId: "canonical-list-demo",
+      subject: accountPrincipal,
+      scope: "owner",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+          "X-Operator": "browser:tab",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      notebooks: Array<{ notebook_id: string; scope: NotebookAclRow["scope"] }>;
+    };
+    assert.deepEqual(
+      body.notebooks.map((listedNotebook) => [listedNotebook.notebook_id, listedNotebook.scope]),
+      [["canonical-list-demo", "owner"]],
+    );
+    assert.equal(
+      env.DB.accountLinks.get("user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0")
+        ?.canonical_principal,
+      accountPrincipal,
     );
   });
 
@@ -3006,7 +3140,8 @@ function anacondaApiKeyEnv(): {
 } {
   return {
     NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "user:anaconda",
-    NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
+    NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL:
+      "https://auth.stage.anaconda.com/api/auth/sessions/whoami",
   };
 }
 
@@ -3795,6 +3930,47 @@ class FakeD1Statement implements D1PreparedStatement {
           .slice(0, limit) as T[],
       );
     }
+    if (this.query.includes("FROM notebooks n") && this.query.includes("JOIN notebook_acl a")) {
+      const [principal, linkedPrincipal, limitValue] = this.values as [string, string, number];
+      const linked = this.db.accountLinks.get(linkedPrincipal)?.canonical_principal;
+      const subjects = new Set([principal, ...(linked ? [linked] : [])]);
+      const byNotebook = new Map<
+        string,
+        NotebookRow & { scope: NotebookAclRow["scope"]; scopeRank: number }
+      >();
+
+      for (const row of this.db.acl) {
+        if (row.subject_kind !== "principal" || !subjects.has(row.subject)) {
+          continue;
+        }
+        const notebook = this.db.notebooks.get(row.notebook_id);
+        if (!notebook) {
+          continue;
+        }
+        const rank = scopeRank(row.scope);
+        const existing = byNotebook.get(notebook.id);
+        if (!existing || rank > existing.scopeRank) {
+          byNotebook.set(notebook.id, {
+            ...notebook,
+            scope: row.scope,
+            scopeRank: rank,
+          });
+        }
+      }
+
+      const limit = Number.isFinite(limitValue) ? limitValue : Number.POSITIVE_INFINITY;
+      return okResult(
+        [...byNotebook.values()]
+          .sort(
+            (left, right) =>
+              right.updated_at.localeCompare(left.updated_at) ||
+              right.created_at.localeCompare(left.created_at) ||
+              right.id.localeCompare(left.id),
+          )
+          .slice(0, limit)
+          .map(({ scopeRank: _scopeRank, ...row }) => row) as T[],
+      );
+    }
     if (this.query.includes("FROM notebook_acl")) {
       const notebookId = this.values[0] as string;
       if (
@@ -3852,6 +4028,19 @@ class FakeD1Statement implements D1PreparedStatement {
       );
     }
     return okResult([]);
+  }
+}
+
+function scopeRank(scope: NotebookAclRow["scope"]): number {
+  switch (scope) {
+    case "owner":
+      return 4;
+    case "editor":
+      return 3;
+    case "runtime_peer":
+      return 2;
+    case "viewer":
+      return 1;
   }
 }
 

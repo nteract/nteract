@@ -49,6 +49,10 @@ export interface NotebookAclRow {
   created_by_actor_label: string;
 }
 
+export interface ListedNotebookRow extends NotebookRow {
+  scope: NotebookAclRow["scope"];
+}
+
 export interface NotebookAclInput {
   notebookId: string;
   subjectKind: NotebookAclRow["subject_kind"];
@@ -379,6 +383,63 @@ export async function getNotebookAclRowsForPrincipal(
   )
     .bind(notebookId, principal, principal)
     .all<NotebookAclRow>();
+  return rows.results ?? [];
+}
+
+export async function listNotebooksForPrincipal(
+  env: Env,
+  principal: string,
+  limit: number,
+): Promise<ListedNotebookRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT n.id,
+            n.owner_principal,
+            n.title,
+            n.created_at,
+            n.updated_at,
+            n.latest_revision_id,
+            CASE MAX(
+              CASE a.scope
+                WHEN 'owner' THEN 4
+                WHEN 'editor' THEN 3
+                WHEN 'runtime_peer' THEN 2
+                WHEN 'viewer' THEN 1
+                ELSE 0
+              END
+            )
+              WHEN 4 THEN 'owner'
+              WHEN 3 THEN 'editor'
+              WHEN 2 THEN 'runtime_peer'
+              ELSE 'viewer'
+            END AS scope
+       FROM notebooks n
+       JOIN notebook_acl a
+         ON a.notebook_id = n.id
+      WHERE a.subject_kind = 'principal'
+        AND (
+          a.subject = ?
+          OR a.subject IN (
+            SELECT canonical_principal
+              FROM principal_account_links
+             WHERE transport_principal = ?
+          )
+        )
+      GROUP BY n.id,
+               n.owner_principal,
+               n.title,
+               n.created_at,
+               n.updated_at,
+               n.latest_revision_id
+      ORDER BY n.updated_at DESC, n.created_at DESC, n.id DESC
+      LIMIT ?`,
+  )
+    .bind(principal, principal, limit)
+    .all<ListedNotebookRow>();
   return rows.results ?? [];
 }
 

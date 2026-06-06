@@ -30,6 +30,7 @@ import {
   getNotebookRow,
   getNotebookCatalog,
   grantNotebookAclRow,
+  listNotebooksForPrincipal,
   recordBlob,
   recordRevision,
   revokeNotebookAclRow,
@@ -162,6 +163,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: exactPath("/api/n"),
     methods: ["POST"],
     handler: (_match, request, env) => routeCreateNotebook(request, env),
+  },
+  {
+    match: exactPath("/api/n"),
+    methods: ["GET"],
+    handler: (_match, request, env) => routeListNotebooks(request, env),
   },
   {
     match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
@@ -552,6 +558,68 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     },
     201,
   );
+}
+
+const DEFAULT_NOTEBOOK_LIST_LIMIT = 100;
+const MAX_NOTEBOOK_LIST_LIMIT = 500;
+
+async function routeListNotebooks(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") {
+    return json({ error: "method not allowed" }, 405);
+  }
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to list notebooks" }, 401);
+  }
+
+  const limit = parseNotebookListLimit(request);
+  if (limit instanceof Response) {
+    return limit;
+  }
+
+  const notebooks = await listNotebooksForPrincipal(env, identity.principal, limit);
+  return json({
+    ok: true,
+    notebooks: notebooks.map((notebook) => {
+      const notebookPathId = encodeURIComponent(notebook.id);
+      const apiBasePath = `/api/n/${notebookPathId}`;
+      return {
+        notebook_id: notebook.id,
+        title: notebook.title,
+        owner_principal: notebook.owner_principal,
+        scope: notebook.scope,
+        created_at: notebook.created_at,
+        updated_at: notebook.updated_at,
+        latest_revision_id: notebook.latest_revision_id,
+        viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+        endpoints: {
+          catalog: apiBasePath,
+          acl: `${apiBasePath}/acl`,
+          access_requests: `${apiBasePath}/access-requests`,
+        },
+      };
+    }),
+  });
+}
+
+function parseNotebookListLimit(request: Request): number | Response {
+  const value = new URL(request.url).searchParams.get("limit");
+  if (value === null || value.trim() === "") {
+    return DEFAULT_NOTEBOOK_LIST_LIMIT;
+  }
+
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1) {
+    return json({ error: "limit must be a positive integer" }, 400);
+  }
+  return Math.min(limit, MAX_NOTEBOOK_LIST_LIMIT);
 }
 
 async function readCreateNotebookPayload(
