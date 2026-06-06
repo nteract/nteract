@@ -347,6 +347,32 @@ describe("startNotebookSyncStoreBridge", () => {
     bridge.stop();
   });
 
+  it("characterizes the blank reconnect state when cells are cleared before initial sync returns", async () => {
+    let visibleCellIds = ["rendered-cell"];
+    const { bridge, materializeCells, setIsLoading, subjects } = startBridge();
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+
+    expect(materializeCells).toHaveBeenCalledTimes(1);
+    expect(visibleCellIds).toEqual(["rendered-cell"]);
+
+    bridge.resetReadiness();
+    visibleCellIds = [];
+    setIsLoading(true);
+    materializeCells.mockClear();
+    setIsLoading.mockClear();
+
+    subjects.sessionStatus$.next(streamingStatus());
+    await flushMicrotasks();
+
+    expect(visibleCellIds).toEqual([]);
+    expect(materializeCells).not.toHaveBeenCalled();
+    expect(setIsLoading).not.toHaveBeenCalled();
+
+    bridge.stop();
+  });
+
   it("ignores in-flight materializeCells result if stopped before it resolves", async () => {
     const materialize = deferred();
     const materializeCells = vi.fn(() => materialize.promise);
