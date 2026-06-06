@@ -1250,7 +1250,7 @@ impl PyCommDocEntry {
     }
 }
 
-/// Full runtime state snapshot from the daemon's RuntimeStateDoc.
+/// Full runtime state snapshot projected from the daemon's runtime documents.
 #[pyclass(name = "RuntimeState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyRuntimeState {
@@ -1266,7 +1266,8 @@ pub struct PyRuntimeState {
     pub last_saved: Option<String>,
     /// Execution lifecycle entries keyed by execution_id.
     pub executions: std::collections::HashMap<String, PyExecutionState>,
-    /// Active comm channels keyed by comm_id.
+    /// Active comm channels keyed by comm_id. Topology comes from
+    /// RuntimeStateDoc; mutable widget state is projected from CommsDoc.
     pub comms: std::collections::HashMap<String, PyCommDocEntry>,
     /// Daemon-observed project-file context, serialised as a JSON
     /// string. Shape mirrors the Rust `ProjectContext` tagged enum so

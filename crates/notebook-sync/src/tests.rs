@@ -894,6 +894,56 @@ mod tests {
     }
 
     #[test]
+    fn get_runtime_state_projects_comms_doc_state_onto_runtime_topology() {
+        let (handle, shared, _changed_rx, _cmd_rx) = test_handle_with_shared();
+
+        {
+            let mut st = shared.lock().unwrap();
+            st.state_doc
+                .put_comm(
+                    "comm-1",
+                    "jupyter.widget",
+                    "@jupyter-widgets/controls",
+                    "IntSliderModel",
+                    &serde_json::json!({"legacy": true}),
+                    3,
+                )
+                .unwrap();
+            st.state_doc
+                .put_comm(
+                    "legacy-only",
+                    "jupyter.widget",
+                    "@jupyter-widgets/controls",
+                    "ButtonModel",
+                    &serde_json::json!({"description": "fallback"}),
+                    4,
+                )
+                .unwrap();
+            st.comms_doc
+                .put_comm_state(
+                    "comm-1",
+                    &serde_json::json!({"value": 7, "description": "probe"}),
+                )
+                .unwrap();
+            st.comms_doc
+                .put_comm_state("orphan", &serde_json::json!({"value": 404}))
+                .unwrap();
+        }
+
+        let state = handle.get_runtime_state().unwrap();
+
+        assert_eq!(
+            state.comms["comm-1"].state,
+            serde_json::json!({"value": 7, "description": "probe"})
+        );
+        assert_eq!(
+            state.comms["legacy-only"].state,
+            serde_json::json!({"description": "fallback"})
+        );
+        assert!(!state.comms.contains_key("orphan"));
+    }
+
+    #[test]
     fn get_cell_execution_count_falls_back_to_notebook_doc() {
         let (handle, _shared, _rx, _cmd_rx) = test_handle_with_shared();
 

@@ -170,13 +170,22 @@ impl DocHandle {
         Ok(notebook_doc::actor_label_from_id(state.doc.get_actor()))
     }
 
-    /// Read the current runtime state from the synced RuntimeStateDoc.
+    /// Read the current runtime state from synced runtime documents.
     ///
     /// Returns the latest snapshot of kernel status, queue, env sync,
-    /// and last_saved as seen by this client's Automerge replica.
+    /// last_saved, and projected widget comms as seen by this client's
+    /// Automerge replicas. RuntimeStateDoc owns comm topology, while CommsDoc
+    /// owns mutable widget state; this returns the client-facing projection.
     pub fn get_runtime_state(&self) -> Result<RuntimeState, SyncError> {
         let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
-        Ok(state.state_doc.read_state())
+        let mut runtime_state = state.state_doc.read_state();
+        let comm_states = state.comms_doc.get_comms();
+        for (comm_id, comm_state) in comm_states {
+            if let Some(entry) = runtime_state.comms.get_mut(&comm_id) {
+                entry.state = comm_state;
+            }
+        }
+        Ok(runtime_state)
     }
 
     // =====================================================================
