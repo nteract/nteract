@@ -482,7 +482,9 @@ impl CommsDoc {
             let keys: Vec<String> = state_map.keys().cloned().collect();
             for key in keys {
                 let authored_by_foreign = match self.doc.get(&state_obj, key.as_str())? {
-                    Some((_, ObjId::Id(_, actor, _))) => is_foreign(&actor),
+                    Some((value, obj_id)) => {
+                        self.value_or_descendant_authored_by_foreign(&value, &obj_id, &is_foreign)?
+                    }
                     _ => false,
                 };
                 if !authored_by_foreign {
@@ -498,6 +500,52 @@ impl CommsDoc {
             applied_actors,
             foreign_comms: Some(foreign_comms),
         })
+    }
+
+    fn value_or_descendant_authored_by_foreign<F>(
+        &self,
+        value: &Value<'_>,
+        obj_id: &ObjId,
+        is_foreign: &F,
+    ) -> Result<bool, AutomergeError>
+    where
+        F: Fn(&ActorId) -> bool,
+    {
+        if obj_id_authored_by_foreign(obj_id, is_foreign) {
+            return Ok(true);
+        }
+
+        match value {
+            Value::Object(ObjType::Map) => {
+                for key in self.doc.keys(obj_id) {
+                    if let Some((child_value, child_obj_id)) = self.doc.get(obj_id, key.as_str())? {
+                        if self.value_or_descendant_authored_by_foreign(
+                            &child_value,
+                            &child_obj_id,
+                            is_foreign,
+                        )? {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            Value::Object(ObjType::List) => {
+                for index in 0..self.doc.length(obj_id) {
+                    if let Some((child_value, child_obj_id)) = self.doc.get(obj_id, index)? {
+                        if self.value_or_descendant_authored_by_foreign(
+                            &child_value,
+                            &child_obj_id,
+                            is_foreign,
+                        )? {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
     }
 
     pub fn receive_sync_and_foreign_comms_recovering<F>(
@@ -571,6 +619,16 @@ impl CommsDoc {
                 false
             }
         }
+    }
+}
+
+fn obj_id_authored_by_foreign<F>(obj_id: &ObjId, is_foreign: &F) -> bool
+where
+    F: Fn(&ActorId) -> bool,
+{
+    match obj_id {
+        ObjId::Id(_, actor, _) => is_foreign(actor),
+        _ => false,
     }
 }
 
@@ -765,6 +823,101 @@ mod tests {
         assert_eq!(
             doc.get_comm_state("comm-1").unwrap(),
             serde_json::json!({"value": 2, "label": "x"})
+        );
+    }
+
+    fn sync_until_foreign_view(
+        receiver: &mut CommsDoc,
+        donor: &mut CommsDoc,
+    ) -> CommsForeignSyncView {
+        let mut receiver_sync = sync::State::new();
+        let mut donor_sync = sync::State::new();
+
+        for _ in 0..8 {
+            if let Some(msg) = donor.generate_sync_message(&mut donor_sync) {
+                let view = receiver
+                    .receive_sync_and_foreign_comms(&mut receiver_sync, msg, |actor| {
+                        !actor.to_bytes().starts_with(b"rt:kernel:")
+                    })
+                    .expect("receive");
+                if view.foreign_comms.is_some() {
+                    return view;
+                }
+            }
+
+            if let Some(reply) = receiver.generate_sync_message(&mut receiver_sync) {
+                donor
+                    .receive_sync_message_with_changes(&mut donor_sync, reply)
+                    .expect("donor receive");
+            }
+        }
+
+        panic!("sync never converged to produce a foreign view");
+    }
+
+    #[test]
+    fn foreign_sync_view_keeps_property_with_foreign_nested_winner() {
+        let mut receiver = CommsDoc::new_with_actor("rt:kernel:deadbeef");
+        receiver
+            .put_comm_state(
+                "scatter",
+                &serde_json::json!({
+                    "selection": {
+                        "view": null,
+                        "dtype": "uint32",
+                        "shape": [0]
+                    },
+                    "unchanged": "kernel"
+                }),
+            )
+            .unwrap();
+
+        let mut donor = CommsDoc::from_doc(receiver.doc().clone());
+        donor
+            .doc_mut()
+            .set_actor(ActorId::from(b"human:peer" as &[u8]));
+        donor
+            .set_comm_state_property(
+                "scatter",
+                "selection",
+                &serde_json::json!({
+                    "view": {
+                        "blob": "abcdef",
+                        "size": 4,
+                        "media_type": "application/octet-stream"
+                    },
+                    "dtype": "uint32",
+                    "shape": [7]
+                }),
+            )
+            .unwrap();
+
+        let view = sync_until_foreign_view(&mut receiver, &mut donor);
+        let foreign_comms = view.foreign_comms.expect("foreign comms");
+        let scatter = foreign_comms
+            .get("scatter")
+            .and_then(|state| state.as_object())
+            .expect("scatter state");
+
+        assert!(
+            scatter.contains_key("selection"),
+            "foreign nested writes must keep the top-level property: {scatter:?}"
+        );
+        assert!(
+            !scatter.contains_key("unchanged"),
+            "kernel-only sibling properties should still be stripped: {scatter:?}"
+        );
+        assert_eq!(
+            scatter.get("selection"),
+            Some(&serde_json::json!({
+                "view": {
+                    "blob": "abcdef",
+                    "size": 4,
+                    "media_type": "application/octet-stream"
+                },
+                "dtype": "uint32",
+                "shape": [7]
+            }))
         );
     }
 
