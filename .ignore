@@ -1,0 +1,8 @@
+# Generated renderer/runtime artifacts. Keep source files searchable; hide the
+# minified bundles and binary snapshots that swamp local code search.
+/apps/notebook/src/renderer-plugins/
+/crates/runt-mcp/assets/plugins/
+/apps/elements/public/wasm/sift_wasm.js
+/apps/elements/public/wasm/sift_wasm_bg.wasm
+/packages/runtimed/tests/fixtures/**/*.bin
+/packages/runtimed/tests/fixtures/**/blobs/
