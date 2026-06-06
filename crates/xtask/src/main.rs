@@ -3272,9 +3272,9 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 /// Called from the top of every entry point that compiles `runtimed`,
 /// `notebook`, or runs the dev daemon, so a fresh clone can go straight to
 /// `cargo xtask build` / `dev` / `dev-daemon` / `notebook` without an
-/// explicit `cargo xtask wasm` step. `runtimed`'s `build.rs` panics with a
-/// "run `cargo xtask wasm`" message if you bypass xtask and invoke `cargo
-/// build` directly.
+/// explicit `cargo xtask artifacts ensure ...` step. `runtimed`'s `build.rs`
+/// panics with a scoped `cargo xtask artifacts ensure ...` recovery command if
+/// you bypass xtask and invoke `cargo build` directly.
 /// Make sure build artifacts on disk match the current source tree.
 ///
 /// Two tiers, matching each artifact's churn profile:
