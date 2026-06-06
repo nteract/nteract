@@ -1,6 +1,7 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { copyRuntimeWasmAssets } from "./runtime-wasm-assets.mjs";
 import { writeViewerCssManifest } from "./viewer-css-assets.mjs";
 
 const siftWasmUrl = new URL("../../../crates/sift-wasm/pkg/sift_wasm_bg.wasm", import.meta.url);
@@ -9,14 +10,10 @@ const runtimedWasmModuleUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
   import.meta.url,
 );
-const runtimedModuleOutputUrl = new URL("../dist/assets/runtimed_wasm.js", import.meta.url);
-const runtimedModulePluginOutputUrl = new URL("../dist/plugins/runtimed_wasm.js", import.meta.url);
 const runtimedWasmUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
   import.meta.url,
 );
-const runtimedOutputUrl = new URL("../dist/assets/runtimed_wasm_bg.wasm", import.meta.url);
-const runtimedPluginOutputUrl = new URL("../dist/plugins/runtimed_wasm_bg.wasm", import.meta.url);
 const isolatedRendererModuleUrl = new URL(
   "../../notebook/src/renderer-plugins/isolated-renderer.js",
   import.meta.url,
@@ -49,10 +46,12 @@ await mkdir(new URL("../dist/plugins/", import.meta.url), { recursive: true });
 await mkdir(new URL("../dist/assets/", import.meta.url), { recursive: true });
 await mkdir(new URL("../dist-output-document/", import.meta.url), { recursive: true });
 await copyFile(siftWasmUrl, outputUrl);
-await copyFile(runtimedWasmModuleUrl, runtimedModuleOutputUrl);
-await copyFile(runtimedWasmUrl, runtimedOutputUrl);
-await copyFile(runtimedWasmModuleUrl, runtimedModulePluginOutputUrl);
-await copyFile(runtimedWasmUrl, runtimedPluginOutputUrl);
+const runtimeWasmAssets = await copyRuntimeWasmAssets({
+  moduleUrl: runtimedWasmModuleUrl,
+  wasmUrl: runtimedWasmUrl,
+  assetsDirUrl: new URL("../dist/assets/", import.meta.url),
+  pluginsDirUrl: new URL("../dist/plugins/", import.meta.url),
+});
 await copyFile(isolatedRendererModuleUrl, isolatedRendererModuleOutputUrl);
 await copyFile(isolatedRendererCssUrl, isolatedRendererCssOutputUrl);
 await copyFile(outputDocumentFrameUrl, outputDocumentOutputUrl);
@@ -61,16 +60,9 @@ const { manifest, manifestUrl } = await writeViewerCssManifest(
 );
 
 console.log(`copied ${fileURLToPath(siftWasmUrl)} -> ${fileURLToPath(outputUrl)}`);
-console.log(
-  `copied ${fileURLToPath(runtimedWasmModuleUrl)} -> ${fileURLToPath(runtimedModuleOutputUrl)}`,
-);
-console.log(`copied ${fileURLToPath(runtimedWasmUrl)} -> ${fileURLToPath(runtimedOutputUrl)}`);
-console.log(
-  `copied ${fileURLToPath(runtimedWasmModuleUrl)} -> ${fileURLToPath(runtimedModulePluginOutputUrl)}`,
-);
-console.log(
-  `copied ${fileURLToPath(runtimedWasmUrl)} -> ${fileURLToPath(runtimedPluginOutputUrl)}`,
-);
+for (const copy of runtimeWasmAssets.copies) {
+  console.log(`copied ${fileURLToPath(copy.sourceUrl)} -> ${fileURLToPath(copy.outputUrl)}`);
+}
 console.log(
   `copied ${fileURLToPath(isolatedRendererModuleUrl)} -> ${fileURLToPath(isolatedRendererModuleOutputUrl)}`,
 );
@@ -80,6 +72,8 @@ console.log(
 console.log(
   `copied ${fileURLToPath(outputDocumentFrameUrl)} -> ${fileURLToPath(outputDocumentOutputUrl)}`,
 );
+console.log(`wrote runtime WASM manifest ${fileURLToPath(runtimeWasmAssets.manifestUrl)}`);
+console.log(`runtime WASM assets: ${JSON.stringify(runtimeWasmAssets.manifest)}`);
 console.log(`wrote viewer CSS manifest ${fileURLToPath(manifestUrl)}`);
 console.log(`viewer CSS assets: ${JSON.stringify(manifest)}`);
 

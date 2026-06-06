@@ -16,6 +16,7 @@ describe("hosted smoke performance diagnostics", () => {
   const origins = {
     targetOrigin: "https://preview.runt.run",
     rendererAssetOrigin: "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev",
+    runtimeWasmOrigin: "https://preview.runt.run",
     outputDocumentOrigin: "https://preview.runtusercontent.com",
   };
 
@@ -55,6 +56,20 @@ describe("hosted smoke performance diagnostics", () => {
         origins,
       ),
       "runtimed_wasm_binary",
+    );
+    assert.equal(
+      classifyPerformanceResource(
+        "https://preview.runt.run/assets/runtimed_wasm_bg.0123456789abcdef.wasm",
+        origins,
+      ),
+      "runtimed_wasm_binary",
+    );
+    assert.equal(
+      classifyPerformanceResource(
+        "https://preview.runt.run/assets/runtimed_wasm.fedcba9876543210.js",
+        origins,
+      ),
+      "runtimed_wasm_js",
     );
     assert.equal(
       classifyPerformanceResource(

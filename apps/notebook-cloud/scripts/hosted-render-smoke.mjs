@@ -119,8 +119,13 @@ const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES"
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
+const expectedRuntimeWasmOrigin =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_RUNTIMED_WASM_ORIGIN ?? targetOrigin;
 const rendererAssetOrigin = expectedRendererAssetOrigin
   ? new URL(expectedRendererAssetOrigin).origin
+  : null;
+const runtimeWasmOrigin = expectedRuntimeWasmOrigin
+  ? new URL(expectedRuntimeWasmOrigin).origin
   : null;
 const outputDocumentOrigin = expectedOutputDocumentOrigin
   ? new URL(expectedOutputDocumentOrigin).origin
@@ -212,6 +217,7 @@ async function main() {
     const kind = classifyPerformanceResource(request.url(), {
       targetOrigin,
       rendererAssetOrigin,
+      runtimeWasmOrigin,
       outputDocumentOrigin,
     });
     if (!kind) {
@@ -297,7 +303,7 @@ async function main() {
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     markTiming("domcontentloaded");
     runtimeWasmHintCheck = checkRuntimeWasmHints(await collectRuntimeWasmHints(page), {
-      expectedRendererAssetOrigin,
+      expectedRuntimeWasmOrigin,
       requireHints: requireRuntimedWasm,
     });
     failures.push(...runtimeWasmHintCheck.failures);
@@ -462,7 +468,7 @@ async function main() {
         });
       }
       if (
-        request.url.includes("runtimed_wasm_bg.wasm") &&
+        isRuntimedWasmBinaryUrl(request.url) &&
         !request.contentType?.includes("application/wasm")
       ) {
         failures.push({
@@ -483,13 +489,13 @@ async function main() {
       });
     }
     if (
-      expectedRendererAssetOrigin &&
+      expectedRuntimeWasmOrigin &&
       (requireRuntimedWasm || runtimedWasmRequests.length > 0) &&
-      !runtimedWasmRequests.some((request) => request.url.startsWith(expectedRendererAssetOrigin))
+      !runtimedWasmRequests.some((request) => request.url.startsWith(expectedRuntimeWasmOrigin))
     ) {
       failures.push({
         kind: "runtimed-wasm-origin",
-        text: `runtimed WASM did not load from ${expectedRendererAssetOrigin}`,
+        text: `runtimed WASM did not load from ${expectedRuntimeWasmOrigin}`,
         requests: runtimedWasmRequests.map((request) => request.url),
       });
     }
@@ -938,7 +944,19 @@ function isRelevantRequestUrl(value) {
     return (
       url.origin === targetOrigin ||
       url.origin === rendererAssetOrigin ||
+      url.origin === runtimeWasmOrigin ||
       url.origin === outputDocumentOrigin
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isRuntimedWasmBinaryUrl(value) {
+  try {
+    const url = new URL(value);
+    return /^runtimed_wasm_bg(?:\.[a-f0-9]{12,64})?\.wasm$/.test(
+      url.pathname.split("/").pop() ?? "",
     );
   } catch {
     return false;

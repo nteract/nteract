@@ -26,7 +26,7 @@ describe("renderer assets Worker", () => {
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
     assert.equal(response.headers.get("Access-Control-Allow-Methods"), "GET, HEAD, OPTIONS");
     assert.equal(response.headers.get("Timing-Allow-Origin"), "*");
-    assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=0, must-revalidate");
     assert.equal(response.headers.get("Content-Type"), "application/wasm");
     assert.equal(await response.text(), "wasm");
   });
@@ -50,6 +50,30 @@ describe("renderer assets Worker", () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(seenPaths, ["/runtimed_wasm_bg.wasm"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Timing-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=0, must-revalidate");
+  });
+
+  it("serves content-hashed runtime WASM assets with immutable caching", async () => {
+    const seenPaths: string[] = [];
+    const response = await rendererAssetsWorker.fetch(
+      new Request("https://assets.test/renderer-assets/runtimed_wasm_bg.0123456789abcdef.wasm"),
+      fakeEnv({
+        ASSETS: {
+          fetch: async (request: Request) => {
+            seenPaths.push(new URL(request.url).pathname);
+            return new Response("runtime-wasm", {
+              headers: { "Content-Type": "application/wasm" },
+            });
+          },
+        },
+      }),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/runtimed_wasm_bg.0123456789abcdef.wasm"]);
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
     assert.equal(response.headers.get("Timing-Allow-Origin"), "*");
     assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");

@@ -95,6 +95,7 @@ export { NotebookRoom };
 // assets with explicit CORS, and let hosts replace it with a dedicated origin.
 const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
 const DEFAULT_RUNTIMED_WASM_BASE_PATH = "/assets/";
+const VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH = "/assets/runtime-wasm-assets.json";
 const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
 const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
@@ -105,6 +106,11 @@ interface MissingSnapshotBlob {
   hash: string;
   size: number | null;
   media_type: string | null;
+}
+
+interface RuntimeWasmAssetNames {
+  module: string;
+  wasm: string;
 }
 
 type SnapshotPairValidationResult =
@@ -2329,10 +2335,16 @@ function requiredRuntimeStateDocId(value: string | null): string | null {
   return trimmed && trimmed !== "none" ? trimmed : null;
 }
 
-function viewer(notebookId: string, request: Request, env: Env, headsHash?: string): Response {
+async function viewer(
+  notebookId: string,
+  request: Request,
+  env: Env,
+  headsHash?: string,
+): Promise<Response> {
   const escaped = escapeHtml(notebookId);
   const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
+  const runtimeWasmAssets = await runtimeWasmAssetNames(env);
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
@@ -2350,8 +2362,8 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
     outputDocumentBaseUrl: outputDocumentBaseUrl(env),
-    runtimedWasmModulePath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_MODULE_NAME),
-    runtimedWasmPath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_NAME),
+    runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
+    runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
   };
   return viewerShell(
     `nteract cloud notebook ${title}`,
@@ -2501,6 +2513,59 @@ function outputDocumentBaseUrl(env: Env): string | null {
 
 function runtimedWasmAssetPath(env: Env, name: string): string {
   return `${runtimedWasmBasePath(env)}${name}`;
+}
+
+async function runtimeWasmAssetNames(env: Env): Promise<RuntimeWasmAssetNames> {
+  if (!env.ASSETS) {
+    return defaultRuntimeWasmAssetNames();
+  }
+
+  try {
+    const manifestRequest = new Request(
+      `https://notebook-cloud.local${VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH}`,
+    );
+    const response = await env.ASSETS.fetch(manifestRequest);
+    if (!response.ok) {
+      return defaultRuntimeWasmAssetNames();
+    }
+    const manifest = await response.json();
+    if (isRuntimeWasmAssetManifest(manifest)) {
+      return manifest;
+    }
+    cloudLog("warn", "viewer.runtime_wasm_manifest.invalid", {
+      manifest_path: VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH,
+    });
+  } catch (error) {
+    cloudLog("warn", "viewer.runtime_wasm_manifest.failed", {
+      manifest_path: VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH,
+      error: errorMessage(error),
+    });
+  }
+
+  return defaultRuntimeWasmAssetNames();
+}
+
+function defaultRuntimeWasmAssetNames(): RuntimeWasmAssetNames {
+  return {
+    module: VIEWER_RUNTIMED_WASM_MODULE_NAME,
+    wasm: VIEWER_RUNTIMED_WASM_NAME,
+  };
+}
+
+function isRuntimeWasmAssetManifest(value: unknown): value is RuntimeWasmAssetNames {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const manifest = value as Record<string, unknown>;
+  return isRuntimeWasmModuleName(manifest.module) && isRuntimeWasmBinaryName(manifest.wasm);
+}
+
+function isRuntimeWasmModuleName(value: unknown): value is string {
+  return typeof value === "string" && /^runtimed_wasm(?:\.[a-f0-9]{12,64})?\.js$/.test(value);
+}
+
+function isRuntimeWasmBinaryName(value: unknown): value is string {
+  return typeof value === "string" && /^runtimed_wasm_bg(?:\.[a-f0-9]{12,64})?\.wasm$/.test(value);
 }
 
 function debugViewer(notebookId: string): Response {

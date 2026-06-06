@@ -1,16 +1,22 @@
 const RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const RUNTIMED_WASM_BINARY_NAME = "runtimed_wasm_bg.wasm";
+const RUNTIMED_WASM_MODULE_FILENAME = /^runtimed_wasm(?:\.[a-f0-9]{12,64})?\.js$/;
+const RUNTIMED_WASM_BINARY_FILENAME = /^runtimed_wasm_bg(?:\.[a-f0-9]{12,64})?\.wasm$/;
 
 export function checkRuntimeWasmHints(hints, options = {}) {
-  const expectedRendererAssetOrigin = options.expectedRendererAssetOrigin ?? "";
+  const expectedRuntimeWasmOrigin =
+    options.expectedRuntimeWasmOrigin ?? options.expectedRendererAssetOrigin ?? "";
   const requireHints = options.requireHints ?? true;
   const failures = [];
   const modulepreload = hints.find(
     (hint) =>
-      relIncludes(hint.rel, "modulepreload") && hint.href.includes(RUNTIMED_WASM_MODULE_NAME),
+      relIncludes(hint.rel, "modulepreload") &&
+      matchesRuntimeWasmFilename(hint.href, RUNTIMED_WASM_MODULE_FILENAME),
   );
   const wasmPreload = hints.find(
-    (hint) => relIncludes(hint.rel, "preload") && hint.href.includes(RUNTIMED_WASM_BINARY_NAME),
+    (hint) =>
+      relIncludes(hint.rel, "preload") &&
+      matchesRuntimeWasmFilename(hint.href, RUNTIMED_WASM_BINARY_FILENAME),
   );
 
   if (requireHints && !modulepreload) {
@@ -30,7 +36,7 @@ export function checkRuntimeWasmHints(hints, options = {}) {
     assertCrossOrigin(modulepreload, failures, `${RUNTIMED_WASM_MODULE_NAME} modulepreload`);
     assertExpectedOrigin(
       modulepreload,
-      expectedRendererAssetOrigin,
+      expectedRuntimeWasmOrigin,
       failures,
       `${RUNTIMED_WASM_MODULE_NAME} modulepreload`,
     );
@@ -51,7 +57,7 @@ export function checkRuntimeWasmHints(hints, options = {}) {
     assertCrossOrigin(wasmPreload, failures, `${RUNTIMED_WASM_BINARY_NAME} preload`);
     assertExpectedOrigin(
       wasmPreload,
-      expectedRendererAssetOrigin,
+      expectedRuntimeWasmOrigin,
       failures,
       `${RUNTIMED_WASM_BINARY_NAME} preload`,
     );
@@ -61,7 +67,7 @@ export function checkRuntimeWasmHints(hints, options = {}) {
     ok: failures.length === 0,
     modulepreload: modulepreload ?? null,
     wasmPreload: wasmPreload ?? null,
-    runtimedWasmHints: hints.filter((hint) => hint.href.includes("runtimed_wasm")),
+    runtimedWasmHints: hints.filter((hint) => isRuntimeWasmAssetHref(hint.href)),
     failures,
   };
 }
@@ -93,5 +99,21 @@ function assertExpectedOrigin(hint, expectedRendererAssetOrigin, failures, label
       text: `${label} did not point at ${expectedRendererAssetOrigin}`,
       href: hint.href,
     });
+  }
+}
+
+function isRuntimeWasmAssetHref(href) {
+  return (
+    matchesRuntimeWasmFilename(href, RUNTIMED_WASM_MODULE_FILENAME) ||
+    matchesRuntimeWasmFilename(href, RUNTIMED_WASM_BINARY_FILENAME)
+  );
+}
+
+function matchesRuntimeWasmFilename(href, pattern) {
+  try {
+    const pathname = new URL(href).pathname;
+    return pattern.test(pathname.split("/").pop() ?? "");
+  } catch {
+    return pattern.test(href.split(/[?#]/)[0].split("/").pop() ?? "");
   }
 }

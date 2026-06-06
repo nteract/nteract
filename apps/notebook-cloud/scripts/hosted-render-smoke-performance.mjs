@@ -1,6 +1,11 @@
 export function classifyPerformanceResource(
   url,
-  { targetOrigin, rendererAssetOrigin = null, outputDocumentOrigin = null } = {},
+  {
+    targetOrigin,
+    rendererAssetOrigin = null,
+    runtimeWasmOrigin = null,
+    outputDocumentOrigin = null,
+  } = {},
 ) {
   let parsed;
   try {
@@ -38,13 +43,22 @@ export function classifyPerformanceResource(
     targetOrigin &&
     parsed.origin === targetOrigin &&
     parsed.pathname.startsWith("/renderer-assets/");
-  if (isRendererAsset || isTargetRendererAsset) {
-    if (parsed.pathname.endsWith("/runtimed_wasm.js")) {
+  const isTargetRuntimeWasmAsset =
+    targetOrigin && parsed.origin === targetOrigin && parsed.pathname.startsWith("/assets/");
+  const isRuntimeWasmAsset =
+    isTargetRuntimeWasmAsset ||
+    (runtimeWasmOrigin && parsed.origin === runtimeWasmOrigin) ||
+    isRendererAsset ||
+    isTargetRendererAsset;
+  if (isRuntimeWasmAsset) {
+    if (runtimeWasmPathnameMatches(parsed.pathname, "js")) {
       return "runtimed_wasm_js";
     }
-    if (parsed.pathname.endsWith("/runtimed_wasm_bg.wasm")) {
+    if (runtimeWasmPathnameMatches(parsed.pathname, "wasm")) {
       return "runtimed_wasm_binary";
     }
+  }
+  if (isRendererAsset || isTargetRendererAsset) {
     if (parsed.pathname.endsWith("/sift_wasm.wasm")) {
       return "sift_wasm_binary";
     }
@@ -70,6 +84,14 @@ export function classifyPerformanceResource(
   }
 
   return null;
+}
+
+function runtimeWasmPathnameMatches(pathname, extension) {
+  const name = pathname.split("/").pop() ?? "";
+  if (extension === "js") {
+    return /^runtimed_wasm(?:\.[a-f0-9]{12,64})?\.js$/.test(name);
+  }
+  return /^runtimed_wasm_bg(?:\.[a-f0-9]{12,64})?\.wasm$/.test(name);
 }
 
 export function refinePerformanceResourceKind(resource) {

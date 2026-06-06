@@ -14,9 +14,11 @@ pnpm run deploy
 ```
 
 That runs `pnpm run build` (compiles `runtimed` to WASM, builds the renderer
-plugins, bundles the viewer with Vite, copies assets) and then `wrangler deploy`.
-The top-level `wrangler.toml` is the prototype config (custom domain
-`preview.runt.run`, `DEPLOYMENT_ENV=prototype`), so there is no `--env` flag.
+plugins, bundles the viewer with Vite, copies assets, and writes the runtime
+WASM asset manifest), deploys `wrangler.renderer-assets.toml`, then deploys the
+main Worker with `wrangler.toml`. The top-level `wrangler.toml` is the prototype
+config (custom domain `preview.runt.run`, `DEPLOYMENT_ENV=prototype`), so there
+is no `--env` flag.
 
 ## Verify
 
@@ -37,9 +39,10 @@ pnpm run deploy:check
 
 ## Scope
 
-`pnpm run deploy` ships only the main rooms Worker (`wrangler.toml`), which carries
-the room logic and the viewer assets. The sibling Workers,
-`wrangler.output-document.toml` (the output-document iframe) and
-`wrangler.renderer-assets.toml` (the renderer assets Worker), change rarely and
-deploy independently with `wrangler deploy -c <file>`. Deploy those only when their
-own inputs change.
+`pnpm run deploy` ships the renderer assets Worker before the main rooms Worker.
+The main Worker carries room logic, viewer assets, and the content-hashed
+runtime WASM assets referenced by `/assets/runtime-wasm-assets.json`. The
+renderer assets Worker carries public renderer sidecars such as `sift_wasm.wasm`
+and compatibility copies of the runtime WASM files. The output-document sibling
+Worker (`wrangler.output-document.toml`) still deploys independently with
+`wrangler deploy -c wrangler.output-document.toml` when its own inputs change.
