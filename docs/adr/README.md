@@ -63,6 +63,7 @@ These entries define the center of gravity for the system:
 | [Tokio Mutex Discipline](tokio-mutex-discipline.md) | Draft | Async lock and cancel-safety invariants. |
 | [Generated Runtime Artifacts](generated-runtime-artifacts.md) | Draft | Gitignored WASM/renderer outputs, LFS bundles, and `xtask artifacts` ownership. |
 | [Frontend Sync Bridge and Stable DOM Order](frontend-sync-bridge.md) | Draft | React/store projection and iframe-preserving cell order. |
+| [Live Notebook Projection Policy](live-notebook-projection-policy.md) | Draft | Full materialization fallback boundaries and narrow live store projections. |
 | [MCP Session Lifecycle and Daemon Supervision](mcp-session-lifecycle.md) | Draft | MCP proxy, daemon, and session lifetime boundaries. |
 | [MCP Resource Addressing](mcp-resource-addressing.md) | Draft | Local `nteract://` MCP resource namespace. |
 
