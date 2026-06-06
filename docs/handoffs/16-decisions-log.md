@@ -4,35 +4,6 @@ A trail of the non-obvious calls behind making the daemon's `runtime_agent`
 transport-agnostic, so a future reader understands *why*. One entry per
 decision: what, the alternative, why.
 
-## PR stack status (2026-06-05)
-
-Phases 1–3a merged via #3411 (squashed into `main`). The work below is a stack of
-six PRs against `main`, each on the `quillaid/desktop` fork, base-chained in order
-(each stacked on the previous; review the *last* commit of each until the lower ones
-merge). All are pure-Rust or Rust+TS, fully unit-tested, with the desktop/UDS path
-left byte-for-byte unchanged. Every PR carries a STATUS section.
-
-| PR | Branch | Phase | What | NEEDS US |
-|----|--------|-------|------|----------|
-| #3413 | `quod/16-phase3b-connect-hardening` | 3b warm-up | cloud ready-wait timeout + framing-error flap floor (2 pullfrog gaps) | none |
-| #3414 | `quod/16-phase3b-reconnect-reauth` | 3b | `TokenRefresher` re-auth seam + `reconnect_with_backoff` tests | live re-auth proof |
-| #3417 | `quod/16-phase3c-spawn-path` | 3c CODE | `run_cloud_runtime_agent` spawn path + principal-derived doc actor | live cross-machine re-proof; CLI wiring |
-| #3418 | `quod/16-phase3e-policy-model` | 3e model | `kernel.last_seen` liveness heartbeat | `Disconnected` variant + policy relaxation (defer w/ 3d) |
-| #3419 | `quod/16-phase3f-writer-recovery` | 3f req #6 | writer-error reconnects instead of killing the kernel | — (req #5 inbound channel needs 3d) |
-| #3420 | `quod/16-phase3d-room-watchdog` | 3d CODE | DO `runtime_peer`-gone watchdog + `reconcile_runtime_peer_gone` | worker deploy + live peer-drop re-proof |
-
-CI: all Rust checks (Clippy, Rust Tests, Lint, runtimed-node) green on every PR. A
-**Browser E2E (Playwright)** flake intermittently fails #3414/#3417 — it's a frontend
-job unrelated to these Rust/TS-cloud changes (the shared base #3413 and sibling #3418
-passed it); needs a maintainer rerun (fork PRs can't self-rerun). The 4
-`room-materializer.test.ts` failures on #3420 are a pre-existing environmental baseline
-(reproduced on clean `origin/main`).
-
-**Only remaining headless-incomplete item:** 3f req #5 (inbound request channel) — it
-needs the 3d worker's hosted REQUEST dispatch + a live room, so it's NEEDS US, not
-buildable here. Everything else in the #16 plan is code-complete behind transport gates;
-what's left is the set of NEEDS-US live/deploy steps consolidated below per phase.
-
 ## Design
 
 1. **Make `runtime_agent` transport-agnostic; do not reimplement the kernel drive.**
@@ -302,7 +273,7 @@ Phase 3b verification: `cargo test -p notebook-cloud-transport` 20 (was 16);
 unchanged); `cargo xtask lint --fix` clean; clippy `-D warnings` clean on both.
 No new workspace crate.
 
-**NEEDS US (3b):** the token-refresher seam is unit-tested but has no live
+**Deferred (3b):** the token-refresher seam is unit-tested but has no live
 re-auth proof — that needs a long-lived session against a preview room where an
 OIDC token actually expires and the refresher mints a new one. Fold this into
 the 3c cross-machine re-proof (same creds/deploy). Nothing in 3b changes the
@@ -364,7 +335,7 @@ suites green (UDS byte-for-byte unchanged); `cargo test -p xtask` 28 (bump-targe
 guard green — `notebook-cloud-transport` was already registered, now also a
 `runtimed` dep); `cargo xtask lint --fix` clean; clippy `-D warnings` clean.
 
-**NEEDS US (3c):** the live cross-machine re-proof. `run_cloud_runtime_agent` is
+**Deferred (3c):** the live cross-machine re-proof. `run_cloud_runtime_agent` is
 built and unit-tested behind the transport gate, but nothing yet *calls* it from a
 CLI/daemon command, and it has never run against a real room. To close req #2/#3
 end-to-end an interactive session with creds must: (1) deploy a preview room (or
@@ -399,7 +370,7 @@ The code path is additive and gated, so it cannot affect the desktop/daemon path
       exactly this reason. So 3e's policy half is deferred, not blocking.
     - **A new `RuntimeLifecycle::Disconnected` variant has a ~28-Rust-file + TS
       blast radius and its payoff is viewer-facing UX**, verifiable only against a
-      deployed viewer (NEEDS US). Landing it unattended-and-unverified is higher
+      deployed viewer (Deferred). Landing it unverified is higher
       risk than the watchdog needs. The lifecycle analysis explicitly sanctions a
       `last_seen` timestamp as the *alternative* form of req #4(b); that is the
       low-risk, fully-headless piece the watchdog actually reads.
@@ -426,7 +397,7 @@ The code path is additive and gated, so it cannot affect the desktop/daemon path
     5 unit tests; runtime-doc 215 (was 211) + genesis tests green; dependent crates
     (`runtimed` 888, `notebook-sync`, `runtimed-py`, `runtimed-node`) green; clippy clean.
 
-**NEEDS US (3e deferred halves):** (1) the `RuntimeLifecycle::Disconnected` variant —
+**Deferred (3e deferred halves):** (1) the `RuntimeLifecycle::Disconnected` variant —
 defer to land with 3d so its viewer UX is validated against a live deployed viewer in
 the same pass (the watchdog can already express "stale" via `last_seen` + flipping to
 the existing `Error`/`Shutdown` terminal states in the meantime); (2) the
@@ -440,7 +411,7 @@ change. Decide (2) when 3d's mechanism is chosen.
     transport) lands now; req #5 (inbound request channel) defers — it needs the
     3d worker.** req #5 routes interrupt/restart `RuntimeAgentRequest`s from the
     cloud room to the agent, which requires a hosted REQUEST dispatch on the
-    DurableObject (3d, NEEDS US). req #6 is pure Rust in `runtime_agent` and is the
+    DurableObject (3d, Deferred). req #6 is pure Rust in `runtime_agent` and is the
     last place a transient cloud blip still destroys a healthy kernel after 3a:
     the two outbound (writer) `select!` arms — the `state_changed_rx`
     RuntimeStateSync send and the `async_response_rx` reply send — `break` the loop
@@ -471,7 +442,7 @@ Phase 3f(req #6) verification: `cargo test -p runtimed` 891 lib (was 888) +
 integration suites green (UDS unchanged); `cargo xtask lint --fix` clean; clippy
 `-D warnings` clean.
 
-**NEEDS US (3f req #5):** the inbound request channel — needs the 3d DurableObject
+**Deferred (3f req #5):** the inbound request channel — needs the 3d DurableObject
 hosted REQUEST dispatch to deliver interrupt/restart `RuntimeAgentRequest`s to the
 cloud agent. Detection of the kernel-side *effect* already survives (decision/req
 analysis); only the trigger path is missing, and it can't be built or verified
@@ -480,7 +451,7 @@ without the worker (3d) + a live room. Build it alongside 3d.
 ## Phase 3d (CODE): cloud-room DurableObject watchdog
 
 36. **3d's DO-internal watchdog is built and unit-tested; the deploy + the
-    live peer-drop re-proof are NEEDS US.** Implements the safety net the daemon
+    live peer-drop re-proof are Deferred.** Implements the safety net the daemon
     structurally cannot provide (reqs #3, #7): when the room's `runtime_peer`
     (the daemon) vanishes, the room itself terminalizes the orphaned state. Three
     layers, each verifiable headlessly:
@@ -530,14 +501,13 @@ Phase 3d verification: `cargo test -p runtimed-wasm` 26 (was 22, +4 reconciliati
 clean `origin/main` worktree, unrelated to this change); `tsc --noEmit` clean; clippy
 `-D warnings` clean.
 
-**NEEDS US (3d):** (1) deploy the worker to preview (the `alarm()` handler + the
+**Deferred (3d):** (1) deploy the worker to preview (the `alarm()` handler + the
 `DurableObjectStorage` alarm methods only execute on a real Cloudflare DO; the unit
 tests use a fake clock/storage). (2) Live peer-drop re-proof: with a real runtime_peer
 attached to a preview room running a cell, kill the peer, and confirm after the 30s
 grace the viewer sees the spinning cell go to error and the kernel flip to Error —
 and that a reconnect *within* 30s does NOT terminalize. (3) Tune `RUNTIME_PEER_GONE_GRACE_MS`
-against real reconnect latencies. None of this is possible without the preview deploy +
-creds this session lacks. The code is gated behind the alarm API feature-detect, so a
+against real reconnect latencies. None of this is possible without a preview deploy and live credentials. The code is gated behind the alarm API feature-detect, so a
 storage backend without alarms (or the desktop/UDS path) is unaffected.
 
 ## Phase 3 remaining (3f req #5 only)

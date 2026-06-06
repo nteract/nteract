@@ -145,8 +145,8 @@ pub async fn run_runtime_agent(
 ///
 /// CODE-ONLY (Phase 3c): this builds and unit-tests the spawn path behind the
 /// transport gate; the live cross-machine re-proof (a preview room + the
-/// explicit `runtime_peer` ACL row, decision #9) is deferred — see the decision
-/// log's NEEDS-US note.
+/// explicit `runtime_peer` ACL row, decision #9) is deferred and tracked in the
+/// decision log.
 pub async fn run_cloud_runtime_agent(
     config: notebook_cloud_transport::CloudWsConfig,
     operator: String,
