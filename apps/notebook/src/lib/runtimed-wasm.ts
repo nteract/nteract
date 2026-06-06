@@ -8,9 +8,14 @@ import init, {
 let notebookWasmReady: Promise<void> | undefined;
 
 export function ensureNotebookWasmReady(): Promise<void> {
-  notebookWasmReady ??= init().then(() => {
-    setMarkdownProjectionProjector(project_markdown_json);
-  });
+  notebookWasmReady ??= init()
+    .then(() => {
+      setMarkdownProjectionProjector(project_markdown_json);
+    })
+    .catch((error: unknown) => {
+      notebookWasmReady = undefined;
+      throw error;
+    });
   return notebookWasmReady;
 }
 

@@ -7,6 +7,7 @@ const MARKDOWN_PROJECTION_CACHE_LIMIT = 128;
 
 let markdownProjectionProjector: MarkdownProjectionProjector | null = null;
 const markdownProjectionCache = new Map<string, MarkdownProjectionPlan>();
+let warnedMissingMarkdownProjectionProjector = false;
 
 export interface MarkdownProjectionMeasurement {
   readonly estimatedHeight: number;
@@ -97,7 +98,10 @@ export function setMarkdownProjectionProjector(
 
 export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | null {
   if (!source.trim()) return null;
-  if (!markdownProjectionProjector) return null;
+  if (!markdownProjectionProjector) {
+    warnMissingMarkdownProjectionProjector();
+    return null;
+  }
 
   const cached = markdownProjectionCache.get(source);
   if (cached) {
@@ -116,6 +120,16 @@ export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | nu
   } catch {
     return null;
   }
+}
+
+function warnMissingMarkdownProjectionProjector(): void {
+  if (warnedMissingMarkdownProjectionProjector) return;
+  warnedMissingMarkdownProjectionProjector = true;
+  if (process.env.NODE_ENV === "production") return;
+
+  console.warn(
+    "[markdown-projection] markdown projector is not initialized; host must call setMarkdownProjectionProjector() before projection.",
+  );
 }
 
 function cacheMarkdownProjectionPlan(
