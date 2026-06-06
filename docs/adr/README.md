@@ -37,6 +37,7 @@ These entries define the center of gravity for the system:
 | Notebook host shell | [Notebook Host Shell Convergence](notebook-host-shell-convergence.md) | Draft |
 | Notebook identity and environment surfaces | [Notebook Identity and Environment Surfaces](notebook-identity-environment-surfaces.md) | PRD draft |
 | Notebook identity and environment audit | [Notebook Identity and Environment Surface Audit](notebook-identity-environment-surface-audit.md) | Audit |
+| Runtime principal promotion | [Runtime Principal Promotion](runtime-principal-promotion.md) | Draft |
 | Execution ordering | [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md) | Draft |
 | Blob storage | [Blob Storage and Content Addressing](blob-storage-and-content-addressing.md) | Draft |
 | Sharing product requirements | [Hosted Notebook Sharing and Invites](hosted-sharing-invites.md) | PRD draft |
@@ -94,6 +95,7 @@ These entries define the center of gravity for the system:
 |-------|--------|-------|
 | [Deployment Topology](deployment-topology.md) | Draft | Hosted room topology, compute attachment, and durable state split. |
 | [Hosted Room Authorization and Cloud Room Host](hosted-room-authorization.md) | Draft | D1 ACLs, scope derivation, and DO room host. |
+| [Runtime Principal Promotion](runtime-principal-promotion.md) | Draft | Local runtime principals, hosted promotion, and execution authority split. |
 | [Hosted Credential Transport and OIDC Binding](hosted-credential-transport.md) | Draft | Browser, native, agent, and runtime credential transport. |
 | [Hosted Notebook Artifacts](hosted-notebook-artifacts.md) | Draft | Published snapshots, R2 layout, and cloud viewer materialization. |
 | [Hosted Output Origin Isolation](hosted-output-origin-isolation.md) | Draft | App, output, and renderer origin separation. |
