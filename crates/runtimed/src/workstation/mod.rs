@@ -19,5 +19,10 @@
 //! pieces are headless-buildable vs. deferred to a live preview deploy.
 
 pub mod cloud_agent_cli;
+pub mod environments;
 
 pub use cloud_agent_cli::{build_cloud_config, CloudAgentArgs, CloudAuthKind};
+pub use environments::{
+    environments_from_pool_state, list_environments, EnvKind, EnvironmentPolicy,
+    WorkstationEnvironment,
+};
