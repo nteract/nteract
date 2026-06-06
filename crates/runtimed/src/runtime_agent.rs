@@ -205,6 +205,22 @@ fn cloud_actor_label(principal: &str, operator: &str) -> String {
     format!("{principal}/{operator}:{}", &nonce[..8])
 }
 
+/// Carry the interpreter path through to `launch()` for a no-pool launch.
+///
+/// `current_python` (and any prepares-own-env source) sets `python_path` with no
+/// `venv_path`, so no `pooled_env` is built and the launcher's
+/// `uv:current_python` arm needs the path directly. A pooled/inline/project env
+/// has a `venv_path`, so this returns `None` and the pooled path is used.
+fn direct_python_path_for(
+    launched_config: &notebook_protocol::protocol::LaunchedEnvConfig,
+) -> Option<PathBuf> {
+    if launched_config.venv_path.is_none() {
+        launched_config.python_path.clone()
+    } else {
+        None
+    }
+}
+
 /// Run the runtime agent over an arbitrary [`FrameTransport`].
 ///
 /// The desktop/daemon path ([`run_runtime_agent`]) and the cloud path
@@ -1172,6 +1188,11 @@ async fn handle_runtime_agent_request(
                     })
             });
 
+            // current_python carries only a python_path (no venv_path), so no
+            // pooled_env is built above; carry the path through for the
+            // launcher's direct-launch arm.
+            let direct_python_path = direct_python_path_for(&launched_config);
+
             let shared = KernelSharedRefs {
                 state: ctx.state.clone(),
                 blob_store: ctx.blob_store.clone(),
@@ -1190,6 +1211,7 @@ async fn handle_runtime_agent_request(
                 env_vars: env_vars.into_iter().collect(),
                 redact_env_values_in_outputs,
                 pooled_env,
+                direct_python_path,
             };
 
             let launch_started = std::time::Instant::now();
@@ -1284,6 +1306,11 @@ async fn handle_runtime_agent_request(
                     })
             });
 
+            // current_python carries only a python_path (no venv_path), so no
+            // pooled_env is built above; carry the path through for the
+            // launcher's direct-launch arm.
+            let direct_python_path = direct_python_path_for(&launched_config);
+
             let shared = KernelSharedRefs {
                 state: ctx.state.clone(),
                 blob_store: ctx.blob_store.clone(),
@@ -1302,6 +1329,7 @@ async fn handle_runtime_agent_request(
                 env_vars: env_vars.into_iter().collect(),
                 redact_env_values_in_outputs,
                 pooled_env,
+                direct_python_path,
             };
 
             // Mark stale executions as failed in RuntimeStateDoc.
@@ -2056,6 +2084,37 @@ mod tests {
     use notebook_protocol::protocol::{BlobDurability, LaunchedEnvConfig};
     use std::path::PathBuf;
     use std::time::Duration;
+
+    // -- direct_python_path_for (B3: current_python launch plumbing) --------
+    //
+    // current_python sets python_path with no venv_path, so the interpreter
+    // path must be carried to launch() separately from the pooled env; a
+    // pooled/project env (venv_path set) must NOT carry it.
+
+    #[test]
+    fn direct_python_path_carried_only_without_venv() {
+        let current_python = LaunchedEnvConfig {
+            python_path: Some(PathBuf::from("/tmp/k/bin/python")),
+            venv_path: None,
+            ..LaunchedEnvConfig::default()
+        };
+        assert_eq!(
+            direct_python_path_for(&current_python),
+            Some(PathBuf::from("/tmp/k/bin/python")),
+            "current_python must carry python_path to the direct-launch arm"
+        );
+
+        let pooled = LaunchedEnvConfig {
+            python_path: Some(PathBuf::from("/opt/env/bin/python")),
+            venv_path: Some(PathBuf::from("/opt/env")),
+            ..LaunchedEnvConfig::default()
+        };
+        assert_eq!(
+            direct_python_path_for(&pooled),
+            None,
+            "a venv-backed env must not carry direct_python_path"
+        );
+    }
 
     // -- reconnect flap-floor policy --------------------------------------
     //
