@@ -22,7 +22,7 @@ import {
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
-import type { NotebookRailPanelId } from "@/components/notebook-rail";
+import type { NotebookContentSection, NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   NotebookDocumentToolbar,
   NotebookEditModeButton,
@@ -1062,11 +1062,89 @@ function NotebookViewer({
     () => new URL(window.location.pathname, window.location.origin).href,
     [],
   );
+  const cloudContentSections = useMemo<readonly NotebookContentSection[]>(() => {
+    const routeTitle = cloudNotebookRouteTitle();
+
+    return [
+      {
+        id: "recently-opened",
+        title: "Recently opened",
+        summary: "2",
+        items: [
+          {
+            id: "current-hosted-notebook",
+            kind: "notebook",
+            title: routeTitle.label,
+            detail: `Notebook ${config.notebookId}`,
+            meta: "open",
+          },
+          {
+            id: "recent-cohort-model",
+            kind: "notebook",
+            title: "Cohort model review",
+            detail: "Private workspace",
+            meta: "1h ago",
+          },
+        ],
+      },
+      {
+        id: "my-notebooks",
+        title: "My notebooks",
+        summary: "3",
+        items: [
+          {
+            id: "owned-growth-readout",
+            kind: "remote",
+            title: "Growth readout",
+            detail: "Owned by you",
+            meta: "live",
+          },
+          {
+            id: "owned-runtime-fixtures",
+            kind: "remote",
+            title: "Runtime fixture matrix",
+            detail: "Owned by you",
+            meta: "draft",
+          },
+          {
+            id: "owned-forecast",
+            kind: "remote",
+            title: "Forecast notebook",
+            detail: "Owned by you",
+            meta: "view",
+          },
+        ],
+      },
+      {
+        id: "shared-with-me",
+        title: "Shared with me",
+        summary: "2",
+        items: [
+          {
+            id: "shared-launch-plan",
+            kind: "shared",
+            title: "Launch plan analysis",
+            detail: "Shared by Product Ops",
+            meta: "edit",
+          },
+          {
+            id: "shared-cost-model",
+            kind: "shared",
+            title: "Cost model",
+            detail: "Shared by Finance",
+            meta: "view",
+          },
+        ],
+      },
+    ];
+  }, [config.notebookId]);
   const rail = (
     <NotebookDocumentRail
       viewModel={notebookViewModel}
       activePanelId={activeRailPanel}
       collapsed={railCollapsed}
+      contentSections={cloudContentSections}
+      contentSummary="Hosted"
       selectedOutlineItemId={selectedOutlineItemId}
       packagesSummary={null}
       packagesPanel={

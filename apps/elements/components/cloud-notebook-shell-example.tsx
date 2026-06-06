@@ -43,6 +43,7 @@ import {
   type NotebookShellCapabilities,
 } from "@/components/notebook";
 import { EnvironmentSummary } from "@/components/environment";
+import type { NotebookContentSection } from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import {
   ElementsNotebookEnvironment,
@@ -269,12 +270,15 @@ function CloudNotebookShellExampleContent() {
     scenario.capabilities,
     cloudInteractionProjection(scenario, mode),
   );
+  const contentSections = cloudNotebookContentSections(scenario);
 
   const rail = (
     <NotebookDocumentRail
       viewModel={scenario.viewModel}
       activePanelId={railState.activePanelId}
       collapsed={railState.collapsed}
+      contentSections={contentSections}
+      contentSummary="Hosted"
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={scenario.viewModel.packages}
@@ -386,6 +390,83 @@ function CloudNotebookShellExampleContent() {
       </section>
     </div>
   );
+}
+
+function cloudNotebookContentSections(
+  scenario: ElementsNotebookScenario,
+): readonly NotebookContentSection[] {
+  return [
+    {
+      id: "recently-opened",
+      title: "Recently opened",
+      summary: "2",
+      items: [
+        {
+          id: "cloud-current",
+          kind: "notebook",
+          title: scenario.title,
+          detail: "Current hosted notebook",
+          meta: "open",
+        },
+        {
+          id: "cloud-cohort-model",
+          kind: "remote",
+          title: "Cohort model review",
+          detail: "Private workspace",
+          meta: "1h ago",
+        },
+      ],
+    },
+    {
+      id: "my-notebooks",
+      title: "My notebooks",
+      summary: "3",
+      items: [
+        {
+          id: "cloud-growth-readout",
+          kind: "remote",
+          title: "Growth readout",
+          detail: "Owned by you",
+          meta: "live",
+        },
+        {
+          id: "cloud-runtime-fixtures",
+          kind: "remote",
+          title: "Runtime fixture matrix",
+          detail: "Owned by you",
+          meta: "draft",
+        },
+        {
+          id: "cloud-forecast",
+          kind: "remote",
+          title: "Forecast notebook",
+          detail: "Owned by you",
+          meta: "view",
+        },
+      ],
+    },
+    {
+      id: "shared-with-me",
+      title: "Shared with me",
+      summary: "2",
+      items: [
+        {
+          id: "cloud-shared-launch",
+          kind: "shared",
+          title: "Launch plan analysis",
+          detail: "Shared by Product Ops",
+          meta: "edit",
+        },
+        {
+          id: "cloud-shared-cost",
+          kind: "shared",
+          title: "Cost model",
+          detail: "Shared by Finance",
+          meta: "view",
+        },
+      ],
+    },
+  ];
 }
 
 function BrowserFrame() {

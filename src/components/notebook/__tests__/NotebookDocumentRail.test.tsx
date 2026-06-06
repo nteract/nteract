@@ -25,6 +25,21 @@ describe("NotebookDocumentRail", () => {
     },
   };
 
+  const contentSections = [
+    {
+      id: "recent",
+      title: "Recent notebooks",
+      items: [
+        {
+          id: "current",
+          kind: "notebook" as const,
+          title: "analysis.ipynb",
+          detail: "~/Notebooks/analysis.ipynb",
+        },
+      ],
+    },
+  ];
+
   it("binds shared notebook view model projections to the notebook rail", () => {
     render(
       <NotebookDocumentRail
@@ -41,6 +56,25 @@ describe("NotebookDocumentRail", () => {
     expect(screen.getByTestId("notebook-rail")).toHaveAttribute("data-collapsed", "false");
     expect(screen.getByText("Runtime packages")).toBeVisible();
     expect(screen.getByText("Package details")).toBeVisible();
+  });
+
+  it("forwards host content catalog sections", () => {
+    render(
+      <NotebookDocumentRail
+        viewModel={viewModel}
+        activePanelId="content"
+        collapsed={false}
+        contentSections={contentSections}
+        contentSummary="Desktop"
+        packagesPanel={<p>Package details</p>}
+        onActivePanelChange={() => {}}
+        onCollapsedChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Content" })).toBeVisible();
+    expect(screen.getByText("Desktop")).toBeVisible();
+    expect(screen.getByText("analysis.ipynb")).toBeVisible();
   });
 
   it("can suppress the package title summary when the host renders it in the panel", () => {

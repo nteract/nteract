@@ -1,4 +1,15 @@
-import { ListTree, Package } from "lucide-react";
+import {
+  Cloud,
+  File,
+  FileText,
+  Folder,
+  FolderOpen,
+  HardDrive,
+  ListTree,
+  Package,
+  Share2,
+  type LucideIcon,
+} from "lucide-react";
 import { useMemo, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   buildNotebookOutlineTree,
@@ -15,17 +26,46 @@ import {
 } from "@/components/rail";
 import { cn } from "@/lib/utils";
 
-export type NotebookRailPanelId = "outline" | "packages";
+export type NotebookRailPanelId = "content" | "outline" | "packages";
+
+export type NotebookContentItemKind =
+  | "notebook"
+  | "file"
+  | "folder"
+  | "local"
+  | "remote"
+  | "shared";
+
+export interface NotebookContentItem {
+  id: string;
+  kind: NotebookContentItemKind;
+  title: string;
+  detail?: string | null;
+  meta?: string | null;
+  href?: string | null;
+  disabled?: boolean;
+}
+
+export interface NotebookContentSection {
+  id: string;
+  title: string;
+  summary?: string | null;
+  emptyLabel?: string | null;
+  items: readonly NotebookContentItem[];
+}
 
 export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = RAIL_TAKEOVER_MEDIA_QUERY;
 export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = RAIL_TAKEOVER_STAGE_CLASS_NAME;
 export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES = RAIL_TAKEOVER_PANEL_CLASS_NAMES;
 const NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,18rem)] min-w-60";
 const NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,17rem)] min-w-60";
+const NOTEBOOK_RAIL_CONTENT_PANEL_CLASS_NAME = "w-[clamp(16rem,22vw,20rem)] min-w-64";
 
 export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
   collapsed: boolean;
+  contentSections?: readonly NotebookContentSection[];
+  contentSummary?: string | null;
   outlineItems: readonly NotebookOutlineItem[];
   outlineCellIds?: readonly string[];
   activeOutlineItemId?: string | null;
@@ -35,13 +75,15 @@ export interface NotebookRailProps {
   packagesPanel: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
+  onOpenContentItem?: (item: NotebookContentItem) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
   onNavigateOutlineItem?: (item: NotebookOutlineItem, href: string) => boolean | void;
   getOutlineItemHref?: (item: NotebookOutlineItem) => string | null | undefined;
   className?: string;
 }
 
-const railButtons: Array<RailItem<NotebookRailPanelId>> = [
+const notebookRailButtons: Array<RailItem<NotebookRailPanelId>> = [
+  { id: "content", label: "Content", icon: FolderOpen },
   { id: "outline", label: "Outline", icon: ListTree },
   { id: "packages", label: "Packages", icon: Package },
 ];
@@ -49,6 +91,8 @@ const railButtons: Array<RailItem<NotebookRailPanelId>> = [
 export function NotebookRail({
   activePanelId,
   collapsed,
+  contentSections,
+  contentSummary = null,
   outlineItems,
   outlineCellIds,
   activeOutlineItemId = null,
@@ -58,17 +102,30 @@ export function NotebookRail({
   packagesPanel,
   onActivePanelChange,
   onCollapsedChange,
+  onOpenContentItem,
   onSelectOutlineItem,
   onNavigateOutlineItem,
   getOutlineItemHref,
   className,
 }: NotebookRailProps) {
-  const title = activePanelId === "outline" ? "Outline" : "Packages";
-  const summary = activePanelId === "packages" ? packagesSummary : null;
+  const hasContentPanel = contentSections !== undefined || activePanelId === "content";
+  const railButtons = hasContentPanel
+    ? notebookRailButtons
+    : notebookRailButtons.filter((item) => item.id !== "content");
+  const title =
+    activePanelId === "content" ? "Content" : activePanelId === "outline" ? "Outline" : "Packages";
+  const summary =
+    activePanelId === "content"
+      ? contentSummary
+      : activePanelId === "packages"
+        ? packagesSummary
+        : null;
   const panelClassName =
-    activePanelId === "packages"
-      ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
-      : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME;
+    activePanelId === "content"
+      ? NOTEBOOK_RAIL_CONTENT_PANEL_CLASS_NAME
+      : activePanelId === "packages"
+        ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
+        : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME;
 
   return (
     <Rail
@@ -87,7 +144,9 @@ export function NotebookRail({
       onActivePanelChange={onActivePanelChange}
       onCollapsedChange={onCollapsedChange}
     >
-      {activePanelId === "outline" ? (
+      {activePanelId === "content" ? (
+        <NotebookContentPanel sections={contentSections ?? []} onOpenItem={onOpenContentItem} />
+      ) : activePanelId === "outline" ? (
         <NotebookOutlinePanel
           items={outlineItems}
           cellIds={outlineCellIds}
@@ -103,6 +162,133 @@ export function NotebookRail({
       )}
     </Rail>
   );
+}
+
+export interface NotebookContentPanelProps {
+  sections: readonly NotebookContentSection[];
+  onOpenItem?: (item: NotebookContentItem) => void;
+}
+
+export function NotebookContentPanel({ sections, onOpenItem }: NotebookContentPanelProps) {
+  if (sections.length === 0) {
+    return (
+      <div
+        className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground"
+        data-testid="notebook-content-panel"
+      >
+        No content sources yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5" data-testid="notebook-content-panel">
+      {sections.map((section) => (
+        <section key={section.id} className="space-y-2" aria-labelledby={`content-${section.id}`}>
+          <div className="flex min-w-0 items-center justify-between gap-2 px-1">
+            <h3
+              id={`content-${section.id}`}
+              className="min-w-0 truncate text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground"
+            >
+              {section.title}
+            </h3>
+            {section.summary ? (
+              <span className="shrink-0 text-[11px] text-muted-foreground">{section.summary}</span>
+            ) : null}
+          </div>
+          {section.items.length === 0 ? (
+            <div className="rounded-md border border-dashed px-3 py-3 text-xs text-muted-foreground">
+              {section.emptyLabel ?? "Nothing here yet."}
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {section.items.map((item) => (
+                <NotebookContentRow key={item.id} item={item} onOpenItem={onOpenItem} />
+              ))}
+            </div>
+          )}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function NotebookContentRow({
+  item,
+  onOpenItem,
+}: {
+  item: NotebookContentItem;
+  onOpenItem?: (item: NotebookContentItem) => void;
+}) {
+  const Icon = notebookContentItemIcon(item.kind);
+  const content = (
+    <>
+      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+        <Icon className="size-3.5" aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className="line-clamp-2 block break-words text-sm font-medium leading-snug text-foreground [overflow-wrap:anywhere]"
+          data-slot="content-item-title"
+        >
+          {item.title}
+        </span>
+        {item.detail ? (
+          <span className="mt-0.5 line-clamp-2 block break-words text-xs leading-snug text-muted-foreground [overflow-wrap:anywhere]">
+            {item.detail}
+          </span>
+        ) : null}
+      </span>
+      {item.meta ? (
+        <span className="mt-0.5 shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {item.meta}
+        </span>
+      ) : null}
+    </>
+  );
+  const className = cn(
+    "flex min-h-10 w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+    item.disabled
+      ? "cursor-not-allowed opacity-50"
+      : "hover:bg-muted/70 hover:[&_[data-slot=content-item-title]]:text-foreground",
+  );
+
+  if (item.href && !item.disabled) {
+    return (
+      <a href={item.href} className={className} aria-label={item.title}>
+        {content}
+      </a>
+    );
+  }
+
+  if (onOpenItem && !item.disabled) {
+    return (
+      <button type="button" onClick={() => onOpenItem(item)} className={className}>
+        {content}
+      </button>
+    );
+  }
+
+  return <div className={className}>{content}</div>;
+}
+
+function notebookContentItemIcon(kind: NotebookContentItemKind): LucideIcon {
+  switch (kind) {
+    case "notebook":
+      return FileText;
+    case "folder":
+      return Folder;
+    case "local":
+      return HardDrive;
+    case "remote":
+      return Cloud;
+    case "shared":
+      return Share2;
+    case "file":
+    default:
+      return File;
+  }
 }
 
 export {

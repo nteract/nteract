@@ -27,6 +27,7 @@ import {
   NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
   NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
   NotebookPackagesPanel,
+  type NotebookContentSection,
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
 import {
@@ -1098,6 +1099,85 @@ function AppContent() {
     applyNotebookPath(runtimePath);
   }, [applyNotebookPath, runtimePath]);
 
+  const desktopContentSections = useMemo<readonly NotebookContentSection[]>(() => {
+    const notebookTitle = runtimePath
+      ? runtimePath.split(/[\\/]/).filter(Boolean).at(-1) || "Untitled.ipynb"
+      : (titleBase ?? "Untitled.ipynb");
+    const notebookFolder = runtimePath ? runtimePath.replace(/[\\/][^\\/]*$/, "") : null;
+    const projectContext = runtimeState.project_context;
+    const localItems =
+      projectContext.state === "Detected"
+        ? [
+            {
+              id: "project-file",
+              kind: "file" as const,
+              title: projectContext.project_file.relative_to_notebook,
+              detail: projectContext.project_file.absolute_path,
+              meta: "env",
+            },
+          ]
+        : [
+            {
+              id: "notebook-folder",
+              kind: "folder" as const,
+              title: notebookFolder ? "Notebook folder" : "Notebooks",
+              detail: notebookFolder ?? "~/Notebooks",
+              meta: "local",
+            },
+          ];
+
+    return [
+      {
+        id: "current",
+        title: "Current notebook",
+        summary: runtimePath ? "Saved" : "Unsaved",
+        items: [
+          {
+            id: "current-notebook",
+            kind: "notebook",
+            title: notebookTitle,
+            detail: runtimePath ?? "Untitled local notebook",
+            meta: runtimePath ? "open" : "new",
+          },
+        ],
+      },
+      {
+        id: "recent",
+        title: "Recent notebooks",
+        summary: "3",
+        items: [
+          {
+            id: "recent-run-quality",
+            kind: "notebook",
+            title: "run-quality-checks.ipynb",
+            detail: `${notebookFolder ?? "~/Notebooks"}/run-quality-checks.ipynb`,
+            meta: "today",
+          },
+          {
+            id: "recent-model-audit",
+            kind: "notebook",
+            title: "model-audit.ipynb",
+            detail: "~/Notebooks/research/model-audit.ipynb",
+            meta: "Mon",
+          },
+          {
+            id: "recent-launch-readout",
+            kind: "notebook",
+            title: "launch-readout.ipynb",
+            detail: "~/Desktop/launch-readout.ipynb",
+            meta: "May 31",
+          },
+        ],
+      },
+      {
+        id: "local-files",
+        title: "Local files",
+        summary: localItems.length.toString(),
+        items: localItems,
+      },
+    ];
+  }, [runtimePath, runtimeState.project_context, titleBase]);
+
   // Title is purely a function of `ephemeral`. Untitled notebooks get
   // the `*` prefix; saved notebooks render their filename. Autosave
   // (2s quiet, 10s max) keeps the file current within seconds of any
@@ -1474,6 +1554,8 @@ function AppContent() {
               viewModel={notebookViewModel}
               activePanelId={activeRailPanel}
               collapsed={railCollapsed}
+              contentSections={desktopContentSections}
+              contentSummary="Desktop"
               outlineCellIds={cellIds}
               activeOutlineItemId={activeOutlineItemId}
               selectedOutlineItemId={selectedOutlineItemId}

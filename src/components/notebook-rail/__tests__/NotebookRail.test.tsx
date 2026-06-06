@@ -33,7 +33,93 @@ const outlineItems = [
   },
 ];
 
+const contentSections = [
+  {
+    id: "recent",
+    title: "Recent notebooks",
+    summary: "2",
+    items: [
+      {
+        id: "current",
+        kind: "notebook" as const,
+        title: "current-analysis.ipynb",
+        detail: "~/Notebooks/current-analysis.ipynb",
+        meta: "open",
+      },
+      {
+        id: "shared",
+        kind: "shared" as const,
+        title: "launch-plan.ipynb",
+        detail: "Shared by Product Ops",
+        meta: "edit",
+      },
+    ],
+  },
+];
+
 describe("NotebookRail", () => {
+  it("switches to content when the host provides notebook content sections", () => {
+    const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
+
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        contentSections={contentSections}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Content" }));
+    expect(onActivePanelChange).toHaveBeenCalledWith("content");
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("renders host content sections without taking ownership of storage", () => {
+    const onOpenContentItem = vi.fn();
+
+    render(
+      <NotebookRail
+        activePanelId="content"
+        collapsed={false}
+        contentSections={contentSections}
+        contentSummary="Desktop"
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+        onOpenContentItem={onOpenContentItem}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Content" })).toBeVisible();
+    expect(screen.getByText("Desktop")).toBeVisible();
+    expect(screen.getByText("Recent notebooks")).toBeVisible();
+    expect(screen.getByText("current-analysis.ipynb")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /launch-plan\.ipynb/ }));
+    expect(onOpenContentItem).toHaveBeenCalledWith(contentSections[0].items[1]);
+  });
+
+  it("omits the content rail entry until a host provides content", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Content" })).not.toBeInTheDocument();
+  });
+
   it("renders outline items and reports selection through the adapter callback", () => {
     const onSelectOutlineItem = vi.fn();
 
