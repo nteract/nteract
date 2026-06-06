@@ -9,7 +9,7 @@ describe("hosted smoke runtime WASM hints", () => {
       [
         {
           rel: "modulepreload",
-          href: "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/runtimed_wasm.js",
+          href: "https://preview.runt.run/assets/runtimed_wasm.0123456789abcdef.js",
           as: "",
           type: "",
           crossorigin: "",
@@ -17,7 +17,7 @@ describe("hosted smoke runtime WASM hints", () => {
         },
         {
           rel: "preload",
-          href: "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/runtimed_wasm_bg.wasm",
+          href: "https://preview.runt.run/assets/runtimed_wasm_bg.fedcba9876543210.wasm",
           as: "fetch",
           type: "application/wasm",
           crossorigin: "",
@@ -25,14 +25,14 @@ describe("hosted smoke runtime WASM hints", () => {
         },
       ],
       {
-        expectedRendererAssetOrigin: "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev",
+        expectedRuntimeWasmOrigin: "https://preview.runt.run",
       },
     );
 
     assert.equal(check.ok, true);
     assert.deepEqual(check.failures, []);
-    assert.match(check.modulepreload.href, /runtimed_wasm\.js$/);
-    assert.match(check.wasmPreload.href, /runtimed_wasm_bg\.wasm$/);
+    assert.match(check.modulepreload.href, /runtimed_wasm\.[a-f0-9]{16}\.js$/);
+    assert.match(check.wasmPreload.href, /runtimed_wasm_bg\.[a-f0-9]{16}\.wasm$/);
   });
 
   it("reports missing or malformed runtime WASM preload hints", () => {

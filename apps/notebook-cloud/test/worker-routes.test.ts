@@ -198,6 +198,31 @@ describe("Worker artifact routes", () => {
     assert.equal(response.headers.get("Content-Type"), "application/wasm");
   });
 
+  it("serves hashed viewer runtimed WASM assets through the Worker assets binding", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("wasm", {
+            headers: { "Content-Type": "application/wasm" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/assets/runtimed_wasm_bg.0123456789abcdef.wasm"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/assets/runtimed_wasm_bg.0123456789abcdef.wasm"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "application/wasm");
+  });
+
   it("serves the viewer runtimed WASM module through the Worker assets binding", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({

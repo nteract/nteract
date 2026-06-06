@@ -106,6 +106,37 @@ describe("HTML script serialization", () => {
     assert.doesNotMatch(html, /id="notebook"/);
   });
 
+  it("uses content-hashed runtime WASM assets from the viewer asset manifest", async () => {
+    const seenPaths: string[] = [];
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo/r/heads-123"),
+      fakeEnv({
+        ASSETS: fakeRuntimeWasmManifestAssets(
+          {
+            module: "runtimed_wasm.0123456789abcdef.js",
+            wasm: "runtimed_wasm_bg.fedcba9876543210.wasm",
+          },
+          seenPaths,
+        ),
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/assets/runtime-wasm-assets.json"]);
+    assert.match(
+      html,
+      /rel="modulepreload" href="\/assets\/runtimed_wasm\.0123456789abcdef\.js" crossorigin/,
+    );
+    assert.match(
+      html,
+      /rel="preload" href="\/assets\/runtimed_wasm_bg\.fedcba9876543210\.wasm" as="fetch" type="application\/wasm" crossorigin/,
+    );
+    assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.0123456789abcdef\.js"/);
+    assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.fedcba9876543210\.wasm"/);
+  });
+
   it("does not serve legacy one-segment notebook viewer URLs", async () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/demo"),
@@ -335,6 +366,24 @@ function fakeEnv(overrides: Partial<Env> = {}): Env {
       }),
     } satisfies DurableObjectNamespace,
     ...overrides,
+  };
+}
+
+function fakeRuntimeWasmManifestAssets(
+  manifest: { module: string; wasm: string },
+  seenPaths: string[] = [],
+): Env["ASSETS"] {
+  return {
+    fetch: async (request: Request) => {
+      const pathname = new URL(request.url).pathname;
+      seenPaths.push(pathname);
+      if (pathname === "/assets/runtime-wasm-assets.json") {
+        return new Response(JSON.stringify(manifest), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    },
   };
 }
 

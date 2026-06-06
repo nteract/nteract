@@ -35,6 +35,7 @@ describe("hosted notebook sharing prototype", () => {
         scope: "editor",
         actorLabel: "system/invite-resolution",
         inviteId: "invite-1",
+        acceptedByPrincipal: "user:oidc:oidc-sub-1",
       },
     ]);
     assert.equal(resolution.acceptedInvites[0]?.acceptedByPrincipal, login.principal);
