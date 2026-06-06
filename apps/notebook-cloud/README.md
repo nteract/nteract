@@ -555,6 +555,39 @@ The copied browser diagnostic should include the requested principal/scope,
 connected actor/scope when available, and the last WebSocket connection error,
 but never the stored token value.
 
+Live runtime-peer smoke with preview API-key credentials:
+
+```bash
+cargo xtask artifacts ensure sift,renderer
+cargo build --release -p runtimed -p runt-cloud-peer
+NTERACT_CLOUD_URL=https://preview.runt.run \
+pnpm --dir apps/notebook-cloud smoke:hosted:runtime-peer
+```
+
+The smoke script reads `NTERACT_API_KEY` from the environment. On lab2 it also
+loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
+creates a private room, grants `runtime_peer` to the owner principal, starts the
+real `runtimed cloud-runtime-agent`, then runs `runt-cloud-peer` as an owner
+that adds a cell and sends hosted `execute_cell`. The JSON result includes the
+viewer URL, timings, and log paths under `.context/smokes/`. A healthy run
+observes `queued` and `done`, and the runtime log shows a kernel launch plus an
+`execute_request`. The artifact ensure step rebuilds the gitignored sift
+WASM/renderer outputs that `runtimed` embeds and catches unhydrated stable
+renderer LFS bundles before `cargo build` fails. Set
+`NOTEBOOK_CLOUD_RUNTIME_PEER_PYTHON` when you need a specific interpreter;
+otherwise the script prefers lab2's `~/k/bin/python` before falling back to a
+system Python that can import `ipykernel`.
+
+Set `NOTEBOOK_CLOUD_KEEP_RUNTIME_PEER=1` to leave the runtime peer alive after
+the smoke for manual browser/OIDC inspection. For truly long-lived manual peers,
+run the command inside tmux; short-lived shells or agent command runners may
+clean up background children after the command exits, which makes later
+execution requests look like room/runtime failures. `runt-cloud-peer` uses
+`--seconds` to control how long the owner peer remains attached. Do not use the
+old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
+private; anonymous hosted render smokes may return a catalog 404 unless the
+browser context has a credential for the owning principal.
+
 Snapshot and blob stubs:
 
 ```bash
