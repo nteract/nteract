@@ -1669,13 +1669,26 @@ fn wasm_artifact_reason(
 }
 
 fn renderer_artifact_reason(strict: bool) -> Option<String> {
-    for output in RENDERER_PLUGIN_OUTPUTS {
+    for output in LFS_RENDERER_PLUGIN_OUTPUTS {
         let path = Path::new(output);
         if !path.exists() {
             return Some(format!("missing {output}"));
         }
         if is_git_lfs_pointer_file(path) {
             return Some(format!("{output} is a Git LFS pointer; run `git lfs pull`"));
+        }
+    }
+    for output in GENERATED_RENDERER_PLUGIN_OUTPUTS {
+        let path = Path::new(output);
+        if !path.exists() {
+            return Some(format!(
+                "missing generated {output}; run `cargo xtask artifacts ensure sift,renderer`"
+            ));
+        }
+        if is_git_lfs_pointer_file(path) {
+            return Some(format!(
+                "{output} is an old Git LFS pointer; run `cargo xtask artifacts ensure sift,renderer`"
+            ));
         }
     }
 
@@ -1780,7 +1793,7 @@ fn cmd_renderer_plugins(only: &[&str]) {
     println!("  Output: apps/notebook/src/renderer-plugins/");
     if only.is_empty() {
         println!(
-            "Stable bundles are LFS-tracked; sift.js/sift.css regenerate with every `cargo xtask wasm`."
+            "LFS-tracked bundles: plotly, vega, leaflet. Generated bundles: isolated-renderer, markdown, sift."
         );
     } else {
         println!("  Targets: {}", only.join(", "));
@@ -3285,21 +3298,19 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 ///   or stale, but skip source-unchanged runs so wasm-pack does not rewrite
 ///   generated files and invalidate `runtimed` / `notebook` build scripts.
 ///
-/// - **Renderer plugin bundles** (`plotly.js`, `vega.js`, `markdown.*`,
-///   `leaflet.*`, `isolated-renderer.*`) change rarely and are LFS-tracked, so
-///   a fresh checkout already has them on disk. We rebuild if they're missing
-///   (e.g. a checkout without LFS hydration) or if `sift.js` / `sift.css` are
-///   missing or stale relative to sift-wasm source. Sift outputs stay
-///   gitignored because they re-embed sift-wasm's `__wbg_*` hashes and must
-///   move in lockstep with it.
+/// - **Renderer plugin bundles** split into stable LFS-tracked third-party
+///   outputs (`plotly.js`, `vega.js`, `leaflet.*`) and generated local outputs
+///   (`isolated-renderer.*`, `markdown.*`, `sift.*`). We rebuild generated
+///   outputs when they're missing or pointer-shaped, and rebuild sift when it
+///   is stale relative to sift-wasm source.
 ///
 /// Staleness gate: hash sift-wasm source (`crates/sift-wasm/src/**/*.rs`
 /// plus `Cargo.toml`) and compare against the previous run's fingerprint
 /// stored under `target/xtask/`. The earlier "did the glue bytes change?"
 /// check was a false positive each time wasm-pack regenerated the glue
 /// with the same source but slightly different internal metadata, which
-/// constantly re-emitted the LFS-tracked `isolated-renderer.{js,css}`
-/// and surfaced as phantom git dirt.
+/// constantly re-emitted LFS-tracked renderer bundles and surfaced as phantom
+/// git dirt.
 fn ensure_build_artifacts() {
     let sift_wasm_rebuilt = ensure_volatile_wasm_current();
     ensure_renderer_artifacts_current(sift_wasm_rebuilt);
@@ -3307,32 +3318,37 @@ fn ensure_build_artifacts() {
 
 fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
     let notebook_plugin_dir = Path::new("apps/notebook/src/renderer-plugins");
-    let stable_probes = [
-        "plotly.js",
-        "vega.js",
-        "leaflet.js",
-        "leaflet.css",
-        "markdown.js",
-        "markdown.css",
+    let lfs_tracked_probes = ["plotly.js", "vega.js", "leaflet.js", "leaflet.css"];
+    let generated_probes = [
         "isolated-renderer.js",
         "isolated-renderer.css",
+        "markdown.js",
+        "markdown.css",
     ];
-    let missing_stable: Vec<&str> = stable_probes
+    let missing_lfs_tracked: Vec<&str> = lfs_tracked_probes
         .iter()
         .copied()
         .filter(|p| !notebook_plugin_dir.join(p).exists())
         .collect();
-    let unhydrated_stable: Vec<&str> = stable_probes
+    let unhydrated_lfs_tracked: Vec<&str> = lfs_tracked_probes
         .iter()
         .copied()
         .filter(|p| is_git_lfs_pointer_file(&notebook_plugin_dir.join(p)))
         .collect();
+    let generated_needs_rebuild: Vec<&str> = generated_probes
+        .iter()
+        .copied()
+        .filter(|p| {
+            let path = notebook_plugin_dir.join(p);
+            !path.exists() || is_git_lfs_pointer_file(&path)
+        })
+        .collect();
     let sift_missing = !notebook_plugin_dir.join("sift.js").exists()
         || !notebook_plugin_dir.join("sift.css").exists();
 
-    if !unhydrated_stable.is_empty() {
+    if !unhydrated_lfs_tracked.is_empty() {
         eprintln!("Stable renderer plugin bundles are Git LFS pointers:");
-        for p in &unhydrated_stable {
+        for p in &unhydrated_lfs_tracked {
             eprintln!("  - apps/notebook/src/renderer-plugins/{p}");
         }
         eprintln!("Run `git lfs pull` to hydrate LFS-tracked bundles before building.");
@@ -3345,22 +3361,33 @@ fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
         (Some(current), Some(prev)) => current != prev,
         // Missing the cached fingerprint means we haven't recorded a
         // successful build under this checkout yet. Don't rebuild on that
-        // alone — the LFS-tracked bundles are already on disk for fresh
-        // checkouts. Persist the current fingerprint below so future runs
-        // have a baseline.
+        // alone — LFS-tracked bundles are already on disk for fresh checkouts,
+        // and generated isolated-renderer outputs are checked above. Persist
+        // the current fingerprint below so future runs have a baseline.
         (Some(_), None) => false,
         _ => false,
     };
 
-    if !missing_stable.is_empty() || sift_missing || sift_source_changed || sift_wasm_rebuilt {
-        if !missing_stable.is_empty() {
-            println!("Stable renderer plugin bundles missing; rebuilding:");
-            for p in &missing_stable {
+    if !missing_lfs_tracked.is_empty()
+        || !generated_needs_rebuild.is_empty()
+        || sift_missing
+        || sift_source_changed
+        || sift_wasm_rebuilt
+    {
+        if !missing_lfs_tracked.is_empty() {
+            println!("LFS-tracked renderer plugin bundles missing; rebuilding:");
+            for p in &missing_lfs_tracked {
                 println!("  - apps/notebook/src/renderer-plugins/{p}");
             }
             println!(
                 "(If these should already be on disk, run `git lfs pull` to hydrate LFS-tracked bundles.)"
             );
+        }
+        if !generated_needs_rebuild.is_empty() {
+            println!("Generated renderer plugin bundles missing or stale; rebuilding:");
+            for p in &generated_needs_rebuild {
+                println!("  - apps/notebook/src/renderer-plugins/{p}");
+            }
         } else if sift_missing {
             println!("[xtask] sift renderer bundle missing; rebuilding sift renderer plugin");
         } else if sift_source_changed {
@@ -3372,10 +3399,26 @@ fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
                 "[xtask] sift-wasm rebuilt; rebuilding sift renderer plugin so sift.js re-embeds the fresh __wbg_* names"
             );
         }
-        if !missing_stable.is_empty() {
+        if !missing_lfs_tracked.is_empty() {
             cmd_renderer_plugins(&[]);
         } else {
-            cmd_renderer_plugins(&["sift"]);
+            let mut targets = Vec::new();
+            if generated_needs_rebuild
+                .iter()
+                .any(|p| p.starts_with("isolated-renderer."))
+            {
+                targets.push("isolated-renderer");
+            }
+            if generated_needs_rebuild
+                .iter()
+                .any(|p| p.starts_with("markdown."))
+            {
+                targets.push("markdown");
+            }
+            if sift_missing || sift_source_changed || sift_wasm_rebuilt {
+                targets.push("sift");
+            }
+            cmd_renderer_plugins(&targets);
         }
     }
 
@@ -3441,6 +3484,22 @@ const SIFT_WASM_INPUTS: &[&str] = &[
 
 const SIFT_WASM_LOCK_ROOTS: &[&str] = &["sift-wasm"];
 const SIFT_WASM_FINGERPRINT: &str = "target/xtask/sift-wasm.fingerprint";
+
+const LFS_RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
+    "apps/notebook/src/renderer-plugins/plotly.js",
+    "apps/notebook/src/renderer-plugins/vega.js",
+    "apps/notebook/src/renderer-plugins/leaflet.js",
+    "apps/notebook/src/renderer-plugins/leaflet.css",
+];
+
+const GENERATED_RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
+    "apps/notebook/src/renderer-plugins/isolated-renderer.js",
+    "apps/notebook/src/renderer-plugins/isolated-renderer.css",
+    "apps/notebook/src/renderer-plugins/markdown.js",
+    "apps/notebook/src/renderer-plugins/markdown.css",
+    "apps/notebook/src/renderer-plugins/sift.js",
+    "apps/notebook/src/renderer-plugins/sift.css",
+];
 
 const RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
     "apps/notebook/src/renderer-plugins/isolated-renderer.js",
