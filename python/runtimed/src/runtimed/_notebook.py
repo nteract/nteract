@@ -75,8 +75,9 @@ class Notebook:
     def _widgets(self) -> dict:
         """Private snapshot of active ipywidget comms keyed by comm_id.
 
-        This reads from RuntimeStateDoc via the local CRDT replica. It is for
-        tests and diagnostics, not a stable Python widget API.
+        This reads the local CRDT projection of RuntimeStateDoc topology plus
+        CommsDoc state. It is for tests and diagnostics, not a stable Python
+        widget API.
         """
         return {
             cid: entry
