@@ -182,50 +182,340 @@ Phase 3a verification: `cargo test -p runtimed` passes 944 (UDS default unchange
 `cargo test -p notebook-protocol` 89; `cargo test -p notebook-cloud-transport` 12; clippy
 clean across all three; `cargo fmt --check` clean.
 
-## Phase 3 remaining plan (3b+)
+## Phase 3b warm-up: two connect-hardening gaps pullfrog flagged on #3411
 
-Ordered by the lifecycle analysis. 3a (req #1) is done. Remaining, in dependency order:
+24. **Bounded ready-wait timeout in `CloudWsFrameTransport::connect`
+    (`READY_WAIT_TIMEOUT`, 30s).** The connect-time `cloud_room_ready` wait
+    blocked on `recv_frame()` with no deadline: a room that completes the WS
+    upgrade but never sends `cloud_room_ready`/`cloud_frame_rejected` and never
+    closes would hang `connect` forever — and since `reconnect_with_backoff`
+    calls `connect()` with no per-attempt timeout of its own, the whole recovery
+    path would wedge on one silent room. Fix: the ready loop is extracted into a
+    `wait_for_ready<S: FrameSource>` helper (no deadline of its own, so it's
+    unit-testable against a mock source) that `connect` wraps in
+    `tokio::time::timeout(READY_WAIT_TIMEOUT, …)`; on elapse it returns a
+    `TimedOut` io error, which `reconnect_with_backoff` already treats as a
+    failed connect and retries. Alternative considered: a per-frame idle timeout
+    rather than a total deadline — rejected as more complex and unnecessary, since
+    a room mid-handshake either reaches a terminal control frame promptly or is
+    wedged. Extracting the helper also fixed a latent bug: the old loop pushed
+    pre-ready data frames back into `source.pending` while *reading via*
+    `source.recv_frame()` (which pops `pending` first), so the buffer now uses a
+    separate deque assigned into `pending` only after ready. 4 new unit tests
+    (timeout under `start_paused`, rejection, clean-EOF-before-ready, pre-ready
+    data buffering); `notebook-cloud-transport` now 16 tests.
 
-- **3b: WS reconnect/re-auth + full-resync on cloud reconnect (req #2).**
-  `reconnect_with_backoff` is already generic over `FrameTransport`, and the cloud `connect()`
-  re-dials, re-auths, and re-reads `cloud_room_ready`, so the *mechanism* exists. What's
-  missing is verifying the resync kick (`state_kick_tx`) drives a full RuntimeStateDoc re-send
-  after a cloud reconnect, and that re-auth uses a *fresh* token if the original expired (the
-  `CloudAuth` is currently a static token; a token-provider closure may be needed for
-  long-lived sessions). Unit-test the reconnect arm with a mock `FrameTransport` whose
-  `connect` fails N times then succeeds.
+25. **Flap floor extended to the framing-error reconnect arm
+    (`RECOVERABLE_RECONNECT_FLOOR`, renamed from `CLEAN_EOF_RECONNECT_FLOOR`).**
+    Phase 3a (decision #23) added the 1s reconnect floor only to the clean-EOF
+    (`None`) arm. The framing-error (`Some(Err)`) arm plus `reconnect_with_backoff`
+    only sleep between *failed* connects, so a cloud room that accepts the
+    connection and then errors the stream every cycle would spin reconnects at RTT
+    rate (a self-inflicted DoS on the room) — the same hazard #23 fixed for clean
+    EOF, on the other arm. Fix: a pure `reconnect_floor_delay(recoverable,
+    since_last_reconnect, floor) -> Option<Duration>` helper, called by *both*
+    arms; the timestamp variable is renamed `last_recoverable_reconnect` and set
+    after every recoverable reconnect. The helper returns `None` immediately when
+    `!recoverable`, so the UDS framing-error path is byte-for-byte unchanged (no
+    sleep, never records a timestamp) — verified by the 944→881-lib runtimed suite
+    staying green and a dedicated `floor_never_delays_a_non_recoverable_transport`
+    test. Alternative considered: a separate accept-then-immediate-error counter
+    per arm — rejected; a single shared floor on the combined reconnect rate is
+    simpler and is exactly the throttle wanted regardless of which failure mode
+    recurs. 4 new unit tests for the policy.
 
-- **3c: daemon spawn path + doc-actor identity + consumer-side receive (the integration).**
-  Add a `run_runtime_agent`-equivalent (or a parameter) that builds a `CloudWsFrameTransport`
-  instead of `UdsFrameTransport`. Two agent-loop changes gated on this path: (a) author the
-  RuntimeStateDoc (and NotebookDoc if synced) under the `cloud_room_ready` principal
-  (`transport.principal()`), as `<principal>/<operator>`, not the daemon's `runtime_agent_id`,
-  else the room's `validate_room_notebook_change_actors` drops every change (decision #6).
-  (b) Apply incoming RuntimeStateSync with `receive_sync_message_with_changes` (consumer
-  semantics) rather than the daemon's `receive_sync_and_foreign_comms_recovering` (which strips
-  incoming changes). Gate (a)/(b) on a transport-kind discriminant so the UDS path is untouched.
-  This is where the live cross-machine re-proof runs: spawn the daemon's real `runtime_agent`
-  against a preview room as `runtime_peer` (needs the explicit `runtime_peer` ACL row,
-  decision #9) and confirm a cloud-submitted cell runs on the daemon-managed kernel and renders
-  in the viewer, through the *real* agent, not the spike.
+Phase 3b warm-up verification: `cargo test -p notebook-cloud-transport` 16;
+`cargo test -p runtimed` 881 lib + integration suites green (UDS unchanged);
+`cargo xtask lint --fix` clean; clippy `-D warnings` clean on both crates. No new
+workspace crate (no bump-targets change).
 
-- **3d: cloud-room DurableObject watchdog (reqs #3, #7; the safety net the daemon can't
-  provide).** TypeScript in `apps/notebook-cloud/`. Thread peer **scope** through
-  `removePeer` → `room-materializer.removePeer` → `RoomHostHandle.remove_peer`
-  (`notebook-room.ts:635`, `runtimed-wasm/src/lib.rs:523`), give `RoomHostHandle` a
-  reconciliation mutator (it has none), and use a DO `alarm()` with a grace period to
-  terminalize running/queued executions and flip lifecycle when a `runtime_peer` departs.
+## Phase 3b: WS reconnect/re-auth + full-resync on cloud reconnect (req #2)
 
-- **3e: policy relaxation (req #4; gates 3d being legal).** `crates/runtime-doc/src/policy.rs:403-405`
-  blocks editor/owner from writing `state.kernel` ("daemon-owned"). The watchdog (room host)
-  needs a *narrow* authority to terminalize lifecycle on `runtime_peer` departure. Recommended:
-  both (a) a scoped relaxation for the lifecycle-to-terminal transition, and (b) a model-level
-  `Disconnected` `RuntimeLifecycle` / `last_seen` on `KernelState`
-  (`crates/runtime-doc/src/types.rs:272`) so viewers distinguish gone-but-recoverable from dead.
+26. **The reconnect *mechanism* was already complete after 3a; 3b adds the
+    re-auth seam and the missing test coverage.** `reconnect_with_backoff` is
+    generic over `FrameTransport` and the cloud `connect()` re-dials + re-reads
+    `cloud_room_ready`; both reconnect arms (clean-EOF and framing-error) already
+    reset `coordinator_sync_state` and fire `state_kick_tx` (verified by
+    inspection at `runtime_agent.rs` — the kick drives a full RuntimeStateDoc
+    re-send on *every* recoverable reconnect, cloud included, because the kick is
+    transport-agnostic). So 3b is two concrete deliverables, not a rewrite:
+    a fresh-token seam and unit tests for the backoff loop.
 
-- **3f: inbound request channel (req #5) + terminal-delta buffering (req #6).** Route
-  interrupt/restart `RuntimeAgentRequest`s to the cloud agent (hosted REQUEST dispatch), and
-  don't `break` the agent loop on a single writer error (`runtime_agent.rs` outbound arm);
-  buffer and replay across a blip. 3f's req #6 is partly addressed by 3a (the loop no longer
-  tears down on a clean close), but the writer-error `break` in the `state_changed_rx` arm
-  remains.
+27. **Re-auth uses an optional `TokenRefresher` closure, not a widened
+    `CloudAuth`.** `CloudAuth` holds a *static* token, fine for a short session
+    but wrong for a long-lived peer: its OIDC token expires mid-session, and a
+    reconnect that re-presents the expired token is rejected at the upgrade, so
+    `reconnect_with_backoff` would burn all 10 attempts and give up. Fix:
+    `CloudWsFrameTransport::with_token_refresher(config, refresher)` takes an
+    `async` closure (`TokenRefresher = Arc<dyn Fn() -> Future<io::Result<String>>>`)
+    that the transport calls *before each connect* via `effective_auth()`; the
+    returned token is re-wrapped in the configured auth variant by
+    `CloudAuth::with_token` (preserving the variant and any `Dev` user label).
+    `None` (the default `new()`) keeps the static-token behavior byte-for-byte.
+    Alternative considered: store an `Arc<Mutex<String>>` the agent mutates —
+    rejected; a pull-on-connect closure has no lock-ordering hazard and keeps the
+    refresh policy (cache, retry, endpoint) entirely on the agent side. The
+    closure's error surfaces as a connect error (kind preserved) so the backoff
+    loop treats it as a retryable failed connect. Wiring this into a daemon spawn
+    path is 3c; this PR ships the seam + tests only.
+
+28. **`reconnect_with_backoff` is unit-tested with a mock `FlakyTransport`.** A
+    `FrameTransport` whose `connect` fails the first N calls (with
+    `ConnectionRefused`) then succeeds, counting attempts. Three tests under
+    `start_paused` time (so the exponential sleeps are instant): recovers after 3
+    transient failures (4 total attempts), recovers on the final allowed attempt
+    (9 fail → success on the 10th), and gives up after exactly `MAX_ATTEMPTS`
+    (10) with the last error preserved so a genuinely-gone room lets the agent
+    exit rather than spin forever.
+
+Phase 3b verification: `cargo test -p notebook-cloud-transport` 20 (was 16);
+`cargo test -p runtimed` 884 lib (was 881) + integration suites green (UDS
+unchanged); `cargo xtask lint --fix` clean; clippy `-D warnings` clean on both.
+No new workspace crate.
+
+**Deferred (3b):** the token-refresher seam is unit-tested but has no live
+re-auth proof — that needs a long-lived session against a preview room where an
+OIDC token actually expires and the refresher mints a new one. Fold this into
+the 3c cross-machine re-proof (same creds/deploy). Nothing in 3b changes the
+static-token path, so this is a forward-looking validation, not a regression risk.
+
+## Phase 3c (CODE ONLY): daemon spawn path + doc-actor identity
+
+29. **Premise (b) of the original 3c plan — "swap the daemon's stripping receive
+    for `receive_sync_message_with_changes`" — was a misreading; the agent is
+    ALREADY consumer-side, and the swap would be a regression. Dropped.** The
+    plan assumed the agent's receive path
+    (`runtime_agent.rs` RuntimeStateSync arm → `receive_sync_and_foreign_comms_recovering`)
+    *strips* incoming changes the way the server-toward-viewer
+    `RuntimeStateDoc::receive_sync_message` (doc.rs:2980) does. It does not. Reading
+    `receive_sync_and_foreign_comms` (doc.rs:3127-3219): it calls **raw**
+    `self.doc.sync().receive_sync_message` (doc.rs:3140), which *applies* every
+    incoming change to the main doc, and then additionally computes a
+    *foreign-comms* fork purely for kernel-echo suppression (the doc comment at
+    3120-3122 states it outright: "The main doc still absorbs every applied change
+    (including kernel echoes)"). So the agent already has the consumer semantics a
+    cloud peer needs. Swapping it for plain `receive_sync_message_with_changes`
+    would *lose* the per-change `rt:kernel:` echo filter and re-introduce the
+    widget-amplification loop that method was written to break — a regression, not
+    a fix. Verified by code-read + the existing echo-suppression tests. Net: 3c's
+    real surface is only premise (a), the doc-actor identity.
+
+30. **The spawn path is a generic inner `run_runtime_agent_on_transport<T, F>`
+    that both entry points funnel through; the transport-kind discriminant is a
+    `resolve_actor: FnOnce(&T) -> Result<String>` closure, not a runtime enum or a
+    trait method.** `run_runtime_agent` (UDS) passes `move |_| Ok(runtime_agent_id)`
+    — the resolver ignores the transport and returns the daemon-supplied id, the
+    exact value the bootstrap used inline before, so the desktop/daemon path is
+    byte-for-byte unchanged (verified: full runtimed suite green, 884→888 only by
+    added tests). `run_cloud_runtime_agent` builds a `CloudWsFrameTransport` and
+    passes a resolver that reads `transport.principal()` *after* connect. Why a
+    closure, not an enum discriminant in the loop: the only thing that actually
+    differs by transport is the actor label, and it's needed exactly once at
+    bootstrap; a closure localises that one difference without threading a
+    `TransportKind` through the 1400-line loop or widening `FrameTransport`.
+    Alternative considered: resolve the actor *before* connect — impossible for
+    cloud, the principal is only known from `cloud_room_ready`, which is why the
+    resolver runs post-`connect()`.
+
+31. **Cloud doc-actor label is `<principal>/<operator>:<nonce>` via
+    `cloud_actor_label`.** Principal from `transport.principal()` (the room's
+    authenticated identity; `validate_room_notebook_change_actors` drops changes
+    authored under anything else — decision #6). Operator is a caller-supplied
+    role suffix (e.g. `agent:runt`). The nonce is a per-process random suffix
+    because reusing one actor label across separate doc instances collides at
+    `(actor, seq 1)` → Automerge `DuplicateSeqNumber` when the room syncs the prior
+    change back (the exact hazard the `runt-cloud-peer` spike documented). The
+    resolver *errors* if the principal is absent rather than authoring under a bogus
+    actor, since a wrong actor fails silently (the room discards every change).
+    Unit-tested: label format/uniqueness, the no-principal error path, and the UDS
+    pass-through property.
+
+Phase 3c verification: `cargo test -p runtimed` 888 lib (was 884) + integration
+suites green (UDS byte-for-byte unchanged); `cargo test -p xtask` 28 (bump-targets
+guard green — `notebook-cloud-transport` was already registered, now also a
+`runtimed` dep); `cargo xtask lint --fix` clean; clippy `-D warnings` clean.
+
+**Deferred (3c):** the live cross-machine re-proof. `run_cloud_runtime_agent` is
+built and unit-tested behind the transport gate, but nothing yet *calls* it from a
+CLI/daemon command, and it has never run against a real room. To close req #2/#3
+end-to-end an interactive session with creds must: (1) deploy a preview room (or
+use an existing one) and grant the agent's principal the explicit `runtime_peer`
+ACL row (decision #9); (2) wire a CLI subcommand (e.g. `runtimed cloud-runtime-agent
+--cloud-url --notebook-id --operator`, plus a `CloudAuth` source) — trivial, but
+left out here since it can't be verified headlessly; (3) spawn it as `runtime_peer`
+and confirm a cloud-submitted cell runs on the daemon-managed kernel and renders in
+the viewer, through the *real* agent (not the `runt-cloud-peer` spike); (4) exercise
+the 3b token-refresher against an actually-expiring token. None of this is possible
+without preview deploy + staging creds, which this autonomous session does not have.
+The code path is additive and gated, so it cannot affect the desktop/daemon path.
+
+## Phase 3e: liveness model (`last_seen`) — the headless half of req #4
+
+32. **3e is reordered ahead of 3d, and split: the headless model half
+    (`last_seen`) lands now; the `Disconnected` variant + the policy relaxation
+    defer to land *with* 3d under live verification.** The original plan put 3d
+    (watchdog) before 3e and called 3e the thing that "gates 3d being legal." Two
+    findings reshaped that:
+    - **The watchdog's own write path does NOT go through the
+      `validate_runtime_state_sync_scope` policy, so the policy relaxation is not
+      actually on 3d's critical path.** `validate_runtime_state_sync_scope`
+      (policy.rs:115) and its `validate_comm_state_only_runtime_delta` deadlock
+      (policy.rs:403-405) gate only *incoming peer sync frames* — they run in
+      `RoomHostHandle::receive_runtime_state_sync` (`runtimed-wasm/src/lib.rs:715`)
+      before applying a peer's sync message. A DO-internal `alarm()` watchdog that
+      authors *directly* on the room host's `state_doc` (the recommended 3d design,
+      and the only place the net can live since the daemon's death is the trigger)
+      bypasses that check entirely. The relaxation matters only for an alternative
+      "Owner peer pushes the reconciliation" design — which 3d should avoid for
+      exactly this reason. So 3e's policy half is deferred, not blocking.
+    - **A new `RuntimeLifecycle::Disconnected` variant has a ~28-Rust-file + TS
+      blast radius and its payoff is viewer-facing UX**, verifiable only against a
+      deployed viewer (Deferred). Landing it unverified is higher
+      risk than the watchdog needs. The lifecycle analysis explicitly sanctions a
+      `last_seen` timestamp as the *alternative* form of req #4(b); that is the
+      low-risk, fully-headless piece the watchdog actually reads.
+
+33. **`last_seen: Option<String>` on `KernelState` (doc.rs), with a `set_last_seen`
+    setter and `read_state` wiring.** ISO-8601 timestamp the runtime peer was last
+    observed present, for the watchdog's staleness decision and for viewers to tell
+    "peer reporting" from "peer silent since T". Design points:
+    - **Not added to the frozen genesis scaffold** (`RUNTIME_STATE_GENESIS_V2_BYTES`),
+      so a fresh doc reads `None` and the `runtime_state_genesis_artifact_matches_scaffold`
+      test stays green — no genesis re-bake, no schema-version bump. Purely additive
+      on the serde model (`#[serde(default)]`), so `..Default::default()` call sites
+      in `runtimed-node`/`runtimed-py` are unaffected.
+    - **Clears to CRDT `Null` → reads back `None`** (like `last_saved`), *not* the
+      empty-string "scaffolded but unset" convention of `error_reason`/`error_details`,
+      because a liveness field has no meaningful "" state.
+    - **Idempotent**: re-stamping the current value is a no-op (no head churn), since
+      a watchdog/peer stamps it frequently and must not trigger spurious sync rounds.
+    - **No policy change needed yet**: `last_seen` lives under `state.kernel`, so the
+      existing kernel-ownership rules already make it `runtime_peer`-writable and
+      editor-blocked — pinned by a `last_seen_is_runtime_peer_writable_but_blocked_for_editor`
+      test. The runtime peer stamps its own liveness; the room-host watchdog writes
+      directly (bypassing the sync policy per #32).
+    5 unit tests; runtime-doc 215 (was 211) + genesis tests green; dependent crates
+    (`runtimed` 888, `notebook-sync`, `runtimed-py`, `runtimed-node`) green; clippy clean.
+
+**Deferred (3e deferred halves):** (1) the `RuntimeLifecycle::Disconnected` variant —
+defer to land with 3d so its viewer UX is validated against a live deployed viewer in
+the same pass (the watchdog can already express "stale" via `last_seen` + flipping to
+the existing `Error`/`Shutdown` terminal states in the meantime); (2) the
+`policy.rs:403-405` relaxation — only needed if 3d is ever built as an Owner-peer-push
+rather than a DO-internal watchdog; the recommended DO-internal design needs no policy
+change. Decide (2) when 3d's mechanism is chosen.
+
+## Phase 3f req #6: writer-error recovery (the headless half of 3f)
+
+34. **3f is split: req #6 (writer-error must not kill the kernel on a recoverable
+    transport) lands now; req #5 (inbound request channel) defers — it needs the
+    3d worker.** req #5 routes interrupt/restart `RuntimeAgentRequest`s from the
+    cloud room to the agent, which requires a hosted REQUEST dispatch on the
+    DurableObject (3d, Deferred). req #6 is pure Rust in `runtime_agent` and is the
+    last place a transient cloud blip still destroys a healthy kernel after 3a:
+    the two outbound (writer) `select!` arms — the `state_changed_rx`
+    RuntimeStateSync send and the `async_response_rx` reply send — `break` the loop
+    (→ kernel shutdown) on a single `send_frame` error.
+
+35. **On a recoverable transport, a writer send error reconnects + resyncs instead
+    of `break`ing; the UDS path keeps the historical teardown byte-for-byte.** A
+    new writer-only helper `reconnect_after_writer_error` applies the shared flap
+    floor, calls `reconnect_with_backoff`, and stamps `last_recoverable_reconnect`
+    (so writer-triggered reconnects share the read arms' throttle). Both writer
+    arms now branch on `transport.clean_eof_is_recoverable()`: `false` (UDS) →
+    `break` exactly as before; `true` (cloud) → drop source, reconnect, reset
+    `coordinator_sync_state`, kick `state_kick_tx`, continue. Why no explicit
+    buffer-and-replay (the analysis's "buffer the change and replay"): the failed
+    RuntimeStateSync delta is *durable in the local doc*, and the fresh sync state
+    + resync kick re-send it on reconnect — **Automerge's own resync IS the replay**,
+    the same mechanism the framing-error arm has always relied on (decision #22/3a).
+    The one genuinely-lost item is the one-shot `async_response` reply envelope
+    (not re-derived by resync), but its *effect* (env progress/state from
+    SyncEnvironment) is in the RuntimeStateDoc and does resync; only the reply
+    envelope is dropped — acceptable, and documented at the site. A dedicated
+    egress buffer was considered and rejected as redundant with Automerge resync
+    and a new source of ordering bugs. 3 unit tests on the helper (recover+stamp,
+    give-up propagation, the UDS discriminant the loop branches on); the read arms
+    are left byte-for-byte unchanged.
+
+Phase 3f(req #6) verification: `cargo test -p runtimed` 891 lib (was 888) +
+integration suites green (UDS unchanged); `cargo xtask lint --fix` clean; clippy
+`-D warnings` clean.
+
+**Deferred (3f req #5):** the inbound request channel — needs the 3d DurableObject
+hosted REQUEST dispatch to deliver interrupt/restart `RuntimeAgentRequest`s to the
+cloud agent. Detection of the kernel-side *effect* already survives (decision/req
+analysis); only the trigger path is missing, and it can't be built or verified
+without the worker (3d) + a live room. Build it alongside 3d.
+
+## Phase 3d (CODE): cloud-room DurableObject watchdog
+
+36. **3d's DO-internal watchdog is built and unit-tested; the deploy + the
+    live peer-drop re-proof are Deferred.** Implements the safety net the daemon
+    structurally cannot provide (reqs #3, #7): when the room's `runtime_peer`
+    (the daemon) vanishes, the room itself terminalizes the orphaned state. Three
+    layers, each verifiable headlessly:
+    - **Rust (`runtimed-wasm`): `RoomHostHandle::reconcile_runtime_peer_gone(reason)`**
+      — the reconciliation mutator `RoomHostHandle` previously lacked. Marks all
+      in-flight (`running`/`queued`) executions failed, clears the queue, and flips
+      a *still-live* kernel (`Running`/any starting phase) to `Error` with an
+      `error_details` note — leaving an already-terminal `Error`/`Shutdown`/`NotStarted`
+      untouched so a clean shutdown that raced the disconnect isn't relabeled. Then
+      broadcasts the corrected state to surviving peers. Authoring is **direct** on
+      the room host's `state_doc`, which doesn't pass through
+      `validate_runtime_state_sync_scope` (decision #32), so no policy relaxation is
+      needed. Native-testable via `reconcile_runtime_peer_gone_inner` (rlib `cargo
+      test`, no wasm/node): 4 tests (terminalize+error, idempotent no-op,
+      clean-shutdown-not-relabeled, broadcast-to-survivors).
+    - **TS materializer**: `reconcileRuntimePeerGone(reason)` forwards to the wasm
+      mutator and normalizes the result.
+    - **TS DurableObject (`notebook-room.ts`)**: a `runtime_peer`-departure watchdog.
+      `removePeer` and the attach path now branch on `peer.identity.scope`; when the
+      last `runtime_peer` leaves, `refreshRuntimePeerWatch` arms a DO `alarm()`
+      `RUNTIME_PEER_GONE_GRACE_MS` (30s) out and persists the notebook id under
+      `RUNTIME_PEER_WATCH_KEY`; a `runtime_peer` rejoining inside the window disarms
+      it. `alarm()` re-checks membership (no-op if a peer returned), else reconciles
+      and broadcasts. The grace window is what makes a transient blip recover rather
+      than terminalize. The `DurableObjectStorage` type gained optional
+      `setAlarm`/`getAlarm`/`deleteAlarm` (Cloudflare-provided; optional so test
+      fakes need not implement them, and the watchdog feature-detects before arming).
+      3 node tests (arm+fire reconciles, rejoin disarms, present-peer fired-alarm
+      no-op) with an alarm-capable fake state.
+
+37. **Scope threading was simpler than the plan anticipated: the DO already had
+    `peer.identity.scope` at every `removePeer`/attach site, so it did NOT need to be
+    threaded through `room-materializer.removePeer` → `RoomHostHandle.remove_peer`.**
+    The original plan (and lifecycle-analysis req #3 bullet 1) assumed the watchdog
+    had to learn the departing peer's scope by passing it down through those layers,
+    because `removePeer(peerId)` is scope-blind. But the *decision* — "was that a
+    runtime_peer? then arm the watchdog" — is made in the DO, which holds the full
+    `Peer` (incl. `identity.scope`). The sync-state cleanup in `remove_peer(peer_id)`
+    genuinely only needs the id, so it's left unchanged. Avoiding the unnecessary
+    signature churn through two layers keeps the diff smaller and the wasm boundary
+    stable.
+
+Phase 3d verification: `cargo test -p runtimed-wasm` 26 (was 22, +4 reconciliation);
+`node --import tsx --test test/notebook-room.test.ts` 19 (+3 watchdog);
+`test/room-materializer.test.ts` 25 pass / 4 fail — the 4 failures are a
+**pre-existing environmental baseline** (published-snapshot fixtures; reproduced on a
+clean `origin/main` worktree, unrelated to this change); `tsc --noEmit` clean; clippy
+`-D warnings` clean.
+
+**Deferred (3d):** (1) deploy the worker to preview (the `alarm()` handler + the
+`DurableObjectStorage` alarm methods only execute on a real Cloudflare DO; the unit
+tests use a fake clock/storage). (2) Live peer-drop re-proof: with a real runtime_peer
+attached to a preview room running a cell, kill the peer, and confirm after the 30s
+grace the viewer sees the spinning cell go to error and the kernel flip to Error —
+and that a reconnect *within* 30s does NOT terminalize. (3) Tune `RUNTIME_PEER_GONE_GRACE_MS`
+against real reconnect latencies. None of this is possible without a preview deploy and live credentials. The code is gated behind the alarm API feature-detect, so a
+storage backend without alarms (or the desktop/UDS path) is unaffected.
+
+## Phase 3 remaining (3f req #5 only)
+
+3a (req #1), 3b (req #2), 3c CODE (doc-actor identity), 3d CODE (watchdog), 3e model
+half (`last_seen`), and 3f req #6 (writer-error recovery) are done. Remaining:
+
+- **3f req #5: inbound request channel.** Route interrupt/restart
+  `RuntimeAgentRequest`s to the cloud agent via the 3d DurableObject hosted REQUEST
+  dispatch. req #6 (don't tear the kernel down on a writer error) is DONE
+  (decisions #34–#35); req #5's trigger path needs the worker + a live room.

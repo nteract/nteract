@@ -509,6 +509,118 @@ describe("NotebookRoom materialized sync persistence", () => {
   });
 });
 
+describe("NotebookRoom runtime_peer-gone watchdog", () => {
+  function peerWithScope(id: string, scope: string): PeerForTest {
+    const identity = authenticateDevRequest(
+      new Request(
+        `https://cloud.test/n/demo/sync?user=${id}&operator=desktop:${id}&scope=${scope}`,
+      ),
+    );
+    return {
+      id,
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-06-05T00:00:00.000Z",
+    };
+  }
+
+  it("arms the alarm when the last runtime_peer leaves and reconciles on fire", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+
+    // A reconcile-recording fake materializer stands in for the wasm host.
+    let reconcileCalls = 0;
+    const reconciled: RoomHostFrameResult = {
+      changed: true,
+      notebook_changed: false,
+      runtime_state_changed: true,
+      outbound: [],
+    };
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      reconcileRuntimePeerGone: async () => {
+        reconcileCalls += 1;
+        return reconciled;
+      },
+    } as never);
+
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.removePeer("demo", runtimePeer);
+    await state.drain();
+
+    // Departure with no runtime_peer left -> alarm armed.
+    assert.equal(await state.getAlarm(), state.now + 30_000);
+    assert.equal(reconcileCalls, 0, "reconcile waits for the grace alarm to fire");
+
+    // Fire the alarm: still no runtime_peer -> reconcile runs.
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+    assert.equal(reconcileCalls, 1, "alarm reconciles the orphaned room");
+  });
+
+  it("disarms (no reconcile) when a runtime_peer rejoins within the grace window", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    let reconcileCalls = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      reconcileRuntimePeerGone: async () => {
+        reconcileCalls += 1;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    const runtimePeer = peerWithScope("rt", "runtime_peer");
+    harness.peers.set(runtimePeer.id, runtimePeer);
+    harness.removePeer("demo", runtimePeer);
+    await state.drain();
+    assert.equal(await state.getAlarm(), state.now + 30_000, "armed after departure");
+
+    // A fresh runtime_peer rejoins before the alarm; the watch key is cleared so
+    // a late alarm becomes a no-op.
+    const rejoined = peerWithScope("rt2", "runtime_peer");
+    harness.peers.set(rejoined.id, rejoined);
+    harness.refreshRuntimePeerWatch?.("demo");
+    await state.drain();
+    assert.equal(await state.getAlarm(), null, "rejoin disarmed the alarm");
+
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+    assert.equal(reconcileCalls, 0, "no reconcile after a recovered blip");
+  });
+
+  it("a fired alarm is a no-op when a runtime_peer is present", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    let reconcileCalls = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      reconcileRuntimePeerGone: async () => {
+        reconcileCalls += 1;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    // Watch key set (as if armed), but a runtime_peer is attached when it fires.
+    await state.state.storage.put("runtime_peer_gone_watch", "demo");
+    harness.peers.set("rt", peerWithScope("rt", "runtime_peer"));
+
+    await (room as unknown as { alarm(): Promise<void> }).alarm();
+    await state.drain();
+    assert.equal(reconcileCalls, 0, "present runtime_peer suppresses reconcile");
+  });
+});
+
 type PeerForTest = {
   id: string;
   socket: CloudflareWebSocket;
@@ -523,8 +635,10 @@ interface RoomHarness {
     {
       receiveFrame(): Promise<RoomHostFrameResult>;
       checkpoint(): Promise<void>;
+      reconcileRuntimePeerGone?(reason: string): Promise<RoomHostFrameResult>;
     }
   >;
+  refreshRuntimePeerWatch?(notebookId: string): void;
   handleMessage(
     notebookId: string,
     peer: PeerForTest,
@@ -534,6 +648,7 @@ interface RoomHarness {
   removePeer(notebookId: string, peer: PeerForTest): void;
   peerForSocket(socket: CloudflareWebSocket): PeerForTest | undefined;
   broadcastFrame(notebookId: string, frame: Uint8Array, excludePeerId?: string): void;
+  hasRuntimePeer(): boolean;
 }
 
 function roomHarness(room: NotebookRoom): RoomHarness {
@@ -553,6 +668,58 @@ function fakeState(): DurableObjectState {
       list: async <T>() => new Map(values as Map<string, T>),
     },
     waitUntil: () => undefined,
+  };
+}
+
+/// A fake DurableObjectState with the alarm API and a deterministic clock, plus
+/// a `drain()` that awaits everything passed to `waitUntil` (so the watchdog's
+/// fire-and-forget arm/disarm work completes before assertions). `now` is fixed
+/// so the armed alarm time is predictable in tests.
+function alarmCapableState(): {
+  state: DurableObjectState;
+  now: number;
+  getAlarm(): Promise<number | null>;
+  drain(): Promise<void>;
+} {
+  const values = new Map<string, unknown>();
+  const pending: Promise<unknown>[] = [];
+  let alarmAt: number | null = null;
+  const now = 1_000_000;
+  const state: DurableObjectState = {
+    id: { toString: () => "room-id" },
+    storage: {
+      get: async <T>(key: string) => values.get(key) as T | undefined,
+      put: async <T>(key: string, value: T) => {
+        values.set(key, value);
+      },
+      delete: async (key: string) => values.delete(key),
+      list: async <T>() => new Map(values as Map<string, T>),
+      setAlarm: async (scheduledTime: number | Date) => {
+        alarmAt = typeof scheduledTime === "number" ? scheduledTime : scheduledTime.getTime();
+      },
+      getAlarm: async () => alarmAt,
+      deleteAlarm: async () => {
+        alarmAt = null;
+      },
+    },
+    waitUntil: (promise: Promise<unknown>) => {
+      pending.push(promise.catch(() => undefined));
+    },
+  };
+  // The room reads Date.now() to compute the alarm time; pin it for the test.
+  const realNow = Date.now;
+  Date.now = () => now;
+  return {
+    state,
+    now,
+    getAlarm: async () => alarmAt,
+    drain: async () => {
+      while (pending.length > 0) {
+        const batch = pending.splice(0, pending.length);
+        await Promise.all(batch);
+      }
+      Date.now = realNow;
+    },
   };
 }
 

@@ -53,13 +53,38 @@ use crate::protocol::QueueEntry;
 mod echo_suppression;
 use echo_suppression::EchoSuppressor;
 
-/// Minimum interval between clean-EOF reconnect cycles on a recoverable
-/// transport. `reconnect_with_backoff` only delays between *failed* connects;
-/// this floor stops a sink that accepts a connection and then immediately
-/// closes cleanly (a flapping/evicting cloud room) from spinning a reconnect
-/// storm at network-RTT rate. Unused by the UDS transport (which tears down on
-/// clean EOF rather than reconnecting).
-const CLEAN_EOF_RECONNECT_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
+/// Minimum interval between reconnect cycles on a recoverable transport,
+/// covering *both* recoverable-failure arms: a clean EOF and a stream framing
+/// error. `reconnect_with_backoff` only delays between *failed* connects, so a
+/// room that accepts the connection and then immediately ends the stream every
+/// cycle — by closing cleanly (clean-EOF arm) or by erroring the stream
+/// (framing-error arm) — would otherwise spin a reconnect storm at network-RTT
+/// rate, a self-inflicted DoS on the room. The floor throttles the combined
+/// reconnect rate regardless of which failure mode recurs. Unused by the UDS
+/// transport (which tears down on clean EOF, and whose framing-error reconnect
+/// is gated out of the floor by `clean_eof_is_recoverable() == false`).
+const RECOVERABLE_RECONNECT_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long to sleep before a reconnect to enforce [`RECOVERABLE_RECONNECT_FLOOR`].
+///
+/// Pure so the flap-floor policy is unit-testable away from the agent's
+/// `select!` loop. Returns `None` (reconnect immediately) when the transport is
+/// not recoverable — keeping the UDS path's framing-error reconnect byte-for-byte
+/// unchanged — or when enough time has already elapsed since the last
+/// recoverable reconnect. Otherwise returns the remaining time to wait out.
+fn reconnect_floor_delay(
+    recoverable: bool,
+    since_last_reconnect: Option<std::time::Duration>,
+    floor: std::time::Duration,
+) -> Option<std::time::Duration> {
+    if !recoverable {
+        return None;
+    }
+    match since_last_reconnect {
+        Some(since) if since < floor => Some(floor - since),
+        _ => None,
+    }
+}
 
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
@@ -84,17 +109,111 @@ pub async fn run_runtime_agent(
         socket_path.display()
     );
 
-    // -- 1. Connect to daemon socket ----------------------------------------
-
-    // The sync wire is abstracted behind `FrameTransport`: the daemon uses the
-    // UDS (Windows named-pipe) transport, while a hosted runtime peer will swap
-    // in a cloud-WebSocket transport without touching the loop below. `connect`
-    // owns the transport-specific dial + handshake.
+    // The daemon socket transport. The sync wire is abstracted behind
+    // `FrameTransport`; the cloud-WebSocket path swaps in a different transport
+    // (`run_cloud_runtime_agent`) without touching the agent loop below.
     let transport =
         UdsFrameTransport::new(&socket_path, &notebook_id, &runtime_agent_id, &blob_root);
+
+    // The UDS actor label is the daemon-supplied `runtime_agent_id`, resolved
+    // up front and independent of the (just-connected) transport. This keeps
+    // the desktop/daemon path byte-for-byte unchanged: the resolver returns the
+    // exact value the bootstrap used inline before the cloud-path extraction.
+    run_runtime_agent_on_transport(transport, notebook_id, blob_root, move |_| {
+        Ok(runtime_agent_id)
+    })
+    .await
+}
+
+/// Run the runtime agent against a hosted cloud room over a WebSocket transport.
+///
+/// The daemon-managed kernel is unchanged; only the sync wire differs from
+/// [`run_runtime_agent`]. The cloud room only reveals its authenticated
+/// principal in the `cloud_room_ready` handshake, so the doc-actor label is
+/// resolved *after* connect, as `<principal>/<operator>:<nonce>`:
+///
+/// - **principal** — `transport.principal()`, the authenticated identity the
+///   room's `validate_room_notebook_change_actors` requires every change to be
+///   authored under (decision #6); authoring under anything else is silently
+///   dropped by the room.
+/// - **operator** — a human-readable role suffix (e.g. `agent:runt`) so the
+///   room can tell which of a principal's agents authored a change.
+/// - **nonce** — a per-process random suffix. Reusing one actor label across
+///   separate doc instances collides at `(actor, seq 1)` → Automerge
+///   `DuplicateSeqNumber` when the room syncs the prior change back, exactly the
+///   hazard the `runt-cloud-peer` spike documented.
+///
+/// CODE-ONLY (Phase 3c): this builds and unit-tests the spawn path behind the
+/// transport gate; the live cross-machine re-proof (a preview room + the
+/// explicit `runtime_peer` ACL row, decision #9) is deferred and tracked in the
+/// decision log.
+pub async fn run_cloud_runtime_agent(
+    config: notebook_cloud_transport::CloudWsConfig,
+    operator: String,
+    blob_root: PathBuf,
+) -> anyhow::Result<()> {
+    let notebook_id = config.notebook_id.clone();
+    info!(
+        "[runtime-agent] Starting cloud runtime_agent notebook_id={} url={} scope={}",
+        notebook_id,
+        notebook_cloud_transport::build_ws_url(&config.cloud_url, &notebook_id),
+        config.scope,
+    );
+
+    let transport = notebook_cloud_transport::CloudWsFrameTransport::new(config);
+
+    run_runtime_agent_on_transport(transport, notebook_id, blob_root, move |t| {
+        let principal = t.principal().ok_or_else(|| {
+            anyhow::anyhow!("cloud transport has no principal after connect (no cloud_room_ready)")
+        })?;
+        Ok(cloud_actor_label(principal, &operator))
+    })
+    .await
+}
+
+/// Build the cloud doc-actor label `<principal>/<operator>:<nonce>`.
+///
+/// Split out so the label scheme is unit-testable without a live room. The
+/// nonce makes the label unique per process (see [`run_cloud_runtime_agent`]
+/// for why reuse is unsafe).
+fn cloud_actor_label(principal: &str, operator: &str) -> String {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    format!("{principal}/{operator}:{}", &nonce[..8])
+}
+
+/// Run the runtime agent over an arbitrary [`FrameTransport`].
+///
+/// The desktop/daemon path ([`run_runtime_agent`]) and the cloud path
+/// ([`run_cloud_runtime_agent`]) both funnel here; only the transport and the
+/// doc-actor label differ. Everything below — the kernel drive, the queue, the
+/// RuntimeStateDoc writes, the lifecycle handling, and the reconnect/resync
+/// dance — is identical across transports by construction.
+///
+/// `resolve_actor` produces the Automerge actor label the agent authors its
+/// RuntimeStateDoc under, given the *connected* transport. It runs after
+/// `connect()` because a cloud transport only learns its room principal from
+/// the `cloud_room_ready` handshake; the UDS path ignores the transport and
+/// returns the daemon-supplied id. The actor label matters for the cloud room:
+/// its `validate_room_notebook_change_actors` drops any change whose principal
+/// differs from the authenticated one, so a cloud agent must author under
+/// `<principal>/<operator>` (decision #6). Authoring under the wrong actor is
+/// silent — the room discards every change and convergence stalls.
+async fn run_runtime_agent_on_transport<T, F>(
+    transport: T,
+    notebook_id: String,
+    blob_root: PathBuf,
+    resolve_actor: F,
+) -> anyhow::Result<()>
+where
+    T: FrameTransport,
+    F: FnOnce(&T) -> anyhow::Result<String>,
+{
+    // -- 1. Connect ---------------------------------------------------------
+
+    // `connect` owns the transport-specific dial + handshake/auth.
     let (mut frame_source, mut frame_sink) = transport.connect().await?;
 
-    info!("[runtime-agent] Connected to daemon, handshake sent");
+    info!("[runtime-agent] Connected, handshake sent");
 
     // The transport hands back a cancel-safe `FrameSource` (backed by a
     // dedicated `FramedReader` actor) so the busy `select!` below stays
@@ -103,6 +222,14 @@ pub async fn run_runtime_agent(
     // captured in production logs as `frame too large: 538976288 bytes`.
 
     // -- 2. Bootstrap RuntimeStateDoc ---------------------------------------
+
+    // Resolve the doc-actor label now that the transport is connected (a cloud
+    // transport's principal is known only post-handshake).
+    let runtime_agent_id = resolve_actor(&transport)?;
+    info!(
+        "[runtime-agent] Bootstrapping notebook_id={} as actor {}",
+        notebook_id, runtime_agent_id
+    );
 
     let state_doc = RuntimeStateDoc::try_new_with_actor(&runtime_agent_id)
         .map_err(|e| anyhow::anyhow!("create runtime-agent state doc: {e}"))?;
@@ -136,11 +263,13 @@ pub async fn run_runtime_agent(
     let mut kernel_state = KernelState::new(state.clone());
     let mut seen_execution_ids = HashSet::new();
     let mut echo_suppressor = EchoSuppressor::default();
-    // Timestamp of the last clean-EOF reconnect, used to enforce a floor
-    // between reconnect cycles on a recoverable (cloud) transport so a flapping
-    // sink can't drive a reconnect storm. Only set/read on that path; `None` on
-    // the UDS transport, which never reconnects on clean EOF.
-    let mut last_clean_reconnect: Option<tokio::time::Instant> = None;
+    // Timestamp of the last recoverable reconnect (clean EOF *or* framing
+    // error), used to enforce a floor between reconnect cycles on a recoverable
+    // (cloud) transport so a flapping sink can't drive a reconnect storm. Set
+    // after every recoverable reconnect arm; stays `None` on the UDS transport,
+    // whose framing-error reconnect is gated out of the floor and which never
+    // reconnects on clean EOF.
+    let mut last_recoverable_reconnect: Option<tokio::time::Instant> = None;
     let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>> = None;
     let mut work_rx: Option<mpsc::Receiver<WorkCommand>> = None;
 
@@ -543,6 +672,20 @@ pub async fn run_runtime_agent(
                              (kernel stays running)",
                             e
                         );
+                        // Flap floor. `reconnect_with_backoff` only sleeps
+                        // between *failed* connects, so a cloud room that
+                        // accepts the connection and then immediately errors the
+                        // stream every cycle would spin a reconnect storm at
+                        // network-RTT rate. Gated on the recoverable transport so
+                        // the UDS framing-error reconnect is byte-for-byte
+                        // unchanged. (lifecycle-analysis: cloud DoS-avoidance)
+                        if let Some(wait) = reconnect_floor_delay(
+                            transport.clean_eof_is_recoverable(),
+                            last_recoverable_reconnect.map(|t| t.elapsed()),
+                            RECOVERABLE_RECONNECT_FLOOR,
+                        ) {
+                            tokio::time::sleep(wait).await;
+                        }
                         // Drop the old source before reconnecting so its
                         // background reader task exits cleanly.
                         drop(frame_source);
@@ -558,6 +701,11 @@ pub async fn run_runtime_agent(
                                 // everything the kernel produced while we
                                 // were disconnected.
                                 let _ = state_kick_tx.send(());
+                                // Track for the flap floor (recoverable only;
+                                // the UDS path leaves this `None`).
+                                if transport.clean_eof_is_recoverable() {
+                                    last_recoverable_reconnect = Some(tokio::time::Instant::now());
+                                }
                                 info!("[runtime-agent] Reconnected to daemon");
                                 continue;
                             }
@@ -588,13 +736,15 @@ pub async fn run_runtime_agent(
                         // accepts the connection and then immediately closes
                         // cleanly every time (a flapping/evicting cloud room)
                         // would otherwise spin a reconnect storm at network-RTT
-                        // rate. If the previous clean reconnect was very recent,
-                        // wait out the floor before redialing.
-                        if let Some(last) = last_clean_reconnect {
-                            let since = last.elapsed();
-                            if since < CLEAN_EOF_RECONNECT_FLOOR {
-                                tokio::time::sleep(CLEAN_EOF_RECONNECT_FLOOR - since).await;
-                            }
+                        // rate. Shared with the framing-error arm via
+                        // `reconnect_floor_delay` so the combined reconnect rate
+                        // is throttled regardless of which failure mode recurs.
+                        if let Some(wait) = reconnect_floor_delay(
+                            transport.clean_eof_is_recoverable(),
+                            last_recoverable_reconnect.map(|t| t.elapsed()),
+                            RECOVERABLE_RECONNECT_FLOOR,
+                        ) {
+                            tokio::time::sleep(wait).await;
                         }
                         warn!(
                             "[runtime-agent] Sync sink closed cleanly — reconnecting \
@@ -607,7 +757,7 @@ pub async fn run_runtime_agent(
                                 frame_sink = new_sink;
                                 coordinator_sync_state = automerge::sync::State::new();
                                 let _ = state_kick_tx.send(());
-                                last_clean_reconnect = Some(tokio::time::Instant::now());
+                                last_recoverable_reconnect = Some(tokio::time::Instant::now());
                                 info!("[runtime-agent] Reconnected after clean close");
                                 continue;
                             }
@@ -691,8 +841,44 @@ pub async fn run_runtime_agent(
                         NotebookFrameType::RuntimeStateSync,
                         &encoded,
                     ).await {
-                        warn!("[runtime-agent] Failed to send RuntimeStateSync: {}", e);
-                        break;
+                        // A writer send error over a recoverable (cloud) sink is
+                        // a blip, not the daemon going away: tearing down here
+                        // would kill a healthy kernel over a transient WS error
+                        // (lifecycle-analysis req #6). Reconnect and resync — the
+                        // delta that just failed to send is durable in the local
+                        // doc, and the fresh sync state + resync kick re-send it,
+                        // so Automerge's own resync IS the replay. The UDS path
+                        // keeps the historical teardown (break).
+                        if !transport.clean_eof_is_recoverable() {
+                            warn!("[runtime-agent] Closing after RuntimeStateSync send failure: {}", e);
+                            break;
+                        }
+                        warn!(
+                            "[runtime-agent] RuntimeStateSync send failed: {} — reconnecting \
+                             (kernel stays running)",
+                            e
+                        );
+                        drop(frame_source);
+                        match reconnect_after_writer_error(
+                            &transport,
+                            &mut last_recoverable_reconnect,
+                        ).await {
+                            Ok((new_source, new_sink)) => {
+                                frame_source = new_source;
+                                frame_sink = new_sink;
+                                coordinator_sync_state = automerge::sync::State::new();
+                                let _ = state_kick_tx.send(());
+                                info!("[runtime-agent] Reconnected after send failure");
+                                continue;
+                            }
+                            Err(reconnect_err) => {
+                                error!(
+                                    "[runtime-agent] Reconnect failed after retries: {}",
+                                    reconnect_err
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -701,8 +887,44 @@ pub async fn run_runtime_agent(
             Some(envelope) = async_response_rx.recv() => {
                 inflight_sync = None;
                 if let Err(e) = send_runtime_agent_response_envelope(&mut frame_sink, envelope).await {
-                    warn!("[runtime-agent] Failed to send async response: {}", e);
-                    break;
+                    // Same recoverable-transport policy as the RuntimeStateSync
+                    // arm: a cloud writer blip must not tear down a healthy
+                    // kernel (req #6). Unlike a state delta, this response is not
+                    // re-derived by resync, so it is lost across the reconnect —
+                    // acceptable: the SyncEnvironment effect is already in the
+                    // RuntimeStateDoc (env progress/state), which the resync kick
+                    // re-sends; only the one-shot reply envelope is dropped. UDS
+                    // keeps the historical teardown.
+                    if !transport.clean_eof_is_recoverable() {
+                        warn!("[runtime-agent] Closing after async response send failure: {}", e);
+                        break;
+                    }
+                    warn!(
+                        "[runtime-agent] Async response send failed: {} — reconnecting \
+                         (kernel stays running)",
+                        e
+                    );
+                    drop(frame_source);
+                    match reconnect_after_writer_error(
+                        &transport,
+                        &mut last_recoverable_reconnect,
+                    ).await {
+                        Ok((new_source, new_sink)) => {
+                            frame_source = new_source;
+                            frame_sink = new_sink;
+                            coordinator_sync_state = automerge::sync::State::new();
+                            let _ = state_kick_tx.send(());
+                            info!("[runtime-agent] Reconnected after async response send failure");
+                            continue;
+                        }
+                        Err(reconnect_err) => {
+                            error!(
+                                "[runtime-agent] Reconnect failed after retries: {}",
+                                reconnect_err
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -771,6 +993,32 @@ async fn reconnect_with_backoff<T: FrameTransport>(
     Err(last_err
         .map(anyhow::Error::from)
         .unwrap_or_else(|| anyhow::anyhow!("reconnect gave up with no last error")))
+}
+
+/// Reconnect a *recoverable* transport after a writer-side send error,
+/// applying the shared flap floor and recording the reconnect time.
+///
+/// Used by the outbound (writer) `select!` arms. The read arms inline their
+/// own reconnect (they additionally rebuild echo-suppression/comm-forward
+/// state), so this stays a writer-only helper: floor → `reconnect_with_backoff`
+/// → stamp `last_recoverable_reconnect`. Callers must have already checked
+/// `transport.clean_eof_is_recoverable()`, since the UDS path tears down on a
+/// writer error rather than reconnecting (lifecycle-analysis req #6). Returns
+/// the fresh `(Source, Sink)` or the give-up error from `reconnect_with_backoff`.
+async fn reconnect_after_writer_error<T: FrameTransport>(
+    transport: &T,
+    last_recoverable_reconnect: &mut Option<tokio::time::Instant>,
+) -> anyhow::Result<(T::Source, T::Sink)> {
+    if let Some(wait) = reconnect_floor_delay(
+        transport.clean_eof_is_recoverable(),
+        last_recoverable_reconnect.map(|t| t.elapsed()),
+        RECOVERABLE_RECONNECT_FLOOR,
+    ) {
+        tokio::time::sleep(wait).await;
+    }
+    let pair = reconnect_with_backoff(transport).await?;
+    *last_recoverable_reconnect = Some(tokio::time::Instant::now());
+    Ok(pair)
 }
 
 async fn queue_synced_executions<K: KernelConnection>(
@@ -1741,8 +1989,293 @@ mod tests {
     use crate::output_prep::queue_command_channels;
     use crate::protocol::CompletionItem;
     use anyhow::Result;
+    use notebook_protocol::connection::TypedNotebookFrame;
     use notebook_protocol::protocol::{BlobDurability, LaunchedEnvConfig};
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    // -- reconnect flap-floor policy --------------------------------------
+    //
+    // `reconnect_floor_delay` is the shared throttle for both recoverable
+    // reconnect arms (clean EOF and framing error). The UDS path must never be
+    // delayed; the cloud path must be throttled when reconnects recur inside the
+    // floor.
+
+    #[test]
+    fn floor_never_delays_a_non_recoverable_transport() {
+        // The UDS path (clean_eof_is_recoverable == false): even a reconnect one
+        // nanosecond ago must not delay, so its framing-error reconnect is
+        // byte-for-byte unchanged.
+        assert_eq!(
+            reconnect_floor_delay(false, Some(Duration::from_nanos(1)), Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            reconnect_floor_delay(false, None, Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn floor_does_not_delay_first_recoverable_reconnect() {
+        // No prior reconnect recorded -> no wait (the first failure reconnects
+        // immediately; the floor only throttles *recurring* flaps).
+        assert_eq!(
+            reconnect_floor_delay(true, None, Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn floor_delays_a_recurring_recoverable_flap() {
+        // A recoverable reconnect 200ms ago, 1s floor -> wait out the remaining
+        // 800ms before redialing.
+        assert_eq!(
+            reconnect_floor_delay(
+                true,
+                Some(Duration::from_millis(200)),
+                Duration::from_secs(1),
+            ),
+            Some(Duration::from_millis(800))
+        );
+    }
+
+    #[test]
+    fn floor_does_not_delay_once_floor_has_elapsed() {
+        // Last reconnect comfortably older than the floor -> reconnect now.
+        assert_eq!(
+            reconnect_floor_delay(true, Some(Duration::from_secs(5)), Duration::from_secs(1)),
+            None
+        );
+        // Exactly at the floor is also "elapsed" (not strictly less than).
+        assert_eq!(
+            reconnect_floor_delay(true, Some(Duration::from_secs(1)), Duration::from_secs(1)),
+            None
+        );
+    }
+
+    // -- reconnect_with_backoff against a mock transport ------------------
+    //
+    // 3a made the reconnect *mechanism* generic over `FrameTransport`; 3b
+    // verifies it: a transport whose `connect` fails N times then succeeds must
+    // recover (within the bounded attempts), and one that always fails must give
+    // up so a genuinely-gone room lets the agent exit rather than spin forever.
+
+    /// Empty source: always clean-EOF. Enough to satisfy the `(Source, Sink)`
+    /// return type; these tests exercise `connect`, not frame flow.
+    #[derive(Debug)]
+    struct NullSource;
+    impl FrameSource for NullSource {
+        async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+            None
+        }
+    }
+
+    /// Sink that drops every frame.
+    #[derive(Debug)]
+    struct NullSink;
+    impl FrameSink for NullSink {
+        async fn send_frame(&mut self, _: NotebookFrameType, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A `FrameTransport` whose `connect` fails the first `fail_before` calls
+    /// (with a `ConnectionRefused` io error, the shape a dial failure takes),
+    /// then succeeds. Counts total connect attempts.
+    struct FlakyTransport {
+        fail_before: u32,
+        attempts: std::sync::atomic::AtomicU32,
+        recoverable: bool,
+    }
+
+    impl FlakyTransport {
+        fn new(fail_before: u32) -> Self {
+            Self {
+                fail_before,
+                attempts: std::sync::atomic::AtomicU32::new(0),
+                recoverable: true,
+            }
+        }
+        fn attempts(&self) -> u32 {
+            self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        /// Set the clean-EOF/recoverable discriminant (default `true`).
+        fn with_recoverable(mut self, recoverable: bool) -> Self {
+            self.recoverable = recoverable;
+            self
+        }
+    }
+
+    impl FrameTransport for FlakyTransport {
+        type Source = NullSource;
+        type Sink = NullSink;
+
+        async fn connect(&self) -> std::io::Result<(Self::Source, Self::Sink)> {
+            let n = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.fail_before {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "mock dial refused",
+                ))
+            } else {
+                Ok((NullSource, NullSink))
+            }
+        }
+
+        fn clean_eof_is_recoverable(&self) -> bool {
+            self.recoverable
+        }
+    }
+
+    /// Fails fewer times than `MAX_ATTEMPTS` (10), so backoff recovers. Paused
+    /// time so the exponential sleeps don't make the test slow.
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_with_backoff_recovers_after_transient_failures() {
+        let transport = FlakyTransport::new(3);
+        let result = reconnect_with_backoff(&transport).await;
+        assert!(result.is_ok(), "should recover after 3 transient failures");
+        // 3 failed + 1 success.
+        assert_eq!(transport.attempts(), 4);
+    }
+
+    /// Fails on the last possible attempt boundary: 9 failures then success on
+    /// the 10th (== MAX_ATTEMPTS) still recovers.
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_with_backoff_recovers_on_final_attempt() {
+        let transport = FlakyTransport::new(9);
+        assert!(reconnect_with_backoff(&transport).await.is_ok());
+        assert_eq!(transport.attempts(), 10);
+    }
+
+    /// A transport that always fails exhausts MAX_ATTEMPTS (10) and returns the
+    /// last error, so the agent can exit rather than spin forever.
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_with_backoff_gives_up_after_max_attempts() {
+        let transport = FlakyTransport::new(u32::MAX);
+        let err = reconnect_with_backoff(&transport)
+            .await
+            .expect_err("always-failing transport gives up");
+        assert_eq!(transport.attempts(), 10, "exactly MAX_ATTEMPTS tries");
+        assert!(
+            err.to_string().contains("mock dial refused"),
+            "last error is preserved: {err}"
+        );
+    }
+
+    // -- writer-error recovery (Phase 3f req #6) --------------------------
+    //
+    // On a recoverable transport, a writer send error must reconnect + stamp the
+    // flap-floor timestamp (so it shares the read arms' throttle), not tear the
+    // kernel down. The agent loop checks `clean_eof_is_recoverable()` before
+    // calling the helper; these tests cover the recover path and that the stamp
+    // is recorded for the floor.
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_after_writer_error_recovers_and_stamps() {
+        let transport = FlakyTransport::new(2); // 2 transient failures, then ok
+        let mut last: Option<tokio::time::Instant> = None;
+        let result = reconnect_after_writer_error(&transport, &mut last).await;
+        assert!(result.is_ok(), "recoverable writer error reconnects");
+        assert_eq!(transport.attempts(), 3, "2 failed + 1 success");
+        assert!(
+            last.is_some(),
+            "a successful writer-error reconnect stamps the flap-floor timestamp"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_after_writer_error_propagates_give_up() {
+        // Even on a recoverable transport, an always-failing dial gives up after
+        // MAX_ATTEMPTS so the agent can exit rather than spin; the timestamp is
+        // left unstamped since no reconnect succeeded.
+        let transport = FlakyTransport::new(u32::MAX);
+        let mut last: Option<tokio::time::Instant> = None;
+        let err = reconnect_after_writer_error(&transport, &mut last)
+            .await
+            .expect_err("always-failing transport gives up");
+        assert!(err.to_string().contains("mock dial refused"));
+        assert_eq!(transport.attempts(), 10);
+        assert!(last.is_none(), "no stamp when no reconnect succeeded");
+    }
+
+    /// The UDS discriminant (`recoverable == false`) is what the agent loop
+    /// checks *before* calling the helper, so a UDS writer error never reaches
+    /// the reconnect path — it breaks the loop. Pin that the discriminant the
+    /// loop branches on is wired through the mock the way the agent reads it.
+    #[test]
+    fn non_recoverable_transport_reports_clean_eof_not_recoverable() {
+        let transport = FlakyTransport::new(0).with_recoverable(false);
+        assert!(!transport.clean_eof_is_recoverable());
+    }
+
+    // -- cloud doc-actor label (Phase 3c) ---------------------------------
+
+    #[test]
+    fn cloud_actor_label_has_principal_operator_and_nonce() {
+        let label = cloud_actor_label("anaconda:alice", "agent:runt");
+        // <principal>/<operator>:<8-hex-nonce>
+        let (prefix, nonce) = label.rsplit_once(':').expect("has nonce suffix");
+        assert_eq!(prefix, "anaconda:alice/agent:runt");
+        assert_eq!(nonce.len(), 8, "8-char nonce: {label}");
+        assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
+        // The principal (which itself contains a colon) is preserved ahead of
+        // the operator, so the room's principal check sees the right identity.
+        assert!(label.starts_with("anaconda:alice/"));
+    }
+
+    #[test]
+    fn cloud_actor_label_is_unique_per_call() {
+        // Reusing a label across doc instances collides at (actor, seq 1) ->
+        // Automerge DuplicateSeqNumber; the nonce must differ per call.
+        let a = cloud_actor_label("p", "op");
+        let b = cloud_actor_label("p", "op");
+        assert_ne!(a, b);
+    }
+
+    /// The cloud actor resolver (the closure `run_cloud_runtime_agent` passes
+    /// into `run_runtime_agent_on_transport`) must error rather than silently
+    /// author under a wrong actor when the transport never observed a
+    /// `cloud_room_ready` principal. Exercise that resolver shape directly
+    /// against a fresh (unconnected) cloud transport.
+    #[test]
+    fn cloud_actor_resolver_errors_without_principal() {
+        use notebook_cloud_transport::{CloudAuth, CloudWsConfig, CloudWsFrameTransport};
+        let transport = CloudWsFrameTransport::new(CloudWsConfig {
+            cloud_url: "https://preview.runt.run".into(),
+            notebook_id: "abc".into(),
+            scope: "runtime_peer".into(),
+            auth: CloudAuth::OidcBearer { token: "t".into() },
+        });
+        let operator = "agent:runt".to_string();
+        // Mirror the resolver body in run_cloud_runtime_agent.
+        let resolved: anyhow::Result<String> = (|t: &CloudWsFrameTransport| {
+            let principal = t
+                .principal()
+                .ok_or_else(|| anyhow::anyhow!("cloud transport has no principal after connect"))?;
+            Ok(cloud_actor_label(principal, &operator))
+        })(&transport);
+        assert!(
+            resolved.is_err(),
+            "no principal before connect -> resolver errors, not a bogus actor"
+        );
+    }
+
+    /// The UDS resolver is a pure pass-through of the daemon-supplied id,
+    /// independent of the transport — the property that keeps the desktop path
+    /// byte-for-byte unchanged after the cloud-path extraction.
+    #[test]
+    fn uds_actor_resolver_returns_daemon_id_verbatim() {
+        let id = "runtime-agent:nb-42".to_string();
+        let resolver = {
+            let id = id.clone();
+            move |_t: &FlakyTransport| -> anyhow::Result<String> { Ok(id) }
+        };
+        let resolved = resolver(&FlakyTransport::new(0)).unwrap();
+        assert_eq!(resolved, id);
+    }
 
     /// Minimal mock kernel for testing queue/state logic without ZeroMQ.
     struct MockKernel;

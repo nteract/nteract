@@ -41,6 +41,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -57,6 +58,19 @@ use tracing::{debug, info, warn};
 /// arrives here). Re-export of the wire constant for local readability.
 const SESSION_CONTROL: u8 = notebook_wire::frame_types::SESSION_CONTROL;
 
+/// How long [`CloudWsFrameTransport::connect`] waits for the room to reach the
+/// `cloud_room_ready` / `cloud_frame_rejected` state after a successful WS
+/// upgrade, before giving up with a `TimedOut` connect error.
+///
+/// Without this bound a room that completes the upgrade but never sends a
+/// terminal control frame and never closes the socket would hang `connect`
+/// forever. Because every reconnect attempt calls `connect` with no per-attempt
+/// timeout of its own, that hang would also wedge the whole
+/// `reconnect_with_backoff` recovery path. Returning a connect error instead
+/// lets the agent's backoff loop retry (or, after its bounded attempts, exit
+/// cleanly) rather than block indefinitely on one wedged room.
+const READY_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// How the runtime peer authenticates on the WebSocket upgrade.
@@ -71,6 +85,40 @@ pub enum CloudAuth {
     /// Dev token (`X-Notebook-Cloud-Dev-Token`) plus a user label.
     Dev { token: String, user: String },
 }
+
+impl CloudAuth {
+    /// Return a copy of this auth with its credential replaced by `token`,
+    /// preserving the variant (and the `Dev` user label). Used by the
+    /// token-refresher path so a reconnect re-auths with a freshly-minted token
+    /// without changing the auth *kind* the room expects.
+    fn with_token(&self, token: String) -> Self {
+        match self {
+            CloudAuth::OidcBearer { .. } => CloudAuth::OidcBearer { token },
+            CloudAuth::AnacondaApiKey { .. } => CloudAuth::AnacondaApiKey { token },
+            CloudAuth::Dev { user, .. } => CloudAuth::Dev {
+                token,
+                user: user.clone(),
+            },
+        }
+    }
+}
+
+/// A closure the transport calls *before each connect* to obtain a fresh
+/// credential, replacing the static token in [`CloudWsConfig::auth`].
+///
+/// The cloud auth token is static for a single short session today, but a
+/// long-lived runtime peer outlives its OIDC token's expiry: every reconnect
+/// (idle eviction, blip) must re-auth, and a reconnect that re-presents an
+/// expired token is rejected at the upgrade, so `reconnect_with_backoff` would
+/// burn all its attempts and give up. A refresher lets the agent mint a fresh
+/// token per connect. `None` (the default) keeps the static-token behavior. The
+/// closure is `async` (refresh is typically a network round-trip) and its error
+/// surfaces as a connect error so the backoff loop retries.
+pub type TokenRefresher = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Connection parameters for a cloud room. Immutable for the life of the
 /// transport, so [`CloudWsFrameTransport::connect`] can be called repeatedly on
@@ -181,6 +229,57 @@ fn classify_ready_control(payload: &[u8]) -> ReadyControl {
     }
 }
 
+/// Read frames from `source` until the room reaches a terminal ready state,
+/// returning the authenticated principal from `cloud_room_ready`.
+///
+/// Data frames that arrive before the room is ready are pushed onto `buffered`
+/// so the caller can replay them to the agent after the handshake — the
+/// connect-time wait never drops a frame. A `cloud_frame_rejected` is surfaced
+/// as a `PermissionDenied` error (the room refusing the attach over a control
+/// frame rather than an HTTP status); a clean close before ready is an
+/// `UnexpectedEof`.
+///
+/// This helper has no deadline of its own — [`CloudWsFrameTransport::connect`]
+/// wraps it in [`READY_WAIT_TIMEOUT`] so a room that upgrades the WS but never
+/// sends a terminal control frame can't hang the connect forever. It is generic
+/// over [`FrameSource`] so the timeout and rejection paths are unit-testable
+/// against a mock source.
+async fn wait_for_ready<S: FrameSource>(
+    source: &mut S,
+    buffered: &mut VecDeque<TypedNotebookFrame>,
+) -> std::io::Result<String> {
+    loop {
+        match source.recv_frame().await {
+            Some(Ok(frame)) if frame.frame_type as u8 == SESSION_CONTROL => {
+                match classify_ready_control(&frame.payload) {
+                    ReadyControl::Ready(principal) => return Ok(principal),
+                    ReadyControl::Rejected(reason) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            format!("room rejected attach before ready: {reason}"),
+                        ));
+                    }
+                    ReadyControl::Other => {
+                        debug!(
+                            "[cloud-transport] control frame before ready ({} bytes): {}",
+                            frame.payload.len(),
+                            String::from_utf8_lossy(&frame.payload)
+                        );
+                    }
+                }
+            }
+            Some(Ok(frame)) => buffered.push_back(frame),
+            Some(Err(e)) => return Err(e),
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed before cloud_room_ready",
+                ));
+            }
+        }
+    }
+}
+
 /// Extract the room principal from a `cloud_room_ready` control payload.
 /// Thin wrapper over [`classify_ready_control`]; used by the ready-wait tests.
 #[cfg(test)]
@@ -268,16 +367,36 @@ pub struct CloudWsFrameTransport {
     /// Principal from the most recent `cloud_room_ready`. Set on first connect;
     /// reconnects to the same room re-observe the same principal.
     principal: Arc<std::sync::OnceLock<String>>,
+    /// Optional per-connect token refresher. `None` keeps the static token from
+    /// `config.auth`. When set, `connect` calls it before each dial and re-auths
+    /// with the returned token so a long-lived peer survives token expiry across
+    /// reconnects.
+    refresher: Option<TokenRefresher>,
 }
 
 impl CloudWsFrameTransport {
-    /// Build a transport for `config`.
+    /// Build a transport for `config` with the static token in `config.auth`.
     pub fn new(config: CloudWsConfig) -> Self {
         let ws_url = build_ws_url(&config.cloud_url, &config.notebook_id);
         Self {
             config,
             ws_url,
             principal: Arc::new(std::sync::OnceLock::new()),
+            refresher: None,
+        }
+    }
+
+    /// Build a transport that mints a fresh credential before every connect via
+    /// `refresher`, replacing the token in `config.auth` (the variant and any
+    /// `Dev` user label are preserved). Use for long-lived runtime peers whose
+    /// OIDC token would otherwise expire mid-session and fail every reconnect.
+    pub fn with_token_refresher(config: CloudWsConfig, refresher: TokenRefresher) -> Self {
+        let ws_url = build_ws_url(&config.cloud_url, &config.notebook_id);
+        Self {
+            config,
+            ws_url,
+            principal: Arc::new(std::sync::OnceLock::new()),
+            refresher: Some(refresher),
         }
     }
 
@@ -293,10 +412,26 @@ impl CloudWsFrameTransport {
         self.principal.get().map(String::as_str)
     }
 
-    /// Apply the auth headers for `config.auth` to the upgrade request.
+    /// Resolve the credential to present on the next connect: the refresher's
+    /// fresh token (re-wrapped in `config.auth`'s variant) if one is configured,
+    /// else the static `config.auth` unchanged.
+    async fn effective_auth(&self) -> std::io::Result<CloudAuth> {
+        match &self.refresher {
+            Some(refresh) => {
+                let token = refresh().await.map_err(|e| {
+                    std::io::Error::new(e.kind(), format!("token refresh failed: {e}"))
+                })?;
+                Ok(self.config.auth.with_token(token))
+            }
+            None => Ok(self.config.auth.clone()),
+        }
+    }
+
+    /// Apply the auth headers for `auth` to the upgrade request.
     fn apply_auth_headers(
         &self,
         request: &mut tokio_tungstenite::tungstenite::handshake::client::Request,
+        auth: &CloudAuth,
     ) -> anyhow::Result<()> {
         let h = request.headers_mut();
         // No Sec-WebSocket-Protocol: the credential rides Authorization /
@@ -305,7 +440,7 @@ impl CloudWsFrameTransport {
             HeaderName::from_static("x-scope"),
             HeaderValue::from_str(&self.config.scope)?,
         );
-        match &self.config.auth {
+        match auth {
             CloudAuth::Dev { token, user } => {
                 h.insert(
                     HeaderName::from_static("x-notebook-cloud-dev-token"),
@@ -340,12 +475,13 @@ impl CloudWsFrameTransport {
     /// and the room principal. The [`FrameTransport::connect`] impl delegates
     /// here and caches the principal.
     async fn connect_cloud(&self) -> std::io::Result<(CloudWsSource, CloudWsSink, String)> {
+        let auth = self.effective_auth().await?;
         let mut request = self
             .ws_url
             .as_str()
             .into_client_request()
             .map_err(|e| std::io::Error::other(format!("build upgrade request: {e}")))?;
-        self.apply_auth_headers(&mut request)
+        self.apply_auth_headers(&mut request, &auth)
             .map_err(|e| std::io::Error::other(format!("apply auth headers: {e}")))?;
 
         info!(
@@ -375,42 +511,32 @@ impl CloudWsFrameTransport {
             pending: VecDeque::new(),
         };
 
-        // Read up to `cloud_room_ready`, surfacing the principal. Buffer any
-        // data frames that arrive first so the agent loop sees them after the
-        // ready handshake without loss. A `cloud_frame_rejected` during this
-        // window is the room refusing the attach (auth/ACL) over a control
-        // frame rather than an HTTP status; surface its reason rather than
-        // hanging until the socket closes.
-        let principal = loop {
-            match source.recv_frame().await {
-                Some(Ok(frame)) if frame.frame_type as u8 == SESSION_CONTROL => {
-                    match classify_ready_control(&frame.payload) {
-                        ReadyControl::Ready(principal) => break principal,
-                        ReadyControl::Rejected(reason) => {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::PermissionDenied,
-                                format!("room rejected attach before ready: {reason}"),
-                            ));
-                        }
-                        ReadyControl::Other => {
-                            debug!(
-                                "[cloud-transport] control frame before ready ({} bytes): {}",
-                                frame.payload.len(),
-                                String::from_utf8_lossy(&frame.payload)
-                            );
-                        }
-                    }
-                }
-                Some(Ok(frame)) => source.pending.push_back(frame),
-                Some(Err(e)) => return Err(e),
-                None => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "connection closed before cloud_room_ready",
-                    ));
-                }
+        // Read up to `cloud_room_ready`, surfacing the principal — but bound the
+        // wait. A room that upgrades the WS yet never sends a terminal control
+        // frame and never closes would otherwise hang `connect` (and, through
+        // `reconnect_with_backoff`, the whole recovery path) forever. On timeout
+        // return a `TimedOut` connect error so the agent retries rather than
+        // blocks. Data frames that arrive before ready are buffered in
+        // `source.pending` and replayed to the agent after the handshake.
+        let mut buffered = VecDeque::new();
+        let principal = match tokio::time::timeout(
+            READY_WAIT_TIMEOUT,
+            wait_for_ready(&mut source, &mut buffered),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "room did not send cloud_room_ready within {}s",
+                        READY_WAIT_TIMEOUT.as_secs()
+                    ),
+                ));
             }
         };
+        source.pending = buffered;
 
         info!("[cloud-transport] room ready; principal={principal}");
         let sink = CloudWsSink { sink };
@@ -627,5 +753,220 @@ mod tests {
             },
         });
         assert!(t.clean_eof_is_recoverable());
+    }
+
+    // -- token-refresher tests --------------------------------------------
+
+    #[test]
+    fn with_token_preserves_variant_and_dev_user() {
+        assert!(matches!(
+            CloudAuth::OidcBearer { token: "old".into() }.with_token("new".into()),
+            CloudAuth::OidcBearer { token } if token == "new"
+        ));
+        assert!(matches!(
+            CloudAuth::AnacondaApiKey { token: "old".into() }.with_token("new".into()),
+            CloudAuth::AnacondaApiKey { token } if token == "new"
+        ));
+        // Dev keeps its user label, swaps only the token.
+        match (CloudAuth::Dev {
+            token: "old".into(),
+            user: "alice".into(),
+        })
+        .with_token("new".into())
+        {
+            CloudAuth::Dev { token, user } => {
+                assert_eq!(token, "new");
+                assert_eq!(user, "alice");
+            }
+            _ => panic!("expected Dev"),
+        }
+    }
+
+    fn test_config() -> CloudWsConfig {
+        CloudWsConfig {
+            cloud_url: "https://preview.runt.run".into(),
+            notebook_id: "abc".into(),
+            scope: "runtime_peer".into(),
+            auth: CloudAuth::OidcBearer {
+                token: "static-tok".into(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_auth_uses_static_token_without_refresher() {
+        let t = CloudWsFrameTransport::new(test_config());
+        match t.effective_auth().await.unwrap() {
+            CloudAuth::OidcBearer { token } => assert_eq!(token, "static-tok"),
+            _ => panic!("expected OidcBearer"),
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_auth_uses_refreshed_token_when_set() {
+        let refresher: TokenRefresher =
+            Arc::new(|| Box::pin(async { Ok("fresh-tok".to_string()) }));
+        let t = CloudWsFrameTransport::with_token_refresher(test_config(), refresher);
+        match t.effective_auth().await.unwrap() {
+            // Variant preserved (still OIDC), token replaced with the fresh one.
+            CloudAuth::OidcBearer { token } => assert_eq!(token, "fresh-tok"),
+            _ => panic!("expected OidcBearer"),
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_auth_surfaces_refresher_error() {
+        let refresher: TokenRefresher = Arc::new(|| {
+            Box::pin(async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "token endpoint said no",
+                ))
+            })
+        });
+        let t = CloudWsFrameTransport::with_token_refresher(test_config(), refresher);
+        let err = t
+            .effective_auth()
+            .await
+            .expect_err("refresher error surfaces");
+        // Kind is preserved so the agent can distinguish auth failures; the
+        // backoff loop treats any connect error as retryable.
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    // -- ready-wait helper tests ------------------------------------------
+    //
+    // `wait_for_ready` is the inner loop `connect` wraps in `READY_WAIT_TIMEOUT`.
+    // Testing it (and the timeout) against a mock `FrameSource` exercises the
+    // hang/rejection/buffering paths without a live room.
+
+    /// A scripted [`FrameSource`]: yields a queue of frames, then either ends
+    /// the stream (`None`) or, if `hang` is set, blocks forever — modelling a
+    /// room that upgraded the WS but never sends a terminal control frame.
+    struct ScriptedSource {
+        frames: VecDeque<std::io::Result<TypedNotebookFrame>>,
+        hang: bool,
+    }
+
+    impl ScriptedSource {
+        fn yielding(frames: Vec<std::io::Result<TypedNotebookFrame>>) -> Self {
+            Self {
+                frames: frames.into(),
+                hang: false,
+            }
+        }
+
+        /// Yields `frames`, then hangs forever instead of ending the stream.
+        fn then_hang(frames: Vec<std::io::Result<TypedNotebookFrame>>) -> Self {
+            Self {
+                frames: frames.into(),
+                hang: true,
+            }
+        }
+    }
+
+    impl FrameSource for ScriptedSource {
+        async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+            if let Some(frame) = self.frames.pop_front() {
+                return Some(frame);
+            }
+            if self.hang {
+                std::future::pending::<()>().await;
+            }
+            None
+        }
+    }
+
+    fn control_frame(json: serde_json::Value) -> TypedNotebookFrame {
+        TypedNotebookFrame {
+            frame_type: NotebookFrameType::SessionControl,
+            payload: serde_json::to_vec(&json).unwrap(),
+        }
+    }
+
+    fn data_frame(payload: &[u8]) -> TypedNotebookFrame {
+        TypedNotebookFrame {
+            frame_type: NotebookFrameType::AutomergeSync,
+            payload: payload.to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_returns_principal_and_buffers_pre_ready_data() {
+        // A data frame arrives before `cloud_room_ready`; it must be buffered
+        // (replayed to the agent later), not dropped, and the principal parsed.
+        let mut source = ScriptedSource::yielding(vec![
+            Ok(data_frame(b"early sync bytes")),
+            Ok(control_frame(serde_json::json!({
+                "type": "cloud_room_ready",
+                "actor_label": "anaconda:alice/agent:runt:7f3a",
+            }))),
+        ]);
+        let mut buffered = VecDeque::new();
+        let principal = wait_for_ready(&mut source, &mut buffered).await.unwrap();
+        assert_eq!(principal, "anaconda:alice");
+        assert_eq!(buffered.len(), 1, "pre-ready data frame is buffered");
+        assert_eq!(buffered[0].payload, b"early sync bytes");
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_surfaces_rejection() {
+        let mut source = ScriptedSource::yielding(vec![Ok(control_frame(serde_json::json!({
+            "type": "cloud_frame_rejected",
+            "reason": "principal lacks runtime_peer ACL row",
+        })))]);
+        let mut buffered = VecDeque::new();
+        let err = wait_for_ready(&mut source, &mut buffered)
+            .await
+            .expect_err("rejection is an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_clean_eof_before_ready_is_unexpected_eof() {
+        let mut source = ScriptedSource::yielding(vec![]);
+        let mut buffered = VecDeque::new();
+        let err = wait_for_ready(&mut source, &mut buffered)
+            .await
+            .expect_err("EOF before ready is an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    /// The keystone gap-1 test: a room that upgrades the WS but never sends a
+    /// terminal control frame and never closes must NOT hang `connect`. The
+    /// `READY_WAIT_TIMEOUT` wrapper turns the hang into a `TimedOut` error so
+    /// `reconnect_with_backoff` can retry. Uses paused time so the test is
+    /// instant and deterministic.
+    #[tokio::test(start_paused = true)]
+    async fn ready_wait_times_out_on_a_silent_room() {
+        // Sends one non-terminal control frame, then hangs forever.
+        let mut source = ScriptedSource::then_hang(vec![Ok(control_frame(serde_json::json!({
+            "type": "cloud_frame_accepted",
+        })))]);
+        let mut buffered = VecDeque::new();
+
+        let result = tokio::time::timeout(
+            READY_WAIT_TIMEOUT,
+            wait_for_ready(&mut source, &mut buffered),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a room that never sends cloud_room_ready must time out, not hang"
+        );
+
+        // And the connect-time mapping turns that elapsed into a TimedOut io
+        // error (the shape `reconnect_with_backoff` treats as a failed connect).
+        let mapped: std::io::Result<String> = match result {
+            Ok(inner) => inner,
+            Err(_elapsed) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "room did not send cloud_room_ready",
+            )),
+        };
+        assert_eq!(
+            mapped.expect_err("timed out").kind(),
+            std::io::ErrorKind::TimedOut
+        );
     }
 }

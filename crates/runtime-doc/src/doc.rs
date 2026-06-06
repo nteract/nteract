@@ -143,6 +143,21 @@ pub struct KernelState {
     /// "scaffolded but unset" (same convention as `error_reason`).
     #[serde(default)]
     pub error_details: Option<String>,
+    /// Liveness heartbeat: ISO-8601 timestamp the runtime peer was last
+    /// known present on the sync link, refreshed by the room as it observes
+    /// the peer. `None` when absent (no peer has reported in, a pre-field doc,
+    /// or explicitly cleared — the setter writes a CRDT `Null`, unlike the
+    /// empty-string `error_reason`/`error_details` convention).
+    ///
+    /// This is the model half of lifecycle requirement #4(b): it lets a
+    /// cloud room (and viewers) distinguish "kernel alive, peer reporting"
+    /// from "peer hasn't been seen since `last_seen`" — the staleness signal
+    /// the room-side watchdog (Phase 3d) reads to decide a `runtime_peer` has
+    /// gone away, without needing a new terminal `RuntimeLifecycle` variant.
+    /// It carries no authority by itself; it is a fact the room stamps and
+    /// the watchdog interprets.
+    #[serde(default)]
+    pub last_seen: Option<String>,
 }
 
 impl Default for KernelState {
@@ -157,6 +172,7 @@ impl Default for KernelState {
             lifecycle: RuntimeLifecycle::NotStarted,
             error_reason: None,
             error_details: None,
+            last_seen: None,
         }
     }
 }
@@ -1123,6 +1139,28 @@ impl RuntimeStateDoc {
         }
         self.doc
             .put(&kernel, "runtime_agent_id", runtime_agent_id)?;
+        Ok(())
+    }
+
+    /// Stamp the runtime peer liveness heartbeat (`kernel/last_seen`).
+    ///
+    /// `Some(ts)` records an ISO-8601 timestamp the peer was last observed;
+    /// `None` clears it (writes a CRDT `Null`, so `read_state().kernel.last_seen`
+    /// reads back `None`). This is a pure liveness fact — it carries no
+    /// lifecycle authority. The room-side watchdog (Phase 3d) refreshes it as it
+    /// sees the peer and reads it back to decide a `runtime_peer` has gone stale.
+    /// Idempotent: re-stamping the current value is a no-op so it doesn't churn
+    /// the doc heads on every observation.
+    pub fn set_last_seen(&mut self, timestamp: Option<&str>) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
+        let current = automunge::read_str_if_present(&self.doc, &kernel, "last_seen");
+        if current.as_deref() == timestamp {
+            return Ok(());
+        }
+        match timestamp {
+            Some(ts) => self.doc.put(&kernel, "last_seen", ts)?,
+            None => self.doc.put(&kernel, "last_seen", ScalarValue::Null)?,
+        }
         Ok(())
     }
 
@@ -2766,6 +2804,7 @@ impl RuntimeStateDoc {
                         }
                     });
                 let error_details = automunge::read_str_if_present(&self.doc, k, "error_details");
+                let last_seen = automunge::read_str_if_present(&self.doc, k, "last_seen");
                 KernelState {
                     status: status.to_string(),
                     starting_phase: starting_phase.to_string(),
@@ -2776,6 +2815,7 @@ impl RuntimeStateDoc {
                     lifecycle,
                     error_reason,
                     error_details,
+                    last_seen,
                 }
             })
             .unwrap_or_default();
@@ -3879,6 +3919,81 @@ mod tests {
 
         doc.set_last_saved(None).unwrap();
         assert_eq!(doc.read_state().last_saved, None);
+    }
+
+    #[test]
+    fn last_seen_defaults_to_none_on_a_fresh_doc() {
+        // Not part of the frozen genesis scaffold: a fresh doc has no
+        // last_seen, so viewers/the watchdog see "no peer has reported in".
+        let doc = RuntimeStateDoc::new();
+        assert_eq!(doc.read_state().kernel.last_seen, None);
+    }
+
+    #[test]
+    fn set_last_seen_roundtrips_and_clears_to_none() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_last_seen(Some("2026-06-05T12:00:00Z")).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.last_seen.as_deref(),
+            Some("2026-06-05T12:00:00Z")
+        );
+
+        // A later observation moves the timestamp forward.
+        doc.set_last_seen(Some("2026-06-05T12:00:05Z")).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.last_seen.as_deref(),
+            Some("2026-06-05T12:00:05Z")
+        );
+
+        // Clearing reads back as None (CRDT Null, not an empty string).
+        doc.set_last_seen(None).unwrap();
+        assert_eq!(doc.read_state().kernel.last_seen, None);
+    }
+
+    #[test]
+    fn set_last_seen_is_idempotent_no_head_churn() {
+        // The watchdog/peer stamps last_seen frequently; re-stamping the same
+        // value must not advance the doc heads (no spurious sync rounds).
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_last_seen(Some("2026-06-05T12:00:00Z")).unwrap();
+        let heads_before = doc.doc_mut().get_heads();
+        doc.set_last_seen(Some("2026-06-05T12:00:00Z")).unwrap();
+        let heads_after = doc.doc_mut().get_heads();
+        assert_eq!(heads_before, heads_after, "re-stamp must not change heads");
+    }
+
+    #[test]
+    fn last_seen_is_runtime_peer_writable_but_blocked_for_editor() {
+        // last_seen lives under `state.kernel`, so the existing kernel-ownership
+        // policy governs it: a runtime_peer may write it, an editor/owner sync
+        // may not (it is part of the daemon/runtime-owned kernel snapshot). This
+        // pins that a liveness stamp can't be forged over an editor sync.
+        use crate::policy::{
+            runtime_state_policy_snapshot, validate_runtime_state_sync_scope,
+            RuntimeStateWriteScope,
+        };
+        let before = RuntimeStateDoc::new();
+        let mut after = RuntimeStateDoc::new();
+        after.set_last_seen(Some("2026-06-05T12:00:00Z")).unwrap();
+
+        let snap_before = runtime_state_policy_snapshot(&before);
+        let snap_after = runtime_state_policy_snapshot(&after);
+
+        // runtime_peer is allowed to stamp liveness.
+        assert!(validate_runtime_state_sync_scope(
+            &snap_before,
+            &snap_after,
+            RuntimeStateWriteScope::RuntimePeer,
+        )
+        .is_ok());
+
+        // editor sync may not touch the kernel snapshot (incl. last_seen).
+        assert!(validate_runtime_state_sync_scope(
+            &snap_before,
+            &snap_after,
+            RuntimeStateWriteScope::Editor,
+        )
+        .is_err());
     }
 
     #[test]
