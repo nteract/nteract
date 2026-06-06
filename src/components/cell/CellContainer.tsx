@@ -113,9 +113,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
     const outputRibbonColor = isFocused ? colors.outputRibbon.focused : colors.outputRibbon.default;
     const bgColor = isFocused ? colors.background.focused : undefined;
 
-    // Use segmented ribbon when codeContent is provided
-    const useSegmentedRibbon = codeContent !== undefined;
+    const hasCodeContent =
+      codeContent !== undefined && codeContent !== null && codeContent !== false;
     const hasOutput = outputContent !== undefined && outputContent !== null;
+    const useSegmentedRibbon = codeContent !== undefined || hasOutput;
 
     return (
       <div
@@ -154,32 +155,34 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {useSegmentedRibbon ? (
           <div className="flex min-w-0 flex-1 flex-col">
             {/* Code row - ribbon + content + right gutter */}
-            <div data-slot="cell-code-row" className="relative flex" onMouseDown={onFocus}>
-              <div
-                {...dragHandleProps}
-                data-slot="cell-ribbon"
-                className={cn(
-                  "w-1 transition-colors duration-150",
-                  ribbonColor,
-                  dragHandleProps && "cursor-grab hover:brightness-125 touch-none",
-                  isDragging && "cursor-grabbing",
-                )}
-              />
-              <div
-                data-slot="cell-code-content"
-                className={cn(
-                  "min-w-0 flex-1 pt-1.5",
-                  cellContentColumnInset,
-                  rightGutterContent ? "pr-14" : "pr-3",
-                  hasOutput && !hideOutput ? "pb-1.5" : "pb-3",
-                )}
-              >
-                {codeContent}
+            {hasCodeContent ? (
+              <div data-slot="cell-code-row" className="relative flex" onMouseDown={onFocus}>
+                <div
+                  {...dragHandleProps}
+                  data-slot="cell-ribbon"
+                  className={cn(
+                    "w-1 transition-colors duration-150",
+                    ribbonColor,
+                    dragHandleProps && "cursor-grab hover:brightness-125 touch-none",
+                    isDragging && "cursor-grabbing",
+                  )}
+                />
+                <div
+                  data-slot="cell-code-content"
+                  className={cn(
+                    "min-w-0 flex-1 pt-1.5",
+                    cellContentColumnInset,
+                    rightGutterContent ? "pr-14" : "pr-3",
+                    hasOutput && !hideOutput ? "pb-1.5" : "pb-3",
+                  )}
+                >
+                  {codeContent}
+                </div>
+                <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
+                  {rightGutterContent}
+                </CellActionOverlay>
               </div>
-              <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
-                {rightGutterContent}
-              </CellActionOverlay>
-            </div>
+            ) : null}
             {/* Output row - ribbon + content + right gutter
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
@@ -207,6 +210,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                     // ribbon plus this slab forms a three-sided frame that
                     // reads as active without the card-like ring aesthetic.
                     outputFocused && "border-y border-primary/40 bg-primary/5",
+                    !hasCodeContent && "pt-2",
                   )}
                 >
                   {outputContent}

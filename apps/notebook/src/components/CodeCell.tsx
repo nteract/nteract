@@ -391,6 +391,8 @@ export const CodeCell = memo(function CodeCell({
   // Fully collapsed when source is hidden AND there's nothing else to show
   // (outputs explicitly hidden, or no outputs at all).
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
+  const canRevealHiddenContent = !readOnly;
+  const visibleOutputCount = isOutputsHidden ? 0 : outputs.length;
 
   // Auto-clear expand/focus when the cell has no visible outputs to
   // operate on. Previously also gated on `!hasIsolatedOutput`, which made
@@ -606,14 +608,19 @@ export const CodeCell = memo(function CodeCell({
     [onNavigateToCell],
   );
 
-  const hasCurrentLine =
-    !isSourceEmpty ||
-    outputs.length > 0 ||
+  const hasExecutionReadout =
     executionCount !== null ||
     isExecuting ||
     isQueued ||
+    isGroupExecuting ||
     isExecutionErrored ||
-    isSourceHidden;
+    submittedByActorLabel !== null;
+  const showExecutionControl = canExecute || hasExecutionReadout;
+  const hasCurrentLine =
+    !isSourceEmpty ||
+    visibleOutputCount > 0 ||
+    hasExecutionReadout ||
+    (isSourceHidden && canRevealHiddenContent);
   const currentLine = hasCurrentLine ? (
     <CodeCellCurrentLine
       languageLabel={languageLabel}
@@ -628,6 +635,10 @@ export const CodeCell = memo(function CodeCell({
     />
   ) : null;
 
+  if (readOnly && bothHidden && !hasExecutionReadout) {
+    return null;
+  }
+
   return (
     <>
       <CellContainer
@@ -640,103 +651,99 @@ export const CodeCell = memo(function CodeCell({
         outputDimmed={outputDimmed}
         onFocus={onFocus}
         gutterContent={
-          <CompactExecutionButton
-            count={executionCount}
-            isExecuting={isExecuting || isGroupExecuting}
-            isQueued={isQueued}
-            isErrored={isExecutionErrored}
-            submittedByActorLabel={submittedByActorLabel}
-            isCellFocused={isFocused}
-            canExecute={canExecute}
-            onExecute={handleExecute}
-            onInterrupt={onInterrupt}
-            className={cn(
-              bothHidden &&
-                !isFocused &&
-                !isExecuting &&
-                !isGroupExecuting &&
-                !isQueued &&
-                !isExecutionErrored &&
-                "opacity-0 group-hover:opacity-70",
-            )}
-          />
+          showExecutionControl ? (
+            <CompactExecutionButton
+              count={executionCount}
+              isExecuting={isExecuting || isGroupExecuting}
+              isQueued={isQueued}
+              isErrored={isExecutionErrored}
+              submittedByActorLabel={submittedByActorLabel}
+              isCellFocused={isFocused}
+              canExecute={canExecute}
+              onExecute={handleExecute}
+              onInterrupt={onInterrupt}
+              className={cn(
+                bothHidden &&
+                  !isFocused &&
+                  !isExecuting &&
+                  !isGroupExecuting &&
+                  !isQueued &&
+                  !isExecutionErrored &&
+                  "opacity-0 group-hover:opacity-70",
+              )}
+            />
+          ) : null
         }
         rightGutterContent={rightGutterContent}
-        stateLaneClassName={isSourceHidden ? "pt-2 sm:pt-2" : undefined}
+        stateLaneClassName={isSourceHidden && canRevealHiddenContent ? "pt-2 sm:pt-2" : undefined}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}
         codeContent={
           <>
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
-              <div className="mt-0.5" onKeyDown={handleHiddenDisclosureKeyDown}>
-                {hiddenGroupCount && hiddenGroupCount > 1 ? (
-                  <HiddenGroupDisclosure
-                    count={hiddenGroupCount}
-                    items={hiddenGroupItems ?? []}
-                    disabled={readOnly}
-                    pulsing={isExecuting || isGroupExecuting}
-                    onRevealAll={() => {
-                      if (readOnly) return;
-                      if (onExpandHiddenGroup) {
-                        onExpandHiddenGroup();
-                      } else {
+              canRevealHiddenContent ? (
+                <div className="mt-0.5" onKeyDown={handleHiddenDisclosureKeyDown}>
+                  {hiddenGroupCount && hiddenGroupCount > 1 ? (
+                    <HiddenGroupDisclosure
+                      count={hiddenGroupCount}
+                      items={hiddenGroupItems ?? []}
+                      pulsing={isExecuting || isGroupExecuting}
+                      onRevealAll={() => {
+                        if (onExpandHiddenGroup) {
+                          onExpandHiddenGroup();
+                        } else {
+                          onToggleSourceHidden?.(false);
+                          onToggleOutputsHidden?.(false);
+                        }
+                      }}
+                      onRevealCell={onExpandHiddenGroupCell}
+                      alert={
+                        hiddenGroupErrorCount
+                          ? hiddenGroupErrorCount === 1
+                            ? "1 error"
+                            : `${hiddenGroupErrorCount} errors`
+                          : undefined
+                      }
+                    />
+                  ) : (
+                    <HiddenCellDisclosure
+                      icon={Code2}
+                      pulsing={isExecuting || isGroupExecuting}
+                      onClick={() => {
                         onToggleSourceHidden?.(false);
                         onToggleOutputsHidden?.(false);
+                      }}
+                      title="Show cell"
+                      label="Cell hidden"
+                      focusTarget
+                      alert={
+                        hiddenGroupErrorCount
+                          ? hiddenGroupErrorCount === 1
+                            ? "1 error"
+                            : `${hiddenGroupErrorCount} errors`
+                          : undefined
                       }
-                    }}
-                    onRevealCell={
-                      onExpandHiddenGroupCell
-                        ? (cellId) => {
-                            if (readOnly) return;
-                            onExpandHiddenGroupCell(cellId);
-                          }
-                        : undefined
-                    }
-                    alert={
-                      hiddenGroupErrorCount
-                        ? hiddenGroupErrorCount === 1
-                          ? "1 error"
-                          : `${hiddenGroupErrorCount} errors`
-                        : undefined
-                    }
-                  />
-                ) : (
-                  <HiddenCellDisclosure
-                    icon={Code2}
-                    disabled={readOnly}
-                    pulsing={isExecuting || isGroupExecuting}
-                    onClick={() => {
-                      if (readOnly) return;
-                      onToggleSourceHidden?.(false);
-                      onToggleOutputsHidden?.(false);
-                    }}
-                    title="Show cell"
-                    label="Cell hidden"
-                    focusTarget
-                    alert={
-                      hiddenGroupErrorCount
-                        ? hiddenGroupErrorCount === 1
-                          ? "1 error"
-                          : `${hiddenGroupErrorCount} errors`
-                        : undefined
-                    }
-                  />
-                )}
-              </div>
+                    />
+                  )}
+                </div>
+              ) : (
+                currentLine
+              )
             ) : isSourceHidden ? (
               <>
-                <div className="mt-0.5" onKeyDown={handleHiddenDisclosureKeyDown}>
-                  <HiddenCellDisclosure
-                    icon={Code2}
-                    disabled={readOnly}
-                    onClick={() => onToggleSourceHidden?.(false)}
-                    title="Show input"
-                    label="Input hidden"
-                    detail={sourcePreview}
-                    focusTarget
-                  />
-                </div>
+                {canRevealHiddenContent ? (
+                  <div className="mt-0.5" onKeyDown={handleHiddenDisclosureKeyDown}>
+                    <HiddenCellDisclosure
+                      icon={Code2}
+                      onClick={() => onToggleSourceHidden?.(false)}
+                      title="Show input"
+                      label="Input hidden"
+                      detail={sourcePreview}
+                      focusTarget
+                    />
+                  </div>
+                ) : null}
                 {currentLine}
               </>
             ) : (
@@ -758,16 +765,17 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && outputs.length > 0 ? (
-            <div className={cn("mt-0.5", cellOutputInnerInset)}>
-              <HiddenCellDisclosure
-                icon={Eye}
-                disabled={readOnly}
-                onClick={() => onToggleOutputsHidden?.(false)}
-                title="Show outputs"
-                label={outputs.length === 1 ? "Output hidden" : "Outputs hidden"}
-                detail={outputs.length > 1 ? `${outputs.length} outputs` : undefined}
-              />
-            </div>
+            canRevealHiddenContent ? (
+              <div className={cn("mt-0.5", cellOutputInnerInset)}>
+                <HiddenCellDisclosure
+                  icon={Eye}
+                  onClick={() => onToggleOutputsHidden?.(false)}
+                  title="Show outputs"
+                  label={outputs.length === 1 ? "Output hidden" : "Outputs hidden"}
+                  detail={outputs.length > 1 ? `${outputs.length} outputs` : undefined}
+                />
+              </div>
+            ) : null
           ) : (
             <OutputArea
               outputs={outputs}
@@ -803,7 +811,7 @@ export const CodeCell = memo(function CodeCell({
             </button>
           ) : undefined
         }
-        hideOutput={outputs.length === 0 || bothHidden}
+        hideOutput={outputs.length === 0 || bothHidden || (readOnly && isOutputsHidden)}
       />
 
       {/* History Search Dialog (Ctrl+R) */}

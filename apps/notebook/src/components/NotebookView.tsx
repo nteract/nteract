@@ -812,31 +812,37 @@ function NotebookViewContent({
           (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden === true;
         const bothHidden = isSourceHidden && isOutputsHidden;
         const hasSourceText = cell.source.trim().length > 0;
-
-        rightGutterContent = (
-          <div className="flex flex-col gap-0.5">
-            {canMutateCells &&
-              onSetCellSourceHidden &&
-              !bothHidden &&
-              (hasSourceText || isSourceHidden) && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onClick={() => onSetCellSourceHidden(cell.id, !isSourceHidden)}
-                  className={cn(
-                    "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
-                    isSourceHidden ? "text-muted-foreground/70" : "text-muted-foreground/40",
-                  )}
-                  title={isSourceHidden ? "Show input" : "Hide input"}
-                >
-                  <Code2 className="h-3.5 w-3.5" />
-                </button>
+        const sourceToggleButton =
+          canMutateCells &&
+          onSetCellSourceHidden &&
+          !bothHidden &&
+          (hasSourceText || isSourceHidden) ? (
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => onSetCellSourceHidden(cell.id, !isSourceHidden)}
+              className={cn(
+                "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
+                isSourceHidden ? "text-muted-foreground/70" : "text-muted-foreground/40",
               )}
-            {!isSourceHidden && deleteButton}
-          </div>
-        );
+              title={isSourceHidden ? "Show input" : "Hide input"}
+            >
+              <Code2 className="h-3.5 w-3.5" />
+            </button>
+          ) : null;
+        const visibleDeleteButton = !isSourceHidden ? deleteButton : null;
+
+        rightGutterContent =
+          sourceToggleButton || visibleDeleteButton ? (
+            <div className="flex flex-col gap-0.5">
+              {sourceToggleButton}
+              {visibleDeleteButton}
+            </div>
+          ) : undefined;
       } else {
-        rightGutterContent = <div className="flex flex-col gap-0.5">{deleteButton}</div>;
+        rightGutterContent = deleteButton ? (
+          <div className="flex flex-col gap-0.5">{deleteButton}</div>
+        ) : undefined;
       }
 
       if (cell.cell_type === "code") {

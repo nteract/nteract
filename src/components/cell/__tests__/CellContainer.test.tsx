@@ -55,6 +55,21 @@ describe("CellContainer", () => {
     expect(outputContent).toHaveClass("pr-14");
   });
 
+  it("renders output-only cells without an empty code row", () => {
+    const { container } = render(
+      <CellContainer
+        id="output-only-cell"
+        cellType="code"
+        codeContent={null}
+        outputContent={<div>visible output</div>}
+      />,
+    );
+
+    expect(container.querySelector('[data-slot="cell-code-row"]')).toBeNull();
+    expect(container.querySelector('[data-slot="cell-output-row"]')).not.toBeNull();
+    expect(container).toHaveTextContent("visible output");
+  });
+
   it("keeps right edge controls hidden until hover or focus for unfocused cells", () => {
     const { container } = render(
       <CellContainer
