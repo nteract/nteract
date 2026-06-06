@@ -495,7 +495,9 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
             <RotateCcw aria-hidden="true" />
             Refresh
           </button>
-          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+          {signedIn ? null : (
+            <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+          )}
           {signedIn ? (
             <button type="button" onClick={signOut}>
               <LogOut aria-hidden="true" />
