@@ -123,6 +123,10 @@ fn main() {
                 .map(|s| s.as_str());
             cmd_wasm(target, skip_renderer_plugins);
         }
+        "artifacts" => {
+            let command = parse_artifact_command(&args[1..]);
+            cmd_artifacts(command);
+        }
         "renderer-plugins" => {
             let only = parse_renderer_plugin_targets(&args[1..]);
             let only_refs: Vec<&str> = only.iter().map(String::as_str).collect();
@@ -130,7 +134,7 @@ fn main() {
         }
         "verify-plugins" => cmd_verify_plugins(),
         "verify-genesis" => cmd_verify_genesis(),
-        "wasm-ensure" => cmd_wasm_ensure(),
+        "wasm-ensure" | "wasm-ensure-runtime" => cmd_wasm_ensure_runtime(),
         "wasm-verify" => cmd_wasm_verify(),
         "mcpb" => {
             let output = args
@@ -216,6 +220,11 @@ Other:
   wasm --skip-renderer-plugins
                              Skip the chained renderer-plugins rebuild (escape hatch
                              for intentionally testing drift between the two).
+  artifacts status [scopes]  Report generated artifact readiness without rebuilding.
+  artifacts ensure [scopes]  Rebuild missing or stale generated artifacts.
+  artifacts verify [scopes]  Strictly verify generated artifacts; exits non-zero
+                             when anything is missing, stale, or lacks fingerprints.
+                             Scopes: runtime, sift, renderer, mcp-widget, all.
   renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
   renderer-plugins --only sift
                              Rebuild one renderer plugin target. Valid targets:
@@ -228,8 +237,9 @@ Other:
   verify-genesis             Check the built runtimed-wasm embeds the current Automerge
                              genesis seeds, so the frontend and daemon share a root.
                              Catches a stale wasm after a schema/seed bump (#3086).
-  wasm-ensure                Ensure runtimed-wasm outputs match source fingerprints
+  wasm-ensure-runtime        Ensure runtimed-wasm outputs match source fingerprints
                              and genesis seeds, rebuilding when stale or missing.
+  wasm-ensure                Alias for wasm-ensure-runtime.
   wasm-verify                Verify downloaded WASM artifacts and fingerprints
                              without rebuilding them.
   icons [source.png]         Generate icon variants
@@ -1382,6 +1392,323 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactAction {
+    Status,
+    Ensure,
+    Verify,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactScope {
+    Runtime,
+    Sift,
+    Renderer,
+    McpWidget,
+}
+
+impl ArtifactScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Runtime => "runtime",
+            Self::Sift => "sift",
+            Self::Renderer => "renderer",
+            Self::McpWidget => "mcp-widget",
+        }
+    }
+}
+
+const ALL_ARTIFACT_SCOPES: &[ArtifactScope] = &[
+    ArtifactScope::Runtime,
+    ArtifactScope::Sift,
+    ArtifactScope::Renderer,
+    ArtifactScope::McpWidget,
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArtifactCommand {
+    action: ArtifactAction,
+    scopes: Vec<ArtifactScope>,
+}
+
+fn parse_artifact_command(args: &[String]) -> ArtifactCommand {
+    let mut index = 0;
+    let action = match args.first().map(String::as_str) {
+        None => ArtifactAction::Status,
+        Some("status") => {
+            index = 1;
+            ArtifactAction::Status
+        }
+        Some("ensure") => {
+            index = 1;
+            ArtifactAction::Ensure
+        }
+        Some("verify") => {
+            index = 1;
+            ArtifactAction::Verify
+        }
+        Some("--help" | "-h" | "help") => {
+            print_artifacts_help();
+            exit(0);
+        }
+        Some(value)
+            if value == "all"
+                || artifact_scope_from_str(value).is_some()
+                || value.contains(',') =>
+        {
+            ArtifactAction::Status
+        }
+        Some(other) => {
+            eprintln!("Unknown artifacts action or scope: {other}");
+            eprintln!();
+            print_artifacts_help();
+            exit(1);
+        }
+    };
+
+    let mut scopes = Vec::new();
+    for arg in &args[index..] {
+        if arg == "--help" || arg == "-h" {
+            print_artifacts_help();
+            exit(0);
+        }
+        for raw_scope in arg
+            .split(',')
+            .map(str::trim)
+            .filter(|scope| !scope.is_empty())
+        {
+            if raw_scope == "all" {
+                for scope in ALL_ARTIFACT_SCOPES {
+                    push_artifact_scope(&mut scopes, *scope);
+                }
+                continue;
+            }
+            let Some(scope) = artifact_scope_from_str(raw_scope) else {
+                eprintln!("Unknown artifact scope: {raw_scope}");
+                eprintln!();
+                print_artifacts_help();
+                exit(1);
+            };
+            push_artifact_scope(&mut scopes, scope);
+        }
+    }
+
+    if scopes.is_empty() {
+        scopes.extend_from_slice(ALL_ARTIFACT_SCOPES);
+    }
+
+    ArtifactCommand { action, scopes }
+}
+
+fn print_artifacts_help() {
+    eprintln!(
+        "Usage: cargo xtask artifacts [status|ensure|verify] [scope[,scope]...]
+
+Actions:
+  status    Report artifact readiness without rebuilding (default)
+  ensure    Rebuild missing or stale generated artifacts
+  verify    Strictly verify artifacts and fail on drift or missing fingerprints
+
+Scopes:
+  runtime   apps/notebook/src/wasm/runtimed-wasm
+  sift      crates/sift-wasm/pkg and packages/sift/public/wasm
+  renderer  apps/notebook/src/renderer-plugins
+  mcp-widget crates/runt-mcp/assets/_output.html and Python widget copy
+  all       Every scope (default)
+"
+    );
+}
+
+fn artifact_scope_from_str(scope: &str) -> Option<ArtifactScope> {
+    match scope {
+        "runtime" | "runtimed" | "runtimed-wasm" => Some(ArtifactScope::Runtime),
+        "sift" | "sift-wasm" => Some(ArtifactScope::Sift),
+        "renderer" | "renderers" | "renderer-plugins" => Some(ArtifactScope::Renderer),
+        "mcp-widget" | "mcp" | "widget" => Some(ArtifactScope::McpWidget),
+        _ => None,
+    }
+}
+
+fn push_artifact_scope(scopes: &mut Vec<ArtifactScope>, scope: ArtifactScope) {
+    if !scopes.contains(&scope) {
+        scopes.push(scope);
+    }
+}
+
+fn cmd_artifacts(command: ArtifactCommand) {
+    ensure_workspace_root_cwd();
+    match command.action {
+        ArtifactAction::Status => print_artifact_status(&command.scopes),
+        ArtifactAction::Ensure => ensure_artifact_scopes(&command.scopes),
+        ArtifactAction::Verify => verify_artifact_scopes_or_exit(&command.scopes),
+    }
+}
+
+fn print_artifact_status(scopes: &[ArtifactScope]) {
+    for scope in ordered_artifact_scopes(scopes) {
+        match artifact_scope_reason(scope, false) {
+            None => println!("ok     {}", scope.label()),
+            Some(reason) => println!("needs  {} ({reason})", scope.label()),
+        }
+    }
+}
+
+fn ensure_artifact_scopes(scopes: &[ArtifactScope]) {
+    let ordered = ordered_artifact_scopes(scopes);
+    let mut sift_wasm_rebuilt = false;
+    for scope in ordered {
+        match scope {
+            ArtifactScope::Runtime => {
+                println!("[xtask] ensuring runtime artifacts");
+                ensure_runtimed_wasm_current();
+                verify_runtimed_wasm_genesis_after_ensure();
+            }
+            ArtifactScope::Sift => {
+                println!("[xtask] ensuring sift artifacts");
+                sift_wasm_rebuilt |= ensure_sift_wasm_current();
+            }
+            ArtifactScope::Renderer => {
+                println!("[xtask] ensuring renderer artifacts");
+                ensure_renderer_artifacts_current(sift_wasm_rebuilt);
+                sift_wasm_rebuilt = false;
+            }
+            ArtifactScope::McpWidget => {
+                println!("[xtask] ensuring MCP widget artifacts");
+                build_mcp_widget();
+            }
+        }
+    }
+}
+
+fn verify_artifact_scopes_or_exit(scopes: &[ArtifactScope]) {
+    let mut ok = true;
+    for scope in ordered_artifact_scopes(scopes) {
+        match artifact_scope_reason(scope, true) {
+            None => println!("ok  {} artifacts", scope.label()),
+            Some(reason) => {
+                eprintln!(
+                    "::error::{} artifacts are not current ({reason})",
+                    scope.label()
+                );
+                ok = false;
+            }
+        }
+    }
+    if !ok {
+        exit(1);
+    }
+}
+
+fn ordered_artifact_scopes(scopes: &[ArtifactScope]) -> Vec<ArtifactScope> {
+    ALL_ARTIFACT_SCOPES
+        .iter()
+        .copied()
+        .filter(|scope| scopes.contains(scope))
+        .collect()
+}
+
+fn artifact_scope_reason(scope: ArtifactScope, strict: bool) -> Option<String> {
+    match scope {
+        ArtifactScope::Runtime => wasm_artifact_reason(
+            "runtimed-wasm",
+            RUNTIMED_WASM_OUTPUTS,
+            RUNTIMED_WASM_INPUTS,
+            RUNTIMED_WASM_LOCK_ROOTS,
+            Path::new(RUNTIMED_WASM_FINGERPRINT),
+            strict,
+            || {
+                if genesis_seeds_embedded(false) {
+                    None
+                } else {
+                    Some("genesis seeds changed")
+                }
+            },
+        ),
+        ArtifactScope::Sift => wasm_artifact_reason(
+            "sift-wasm",
+            SIFT_WASM_OUTPUTS,
+            SIFT_WASM_INPUTS,
+            SIFT_WASM_LOCK_ROOTS,
+            Path::new(SIFT_WASM_FINGERPRINT),
+            strict,
+            || None,
+        ),
+        ArtifactScope::Renderer => renderer_artifact_reason(strict),
+        ArtifactScope::McpWidget => mcp_widget_artifact_reason(),
+    }
+}
+
+fn wasm_artifact_reason(
+    label: &str,
+    outputs: &[&str],
+    inputs: &[&str],
+    lock_roots: &[&str],
+    fingerprint_path: &Path,
+    strict: bool,
+    extra_reason: impl FnOnce() -> Option<&'static str>,
+) -> Option<String> {
+    let current_fingerprint = wasm_input_fingerprint(inputs, lock_roots);
+    let reason = if strict {
+        wasm_package_verify_reason(
+            outputs,
+            fingerprint_path,
+            current_fingerprint.as_deref(),
+            extra_reason,
+        )
+    } else {
+        wasm_package_rebuild_reason(
+            label,
+            outputs,
+            inputs,
+            fingerprint_path,
+            current_fingerprint.as_deref(),
+            extra_reason,
+        )
+    };
+    reason.map(str::to_string)
+}
+
+fn renderer_artifact_reason(strict: bool) -> Option<String> {
+    for output in RENDERER_PLUGIN_OUTPUTS {
+        let path = Path::new(output);
+        if !path.exists() {
+            return Some(format!("missing {output}"));
+        }
+        if is_git_lfs_pointer_file(path) {
+            return Some(format!("{output} is a Git LFS pointer; run `git lfs pull`"));
+        }
+    }
+
+    match (
+        sift_wasm_source_fingerprint(),
+        read_renderer_plugins_fingerprint(),
+    ) {
+        (Some(current), Some(previous)) if current == previous => {}
+        (Some(_), Some(_)) => return Some("sift-wasm source changed".to_string()),
+        (Some(_), None) if strict => return Some("input fingerprint missing".to_string()),
+        (Some(_), None) => {}
+        (None, _) => return Some("could not fingerprint renderer plugin inputs".to_string()),
+    }
+
+    match verify_plugin_against_wasm(
+        Path::new("apps/notebook/src/renderer-plugins/sift.js"),
+        Path::new("crates/sift-wasm/pkg/sift_wasm_bg.wasm"),
+    ) {
+        Ok(_) => None,
+        Err(msg) => Some(msg.to_string()),
+    }
+}
+
+fn is_git_lfs_pointer_file(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|contents| contents.starts_with("version https://git-lfs.github.com/spec/"))
+        .unwrap_or(false)
+}
+
+fn mcp_widget_artifact_reason() -> Option<String> {
+    mcp_widget_needs_rebuild().map(str::to_string)
+}
+
 fn parse_renderer_plugin_targets(args: &[String]) -> Vec<String> {
     let mut only = Vec::new();
     let mut saw_only = false;
@@ -1568,9 +1895,13 @@ fn cmd_verify_genesis() {
 /// root diverges from the daemon — the exact gap that shipped the #3086
 /// regression from a local build where the daemon was rebuilt but the
 /// gitignored wasm was not.
-fn cmd_wasm_ensure() {
+fn cmd_wasm_ensure_runtime() {
     ensure_workspace_root_cwd();
     ensure_runtimed_wasm_current();
+    verify_runtimed_wasm_genesis_after_ensure();
+}
+
+fn verify_runtimed_wasm_genesis_after_ensure() {
     // cmd_wasm self-verifies on the runtimed rebuild path, so a still-stale
     // result there already aborts. This re-check covers the skip path and
     // missing-wasm cases.
@@ -2971,7 +3302,10 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 /// and surfaced as phantom git dirt.
 fn ensure_build_artifacts() {
     let sift_wasm_rebuilt = ensure_volatile_wasm_current();
+    ensure_renderer_artifacts_current(sift_wasm_rebuilt);
+}
 
+fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
     let notebook_plugin_dir = Path::new("apps/notebook/src/renderer-plugins");
     let stable_probes = [
         "plotly.js",
@@ -2988,8 +3322,22 @@ fn ensure_build_artifacts() {
         .copied()
         .filter(|p| !notebook_plugin_dir.join(p).exists())
         .collect();
+    let unhydrated_stable: Vec<&str> = stable_probes
+        .iter()
+        .copied()
+        .filter(|p| is_git_lfs_pointer_file(&notebook_plugin_dir.join(p)))
+        .collect();
     let sift_missing = !notebook_plugin_dir.join("sift.js").exists()
         || !notebook_plugin_dir.join("sift.css").exists();
+
+    if !unhydrated_stable.is_empty() {
+        eprintln!("Stable renderer plugin bundles are Git LFS pointers:");
+        for p in &unhydrated_stable {
+            eprintln!("  - apps/notebook/src/renderer-plugins/{p}");
+        }
+        eprintln!("Run `git lfs pull` to hydrate LFS-tracked bundles before building.");
+        exit(1);
+    }
 
     let sift_source_fingerprint = sift_wasm_source_fingerprint();
     let stored_fingerprint = read_renderer_plugins_fingerprint();
@@ -3107,6 +3455,11 @@ const RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
     "apps/notebook/src/renderer-plugins/sift.css",
 ];
 
+const MCP_WIDGET_OUTPUTS: &[&str] = &[
+    "crates/runt-mcp/assets/_output.html",
+    "python/nteract/src/nteract/_widget.html",
+];
+
 /// Ensure gitignored wasm-pack outputs are current enough for regular
 /// build/dev commands without rewriting them on every run.
 ///
@@ -3116,7 +3469,10 @@ const RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
 fn ensure_volatile_wasm_current() -> bool {
     ensure_workspace_root_cwd();
     ensure_runtimed_wasm_current();
+    ensure_sift_wasm_current()
+}
 
+fn ensure_sift_wasm_current() -> bool {
     ensure_wasm_package_current(
         "sift-wasm",
         SIFT_WASM_OUTPUTS,
@@ -3652,16 +4008,15 @@ fn write_current_renderer_plugins_fingerprint() {
 /// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
 /// nteract package so it ships with the PyPI wheel.
 fn mcp_widget_needs_rebuild() -> Option<&'static str> {
-    let outputs = [
-        Path::new("crates/runt-mcp/assets/_output.html"),
-        Path::new("python/nteract/src/nteract/_widget.html"),
-    ];
-
     // If any output is missing, must rebuild
     let mut oldest_output = None;
-    for output in &outputs {
+    for output in MCP_WIDGET_OUTPUTS {
+        let output = Path::new(output);
         if !output.exists() {
             return Some("output file missing");
+        }
+        if is_mcp_widget_placeholder(output) {
+            return Some("placeholder output file");
         }
         let Some(t) = modified_time(output) else {
             return Some("could not read output timestamp");
@@ -3726,6 +4081,16 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
     }
 
     None
+}
+
+fn is_mcp_widget_placeholder(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|contents| {
+            contents.contains("Placeholder")
+                && contents.contains("cargo xtask build")
+                && contents.contains("generate the real output renderer")
+        })
+        .unwrap_or(false)
 }
 
 fn build_mcp_widget() {
@@ -4452,6 +4817,75 @@ mod tests {
                 "isolated-renderer".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn parse_artifact_command_defaults_to_status_all() {
+        assert_eq!(
+            parse_artifact_command(&[]),
+            ArtifactCommand {
+                action: ArtifactAction::Status,
+                scopes: ALL_ARTIFACT_SCOPES.to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_artifact_command_reads_action_and_deduped_scopes() {
+        let args = vec![
+            "verify".to_string(),
+            "renderer,sift".to_string(),
+            "renderer".to_string(),
+            "mcp-widget".to_string(),
+        ];
+
+        assert_eq!(
+            parse_artifact_command(&args),
+            ArtifactCommand {
+                action: ArtifactAction::Verify,
+                scopes: vec![
+                    ArtifactScope::Renderer,
+                    ArtifactScope::Sift,
+                    ArtifactScope::McpWidget,
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_artifact_command_accepts_scope_without_action_as_status() {
+        let args = vec!["runtime".to_string(), "renderer-plugins".to_string()];
+
+        assert_eq!(
+            parse_artifact_command(&args),
+            ArtifactCommand {
+                action: ArtifactAction::Status,
+                scopes: vec![ArtifactScope::Runtime, ArtifactScope::Renderer],
+            }
+        );
+    }
+
+    #[test]
+    fn generated_artifact_shape_checks_detect_lfs_pointers_and_mcp_placeholders() {
+        let dir = test_temp_dir("artifact-shape");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let lfs = dir.join("plotly.js");
+        let widget = dir.join("_output.html");
+        fs::write(
+            &lfs,
+            "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 1\n",
+        )
+        .expect("write lfs pointer");
+        fs::write(
+            &widget,
+            "<!doctype html><p>Placeholder - run <code>cargo xtask build</code> to generate the real output renderer.</p>",
+        )
+        .expect("write placeholder");
+
+        assert!(is_git_lfs_pointer_file(&lfs));
+        assert!(is_mcp_widget_placeholder(&widget));
+
+        fs::remove_dir_all(dir).expect("remove temp dir");
     }
 
     #[test]

@@ -579,13 +579,13 @@ fn run_cargo_build_daemon(project_root: &Path) -> bool {
 /// runtime-state doc gets stuck behind a duplicate-seq-1 rejection from
 /// automerge.
 ///
-/// We invoke `cargo xtask wasm-ensure` so normal rebuilds use the same
+/// We invoke `cargo xtask wasm-ensure-runtime` so normal rebuilds use the same
 /// fingerprint guard as `cargo xtask build` without pulling in sift renderer
 /// plugin glue or touching wasm-pack outputs when they are already current.
 fn run_xtask_wasm_ensure(project_root: &Path) -> bool {
-    info!("Ensuring runtimed-wasm is current (cargo xtask wasm-ensure)...");
+    info!("Ensuring runtimed-wasm is current (cargo xtask wasm-ensure-runtime)...");
     let status = std::process::Command::new("cargo")
-        .args(["run", "--package", "xtask", "--", "wasm-ensure"])
+        .args(["run", "--package", "xtask", "--", "wasm-ensure-runtime"])
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -593,15 +593,15 @@ fn run_xtask_wasm_ensure(project_root: &Path) -> bool {
 
     match status {
         Ok(s) if s.success() => {
-            info!("cargo xtask wasm-ensure succeeded");
+            info!("cargo xtask wasm-ensure-runtime succeeded");
             true
         }
         Ok(s) => {
-            error!("cargo xtask wasm-ensure failed with {s}");
+            error!("cargo xtask wasm-ensure-runtime failed with {s}");
             false
         }
         Err(e) => {
-            error!("Failed to run cargo xtask wasm-ensure: {e}");
+            error!("Failed to run cargo xtask wasm-ensure-runtime: {e}");
             false
         }
     }
@@ -1488,7 +1488,7 @@ impl Supervisor {
             // stuck on "Initializing" with no surfaced error.
             if !run_xtask_wasm_ensure(&project_root) {
                 return Ok(CallToolResult::success(vec![Content::text(
-                    "up: cargo xtask wasm-ensure failed. Daemon was rebuilt; \
+                    "up: cargo xtask wasm-ensure-runtime failed. Daemon was rebuilt; \
                      the frontend wasm bundle may be stale. See the supervisor logs.",
                 )]));
             }
@@ -2208,7 +2208,7 @@ impl ServerHandler for Supervisor {
                 // duplicate-seq-1.
                 if !run_xtask_wasm_ensure(&project_root) {
                     return Ok(CallToolResult::success(vec![Content::text(
-                        "cargo xtask wasm-ensure failed — check the supervisor logs for details\n\
+                        "cargo xtask wasm-ensure-runtime failed — check the supervisor logs for details\n\
                          (daemon binary was rebuilt successfully; the frontend wasm bundle may be stale)",
                     )]));
                 }

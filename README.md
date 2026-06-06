@@ -181,6 +181,7 @@ cargo xtask dev
 | Lint (check) | `cargo xtask lint` | Check formatting and linting across Rust, JS/TS, Python |
 | Lint (fix) | `cargo xtask lint --fix` | Auto-fix formatting and linting |
 | Dev daemon | `cargo xtask dev-daemon` | Run per-worktree dev daemon |
+| Artifact status | `cargo xtask artifacts status` | Check generated WASM, renderer, and MCP widget artifacts |
 | Install nightly (Linux/headless) | `./scripts/install-nightly` | Build + install runtimed + runt + nteract-mcp as the local nightly. Refuses on macOS and when an app bundle is installed. |
 | Release .app | `cargo xtask build-app` | Testing app bundle locally |
 | Release DMG | `cargo xtask build-dmg` | Distribution (usually CI) |
@@ -200,6 +201,8 @@ The UI must be built before Rust because `crates/notebook` embeds assets from `a
 pnpm build                          # Build notebook UI
 cargo test                          # Run Rust tests
 pnpm test:run                       # Run JS tests
+cargo xtask artifacts status         # Check generated artifact readiness
+cargo xtask artifacts ensure runtime # Rebuild only runtimed-wasm when needed
 cargo fmt                           # Format Rust
 vp check --fix                      # Lint + format JS/TS
 cargo clippy --all-targets -- -D warnings               # Lint Rust

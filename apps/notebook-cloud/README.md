@@ -16,7 +16,7 @@ pnpm --dir apps/notebook-cloud build:viewer
 pnpm --dir apps/notebook-cloud dev
 ```
 
-`typecheck` runs `cargo xtask wasm-ensure` first so a clean checkout regenerates
+`typecheck` runs `cargo xtask wasm-ensure-runtime` first so a clean checkout regenerates
 the gitignored `runtimed-wasm` bindings before TypeScript reads them. Use
 `pnpm --dir apps/notebook-cloud wasm` when you explicitly want a full
 `runtimed-wasm` rebuild.
