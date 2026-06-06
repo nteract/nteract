@@ -164,6 +164,16 @@ enum Commands {
         /// Blob store root path.
         #[arg(long)]
         blob_root: PathBuf,
+        /// Launch-on-attach: start a kernel in this explicit Python interpreter
+        /// right after attaching (the `current_python` environment policy), so
+        /// the runtime *starts* without waiting for an inbound LaunchKernel RPC
+        /// (req #5, deferred). When omitted, the agent attaches only.
+        #[arg(long)]
+        python_path: Option<PathBuf>,
+        /// Notebook file path on this workstation, for the launch-on-attach
+        /// kernel (only used with --python-path).
+        #[arg(long)]
+        notebook_path: Option<String>,
     },
 
     /// Warm a pool environment (internal, spawned by daemon warming loops).
@@ -456,6 +466,8 @@ async fn main() -> anyhow::Result<()> {
             auth_kind,
             operator,
             blob_root,
+            python_path,
+            notebook_path,
         }) => {
             let cli_args = runtimed::workstation::CloudAgentArgs {
                 cloud_url,
@@ -469,14 +481,37 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("[cloud-runtime-agent] Config error: {}", e);
                         e
                     })?;
-            // Attach-only for now: the launch-on-attach trigger is wired by the
-            // allocate-runtime-for-room path (Phase B4), not this bare CLI entry.
-            runtimed::runtime_agent::run_cloud_runtime_agent(config, operator, blob_root, None)
-                .await
-                .map_err(|e| {
-                    eprintln!("[cloud-runtime-agent] Fatal: {}", e);
-                    e
-                })
+            let result = match python_path {
+                // Launch-on-attach: allocate and *start* a current_python runtime.
+                Some(python_path) => {
+                    let target = runtimed::workstation::RoomTarget {
+                        cloud_url: config.cloud_url.clone(),
+                        notebook_id: config.notebook_id.clone(),
+                        scope: config.scope.clone(),
+                        operator,
+                    };
+                    runtimed::workstation::allocate_current_python_runtime(
+                        target,
+                        config.auth,
+                        python_path,
+                        notebook_path,
+                        std::collections::HashMap::new(),
+                        blob_root,
+                    )
+                    .await
+                }
+                // Attach-only: wait for an inbound launch (req #5, deferred).
+                None => {
+                    runtimed::runtime_agent::run_cloud_runtime_agent(
+                        config, operator, blob_root, None,
+                    )
+                    .await
+                }
+            };
+            result.map_err(|e| {
+                eprintln!("[cloud-runtime-agent] Fatal: {}", e);
+                e
+            })
         }
         Some(Commands::WarmEnv) => {
             runtimed::warm_env::run().await;
