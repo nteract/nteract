@@ -46,6 +46,9 @@ pub struct KernelLaunchConfig {
     pub redact_env_values_in_outputs: bool,
     /// Prewarmed pool environment, if one was claimed.
     pub pooled_env: Option<PooledEnv>,
+    /// Direct interpreter path for a no-pool launch (e.g. current_python):
+    /// set only when the launched env carries a python_path but no venv_path.
+    pub direct_python_path: Option<PathBuf>,
 }
 
 /// Shared references that the kernel needs but does not own.

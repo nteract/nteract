@@ -379,6 +379,7 @@ impl KernelConnection for JupyterKernel {
         let env_source = config.env_source;
         let notebook_path = config.notebook_path;
         let env = config.pooled_env;
+        let direct_python_path = config.direct_python_path;
         let launched_config = config.launched_config;
         let bootstrap_dx = launched_config.feature_flags.bootstrap_dx;
         let env_path = env.as_ref().map(|e| e.venv_path.clone());
@@ -742,6 +743,42 @@ impl KernelConnection for JupyterKernel {
                             // vendor into; inject the daemon-side launcher via
                             // PYTHONPATH so `-m nteract_kernel_launcher`
                             // resolves without touching sys.path[0].
+                            let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                            cmd.env("PYTHONPATH", &dir);
+                        }
+                        cmd
+                    }
+                    "uv:current_python" => {
+                        // current_python: launch directly against a user-owned
+                        // interpreter, no pool take and no VIRTUAL_ENV/PATH
+                        // overlay. Reachable only over the cloud launch-on-attach
+                        // path; direct_python_path is set when the launched env
+                        // carries a python_path but no venv_path.
+                        let python_path = direct_python_path.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "uv:current_python requires a direct python_path (none was plumbed through)"
+                            )
+                        })?;
+                        info!(
+                            "[jupyter-kernel] Starting Python kernel with current python at {:?}",
+                            python_path
+                        );
+                        let launcher_module = if bootstrap_dx {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
+                        let mut cmd = tokio::process::Command::new(python_path);
+                        cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
+                        cmd.arg(&connection_file_path);
+                        cmd.stdout(Stdio::null());
+                        cmd.stderr(Stdio::piped());
+                        if bootstrap_dx {
+                            // The user's interpreter may predate the launcher;
+                            // inject it via PYTHONPATH (same pattern as the
+                            // pyproject and pool arms) so
+                            // `-m nteract_kernel_launcher` resolves without
+                            // touching sys.path[0].
                             let dir = crate::launcher_cache::launcher_cache_dir().await?;
                             cmd.env("PYTHONPATH", &dir);
                         }
