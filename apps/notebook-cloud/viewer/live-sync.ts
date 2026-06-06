@@ -441,6 +441,7 @@ const consoleSyncLogger = {
 };
 
 export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
+  const commsSync = cloudCommsDocSyncMethods(handle);
   return {
     receive_frame: (bytes) =>
       handle.receive_frame(bytes) as ReturnType<SyncableHandle["receive_frame"]>,
@@ -449,9 +450,9 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     flush_runtime_state_sync: () => handle.flush_runtime_state_sync() ?? null,
     cancel_last_runtime_state_flush: () => handle.cancel_last_runtime_state_flush(),
     generate_runtime_state_sync_reply: () => handle.generate_runtime_state_sync_reply() ?? null,
-    flush_comms_doc_sync: () => handle.flush_comms_doc_sync() ?? null,
-    cancel_last_comms_doc_flush: () => handle.cancel_last_comms_doc_flush(),
-    generate_comms_doc_sync_reply: () => handle.generate_comms_doc_sync_reply() ?? null,
+    flush_comms_doc_sync: commsSync.flush_comms_doc_sync,
+    cancel_last_comms_doc_flush: commsSync.cancel_last_comms_doc_flush,
+    generate_comms_doc_sync_reply: commsSync.generate_comms_doc_sync_reply,
     // notebook-cloud does not host or display daemon pool state. The shared
     // SyncEngine flushes pool sync opportunistically for Desktop, so the cloud
     // adapter intentionally presents PoolDoc as absent instead of sending a
@@ -471,5 +472,41 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
             text_paths?: string[][];
           }
         | undefined,
+  };
+}
+
+type CloudCommsDocSyncMethods = Pick<
+  SyncableHandle,
+  "flush_comms_doc_sync" | "cancel_last_comms_doc_flush" | "generate_comms_doc_sync_reply"
+>;
+
+function cloudCommsDocSyncMethods(handle: NotebookHandle): CloudCommsDocSyncMethods {
+  const candidate = handle as NotebookHandle &
+    Partial<
+      Pick<
+        NotebookHandle,
+        "flush_comms_doc_sync" | "cancel_last_comms_doc_flush" | "generate_comms_doc_sync_reply"
+      >
+    >;
+
+  if (
+    typeof candidate.flush_comms_doc_sync === "function" &&
+    typeof candidate.cancel_last_comms_doc_flush === "function" &&
+    typeof candidate.generate_comms_doc_sync_reply === "function"
+  ) {
+    return {
+      flush_comms_doc_sync: () => candidate.flush_comms_doc_sync?.() ?? null,
+      cancel_last_comms_doc_flush: () => candidate.cancel_last_comms_doc_flush?.(),
+      generate_comms_doc_sync_reply: () => candidate.generate_comms_doc_sync_reply?.() ?? null,
+    };
+  }
+
+  console.warn(
+    "[notebook-cloud] runtimed WASM handle is missing CommsDoc sync methods; widget state sync is disabled for this connection",
+  );
+  return {
+    flush_comms_doc_sync: () => null,
+    cancel_last_comms_doc_flush: () => undefined,
+    generate_comms_doc_sync_reply: () => null,
   };
 }
