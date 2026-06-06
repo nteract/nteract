@@ -34,7 +34,7 @@ export interface NotebookHandleHostOptions<THandle extends HostedNotebookHandle>
   publishHandle: (handle: THandle | null) => void;
 
   /** Optional readiness gate, commonly WASM initialization. */
-  ready?: Promise<void>;
+  ready?: Promise<void> | (() => Promise<void>);
 
   /** Optional current blob port provider. */
   getBlobPort?: () => number | null;
@@ -60,7 +60,7 @@ export class NotebookHandleHost<THandle extends HostedNotebookHandle = HostedNot
   readonly #getBlobPort?: () => number | null;
   readonly #refreshBlobPort?: () => Promise<number | null>;
   readonly #mimePriority: readonly string[];
-  #ready: Promise<void>;
+  readonly #ready: () => Promise<void>;
 
   constructor(options: NotebookHandleHostOptions<THandle>) {
     this.#slot = options.slot;
@@ -70,7 +70,8 @@ export class NotebookHandleHost<THandle extends HostedNotebookHandle = HostedNot
     this.#getBlobPort = options.getBlobPort;
     this.#refreshBlobPort = options.refreshBlobPort;
     this.#mimePriority = options.mimePriority ?? DEFAULT_MIME_PRIORITY;
-    this.#ready = options.ready ?? Promise.resolve();
+    const ready = options.ready ?? Promise.resolve();
+    this.#ready = typeof ready === "function" ? ready : () => ready;
   }
 
   get current(): THandle | null {
@@ -78,7 +79,7 @@ export class NotebookHandleHost<THandle extends HostedNotebookHandle = HostedNot
   }
 
   async bootstrap(isCancelled: () => boolean = () => false): Promise<boolean> {
-    const ready = this.#ready;
+    const ready = this.#ready();
     await ready;
     if (isCancelled()) return false;
 

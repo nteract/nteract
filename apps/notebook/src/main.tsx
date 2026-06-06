@@ -124,12 +124,14 @@ async function boot() {
   };
 
   void attachTauriDevLogMirror();
-  void ensureNotebookWasmReady().catch((error: unknown) => {
+  try {
+    await ensureNotebookWasmReady();
+  } catch (error: unknown) {
     logger.warn(
-      "[main] failed to initialize runtimed WASM during app boot; notebook controller will retry",
+      "[main] failed to initialize runtimed WASM during app boot; rendering app shell without preinitialized notebook WASM",
       error,
     );
-  });
+  }
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

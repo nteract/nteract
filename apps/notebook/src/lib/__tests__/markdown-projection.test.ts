@@ -16,6 +16,7 @@ describe("markdown projection", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("can use a host-initialized markdown projector", () => {
@@ -76,6 +77,14 @@ describe("markdown projection", () => {
     expect(module.canRenderMarkdownProjectionInHost(projected)).toBe(true);
 
     restore();
+    expect(module.projectMarkdownPlan("# Title")).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the missing-projector fallback safe without a process global", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("process", undefined);
+
     expect(module.projectMarkdownPlan("# Title")).toBeNull();
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });

@@ -125,7 +125,9 @@ export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | nu
 function warnMissingMarkdownProjectionProjector(): void {
   if (warnedMissingMarkdownProjectionProjector) return;
   warnedMissingMarkdownProjectionProjector = true;
-  if (process.env.NODE_ENV === "production") return;
+  const isProduction =
+    typeof process !== "undefined" && process.env?.NODE_ENV === "production";
+  if (isProduction) return;
 
   console.warn(
     "[markdown-projection] markdown projector is not initialized; host must call setMarkdownProjectionProjector() before projection.",

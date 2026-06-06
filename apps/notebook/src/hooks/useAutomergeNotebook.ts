@@ -51,9 +51,15 @@ import type { JupyterOutput, NotebookCell } from "../types";
  */
 const PRESENCE_HEARTBEAT_INTERVAL_MS = 15_000;
 
-const wasmReady: Promise<void> = ensureNotebookWasmReady().then(() => {
-  logger.info("[automerge-notebook] WASM initialized");
-});
+let loggedWasmReady = false;
+
+function waitForNotebookWasmReady(): Promise<void> {
+  return ensureNotebookWasmReady().then(() => {
+    if (loggedWasmReady) return;
+    loggedWasmReady = true;
+    logger.info("[automerge-notebook] WASM initialized");
+  });
+}
 
 function scopeAllowsNotebookWrite(scope: string | null): boolean {
   return scope === null || scope === "editor" || scope === "owner";
@@ -129,7 +135,7 @@ export function useNotebook() {
         createHandle: (actorLabel) => NotebookHandle.create_empty_with_actor(actorLabel),
         getBlobPort,
         publishHandle: setNotebookHandle,
-        ready: wasmReady,
+        ready: waitForNotebookWasmReady,
         refreshBlobPort,
         slot: handleRef,
       }),
