@@ -24,14 +24,13 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
-  NotebookCommandToolbar,
-  NotebookDocumentHeader,
+  NotebookDocumentToolbar,
   NotebookEditModeButton,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
-  NotebookToolbarFrame,
+  shouldShowNotebookDocumentCommandToolbar,
   type NotebookEnvironmentManager,
   type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
@@ -1092,57 +1091,55 @@ function NotebookViewer({
     />
   );
 
-  const showCloudCommandToolbar =
-    shouldShowCloudNotebookCommandToolbar(shellCapabilities) || editAccessPending;
+  const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar(shellCapabilities, {
+    reserve: editAccessPending,
+  });
 
   const toolbar = (
-    <NotebookToolbarFrame className="z-20">
-      <NotebookDocumentHeader
-        capabilities={shellCapabilities}
-        className="cloud-room-toolbar"
-        presence={<CloudNotebookTitle />}
-        utilityControls={
-          <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
-        }
-        authControls={
-          shouldShowCloudHeaderSignIn(authState) ? (
-            <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
-          ) : null
-        }
-        sharingControls={
-          <CloudSharingControls
-            aclEndpoint={config.aclEndpoint}
-            invitesEndpoint={config.invitesEndpoint}
-            accessRequestsEndpoint={config.accessRequestsEndpoint}
-            authState={authState}
-            publicLink={publicNotebookLink}
-          />
-        }
-        editControls={
-          <CloudNotebookEditModeButton
-            authState={authState}
-            interaction={shellCapabilities.interaction ?? null}
-            accessLevel={shellCapabilities.access.level}
-            accessPending={editAccessPending}
-            onModeChange={setSelectedInteractionMode}
-            onRequestEditAccess={requestCloudEditAccess}
-          />
-        }
-        identityControls={null}
-      />
-      {showCloudCommandToolbar ? (
-        <NotebookCommandToolbar
-          capabilities={shellCapabilities}
-          runtime={toolbarRuntime}
-          environmentManager={toolbarEnvironmentManager}
-          environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
-          addCellControlsDisabled={editAccessPending}
-          addAfterCellId={toolbarAddAfterCellId}
-          onAddCell={handleCloudAddCell}
-          onTogglePackages={handleTogglePackagesRail}
+    <NotebookDocumentToolbar
+      capabilities={shellCapabilities}
+      frameClassName="z-20"
+      headerClassName="cloud-room-toolbar"
+      presence={<CloudNotebookTitle />}
+      utilityControls={
+        <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
+      }
+      authControls={
+        shouldShowCloudHeaderSignIn(authState) ? (
+          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+        ) : null
+      }
+      sharingControls={
+        <CloudSharingControls
+          aclEndpoint={config.aclEndpoint}
+          invitesEndpoint={config.invitesEndpoint}
+          accessRequestsEndpoint={config.accessRequestsEndpoint}
+          authState={authState}
+          publicLink={publicNotebookLink}
         />
-      ) : null}
-    </NotebookToolbarFrame>
+      }
+      editControls={
+        <CloudNotebookEditModeButton
+          authState={authState}
+          interaction={shellCapabilities.interaction ?? null}
+          accessLevel={shellCapabilities.access.level}
+          accessPending={editAccessPending}
+          onModeChange={setSelectedInteractionMode}
+          onRequestEditAccess={requestCloudEditAccess}
+        />
+      }
+      identityControls={null}
+      reserveCommandToolbar={editAccessPending}
+      commandToolbar={{
+        runtime: toolbarRuntime,
+        environmentManager: toolbarEnvironmentManager,
+        environmentPanelOpen: activeRailPanel === "packages" && !railCollapsed,
+        addCellControlsDisabled: editAccessPending,
+        addAfterCellId: toolbarAddAfterCellId,
+        onAddCell: handleCloudAddCell,
+        onTogglePackages: handleTogglePackagesRail,
+      }}
+    />
   );
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
@@ -1392,10 +1389,6 @@ function CloudNotebookSignInButton({
       <span>{copy.label}</span>
     </button>
   );
-}
-
-function shouldShowCloudNotebookCommandToolbar(capabilities: NotebookShellCapabilities): boolean {
-  return capabilities.canEditStructure || capabilities.canExecute || capabilities.canManagePackages;
 }
 
 function initialCloudRailCollapsed(): boolean {

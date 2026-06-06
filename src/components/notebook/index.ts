@@ -85,6 +85,11 @@ export {
   type NotebookCommandToolbarUpdateAction,
   type NotebookEnvironmentManager,
 } from "./NotebookCommandToolbar";
+export {
+  NotebookDocumentToolbar,
+  shouldShowNotebookDocumentCommandToolbar,
+  type NotebookDocumentToolbarProps,
+} from "./NotebookDocumentToolbar";
 export { NotebookToolbarFrame, type NotebookToolbarFrameProps } from "./NotebookToolbarFrame";
 export {
   NotebookIdentityBadge,
