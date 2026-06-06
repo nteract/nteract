@@ -51,7 +51,7 @@ import { useWidgetStoreRequired } from "@/components/widgets/widget-store-contex
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { EnvironmentSummary } from "@/components/environment";
-import type { NotebookOutlineItem } from "runtimed";
+import { NotebookClient, type NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
   clearCloudPrototypeDevAuth,
@@ -87,6 +87,7 @@ import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
+  cloudPresenceHasRuntimePeer,
   type CloudViewerPresencePeer,
   type CloudViewerPresenceStore,
   cloudViewerPresenceDisplay,
@@ -670,6 +671,12 @@ function NotebookViewer({
     preloadSiftWasm,
     widgetStore,
   });
+  const presenceSnapshot = useSyncExternalStore(
+    presenceStore.subscribe,
+    presenceStore.getSnapshot,
+    presenceStore.getSnapshot,
+  );
+  const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
     () => ({
       nteract: {
@@ -770,6 +777,7 @@ function NotebookViewer({
         selectedMode: selectedInteractionMode,
         canAcceptCellMutations,
         editAccessRequestPending,
+        runtimeAvailable: runtimePeerAvailable,
         hostCapabilities: config.hostCapabilities,
       }),
     [
@@ -780,6 +788,7 @@ function NotebookViewer({
       connectionActorLabel,
       connectionScope,
       editAccessRequestPending,
+      runtimePeerAvailable,
       selectedInteractionMode,
     ],
   );
@@ -880,6 +889,30 @@ function NotebookViewer({
     },
     [cloudNotebookController],
   );
+  const handleCloudExecuteCell = useCallback((cellId: string) => {
+    const liveRuntime = liveRuntimeRef.current;
+    if (!liveRuntime) {
+      console.warn("[notebook-cloud] cannot execute cell without a live room connection");
+      return;
+    }
+
+    void (async () => {
+      const delivered = await liveRuntime.engine.flushAndWait();
+      if (!delivered) {
+        console.warn("[notebook-cloud] execute cell request skipped; notebook sync failed");
+        return;
+      }
+
+      const client = new NotebookClient({
+        transport: liveRuntime.transport,
+        logger: console,
+        getRequiredHeads: () => liveRuntime.handle.get_heads_hex(),
+      });
+      await client.executeCell(cellId);
+    })().catch((error: unknown) => {
+      console.warn("[notebook-cloud] execute cell request failed", error);
+    });
+  }, []);
   const handleCloudSetCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       cloudNotebookController.setCellSourceHidden(cellId, hidden);
@@ -1213,7 +1246,7 @@ function NotebookViewer({
             runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
             sessionRuntimeState={connectionError ? "error" : "ready"}
             onFocusCell={setFocusedCellId}
-            onExecuteCell={() => {}}
+            onExecuteCell={handleCloudExecuteCell}
             onInterruptKernel={() => {}}
             onDeleteCell={handleCloudDeleteCell}
             onAddCell={handleCloudAddCell}

@@ -92,22 +92,24 @@ test("cloud shell capabilities wait for host mutation support before activating 
 
 test("cloud shell capabilities surface execution only when a runtime is available", () => {
   const withoutRuntime = cloudNotebookShellCapabilities({
-    authState: authState("oidc", "editor"),
-    connectionScope: "editor",
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
     hasCodeCells: true,
     selectedMode: "edit",
   });
   assert.equal(withoutRuntime.runtime.executionAvailable, false);
+  assert.equal(withoutRuntime.runtime.connected, false);
   assert.equal(withoutRuntime.canExecute, false);
 
   const withRuntime = cloudNotebookShellCapabilities({
-    authState: authState("oidc", "editor"),
-    connectionScope: "editor",
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
     hasCodeCells: true,
     selectedMode: "edit",
     runtimeAvailable: true,
   });
   assert.equal(withRuntime.runtime.executionAvailable, true);
+  assert.equal(withRuntime.runtime.connected, true);
   assert.equal(withRuntime.canExecute, true);
 
   // A live runtime is visible to viewers, but viewing is not execution authority.
@@ -118,7 +120,22 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
     runtimeAvailable: true,
   });
   assert.equal(viewerWithRuntime.runtime.executionAvailable, true);
+  assert.equal(viewerWithRuntime.runtime.connected, true);
   assert.equal(viewerWithRuntime.canExecute, false);
+
+  // Runtime presence is visible to editors too, but the room host grants
+  // execution-intent authority to owner scope until an explicit execute scope
+  // is defined.
+  const editorWithRuntime = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+  });
+  assert.equal(editorWithRuntime.runtime.executionAvailable, true);
+  assert.equal(editorWithRuntime.runtime.connected, true);
+  assert.equal(editorWithRuntime.canExecute, false);
 });
 
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {

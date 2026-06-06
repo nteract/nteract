@@ -142,6 +142,7 @@ export class NotebookRoom {
       display_name: identity.metadata.displayName,
       email: identity.metadata.email,
       room_peer_count: this.peers.size,
+      runtime_peer_count: this.runtimePeerCount(),
       timestamp: peer.connectedAt,
     });
 
@@ -152,7 +153,9 @@ export class NotebookRoom {
         notebook_id: notebookId,
         peer_id: peer.id,
         actor_label: identity.actorLabel,
+        connection_scope: identity.scope,
         room_peer_count: this.peers.size,
+        runtime_peer_count: this.runtimePeerCount(),
         timestamp: peer.connectedAt,
       },
       peer.id,
@@ -702,7 +705,9 @@ export class NotebookRoom {
       notebook_id: notebookId,
       peer_id: peer.id,
       actor_label: peer.identity.actorLabel,
+      connection_scope: peer.identity.scope,
       room_peer_count: this.peers.size,
+      runtime_peer_count: this.runtimePeerCount(),
       timestamp: new Date().toISOString(),
     });
 
@@ -721,12 +726,17 @@ export class NotebookRoom {
   /// notebook-scoped implicitly. If a DO ever hosts more than one notebook, both
   /// this check and the watch key must be keyed per notebook id.
   private hasRuntimePeer(): boolean {
+    return this.runtimePeerCount() > 0;
+  }
+
+  private runtimePeerCount(): number {
+    let count = 0;
     for (const peer of this.peers.values()) {
       if (peer.identity.scope === "runtime_peer") {
-        return true;
+        count += 1;
       }
     }
-    return false;
+    return count;
   }
 
   /// Arm or disarm the runtime_peer-gone reconciliation alarm to match current

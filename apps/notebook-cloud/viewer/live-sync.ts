@@ -56,6 +56,13 @@ export interface CloudSyncConnectOptions {
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
 
 const LIVE_SYNC_READY_TIMEOUT_MS = 30_000;
+const CLOUD_REQUEST_TIMEOUT_MS = 30_000;
+
+interface PendingFrameAck {
+  reject: (error: Error) => void;
+  resolve: () => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
 
 export function cloudSyncAuthFromLocalStorage(): CloudSyncAuth {
   return cloudSyncAuthFromPrototypeAuthState(cloudPrototypeAuthFromWindow());
@@ -203,6 +210,9 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private socket: WebSocket;
   private listeners = new Set<FrameListener>();
   private queuedFrames: number[][] = [];
+  // Hosted room accept/reject controls currently carry only the frame type, not
+  // a request id, so pending acknowledgements are matched FIFO per frame type.
+  private pendingFrameAcks = new Map<number, PendingFrameAck[]>();
   private readySettled = false;
   private readyResolved = false;
   private closed = false;
@@ -287,17 +297,39 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   async sendTypedRequest(
-    _frameType: FrameTypeValue,
-    _payload: Uint8Array,
+    frameType: FrameTypeValue,
+    payload: Uint8Array,
     _id: string,
-    _timeoutMs: number,
-    _timeoutLabel?: string,
+    timeoutMs: number,
+    timeoutLabel = "cloud request",
   ): Promise<NotebookResponse> {
-    throw new Error("cloud viewer transport does not support request/response frames yet");
+    if (frameType !== FrameType.REQUEST) {
+      throw new Error(
+        `cloud viewer transport does not support typed request frame 0x${frameType.toString(16)}`,
+      );
+    }
+
+    const pending = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
+    try {
+      await this.sendFrame(frameType, payload);
+      await pending.promise;
+      return { result: "ok" };
+    } catch (error) {
+      pending.cancel();
+      throw error;
+    }
   }
 
-  async sendRequest(_request: unknown, _options?: NotebookRequestOptions): Promise<unknown> {
-    throw new Error("cloud viewer transport does not support notebook requests yet");
+  async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
+    const envelope = notebookRequestEnvelope(request, options);
+    const payload = new TextEncoder().encode(JSON.stringify(envelope));
+    return this.sendTypedRequest(
+      FrameType.REQUEST,
+      payload,
+      envelope.id,
+      CLOUD_REQUEST_TIMEOUT_MS,
+      envelope.action,
+    );
   }
 
   onFrame(callback: FrameListener): () => void {
@@ -327,6 +359,13 @@ export class CloudWebSocketTransport implements NotebookTransport {
       this.onControl?.(control);
       if (control.type === "cloud_room_ready") {
         this.readyResolve(control);
+      } else if (control.type === "cloud_frame_accepted") {
+        this.resolveFrameAck(control.frame_type);
+      } else if (control.type === "cloud_frame_rejected") {
+        this.rejectFrameAck(
+          control.frame_type,
+          new Error(`cloud room rejected frame: ${control.reason}`),
+        );
       }
       return;
     }
@@ -374,10 +413,107 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.closed = true;
     this.listeners.clear();
     this.queuedFrames = [];
+    this.rejectPendingFrameAcks(reason);
     if (this.readyResolved && !this.manualDisconnect) {
       this.onDisconnect?.(reason);
     }
   }
+
+  private registerFrameAck(
+    frameType: FrameTypeValue,
+    timeoutMs: number,
+    timeoutLabel: string,
+  ): { cancel: () => void; promise: Promise<void> } {
+    let pending!: PendingFrameAck;
+    const promise = new Promise<void>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.removeFrameAck(frameType, pending);
+        reject(new Error(`${timeoutLabel} timed out waiting for cloud room frame acceptance`));
+      }, timeoutMs);
+      pending = { reject, resolve, timeoutId };
+      const queue = this.pendingFrameAcks.get(frameType) ?? [];
+      queue.push(pending);
+      this.pendingFrameAcks.set(frameType, queue);
+    });
+    promise.catch(() => undefined);
+
+    return {
+      cancel: () => this.removeFrameAck(frameType, pending),
+      promise,
+    };
+  }
+
+  private resolveFrameAck(frameType: number): void {
+    const pending = this.shiftFrameAck(frameType);
+    if (!pending) return;
+    clearTimeout(pending.timeoutId);
+    pending.resolve();
+  }
+
+  private rejectFrameAck(frameType: number | undefined, error: Error): void {
+    if (frameType === undefined) {
+      this.rejectPendingFrameAcks(error);
+      return;
+    }
+
+    const pending = this.shiftFrameAck(frameType);
+    if (!pending) return;
+    clearTimeout(pending.timeoutId);
+    pending.reject(error);
+  }
+
+  private shiftFrameAck(frameType: number): PendingFrameAck | undefined {
+    const queue = this.pendingFrameAcks.get(frameType);
+    const pending = queue?.shift();
+    if (!queue || queue.length === 0) {
+      this.pendingFrameAcks.delete(frameType);
+    }
+    return pending;
+  }
+
+  private removeFrameAck(frameType: number, pending: PendingFrameAck): void {
+    const queue = this.pendingFrameAcks.get(frameType);
+    if (!queue) return;
+    const index = queue.indexOf(pending);
+    if (index === -1) return;
+    queue.splice(index, 1);
+    clearTimeout(pending.timeoutId);
+    if (queue.length === 0) {
+      this.pendingFrameAcks.delete(frameType);
+    }
+  }
+
+  private rejectPendingFrameAcks(error: Error): void {
+    for (const queue of this.pendingFrameAcks.values()) {
+      for (const pending of queue) {
+        clearTimeout(pending.timeoutId);
+        pending.reject(error);
+      }
+    }
+    this.pendingFrameAcks.clear();
+  }
+}
+
+function notebookRequestEnvelope(
+  request: unknown,
+  options?: NotebookRequestOptions,
+): { action: string; id: string; required_heads?: string[]; [key: string]: unknown } {
+  if (!isRecord(request) || typeof request.type !== "string") {
+    throw new Error("cloud viewer notebook request must include a string type");
+  }
+
+  const { type, ...rest } = request;
+  const requiredHeads = options?.required_heads?.filter((head) => head.length > 0);
+  return {
+    id: crypto.randomUUID(),
+    action: type,
+    ...(requiredHeads?.length ? { required_heads: requiredHeads } : {}),
+    ...rest,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export function syncUrl(syncEndpoint: string, sessionId: string, auth: CloudSyncAuth): URL {

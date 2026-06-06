@@ -276,10 +276,9 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.equal(healthySocket.sent.length, 2);
     assert.deepEqual([...healthySocket.sent[0]], [FrameType.AUTOMERGE_SYNC, 42]);
     assert.equal(healthySocket.sent[1][0], FrameType.SESSION_CONTROL);
-    assert.equal(
-      decodeJsonPayload<Record<string, unknown>>(healthySocket.sent[1].slice(1)).type,
-      "cloud_peer_left",
-    );
+    const peerLeft = decodeJsonPayload<Record<string, unknown>>(healthySocket.sent[1].slice(1));
+    assert.equal(peerLeft.type, "cloud_peer_left");
+    assert.equal(peerLeft.connection_scope, "editor");
     assert.equal(staleSocket.closed, true);
   });
 

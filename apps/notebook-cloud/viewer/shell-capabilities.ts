@@ -29,10 +29,17 @@ export interface CloudNotebookShellCapabilityInput {
   editAccessRequestPending?: boolean;
   /**
    * Whether an execution runtime is attached to the room. The hosted prototype
-   * has no kernel provider yet, so this defaults false and run controls stay
-   * hidden. Flip it on once a runtime peer can execute the room's cells.
+   * uses this as runtime status only; execution controls also require
+   * canSubmitExecutionRequests so runtime presence is not confused with
+   * execution authority.
    */
   runtimeAvailable?: boolean;
+  /**
+   * Whether this browser connection may create execution intent in the hosted
+   * room. Today the room host grants that to owners only; future execute-scope
+   * policy can replace this without changing the shared shell projection.
+   */
+  canSubmitExecutionRequests?: boolean;
   /**
    * Host-provided room capabilities. Sharing is a room/host concern, not a
    * notebook-local affordance, so owner access alone is not enough to show it.
@@ -51,6 +58,7 @@ export function cloudNotebookShellCapabilities({
   canAcceptCellMutations = true,
   editAccessRequestPending = false,
   runtimeAvailable = false,
+  canSubmitExecutionRequests = connectionScope === "owner",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const interaction = projectCloudNotebookEditAccess({
@@ -80,7 +88,7 @@ export function cloudNotebookShellCapabilities({
   };
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
-    connected: isRuntimePeer,
+    connected: isRuntimePeer || runtimeAvailable,
     executionAvailable: runtimeAvailable,
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
@@ -111,6 +119,7 @@ export function cloudNotebookShellCapabilities({
     },
     execution: {
       available: runtimeAvailable,
+      canSubmit: canSubmitExecutionRequests,
       requiresDocumentEditPermission: true,
     },
     packages: {

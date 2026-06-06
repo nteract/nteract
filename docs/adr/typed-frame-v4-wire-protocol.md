@@ -233,6 +233,18 @@ The same envelope shape covers the runtime-agent subprotocol (`RuntimeAgentReque
 
 `PutBlob` (0x08) also correlates with `Response` frames using the same id mechanism, even though `PutBlob` is a different type byte. The relay's `sendTypedRequest(frameType, payload, id, timeoutMs)` is the generic path; `sendRequest` is the JSON-request wrapper, and the blob-upload code uses `sendTypedRequest` directly.
 
+The hosted cloud room currently has one narrower request path: browser
+`execute_cell` requests are sent as `Request` frames to the Durable Object room
+host, and the room host materializes execution intent into `RuntimeStateDoc`.
+That path acknowledges frame acceptance or rejection through `SessionControl`
+(`cloud_frame_accepted` / `cloud_frame_rejected`) and does not yet emit a
+correlated `Response` envelope. Browser clients therefore treat frame acceptance
+as "the room accepted the execution-intent request"; the durable execution
+result is still observed through `RuntimeStateDoc`. A future hosted protocol
+pass should add correlated `Response` frames for hosted `Request` handling so
+the cloud transport fully matches the desktop/daemon request contract and can
+return `cell_queued` / `guard_rejected` details directly.
+
 ## Decision 10: Back-pressure is bounded by the reader actor, not the wire
 
 There is no flow-control field on the wire. No window, no credits, no rate limit. Back-pressure is structural:

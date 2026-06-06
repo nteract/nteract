@@ -132,6 +132,22 @@ grant different write surfaces. Treat them as capability sets:
 | `runtime_peer` | viewer + write kernel lifecycle, comm topology, output routing, and progress/output state for accepted executions + upload output blobs; cannot create execution intent or rewrite trust/environment/path/project metadata |
 | `owner` | editor + publish revisions + mutate ACLs; may hold separate `runtime_peer` capability through an explicit ACL row when it needs runtime progress authorship |
 
+Execution intent is a separate authority from runtime-state authorship. A
+runtime peer may consume queued executions and write lifecycle/output state, but
+it must not create new execution intent. In the current browser-hosted
+implementation, the cloud viewer surfaces run controls only when:
+
+1. a live `runtime_peer` is attached to the room; and
+2. the browser connection is scoped as `owner`.
+
+This is an interim policy, not the final shape. The long-term model should add
+an explicit execute capability/scope so principals that own both a document
+editing connection and a runtime-peer connection can be granted execution intent
+without conflating `editor`, `runtime_peer`, and `owner`. Local-only kernels
+should continue to author runtime state under a local principal; when a local
+kernel is promoted into a hosted room, it should adopt the authenticated room
+principal/operator it uses for that connection.
+
 The provider gives a maximum capability set for the credential. The ACL gives
 one or more room grants. A connection also has a requested role. Anonymous
 browser viewers may omit the role and default to `viewer`. Authenticated native

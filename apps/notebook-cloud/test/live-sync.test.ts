@@ -233,6 +233,77 @@ describe("cloud live sync", () => {
     }
   });
 
+  it("sends notebook requests as cloud request frames and resolves on room acceptance", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      const response = transport.sendRequest(
+        { type: "execute_cell", cell_id: "cell-1" },
+        { required_heads: ["head-1"] },
+      );
+      await nextMicrotask();
+
+      assert.equal(socket.sent.length, 1);
+      const frame = socket.sent[0];
+      assert.ok(frame instanceof Uint8Array);
+      assert.equal(frame[0], FrameType.REQUEST);
+      const envelope = JSON.parse(new TextDecoder().decode(frame.slice(1))) as {
+        action: string;
+        cell_id: string;
+        id: string;
+        required_heads: string[];
+      };
+      assert.equal(envelope.action, "execute_cell");
+      assert.equal(envelope.cell_id, "cell-1");
+      assert.deepEqual(envelope.required_heads, ["head-1"]);
+      assert.equal(typeof envelope.id, "string");
+
+      socket.control({
+        type: "cloud_frame_accepted",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        byte_length: frame.byteLength - 1,
+        timestamp: "2026-06-06T00:00:00.000Z",
+      });
+
+      assert.deepEqual(await response, { result: "ok" });
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("rejects notebook requests when the cloud room rejects the request frame", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      const response = transport.sendRequest({ type: "execute_cell", cell_id: "cell-1" });
+      await nextMicrotask();
+      socket.control({
+        type: "cloud_frame_rejected",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        reason: "viewer cannot write request frames",
+        timestamp: "2026-06-06T00:00:00.000Z",
+      });
+
+      await assert.rejects(response, /viewer cannot write request frames/);
+    } finally {
+      fake.restore();
+    }
+  });
+
   it("notifies disconnect when WebSocket.send throws", async () => {
     const fake = installFakeWebSocket();
     const disconnects: string[] = [];
@@ -338,15 +409,19 @@ class FakeWebSocket extends EventTarget {
   binaryType: BinaryType = "arraybuffer";
   readyState = FakeWebSocket.CONNECTING;
   throwOnSend = false;
+  sent: Uint8Array[] = [];
 
   constructor() {
     super();
     FakeWebSocket.instances.push(this);
   }
 
-  send(): void {
+  send(data: unknown): void {
     if (this.throwOnSend) {
       throw new Error("synthetic send failure");
+    }
+    if (data instanceof Uint8Array) {
+      this.sent.push(data);
     }
   }
 
@@ -361,17 +436,20 @@ class FakeWebSocket extends EventTarget {
   }
 
   ready(peerId: string): void {
-    const payload = new TextEncoder().encode(
-      JSON.stringify({
-        type: "cloud_room_ready",
-        protocol: "v4",
-        notebook_id: "room",
-        peer_id: peerId,
-        actor_label: `user:dev:alice/desktop:${peerId}`,
-        connection_scope: "editor",
-        timestamp: "2026-05-24T00:00:00.000Z",
-      }),
-    );
+    this.control({
+      type: "cloud_room_ready",
+      protocol: "v4",
+      notebook_id: "room",
+      peer_id: peerId,
+      actor_label: `user:dev:alice/desktop:${peerId}`,
+      connection_scope: "editor",
+      room_peer_count: 1,
+      timestamp: "2026-05-24T00:00:00.000Z",
+    });
+  }
+
+  control(value: unknown): void {
+    const payload = new TextEncoder().encode(JSON.stringify(value));
     const frame = new Uint8Array(payload.byteLength + 1);
     frame[0] = FrameType.SESSION_CONTROL;
     frame.set(payload, 1);
