@@ -119,9 +119,15 @@ pub async fn run_runtime_agent(
     // up front and independent of the (just-connected) transport. This keeps
     // the desktop/daemon path byte-for-byte unchanged: the resolver returns the
     // exact value the bootstrap used inline before the cloud-path extraction.
-    run_runtime_agent_on_transport(transport, notebook_id, blob_root, move |_| {
-        Ok(runtime_agent_id)
-    })
+    run_runtime_agent_on_transport(
+        transport,
+        notebook_id,
+        blob_root,
+        move |_| Ok(runtime_agent_id),
+        // The daemon/UDS path never launches on attach: the daemon drives launch
+        // via an inbound `LaunchKernel` RPC. Always `None` here.
+        None,
+    )
     .await
 }
 
@@ -143,7 +149,15 @@ pub async fn run_runtime_agent(
 ///   `DuplicateSeqNumber` when the room syncs the prior change back, exactly the
 ///   hazard the `runt-cloud-peer` spike documented.
 ///
-/// CODE-ONLY (Phase 3c): this builds and unit-tests the spawn path behind the
+/// `initial_launch`, when `Some`, is a [`RuntimeAgentRequest::LaunchKernel`] the
+/// agent applies *once* right after bootstrap, so the workstation endpoint can
+/// *start* a runtime in env X without waiting for an inbound `LaunchKernel` RPC
+/// — that inbound channel is req #5, Deferred (decision 38). `None` keeps the
+/// historical attach-only behavior (the agent waits for an RPC that, over the
+/// cloud transport, does not yet arrive). Build it with
+/// [`crate::workstation::build_current_python_launch`].
+///
+/// CODE-ONLY (Phase 3c/3b): this builds and unit-tests the spawn path behind the
 /// transport gate; the live cross-machine re-proof (a preview room + the
 /// explicit `runtime_peer` ACL row, decision #9) is deferred and tracked in the
 /// decision log.
@@ -151,23 +165,33 @@ pub async fn run_cloud_runtime_agent(
     config: notebook_cloud_transport::CloudWsConfig,
     operator: String,
     blob_root: PathBuf,
+    initial_launch: Option<RuntimeAgentRequest>,
 ) -> anyhow::Result<()> {
     let notebook_id = config.notebook_id.clone();
     info!(
-        "[runtime-agent] Starting cloud runtime_agent notebook_id={} url={} scope={}",
+        "[runtime-agent] Starting cloud runtime_agent notebook_id={} url={} scope={} launch_on_attach={}",
         notebook_id,
         notebook_cloud_transport::build_ws_url(&config.cloud_url, &notebook_id),
         config.scope,
+        initial_launch.is_some(),
     );
 
     let transport = notebook_cloud_transport::CloudWsFrameTransport::new(config);
 
-    run_runtime_agent_on_transport(transport, notebook_id, blob_root, move |t| {
-        let principal = t.principal().ok_or_else(|| {
-            anyhow::anyhow!("cloud transport has no principal after connect (no cloud_room_ready)")
-        })?;
-        Ok(cloud_actor_label(principal, &operator))
-    })
+    run_runtime_agent_on_transport(
+        transport,
+        notebook_id,
+        blob_root,
+        move |t| {
+            let principal = t.principal().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cloud transport has no principal after connect (no cloud_room_ready)"
+                )
+            })?;
+            Ok(cloud_actor_label(principal, &operator))
+        },
+        initial_launch,
+    )
     .await
 }
 
@@ -203,6 +227,7 @@ async fn run_runtime_agent_on_transport<T, F>(
     notebook_id: String,
     blob_root: PathBuf,
     resolve_actor: F,
+    initial_launch: Option<RuntimeAgentRequest>,
 ) -> anyhow::Result<()>
 where
     T: FrameTransport,
@@ -291,6 +316,44 @@ where
     // terminal events). u64 wraparound is a non-issue in practice.
     let sync_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut inflight_sync: Option<tokio::task::JoinHandle<()>> = None;
+
+    // -- 3b. Launch-on-attach (cloud only) ----------------------------------
+    //
+    // The workstation endpoint can hand the agent an initial `LaunchKernel` to
+    // apply right after bootstrap, so it *starts* a runtime in env X without
+    // waiting for an inbound RPC (req #5, Deferred — decision 38). Gated on
+    // `clean_eof_is_recoverable()`, the recoverable/cloud-transport discriminant:
+    // the daemon/UDS path drives launch via its own RPC and must never launch on
+    // attach, so even a (never-passed) `Some` here is ignored on UDS. The launch
+    // runs through the *same* `handle_runtime_agent_request` path an inbound RPC
+    // would, so the kernel drive, queue release, and command-receiver install are
+    // identical — only the trigger differs.
+    if let Some(launch) = initial_launch {
+        if transport.clean_eof_is_recoverable() {
+            info!("[runtime-agent] Applying launch-on-attach LaunchKernel");
+            let (response, new_cmd_rx) = handle_runtime_agent_request(
+                launch,
+                &ctx,
+                &mut kernel,
+                &mut kernel_state,
+                &mut seen_execution_ids,
+            )
+            .await;
+            if let Some(rx) = new_cmd_rx {
+                lifecycle_rx = Some(rx.lifecycle_rx);
+                work_rx = Some(rx.work_rx);
+            }
+            interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
+            if let RuntimeAgentResponse::Error { error } = response {
+                warn!("[runtime-agent] Launch-on-attach failed: {}", error);
+            }
+        } else {
+            warn!(
+                "[runtime-agent] Ignoring launch-on-attach on a non-recoverable transport \
+                 (daemon-driven launch only)"
+            );
+        }
+    }
 
     info!("[runtime-agent] Infrastructure ready, entering main loop");
 
@@ -2209,6 +2272,26 @@ mod tests {
     fn non_recoverable_transport_reports_clean_eof_not_recoverable() {
         let transport = FlakyTransport::new(0).with_recoverable(false);
         assert!(!transport.clean_eof_is_recoverable());
+    }
+
+    /// Launch-on-attach is gated on the same `clean_eof_is_recoverable()`
+    /// discriminant (decision 38): the bootstrap apply runs the `LaunchKernel`
+    /// only when the transport reports recoverable (cloud). A non-recoverable
+    /// (UDS) transport reports `false`, so the daemon path never launches on
+    /// attach even if a `Some(initial_launch)` were ever passed. Pin both arms
+    /// of the discriminant the gate reads.
+    #[test]
+    fn launch_on_attach_gate_follows_recoverable_discriminant() {
+        let cloud_like = FlakyTransport::new(0).with_recoverable(true);
+        assert!(
+            cloud_like.clean_eof_is_recoverable(),
+            "a recoverable (cloud) transport applies launch-on-attach"
+        );
+        let uds_like = FlakyTransport::new(0).with_recoverable(false);
+        assert!(
+            !uds_like.clean_eof_is_recoverable(),
+            "a non-recoverable (UDS) transport ignores launch-on-attach"
+        );
     }
 
     // -- cloud doc-actor label (Phase 3c) ---------------------------------

@@ -20,9 +20,13 @@
 
 pub mod cloud_agent_cli;
 pub mod environments;
+pub mod launch_on_attach;
 
 pub use cloud_agent_cli::{build_cloud_config, CloudAgentArgs, CloudAuthKind};
 pub use environments::{
     environments_from_pool_state, list_environments, EnvKind, EnvironmentPolicy,
     WorkstationEnvironment,
+};
+pub use launch_on_attach::{
+    build_current_python_launch, CurrentPythonLaunch, CURRENT_PYTHON_ENV_SOURCE,
 };

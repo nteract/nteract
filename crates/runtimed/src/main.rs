@@ -469,7 +469,9 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("[cloud-runtime-agent] Config error: {}", e);
                         e
                     })?;
-            runtimed::runtime_agent::run_cloud_runtime_agent(config, operator, blob_root)
+            // Attach-only for now: the launch-on-attach trigger is wired by the
+            // allocate-runtime-for-room path (Phase B4), not this bare CLI entry.
+            runtimed::runtime_agent::run_cloud_runtime_agent(config, operator, blob_root, None)
                 .await
                 .map_err(|e| {
                     eprintln!("[cloud-runtime-agent] Fatal: {}", e);
