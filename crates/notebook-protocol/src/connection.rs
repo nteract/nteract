@@ -604,6 +604,7 @@ mod tests {
             ft::BROADCAST,
             ft::PRESENCE,
             ft::RUNTIME_STATE_SYNC,
+            ft::COMMS_DOC_SYNC,
             ft::POOL_STATE_SYNC,
             ft::SESSION_CONTROL,
             ft::PUT_BLOB,
@@ -685,8 +686,28 @@ mod tests {
             NotebookFrameType::Broadcast
         );
         assert_eq!(
+            NotebookFrameType::try_from(0x04).unwrap(),
+            NotebookFrameType::Presence
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x05).unwrap(),
+            NotebookFrameType::RuntimeStateSync
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x06).unwrap(),
+            NotebookFrameType::PoolStateSync
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x07).unwrap(),
+            NotebookFrameType::SessionControl
+        );
+        assert_eq!(
             NotebookFrameType::try_from(0x08).unwrap(),
             NotebookFrameType::PutBlob
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x09).unwrap(),
+            NotebookFrameType::CommsDocSync
         );
         assert!(NotebookFrameType::try_from(0xFF).is_err());
     }

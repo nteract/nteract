@@ -11,7 +11,7 @@ use clap::Parser;
 use notebook_doc::NotebookDoc;
 use notebook_sync::{connect, BroadcastReceiver, SnapshotPairBytes};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use runtime_doc::RuntimeStateDoc;
+use runtime_doc::{CommsDoc, RuntimeStateDoc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -218,6 +218,7 @@ async fn publish(args: Args) -> Result<()> {
     let mut refs = collect_snapshot_blob_refs(
         &source_snapshot.snapshot.notebook_bytes,
         &source_snapshot.snapshot.runtime_state_bytes,
+        &source_snapshot.snapshot.comms_doc_bytes,
     )?;
     let initial_ref_count = refs.len();
     let runtime_state_doc_id =
@@ -233,6 +234,7 @@ async fn publish(args: Args) -> Result<()> {
     let uploaded_blobs = publisher.upload_blob_closure(&mut refs).await?;
 
     let runtime_heads_hash = heads_digest(&source_snapshot.snapshot.runtime_state_heads);
+    let comms_heads_hash = heads_digest(&source_snapshot.snapshot.comms_doc_heads);
     let notebook_heads_hash = heads_digest(&source_snapshot.snapshot.notebook_heads);
     let runtime_state_doc_id_header = HeaderValue::from_str(&runtime_state_doc_id)
         .context("runtime state document id is not a valid header value")?;
@@ -256,11 +258,36 @@ async fn publish(args: Args) -> Result<()> {
         )
         .await?;
 
+    let mut comms_snapshot_headers = HeaderMap::new();
+    comms_snapshot_headers.insert(
+        "X-Runtime-State-Doc-Id",
+        runtime_state_doc_id_header.clone(),
+    );
+    publisher
+        .put_bytes(
+            &[
+                "api",
+                "n",
+                &publisher.notebook_id,
+                "comms-snapshots",
+                &comms_heads_hash,
+            ],
+            source_snapshot.snapshot.comms_doc_bytes,
+            DEFAULT_BLOB_CONTENT_TYPE,
+            comms_snapshot_headers,
+        )
+        .await?;
+
     let mut snapshot_headers = HeaderMap::new();
     snapshot_headers.insert(
         "X-Runtime-Heads-Hash",
         HeaderValue::from_str(&runtime_heads_hash)
             .context("runtime heads hash is not a valid header value")?,
+    );
+    snapshot_headers.insert(
+        "X-Comms-Heads-Hash",
+        HeaderValue::from_str(&comms_heads_hash)
+            .context("comms heads hash is not a valid header value")?,
     );
     snapshot_headers.insert("X-Runtime-State-Doc-Id", runtime_state_doc_id_header);
     publisher
@@ -288,9 +315,11 @@ async fn publish(args: Args) -> Result<()> {
             == Some(notebook_heads_hash.as_str())
             && revision.get("runtime_heads_hash").and_then(Value::as_str)
                 == Some(runtime_heads_hash.as_str())
+            && revision.get("comms_heads_hash").and_then(Value::as_str)
+                == Some(comms_heads_hash.as_str())
     });
     if !published_revision {
-        bail!("published catalog did not include the uploaded snapshot pair");
+        bail!("published catalog did not include the uploaded snapshot triplet");
     }
 
     println!(
@@ -303,6 +332,7 @@ async fn publish(args: Args) -> Result<()> {
             "runtime_state_doc_id": runtime_state_doc_id,
             "notebook_heads_hash": notebook_heads_hash,
             "runtime_heads_hash": runtime_heads_hash,
+            "comms_heads_hash": comms_heads_hash,
             "cell_count": source_snapshot.exported_cell_count,
             "initial_blob_refs": initial_ref_count,
             "total_blob_refs": refs.len(),
@@ -1071,9 +1101,11 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
 fn collect_snapshot_blob_refs(
     notebook_bytes: &[u8],
     runtime_state_bytes: &[u8],
+    comms_doc_bytes: &[u8],
 ) -> Result<BTreeMap<String, BlobRef>> {
     let mut refs = BTreeMap::new();
     collect_runtime_snapshot_blob_refs(runtime_state_bytes, &mut refs)?;
+    collect_comms_snapshot_blob_refs(comms_doc_bytes, &mut refs)?;
     collect_notebook_snapshot_blob_refs(notebook_bytes, &mut refs)?;
     Ok(refs)
 }
@@ -1147,6 +1179,19 @@ fn collect_runtime_snapshot_blob_refs(
         }
     }
 
+    Ok(())
+}
+
+fn collect_comms_snapshot_blob_refs(
+    comms_doc_bytes: &[u8],
+    refs: &mut BTreeMap<String, BlobRef>,
+) -> Result<()> {
+    let comms_doc =
+        AutoCommit::load(comms_doc_bytes).context("load CommsDoc from exported snapshot bytes")?;
+    let comms_doc = CommsDoc::from_doc(comms_doc);
+    for state in comms_doc.get_comms().values() {
+        collect_blob_refs(state, refs);
+    }
     Ok(())
 }
 
@@ -1564,6 +1609,45 @@ mod tests {
             Some("application/octet-stream")
         );
         assert_eq!(refs["binary-hash"].size, Some(12));
+    }
+
+    #[test]
+    fn collects_widget_comm_state_blobs_from_comms_doc_snapshot() {
+        let mut comms_doc = CommsDoc::new();
+        comms_doc
+            .put_comm_state(
+                "widget-model",
+                &json!({
+                    "_model_module": "anywidget",
+                    "_model_name": "AnyModel",
+                    "_esm": {
+                        "blob": "comms-esm-hash",
+                        "size": 24,
+                        "media_type": "text/javascript"
+                    },
+                    "binary_value": {
+                        "blob": "comms-binary-hash",
+                        "size": 12,
+                        "media_type": "application/octet-stream"
+                    }
+                }),
+            )
+            .unwrap();
+
+        let comms_doc_bytes = comms_doc.doc_mut().save();
+        let mut refs = BTreeMap::new();
+        collect_comms_snapshot_blob_refs(&comms_doc_bytes, &mut refs).unwrap();
+
+        assert_eq!(
+            refs["comms-esm-hash"].media_type.as_deref(),
+            Some("text/javascript")
+        );
+        assert_eq!(refs["comms-esm-hash"].size, Some(24));
+        assert_eq!(
+            refs["comms-binary-hash"].media_type.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(refs["comms-binary-hash"].size, Some(12));
     }
 
     #[test]

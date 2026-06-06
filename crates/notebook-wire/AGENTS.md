@@ -9,7 +9,7 @@ Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protoco
 - `notebook-wire` — frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes.
 - `notebook-protocol` — handshakes and JSON wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, runtime-agent envelopes.
 - `notebook-doc` — `NotebookDoc` Automerge schema. `SCHEMA_VERSION` bumps only with a migration that preserves real user data.
-- `runtime-doc` — `RuntimeStateDoc` schema. Kernel lifecycle, queue, outputs, env, trust, project, path, save state are daemon/runtime-agent authored; widget comm state under `comms/` has a sanctioned frontend write path via the approved comm CRDT writer.
+- `runtime-doc` — `RuntimeStateDoc` and `CommsDoc` schemas. RuntimeStateDoc is daemon/runtime-agent authored for kernel lifecycle, queue, outputs, env, trust, project, path, save state, and comm topology. CommsDoc carries mutable widget state written by the daemon/runtime agent and the approved frontend comm CRDT writer.
 
 ## Versioning
 
@@ -98,11 +98,12 @@ After the handshake, frames carry a leading type byte:
 | `0x06` | PoolStateSync | Binary (per-daemon `PoolDoc` Automerge sync) |
 | `0x07` | SessionControl | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
 | `0x08` | PutBlob | Framed binary blob upload (`PutBlobHeader` + bytes) |
+| `0x09` | CommsDocSync | Binary (per-notebook `CommsDoc` Automerge sync) |
 
 | Sender | Valid types |
 |--------|-------------|
-| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08` |
-| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07` |
+| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09` |
+| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09` |
 | Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05` |
 
 `NotebookRequest` / `NotebookResponse` payloads travel in flattened `NotebookRequestEnvelope` / `NotebookResponseEnvelope`. Concurrent requests carry an `id`; clients route responses by id because broadcasts, state sync, and out-of-order responses interleave freely.
@@ -222,10 +223,10 @@ Daemon-initiated messages pushed to all connected clients; not replies to reques
 
 | Broadcast | Purpose |
 |-----------|---------|
-| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget custom one-shot events). Widget state itself syncs via `RuntimeStateDoc`. |
+| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget custom one-shot events). Widget state itself syncs via `CommsDoc`. |
 | `EnvProgress { env_type, phase }` | Environment setup progress (`phase` flattened as `EnvProgressPhase`). `RuntimeStateDoc` is authoritative for durable env state. |
 
-State-carrying broadcast variants (`CommSync`, kernel state, execution lifecycle, queue, outputs/display, path/autosave, env sync) were removed once `RuntimeStateDoc` became authoritative. The `Comm` variant is limited to custom messages (`method != "update"`) — state updates flow through `RuntimeStateDoc`.
+State-carrying broadcast variants (`CommSync`, kernel state, execution lifecycle, queue, outputs/display, path/autosave, env sync) were removed once Automerge docs became authoritative. The `Comm` variant is limited to custom messages (`method != "update"`) — widget state updates flow through `CommsDoc`.
 
 ### Output sync flow
 
@@ -290,13 +291,13 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 State-carrying broadcasts (kernel status, env sync diff, queue) were replaced because they suffered from silent drops, no initial state for late joiners, and ordering races between windows. `RuntimeStateDoc` is a daemon-authoritative per-notebook Automerge document synced via frame `0x05` on the existing notebook connection.
 
-The daemon writes kernel status, execution queue, environment progress, project context, trust state, path/save state, and outputs. Clients receive those fields via normal Automerge sync, with unexpected client changes stripped. Widget comm state is the intentional exception: frontend-originated widget state updates write under `doc.comms/` through the approved comm CRDT writer, and the runtime agent forwards those deltas to the kernel. The frontend reads runtime state via `useRuntimeState()` and the project runtime stores.
+The daemon writes kernel status, execution queue, environment progress, project context, trust state, path/save state, outputs, and comm topology. Clients receive those fields via normal Automerge sync, with unexpected client changes stripped. Mutable widget comm state lives in CommsDoc so RuntimeStateDoc remains daemon-owned. The frontend reads runtime state via `useRuntimeState()` and the project runtime stores.
 
 **Key files:** `crates/runtime-doc/src/doc.rs` (schema + setters), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
 ### Widget comm state
 
-Widget state lives in `doc.comms/` in `RuntimeStateDoc`. The daemon writes comm entries from kernel IOPub; new clients get widget state via CRDT sync. `CommSync` broadcast was removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to the CRDT, and the runtime agent diffs comm state on each sync to forward deltas to the kernel. See `src/components/widgets/AGENTS.md` for the widget-side data flow.
+Widget topology lives in `doc.comms/` in RuntimeStateDoc; mutable widget values live in CommsDoc. The daemon/runtime agent writes kernel-authored entries from IOPub, and new clients get widget topology and state through CRDT sync frames `0x05` and `0x09`. `CommSync` broadcast was removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to CommsDoc, and the runtime agent diffs CommsDoc state for comm ids with RuntimeStateDoc topology before forwarding deltas to the kernel. See `src/components/widgets/AGENTS.md` for the widget-side data flow.
 
 ## Runtime agent subprotocol
 
@@ -308,6 +309,7 @@ Runtime agents are same-socket peers that connect with `Handshake::RuntimeAgent`
 | `0x01` | `RuntimeAgentRequestEnvelope` |
 | `0x02` | `RuntimeAgentResponseEnvelope` |
 | `0x05` | RuntimeStateDoc Automerge sync |
+| `0x09` | CommsDoc Automerge sync |
 
 Coordinator-to-agent RPC covers kernel lifecycle and query-style operations: launch, restart, shutdown, completion, history, comm sends, interrupts, and hot environment sync. Cell execution is CRDT-driven: the coordinator writes execution entries into `RuntimeStateDoc`, and the runtime agent discovers and executes queued entries via `RuntimeStateDoc` sync.
 
@@ -317,7 +319,7 @@ Because the daemon socket is same-UID trusted, treat the runtime-agent handshake
 
 - Update Rust protocol types and generated `packages/runtimed` TypeScript surfaces in the same patch.
 - Run `cargo test -p notebook-protocol` for protocol-surface changes; add focused package tests when TypeScript transport or generated contracts move.
-- Runtime state, outputs, queue, kernel lifecycle, trust, env drift, env progress snapshots, path, save state, and widget state belong in `RuntimeStateDoc`, not room-wide broadcasts. Broadcasts are for ephemeral comm messages and high-frequency env progress events.
+- Runtime state, outputs, queue, kernel lifecycle, trust, env drift, env progress snapshots, path, save state, and widget topology belong in `RuntimeStateDoc`; widget values belong in `CommsDoc`. Broadcasts are for ephemeral comm messages and high-frequency env progress events.
 - Steady-state frame readers must keep draining. Register waiters/pending requests instead of blocking inside command paths.
 - The runtimed socket is same-UID trusted, not app-private. New handshake variants must account for any same-user process holding the socket path.
 

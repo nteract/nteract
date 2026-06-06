@@ -15,12 +15,25 @@ export function snapshotWidgetCommsFromRuntimeState(
   runtimeState: unknown,
   blobResolver?: BlobResolver,
 ): SnapshotWidgetComm[] {
+  return snapshotWidgetCommsFromRuntimeAndCommsState(runtimeState, null, blobResolver);
+}
+
+export function snapshotWidgetCommsFromRuntimeAndCommsState(
+  runtimeState: unknown,
+  commsState: unknown,
+  blobResolver?: BlobResolver,
+): SnapshotWidgetComm[] {
   const comms = asRecord(asRecord(runtimeState).comms);
+  const splitComms = asRecord(asRecord(commsState).comms);
   const normalized = normalizeSnapshotWidgetComms(
-    Object.entries(comms).map(([commId, entry]) => ({
-      ...asRecord(entry),
-      comm_id: commId,
-    })),
+    Object.entries(comms).map(([commId, entry]) => {
+      const topology = asRecord(entry);
+      return {
+        ...topology,
+        state: asRecord(splitComms[commId] ?? topology.state),
+        comm_id: commId,
+      };
+    }),
   );
   return blobResolver ? resolveSnapshotWidgetComms(normalized, blobResolver) : normalized;
 }

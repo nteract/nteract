@@ -1537,6 +1537,10 @@ const GENESIS_SEEDS_IN_WASM: &[(&str, &str)] = &[
         "runtime-state genesis",
         "crates/runtime-doc/assets/runtime_state_genesis_v2.am",
     ),
+    (
+        "comms-doc genesis",
+        "crates/runtime-doc/assets/comms_doc_genesis_v1.am",
+    ),
 ];
 
 const RUNTIMED_WASM_BINARY: &str = "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm";

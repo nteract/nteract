@@ -148,7 +148,7 @@ describe("snapshot pair render materialization", () => {
     );
   });
 
-  it("materializes RuntimeStateDoc widget comms for hosted widget views", async () => {
+  it("materializes RuntimeStateDoc comm topology with CommsDoc state for hosted widget views", async () => {
     const notebookBytes = await readFile(
       new URL(
         "../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin",
@@ -172,6 +172,7 @@ describe("snapshot pair render materialization", () => {
       4,
     );
     const runtimeStateBytes = peer.save();
+    const commsDocBytes = peer.save_comms_doc();
     peer.free();
 
     const render = await materializeSnapshotPairRender({
@@ -180,6 +181,7 @@ describe("snapshot pair render materialization", () => {
       runtimeHeadsHash: "runtime-fixture",
       notebookBytes,
       runtimeStateBytes,
+      commsDocBytes,
       generatedAt: "2026-05-22T00:00:00.000Z",
     });
 
@@ -242,6 +244,7 @@ describe("snapshot pair render materialization", () => {
       7,
     );
     const runtimeStateBytes = peer.save();
+    const commsDocBytes = peer.save_comms_doc();
     peer.free();
 
     const render = await materializeSnapshotPairRender({
@@ -250,6 +253,7 @@ describe("snapshot pair render materialization", () => {
       runtimeHeadsHash: "runtime-fixture",
       notebookBytes,
       runtimeStateBytes,
+      commsDocBytes,
       generatedAt: "2026-05-22T00:00:00.000Z",
       blobResolver: createNotebookCloudBlobResolver({
         baseUrl: "https://cloud.test/n/fixture-widget-anywidget",

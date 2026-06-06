@@ -21,7 +21,7 @@ impl RuntimeStateWriteScope {
     }
 
     pub const fn allows_runtime_state_write(self) -> bool {
-        matches!(self, Self::Editor | Self::RuntimePeer | Self::Owner)
+        matches!(self, Self::RuntimePeer)
     }
 }
 
@@ -121,17 +121,16 @@ pub fn validate_runtime_state_sync_scope(
         RuntimeStateWriteScope::RuntimePeer => {
             validate_runtime_peer_runtime_delta(before, after, scope)
         }
-        RuntimeStateWriteScope::Editor | RuntimeStateWriteScope::Owner => {
-            validate_comm_state_only_runtime_delta(before, after, scope)
-        }
-        RuntimeStateWriteScope::Viewer => {
+        RuntimeStateWriteScope::Viewer
+        | RuntimeStateWriteScope::Editor
+        | RuntimeStateWriteScope::Owner => {
             if before == after {
                 Ok(())
             } else {
                 Err(runtime_state_policy_error(
                     scope,
                     "runtime state",
-                    "viewer connections are read-only",
+                    "RuntimeStateDoc is runtime-peer only",
                 ))
             }
         }
@@ -154,6 +153,7 @@ fn validate_runtime_peer_runtime_delta(
     validate_runtime_peer_execution_delta(before, after, scope)?;
     validate_runtime_peer_queue_delta(before, after, scope)?;
     validate_runtime_peer_room_host_owned_delta(before, after, scope)?;
+    validate_runtime_peer_comm_state_delta(before, after, scope)?;
 
     Ok(())
 }
@@ -388,6 +388,37 @@ fn validate_runtime_peer_queue_delta(
     Ok(())
 }
 
+fn validate_runtime_peer_comm_state_delta(
+    before: &RuntimeStatePolicySnapshot,
+    after: &RuntimeStatePolicySnapshot,
+    scope: RuntimeStateWriteScope,
+) -> Result<(), RuntimeStateError> {
+    for (comm_id, after_comm) in &after.state.comms {
+        if let Some(before_comm) = before.state.comms.get(comm_id) {
+            if before_comm.state != after_comm.state {
+                return Err(runtime_state_policy_error(
+                    scope,
+                    "comms",
+                    &format!("comm state moved to CommsDoc for {comm_id}"),
+                ));
+            }
+        } else if !after_comm
+            .state
+            .as_object()
+            .is_some_and(|state| state.is_empty())
+        {
+            return Err(runtime_state_policy_error(
+                scope,
+                "comms",
+                &format!("new RuntimeStateDoc comm state must be empty for {comm_id}"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn validate_comm_state_only_runtime_delta(
     before: &RuntimeStatePolicySnapshot,
     after: &RuntimeStatePolicySnapshot,
@@ -488,6 +519,7 @@ fn validate_comm_state_only_runtime_delta(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_comm_metadata_unchanged(
     scope: RuntimeStateWriteScope,
     comm_id: &str,
@@ -544,13 +576,14 @@ mod tests {
                 .unwrap_err();
 
         assert!(
-            err.to_string().contains("executions"),
-            "error should identify execution writes: {err}"
+            err.to_string()
+                .contains("RuntimeStateDoc is runtime-peer only"),
+            "error should identify RuntimeStateDoc ownership policy: {err}"
         );
     }
 
     #[test]
-    fn owner_runtime_state_policy_allows_existing_comm_state_update() {
+    fn owner_runtime_state_policy_rejects_existing_comm_state_update() {
         let mut before_doc = RuntimeStateDoc::new();
         before_doc
             .put_comm(
@@ -570,7 +603,64 @@ mod tests {
             .unwrap();
         let after = runtime_state_policy_snapshot(&after_doc);
 
-        validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::Owner).unwrap();
+        let err = validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::Owner)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("runtime state"),
+            "error should identify document-level rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_peer_runtime_state_policy_rejects_comm_state_update() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .put_comm(
+                "comm-1",
+                "jupyter.widget",
+                "anywidget",
+                "AnyModel",
+                &json!({}),
+                0,
+            )
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc
+            .set_comm_state_property("comm-1", "value", &json!(2))
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("CommsDoc"),
+            "error should point comm state to CommsDoc: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_peer_runtime_state_policy_allows_empty_comm_topology_creation() {
+        let before = runtime_state_policy_snapshot(&RuntimeStateDoc::new());
+        let mut after_doc = RuntimeStateDoc::new();
+        after_doc
+            .put_comm(
+                "comm-1",
+                "jupyter.widget",
+                "anywidget",
+                "AnyModel",
+                &json!({}),
+                0,
+            )
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+            .unwrap();
     }
 
     #[test]
@@ -593,8 +683,9 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            err.to_string().contains("comms"),
-            "error should identify comm topology writes: {err}"
+            err.to_string()
+                .contains("RuntimeStateDoc is runtime-peer only"),
+            "error should identify RuntimeStateDoc ownership policy: {err}"
         );
     }
 
@@ -609,8 +700,9 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            err.to_string().contains("display_index"),
-            "error should identify display index writes: {err}"
+            err.to_string()
+                .contains("RuntimeStateDoc is runtime-peer only"),
+            "error should identify RuntimeStateDoc ownership policy: {err}"
         );
     }
 
@@ -632,8 +724,9 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            err.to_string().contains("runtime_state_doc_id"),
-            "error should identify identity writes: {err}"
+            err.to_string()
+                .contains("RuntimeStateDoc is runtime-peer only"),
+            "error should identify RuntimeStateDoc ownership policy: {err}"
         );
     }
 
@@ -651,8 +744,9 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            err.to_string().contains("schema"),
-            "error should identify raw schema writes: {err}"
+            err.to_string()
+                .contains("RuntimeStateDoc is runtime-peer only"),
+            "error should identify RuntimeStateDoc ownership policy: {err}"
         );
     }
 
@@ -682,8 +776,9 @@ mod tests {
                 .unwrap_err();
 
         assert!(
-            err.to_string().contains("viewer connections are read-only"),
-            "error should identify viewer read-only policy: {err}"
+            err.to_string()
+                .contains("RuntimeStateDoc is runtime-peer only"),
+            "error should identify RuntimeStateDoc ownership policy: {err}"
         );
     }
 
@@ -748,7 +843,7 @@ mod tests {
                 "jupyter.widget",
                 "anywidget",
                 "AnyModel",
-                &json!({ "value": 1 }),
+                &json!({}),
                 0,
             )
             .unwrap();

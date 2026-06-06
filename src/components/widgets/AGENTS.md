@@ -1,6 +1,6 @@
 # Widget system — state, bridge, renderers
 
-Widgets run inside the isolated iframe. Widget state lives in `RuntimeStateDoc` (`doc.comms/`), not in Jupyter comm frames. The daemon writes comm state; `SyncEngine` diffs the CRDT, runs the WASM resolver, and forwards `ResolvedComm` events through `CommBridgeManager` to the iframe over JSON-RPC. The iframe fetches blob URLs and installs `DataView`s at each `bufferPath` before the anywidget model observes state.
+Widgets run inside the isolated iframe. Widget topology lives in `RuntimeStateDoc`; mutable widget state lives in the paired `CommsDoc`, not in Jupyter comm frames. The daemon/runtime agent writes kernel-authored comm state, editors write state deltas through the CRDT comm writer, and `SyncEngine` merges the two docs before forwarding `ResolvedComm` events through `CommBridgeManager` to the iframe over JSON-RPC. The iframe fetches blob URLs and installs `DataView`s at each `bufferPath` before the anywidget model observes state.
 
 Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle live alongside in `src/components/isolated/**` — see `src/components/isolated/AGENTS.md` for sandbox and postMessage details.
 
@@ -8,7 +8,7 @@ Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ Daemon — kernel + blob store + RuntimeStateDoc                   │
+│ Daemon — kernel + blob store + RuntimeStateDoc + CommsDoc        │
 │   comm_open / comm_msg / binary buffers                          │
 │   → blob-store + ContentRef in CRDT                              │
 └──────────────────────────────────┬───────────────────────────────┘
@@ -30,19 +30,19 @@ Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle 
 
 ## CRDT-driven inbound, outbound through the store
 
-- **Daemon** writes comm state on `comm_open` / `comm_msg(update)` / `comm_close` from kernel IOPub, through a 16 ms coalescing writer so CRDT sync isn't overwhelmed.
+- **Daemon/runtime agent** writes comm topology to `RuntimeStateDoc` and comm state to `CommsDoc` on `comm_open` / `comm_msg(update)` / `comm_close` from kernel IOPub, through a 16 ms coalescing writer so CRDT sync isn't overwhelmed.
 - **Large values** (>1 KB JSON) and **binary buffers** from the ipywidgets binary-traitlet protocol (`Image.value`, `BinaryWidget.data`, …) are stored in the blob store as `ContentRef { blob, size, media_type }`. The daemon sets `media_type` per key — `_esm` → `text/javascript`, `_css` → `text/css`, binary buffers → `application/octet-stream`, else `text/plain`. See `crates/runtimed/src/output_prep.rs`.
 - **WASM resolver** `resolve_comm_state` in `crates/runtimed-wasm/` walks the state and rewrites each `ContentRef` to a blob-server URL. It reports each path in one of three buckets:
   - `buffer_paths` — binary MIME (or missing `media_type`). Iframe fetches and installs a `DataView` (the ipywidgets binary-traitlet contract).
   - `text_paths` — text MIME. `SyncEngine` fetches and inlines the decoded string before it reaches widget code.
   - **Neither** — anywidget-reserved keys `_esm` / `_css`. The URL stays as a string so `loadESM` can `import(url)` and `injectCSS` can `<link rel="stylesheet">`. Leave these out of `buffer_paths` or the iframe resolver will turn them into `DataView`s and break both loaders.
 - **Frontend inbound**: `SyncEngine.commChanges$` (`packages/runtimed/src/sync-engine.ts`) emits `ResolvedComm { state, bufferPaths, … }`. `App.tsx` drives `WidgetStore` from those events. `useCommRouter` is **outbound-only** — the old `handleMessage` / `applyBufferPaths` path was dropped when SyncEngine became authoritative (`fix/widget-binary-buffers`). If you want to re-add an inbound path, extend SyncEngine.
-- **Frontend → kernel**: built-in widgets write state to `RuntimeStateDoc` via `getCrdtCommWriter()`. The runtime agent diffs comm state on each sync and forwards deltas to the kernel. Custom `model.send(..., buffers)` messages still use the daemon shell channel — they're ephemeral events, not CRDT state.
-- **New clients** get widget state via normal `RuntimeStateDoc` CRDT sync (frame `0x05`). Ephemeral custom messages ride `NotebookBroadcast::Comm`.
+- **Frontend → kernel**: built-in widgets write state to `CommsDoc` via `getCrdtCommWriter()`. The runtime agent gates those deltas by `RuntimeStateDoc` topology, suppresses kernel echoes, and forwards accepted foreign deltas to the kernel. Custom `model.send(..., buffers)` messages still use the daemon shell channel — they're ephemeral events, not CRDT state.
+- **New clients** get widget topology through `RuntimeStateDoc` sync (frame `0x05`) and widget state through `CommsDoc` sync (frame `0x09`). Ephemeral custom messages ride `NotebookBroadcast::Comm`.
 
 ## Reserved comm namespace: `nteract.dx.*`
 
-`nteract.dx.*` target-names are reserved for nteract kernel-side protocols. The runtime agent filters this namespace out of `RuntimeStateDoc::comms` and `NotebookBroadcast::Comm`, so it is not widget state and never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning while current blob refs ride IOPub `display_data` buffers. Pick a different prefix for widget targets.
+`nteract.dx.*` target-names are reserved for nteract kernel-side protocols. The runtime agent filters this namespace out of runtime comm topology/state and `NotebookBroadcast::Comm`, so it is not widget state and never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning while current blob refs ride IOPub `display_data` buffers. Pick a different prefix for widget targets.
 
 ## Key files
 

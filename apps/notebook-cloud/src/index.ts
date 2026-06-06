@@ -23,6 +23,7 @@ import {
 } from "./authorization.ts";
 import {
   blobKey,
+  commsDocSnapshotKey,
   createNotebookWithOwnerAcl,
   ensureCatalogSchema,
   getNotebookAclRows,
@@ -190,6 +191,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/n/:notebookId/runtime-snapshots/:runtimeHeadsHash"),
     handler: ({ params }, request, env) =>
       routeRuntimeSnapshot(request, env, params.notebookId, params.runtimeHeadsHash),
+  },
+  {
+    match: routePath("/api/n/:notebookId/comms-snapshots/:commsHeadsHash"),
+    handler: ({ params }, request, env) =>
+      routeCommsSnapshot(request, env, params.notebookId, params.commsHeadsHash),
   },
   {
     match: routePath("/api/n/:notebookId/snapshots/:headsHash"),
@@ -534,6 +540,7 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
         catalog: apiBasePath,
         blobs: `${apiBasePath}/blobs/{hash}`,
         runtime_snapshots: `${apiBasePath}/runtime-snapshots/{runtimeHeadsHash}`,
+        comms_snapshots: `${apiBasePath}/comms-snapshots/{commsHeadsHash}`,
         snapshots: `${apiBasePath}/snapshots/{notebookHeadsHash}`,
       },
     },
@@ -701,6 +708,7 @@ async function routeSnapshot(
 
   const body = await request.arrayBuffer();
   const runtimeHeadsHash = normalizedRuntimeHeadsHash(request.headers.get("x-runtime-heads-hash"));
+  const commsHeadsHash = normalizedRuntimeHeadsHash(request.headers.get("x-comms-heads-hash"));
   const runtimeStateDocId = requiredRuntimeStateDocId(
     request.headers.get("x-runtime-state-doc-id"),
   );
@@ -711,6 +719,7 @@ async function routeSnapshot(
     return json({ error: "X-Runtime-Heads-Hash header is required" }, 400);
   }
   const runtimeKey = runtimeStateSnapshotKey(runtimeStateDocId, runtimeHeadsHash);
+  const commsKey = commsHeadsHash ? commsDocSnapshotKey(runtimeStateDocId, commsHeadsHash) : null;
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
@@ -720,6 +729,7 @@ async function routeSnapshot(
       notebook_id: notebookId,
       runtime_state_doc_id: runtimeStateDocId,
       notebook_heads_hash: headsHash,
+      comms_heads_hash: commsHeadsHash ?? "",
     },
   });
 
@@ -734,6 +744,17 @@ async function routeSnapshot(
       424,
     );
   }
+  const commsObject = commsKey ? await env.NOTEBOOK_SNAPSHOTS.get(commsKey) : null;
+  if (commsKey && !commsObject) {
+    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    return json(
+      {
+        error: "snapshot publish missing comms-doc snapshot",
+        comms_heads_hash: commsHeadsHash,
+      },
+      424,
+    );
+  }
 
   const validated = await validateSnapshotPair({
     request,
@@ -744,6 +765,7 @@ async function routeSnapshot(
     expectedRuntimeStateDocId: runtimeStateDocId,
     notebookBytes: new Uint8Array(body),
     runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
+    commsDocBytes: commsObject ? new Uint8Array(await commsObject.arrayBuffer()) : undefined,
   });
   if (!validated.ok) {
     await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
@@ -757,8 +779,10 @@ async function routeSnapshot(
       runtimeStateDocId,
       notebookHeadsHash: headsHash,
       runtimeHeadsHash,
+      commsHeadsHash,
       snapshotKey: key,
       runtimeSnapshotKey: runtimeKey,
+      commsSnapshotKey: commsKey,
       actorLabel: identity.actorLabel,
       publishPublic: true,
     });
@@ -768,7 +792,102 @@ async function routeSnapshot(
   }
 
   return json(
-    { ok: true, revision_id: revisionId, key, runtime_state_doc_id: runtimeStateDocId },
+    {
+      ok: true,
+      revision_id: revisionId,
+      key,
+      runtime_state_doc_id: runtimeStateDocId,
+      comms_snapshot_key: commsKey,
+    },
+    201,
+  );
+}
+
+async function routeCommsSnapshot(
+  request: Request,
+  env: Env,
+  notebookId: string,
+  headsHash: string,
+): Promise<Response> {
+  if (request.method === "GET") {
+    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    if (identity instanceof Response) {
+      return identity;
+    }
+    const runtimeStateDocId = requiredRuntimeStateDocId(
+      request.headers.get("x-runtime-state-doc-id"),
+    );
+    if (!runtimeStateDocId) {
+      return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
+    }
+    const key = commsDocSnapshotKey(runtimeStateDocId, headsHash);
+    const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+    if (!object) {
+      return json({ error: "comms snapshot not found" }, 404);
+    }
+    if (
+      object.customMetadata?.notebook_id !== notebookId ||
+      object.customMetadata?.runtime_state_doc_id !== runtimeStateDocId
+    ) {
+      return json({ error: "comms snapshot not found" }, 404);
+    }
+
+    return immutableR2ObjectResponse(object);
+  }
+
+  if (request.method !== "PUT") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const identity = await authorizePublishOrCreateOrResponse(
+    request,
+    env,
+    notebookId,
+    "comms snapshots",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!env.NOTEBOOK_SNAPSHOTS) {
+    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
+  }
+
+  const body = await request.arrayBuffer();
+  const runtimeStateDocId = requiredRuntimeStateDocId(
+    request.headers.get("x-runtime-state-doc-id"),
+  );
+  if (!runtimeStateDocId) {
+    return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
+  }
+  const key = commsDocSnapshotKey(runtimeStateDocId, headsHash);
+  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
+  if (
+    existing &&
+    (existing.customMetadata?.notebook_id !== notebookId ||
+      existing.customMetadata?.runtime_state_doc_id !== runtimeStateDocId)
+  ) {
+    return json({ error: "comms snapshot belongs to another notebook" }, 403);
+  }
+  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+    httpMetadata: {
+      contentType: request.headers.get("content-type") ?? "application/octet-stream",
+      cacheControl: "public, max-age=31536000, immutable",
+    },
+    customMetadata: {
+      notebook_id: notebookId,
+      runtime_state_doc_id: runtimeStateDocId,
+      comms_heads_hash: headsHash,
+      artifact: "comms-doc-snapshot",
+    },
+  });
+
+  return json(
+    { ok: true, key, size: body.byteLength, runtime_state_doc_id: runtimeStateDocId },
     201,
   );
 }
@@ -1512,6 +1631,7 @@ async function validateSnapshotPair(options: {
   expectedRuntimeStateDocId: string;
   notebookBytes: Uint8Array;
   runtimeStateBytes: Uint8Array;
+  commsDocBytes?: Uint8Array;
 }): Promise<SnapshotPairValidationResult> {
   const startedAt = Date.now();
   const bucket = options.env.NOTEBOOK_SNAPSHOTS;
@@ -1531,6 +1651,7 @@ async function validateSnapshotPair(options: {
       runtimeHeadsHash: options.runtimeHeadsHash,
       notebookBytes: options.notebookBytes,
       runtimeStateBytes: options.runtimeStateBytes,
+      commsDocBytes: options.commsDocBytes,
       blobResolver: createNotebookCloudBlobResolver({
         baseUrl: options.request.url,
         blobBasePath: notebookCloudBlobBasePath(options.notebookId),
@@ -2218,6 +2339,7 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
     catalogEndpoint: notebookApiBasePath,
     snapshotBasePath: `${notebookApiBasePath}/snapshots/`,
     runtimeSnapshotBasePath: `${notebookApiBasePath}/runtime-snapshots/`,
+    commsSnapshotBasePath: `${notebookApiBasePath}/comms-snapshots/`,
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,
     accessRequestsEndpoint: `${notebookApiBasePath}/access-requests`,

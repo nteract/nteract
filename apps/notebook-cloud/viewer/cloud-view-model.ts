@@ -1,5 +1,8 @@
 import type { BlobResolver } from "runtimed";
-import { snapshotWidgetCommsFromRuntimeState, type SnapshotWidgetComm } from "../src/widget-comms";
+import {
+  snapshotWidgetCommsFromRuntimeAndCommsState,
+  type SnapshotWidgetComm,
+} from "../src/widget-comms";
 import {
   resolveCellsProgressively,
   type ProgressiveCellResolutionCallbacks,
@@ -30,8 +33,9 @@ export async function materializeCloudNotebookView(
   const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json?.());
   const notebookLanguage =
     languageFromNotebookMetadata(metadata) ?? options.defaultNotebookLanguage;
-  const widgetComms = snapshotWidgetCommsFromRuntimeState(
+  const widgetComms = snapshotWidgetCommsFromRuntimeAndCommsState(
     handle.get_runtime_state(),
+    handle.get_comms_state?.(),
     options.blobResolver,
   );
   const cells = await resolveCellsProgressively(

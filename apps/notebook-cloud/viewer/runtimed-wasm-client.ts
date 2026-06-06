@@ -56,11 +56,16 @@ export async function createBootstrapNotebookHandle(
 export async function loadSnapshotPairHandle(
   notebookBytes: Uint8Array,
   runtimeStateBytes: Uint8Array,
+  commsBytes: Uint8Array | undefined,
   modulePath: string | URL,
   moduleOrPath: WasmModuleOrPath,
 ): Promise<NotebookHandle> {
   const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
-  return module.NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+  const handle = module.NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+  if (commsBytes) {
+    handle.load_comms_doc(commsBytes);
+  }
+  return handle;
 }
 
 export function encodeHeartbeatPresenceAfterInit(peerId: string): Uint8Array {

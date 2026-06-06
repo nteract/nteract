@@ -1,3 +1,4 @@
+mod comms;
 mod doc;
 pub mod error;
 mod handle;
@@ -5,6 +6,7 @@ mod policy;
 mod projection;
 mod types;
 
+pub use comms::{CommsDoc, CommsDocHandle, CommsForeignSyncView, CommsState};
 pub use doc::*;
 pub use error::RuntimeStateError;
 pub use handle::RuntimeStateHandle;

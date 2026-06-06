@@ -19,11 +19,12 @@
 //! - Frame 0x01: RuntimeAgentRequest (coordinator -> runtime agent)
 //! - Frame 0x02: RuntimeAgentResponse (runtime agent -> coordinator)
 //! - Frame 0x05: RuntimeStateSync (bidirectional, carries execution queue + outputs)
+//! - Frame 0x09: CommsDocSync (bidirectional, carries widget comm state)
 //!
 //! ## Lifecycle
 //!
 //! 1. Runtime agent connects to daemon socket, sends `Handshake::RuntimeAgent`
-//! 2. Initial sync for NotebookDoc and RuntimeStateDoc
+//! 2. Initial sync for NotebookDoc, RuntimeStateDoc, and CommsDoc
 //! 3. Runtime agent waits for `LaunchKernel` RPC
 //! 4. Main select loop: socket frames, LifecycleSignals, WorkCommands, RuntimeStateDoc changes
 //! 5. Watches for new `status=queued` execution entries after each sync
@@ -38,7 +39,7 @@ use notebook_protocol::connection::{
     FrameSink, FrameSource, FrameTransport, NotebookFrameType, PackageManager, UdsFrameTransport,
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
-use runtime_doc::{CommDocEntry, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
+use runtime_doc::{CommsDoc, CommsDocHandle, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
 use runtime_doc::{KernelActivity, RuntimeStateHandle};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info, warn};
@@ -89,6 +90,7 @@ fn reconnect_floor_delay(
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
     state: RuntimeStateHandle,
+    comms: CommsDocHandle,
     blob_store: Arc<BlobStore>,
     broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
     presence: Arc<RwLock<PresenceState>>,
@@ -281,6 +283,13 @@ where
     let state_kick_tx = state_changed_tx.clone();
     let state = RuntimeStateHandle::new(state_doc, state_changed_tx);
 
+    let comms_doc = CommsDoc::try_new_with_actor(&runtime_agent_id)
+        .map_err(|e| anyhow::anyhow!("create runtime-agent comms doc: {e}"))?;
+    let mut comms_sync_state = automerge::sync::State::new();
+    let (comms_changed_tx, mut comms_changed_rx) = broadcast::channel::<()>(64);
+    let comms_kick_tx = comms_changed_tx.clone();
+    let comms = CommsDocHandle::new(comms_doc, comms_changed_tx);
+
     // -- 3. Create local infrastructure -------------------------------------
 
     let blob_store = Arc::new(BlobStore::new(blob_root.clone()));
@@ -291,6 +300,7 @@ where
 
     let ctx = RuntimeAgentContext {
         state: state.clone(),
+        comms: comms.clone(),
         blob_store,
         broadcast_tx: broadcast_tx.clone(),
         presence,
@@ -332,6 +342,8 @@ where
     // terminal events). u64 wraparound is a non-issue in practice.
     let sync_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut inflight_sync: Option<tokio::task::JoinHandle<()>> = None;
+    let mut runtime_state_doc_seen = false;
+    let mut orphan_comm_candidates: HashSet<String> = HashSet::new();
 
     // -- 3b. Launch-on-attach (cloud only) ----------------------------------
     //
@@ -556,47 +568,18 @@ where
                                 }
                             }
 
-                            // RuntimeStateSync -- apply coordinator's changes, check for new queue entries
-                            // and forward frontend-originated comm state changes to kernel
+                            // RuntimeStateSync -- apply coordinator's changes and check for new queue entries.
                             NotebookFrameType::RuntimeStateSync => {
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
-                                    // Apply sync and extract data we need for async
-                                    // work, all in one lock acquisition.
                                     let sync_result = ctx.state.with_doc(|sd| {
-                                        // Snapshot comm state before applying sync so we can
-                                        // detect frontend-originated widget state changes.
-                                        let comms_before = sd.get_comms();
-
-                                        // Per-change actor filter: diff comm state against a
-                                        // foreign-only view of the post-sync doc.
-                                        match sd.receive_sync_and_foreign_comms_recovering(
+                                        match sd.receive_sync_message_with_changes_recovering(
                                             &mut coordinator_sync_state,
                                             msg,
-                                            |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
                                             "runtime-agent-state-receive",
                                         ) {
-                                            Ok(view) if !view.applied_actors.is_empty() => {
+                                            Ok(true) => {
                                                 let queued = sd.get_queued_executions();
-                                                let comm_updates = match view.foreign_comms {
-                                                    Some(foreign_comms) => {
-                                                        diff_comm_state(&comms_before, &foreign_comms)
-                                                    }
-                                                    None => {
-                                                        debug!(
-                                                            "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
-                                                            view.applied_actors.len()
-                                                        );
-                                                        Vec::new()
-                                                    }
-                                                };
-                                                let comms_after = sd.get_comms();
-                                                let superseded_hashes =
-                                                    superseded_content_ref_hashes_by_comm(
-                                                        &comms_before,
-                                                        &comms_after,
-                                                        &comm_updates,
-                                                    );
-                                                Ok(Some((queued, comm_updates, superseded_hashes)))
+                                                Ok(Some(queued))
                                             }
                                             Ok(_) => Ok(None),
                                             Err(e) => {
@@ -609,13 +592,130 @@ where
                                         }
                                     });
 
-                                    // Async work outside the lock
                                     match sync_result {
-                                        Ok(Some((
-                                            queued,
-                                            comm_updates,
-                                            superseded_hashes_by_comm,
-                                        ))) => {
+                                        Ok(Some(queued)) => {
+                                            runtime_state_doc_seen = true;
+                                            queue_synced_executions(
+                                                queued,
+                                                &mut seen_execution_ids,
+                                                &mut kernel_state,
+                                                kernel.as_mut(),
+                                            )
+                                            .await;
+                                        }
+                                        Ok(None) => {
+                                            runtime_state_doc_seen = true;
+                                        }
+                                        Err(e) => {
+                                            warn!("[runtime-agent] Closing after RuntimeStateSync failure: {}", e);
+                                            break;
+                                        }
+                                    }
+
+                                    // Send sync reply
+                                    let reply_encoded = match ctx
+                                        .state
+                                        .generate_sync_message_recovering(
+                                            &mut coordinator_sync_state,
+                                            "runtime-agent-state-reply",
+                                        ) {
+                                            Ok(message) => message.map(|reply| reply.encode()),
+                                            Err(e) => {
+                                                warn!(
+                                                    "[runtime-agent] Closing after RuntimeStateSync reply failure: {}",
+                                                    e
+                                                );
+                                                break;
+                                            }
+                                        };
+                                    if let Some(encoded) = reply_encoded {
+                                        let _ = frame_sink.send_frame(
+                                            NotebookFrameType::RuntimeStateSync,
+                                            &encoded,
+                                        ).await;
+                                    }
+                                }
+                            }
+
+                            // CommsDocSync -- apply widget state changes, suppress echoes, gate by
+                            // RuntimeStateDoc topology, and forward only live frontend-originated
+                            // deltas to the kernel.
+                            NotebookFrameType::CommsDocSync => {
+                                if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
+                                    let active_comm_ids: HashSet<String> = ctx
+                                        .state
+                                        .read(|sd| sd.get_comms().keys().cloned().collect())
+                                        .unwrap_or_default();
+
+                                    let sync_result = ctx.comms.with_doc(|comms_doc| {
+                                        let comms_before = comms_doc.get_comms();
+                                        match comms_doc.receive_sync_and_foreign_comms_recovering(
+                                            &mut comms_sync_state,
+                                            msg,
+                                            |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
+                                            "runtime-agent-comms-receive",
+                                        ) {
+                                            Ok(view) if !view.applied_actors.is_empty() => {
+                                                let current_comm_ids: HashSet<String> =
+                                                    comms_doc.get_comms().keys().cloned().collect();
+                                                let should_prune_orphans =
+                                                    runtime_state_doc_seen
+                                                        && should_prune_orphan_comm_states(
+                                                            &active_comm_ids,
+                                                            &current_comm_ids,
+                                                            &orphan_comm_candidates,
+                                                        );
+                                                orphan_comm_candidates = current_comm_ids
+                                                    .difference(&active_comm_ids)
+                                                    .cloned()
+                                                    .collect();
+                                                let removed_orphans = if should_prune_orphans {
+                                                    comms_doc
+                                                        .prune_orphan_comm_states(&active_comm_ids)?
+                                                } else {
+                                                    Vec::new()
+                                                };
+                                                if !removed_orphans.is_empty() {
+                                                    debug!(
+                                                        "[runtime-agent] Pruned {} orphan CommsDoc state entries",
+                                                        removed_orphans.len()
+                                                    );
+                                                }
+
+                                                let comm_updates = match view.foreign_comms {
+                                                    Some(foreign_comms) => {
+                                                        diff_comm_state(&comms_before, &foreign_comms, &active_comm_ids)
+                                                    }
+                                                    None => {
+                                                        debug!(
+                                                            "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
+                                                            view.applied_actors.len()
+                                                        );
+                                                        Vec::new()
+                                                    }
+                                                };
+                                                let comms_after = comms_doc.get_comms();
+                                                let superseded_hashes =
+                                                    superseded_content_ref_hashes_by_comm(
+                                                        &comms_before,
+                                                        &comms_after,
+                                                        &comm_updates,
+                                                    );
+                                                Ok(Some((comm_updates, superseded_hashes)))
+                                            }
+                                            Ok(_) => Ok(None),
+                                            Err(e) => {
+                                                warn!(
+                                                    "[runtime-agent] Failed to apply CommsDocSync: {}",
+                                                    e
+                                                );
+                                                Err(e.into())
+                                            }
+                                        }
+                                    });
+
+                                    match sync_result {
+                                        Ok(Some((comm_updates, superseded_hashes_by_comm))) => {
                                             if !comm_updates.is_empty() {
                                                 if let Some(ref mut k) = kernel {
                                                     for (comm_id, delta) in &comm_updates {
@@ -632,10 +732,6 @@ where
                                                         )
                                                         .await
                                                         else {
-                                                            // The doc supersession already happened; even though no
-                                                            // kernel send is needed for an echo, stale ephemeral blobs
-                                                            // can be freed here. Failed kernel sends skip this cleanup
-                                                            // below so the bytes remain available for a retry.
                                                             free_superseded_ephemeral_blobs(
                                                                 &ctx.blob_store,
                                                                 comm_id,
@@ -679,33 +775,24 @@ where
                                                     }
                                                 }
                                             }
-
-                                            queue_synced_executions(
-                                                queued,
-                                                &mut seen_execution_ids,
-                                                &mut kernel_state,
-                                                kernel.as_mut(),
-                                            )
-                                            .await;
                                         }
                                         Ok(None) => {}
                                         Err(e) => {
-                                            warn!("[runtime-agent] Closing after RuntimeStateSync failure: {}", e);
+                                            warn!("[runtime-agent] Closing after CommsDocSync failure: {}", e);
                                             break;
                                         }
                                     }
 
-                                    // Send sync reply
                                     let reply_encoded = match ctx
-                                        .state
+                                        .comms
                                         .generate_sync_message_recovering(
-                                            &mut coordinator_sync_state,
-                                            "runtime-agent-state-reply",
+                                            &mut comms_sync_state,
+                                            "runtime-agent-comms-reply",
                                         ) {
                                             Ok(message) => message.map(|reply| reply.encode()),
                                             Err(e) => {
                                                 warn!(
-                                                    "[runtime-agent] Closing after RuntimeStateSync reply failure: {}",
+                                                    "[runtime-agent] Closing after CommsDocSync reply failure: {}",
                                                     e
                                                 );
                                                 break;
@@ -713,7 +800,7 @@ where
                                         };
                                     if let Some(encoded) = reply_encoded {
                                         let _ = frame_sink.send_frame(
-                                            NotebookFrameType::RuntimeStateSync,
+                                            NotebookFrameType::CommsDocSync,
                                             &encoded,
                                         ).await;
                                     }
@@ -773,13 +860,15 @@ where
                                 frame_source = new_source;
                                 frame_sink = new_sink;
                                 // The daemon creates a fresh sync state for
-                                // each connection; match that or the doc
+                                // each connection; match that or the docs
                                 // won't converge.
                                 coordinator_sync_state = automerge::sync::State::new();
+                                comms_sync_state = automerge::sync::State::new();
                                 // Kick off a full resync so the daemon gets
                                 // everything the kernel produced while we
                                 // were disconnected.
                                 let _ = state_kick_tx.send(());
+                                let _ = comms_kick_tx.send(());
                                 // Track for the flap floor (recoverable only;
                                 // the UDS path leaves this `None`).
                                 if transport.clean_eof_is_recoverable() {
@@ -835,7 +924,9 @@ where
                                 frame_source = new_source;
                                 frame_sink = new_sink;
                                 coordinator_sync_state = automerge::sync::State::new();
+                                comms_sync_state = automerge::sync::State::new();
                                 let _ = state_kick_tx.send(());
+                                let _ = comms_kick_tx.send(());
                                 last_recoverable_reconnect = Some(tokio::time::Instant::now());
                                 info!("[runtime-agent] Reconnected after clean close");
                                 continue;
@@ -946,8 +1037,70 @@ where
                                 frame_source = new_source;
                                 frame_sink = new_sink;
                                 coordinator_sync_state = automerge::sync::State::new();
+                                comms_sync_state = automerge::sync::State::new();
                                 let _ = state_kick_tx.send(());
+                                let _ = comms_kick_tx.send(());
                                 info!("[runtime-agent] Reconnected after send failure");
+                                continue;
+                            }
+                            Err(reconnect_err) => {
+                                error!(
+                                    "[runtime-agent] Reconnect failed after retries: {}",
+                                    reconnect_err
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Sync CommsDoc changes to coordinator
+            _ = comms_changed_rx.recv() => {
+                while comms_changed_rx.try_recv().is_ok() {}
+
+                let encoded = match ctx
+                    .comms
+                    .generate_sync_message_recovering(
+                        &mut comms_sync_state,
+                        "runtime-agent-comms-outbound",
+                    ) {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
+                            warn!(
+                                "[runtime-agent] Closing after outbound CommsDocSync failure: {}",
+                                e
+                            );
+                            break;
+                        }
+                    };
+                if let Some(encoded) = encoded {
+                    if let Err(e) = frame_sink.send_frame(
+                        NotebookFrameType::CommsDocSync,
+                        &encoded,
+                    ).await {
+                        if !transport.clean_eof_is_recoverable() {
+                            warn!("[runtime-agent] Closing after CommsDocSync send failure: {}", e);
+                            break;
+                        }
+                        warn!(
+                            "[runtime-agent] CommsDocSync send failed: {} — reconnecting \
+                             (kernel stays running)",
+                            e
+                        );
+                        drop(frame_source);
+                        match reconnect_after_writer_error(
+                            &transport,
+                            &mut last_recoverable_reconnect,
+                        ).await {
+                            Ok((new_source, new_sink)) => {
+                                frame_source = new_source;
+                                frame_sink = new_sink;
+                                coordinator_sync_state = automerge::sync::State::new();
+                                comms_sync_state = automerge::sync::State::new();
+                                let _ = state_kick_tx.send(());
+                                let _ = comms_kick_tx.send(());
+                                info!("[runtime-agent] Reconnected after CommsDoc send failure");
                                 continue;
                             }
                             Err(reconnect_err) => {
@@ -992,7 +1145,9 @@ where
                             frame_source = new_source;
                             frame_sink = new_sink;
                             coordinator_sync_state = automerge::sync::State::new();
+                            comms_sync_state = automerge::sync::State::new();
                             let _ = state_kick_tx.send(());
+                            let _ = comms_kick_tx.send(());
                             info!("[runtime-agent] Reconnected after async response send failure");
                             continue;
                         }
@@ -1195,6 +1350,7 @@ async fn handle_runtime_agent_request(
 
             let shared = KernelSharedRefs {
                 state: ctx.state.clone(),
+                comms: ctx.comms.clone(),
                 blob_store: ctx.blob_store.clone(),
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
@@ -1313,6 +1469,7 @@ async fn handle_runtime_agent_request(
 
             let shared = KernelSharedRefs {
                 state: ctx.state.clone(),
+                comms: ctx.comms.clone(),
                 blob_store: ctx.blob_store.clone(),
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
@@ -1831,22 +1988,43 @@ fn mark_interrupted_executions_failed(
     }
 }
 
+fn should_prune_orphan_comm_states(
+    active_comm_ids: &HashSet<String>,
+    current_comm_ids: &HashSet<String>,
+    previous_orphan_candidates: &HashSet<String>,
+) -> bool {
+    let mut saw_orphan = false;
+    for comm_id in current_comm_ids {
+        if active_comm_ids.contains(comm_id) {
+            continue;
+        }
+        saw_orphan = true;
+        if !previous_orphan_candidates.contains(comm_id) {
+            return false;
+        }
+    }
+    saw_orphan
+}
+
 /// Diff two comm state snapshots, returning `(comm_id, changed_properties)` pairs.
 ///
 /// Only diffs existing comms (new comms originate from kernel `comm_open` and
 /// don't need forwarding back). Returns a minimal delta per comm -- only
 /// properties whose values actually changed.
 fn diff_comm_state(
-    before: &HashMap<String, CommDocEntry>,
-    after: &HashMap<String, CommDocEntry>,
+    before: &HashMap<String, serde_json::Value>,
+    after: &HashMap<String, serde_json::Value>,
+    active_comm_ids: &HashSet<String>,
 ) -> Vec<(String, serde_json::Value)> {
     let mut updates = Vec::new();
-    for (comm_id, after_entry) in after {
-        if let Some(before_entry) = before.get(comm_id) {
-            if let (Some(before_obj), Some(after_obj)) = (
-                before_entry.state.as_object(),
-                after_entry.state.as_object(),
-            ) {
+    for (comm_id, after_state) in after {
+        if !active_comm_ids.contains(comm_id) {
+            continue;
+        }
+        if let Some(before_state) = before.get(comm_id) {
+            if let (Some(before_obj), Some(after_obj)) =
+                (before_state.as_object(), after_state.as_object())
+            {
                 let mut delta = serde_json::Map::new();
                 for (key, after_val) in after_obj {
                     match before_obj.get(key) {
@@ -1866,8 +2044,8 @@ fn diff_comm_state(
 }
 
 fn superseded_content_ref_hashes_by_comm(
-    before: &HashMap<String, CommDocEntry>,
-    after: &HashMap<String, CommDocEntry>,
+    before: &HashMap<String, serde_json::Value>,
+    after: &HashMap<String, serde_json::Value>,
     comm_updates: &[(String, serde_json::Value)],
 ) -> HashMap<String, Vec<String>> {
     // BlobStore is content-addressed across the document, so identical hashes
@@ -1876,11 +2054,11 @@ fn superseded_content_ref_hashes_by_comm(
     let mut superseded = HashMap::new();
 
     for (comm_id, _) in comm_updates {
-        let Some(before_entry) = before.get(comm_id) else {
+        let Some(before_state) = before.get(comm_id) else {
             continue;
         };
         let mut hashes = HashSet::new();
-        for (_, hash) in collect_content_refs(&before_entry.state) {
+        for (_, hash) in collect_content_refs(before_state) {
             if !live_hashes_after.contains(&hash) {
                 hashes.insert(hash);
             }
@@ -1893,10 +2071,10 @@ fn superseded_content_ref_hashes_by_comm(
     superseded
 }
 
-fn content_ref_hashes_in_comms(comms: &HashMap<String, CommDocEntry>) -> HashSet<String> {
+fn content_ref_hashes_in_comms(comms: &HashMap<String, serde_json::Value>) -> HashSet<String> {
     let mut hashes = HashSet::new();
-    for entry in comms.values() {
-        for (_, hash) in collect_content_refs(&entry.state) {
+    for state in comms.values() {
+        for (_, hash) in collect_content_refs(state) {
             hashes.insert(hash);
         }
     }
@@ -2174,6 +2352,24 @@ mod tests {
             reconnect_floor_delay(true, Some(Duration::from_secs(1)), Duration::from_secs(1)),
             None
         );
+    }
+
+    #[test]
+    fn orphan_comm_gc_waits_for_confirmed_absence() {
+        let active = HashSet::from(["alive".to_string()]);
+        let current = HashSet::from(["alive".to_string(), "loaded-before-topology".to_string()]);
+
+        assert!(!should_prune_orphan_comm_states(
+            &active,
+            &current,
+            &HashSet::new(),
+        ));
+
+        assert!(should_prune_orphan_comm_states(
+            &active,
+            &current,
+            &HashSet::from(["loaded-before-topology".to_string()]),
+        ));
     }
 
     // -- reconnect_with_backoff against a mock transport ------------------
@@ -2486,22 +2682,16 @@ mod tests {
         fn update_launched_uv_deps(&mut self, _: Vec<String>) {}
     }
 
-    fn comm_entry(state: serde_json::Value) -> CommDocEntry {
-        CommDocEntry {
-            target_name: "jupyter.widget".to_string(),
-            model_module: "anywidget".to_string(),
-            model_name: "AnyModel".to_string(),
-            state,
-            outputs: Vec::new(),
-            seq: 0,
-            capture_msg_id: String::new(),
-        }
+    fn comm_state(state: serde_json::Value) -> serde_json::Value {
+        state
     }
 
     /// Build test fixtures: RuntimeAgentContext + KernelState wired to the same doc.
     fn test_fixtures() -> (RuntimeAgentContext, KernelState, RuntimeStateHandle) {
         let (state_changed_tx, _) = broadcast::channel(64);
         let handle = RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
+        let (comms_changed_tx, _) = broadcast::channel(64);
+        let comms = CommsDocHandle::new(CommsDoc::new(), comms_changed_tx);
         let (broadcast_tx, _) = broadcast::channel(64);
         let (presence_tx, _) = broadcast::channel(16);
         let blob_store = Arc::new(BlobStore::new(std::env::temp_dir().join("test-blobs")));
@@ -2509,6 +2699,7 @@ mod tests {
 
         let ctx = RuntimeAgentContext {
             state: handle.clone(),
+            comms,
             blob_store,
             broadcast_tx: broadcast_tx.clone(),
             presence,
@@ -2899,8 +3090,8 @@ mod tests {
             }
         });
         let after_state = serde_json::json!({ "selection": null });
-        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
-        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let before = HashMap::from([("comm-a".to_string(), comm_state(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_state(after_state))]);
         let updates = vec![(
             "comm-a".to_string(),
             serde_json::json!({ "selection": null }),
@@ -2927,8 +3118,8 @@ mod tests {
             }
         });
         let after_state = serde_json::json!({ "selection": null });
-        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
-        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let before = HashMap::from([("comm-a".to_string(), comm_state(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_state(after_state))]);
         let updates = vec![(
             "comm-a".to_string(),
             serde_json::json!({ "selection": null }),
@@ -2959,8 +3150,8 @@ mod tests {
         let content_ref = serde_json::json!({ "blob": hash, "size": 3, "media_type": "application/octet-stream" });
         let before_state = serde_json::json!({ "a": { "view": content_ref.clone() } });
         let after_state = serde_json::json!({ "b": { "view": content_ref } });
-        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
-        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let before = HashMap::from([("comm-a".to_string(), comm_state(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_state(after_state))]);
         let updates = vec![(
             "comm-a".to_string(),
             serde_json::json!({ "a": null, "b": {} }),
@@ -2991,21 +3182,21 @@ mod tests {
         let before = HashMap::from([
             (
                 "comm-a".to_string(),
-                comm_entry(serde_json::json!({ "selection": { "view": content_ref.clone() } })),
+                comm_state(serde_json::json!({ "selection": { "view": content_ref.clone() } })),
             ),
             (
                 "comm-b".to_string(),
-                comm_entry(serde_json::json!({ "selection": { "view": content_ref.clone() } })),
+                comm_state(serde_json::json!({ "selection": { "view": content_ref.clone() } })),
             ),
         ]);
         let after = HashMap::from([
             (
                 "comm-a".to_string(),
-                comm_entry(serde_json::json!({ "selection": null })),
+                comm_state(serde_json::json!({ "selection": null })),
             ),
             (
                 "comm-b".to_string(),
-                comm_entry(serde_json::json!({ "selection": { "view": content_ref } })),
+                comm_state(serde_json::json!({ "selection": { "view": content_ref } })),
             ),
         ]);
         let updates = vec![(
@@ -3040,8 +3231,8 @@ mod tests {
             }
         });
         let after_state = serde_json::json!({ "selection": null });
-        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
-        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let before = HashMap::from([("comm-a".to_string(), comm_state(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_state(after_state))]);
         let updates = vec![(
             "comm-a".to_string(),
             serde_json::json!({ "selection": null }),

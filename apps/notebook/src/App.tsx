@@ -615,7 +615,7 @@ function AppContent() {
   }, [sendCommMessage]);
 
   // Set up CRDT comm writer for widget state updates.
-  // Writes directly to RuntimeStateDoc via WASM — no SendComm round-trip.
+  // Writes directly to CommsDoc via WASM — no SendComm round-trip.
   useEffect(() => {
     setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
       const handle = getHandle();
@@ -667,8 +667,9 @@ function AppContent() {
 
   // ── CRDT → WidgetStore projection via SyncEngine.commChanges$ ──────
   // Replaces the old Jupyter message synthesis path. The SyncEngine diffs
-  // RuntimeStateDoc.comms, resolves ContentRefs via WASM, and emits
-  // opened/updated/closed events. We drive the WidgetStore directly.
+  // RuntimeStateDoc topology plus CommsDoc state, resolves ContentRefs via
+  // WASM, and emits opened/updated/closed events. We drive the WidgetStore
+  // directly.
   useEffect(() => {
     const engine = getEngine();
     if (!engine) return;

@@ -23,9 +23,10 @@ import type {
   R2ObjectBody,
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
-import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
+import { initializeRuntimedWasm, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import {
   blobKey,
+  commsDocSnapshotKey,
   createNotebookWithOwnerAcl,
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
@@ -2325,6 +2326,17 @@ describe("Worker artifact routes", () => {
         ),
       ),
     ]);
+    const commsPeer = new RuntimeStatePeerHandle("runtime");
+    commsPeer.put_comm_json(
+      "widget-model",
+      "jupyter.widget",
+      "@jupyter-widgets/controls",
+      "IntTextModel",
+      JSON.stringify({ value: 7 }),
+      1,
+    );
+    const commsDocBytes = commsPeer.save_comms_doc();
+    commsPeer.free();
 
     const runtimePut = await ownerPut(
       env,
@@ -2335,6 +2347,15 @@ describe("Worker artifact routes", () => {
       },
     );
     assert.equal(runtimePut.status, 201);
+    const commsPut = await ownerPut(
+      env,
+      "/api/n/route-demo/comms-snapshots/comms-fixture",
+      commsDocBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:output-streaming",
+      },
+    );
+    assert.equal(commsPut.status, 201);
     assert.deepEqual(
       env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
       [["route-demo", "principal", "user:dev:alice", "owner"]],
@@ -2346,16 +2367,29 @@ describe("Worker artifact routes", () => {
       notebookBytes,
       {
         "X-Runtime-Heads-Hash": "runtime-fixture",
+        "X-Comms-Heads-Hash": "comms-fixture",
         "X-Runtime-State-Doc-Id": "runtime:output-streaming",
       },
     );
     assert.equal(notebookPut.status, 201);
-    const notebookPutBody = (await notebookPut.json()) as { runtime_state_doc_id: string };
+    const notebookPutBody = (await notebookPut.json()) as {
+      runtime_state_doc_id: string;
+      comms_snapshot_key: string;
+    };
     assert.equal(notebookPutBody.runtime_state_doc_id, "runtime:output-streaming");
+    assert.equal(
+      notebookPutBody.comms_snapshot_key,
+      commsDocSnapshotKey("runtime:output-streaming", "comms-fixture"),
+    );
     assert.equal(env.DB.revisions[0]?.runtime_state_doc_id, "runtime:output-streaming");
     assert.equal(
       env.DB.revisions[0]?.runtime_snapshot_key,
       runtimeStateSnapshotKey("runtime:output-streaming", "runtime-fixture"),
+    );
+    assert.equal(env.DB.revisions[0]?.comms_heads_hash, "comms-fixture");
+    assert.equal(
+      env.DB.revisions[0]?.comms_snapshot_key,
+      commsDocSnapshotKey("runtime:output-streaming", "comms-fixture"),
     );
     assert.deepEqual(
       env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
@@ -2384,6 +2418,15 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(runtimeResponse.status, 200);
+
+    const commsResponse = await worker.fetch(
+      new Request("http://localhost/api/n/route-demo/comms-snapshots/comms-fixture", {
+        headers: { "X-Runtime-State-Doc-Id": "runtime:output-streaming" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(commsResponse.status, 200);
 
     const latestRenderRoute = await worker.fetch(
       new Request("http://localhost/api/n/route-demo/render"),
@@ -3022,8 +3065,10 @@ interface RevisionRow {
   runtime_state_doc_id: string | null;
   notebook_heads_hash: string;
   runtime_heads_hash: string | null;
+  comms_heads_hash: string | null;
   snapshot_key: string;
   runtime_snapshot_key: string | null;
+  comms_snapshot_key: string | null;
   actor_label: string;
   created_at: string;
 }
@@ -3435,8 +3480,10 @@ class FakeD1Statement implements D1PreparedStatement {
         runtimeStateDocId,
         notebookHeadsHash,
         runtimeHeadsHash,
+        commsHeadsHash,
         snapshotKey,
         runtimeSnapshotKey,
+        commsSnapshotKey,
         actorLabel,
       ] = this.values as [
         string,
@@ -3444,7 +3491,9 @@ class FakeD1Statement implements D1PreparedStatement {
         string | null,
         string,
         string | null,
+        string | null,
         string,
+        string | null,
         string | null,
         string,
       ];
@@ -3454,8 +3503,10 @@ class FakeD1Statement implements D1PreparedStatement {
         runtime_state_doc_id: runtimeStateDocId,
         notebook_heads_hash: notebookHeadsHash,
         runtime_heads_hash: runtimeHeadsHash,
+        comms_heads_hash: commsHeadsHash,
         snapshot_key: snapshotKey,
         runtime_snapshot_key: runtimeSnapshotKey,
+        comms_snapshot_key: commsSnapshotKey,
         actor_label: actorLabel,
         created_at: new Date().toISOString(),
       });

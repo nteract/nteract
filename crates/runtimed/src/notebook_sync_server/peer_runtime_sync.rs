@@ -80,7 +80,7 @@ pub(super) async fn handle_runtime_state_frame(
     let mut message =
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
     let has_client_changes = !message.changes.is_empty();
-    if has_client_changes && !connection_identity.allows_runtime_state_write() {
+    if has_client_changes && !allows_runtime_state_doc_write(connection_identity.scope()) {
         warn!(
             "[notebook-sync] Stripping unauthorized RuntimeStateDoc changes for scope {}",
             connection_identity.scope()
@@ -210,6 +210,10 @@ fn runtime_state_write_scope(scope: ConnectionScope) -> RuntimeStateWriteScope {
         ConnectionScope::RuntimePeer => RuntimeStateWriteScope::RuntimePeer,
         ConnectionScope::Owner => RuntimeStateWriteScope::Owner,
     }
+}
+
+fn allows_runtime_state_doc_write(scope: ConnectionScope) -> bool {
+    matches!(scope, ConnectionScope::RuntimePeer)
 }
 
 fn generate_runtime_state_sync_message(

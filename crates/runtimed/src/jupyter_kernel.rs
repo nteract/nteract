@@ -1346,6 +1346,7 @@ impl KernelConnection for JupyterKernel {
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
         let state_for_iopub = shared.state.clone();
+        let comms_for_iopub = shared.comms.clone();
         let iopub_output_redactor = output_redactor.clone();
         // IOPub writes use transactions with the base kernel actor. Async
         // blob/manifest work is completed before the document transaction.
@@ -1597,19 +1598,6 @@ impl KernelConnection for JupyterKernel {
                                                             sd.get_comm(&widget_comm_id)
                                                         {
                                                             let manifests = entry.outputs.clone();
-                                                            let manifests_json =
-                                                                serde_json::Value::Array(
-                                                                    manifests.clone(),
-                                                                );
-                                                            if let Err(e) = sd
-                                                                .set_comm_state_property(
-                                                                    &widget_comm_id,
-                                                                    "outputs",
-                                                                    &manifests_json,
-                                                                )
-                                                            {
-                                                                warn!("[runtime-state] {}", e);
-                                                            }
                                                             Some(manifests)
                                                         } else {
                                                             None
@@ -1619,6 +1607,26 @@ impl KernelConnection for JupyterKernel {
                                                 .ok()
                                                 .flatten();
                                             if let Some(output_manifests) = output_manifests {
+                                                let manifests_json = serde_json::Value::Array(
+                                                    output_manifests.clone(),
+                                                );
+                                                if let Err(e) = comms_for_iopub.with_doc(|cd| {
+                                                    let heads = cd.get_heads();
+                                                    cd.transact_at_heads_recovering(
+                                                        &heads,
+                                                        Some(&iopub_kernel_actor_id),
+                                                        "comms-doc-output-widget-stream",
+                                                        |cd| {
+                                                            cd.set_comm_state_property(
+                                                                &widget_comm_id,
+                                                                "outputs",
+                                                                &manifests_json,
+                                                            )
+                                                        },
+                                                    )
+                                                }) {
+                                                    warn!("[comms-doc] {}", e);
+                                                }
                                                 let resolved_outputs =
                                                     resolve_output_widget_replay_state(
                                                         &mut output_widget_replay_cache,
@@ -1725,19 +1733,6 @@ impl KernelConnection for JupyterKernel {
                                                             {
                                                                 let manifests =
                                                                     entry.outputs.clone();
-                                                                let manifests_json =
-                                                                    serde_json::Value::Array(
-                                                                        manifests.clone(),
-                                                                    );
-                                                                if let Err(e) = sd
-                                                                    .set_comm_state_property(
-                                                                        &widget_comm_id,
-                                                                        "outputs",
-                                                                        &manifests_json,
-                                                                    )
-                                                                {
-                                                                    warn!("[runtime-state] {}", e);
-                                                                }
                                                                 Some(manifests)
                                                             } else {
                                                                 None
@@ -1747,6 +1742,26 @@ impl KernelConnection for JupyterKernel {
                                                     .ok()
                                                     .flatten();
                                                 if let Some(output_manifests) = output_manifests {
+                                                    let manifests_json = serde_json::Value::Array(
+                                                        output_manifests.clone(),
+                                                    );
+                                                    if let Err(e) = comms_for_iopub.with_doc(|cd| {
+                                                        let heads = cd.get_heads();
+                                                        cd.transact_at_heads_recovering(
+                                                            &heads,
+                                                            Some(&iopub_kernel_actor_id),
+                                                            "comms-doc-output-widget-display",
+                                                            |cd| {
+                                                                cd.set_comm_state_property(
+                                                                    &widget_comm_id,
+                                                                    "outputs",
+                                                                    &manifests_json,
+                                                                )
+                                                            },
+                                                        )
+                                                    }) {
+                                                        warn!("[comms-doc] {}", e);
+                                                    }
                                                     let resolved_outputs =
                                                         resolve_output_widget_replay_state(
                                                             &mut output_widget_replay_cache,
@@ -1898,19 +1913,6 @@ impl KernelConnection for JupyterKernel {
                                                             {
                                                                 let manifests =
                                                                     entry.outputs.clone();
-                                                                let manifests_json =
-                                                                    serde_json::Value::Array(
-                                                                        manifests.clone(),
-                                                                    );
-                                                                if let Err(e) = sd
-                                                                    .set_comm_state_property(
-                                                                        &widget_comm_id,
-                                                                        "outputs",
-                                                                        &manifests_json,
-                                                                    )
-                                                                {
-                                                                    warn!("[runtime-state] {}", e);
-                                                                }
                                                                 Some(manifests)
                                                             } else {
                                                                 None
@@ -1920,6 +1922,26 @@ impl KernelConnection for JupyterKernel {
                                                     .ok()
                                                     .flatten();
                                                 if let Some(output_manifests) = output_manifests {
+                                                    let manifests_json = serde_json::Value::Array(
+                                                        output_manifests.clone(),
+                                                    );
+                                                    if let Err(e) = comms_for_iopub.with_doc(|cd| {
+                                                        let heads = cd.get_heads();
+                                                        cd.transact_at_heads_recovering(
+                                                            &heads,
+                                                            Some(&iopub_kernel_actor_id),
+                                                            "comms-doc-output-widget-result",
+                                                            |cd| {
+                                                                cd.set_comm_state_property(
+                                                                    &widget_comm_id,
+                                                                    "outputs",
+                                                                    &manifests_json,
+                                                                )
+                                                            },
+                                                        )
+                                                    }) {
+                                                        warn!("[comms-doc] {}", e);
+                                                    }
                                                     let resolved_outputs =
                                                         resolve_output_widget_replay_state(
                                                             &mut output_widget_replay_cache,
@@ -1995,14 +2017,26 @@ impl KernelConnection for JupyterKernel {
                                             output_widget_replay_cache.remove(&widget_comm_id);
                                             if let Err(e) = state_for_iopub.with_doc(|sd| {
                                                 sd.clear_comm_outputs(&widget_comm_id)?;
-                                                sd.set_comm_state_property(
-                                                    &widget_comm_id,
-                                                    "outputs",
-                                                    &serde_json::json!([]),
-                                                )?;
                                                 Ok(())
                                             }) {
                                                 warn!("[runtime-state] {}", e);
+                                            }
+                                            if let Err(e) = comms_for_iopub.with_doc(|cd| {
+                                                let heads = cd.get_heads();
+                                                cd.transact_at_heads_recovering(
+                                                    &heads,
+                                                    Some(&iopub_kernel_actor_id),
+                                                    "comms-doc-output-widget-clear",
+                                                    |cd| {
+                                                        cd.set_comm_state_property(
+                                                            &widget_comm_id,
+                                                            "outputs",
+                                                            &serde_json::json!([]),
+                                                        )
+                                                    },
+                                                )
+                                            }) {
+                                                warn!("[comms-doc] {}", e);
                                             }
                                             try_send_comm_update(
                                                 &iopub_work_tx,
@@ -2107,7 +2141,7 @@ impl KernelConnection for JupyterKernel {
                                                 &open.target_name,
                                                 model_module,
                                                 model_name,
-                                                &state_with_blobs,
+                                                &serde_json::json!({}),
                                                 seq,
                                             )?;
                                             if let Some(ref msg_id) = capture_msg {
@@ -2119,6 +2153,22 @@ impl KernelConnection for JupyterKernel {
                                             Ok(())
                                         }) {
                                             warn!("[runtime-state] {}", e);
+                                        }
+                                        if let Err(e) = comms_for_iopub.with_doc(|cd| {
+                                            let heads = cd.get_heads();
+                                            cd.transact_at_heads_recovering(
+                                                &heads,
+                                                Some(&iopub_kernel_actor_id),
+                                                "comms-doc-comm-open",
+                                                |cd| {
+                                                    cd.put_comm_state(
+                                                        &open.comm_id.0,
+                                                        &state_with_blobs,
+                                                    )
+                                                },
+                                            )
+                                        }) {
+                                            warn!("[comms-doc] {}", e);
                                         }
                                         let crdt_elapsed = crdt_start.elapsed();
                                         if crdt_elapsed > std::time::Duration::from_millis(10) {
@@ -2269,6 +2319,17 @@ impl KernelConnection for JupyterKernel {
                                     capture_cache.retain(|_, cid| cid != &close.comm_id.0);
                                     output_widget_replay_cache.remove(&close.comm_id.0);
 
+                                    if let Err(e) = comms_for_iopub.with_doc(|cd| {
+                                        let heads = cd.get_heads();
+                                        cd.transact_at_heads_recovering(
+                                            &heads,
+                                            Some(&iopub_kernel_actor_id),
+                                            "comms-doc-comm-close",
+                                            |cd| cd.remove_comm(&close.comm_id.0),
+                                        )
+                                    }) {
+                                        warn!("[comms-doc] {}", e);
+                                    }
                                     if let Err(e) = state_for_iopub
                                         .with_doc(|sd| sd.remove_comm(&close.comm_id.0))
                                     {
@@ -2703,7 +2764,7 @@ impl KernelConnection for JupyterKernel {
         // ── Coalesced comm state writer ──────────────────────────────────
 
         let mut coalesce_rx = coalesce_rx;
-        let coalesce_state = shared.state.clone();
+        let coalesce_comms = shared.comms.clone();
         let coalesce_blob_store = shared.blob_store.clone();
         // Coalesced comm writes must carry a kernel actor ID so the
         // runtime agent's actor filter in `receive_sync_and_foreign_comms`
@@ -2745,18 +2806,18 @@ impl KernelConnection for JupyterKernel {
                             for delta in batch.values_mut() {
                                 *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
                             }
-                            if let Err(e) = coalesce_state.with_doc(|sd| {
-                                let heads = sd.get_heads();
-                                sd.transact_at_heads_recovering(
+                            if let Err(e) = coalesce_comms.with_doc(|cd| {
+                                let heads = cd.get_heads();
+                                cd.transact_at_heads_recovering(
                                     &heads,
                                     Some(&coalesce_kernel_actor_id),
-                                    "runtime-state-comm-coalesce-transaction",
-                                    |sd| {
+                                    "comms-doc-comm-coalesce-transaction",
+                                    |cd| {
                                         for (comm_id, delta) in &batch {
                                             if let Err(e) =
-                                                sd.merge_comm_state_delta(comm_id, delta)
+                                                cd.merge_comm_state_delta(comm_id, delta)
                                             {
-                                                warn!("[runtime-state] {}", e);
+                                                warn!("[comms-doc] {}", e);
                                             }
                                         }
                                         Ok(())
@@ -2764,7 +2825,7 @@ impl KernelConnection for JupyterKernel {
                                 )?;
                                 Ok(())
                             }) {
-                                warn!("[runtime-state] {}", e);
+                                warn!("[comms-doc] {}", e);
                             }
                         }
                     }

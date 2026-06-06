@@ -5,8 +5,8 @@
  * travel frontend → kernel through two channels:
  *
  * - State updates (method: "update") go to `WidgetUpdateManager`, which
- *   writes a debounced delta into `RuntimeStateDoc.comms[commId].state`;
- *   the daemon diffs and forwards to the kernel. If the CRDT writer
+ *   writes a debounced delta into `CommsDoc[commId].state`; the daemon/runtime
+ *   agent gates by RuntimeStateDoc topology and forwards to the kernel. If the CRDT writer
  *   isn't installed yet, the manager re-queues the flush — no shell-
  *   channel fallback.
  * - Custom messages (method: "custom") and `comm_close` still use the

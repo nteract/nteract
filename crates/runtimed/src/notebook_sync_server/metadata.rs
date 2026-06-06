@@ -2891,10 +2891,10 @@ pub(crate) async fn auto_launch_kernel(
     }
 
     // Clear any stale comm state from a previous kernel (in case it crashed)
-    if let Err(e) = room.state.with_doc(|sd| {
-        sd.clear_comms()?;
-        Ok(())
-    }) {
+    if let Err(e) = room.comms.with_doc(|cd| cd.clear_comms()) {
+        warn!("[comms-doc] {}", e);
+    }
+    if let Err(e) = room.state.with_doc(|sd| sd.clear_comms()) {
         warn!("[runtime-state] {}", e);
     }
 

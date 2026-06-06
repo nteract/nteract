@@ -1,6 +1,6 @@
 # ADR 0002: Extract widget comm state into its own document (CommsDoc)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-06-02
 - Deciders: nteract maintainers
 - Relates to: #3316 (editor write surface), #3317 (runtime-availability capability), ADR 0001 (causal seeding invariant)
@@ -101,6 +101,8 @@ The reframe behind D is real (if the kernel is the sole authority, a durable CRD
 ## Decision
 
 **Recommended: Option B (CommsDoc), shipped decoupled from any NotebookDoc structural change, with its three load-bearing invariants built in from the first commit, not deferred.**
+
+Implementation note: this ADR is satisfied by adding CommsDoc as the fourth sync document, keeping RuntimeStateDoc as the topology/runtime document, and shipping the membership gate, echo suppression, orphan GC, save/load merge, and cloud/daemon fourth-stream acceptance tests together. It intentionally does **not** include the larger five-document split.
 
 Concretely, CommsDoc does not land unless the same change set also:
 

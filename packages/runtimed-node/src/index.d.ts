@@ -153,8 +153,10 @@ export interface SnapshotPair {
   notebookId: string;
   notebookBytes: Uint8Array;
   runtimeStateBytes: Uint8Array;
+  commsDocBytes: Uint8Array;
   notebookHeads: string[];
   runtimeStateHeads: string[];
+  commsDocHeads: string[];
   blobBaseUrl?: string | null;
   blobStorePath?: string | null;
 }

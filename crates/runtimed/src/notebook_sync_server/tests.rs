@@ -1177,6 +1177,8 @@ fn test_room_with_path_and_store(
 
     let (state_changed_tx, _) = broadcast::channel(16);
     let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
+    let (comms_changed_tx, _) = broadcast::channel(16);
+    let comms = runtime_doc::CommsDocHandle::new(runtime_doc::CommsDoc::new(), comms_changed_tx);
     let room = NotebookRoom {
         id: uuid::Uuid::new_v4(),
         doc: Arc::new(RwLock::new(doc)),
@@ -1207,6 +1209,7 @@ fn test_room_with_path_and_store(
         })),
         trusted_packages,
         state,
+        comms,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
         runtime_agent_launched_config: Arc::new(RwLock::new(None)),
@@ -3112,10 +3115,12 @@ async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comm
     let notebook_id = ipynb_path.to_string_lossy().to_string();
     let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
     let mut state_doc = RuntimeStateDoc::new();
+    let mut comms_doc = runtime_doc::CommsDoc::new();
 
-    load_notebook_from_disk_with_state_doc(
+    load_notebook_from_disk_with_runtime_docs(
         &mut doc,
         Some(&mut state_doc),
+        Some(&mut comms_doc),
         &ipynb_path,
         &blob_store,
     )
@@ -3124,26 +3129,35 @@ async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comm
 
     let comm = state_doc
         .get_comm("slider-model")
-        .expect("widget metadata should hydrate RuntimeStateDoc comm");
+        .expect("widget metadata should hydrate RuntimeStateDoc topology");
     assert_eq!(comm.target_name, JUPYTER_WIDGET_TARGET);
     assert_eq!(comm.model_name, "IntSliderModel");
     assert_eq!(comm.model_module, "@jupyter-widgets/controls");
     assert_eq!(
-        comm.state["_model_name"],
+        comm.state,
+        serde_json::json!({}),
+        "mutable widget state should live in CommsDoc, not RuntimeStateDoc topology"
+    );
+
+    let comm_state = comms_doc
+        .get_comm_state("slider-model")
+        .expect("widget metadata should hydrate CommsDoc state");
+    assert_eq!(
+        comm_state["_model_name"],
         serde_json::json!("IntSliderModel")
     );
     assert_eq!(
-        comm.state["_model_module"],
+        comm_state["_model_module"],
         serde_json::json!("@jupyter-widgets/controls")
     );
     assert_eq!(
-        comm.state["_model_module_version"],
+        comm_state["_model_module_version"],
         serde_json::json!("2.0.0")
     );
-    assert_eq!(comm.state["_view_name"], serde_json::json!("IntSliderView"));
-    assert_eq!(comm.state["value"], serde_json::json!(42));
+    assert_eq!(comm_state["_view_name"], serde_json::json!("IntSliderView"));
+    assert_eq!(comm_state["value"], serde_json::json!(42));
 
-    let binary_ref = &comm.state["binary_value"];
+    let binary_ref = &comm_state["binary_value"];
     let binary_hash = binary_ref
         .get("blob")
         .and_then(serde_json::Value::as_str)

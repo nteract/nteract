@@ -65,7 +65,7 @@
 //!       target_name: Str
 //!       model_module: Str
 //!       model_name: Str
-//!       state: Str         (JSON-encoded widget state)
+//!       state: Map         (legacy compatibility slot; widget state lives in CommsDoc)
 //!       outputs: List[Map] (inline manifests, OutputModel only)
 //!       seq: Int           (insertion order)
 //!       capture_msg_id: Str (Output widget capture routing, "" if not capturing)

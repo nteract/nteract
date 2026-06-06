@@ -102,6 +102,8 @@ export function frameTypeName(type: number): string {
       return "presence";
     case FrameType.RUNTIME_STATE_SYNC:
       return "runtime_state_sync";
+    case FrameType.COMMS_DOC_SYNC:
+      return "comms_doc_sync";
     case FrameType.POOL_STATE_SYNC:
       return "pool_state_sync";
     case FrameType.SESSION_CONTROL:
@@ -123,6 +125,7 @@ export function isClientWritableFrame(type: FrameTypeValue): boolean {
     type === FrameType.REQUEST ||
     type === FrameType.PRESENCE ||
     type === FrameType.RUNTIME_STATE_SYNC ||
+    type === FrameType.COMMS_DOC_SYNC ||
     type === FrameType.POOL_STATE_SYNC ||
     type === FrameType.PUT_BLOB
   );

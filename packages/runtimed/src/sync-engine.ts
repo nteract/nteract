@@ -42,6 +42,7 @@ import {
   diffComms,
 } from "./comm-diff";
 import type {
+  CommsState,
   ExecutionViewChangeset,
   FrameEvent,
   InitialLoadPhase,
@@ -50,6 +51,7 @@ import type {
 } from "./handle";
 import type { PoolState } from "./pool-state";
 import {
+  type CommDocEntry,
   type ExecutionTransition,
   type RuntimeState,
   type ExecutionState,
@@ -214,6 +216,10 @@ function writePath(obj: unknown, path: string[], value: unknown): void {
   (cursor as Record<string, unknown>)[path[path.length - 1]] = value;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 // ── Options ──────────────────────────────────────────────────────────
 
 export interface SyncEngineOptions {
@@ -260,6 +266,7 @@ export class SyncEngine {
   private prevExecutions: Record<string, ExecutionState> = {};
   private commDiffState: CommDiffState = { comms: {}, json: {} };
   private lastRuntimeState: RuntimeState | null = null;
+  private lastCommsState: CommsState | null = null;
   /**
    * Serial queue for async comm emissions.
    *
@@ -334,7 +341,7 @@ export class SyncEngine {
   readonly commBroadcasts$: Observable<CommBroadcast>;
 
   /**
-   * Comm state projection from RuntimeStateDoc.
+   * Comm state projection from RuntimeStateDoc topology + CommsDoc state.
    *
    * Emits resolved comm lifecycle changes (opened/updated/closed) with
    * ContentRef blobs replaced by URL strings. Subscribers drive their
@@ -653,7 +660,8 @@ export class SyncEngine {
           if (transitions.length > 0) {
             this._executionTransitions$.next(transitions);
           }
-          this.projectComms(state);
+          this.lastRuntimeState = state;
+          this.projectComms();
         }
       }),
     );
@@ -697,7 +705,8 @@ export class SyncEngine {
               }
 
               // ── Comm state projection ──────────────────────────────
-              this.projectComms(state);
+              this.lastRuntimeState = state;
+              this.projectComms();
             }
 
             // Send sync reply so the daemon knows our heads
@@ -722,6 +731,61 @@ export class SyncEngine {
           }),
         )
         .subscribe(),
+    );
+
+    // ── Sub-pipeline: comms doc sync ───────────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(
+          filter((e) => e.type === "comms_doc_sync_applied"),
+          concatMap((e) => {
+            if (e.changed && e.state) {
+              this.lastCommsState = e.state as CommsState;
+              this.projectComms();
+            }
+
+            const handle = this.opts.getHandle();
+            if (handle) {
+              try {
+                const reply = handle.generate_comms_doc_sync_reply();
+                if (reply) {
+                  return from(
+                    this.opts.transport
+                      .sendFrame(FrameType.COMMS_DOC_SYNC, reply)
+                      .catch((err: unknown) =>
+                        log.warn("[sync-engine] comms doc sync reply failed:", err),
+                      ),
+                  );
+                }
+              } catch (err) {
+                log.warn("[sync-engine] generate_comms_doc_sync_reply failed:", err);
+              }
+            }
+            return EMPTY;
+          }),
+        )
+        .subscribe(),
+    );
+
+    // CommsDoc sync error: send recovery reply + publish recovered state
+    sub.add(
+      frameEvents$.pipe(filter((e) => e.type === "comms_doc_sync_error")).subscribe((e) => {
+        log.warn("[sync-engine] comms_doc_sync_error: comms doc rebuilt, sync state normalized");
+        if (e.reply) {
+          this.opts.transport
+            .sendFrame(FrameType.COMMS_DOC_SYNC, new Uint8Array(e.reply))
+            .catch((err: unknown) => {
+              const handle = this.opts.getHandle();
+              if (handle) handle.cancel_last_comms_doc_flush();
+              log.warn("[sync-engine] comms doc recovery reply send failed:", err);
+            });
+        }
+        if (e.changed && e.state) {
+          this.lastCommsState = e.state as CommsState;
+          this.projectComms();
+        }
+      }),
     );
 
     // ── Sub-pipeline: pool state sync ─────────────────────────────
@@ -817,13 +881,11 @@ export class SyncEngine {
    */
   reProjectComms(): void {
     this.commDiffState = { comms: {}, json: {} };
-    if (this.lastRuntimeState) {
-      this.projectComms(this.lastRuntimeState);
-    }
+    this.projectComms();
   }
 
   /**
-   * Project comm state from a RuntimeState snapshot.
+   * Project widget comms from RuntimeStateDoc topology plus CommsDoc state.
    *
    * Diffs against previous state, resolves ContentRefs via the WASM handle,
    * fetches any text blob references, and emits to commChanges$.
@@ -833,9 +895,9 @@ export class SyncEngine {
    * is queued on `commEmitQueue` so emissions stay in order even when text
    * blob fetches from one batch outlive a later batch's fetches.
    */
-  private projectComms(state: RuntimeState): void {
-    this.lastRuntimeState = state;
-    const comms = state.comms ?? {};
+  private projectComms(): void {
+    if (!this.lastRuntimeState) return;
+    const comms = this.projectableComms();
     const { result, next } = diffComms(this.commDiffState, comms);
 
     if (result.opened.length === 0 && result.updated.length === 0 && result.closed.length === 0) {
@@ -946,6 +1008,23 @@ export class SyncEngine {
       });
   }
 
+  private projectableComms(): Record<string, CommDocEntry> {
+    const runtimeState = this.lastRuntimeState;
+    if (!runtimeState) return {};
+
+    const splitComms = this.lastCommsState?.comms ?? null;
+    const projected: Record<string, CommDocEntry> = {};
+    for (const [commId, topology] of Object.entries(runtimeState.comms ?? {})) {
+      const splitState = splitComms?.[commId];
+      const legacyState = topology.state ?? {};
+      projected[commId] = {
+        ...topology,
+        state: isRecord(splitState) ? splitState : legacyState,
+      };
+    }
+    return projected;
+  }
+
   private emitExecutionViewChanges(changeset: ExecutionViewChangeset | undefined): void {
     if (!changeset) return;
     const cellChanges = changeset.cell_pointer_changes?.length ?? 0;
@@ -960,9 +1039,9 @@ export class SyncEngine {
   /**
    * Flush local CRDT mutations to the daemon immediately.
    *
-   * Sends both the notebook doc sync message and the RuntimeStateDoc
-   * sync message. On transport failure, rolls back sync state to
-   * prevent the consumption race from #1067.
+   * Sends notebook doc, RuntimeStateDoc, CommsDoc, and PoolDoc sync messages.
+   * On transport failure, rolls back sync state to prevent the consumption
+   * race from #1067.
    */
   flush(): void {
     const handle = this.opts.getHandle();
@@ -993,6 +1072,17 @@ export class SyncEngine {
         this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg),
         "runtime state sync to relay",
         () => handle.cancel_last_runtime_state_flush(),
+      );
+    }
+
+    // Also flush CommsDoc sync so widget state updates reach the daemon
+    // independently from runtime topology/status.
+    const commsMsg = handle.flush_comms_doc_sync();
+    if (commsMsg) {
+      void this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.COMMS_DOC_SYNC, commsMsg),
+        "comms doc sync to relay",
+        () => handle.cancel_last_comms_doc_flush(),
       );
     }
 
@@ -1058,6 +1148,19 @@ export class SyncEngine {
         this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg),
         "flushAndWait runtime state sync",
         () => handle.cancel_last_runtime_state_flush(),
+      );
+      if (!delivered) {
+        return false;
+      }
+    }
+
+    // Also flush CommsDoc sync.
+    const commsMsg = handle.flush_comms_doc_sync();
+    if (commsMsg) {
+      const delivered = await this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.COMMS_DOC_SYNC, commsMsg),
+        "flushAndWait comms doc sync",
+        () => handle.cancel_last_comms_doc_flush(),
       );
       if (!delivered) {
         return false;
@@ -1164,6 +1267,7 @@ export class SyncEngine {
     this.prevExecutions = {};
     this.commDiffState = { comms: {}, json: {} };
     this.lastRuntimeState = null;
+    this.lastCommsState = null;
     this._sessionStatus$.next({
       notebook_doc: "pending",
       runtime_state: "pending",
