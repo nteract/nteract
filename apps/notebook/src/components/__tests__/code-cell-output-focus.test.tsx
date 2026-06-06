@@ -25,6 +25,7 @@ vi.mock("@/components/cell/CellContainer", () => ({
     outputRightGutterContent,
     outputFocused,
     outputDimmed,
+    hideOutput,
   }: {
     codeContent?: React.ReactNode;
     gutterContent?: React.ReactNode;
@@ -32,11 +33,12 @@ vi.mock("@/components/cell/CellContainer", () => ({
     outputRightGutterContent?: React.ReactNode;
     outputFocused?: boolean;
     outputDimmed?: boolean;
+    hideOutput?: boolean;
   }) => (
     <div data-output-dimmed={String(outputDimmed)} data-output-focused={String(outputFocused)}>
       {gutterContent}
       {codeContent}
-      {outputContent}
+      {hideOutput ? null : outputContent}
       {outputRightGutterContent}
     </div>
   ),
@@ -491,6 +493,99 @@ describe("CodeCell output focus", () => {
 
     expect(queryByTestId("editor")).toBeNull();
     expect(footer?.textContent?.replace(/\s+/g, "")).toContain("Python/run4");
+  });
+
+  it("hides source reveal affordances in read-only mode while keeping visible outputs", () => {
+    mockOutputs = [
+      {
+        output_type: "stream",
+        name: "stdout",
+        text: "visible output\n",
+      },
+    ];
+
+    const { getByTestId, queryByTitle } = render(
+      <CodeCell
+        cell={makeCell({ metadata: { jupyter: { source_hidden: true } } })}
+        readOnly
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onToggleSourceHidden={() => {}}
+      />,
+    );
+
+    expect(queryByTitle("Show input")).toBeNull();
+    expect(getByTestId("output")).toBeTruthy();
+  });
+
+  it("hides output reveal affordances and the output row in read-only mode", () => {
+    mockOutputs = [
+      {
+        output_type: "stream",
+        name: "stdout",
+        text: "hidden output\n",
+      },
+    ];
+
+    const { queryByTestId, queryByTitle } = render(
+      <CodeCell
+        cell={makeCell({ metadata: { jupyter: { outputs_hidden: true } } })}
+        readOnly
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(queryByTitle("Show outputs")).toBeNull();
+    expect(queryByTestId("output")).toBeNull();
+  });
+
+  it("omits fully hidden read-only cells when there is no runtime state to show", () => {
+    mockOutputs = [];
+
+    const { container, queryByTestId, queryByTitle } = render(
+      <CodeCell
+        cell={makeCell({
+          metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
+        })}
+        readOnly
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onToggleSourceHidden={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(container.firstChild).toBeNull();
+    expect(queryByTitle("Show cell")).toBeNull();
+    expect(queryByTestId("execute-button")).toBeNull();
+  });
+
+  it("keeps runtime readout for fully hidden read-only cells after execution", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: 8, submitted_by_actor_label: null };
+
+    const { container, queryByTitle } = render(
+      <CodeCell
+        cell={makeCell({
+          metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
+        })}
+        readOnly
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onToggleSourceHidden={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(queryByTitle("Show cell")).toBeNull();
+    expect(container.querySelector('[data-slot="code-cell-current-line"]')).not.toBeNull();
+    expect(container.textContent?.replace(/\s+/g, "")).toContain("Python/run8");
   });
 
   it("omits output chrome for short stream output", () => {

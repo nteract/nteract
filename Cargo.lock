@@ -7589,6 +7589,7 @@ dependencies = [
  "loro_fractional_index",
  "nbformat",
  "nix 0.31.2",
+ "notebook-cloud-transport",
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
