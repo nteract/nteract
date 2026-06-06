@@ -95,6 +95,7 @@ struct RuntimeAgentContext {
     broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
     presence: Arc<RwLock<PresenceState>>,
     presence_tx: broadcast::Sender<(String, Vec<u8>)>,
+    kernel_actor_principal: Option<String>,
 }
 
 /// Run the runtime agent, connecting to the daemon socket as a peer.
@@ -207,6 +208,28 @@ fn cloud_actor_label(principal: &str, operator: &str) -> String {
     format!("{principal}/{operator}:{}", &nonce[..8])
 }
 
+fn kernel_actor_principal_from_runtime_actor(actor_label: &str) -> Option<&str> {
+    actor_label.split_once('/').map(|(principal, _)| principal)
+}
+
+fn is_kernel_authored_actor(actor: &automerge::ActorId, principal: Option<&str>) -> bool {
+    let bytes = actor.to_bytes();
+    if bytes.starts_with(b"rt:kernel:") {
+        return true;
+    }
+
+    let Some(principal) = principal else {
+        return false;
+    };
+    let Ok(label) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    let Some((actor_principal, operator)) = label.split_once('/') else {
+        return false;
+    };
+    actor_principal == principal && operator.starts_with("runtime:kernel:")
+}
+
 /// Carry the interpreter path through to `launch()` for a no-pool launch.
 ///
 /// `current_python` (and any prepares-own-env source) sets `python_path` with no
@@ -273,6 +296,8 @@ where
         "[runtime-agent] Bootstrapping notebook_id={} as actor {}",
         notebook_id, runtime_agent_id
     );
+    let kernel_actor_principal =
+        kernel_actor_principal_from_runtime_actor(&runtime_agent_id).map(str::to_string);
 
     let state_doc = RuntimeStateDoc::try_new_with_actor(&runtime_agent_id)
         .map_err(|e| anyhow::anyhow!("create runtime-agent state doc: {e}"))?;
@@ -305,6 +330,7 @@ where
         broadcast_tx: broadcast_tx.clone(),
         presence,
         presence_tx,
+        kernel_actor_principal,
     };
 
     // -- Local variables owned by the select! loop (no mutex) ---------------
@@ -652,7 +678,12 @@ where
                                         match comms_doc.receive_sync_and_foreign_comms_recovering(
                                             &mut comms_sync_state,
                                             msg,
-                                            |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
+                                            |actor| {
+                                                !is_kernel_authored_actor(
+                                                    actor,
+                                                    ctx.kernel_actor_principal.as_deref(),
+                                                )
+                                            },
                                             "runtime-agent-comms-receive",
                                         ) {
                                             Ok(view) if !view.applied_actors.is_empty() => {
@@ -813,6 +844,25 @@ where
                                 // (source comes from execution entries), but it may be
                                 // useful for completions context in the future.
                                 debug!("[runtime-agent] Received NotebookDoc sync frame (ignored for now)");
+                            }
+
+                            NotebookFrameType::SessionControl => {
+                                if let Ok(control) =
+                                    serde_json::from_slice::<serde_json::Value>(&typed_frame.payload)
+                                {
+                                    if control.get("type").and_then(|v| v.as_str())
+                                        == Some("cloud_frame_rejected")
+                                    {
+                                        warn!(
+                                            "[runtime-agent] Cloud room rejected frame: frame_type={:?} reason={}",
+                                            control.get("frame_type"),
+                                            control
+                                                .get("reason")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("(no reason given)")
+                                        );
+                                    }
+                                }
                             }
 
                             _ => {
@@ -1005,8 +1055,12 @@ where
                             );
                             break;
                         }
-                    };
+                };
                 if let Some(encoded) = encoded {
+                    debug!(
+                        "[runtime-agent] Sending RuntimeStateSync to coordinator ({} bytes)",
+                        encoded.len()
+                    );
                     if let Err(e) = frame_sink.send_frame(
                         NotebookFrameType::RuntimeStateSync,
                         &encoded,
@@ -1355,6 +1409,7 @@ async fn handle_runtime_agent_request(
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
+                kernel_actor_principal: ctx.kernel_actor_principal.clone(),
             };
             let launch_kernel_type = kernel_type.clone();
             let launch_env_source = env_source.as_str().to_string();
@@ -1474,6 +1529,7 @@ async fn handle_runtime_agent_request(
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
+                kernel_actor_principal: ctx.kernel_actor_principal.clone(),
             };
             let launch_kernel_type = kernel_type.clone();
             let launch_env_source = env_source.as_str().to_string();
@@ -2573,6 +2629,39 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    #[test]
+    fn kernel_actor_principal_tracks_cloud_actor_principal() {
+        let actor = "user:anaconda:alice/agent:runt:12345678";
+        assert_eq!(
+            kernel_actor_principal_from_runtime_actor(actor),
+            Some("user:anaconda:alice")
+        );
+        assert_eq!(
+            kernel_actor_principal_from_runtime_actor("runtime-agent:local"),
+            None
+        );
+    }
+
+    #[test]
+    fn kernel_authored_actor_recognizes_legacy_and_cloud_kernel_labels() {
+        let legacy = automerge::ActorId::from(b"rt:kernel:deadbeef".as_slice());
+        assert!(is_kernel_authored_actor(&legacy, None));
+
+        let cloud =
+            automerge::ActorId::from(b"user:anaconda:alice/runtime:kernel:deadbeef".as_slice());
+        assert!(is_kernel_authored_actor(
+            &cloud,
+            Some("user:anaconda:alice")
+        ));
+        assert!(!is_kernel_authored_actor(&cloud, Some("user:anaconda:bob")));
+
+        let agent = automerge::ActorId::from(b"user:anaconda:alice/agent:runt:12345678".as_slice());
+        assert!(!is_kernel_authored_actor(
+            &agent,
+            Some("user:anaconda:alice")
+        ));
+    }
+
     /// The cloud actor resolver (the closure `run_cloud_runtime_agent` passes
     /// into `run_runtime_agent_on_transport`) must error rather than silently
     /// author under a wrong actor when the transport never observed a
@@ -2704,6 +2793,7 @@ mod tests {
             broadcast_tx: broadcast_tx.clone(),
             presence,
             presence_tx,
+            kernel_actor_principal: None,
         };
         let state = KernelState::new(handle.clone());
         (ctx, state, handle)

@@ -69,6 +69,12 @@ pub struct KernelSharedRefs {
     pub presence: Arc<RwLock<PresenceState>>,
     /// Broadcast channel for presence frames.
     pub presence_tx: broadcast::Sender<(String, Vec<u8>)>,
+    /// Principal prefix for kernel-authored RuntimeStateDoc changes.
+    ///
+    /// Cloud rooms require every actor to be a durable
+    /// `<principal>/<operator>` label. The desktop/UDS path leaves this unset
+    /// and keeps the legacy `rt:kernel:*` actor prefix.
+    pub kernel_actor_principal: Option<String>,
 }
 
 /// Internal abstraction over the Jupyter ZeroMQ IO boundary.

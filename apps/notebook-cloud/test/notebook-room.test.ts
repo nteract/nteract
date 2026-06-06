@@ -282,6 +282,35 @@ describe("NotebookRoom peer lifecycle", () => {
     );
     assert.equal(staleSocket.closed, true);
   });
+
+  it("re-registers hibernated peers with the room host sync state", async () => {
+    const identity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const socket = new FakeSocket();
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: "runtime-peer",
+      identity,
+      connectedAt: "2026-06-06T00:00:00.000Z",
+    });
+    const state = hibernatedState([socket.asCloudflareWebSocket()]);
+    const room = new NotebookRoom(state.state, {} as Env);
+
+    await state.drain();
+
+    assert.equal(
+      roomHarness(room).peerForSocket(socket.asCloudflareWebSocket())?.id,
+      "runtime-peer",
+      "the hibernated socket is restored into the peer map",
+    );
+    assert(
+      socket.sent.some((frame) => frame[0] === FrameType.RUNTIME_STATE_SYNC),
+      "restored peers receive RuntimeStateDoc sync so future ExecuteCell fanout can target them",
+    );
+  });
 });
 
 describe("NotebookRoom materialized sync persistence", () => {
@@ -668,6 +697,39 @@ function fakeState(): DurableObjectState {
       list: async <T>() => new Map(values as Map<string, T>),
     },
     waitUntil: () => undefined,
+  };
+}
+
+function hibernatedState(sockets: CloudflareWebSocket[]): {
+  state: DurableObjectState;
+  drain(): Promise<void>;
+} {
+  const values = new Map<string, unknown>();
+  const pending: Promise<unknown>[] = [];
+  return {
+    state: {
+      id: { toString: () => "room-id" },
+      storage: {
+        get: async <T>(key: string) => values.get(key) as T | undefined,
+        put: async <T>(key: string, value: T) => {
+          values.set(key, value);
+        },
+        delete: async (key: string) => values.delete(key),
+        list: async <T>() => new Map(values as Map<string, T>),
+        deleteAlarm: async () => undefined,
+        setAlarm: async () => undefined,
+      },
+      getWebSockets: () => sockets,
+      waitUntil: (promise: Promise<unknown>) => {
+        pending.push(promise.catch(() => undefined));
+      },
+    },
+    drain: async () => {
+      while (pending.length > 0) {
+        const batch = pending.splice(0, pending.length);
+        await Promise.all(batch);
+      }
+    },
   };
 }
 
