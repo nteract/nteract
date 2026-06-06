@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   cloudFriendlyPeerLabel,
+  cloudPresenceHasRuntimePeer,
   cloudVisiblePeerLabel,
   cloudViewerPresenceDisplay,
   initialCloudViewerPresence,
@@ -30,6 +31,7 @@ describe("cloud viewer presence", () => {
         actorLabel: state.actorLabel,
         ownPeerLabel: state.ownPeerLabel,
         roomPeerCount: state.roomPeerCount,
+        runtimePeerCount: state.runtimePeerCount,
       },
       {
         connection: "connected",
@@ -37,6 +39,7 @@ describe("cloud viewer presence", () => {
         actorLabel: "anonymous:viewer:session-a/desktop:browser",
         ownPeerLabel: "Anonymous",
         roomPeerCount: 1,
+        runtimePeerCount: 0,
       },
     );
     assert.equal(cloudViewerPresenceDisplay(state).label, "1 here now");
@@ -46,6 +49,7 @@ describe("cloud viewer presence", () => {
       notebook_id: "demo",
       peer_id: "peer-b",
       actor_label: "anonymous:viewer:session-b/desktop:browser",
+      connection_scope: "viewer",
       room_peer_count: 2,
       timestamp: "2026-05-23T00:00:01.000Z",
     });
@@ -65,6 +69,7 @@ describe("cloud viewer presence", () => {
       notebook_id: "demo",
       peer_id: "peer-b",
       actor_label: "anonymous:viewer:session-b/desktop:browser",
+      connection_scope: "viewer",
       room_peer_count: 1,
       timestamp: "2026-05-23T00:00:02.000Z",
     });
@@ -148,6 +153,7 @@ describe("cloud viewer presence", () => {
       notebook_id: "demo",
       peer_id: "peer-b",
       actor_label: "user:anaconda:bob/browser:tab",
+      connection_scope: "editor",
       room_peer_count: 2,
       timestamp: "2026-05-23T00:00:01.000Z",
     });
@@ -156,6 +162,7 @@ describe("cloud viewer presence", () => {
       notebook_id: "demo",
       peer_id: "peer-c",
       actor_label: "anonymous:viewer:session-c/browser",
+      connection_scope: "viewer",
       room_peer_count: 3,
       timestamp: "2026-05-23T00:00:02.000Z",
     });
@@ -175,6 +182,61 @@ describe("cloud viewer presence", () => {
       ],
     );
     assert.equal(display.hiddenCount, 0);
+  });
+
+  it("detects attached runtime peers from session-control scope", () => {
+    let state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
+      type: "cloud_room_ready",
+      protocol: "v4",
+      notebook_id: "demo",
+      peer_id: "peer-owner",
+      actor_label: "user:anaconda:alice/browser:tab",
+      connection_scope: "owner",
+      room_peer_count: 1,
+      runtime_peer_count: 0,
+      timestamp: "2026-05-23T00:00:00.000Z",
+    });
+    assert.equal(cloudPresenceHasRuntimePeer(state), false);
+
+    state = reduceCloudViewerPresenceMessage(state, {
+      type: "cloud_peer_joined",
+      notebook_id: "demo",
+      peer_id: "peer-runtime",
+      actor_label: "user:anaconda:alice/agent:runt-cloud-peer",
+      connection_scope: "runtime_peer",
+      room_peer_count: 2,
+      runtime_peer_count: 1,
+      timestamp: "2026-05-23T00:00:01.000Z",
+    });
+    assert.equal(cloudPresenceHasRuntimePeer(state), true);
+
+    state = reduceCloudViewerPresenceMessage(state, {
+      type: "cloud_peer_left",
+      notebook_id: "demo",
+      peer_id: "peer-runtime",
+      actor_label: "user:anaconda:alice/agent:runt-cloud-peer",
+      connection_scope: "runtime_peer",
+      room_peer_count: 1,
+      runtime_peer_count: 0,
+      timestamp: "2026-05-23T00:00:02.000Z",
+    });
+    assert.equal(cloudPresenceHasRuntimePeer(state), false);
+  });
+
+  it("detects runtime peers already present when this browser joins", () => {
+    const state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
+      type: "cloud_room_ready",
+      protocol: "v4",
+      notebook_id: "demo",
+      peer_id: "peer-owner",
+      actor_label: "user:anaconda:alice/browser:tab",
+      connection_scope: "owner",
+      room_peer_count: 2,
+      runtime_peer_count: 1,
+      timestamp: "2026-05-23T00:00:00.000Z",
+    });
+
+    assert.equal(cloudPresenceHasRuntimePeer(state), true);
   });
 
   it("falls back to readable cloud peer labels instead of raw actor labels", () => {

@@ -29,6 +29,7 @@ export type SessionControlMessage =
       display_name?: string;
       email?: string;
       room_peer_count: number;
+      runtime_peer_count?: number;
       timestamp: string;
     }
   | {
@@ -52,7 +53,9 @@ export type SessionControlMessage =
       notebook_id: string;
       peer_id: string;
       actor_label: string;
+      connection_scope?: string;
       room_peer_count: number;
+      runtime_peer_count?: number;
       timestamp: string;
     };
 

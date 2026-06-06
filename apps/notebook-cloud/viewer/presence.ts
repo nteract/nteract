@@ -1,4 +1,5 @@
 import type { SessionControlMessage } from "../src/protocol";
+import type { ConnectionScope } from "../src/auth-shared";
 import { notebookActorIdentityFromProjection, notebookActorProjectionFromLabel } from "runtimed";
 
 export type CloudViewerPresenceConnection = "connecting" | "connected" | "disconnected";
@@ -10,6 +11,7 @@ export interface CloudViewerPresenceState {
   ownPeerLabel: string | null;
   peers: CloudViewerPresencePeer[];
   roomPeerCount: number | null;
+  runtimePeerCount: number;
 }
 
 export interface CloudViewerPresenceDisplay {
@@ -23,6 +25,7 @@ export interface CloudViewerPresenceDisplay {
 export interface CloudViewerPresencePeer {
   id: string;
   label: string;
+  connectionScope: ConnectionScope | null;
   kind: "self" | "peer" | "anonymous" | "unknown";
   status: "active" | "idle" | "offline";
   count?: number;
@@ -72,6 +75,7 @@ export function initialCloudViewerPresence(): CloudViewerPresenceState {
     ownPeerLabel: null,
     peers: [],
     roomPeerCount: null,
+    runtimePeerCount: 0,
   };
 }
 
@@ -112,10 +116,15 @@ export function reduceCloudViewerPresenceMessage(
               displayName: message.display_name,
               email: message.email,
               actorLabel: message.actor_label,
+              connectionScope: message.connection_scope,
               kind: "self",
             }),
           ],
           roomPeerCount: safeRoomPeerCount(message.room_peer_count),
+          runtimePeerCount: safeRuntimePeerCount(
+            message.runtime_peer_count,
+            message.connection_scope === "runtime_peer" ? 1 : 0,
+          ),
         },
         message.room_peer_count,
       );
@@ -129,10 +138,15 @@ export function reduceCloudViewerPresenceMessage(
             cloudPresencePeerFromMessage({
               peerId: message.peer_id,
               actorLabel: message.actor_label,
+              connectionScope: message.connection_scope ?? null,
               kind: "peer",
             }),
           ),
           roomPeerCount: safeRoomPeerCount(message.room_peer_count),
+          runtimePeerCount: safeRuntimePeerCount(
+            message.runtime_peer_count,
+            state.runtimePeerCount + (message.connection_scope === "runtime_peer" ? 1 : 0),
+          ),
         },
         message.room_peer_count,
       );
@@ -143,6 +157,10 @@ export function reduceCloudViewerPresenceMessage(
           connection: "connected",
           peers: state.peers.filter((peer) => peer.id !== message.peer_id),
           roomPeerCount: safeRoomPeerCount(message.room_peer_count),
+          runtimePeerCount: safeRuntimePeerCount(
+            message.runtime_peer_count,
+            state.runtimePeerCount - (message.connection_scope === "runtime_peer" ? 1 : 0),
+          ),
         },
         message.room_peer_count,
       );
@@ -156,18 +174,21 @@ function cloudPresencePeerFromMessage({
   displayName,
   email,
   actorLabel,
+  connectionScope,
   kind,
 }: {
   peerId: string;
   displayName?: string | null;
   email?: string | null;
   actorLabel?: string | null;
+  connectionScope?: string | null;
   kind: "self" | "peer";
 }): CloudViewerPresencePeer {
   const label = cloudFriendlyPeerLabel({ displayName, email, actorLabel });
   return {
     id: peerId,
     label,
+    connectionScope: normalizePresenceConnectionScope(connectionScope),
     kind: label === "Anonymous" ? "anonymous" : kind === "self" ? "self" : "peer",
     status: "active",
   };
@@ -197,6 +218,7 @@ function withRoomPeerCount(
     return {
       id: `unknown-${ordinal}`,
       label: "Anonymous",
+      connectionScope: null,
       kind: "unknown",
       status: state.connection === "connected" ? "active" : "idle",
     };
@@ -231,6 +253,7 @@ export function cloudViewerPresenceDisplay(
         {
           id: "joining",
           label: "Joining room",
+          connectionScope: null,
           kind: "unknown",
           status: "idle",
         },
@@ -255,6 +278,7 @@ export function cloudViewerPresenceDisplay(
             id: "anonymous-group",
             label:
               anonymousCount === 1 ? "Anonymous viewer" : `${anonymousCount} anonymous viewers`,
+            connectionScope: null,
             kind: "anonymous" as const,
             status: "active" as const,
             count: anonymousCount,
@@ -270,6 +294,13 @@ export function cloudViewerPresenceDisplay(
     peers: visiblePeers,
     hiddenCount,
   };
+}
+
+export function cloudPresenceHasRuntimePeer(state: CloudViewerPresenceState): boolean {
+  return (
+    state.runtimePeerCount > 0 ||
+    state.peers.some((peer) => peer.connectionScope === "runtime_peer")
+  );
 }
 
 export interface CloudFriendlyPeerLabelInput {
@@ -317,6 +348,25 @@ function safeRoomPeerCount(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
 }
 
+function safeRuntimePeerCount(value: number | undefined, fallback: number): number {
+  const count = value ?? fallback;
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
 function looksLikeRawIdentityLabel(value: string): boolean {
   return /^(anonymous|user):/.test(value);
+}
+
+function normalizePresenceConnectionScope(
+  value: string | null | undefined,
+): ConnectionScope | null {
+  switch (value) {
+    case "viewer":
+    case "editor":
+    case "runtime_peer":
+    case "owner":
+      return value;
+    default:
+      return null;
+  }
 }

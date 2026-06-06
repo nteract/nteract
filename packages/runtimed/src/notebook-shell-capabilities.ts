@@ -87,6 +87,7 @@ export interface NotebookShellControlPolicy {
 
 export interface NotebookShellExecutionPolicy {
   available: boolean;
+  canSubmit?: boolean;
   requiresDocumentEditPermission?: boolean;
   requiresDocumentMutationSupport?: boolean;
 }
@@ -330,6 +331,7 @@ export function projectNotebookShellCapabilities({
   const canRead = accessCapabilities.level !== "none";
   const canExecute =
     executionAvailable &&
+    (execution?.canSubmit ?? true) &&
     (!execution?.requiresDocumentEditPermission || hasDocumentEditPermission) &&
     (!execution?.requiresDocumentMutationSupport || canMutateFullDocument);
   const canToggleCode = controls?.canToggleCode ?? true;

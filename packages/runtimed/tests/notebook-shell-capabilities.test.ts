@@ -139,6 +139,31 @@ describe("projectNotebookShellCapabilities", () => {
     expect(capabilities.canExecute).toBe(true);
   });
 
+  it("keeps runtime availability visible when execution submission is not allowed", () => {
+    const interaction = projectNotebookRoomEditAccess({
+      accessLevel: "editor",
+      requestedScope: "editor",
+      selectedMode: "edit",
+      canAcceptDocumentMutations: true,
+      canRequestEdit: true,
+    });
+
+    const capabilities = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ level: "editor" }),
+      runtime: runtime({ connected: true, executionAvailable: true }),
+      execution: {
+        available: true,
+        canSubmit: false,
+        requiresDocumentEditPermission: true,
+      },
+    });
+
+    expect(capabilities.runtime.connected).toBe(true);
+    expect(capabilities.runtime.executionAvailable).toBe(true);
+    expect(capabilities.canExecute).toBe(false);
+  });
+
   it("applies sharing requirements for authenticated cloud hosts", () => {
     const interaction = projectNotebookRoomEditAccess({
       accessLevel: "owner",
