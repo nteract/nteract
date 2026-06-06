@@ -94,6 +94,66 @@ describe("NotebookRail", () => {
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });
 
+  it("does not show the workstations rail item until the host supplies a panel", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Workstations" })).not.toBeInTheDocument();
+  });
+
+  it("switches to the host-provided workstations panel", () => {
+    const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
+
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        workstationsSummary="Ready"
+        workstationsPanel={<div data-testid="host-workstations-content">runtime target</div>}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Workstations" }));
+    expect(onActivePanelChange).toHaveBeenCalledWith("workstations");
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("renders the active workstations panel summary and host content", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="workstations"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        workstationsSummary="Attached"
+        workstationsPanel={<div data-testid="host-workstations-content">runtime target</div>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Workstations" })).toBeVisible();
+    expect(screen.getByText("Attached")).toBeVisible();
+    expect(screen.getByTestId("host-workstations-content")).toHaveTextContent("runtime target");
+    expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
+      "w-[clamp(16rem,22vw,19rem)]",
+      "min-w-64",
+    );
+  });
+
   it("keeps the active panel title primary when package metadata is present", () => {
     render(
       <NotebookRail

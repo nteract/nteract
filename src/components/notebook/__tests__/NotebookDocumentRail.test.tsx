@@ -77,4 +77,23 @@ describe("NotebookDocumentRail", () => {
 
     expect(screen.getByRole("link", { name: "Intro" })).toHaveAttribute("aria-current", "location");
   });
+
+  it("forwards the host workstation panel", () => {
+    render(
+      <NotebookDocumentRail
+        viewModel={viewModel}
+        activePanelId="workstations"
+        collapsed={false}
+        packagesPanel={<p>Package details</p>}
+        workstationsSummary="Ready"
+        workstationsPanel={<p>Runtime target</p>}
+        onActivePanelChange={() => {}}
+        onCollapsedChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Workstations" })).toBeVisible();
+    expect(screen.getByText("Ready")).toBeVisible();
+    expect(screen.getByText("Runtime target")).toBeVisible();
+  });
 });

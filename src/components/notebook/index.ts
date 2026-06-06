@@ -138,6 +138,10 @@ export {
   NotebookPackageSummaryPanel,
   type NotebookPackageSummaryPanelProps,
 } from "./NotebookPackageSummaryPanel";
+export {
+  NotebookWorkstationsPanel,
+  type NotebookWorkstationsPanelProps,
+} from "./NotebookWorkstationsPanel";
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
 export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
 export {

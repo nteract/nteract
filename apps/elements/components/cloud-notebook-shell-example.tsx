@@ -34,6 +34,7 @@ import {
   NotebookIdentityBadge,
   NotebookPackageSummaryPanel,
   NotebookPresenceStatus,
+  NotebookWorkstationsPanel,
   notebookActorIdentityFromAccess,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarStatus,
@@ -256,7 +257,11 @@ const workstationFlowRows = [
 
 export function CloudNotebookShellExample() {
   return (
-    <ElementsNotebookEnvironment scenarioId="cloud-workstation-ready" initialRailCollapsed>
+    <ElementsNotebookEnvironment
+      scenarioId="cloud-workstation-ready"
+      initialActivePanelId="workstations"
+      initialRailCollapsed={false}
+    >
       <CloudNotebookShellExampleContent />
     </ElementsNotebookEnvironment>
   );
@@ -275,6 +280,14 @@ function CloudNotebookShellExampleContent() {
       viewModel={scenario.viewModel}
       activePanelId={railState.activePanelId}
       collapsed={railState.collapsed}
+      workstationsSummary={
+        shellCapabilities.runtime.executionAvailable
+          ? "Ready"
+          : shellCapabilities.runtime.connected
+            ? "Attached"
+            : "Offline"
+      }
+      workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={scenario.viewModel.packages}
