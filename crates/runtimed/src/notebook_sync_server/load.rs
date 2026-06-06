@@ -864,9 +864,43 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc(
 }
 
 #[cfg(test)]
+pub(crate) async fn load_notebook_from_disk_with_runtime_docs(
+    doc: &mut NotebookDoc,
+    state_doc: Option<&mut RuntimeStateDoc>,
+    comms_doc: Option<&mut runtime_doc::CommsDoc>,
+    path: &std::path::Path,
+    blob_store: &BlobStore,
+) -> Result<usize, String> {
+    load_notebook_from_disk_with_runtime_docs_and_execution_store(
+        doc, state_doc, comms_doc, path, blob_store, None,
+    )
+    .await
+}
+
+#[cfg(test)]
 pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
     doc: &mut NotebookDoc,
+    state_doc: Option<&mut RuntimeStateDoc>,
+    path: &std::path::Path,
+    blob_store: &BlobStore,
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
+) -> Result<usize, String> {
+    load_notebook_from_disk_with_runtime_docs_and_execution_store(
+        doc,
+        state_doc,
+        None,
+        path,
+        blob_store,
+        execution_store,
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn load_notebook_from_disk_with_runtime_docs_and_execution_store(
+    doc: &mut NotebookDoc,
     mut state_doc: Option<&mut RuntimeStateDoc>,
+    mut comms_doc: Option<&mut runtime_doc::CommsDoc>,
     path: &std::path::Path,
     blob_store: &BlobStore,
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
@@ -897,6 +931,10 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
     if let Some(ref mut sd) = state_doc {
         write_widget_comm_topology_to_state_doc(sd, &widget_comms)
             .map_err(|e| format!("Failed to load widget metadata into state doc: {}", e))?;
+    }
+    if let Some(ref mut cd) = comms_doc {
+        write_widget_comm_state_to_comms_doc(cd, &widget_comms)
+            .map_err(|e| format!("Failed to load widget metadata into comms doc: {}", e))?;
     }
 
     // Populate cells in the doc
