@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   getCellExecutionId,
   getExecutionById,
@@ -8,6 +8,7 @@ import {
 import { getOutputById } from "../notebook-outputs";
 import {
   applyExecutionViewChangeset,
+  applyOutputChangeset,
   resetRuntimeStoresProjection,
   seedOutputStoresFromHandle,
 } from "../project-runtime-stores";
@@ -126,6 +127,40 @@ describe("applyExecutionViewChangeset", () => {
     expect(getOutputById("out-notebook")).toEqual({
       output_id: "out-notebook",
       output_type: "stream",
+    });
+  });
+});
+
+describe("applyOutputChangeset", () => {
+  it("uses a supplied blob resolver for manifest-backed outputs", async () => {
+    const fetch = vi.fn(async () => new Response("hello from cloud"));
+    const blobResolver = {
+      url: vi.fn((ref: { blob: string }) => `https://example.test/blob/${ref.blob}`),
+      fetch,
+    };
+
+    await applyOutputChangeset(
+      [
+        [
+          "out-1",
+          {
+            output_id: "out-1",
+            output_type: "stream",
+            name: "stdout",
+            text: { blob: "blob-1", size: 16 },
+          },
+        ],
+      ],
+      [],
+      { blobResolver },
+    );
+
+    expect(fetch).toHaveBeenCalledWith({ blob: "blob-1", size: 16 });
+    expect(getOutputById("out-1")).toEqual({
+      output_id: "out-1",
+      output_type: "stream",
+      name: "stdout",
+      text: "hello from cloud",
     });
   });
 });

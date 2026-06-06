@@ -39,6 +39,18 @@ import {
   setOutput,
 } from "@/components/notebook/state/output-store";
 
+export interface ApplyOutputChangesetOptions {
+  /**
+   * Host-provided resolver for callers that already own blob access.
+   *
+   * Desktop leaves this unset and falls back to the blob-port store. Cloud
+   * passes its authenticated HTTP resolver so runtime-state projection does
+   * not depend on desktop host discovery.
+   */
+  blobResolver?: HostBlobResolver | null;
+  refreshBlobResolver?: () => Promise<HostBlobResolver | null>;
+}
+
 /**
  * Apply the cross-document execution materialized-view changeset emitted by
  * WASM.
@@ -140,6 +152,7 @@ export function seedOutputStoresFromHandle(
 export async function applyOutputChangeset(
   changed: Array<[string, unknown]>,
   removed_ids: string[],
+  options: ApplyOutputChangesetOptions = {},
 ): Promise<void> {
   if (removed_ids.length > 0) {
     deleteOutputs(removed_ids);
@@ -149,9 +162,12 @@ export async function applyOutputChangeset(
   // Stream/display-update manifests with text blob refs need host blob access.
   // Fetch it on demand so a race between the first manifest and resolver
   // discovery doesn't drop outputs on the floor.
-  let blobResolver = getBlobResolver();
+  let blobResolver =
+    "blobResolver" in options ? options.blobResolver ?? null : getBlobResolver();
   if (blobResolver === null && changed.some(([, raw]) => isOutputManifest(raw))) {
-    blobResolver = await refreshBlobResolver();
+    blobResolver = options.refreshBlobResolver
+      ? await options.refreshBlobResolver()
+      : await refreshBlobResolver();
   }
 
   for (const [output_id, raw] of changed) {

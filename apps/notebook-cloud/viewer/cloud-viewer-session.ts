@@ -32,6 +32,13 @@ import { createOutputResolutionCache, type ResolvedCell } from "./render-resolut
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
+import {
+  applyExecutionViewChangeset,
+  applyOutputChangeset,
+  resetRuntimeStoresProjection,
+} from "../../notebook/src/lib/project-runtime-stores";
+import { resetPoolState, setPoolState } from "../../notebook/src/lib/pool-state";
+import { resetRuntimeState, setRuntimeState } from "../../notebook/src/lib/runtime-state";
 
 export interface CloudViewerConfig {
   notebookId: string;
@@ -409,6 +416,7 @@ export function useCloudViewerSession({
       if (disposed || sequence !== materializeSequence) return;
       notebookLanguageRef.current = materialized.notebookLanguage;
       setNotebookMetadata(materialized.metadata);
+      applyExecutionViewChangeset(liveRuntime.handle.project_execution_view_changeset?.());
 
       await projectCloudWidgetComms(
         widgetStore,
@@ -498,8 +506,21 @@ export function useCloudViewerSession({
           liveRuntime.engine.cellChanges$.subscribe(() => {
             materializeLiveCellsSafely(liveRuntime);
           }),
-          liveRuntime.engine.runtimeState$.subscribe(() => {
-            materializeLiveCellsSafely(liveRuntime);
+          liveRuntime.engine.runtimeState$.subscribe((state) => {
+            setRuntimeState(state);
+          }),
+          liveRuntime.engine.executionViewChanges$.subscribe((changeset) => {
+            applyExecutionViewChangeset(changeset);
+          }),
+          liveRuntime.engine.outputIdChanges$.subscribe(({ changed, removed_ids }) => {
+            void applyOutputChangeset(changed, removed_ids, { blobResolver }).catch(
+              (error: unknown) => {
+                console.warn("[notebook-cloud] output store projection failed", error);
+              },
+            );
+          }),
+          liveRuntime.engine.poolState$.subscribe((state) => {
+            setPoolState(state);
           }),
           { unsubscribe: stopCursorDispatch },
         ];
@@ -534,6 +555,9 @@ export function useCloudViewerSession({
       materializeLiveRuntimeRef.current = null;
       disposeCurrentRuntime();
       resetCloudViewStoreProjection();
+      resetRuntimeState();
+      resetRuntimeStoresProjection();
+      resetPoolState();
       livePresenceStore = null;
       presenceStore.reduceConnection("disconnected");
       setConnectionPeerId(null);
