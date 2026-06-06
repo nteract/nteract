@@ -39,6 +39,7 @@ describe("FrameType constants", () => {
     expect(FrameType.POOL_STATE_SYNC).toBe(0x06);
     expect(FrameType.SESSION_CONTROL).toBe(0x07);
     expect(FrameType.PUT_BLOB).toBe(0x08);
+    expect(FrameType.COMMS_DOC_SYNC).toBe(0x09);
   });
 });
 
@@ -73,6 +74,10 @@ describe("frameSizeLimits", () => {
       warn: 1 * kib,
     });
     expect(frameSizeLimits(FrameType.RUNTIME_STATE_SYNC)).toEqual({
+      cap: 64 * mib,
+      warn: 16 * mib,
+    });
+    expect(frameSizeLimits(FrameType.COMMS_DOC_SYNC)).toEqual({
       cap: 64 * mib,
       warn: 16 * mib,
     });

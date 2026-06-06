@@ -449,6 +449,9 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     flush_runtime_state_sync: () => handle.flush_runtime_state_sync() ?? null,
     cancel_last_runtime_state_flush: () => handle.cancel_last_runtime_state_flush(),
     generate_runtime_state_sync_reply: () => handle.generate_runtime_state_sync_reply() ?? null,
+    flush_comms_doc_sync: () => handle.flush_comms_doc_sync() ?? null,
+    cancel_last_comms_doc_flush: () => handle.cancel_last_comms_doc_flush(),
+    generate_comms_doc_sync_reply: () => handle.generate_comms_doc_sync_reply() ?? null,
     // notebook-cloud does not host or display daemon pool state. The shared
     // SyncEngine flushes pool sync opportunistically for Desktop, so the cloud
     // adapter intentionally presents PoolDoc as absent instead of sending a
@@ -460,5 +463,13 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     cell_count: () => handle.cell_count(),
     get_heads_hex: () => handle.get_heads_hex(),
     get_dependency_fingerprint: () => handle.get_dependency_fingerprint(),
+    resolve_comm_state: (commId) =>
+      handle.resolve_comm_state(commId) as
+        | {
+            state: Record<string, unknown>;
+            buffer_paths: string[][];
+            text_paths?: string[][];
+          }
+        | undefined,
   };
 }

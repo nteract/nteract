@@ -18,7 +18,7 @@ use super::{NotebookRoom, RuntimeAgentMessage, STATE_SYNC_COMPACT_THRESHOLD};
 /// 0x01 and watches RuntimeStateDoc for queued executions via frame 0x05.
 ///
 /// This handler:
-/// 1. Performs initial NotebookDoc + RuntimeStateDoc sync
+/// 1. Performs initial NotebookDoc + RuntimeStateDoc + CommsDoc sync
 /// 2. Sets up the `runtime_agent_request_tx` channel on the room
 /// 3. Fires `runtime_agent_connected` to unblock LaunchKernel
 /// 4. Enters a sync loop relaying frames bidirectionally
@@ -121,6 +121,34 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         }
     }
 
+    // ── 2b. Initial CommsDoc sync ───────────────────────────────────
+    let mut comms_sync_state = automerge::sync::State::new();
+    let comms_sync_msg = match room.comms.generate_sync_message_bounded_encoded_recovering(
+        &mut comms_sync_state,
+        STATE_SYNC_COMPACT_THRESHOLD,
+        "peer-runtime-agent-comms-init",
+    ) {
+        Ok(message) => message,
+        Err(e) => {
+            warn!(
+                "[notebook-sync] runtime-agent initial CommsDoc sync failed: {}",
+                e
+            );
+            return;
+        }
+    };
+    if let Some(encoded) = comms_sync_msg {
+        if let Err(e) =
+            send_typed_frame(&mut writer, NotebookFrameType::CommsDocSync, &encoded).await
+        {
+            warn!(
+                "[notebook-sync] Agent initial CommsDoc sync send failed: {}",
+                e
+            );
+            return;
+        }
+    }
+
     // ── 3. Set up request channel ────────────────────────────────────
     let (ra_tx, mut ra_rx) = tokio::sync::mpsc::channel::<RuntimeAgentMessage>(16);
     {
@@ -147,6 +175,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     // ── 5. Sync loop ─────────────────────────────────────────────────
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
+    let mut comms_changed_rx = room.comms.subscribe();
     let execution_store =
         runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
     let mut persisted_execution_records: std::collections::HashMap<
@@ -295,6 +324,54 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             }
                         }
                     }
+                    NotebookFrameType::CommsDocSync => {
+                        if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
+                            let mut comms_changed = false;
+                            let reply_encoded = room.comms.with_doc(|comms_doc| {
+                                match comms_doc.receive_sync_message_with_changes_recovering(
+                                    &mut comms_sync_state,
+                                    msg,
+                                    "peer-runtime-agent-comms",
+                                ) {
+                                    Ok(changed) => {
+                                        if changed {
+                                            comms_changed = true;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("[notebook-sync] Agent CommsDoc sync receive failed: {}", e);
+                                        return Err(e.into());
+                                    }
+                                }
+                                comms_doc
+                                    .generate_sync_message_recovering(
+                                        &mut comms_sync_state,
+                                        "peer-runtime-agent-comms-reply",
+                                    )
+                                    .map(|message| message.map(|reply| reply.encode()))
+                                    .map_err(Into::into)
+                            });
+                            let reply_encoded = match reply_encoded {
+                                Ok(encoded) => encoded,
+                                Err(e) => {
+                                    warn!("[notebook-sync] Agent CommsDoc sync failed: {}", e);
+                                    break;
+                                }
+                            };
+                            if let Some(encoded) = reply_encoded {
+                                if let Err(e) = agent_writer.send_frame(
+                                    NotebookFrameType::CommsDocSync,
+                                    encoded,
+                                ) {
+                                    warn!("[notebook-sync] Failed to queue CommsDoc sync reply to runtime agent: {}", e);
+                                    break;
+                                }
+                            }
+                            if comms_changed {
+                                debug!("[notebook-sync] Runtime agent applied CommsDoc changes");
+                            }
+                        }
+                    }
                     NotebookFrameType::Response => {
                         if let Ok(envelope) = serde_json::from_slice::<
                             notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
@@ -359,6 +436,32 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                         encoded,
                     ) {
                         warn!("[notebook-sync] Failed to queue state sync to runtime agent: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            // CommsDoc changes → sync to runtime agent
+            _ = comms_changed_rx.recv() => {
+                while comms_changed_rx.try_recv().is_ok() {}
+                let encoded = match room
+                    .comms
+                    .generate_sync_message_recovering(
+                        &mut comms_sync_state,
+                        "peer-runtime-agent-comms-outbound",
+                    ) {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
+                            warn!("[notebook-sync] Agent outbound CommsDoc sync failed: {}", e);
+                            break;
+                        }
+                    };
+                if let Some(encoded) = encoded {
+                    if let Err(e) = agent_writer.send_frame(
+                        NotebookFrameType::CommsDocSync,
+                        encoded,
+                    ) {
+                        warn!("[notebook-sync] Failed to queue CommsDoc sync to runtime agent: {}", e);
                         break;
                     }
                 }

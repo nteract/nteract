@@ -1,4 +1,7 @@
 use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker, MultipartUploadState};
+use super::peer_comms_sync::{
+    forward_comms_doc_broadcast, handle_comms_doc_frame, send_initial_comms_doc_sync,
+};
 use super::peer_notebook_sync::{
     finish_notebook_doc_frame, forward_notebook_doc_broadcast, handle_notebook_doc_frame,
     queue_doc_sync,
@@ -51,6 +54,7 @@ where
     let mut kernel_broadcast_rx = room.broadcasts.kernel_broadcast_tx.subscribe();
     let mut presence_rx = room.broadcasts.presence_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
+    let mut comms_changed_rx = room.comms.subscribe();
 
     // PoolDoc — global daemon pool state (UV/Conda availability, errors).
     let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
@@ -87,6 +91,7 @@ where
     }
 
     let mut state_peer_state = sync::State::new();
+    let mut comms_peer_state = sync::State::new();
     let mut pool_peer_state = sync::State::new();
     let mut persisted_execution_records: std::collections::HashMap<
         String,
@@ -107,6 +112,8 @@ where
         )
         .await?;
     }
+
+    send_initial_comms_doc_sync(&mut writer, room, &mut comms_peer_state).await?;
 
     initial_load_phase = stream_initial_load(
         &mut reader,
@@ -325,6 +332,20 @@ where
                                 }
                             }
 
+                            NotebookFrameType::CommsDocSync => {
+                                if !handle_comms_doc_frame(
+                                    room,
+                                    &mut comms_peer_state,
+                                    &peer_writer,
+                                    &frame.payload,
+                                    connection_identity,
+                                )
+                                .await?
+                                {
+                                    continue;
+                                }
+                            }
+
                             NotebookFrameType::PoolStateSync => {
                                 if !handle_pool_state_frame(
                                     &daemon,
@@ -388,6 +409,21 @@ where
                     room,
                     peer_id,
                     &mut state_peer_state,
+                    &peer_writer,
+                    result,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+            }
+
+            // CommsDoc changed — push widget state updates to this client
+            result = comms_changed_rx.recv() => {
+                if !forward_comms_doc_broadcast(
+                    room,
+                    peer_id,
+                    &mut comms_peer_state,
                     &peer_writer,
                     result,
                 )

@@ -713,6 +713,9 @@ pub struct NotebookRoom {
     /// (kernel status, queue, env sync). Clients sync read-only.
     /// Uses `std::sync::Mutex` internally (no `.await` needed).
     pub state: runtime_doc::RuntimeStateHandle,
+    /// Per-notebook CommsDoc handle — widget comm state keyed by comm_id.
+    /// RuntimeStateDoc remains the topology/membership source of truth.
+    pub comms: runtime_doc::CommsDocHandle,
     /// Handle to the runtime agent subprocess that owns this notebook's kernel.
     /// Set by `LaunchKernel` or `auto_launch_kernel` when spawned.
     pub runtime_agent_handle: Arc<Mutex<Option<crate::runtime_agent_handle::RuntimeAgentHandle>>>,
@@ -909,6 +912,10 @@ impl NotebookRoom {
             .map_err(|e| anyhow::anyhow!("create runtime state doc: {e}"))?;
         state_doc.set_runtime_state_doc_id(Some(&runtime_state_doc_id))?;
         let state = runtime_doc::RuntimeStateHandle::new(state_doc, state_changed_tx);
+        let (comms_changed_tx, _) = broadcast::channel(16);
+        let comms_doc = runtime_doc::CommsDoc::try_new()
+            .map_err(|e| anyhow::anyhow!("create comms doc: {e}"))?;
+        let comms = runtime_doc::CommsDocHandle::new(comms_doc, comms_changed_tx);
 
         // Seed path on the runtime-state doc so connecting peers see it via sync.
         if let Some(p) = path.as_ref() {
@@ -933,6 +940,7 @@ impl NotebookRoom {
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
             state,
+            comms,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
@@ -1015,6 +1023,9 @@ impl NotebookRoom {
             .set_runtime_state_doc_id(Some(&runtime_state_doc_id))
             .expect("seed runtime state document identity");
         let state = runtime_doc::RuntimeStateHandle::new(state_doc, state_changed_tx);
+        let (comms_changed_tx, _) = broadcast::channel(16);
+        let comms =
+            runtime_doc::CommsDocHandle::new(runtime_doc::CommsDoc::new(), comms_changed_tx);
         if let Some(p) = path.as_ref() {
             let path_str = p.to_string_lossy().into_owned();
             let _ = state.with_doc(|sd| sd.set_path(Some(&path_str)));
@@ -1031,6 +1042,7 @@ impl NotebookRoom {
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
             state,
+            comms,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),

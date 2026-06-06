@@ -54,13 +54,16 @@ describe("typed-frame protocol helpers", () => {
 
   it("names and gates client writable frames", () => {
     assert.equal(frameTypeName(FrameType.RUNTIME_STATE_SYNC), "runtime_state_sync");
+    assert.equal(frameTypeName(FrameType.COMMS_DOC_SYNC), "comms_doc_sync");
     assert.equal(isClientWritableFrame(FrameType.AUTOMERGE_SYNC), true);
+    assert.equal(isClientWritableFrame(FrameType.COMMS_DOC_SYNC), true);
     assert.equal(isClientWritableFrame(FrameType.SESSION_CONTROL), false);
   });
 
   it("mirrors notebook-wire per-frame payload size limits", () => {
     assert.equal(frameSizeLimits(FrameType.AUTOMERGE_SYNC).cap, 64 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.RUNTIME_STATE_SYNC).cap, 64 * 1024 * 1024);
+    assert.equal(frameSizeLimits(FrameType.COMMS_DOC_SYNC).cap, 64 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.PUT_BLOB).cap, 32 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.REQUEST).cap, 16 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.PRESENCE).cap, 4 * 1024);

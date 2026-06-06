@@ -155,9 +155,14 @@ export async function rewritePresenceIngress(
 export async function loadSnapshotPair(
   notebookBytes: Uint8Array,
   runtimeStateBytes: Uint8Array,
+  commsBytes?: Uint8Array,
 ): Promise<NotebookHandle> {
   await initializeRuntimedWasm();
-  return NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+  const handle = NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+  if (commsBytes) {
+    handle.load_comms_doc(commsBytes);
+  }
+  return handle;
 }
 
 export async function createBootstrapNotebookHandle(actorLabel: string): Promise<NotebookHandle> {
@@ -176,9 +181,14 @@ export async function createEmptyRoomHost(
 export async function loadRoomHostSnapshot(
   notebookBytes: Uint8Array,
   runtimeStateBytes: Uint8Array,
+  commsBytes?: Uint8Array,
 ): Promise<RoomHostHandle> {
   await initializeRuntimedWasm();
-  return RoomHostHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+  const host = RoomHostHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+  if (commsBytes) {
+    host.load_comms_doc(commsBytes);
+  }
+  return host;
 }
 
 export { NotebookHandle, RoomHostHandle, RuntimeStatePeerHandle };

@@ -3,7 +3,7 @@ import { collectBlobUrls } from "./blob-refs.ts";
 import { loadSnapshotPair } from "./runtimed-wasm.ts";
 import {
   resolveSnapshotWidgetComms,
-  snapshotWidgetCommsFromRuntimeState,
+  snapshotWidgetCommsFromRuntimeAndCommsState,
   type SnapshotWidgetComm,
 } from "./widget-comms.ts";
 
@@ -28,15 +28,21 @@ export async function materializeSnapshotPairRender(input: {
   runtimeHeadsHash: string | null;
   notebookBytes: Uint8Array;
   runtimeStateBytes: Uint8Array;
+  commsDocBytes?: Uint8Array;
   blobResolver?: BlobResolver;
   generatedAt?: string;
 }): Promise<SnapshotRender> {
-  const handle = await loadSnapshotPair(input.notebookBytes, input.runtimeStateBytes);
+  const handle = await loadSnapshotPair(
+    input.notebookBytes,
+    input.runtimeStateBytes,
+    input.commsDocBytes,
+  );
   try {
     const cells = JSON.parse(handle.get_cells_json()) as unknown;
     const runtimeState = handle.get_runtime_state();
+    const commsState = handle.get_comms_state();
     const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json());
-    const rawWidgetComms = snapshotWidgetCommsFromRuntimeState(runtimeState);
+    const rawWidgetComms = snapshotWidgetCommsFromRuntimeAndCommsState(runtimeState, commsState);
     const widgetComms = input.blobResolver
       ? resolveSnapshotWidgetComms(rawWidgetComms, input.blobResolver)
       : rawWidgetComms;

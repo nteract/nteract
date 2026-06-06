@@ -88,7 +88,6 @@ pub(crate) async fn handle(
                 // Atomically claim the launch by moving into Resolving
                 // while we hold the sync mutex. Prevents a concurrent
                 // LaunchKernel from also proceeding past this gate.
-                sd.clear_comms().ok();
                 sd.clear_env_progress().ok();
                 sd.set_trust("trusted", false).ok();
                 sd.set_lifecycle(&RuntimeLifecycle::Resolving).ok();
@@ -99,6 +98,21 @@ pub(crate) async fn handle(
             warn!("[runtime-state] {}", e);
             RuntimeLifecycle::NotStarted
         });
+    if !matches!(
+        prior_lifecycle,
+        RuntimeLifecycle::Running(_)
+            | RuntimeLifecycle::Resolving
+            | RuntimeLifecycle::PreparingEnv
+            | RuntimeLifecycle::Launching
+            | RuntimeLifecycle::Connecting
+    ) {
+        if let Err(e) = room.comms.with_doc(|cd| cd.clear_comms()) {
+            warn!("[comms-doc] {}", e);
+        }
+        if let Err(e) = room.state.with_doc(|sd| sd.clear_comms()) {
+            warn!("[runtime-state] {}", e);
+        }
+    }
     match prior_lifecycle {
         RuntimeLifecycle::Running(_) => {
             // Agent already has a running kernel — check for restart path below.

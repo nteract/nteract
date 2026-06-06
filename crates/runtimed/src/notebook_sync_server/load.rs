@@ -521,7 +521,7 @@ fn widget_metadata_buffer_path(value: Option<&serde_json::Value>) -> Option<Vec<
     }
 }
 
-fn write_widget_comms_to_state_doc(
+fn write_widget_comm_topology_to_state_doc(
     state_doc: &mut RuntimeStateDoc,
     comms: &[LoadedWidgetComm],
 ) -> Result<(), runtime_doc::RuntimeStateError> {
@@ -531,9 +531,19 @@ fn write_widget_comms_to_state_doc(
             JUPYTER_WIDGET_TARGET,
             &comm.model_module,
             &comm.model_name,
-            &comm.state,
+            &serde_json::json!({}),
             comm.seq,
         )?;
+    }
+    Ok(())
+}
+
+fn write_widget_comm_state_to_comms_doc(
+    comms_doc: &mut runtime_doc::CommsDoc,
+    comms: &[LoadedWidgetComm],
+) -> Result<(), runtime_doc::RuntimeStateError> {
+    for comm in comms {
+        comms_doc.put_comm_state(&comm.comm_id, &comm.state)?;
     }
     Ok(())
 }
@@ -660,8 +670,11 @@ where
 
     if !widget_comms.is_empty() {
         room.state
-            .with_doc(|sd| write_widget_comms_to_state_doc(sd, &widget_comms))
+            .with_doc(|sd| write_widget_comm_topology_to_state_doc(sd, &widget_comms))
             .map_err(|e| format!("Failed to load widget metadata into runtime state: {e}"))?;
+        room.comms
+            .with_doc(|cd| write_widget_comm_state_to_comms_doc(cd, &widget_comms))
+            .map_err(|e| format!("Failed to load widget metadata into comms doc: {e}"))?;
     }
 
     // 2. Stream cells in batches
@@ -882,7 +895,7 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
     let mut claimed_execution_ids = HashSet::new();
 
     if let Some(ref mut sd) = state_doc {
-        write_widget_comms_to_state_doc(sd, &widget_comms)
+        write_widget_comm_topology_to_state_doc(sd, &widget_comms)
             .map_err(|e| format!("Failed to load widget metadata into state doc: {}", e))?;
     }
 

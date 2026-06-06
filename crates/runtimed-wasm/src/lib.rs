@@ -24,9 +24,9 @@ use notebook_wire::{frame_types, SessionControlMessage, SessionSyncStatusWire};
 use nteract_identity::{ActorLabel, ConnectionScope, Operator, Principal};
 use runtime_doc::{
     diff_output_ids_in_place, output_ids_for_execution, runtime_state_policy_snapshot,
-    validate_runtime_state_sync_scope, ExecutionState, ExecutionViewChangeset,
-    ExecutionViewProjector, RuntimeLifecycle, RuntimeState, RuntimeStateDoc,
-    RuntimeStateWriteScope,
+    validate_runtime_state_sync_scope, CommsDoc, CommsState, ExecutionState,
+    ExecutionViewChangeset, ExecutionViewProjector, RuntimeLifecycle, RuntimeState,
+    RuntimeStateDoc, RuntimeStateWriteScope,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -193,6 +193,12 @@ pub enum FrameEvent {
         #[serde(default)]
         execution_view_changeset: ExecutionViewChangeset,
     },
+    /// CommsDoc was synced — frontend should update widget comm projections.
+    CommsDocSyncApplied {
+        changed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<Box<CommsState>>,
+    },
     /// Sync apply error recovered — doc rebuilt and sync state normalized.
     ///
     /// Emitted when `receive_sync_message` returns an error. The WASM layer
@@ -224,6 +230,14 @@ pub enum FrameEvent {
         #[serde(skip_serializing_if = "ExecutionViewChangeset::is_empty")]
         #[serde(default)]
         execution_view_changeset: ExecutionViewChangeset,
+    },
+    /// CommsDoc sync error recovered — comms doc rebuilt.
+    CommsDocSyncError {
+        changed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<Box<CommsState>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply: Option<Vec<u8>>,
     },
     /// Pool state document was synced — frontend should update pool state UI.
     PoolStateSyncApplied {
@@ -289,6 +303,8 @@ impl RoomHostFrameResult {
 pub struct RuntimeStatePeerHandle {
     state_doc: RuntimeStateDoc,
     state_sync_state: sync::State,
+    comms_doc: CommsDoc,
+    comms_sync_state: sync::State,
 }
 
 #[derive(Serialize)]
@@ -307,6 +323,9 @@ impl RuntimeStatePeerHandle {
         Ok(RuntimeStatePeerHandle {
             state_doc,
             state_sync_state: sync::State::new(),
+            comms_doc: CommsDoc::try_new_with_actor(actor_label)
+                .map_err(|e| JsError::new(&format!("create runtime peer comms doc: {e}")))?,
+            comms_sync_state: sync::State::new(),
         })
     }
 
@@ -321,37 +340,62 @@ impl RuntimeStatePeerHandle {
         Ok(RuntimeStatePeerHandle {
             state_doc,
             state_sync_state: sync::State::new(),
+            comms_doc: CommsDoc::try_new_with_actor(actor_label)
+                .map_err(|e| JsError::new(&format!("create runtime peer comms doc: {e}")))?,
+            comms_sync_state: sync::State::new(),
         })
     }
 
     pub fn set_actor(&mut self, actor_label: &str) {
         self.state_doc.set_actor(actor_label);
+        self.comms_doc
+            .doc_mut()
+            .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
     }
 
     pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> Result<JsValue, JsError> {
         if frame_bytes.is_empty() {
             return Err(JsError::new("typed frame cannot be empty"));
         }
-        if frame_bytes[0] != frame_types::RUNTIME_STATE_SYNC {
-            return Err(JsError::new(
-                "runtime peer only accepts RuntimeStateDoc sync frames",
-            ));
-        }
 
-        let message = sync::Message::decode(&frame_bytes[1..])
-            .map_err(|e| JsError::new(&format!("decode runtime state sync: {e}")))?;
-        let heads_before = self.state_doc.get_heads();
-        self.state_doc
-            .receive_sync_message_with_changes_recovering(
-                &mut self.state_sync_state,
-                message,
-                "runtime-peer-receive-sync",
-            )
-            .map_err(|e| JsError::new(&format!("receive runtime state sync: {e}")))?;
-        let changed = heads_before != self.state_doc.get_heads();
-        let result = RuntimeStatePeerFrameResult {
-            changed,
-            reply: self.generate_runtime_state_sync_reply(),
+        let result = match frame_bytes[0] {
+            frame_types::RUNTIME_STATE_SYNC => {
+                let message = sync::Message::decode(&frame_bytes[1..])
+                    .map_err(|e| JsError::new(&format!("decode runtime state sync: {e}")))?;
+                let heads_before = self.state_doc.get_heads();
+                self.state_doc
+                    .receive_sync_message_with_changes_recovering(
+                        &mut self.state_sync_state,
+                        message,
+                        "runtime-peer-receive-sync",
+                    )
+                    .map_err(|e| JsError::new(&format!("receive runtime state sync: {e}")))?;
+                RuntimeStatePeerFrameResult {
+                    changed: heads_before != self.state_doc.get_heads(),
+                    reply: self.generate_runtime_state_sync_reply(),
+                }
+            }
+            frame_types::COMMS_DOC_SYNC => {
+                let message = sync::Message::decode(&frame_bytes[1..])
+                    .map_err(|e| JsError::new(&format!("decode comms doc sync: {e}")))?;
+                let heads_before = self.comms_doc.get_heads();
+                self.comms_doc
+                    .receive_sync_message_with_changes_recovering(
+                        &mut self.comms_sync_state,
+                        message,
+                        "runtime-peer-comms-receive-sync",
+                    )
+                    .map_err(|e| JsError::new(&format!("receive comms doc sync: {e}")))?;
+                RuntimeStatePeerFrameResult {
+                    changed: heads_before != self.comms_doc.get_heads(),
+                    reply: self.generate_comms_doc_sync_reply(),
+                }
+            }
+            _ => {
+                return Err(JsError::new(
+                    "runtime peer only accepts RuntimeStateDoc or CommsDoc sync frames",
+                ));
+            }
         };
         serialize_to_js(&result)
             .map_err(|e| JsError::new(&format!("serialize runtime peer result: {e}")))
@@ -374,8 +418,29 @@ impl RuntimeStatePeerHandle {
         self.state_sync_state.sent_hashes.clear();
     }
 
+    pub fn flush_comms_doc_sync(&mut self) -> Option<Vec<u8>> {
+        self.comms_doc
+            .generate_sync_message(&mut self.comms_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    pub fn generate_comms_doc_sync_reply(&mut self) -> Option<Vec<u8>> {
+        self.comms_doc
+            .generate_sync_message(&mut self.comms_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    pub fn cancel_last_comms_doc_flush(&mut self) {
+        self.comms_sync_state.in_flight = false;
+        self.comms_sync_state.sent_hashes.clear();
+    }
+
     pub fn save(&mut self) -> Vec<u8> {
         self.state_doc.doc_mut().save()
+    }
+
+    pub fn save_comms_doc(&mut self) -> Vec<u8> {
+        self.comms_doc.doc_mut().save()
     }
 
     pub fn get_runtime_state(&self) -> JsValue {
@@ -450,14 +515,17 @@ impl RuntimeStatePeerHandle {
                 target_name,
                 model_module,
                 model_name,
-                &state,
+                &serde_json::json!({}),
                 seq.into(),
             )
-            .map_err(|e| JsError::new(&format!("put comm failed: {e}")))
+            .map_err(|e| JsError::new(&format!("put comm topology failed: {e}")))?;
+        self.comms_doc
+            .put_comm_state(comm_id, &state)
+            .map_err(|e| JsError::new(&format!("put comm state failed: {e}")))
     }
 }
 
-/// Durable-Object room host for NotebookDoc + RuntimeStateDoc sync.
+/// Durable-Object room host for NotebookDoc + RuntimeStateDoc + CommsDoc sync.
 ///
 /// Unlike [`NotebookHandle`], this is not a frontend/client handle. It owns the
 /// authoritative document pair for one room and keeps a separate Automerge
@@ -468,8 +536,10 @@ impl RuntimeStatePeerHandle {
 pub struct RoomHostHandle {
     doc: NotebookDoc,
     state_doc: RuntimeStateDoc,
+    comms_doc: CommsDoc,
     notebook_peer_states: HashMap<String, sync::State>,
     runtime_peer_states: HashMap<String, sync::State>,
+    comms_peer_states: HashMap<String, sync::State>,
 }
 
 #[wasm_bindgen]
@@ -480,8 +550,11 @@ impl RoomHostHandle {
             doc: NotebookDoc::new_with_actor(notebook_id, actor_label),
             state_doc: RuntimeStateDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create runtime state doc failed: {e}")))?,
+            comms_doc: CommsDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create comms doc failed: {e}")))?,
             notebook_peer_states: HashMap::new(),
             runtime_peer_states: HashMap::new(),
+            comms_peer_states: HashMap::new(),
         })
     }
 
@@ -515,8 +588,11 @@ impl RoomHostHandle {
         Ok(RoomHostHandle {
             doc,
             state_doc: RuntimeStateDoc::from_doc(runtime_doc),
+            comms_doc: CommsDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create comms doc failed: {e}")))?,
             notebook_peer_states: HashMap::new(),
             runtime_peer_states: HashMap::new(),
+            comms_peer_states: HashMap::new(),
         })
     }
 
@@ -524,6 +600,7 @@ impl RoomHostHandle {
     pub fn remove_peer(&mut self, peer_id: &str) {
         self.notebook_peer_states.remove(peer_id);
         self.runtime_peer_states.remove(peer_id);
+        self.comms_peer_states.remove(peer_id);
     }
 
     /// Reconcile the authoritative RuntimeStateDoc after the room's
@@ -571,7 +648,8 @@ impl RoomHostHandle {
         self.queue_current_sync_for_peer(
             peer_id,
             connection_scope.allows_notebook_write(),
-            connection_scope.allows_runtime_state_write(),
+            allows_runtime_state_doc_write(connection_scope),
+            allows_comms_doc_write(connection_scope),
             &mut result.outbound,
         )?;
         serialize_to_js(&result).map_err(|e| JsError::new(&format!("serialize room result: {e}")))
@@ -599,6 +677,7 @@ impl RoomHostHandle {
         let connection_scope = parse_connection_scope(connection_scope)?;
         let runtime_scope = runtime_state_write_scope(connection_scope);
         let can_write_notebook = connection_scope.allows_notebook_write();
+        let can_write_comms = allows_comms_doc_write(connection_scope);
         let frame_type = frame_bytes[0];
         let payload = &frame_bytes[1..];
         let result = match frame_type {
@@ -611,6 +690,9 @@ impl RoomHostHandle {
             )?,
             frame_types::RUNTIME_STATE_SYNC => {
                 self.receive_runtime_state_sync(peer_id, principal, runtime_scope, payload)?
+            }
+            frame_types::COMMS_DOC_SYNC => {
+                self.receive_comms_doc_sync(peer_id, principal, can_write_comms, payload)?
             }
             frame_types::REQUEST => {
                 self.receive_request(peer_id, submitter_actor_label, can_write_notebook, payload)?
@@ -631,6 +713,20 @@ impl RoomHostHandle {
         self.state_doc.doc_mut().save()
     }
 
+    /// Export the current CommsDoc bytes for room checkpointing.
+    pub fn save_comms_doc(&mut self) -> Vec<u8> {
+        self.comms_doc.doc_mut().save()
+    }
+
+    /// Replace the current CommsDoc from checkpointed bytes.
+    pub fn load_comms_doc(&mut self, comms_bytes: &[u8]) -> Result<(), JsError> {
+        let comms_doc = automerge::AutoCommit::load(comms_bytes)
+            .map_err(|e| JsError::new(&format!("load comms snapshot failed: {e}")))?;
+        self.comms_doc = CommsDoc::from_doc(comms_doc);
+        self.comms_peer_states.clear();
+        Ok(())
+    }
+
     /// Current NotebookDoc heads as hex strings.
     pub fn get_heads_hex(&mut self) -> Vec<String> {
         self.doc.get_heads_hex()
@@ -639,6 +735,15 @@ impl RoomHostHandle {
     /// Current RuntimeStateDoc heads as hex strings.
     pub fn get_runtime_state_heads_hex(&mut self) -> Vec<String> {
         self.state_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect()
+    }
+
+    /// Current CommsDoc heads as hex strings.
+    pub fn get_comms_doc_heads_hex(&mut self) -> Vec<String> {
+        self.comms_doc
             .get_heads()
             .into_iter()
             .map(|head| hex::encode(head.as_ref()))
@@ -780,6 +885,70 @@ impl RoomHostHandle {
         self.queue_runtime_state_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
         if changed {
             self.queue_runtime_state_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
+    fn receive_comms_doc_sync(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let message = sync::Message::decode(payload)
+            .map_err(|e| JsError::new(&format!("decode comms doc sync: {e}")))?;
+        let has_changes = !message.changes.is_empty();
+        if has_changes && !can_write {
+            return Err(JsError::new(
+                "connection scope cannot write CommsDoc changes",
+            ));
+        }
+        if has_changes {
+            let heads_before = self.comms_doc.get_heads();
+            let peer_state = self
+                .comms_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(|| room_peer_sync_state(can_write));
+            let mut preview = CommsDoc::from_doc(self.comms_doc.doc().clone());
+            let mut preview_peer_state = peer_state.clone();
+            preview
+                .receive_sync_message_with_changes_recovering(
+                    &mut preview_peer_state,
+                    message.clone(),
+                    "cloud-room-comms-auth-preview",
+                )
+                .map_err(|e| JsError::new(&format!("comms auth preview failed: {e}")))?;
+            let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+            validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
+        }
+
+        let heads_before = self.comms_doc.get_heads();
+        {
+            let peer_state = self
+                .comms_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(|| room_peer_sync_state(can_write));
+            self.comms_doc
+                .receive_sync_message_with_changes_recovering(
+                    peer_state,
+                    message,
+                    "cloud-room-comms-receive-sync",
+                )
+                .map_err(|e| JsError::new(&format!("receive comms doc sync: {e}")))?;
+        }
+        let heads_after = self.comms_doc.get_heads();
+        let changed = heads_before != heads_after;
+
+        let mut result = RoomHostFrameResult {
+            changed,
+            notebook_changed: false,
+            runtime_state_changed: false,
+            outbound: Vec::new(),
+        };
+        self.queue_comms_doc_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
+        if changed {
+            self.queue_comms_doc_sync_for_other_peers(peer_id, &mut result.outbound)?;
         }
         Ok(result)
     }
@@ -937,10 +1106,12 @@ impl RoomHostHandle {
         peer_id: &str,
         can_write_notebook: bool,
         can_write_runtime_state: bool,
+        can_write_comms: bool,
         outbound: &mut Vec<RoomHostOutboundFrame>,
     ) -> Result<(), JsError> {
         self.queue_notebook_sync_for_peer(peer_id, can_write_notebook, outbound)?;
         self.queue_runtime_state_sync_for_peer(peer_id, can_write_runtime_state, outbound)?;
+        self.queue_comms_doc_sync_for_peer(peer_id, can_write_comms, outbound)?;
         Ok(())
     }
 
@@ -1018,6 +1189,45 @@ impl RoomHostHandle {
                 continue;
             }
             self.queue_runtime_state_sync_for_peer(&peer_id, true, outbound)?;
+        }
+        Ok(())
+    }
+
+    fn queue_comms_doc_sync_for_peer(
+        &mut self,
+        peer_id: &str,
+        can_write: bool,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peer_state = self
+            .comms_peer_states
+            .entry(peer_id.to_string())
+            .or_insert_with(|| room_peer_sync_state(can_write));
+        if let Some(message) = self
+            .comms_doc
+            .generate_sync_message_recovering(peer_state, "cloud-room-comms-sync-outbound")
+            .map_err(|e| JsError::new(&format!("generate comms doc sync: {e}")))?
+        {
+            outbound.push(RoomHostOutboundFrame {
+                peer_id: peer_id.to_string(),
+                frame_type: frame_types::COMMS_DOC_SYNC,
+                payload: message.encode(),
+            });
+        }
+        Ok(())
+    }
+
+    fn queue_comms_doc_sync_for_other_peers(
+        &mut self,
+        changed_peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peers: Vec<String> = self.comms_peer_states.keys().cloned().collect();
+        for peer_id in peers {
+            if peer_id == changed_peer_id {
+                continue;
+            }
+            self.queue_comms_doc_sync_for_peer(&peer_id, true, outbound)?;
         }
         Ok(())
     }
@@ -1114,6 +1324,17 @@ fn runtime_state_write_scope(scope: ConnectionScope) -> RuntimeStateWriteScope {
         ConnectionScope::RuntimePeer => RuntimeStateWriteScope::RuntimePeer,
         ConnectionScope::Owner => RuntimeStateWriteScope::Owner,
     }
+}
+
+fn allows_runtime_state_doc_write(scope: ConnectionScope) -> bool {
+    matches!(scope, ConnectionScope::RuntimePeer)
+}
+
+fn allows_comms_doc_write(scope: ConnectionScope) -> bool {
+    matches!(
+        scope,
+        ConnectionScope::Editor | ConnectionScope::Owner | ConnectionScope::RuntimePeer
+    )
 }
 
 fn validate_room_actor_labels<'a>(
@@ -1256,6 +1477,9 @@ pub struct NotebookHandle {
     /// Runtime state doc — daemon-authoritative, synced read-only.
     state_doc: RuntimeStateDoc,
     state_sync_state: sync::State,
+    /// Widget comm state doc — mutable by notebook editors and runtime.
+    comms_doc: CommsDoc,
+    comms_sync_state: sync::State,
     /// Previous per-`output_id` manifest snapshot. Used to produce the
     /// per-output diff emitted on `RuntimeStateSyncApplied.output_changeset`.
     prev_output_by_id: HashMap<String, serde_json::Value>,
@@ -1516,6 +1740,9 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
+            comms_doc: CommsDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
+            comms_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             execution_view_projector: ExecutionViewProjector::default(),
             pool_doc: PoolDoc::new_empty(),
@@ -1534,11 +1761,18 @@ impl NotebookHandle {
         let mut state_doc = RuntimeStateDoc::try_new_empty()
             .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?;
         state_doc.set_actor(actor_label);
+        let mut comms_doc = CommsDoc::try_new_empty()
+            .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?;
+        comms_doc
+            .doc_mut()
+            .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
         Ok(NotebookHandle {
             doc: NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, actor_label),
             sync_state: sync::State::new(),
             state_doc,
             state_sync_state: sync::State::new(),
+            comms_doc,
+            comms_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             execution_view_projector: ExecutionViewProjector::default(),
             pool_doc: PoolDoc::new_empty(),
@@ -1574,6 +1808,9 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
+            comms_doc: CommsDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create comms doc failed: {}", e)))?,
+            comms_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             execution_view_projector: ExecutionViewProjector::default(),
             pool_doc: PoolDoc::new_empty(),
@@ -1611,6 +1848,15 @@ impl NotebookHandle {
         self.state_sync_state = sync::State::new();
         self.prev_output_by_id.clear();
         self.execution_view_projector.reset();
+        Ok(())
+    }
+
+    /// Load a CommsDoc from saved bytes.
+    pub fn load_comms_doc(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        let doc = automerge::AutoCommit::load(bytes)
+            .map_err(|e| JsError::new(&format!("load_comms_doc failed: {}", e)))?;
+        self.comms_doc = CommsDoc::from_doc(doc);
+        self.comms_sync_state = sync::State::new();
         Ok(())
     }
 
@@ -2557,17 +2803,22 @@ impl NotebookHandle {
         self.state_doc.doc_mut().save()
     }
 
+    /// Export the full CommsDoc as bytes.
+    pub fn save_comms_doc(&mut self) -> Vec<u8> {
+        self.comms_doc.doc_mut().save()
+    }
+
     /// Set a single property in a comm's state map.
     ///
-    /// Writes directly to `comms/{comm_id}/state/{key}` as a native
-    /// Automerge value. Call `flush_runtime_state_sync()` after mutations
+    /// Writes directly to `CommsDoc.comms/{comm_id}/{key}` as a native
+    /// Automerge value. Call `flush_comms_doc_sync()` after mutations
     /// to propagate changes to the daemon.
     pub fn set_comm_state_property(&mut self, comm_id: &str, key: &str, value_json: &str) -> bool {
         let value: serde_json::Value = match serde_json::from_str(value_json) {
             Ok(v) => v,
             Err(_) => return false,
         };
-        self.state_doc
+        self.comms_doc
             .set_comm_state_property(comm_id, key, &value)
             .is_ok()
     }
@@ -2576,7 +2827,7 @@ impl NotebookHandle {
     ///
     /// Accepts a JSON object string of key-value pairs to write.
     /// Used by anywidget's `save_changes()` which batches pending mutations.
-    /// Call `flush_runtime_state_sync()` after to propagate.
+    /// Call `flush_comms_doc_sync()` after to propagate.
     pub fn set_comm_state_batch(&mut self, comm_id: &str, patch_json: &str) -> bool {
         let patch: serde_json::Value = match serde_json::from_str(patch_json) {
             Ok(v) => v,
@@ -2588,7 +2839,7 @@ impl NotebookHandle {
         let mut any_written = false;
         for (key, value) in obj {
             if self
-                .state_doc
+                .comms_doc
                 .set_comm_state_property(comm_id, key, value)
                 .is_ok()
             {
@@ -2636,6 +2887,26 @@ impl NotebookHandle {
         self.state_sync_state.sent_hashes.clear();
     }
 
+    /// Generate a sync reply for the CommsDoc.
+    pub fn generate_comms_doc_sync_reply(&mut self) -> Option<Vec<u8>> {
+        self.comms_doc
+            .generate_sync_message(&mut self.comms_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    /// Generate an initial CommsDoc sync message.
+    pub fn flush_comms_doc_sync(&mut self) -> Option<Vec<u8>> {
+        self.comms_doc
+            .generate_sync_message(&mut self.comms_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    /// Roll back CommsDoc sync state after a failed delivery.
+    pub fn cancel_last_comms_doc_flush(&mut self) {
+        self.comms_sync_state.in_flight = false;
+        self.comms_sync_state.sent_hashes.clear();
+    }
+
     /// Generate a sync reply for the PoolDoc.
     pub fn generate_pool_state_sync_reply(&mut self) -> Option<Vec<u8>> {
         self.pool_doc
@@ -2667,6 +2938,12 @@ impl NotebookHandle {
     /// Read the current runtime state snapshot from the WASM doc.
     pub fn get_runtime_state(&self) -> JsValue {
         let state = self.state_doc.read_state();
+        serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    /// Read the current CommsDoc state snapshot from the WASM doc.
+    pub fn get_comms_state(&self) -> JsValue {
+        let state = self.comms_doc.read_state();
         serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
     }
 
@@ -2714,11 +2991,15 @@ impl NotebookHandle {
         let Some(entry) = state.comms.get(comm_id) else {
             return JsValue::UNDEFINED;
         };
+        let comm_state = self
+            .comms_doc
+            .get_comm_state(comm_id)
+            .unwrap_or_else(|| serde_json::json!({}));
 
         let is_output_model = entry.model_name == "OutputModel"
-            || entry.state.get("_model_name").and_then(|v| v.as_str()) == Some("OutputModel");
+            || comm_state.get("_model_name").and_then(|v| v.as_str()) == Some("OutputModel");
         let (resolved, buffer_paths, text_paths) =
-            resolve_comm_state_for_frontend(&entry.state, port, is_output_model);
+            resolve_comm_state_for_frontend(&comm_state, port, is_output_model);
 
         serialize_to_js(&serde_json::json!({
             "state": resolved,
@@ -2732,6 +3013,7 @@ impl NotebookHandle {
     pub fn reset_sync_state(&mut self) {
         self.sync_state = sync::State::new();
         self.state_sync_state = sync::State::new();
+        self.comms_sync_state = sync::State::new();
         self.pool_sync_state = sync::State::new();
     }
 
@@ -2756,6 +3038,13 @@ impl NotebookHandle {
             sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
     }
 
+    /// Normalize the CommsDoc sync state (same pattern as notebook sync).
+    fn normalize_comms_sync_state(&mut self) {
+        let encoded = self.comms_sync_state.encode();
+        self.comms_sync_state =
+            sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
+    }
+
     /// Rebuild the notebook doc via save→load to clear corrupted internal indices.
     ///
     /// Mirrors `NotebookDoc::rebuild_from_save()` on the daemon side. The
@@ -2775,6 +3064,14 @@ impl NotebookHandle {
         let bytes = self.pool_doc.doc_mut().save();
         if let Ok(doc) = automerge::AutoCommit::load(&bytes) {
             *self.pool_doc.doc_mut() = doc;
+        }
+    }
+
+    /// Rebuild the CommsDoc via save→load.
+    fn rebuild_comms_doc(&mut self) {
+        let bytes = self.comms_doc.doc_mut().save();
+        if let Ok(doc) = automerge::AutoCommit::load(&bytes) {
+            *self.comms_doc.doc_mut() = doc;
         }
     }
 
@@ -3040,6 +3337,50 @@ impl NotebookHandle {
                     output_changeset,
                     execution_view_changeset,
                 });
+            }
+            frame_types::COMMS_DOC_SYNC => {
+                let Ok(msg) = sync::Message::decode(payload) else {
+                    return JsValue::UNDEFINED;
+                };
+                let heads_before = self.comms_doc.doc_mut().get_heads();
+                if self
+                    .comms_doc
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut self.comms_sync_state, msg)
+                    .is_err()
+                {
+                    self.rebuild_comms_doc();
+                    self.normalize_comms_sync_state();
+                    let heads_after = self.comms_doc.doc_mut().get_heads();
+                    let changed = heads_before != heads_after;
+                    let state = if changed {
+                        Some(Box::new(self.comms_doc.read_state()))
+                    } else {
+                        None
+                    };
+                    let reply = self
+                        .comms_doc
+                        .doc_mut()
+                        .sync()
+                        .generate_sync_message(&mut self.comms_sync_state)
+                        .map(|msg| msg.encode());
+                    events.push(FrameEvent::CommsDocSyncError {
+                        changed,
+                        state,
+                        reply,
+                    });
+                    return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
+                }
+                let heads_after = self.comms_doc.doc_mut().get_heads();
+                let changed = heads_before != heads_after;
+                let state = if changed {
+                    Some(Box::new(self.comms_doc.read_state()))
+                } else {
+                    None
+                };
+
+                events.push(FrameEvent::CommsDocSyncApplied { changed, state });
             }
             frame_types::POOL_STATE_SYNC => {
                 // Apply daemon's PoolDoc sync message to our local replica.

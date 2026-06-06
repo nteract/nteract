@@ -140,6 +140,11 @@ describe("cloud live sync", () => {
         calls.push("cancel_last_runtime_state_flush");
       },
       generate_runtime_state_sync_reply: () => undefined,
+      flush_comms_doc_sync: () => undefined,
+      cancel_last_comms_doc_flush: () => {
+        calls.push("cancel_last_comms_doc_flush");
+      },
+      generate_comms_doc_sync_reply: () => undefined,
       flush_pool_state_sync: () => {
         calls.push("flush_pool_state_sync");
         return new Uint8Array([1, 2, 3]);
@@ -157,6 +162,7 @@ describe("cloud live sync", () => {
       cell_count: () => 0,
       get_heads_hex: () => [],
       get_dependency_fingerprint: () => undefined,
+      resolve_comm_state: () => undefined,
     } as unknown as Parameters<typeof syncableCloudHandle>[0];
     const handle = syncableCloudHandle(wasmHandle);
 

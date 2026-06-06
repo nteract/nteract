@@ -40,8 +40,9 @@ The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to 
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
 | Cell outputs (inline manifests) | Daemon | Kernel IOPub → blob store → inline manifest Maps in RuntimeStateDoc |
 | Execution count | Daemon | Set on `execute_input` from kernel |
-| Widget state | Daemon + frontend comm deltas | Kernel-authored comms write RuntimeStateDoc; frontend widget state updates write `comms/*/state/*` deltas that the runtime agent forwards to the kernel |
+| Widget state | Daemon/runtime agent + frontend comm deltas | RuntimeStateDoc holds comm topology; CommsDoc holds mutable comm state; the runtime agent gates state by topology, suppresses echoes, and forwards accepted frontend deltas to the kernel |
 | RuntimeStateDoc (kernel status, queue, executions, env, trust) | Daemon | Separate per-notebook Automerge doc synced via frame `0x05` |
+| CommsDoc (widget state) | Daemon/runtime agent + frontend comm deltas | Separate per-notebook Automerge doc synced via frame `0x09` |
 
 ## RuntimeStateDoc
 
@@ -53,7 +54,7 @@ Each notebook room has a daemon-authoritative **RuntimeStateDoc** — a separate
 - **Environment drift**: in_sync flag, added/removed packages
 - **Trust state**: status and needs_approval flag
 
-The daemon is the authoritative writer for kernel lifecycle, env, trust, queue, execution, and output state. Frontend reads via `useRuntimeState()`, and Python reads via `notebook.runtime`. Widget state is the exception: frontend-authored `comms/*/state/*` deltas are valid RuntimeStateDoc writes, and the runtime agent filters out kernel-authored echoes before forwarding foreign deltas to the kernel.
+The daemon is the authoritative writer for kernel lifecycle, env, trust, queue, execution, output state, and comm topology. Frontend reads via `useRuntimeState()`, and Python reads via `notebook.runtime`. Widget values live in the paired CommsDoc so RuntimeStateDoc remains daemon-owned; the runtime agent gates CommsDoc deltas by RuntimeStateDoc topology and filters out kernel-authored echoes before forwarding foreign deltas to the kernel.
 
 Key files: `crates/runtime-doc/src/doc.rs`, `crates/runtime-doc/src/handle.rs`, `apps/notebook/src/lib/runtime-state.ts`.
 
@@ -117,16 +118,16 @@ Settings sync via a separate Automerge document on the same Unix socket. `settin
 
 ## Widget state
 
-Widget state lives in **RuntimeStateDoc** (`doc.comms/` Automerge map):
+Widget topology lives in **RuntimeStateDoc** (`doc.comms/` entries without mutable state). Widget values live in **CommsDoc**:
 - **Daemon/runtime agent:** Writes kernel-authored comm state from IOPub. State updates coalesce in a 16ms batch writer and use kernel actors so self-echoes can be filtered.
-- **Frontend inbound:** `WidgetStore` in `widget-store.ts` has per-model subscriptions. `SyncEngine.commChanges$` diffs `runtimeState.comms`, resolves blobs, and drives the store.
-- **Frontend → Kernel:** State updates go through `WidgetUpdateManager` into RuntimeStateDoc (`comms/*/state/*`). The runtime agent diffs foreign comm state on each sync and forwards deltas to the kernel. Custom messages and `comm_close` stay on the `SendComm` shell path because they are ephemeral events.
+- **Frontend inbound:** `WidgetStore` in `widget-store.ts` has per-model subscriptions. `SyncEngine.commChanges$` merges RuntimeStateDoc topology with CommsDoc state, resolves blobs, and drives the store.
+- **Frontend → Kernel:** State updates go through `WidgetUpdateManager` into CommsDoc. The runtime agent diffs foreign CommsDoc state for comm ids that still have RuntimeStateDoc topology, suppresses echoes, and forwards accepted deltas to the kernel. Custom messages and `comm_close` stay on the `SendComm` shell path because they are ephemeral events.
 
-New clients receive widget state via normal RuntimeStateDoc CRDT sync. Custom widget messages (buttons, etc.) still use `NotebookBroadcast::Comm` as ephemeral events.
+New clients receive widget topology via RuntimeStateDoc sync and widget state via CommsDoc sync. Custom widget messages (buttons, etc.) still use `NotebookBroadcast::Comm` as ephemeral events.
 
 ### Reserved comm namespace: `nteract.dx.*`
 
-The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. `comm_open` / `comm_msg` / `comm_close` traffic for this namespace is filtered out of `RuntimeStateDoc::comms` and `NotebookBroadcast::Comm`, so it never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning, and current blob refs ride IOPub `display_data` buffers through `preflight_ref_buffers`.
+The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. `comm_open` / `comm_msg` / `comm_close` traffic for this namespace is filtered out of runtime comm topology/state and `NotebookBroadcast::Comm`, so it never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning, and current blob refs ride IOPub `display_data` buffers through `preflight_ref_buffers`.
 
 ## Development workflow
 

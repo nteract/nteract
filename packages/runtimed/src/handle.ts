@@ -65,6 +65,10 @@ export interface ExecutionViewChangeset {
   queue?: ExecutionQueueProjection;
 }
 
+export interface CommsState {
+  comms: Record<string, Record<string, unknown>>;
+}
+
 /**
  * Typed event returned by WASM `receive_frame()`.
  *
@@ -74,8 +78,10 @@ export interface ExecutionViewChangeset {
  * - `presence` — Remote peer presence update
  * - `session_control` — Connection-local readiness / bootstrap status
  * - `runtime_state_sync_applied` — RuntimeStateDoc sync applied
+ * - `comms_doc_sync_applied` — CommsDoc sync applied
  * - `sync_error` — Sync failed, doc rebuilt + sync state normalized, reply restarts negotiation
  * - `runtime_state_sync_error` — RuntimeState sync failed, same recovery pattern
+ * - `comms_doc_sync_error` — CommsDoc sync failed, same recovery pattern
  * - `unknown` — Unrecognized frame type
  */
 export interface FrameEvent {
@@ -149,6 +155,19 @@ export interface SyncableHandle {
 
   /** Generate a sync reply for the RuntimeStateDoc. */
   generate_runtime_state_sync_reply(): Uint8Array | null;
+
+  /**
+   * Flush CommsDoc sync message.
+   *
+   * Returns the message bytes, or null if there are no pending changes.
+   */
+  flush_comms_doc_sync(): Uint8Array | null;
+
+  /** Roll back the last CommsDoc flush. */
+  cancel_last_comms_doc_flush(): void;
+
+  /** Generate a sync reply for the CommsDoc. */
+  generate_comms_doc_sync_reply(): Uint8Array | null;
 
   /**
    * Flush PoolDoc sync message.

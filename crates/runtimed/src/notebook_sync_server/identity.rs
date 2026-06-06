@@ -65,6 +65,7 @@ impl RoomConnectionIdentity {
         self.scope().allows_notebook_write()
     }
 
+    #[cfg(test)]
     pub(crate) fn allows_runtime_state_write(&self) -> bool {
         self.scope().allows_runtime_state_write()
     }

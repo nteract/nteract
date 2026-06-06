@@ -28,6 +28,9 @@ function createMockHandle(overrides: Partial<SyncableHandle> = {}): SyncableHand
     flush_runtime_state_sync: vi.fn(() => null),
     cancel_last_runtime_state_flush: vi.fn(),
     generate_runtime_state_sync_reply: vi.fn(() => null),
+    flush_comms_doc_sync: vi.fn(() => null),
+    cancel_last_comms_doc_flush: vi.fn(),
+    generate_comms_doc_sync_reply: vi.fn(() => null),
     flush_pool_state_sync: vi.fn(() => null),
     cancel_last_pool_state_flush: vi.fn(),
     generate_pool_state_sync_reply: vi.fn(() => null),
@@ -83,6 +86,14 @@ function runtimeStateSyncEvent(
     changed: true,
     state,
     execution_view_changeset: executionViewChangeset,
+  };
+}
+
+function commsDocSyncEvent(state: Record<string, Record<string, unknown>>): FrameEvent {
+  return {
+    type: "comms_doc_sync_applied",
+    changed: true,
+    state: { comms: state },
   };
 }
 
@@ -1049,6 +1060,22 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("flush() also sends CommsDoc sync", () => {
+      const commsMsg = new Uint8Array([8, 9, 10]);
+      (handle.flush_comms_doc_sync as ReturnType<typeof vi.fn>).mockReturnValue(commsMsg);
+
+      const engine = createEngine();
+      engine.start();
+      engine.flush();
+
+      const commsFrames = transport.sentFrames.filter(
+        (f) => f.frameType === FrameType.COMMS_DOC_SYNC,
+      );
+      expect(commsFrames).toHaveLength(1);
+      expect(commsFrames[0].payload).toEqual(commsMsg);
+      engine.stop();
+    });
+
     it("flush() rolls back on transport failure", async () => {
       const syncMsg = new Uint8Array([1, 2, 3]);
       (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
@@ -1072,6 +1099,15 @@ describe("SyncEngine", () => {
             new Uint8Array([4, 5, 6]),
           ),
         cancel: () => handle.cancel_last_runtime_state_flush,
+      },
+      {
+        name: "comms doc",
+        frameType: FrameType.COMMS_DOC_SYNC,
+        flush: () =>
+          (handle.flush_comms_doc_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([8, 9, 10]),
+          ),
+        cancel: () => handle.cancel_last_comms_doc_flush,
       },
       {
         name: "pool state",
@@ -1116,6 +1152,15 @@ describe("SyncEngine", () => {
             new Uint8Array([4, 5, 6]),
           ),
         cancel: () => handle.cancel_last_runtime_state_flush,
+      },
+      {
+        name: "comms doc",
+        frameType: FrameType.COMMS_DOC_SYNC,
+        flush: () =>
+          (handle.flush_comms_doc_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([8, 9, 10]),
+          ),
+        cancel: () => handle.cancel_last_comms_doc_flush,
       },
       {
         name: "pool state",
@@ -1877,6 +1922,52 @@ describe("SyncEngine", () => {
         },
       };
     }
+
+    it("projects CommsDoc state changes against RuntimeStateDoc topology", async () => {
+      const commId = "split-doc-comm";
+      let resolvedState: Record<string, unknown> = { value: 0 };
+      handle = createMockHandle({
+        resolve_comm_state: vi.fn(() => ({
+          state: resolvedState,
+          buffer_paths: [] as string[][],
+          text_paths: [] as string[][],
+        })),
+        generate_comms_doc_sync_reply: vi.fn(() => new Uint8Array([0xaa])),
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      const emissions: Array<{
+        opened: Array<{ commId: string; state: unknown }>;
+        updated: Array<{ commId: string; state: unknown }>;
+      }> = [];
+      engine.commChanges$.subscribe((c) => emissions.push(c));
+
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValueOnce([
+        runtimeStateSyncEvent(runtimeStateWithComm(commId, {})),
+      ]);
+      transport.deliver([0x05, 0x01]);
+      await vi.waitFor(() => expect(emissions.length).toBe(1));
+      expect(emissions[0].opened.map((o) => o.commId)).toEqual([commId]);
+
+      resolvedState = { value: 2 };
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValueOnce([
+        commsDocSyncEvent({ [commId]: { value: 2 } }),
+      ]);
+      transport.deliver([0x09, 0x02]);
+
+      await vi.waitFor(() => expect(emissions.length).toBe(2));
+      expect(emissions[1].updated.map((u) => u.commId)).toEqual([commId]);
+      expect((emissions[1].updated[0].state as Record<string, unknown>).value).toBe(2);
+      expect(
+        transport.sentFrames.some(
+          (frame) => frame.frameType === FrameType.COMMS_DOC_SYNC && frame.payload[0] === 0xaa,
+        ),
+      ).toBe(true);
+
+      engine.stop();
+    });
 
     it("inlines text-MIME blobs into emitted comm state", async () => {
       const commId = "abc123";

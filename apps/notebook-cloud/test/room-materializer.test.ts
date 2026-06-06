@@ -290,6 +290,40 @@ describe("RoomHostHandle", () => {
     );
   });
 
+  it("rejects editor-scoped RuntimeStateDoc changes", async () => {
+    const setupHost = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const forged = new RuntimeStatePeerHandle("user:dev:bob/desktop:editor");
+    // Establish a writable sync state only to force Automerge to emit a
+    // changed RuntimeStateDoc payload; the assertion below sends that payload
+    // through an editor-scoped connection on a fresh host.
+    syncRuntimeHostWithRuntimePeer(
+      setupHost,
+      "peer-setup",
+      "user:dev:bob",
+      "runtime_peer",
+      false,
+      forged,
+    );
+
+    forged.create_execution("exec-forged-editor");
+    const message = forged.flush_runtime_state_sync();
+    assert.ok(message);
+
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-editor",
+          "user:dev:bob",
+          "user:dev:bob/test",
+          "editor",
+          false,
+          encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
+        ),
+      /RuntimeStateDoc/,
+    );
+  });
+
   it("allows runtime peers to publish progress for accepted RuntimeStateDoc executions", async () => {
     const host = await createRoomHostWithAcceptedExecution(
       "demo",
@@ -499,6 +533,7 @@ describe("RoomMaterializer", () => {
     const keys = [...(await state.storage.list({ prefix: "room-host:" })).keys()].sort();
     assert.deepEqual(keys, [
       "room-host:checkpoint",
+      "room-host:comms-doc",
       "room-host:notebook-doc",
       "room-host:runtime-state-doc",
     ]);
@@ -1050,7 +1085,7 @@ describe("RoomMaterializer", () => {
     );
   });
 
-  it("rejects runtime peer and editor execution creation over runtime-state sync", async () => {
+  it("rejects runtime peer execution creation over runtime-state sync", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);
     const runtimeIdentity = authenticateDevRequest(
@@ -1061,31 +1096,15 @@ describe("RoomMaterializer", () => {
     const runtimePeerConnection = { id: "peer-runtime", identity: runtimeIdentity };
     const runtimePeer = new RuntimeStatePeerHandle(runtimeIdentity.actorLabel);
     await syncMaterializerWithRuntimePeer(materializer, runtimePeerConnection, runtimePeer);
+    runtimePeer.cancel_last_runtime_state_flush();
     runtimePeer.create_execution_with_source("exec-runtime", "print('runtime')", 0);
     await assert.rejects(
       () => applyRuntimePeerChangesToMaterializer(materializer, runtimePeerConnection, runtimePeer),
       /executions/,
     );
-
-    const editorIdentity = authenticateDevRequest(
-      new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=editor"),
-    );
-    const editorPeerConnection = { id: "peer-editor", identity: editorIdentity };
-    const forgedEditorRuntime = new RuntimeStatePeerHandle(editorIdentity.actorLabel);
-    await syncMaterializerWithRuntimePeer(materializer, editorPeerConnection, forgedEditorRuntime);
-    forgedEditorRuntime.create_execution_with_source("exec-editor-forged", "print('editor')", 0);
-    await assert.rejects(
-      () =>
-        applyRuntimePeerChangesToMaterializer(
-          materializer,
-          editorPeerConnection,
-          forgedEditorRuntime,
-        ),
-      /executions/,
-    );
   });
 
-  it("allows owner-scoped RuntimeStateDoc changes to existing comm state", async () => {
+  it("allows owner-scoped CommsDoc changes to existing runtime comm topology", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);
     const runtimeIdentity = authenticateDevRequest(
@@ -1104,12 +1123,19 @@ describe("RoomMaterializer", () => {
       JSON.stringify({ value: 1, label: "before" }),
       0,
     );
-    const runtimeMessage = runtimePeer.flush_runtime_state_sync();
-    assert.ok(runtimeMessage);
-    await materializer.receiveFrame(runtimePeerConnection, {
-      type: FrameType.RUNTIME_STATE_SYNC,
-      payload: runtimeMessage,
-    });
+    const topologyAccepted = await applyRuntimePeerChangesToMaterializer(
+      materializer,
+      runtimePeerConnection,
+      runtimePeer,
+    );
+    assert.equal(topologyAccepted.changed, true);
+    assert.equal(topologyAccepted.runtime_state_changed, true);
+    const initialStateAccepted = await applyCommsPeerChangesToMaterializer(
+      materializer,
+      runtimePeerConnection,
+      runtimePeer,
+    );
+    assert.equal(initialStateAccepted.changed, true);
 
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
@@ -1117,20 +1143,27 @@ describe("RoomMaterializer", () => {
     const ownerPeerConnection = { id: "peer-owner", identity: ownerIdentity };
     const owner = NotebookHandle.create_bootstrap(ownerIdentity.actorLabel);
     await syncMaterializerRuntimeStateWithClient(materializer, ownerPeerConnection, owner);
+    await syncMaterializerCommsDocWithClient(materializer, ownerPeerConnection, owner);
     assert.equal(owner.set_comm_state_property("comm-widget", "value", JSON.stringify(2)), true);
-    const accepted = await applyRuntimeClientChangesToMaterializer(
+    const accepted = await applyCommsClientChangesToMaterializer(
       materializer,
       ownerPeerConnection,
       owner,
     );
     assert.equal(accepted.changed, true);
-    assert.equal(accepted.runtime_state_changed, true);
+    assert.equal(accepted.runtime_state_changed, false);
 
     const viewerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=carol&operator=desktop:c&scope=viewer"),
     );
     const viewer = NotebookHandle.create_bootstrap(viewerIdentity.actorLabel);
+    viewer.set_blob_port(1234);
     await syncMaterializerRuntimeStateWithClient(
+      materializer,
+      { id: "peer-viewer", identity: viewerIdentity },
+      viewer,
+    );
+    await syncMaterializerCommsDocWithClient(
       materializer,
       { id: "peer-viewer", identity: viewerIdentity },
       viewer,
@@ -1138,7 +1171,11 @@ describe("RoomMaterializer", () => {
     const runtimeState = viewer.get_runtime_state() as {
       comms: Record<string, { state: Record<string, unknown> }>;
     };
-    assert.equal(runtimeState.comms["comm-widget"].state.value, 2);
+    assert.deepEqual(runtimeState.comms["comm-widget"].state, {});
+    const resolved = viewer.resolve_comm_state("comm-widget") as {
+      state?: Record<string, unknown>;
+    };
+    assert.equal(resolved.state?.value, 2);
   });
 
   it("rejects owner-scoped RuntimeStateDoc execution changes", async () => {
@@ -1167,7 +1204,7 @@ describe("RoomMaterializer", () => {
           type: FrameType.RUNTIME_STATE_SYNC,
           payload: runtimeMessage,
         }),
-      /executions/,
+      /RuntimeStateDoc/,
     );
   });
 });
@@ -1256,27 +1293,27 @@ async function syncMaterializerWithClient(
   }
 }
 
-async function applyRuntimeClientChangesToMaterializer(
+async function applyCommsClientChangesToMaterializer(
   materializer: RoomMaterializer,
   peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
   client: NotebookHandle,
 ) {
-  const message = client.flush_runtime_state_sync();
+  const message = client.flush_comms_doc_sync();
   assert.ok(message);
   let result = await materializer.receiveFrame(peer, {
-    type: FrameType.RUNTIME_STATE_SYNC,
+    type: FrameType.COMMS_DOC_SYNC,
     payload: message,
   });
 
   for (let round = 0; round < 8 && !result.changed; round += 1) {
-    const replies = applyRuntimeOutboundToClient(result.outbound, peer.id, client);
+    const replies = applyCommsOutboundToClient(result.outbound, peer.id, client);
     if (replies.length === 0) {
       break;
     }
     const outbound = [];
     for (const reply of replies) {
       const next = await materializer.receiveFrame(peer, {
-        type: FrameType.RUNTIME_STATE_SYNC,
+        type: FrameType.COMMS_DOC_SYNC,
         payload: reply.slice(1),
       });
       if (next.changed) {
@@ -1318,6 +1355,47 @@ async function applyRuntimePeerChangesToMaterializer(
     for (const reply of replies) {
       const next = await materializer.receiveFrame(peer, {
         type: FrameType.RUNTIME_STATE_SYNC,
+        payload: reply.slice(1),
+      });
+      if (next.changed) {
+        result = next;
+      }
+      outbound.push(...next.outbound);
+    }
+    if (!result.changed) {
+      result = {
+        changed: false,
+        notebook_changed: false,
+        runtime_state_changed: false,
+        outbound,
+      };
+    }
+  }
+
+  return result;
+}
+
+async function applyCommsPeerChangesToMaterializer(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  runtime: RuntimeStatePeerHandle,
+) {
+  const message = runtime.flush_comms_doc_sync();
+  assert.ok(message);
+  let result = await materializer.receiveFrame(peer, {
+    type: FrameType.COMMS_DOC_SYNC,
+    payload: message,
+  });
+
+  for (let round = 0; round < 8 && !result.changed; round += 1) {
+    const replies = applyCommsOutboundToRuntimePeer(result.outbound, peer.id, runtime);
+    if (replies.length === 0) {
+      break;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.COMMS_DOC_SYNC,
         payload: reply.slice(1),
       });
       if (next.changed) {
@@ -1445,6 +1523,46 @@ async function syncMaterializerRuntimeStateWithClient(
     for (const reply of replies) {
       const next = await materializer.receiveFrame(peer, {
         type: FrameType.RUNTIME_STATE_SYNC,
+        payload: reply.slice(1),
+      });
+      outbound.push(...next.outbound);
+    }
+    result = {
+      changed: false,
+      notebook_changed: false,
+      runtime_state_changed: false,
+      outbound,
+    };
+  }
+}
+
+async function syncMaterializerCommsDocWithClient(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  client: NotebookHandle,
+): Promise<void> {
+  const outbound = [];
+  const initial = client.flush_comms_doc_sync();
+  if (initial) {
+    const reply = await materializer.receiveFrame(peer, {
+      type: FrameType.COMMS_DOC_SYNC,
+      payload: initial,
+    });
+    outbound.push(...reply.outbound);
+  }
+
+  const hostSync = await materializer.syncPeer(peer);
+  outbound.push(...hostSync.outbound);
+  let result = { ...hostSync, outbound };
+  for (let round = 0; round < 8; round += 1) {
+    const replies = applyCommsOutboundToClient(result.outbound, peer.id, client);
+    if (replies.length === 0) {
+      return;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.COMMS_DOC_SYNC,
         payload: reply.slice(1),
       });
       outbound.push(...next.outbound);
@@ -1616,6 +1734,38 @@ function applyRuntimeOutboundToClient(
   return replies;
 }
 
+function applyCommsOutboundToClient(
+  outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: Uint8Array | number[] }>,
+  peerId: string,
+  client: NotebookHandle,
+): Uint8Array[] {
+  const replies: Uint8Array[] = [];
+  for (const frame of outbound) {
+    if (frame.peer_id !== peerId || frame.frame_type !== FrameType.COMMS_DOC_SYNC) {
+      continue;
+    }
+    const events = client.receive_frame(
+      encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
+    ) as Array<{ type: string; reply?: number[] }>;
+    let sawCommsDocSync = false;
+    for (const event of events ?? []) {
+      if (event.type === "comms_doc_sync_applied" || event.type === "comms_doc_sync_error") {
+        sawCommsDocSync = true;
+      }
+      if (event.reply) {
+        replies.push(encodeTypedFrame(FrameType.COMMS_DOC_SYNC, new Uint8Array(event.reply)));
+      }
+    }
+    if (sawCommsDocSync) {
+      const reply = client.generate_comms_doc_sync_reply();
+      if (reply) {
+        replies.push(encodeTypedFrame(FrameType.COMMS_DOC_SYNC, reply));
+      }
+    }
+  }
+  return replies;
+}
+
 function applyRuntimeOutboundToRuntimePeer(
   outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: Uint8Array | number[] }>,
   peerId: string,
@@ -1631,6 +1781,26 @@ function applyRuntimeOutboundToRuntimePeer(
     ) as { reply?: number[] };
     if (event.reply) {
       replies.push(encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array(event.reply)));
+    }
+  }
+  return replies;
+}
+
+function applyCommsOutboundToRuntimePeer(
+  outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: Uint8Array | number[] }>,
+  peerId: string,
+  runtime: RuntimeStatePeerHandle,
+): Uint8Array[] {
+  const replies: Uint8Array[] = [];
+  for (const frame of outbound) {
+    if (frame.peer_id !== peerId || frame.frame_type !== FrameType.COMMS_DOC_SYNC) {
+      continue;
+    }
+    const event = runtime.receive_frame(
+      encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
+    ) as { reply?: number[] };
+    if (event.reply) {
+      replies.push(encodeTypedFrame(FrameType.COMMS_DOC_SYNC, new Uint8Array(event.reply)));
     }
   }
   return replies;

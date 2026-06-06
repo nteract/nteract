@@ -204,7 +204,13 @@ pub(crate) async fn save_notebook_to_disk(
         .as_ref()
         .map(|s| serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({})))
         .unwrap_or_else(|| serde_json::json!({}));
-    let comms = room.state.read(|sd| sd.get_comms()).unwrap_or_default();
+    let mut comms = room.state.read(|sd| sd.get_comms()).unwrap_or_default();
+    let comm_states = room.comms.read(|cd| cd.get_comms()).unwrap_or_default();
+    for (comm_id, comm_state) in comm_states {
+        if let Some(entry) = comms.get_mut(&comm_id) {
+            entry.state = comm_state;
+        }
+    }
     match widget_state_metadata_from_comms(&comms, &room.blob_store).await {
         Ok(Some(widget_state)) => {
             insert_widget_state_metadata(&mut metadata, widget_state);

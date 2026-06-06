@@ -17,6 +17,7 @@ export const FrameType = {
   POOL_STATE_SYNC: 0x06,
   SESSION_CONTROL: 0x07,
   PUT_BLOB: 0x08,
+  COMMS_DOC_SYNC: 0x09,
 } as const;
 
 export type FrameTypeName = keyof typeof FrameType;
@@ -43,6 +44,7 @@ export const FRAME_SIZE_LIMITS = {
   [FrameType.BROADCAST]: { cap: 16777216, warn: 4194304 },
   [FrameType.PRESENCE]: { cap: 4096, warn: 1024 },
   [FrameType.RUNTIME_STATE_SYNC]: { cap: 67108864, warn: 16777216 },
+  [FrameType.COMMS_DOC_SYNC]: { cap: 67108864, warn: 16777216 },
   [FrameType.POOL_STATE_SYNC]: { cap: 1048576, warn: 262144 },
   [FrameType.SESSION_CONTROL]: { cap: 1048576, warn: 262144 },
   [FrameType.PUT_BLOB]: { cap: 33554432, warn: 8388608 },
