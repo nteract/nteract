@@ -10,7 +10,10 @@ import {
 import { createRoot } from "react-dom/client";
 import {
   AlertCircle,
+  BookOpen,
   Check,
+  Clock,
+  ExternalLink,
   KeyRound,
   Loader2,
   LogIn,
@@ -130,6 +133,33 @@ interface ViewerRuntime {
   config: CloudViewerConfig;
 }
 
+interface CloudNotebookListItem {
+  notebook_id: string;
+  title: string | null;
+  owner_principal: string;
+  scope: "viewer" | "editor" | "runtime_peer" | "owner";
+  created_at: string;
+  updated_at: string;
+  latest_revision_id: string | null;
+  viewer_url: string;
+  endpoints: {
+    catalog: string;
+    acl: string;
+    access_requests: string;
+  };
+}
+
+interface CloudNotebookListResponse {
+  ok: boolean;
+  notebooks: CloudNotebookListItem[];
+}
+
+type CloudNotebookListState =
+  | { kind: "loading" }
+  | { kind: "ready"; notebooks: CloudNotebookListItem[] }
+  | { kind: "signed_out" }
+  | { kind: "error"; message: string };
+
 type ViewerRuntimeState =
   | { kind: "ready"; runtime: ViewerRuntime }
   | { kind: "error"; message: string };
@@ -223,6 +253,10 @@ function isOidcCallbackPath(): boolean {
 function isHomePath(): boolean {
   const pathname = window.location.pathname.replace(/\/+$/, "");
   return pathname === "" || pathname === "/index.html";
+}
+
+function isNotebookListPath(): boolean {
+  return window.location.pathname.replace(/\/+$/, "") === "/n";
 }
 
 function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
@@ -324,11 +358,15 @@ function shouldRefreshStoredOidcToken(): boolean {
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
-    isOidcCallbackPath() || isHomePath() ? null : loadViewerRuntime(),
+    isOidcCallbackPath() || isHomePath() || isNotebookListPath() ? null : loadViewerRuntime(),
   );
 
   if (isHomePath()) {
     return <CloudHomeView authConfig={authConfig} />;
+  }
+
+  if (isNotebookListPath()) {
+    return <CloudNotebookListView authConfig={authConfig} />;
   }
 
   if (isOidcCallbackPath()) {
@@ -371,6 +409,195 @@ function CloudNotebookProviders({
       </CloudWidgetStoreProvider>
     </IsolatedRendererProvider>
   );
+}
+
+function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
+  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
+  const [listState, setListState] = useState<CloudNotebookListState>({ kind: "loading" });
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const signedIn = authState.mode === "dev" || authState.mode === "oidc";
+
+  useEffect(() => {
+    applyDocumentTheme(resolvedTheme);
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    if (!signedIn) {
+      setListState({ kind: "signed_out" });
+      return;
+    }
+
+    const controller = new AbortController();
+    setListState({ kind: "loading" });
+    void (async () => {
+      try {
+        const response = await fetchWithCloudPrototypeAuth(
+          "/api/n?limit=100",
+          { headers: { Accept: "application/json" }, signal: controller.signal },
+          authState,
+        );
+        if (controller.signal.aborted) return;
+        if (!response.ok) {
+          throw await cloudResponseError(response, "Unable to list notebooks");
+        }
+        const body = (await response.json()) as unknown;
+        if (!isCloudNotebookListResponse(body)) {
+          throw new Error("Unable to list notebooks: response shape was invalid");
+        }
+        setListState({ kind: "ready", notebooks: body.notebooks });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setListState({
+          kind: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+
+    return () => {
+      controller.abort();
+    };
+  }, [authState, refreshIndex, signedIn]);
+
+  const refreshList = () => {
+    setRefreshIndex((value) => value + 1);
+  };
+
+  const signOut = () => {
+    clearCloudPrototypeDevAuth(window.localStorage);
+    refreshAuthState();
+  };
+
+  const headerDetail =
+    authState.mode === "oidc" || authState.mode === "dev"
+      ? (authState.user ?? "Signed in")
+      : authState.mode === "oidc_expired"
+        ? "Session expired"
+        : "Signed out";
+
+  return (
+    <main className="cloud-notebook-list-page">
+      <header className="cloud-notebook-list-header">
+        <div>
+          <a className="cloud-notebook-list-brand" href="/">
+            nteract
+          </a>
+          <h1>Notebooks</h1>
+          <p>{headerDetail}</p>
+        </div>
+        <div className="cloud-notebook-list-actions">
+          <button
+            type="button"
+            disabled={!signedIn || listState.kind === "loading"}
+            onClick={refreshList}
+          >
+            <RotateCcw aria-hidden="true" />
+            Refresh
+          </button>
+          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+          {signedIn ? (
+            <button type="button" onClick={signOut}>
+              <LogOut aria-hidden="true" />
+              Sign out
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      {authRenewal.kind !== "idle" ? (
+        <div
+          className="cloud-notebook-list-banner"
+          data-kind={authRenewal.kind === "failed" ? "error" : "info"}
+          role={authRenewal.kind === "failed" ? "alert" : "status"}
+        >
+          {authRenewal.message}
+        </div>
+      ) : null}
+
+      <section className="cloud-notebook-list-content" aria-label="Notebook list">
+        {listState.kind === "loading" ? (
+          <div className="cloud-notebook-list-state" data-kind="loading" role="status">
+            <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+            <span>Loading notebooks</span>
+          </div>
+        ) : listState.kind === "signed_out" ? (
+          <div className="cloud-notebook-list-state" data-kind="signed-out">
+            <KeyRound aria-hidden="true" />
+            <span>Sign in to view notebooks.</span>
+          </div>
+        ) : listState.kind === "error" ? (
+          <div className="cloud-notebook-list-state" data-kind="error" role="alert">
+            <AlertCircle aria-hidden="true" />
+            <span>{listState.message}</span>
+          </div>
+        ) : listState.notebooks.length === 0 ? (
+          <div className="cloud-notebook-list-state" data-kind="empty">
+            <BookOpen aria-hidden="true" />
+            <span>No notebooks yet.</span>
+          </div>
+        ) : (
+          <ul className="cloud-notebook-list" aria-label="Notebook rooms">
+            {listState.notebooks.map((notebook) => (
+              <li key={notebook.notebook_id}>
+                <a className="cloud-notebook-list-row" href={notebook.viewer_url}>
+                  <span className="cloud-notebook-list-icon" aria-hidden="true">
+                    <BookOpen />
+                  </span>
+                  <span className="cloud-notebook-list-main">
+                    <span className="cloud-notebook-list-title">
+                      {notebook.title?.trim() || notebook.notebook_id}
+                    </span>
+                    <span className="cloud-notebook-list-id">{notebook.notebook_id}</span>
+                  </span>
+                  <span className="cloud-notebook-list-scope" data-scope={notebook.scope}>
+                    {formatNotebookScope(notebook.scope)}
+                  </span>
+                  <span className="cloud-notebook-list-updated">
+                    <Clock aria-hidden="true" />
+                    {formatNotebookUpdatedAt(notebook.updated_at)}
+                  </span>
+                  <ExternalLink className="cloud-notebook-list-open" aria-hidden="true" />
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function isCloudNotebookListResponse(value: unknown): value is CloudNotebookListResponse {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return candidate.ok === true && Array.isArray(candidate.notebooks);
+}
+
+function formatNotebookScope(scope: CloudNotebookListItem["scope"]): string {
+  switch (scope) {
+    case "owner":
+      return "owner";
+    case "editor":
+      return "editor";
+    case "runtime_peer":
+      return "runtime";
+    case "viewer":
+      return "viewer";
+  }
+}
+
+function formatNotebookUpdatedAt(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
 }
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
@@ -452,7 +679,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
           ) : null}
 
           <div className="cloud-home-actions">
-            <a href="/n/topic-viz/topic-viz">Open topic viz</a>
+            <a href="/n">View notebooks</a>
             {signedIn ? (
               <button
                 type="button"

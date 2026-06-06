@@ -174,6 +174,18 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /topic-viz.*render/);
   });
 
+  it("serves the notebook list page at /n", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(new Request("http://localhost/n"), env, fakeContext());
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<title>nteract cloud notebooks<\/title>/);
+    assert.match(html, /notebook-cloud-viewer\.js/);
+    assert.doesNotMatch(html, /nteract-cloud-viewer-config/);
+  });
+
   it("serves the viewer runtimed WASM asset through the Worker assets binding", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({

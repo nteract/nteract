@@ -136,6 +136,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     handler: (_match, request, env) => homeViewer(request, env),
   },
   {
+    match: exactPath("/n", "/n/"),
+    methods: ["GET"],
+    handler: (_match, request, env) => notebookListViewer(request, env),
+  },
+  {
     match: exactPath("/oidc"),
     methods: ["GET"],
     handler: (_match, request, env) => oidcCallbackViewer(request, env),
@@ -2450,6 +2455,10 @@ interface ViewerShellConfig extends Record<string, unknown> {
 
 function homeViewer(request: Request, env: Env): Response {
   return viewerShell("nteract", env, authConfigForRequest(request, env), null);
+}
+
+function notebookListViewer(request: Request, env: Env): Response {
+  return viewerShell("nteract cloud notebooks", env, authConfigForRequest(request, env), null);
 }
 
 function oidcCallbackViewer(request: Request, env: Env): Response {
