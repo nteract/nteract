@@ -68,6 +68,7 @@ pub mod user_error;
 pub(crate) mod uv_project;
 #[doc(hidden)]
 pub mod warm_env;
+pub mod workstation;
 
 pub fn trusted_packages_db_path() -> std::path::PathBuf {
     runt_workspace::daemon_base_dir().join("trusted-packages.sqlite")
