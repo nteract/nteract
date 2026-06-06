@@ -131,6 +131,7 @@ fn main() {
         "verify-plugins" => cmd_verify_plugins(),
         "verify-genesis" => cmd_verify_genesis(),
         "wasm-ensure" => cmd_wasm_ensure(),
+        "wasm-verify" => cmd_wasm_verify(),
         "mcpb" => {
             let output = args
                 .windows(2)
@@ -229,6 +230,8 @@ Other:
                              Catches a stale wasm after a schema/seed bump (#3086).
   wasm-ensure                Ensure runtimed-wasm outputs match source fingerprints
                              and genesis seeds, rebuilding when stale or missing.
+  wasm-verify                Verify downloaded WASM artifacts and fingerprints
+                             without rebuilding them.
   icons [source.png]         Generate icon variants
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
   mcpb --variant nightly     Build nightly variant (different name/icon)
@@ -1300,6 +1303,12 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
         // turns a silently-stale bundle into a loud failure at build time, not
         // a broken notebook at runtime.
         cmd_verify_genesis();
+        write_wasm_package_fingerprint(
+            "runtimed-wasm",
+            RUNTIMED_WASM_INPUTS,
+            RUNTIMED_WASM_LOCK_ROOTS,
+            Path::new(RUNTIMED_WASM_FINGERPRINT),
+        );
     }
 
     if build_sift {
@@ -1349,6 +1358,12 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
         }
         println!(
             "WASM build complete. Output: crates/sift-wasm/pkg/ (mirrored to packages/sift/public/wasm/)"
+        );
+        write_wasm_package_fingerprint(
+            "sift-wasm",
+            SIFT_WASM_INPUTS,
+            SIFT_WASM_LOCK_ROOTS,
+            Path::new(SIFT_WASM_FINGERPRINT),
         );
     }
 
@@ -1443,6 +1458,13 @@ fn cmd_renderer_plugins(only: &[&str]) {
     } else {
         println!("  Targets: {}", only.join(", "));
     }
+    if renderer_plugin_targets_include_sift(only) {
+        write_current_renderer_plugins_fingerprint();
+    }
+}
+
+fn renderer_plugin_targets_include_sift(only: &[&str]) -> bool {
+    only.is_empty() || only.contains(&"sift")
 }
 
 /// Verify renderer plugin bundles are coherent with their paired wasm binaries.
@@ -1552,6 +1574,96 @@ fn cmd_wasm_ensure() {
         eprintln!("::error::runtimed-wasm still does not embed the current genesis after rebuild.");
         exit(1);
     }
+}
+
+/// Verify prebuilt WASM artifacts without rebuilding them. This is for CI jobs
+/// that downloaded the `wasm-artifacts` bundle from a build-wasm job and should
+/// never need `wasm-pack` in the consumer job.
+fn cmd_wasm_verify() {
+    ensure_workspace_root_cwd();
+
+    let mut ok = true;
+    ok &= verify_wasm_package_current(
+        "runtimed-wasm",
+        RUNTIMED_WASM_OUTPUTS,
+        RUNTIMED_WASM_INPUTS,
+        RUNTIMED_WASM_LOCK_ROOTS,
+        Path::new(RUNTIMED_WASM_FINGERPRINT),
+        || {
+            if genesis_seeds_embedded(false) {
+                None
+            } else {
+                Some("genesis seeds changed")
+            }
+        },
+    );
+    ok &= verify_wasm_package_current(
+        "sift-wasm",
+        SIFT_WASM_OUTPUTS,
+        SIFT_WASM_INPUTS,
+        SIFT_WASM_LOCK_ROOTS,
+        Path::new(SIFT_WASM_FINGERPRINT),
+        || None,
+    );
+    ok &= verify_renderer_plugins_current();
+
+    if !ok {
+        eprintln!(
+            "Downloaded WASM artifacts are not current for this checkout. \
+             Rebuild them with `cargo xtask wasm` and upload the matching \
+             target/xtask/*.fingerprint files."
+        );
+        exit(1);
+    }
+}
+
+fn verify_renderer_plugins_current() -> bool {
+    let mut ok = true;
+    for output in RENDERER_PLUGIN_OUTPUTS {
+        if !Path::new(output).exists() {
+            eprintln!("::error file={output}::renderer plugin artifact is missing");
+            ok = false;
+        }
+    }
+
+    match (
+        sift_wasm_source_fingerprint(),
+        read_renderer_plugins_fingerprint(),
+    ) {
+        (Some(current), Some(previous)) if current == previous => {
+            println!("[xtask] verified renderer plugin source fingerprint");
+        }
+        (Some(_), Some(_)) => {
+            eprintln!("::error::renderer plugin artifacts are stale (sift-wasm source changed)");
+            ok = false;
+        }
+        (Some(_), None) => {
+            eprintln!("::error::renderer plugin input fingerprint missing");
+            ok = false;
+        }
+        (None, _) => {
+            eprintln!("::error::could not fingerprint renderer plugin inputs");
+            ok = false;
+        }
+    }
+
+    match verify_plugin_against_wasm(
+        Path::new("apps/notebook/src/renderer-plugins/sift.js"),
+        Path::new("crates/sift-wasm/pkg/sift_wasm_bg.wasm"),
+    ) {
+        Ok(count) => {
+            println!("[xtask] verified sift renderer plugin ({count} imports match sift-wasm)");
+        }
+        Err(msg) => {
+            eprintln!("::error file=apps/notebook/src/renderer-plugins/sift.js::{msg}");
+            ok = false;
+        }
+    }
+
+    if ok {
+        println!("[xtask] verified renderer plugin artifacts");
+    }
+    ok
 }
 
 /// Check whether the built `runtimed-wasm` embeds every current genesis seed.
@@ -2953,6 +3065,7 @@ const RUNTIMED_WASM_INPUTS: &[&str] = &[
 ];
 
 const RUNTIMED_WASM_LOCK_ROOTS: &[&str] = &["runtimed-wasm"];
+const RUNTIMED_WASM_FINGERPRINT: &str = "target/xtask/runtimed-wasm.fingerprint";
 
 const SIFT_WASM_OUTPUTS: &[&str] = &[
     "crates/sift-wasm/pkg/package.json",
@@ -2975,6 +3088,20 @@ const SIFT_WASM_INPUTS: &[&str] = &[
 ];
 
 const SIFT_WASM_LOCK_ROOTS: &[&str] = &["sift-wasm"];
+const SIFT_WASM_FINGERPRINT: &str = "target/xtask/sift-wasm.fingerprint";
+
+const RENDERER_PLUGIN_OUTPUTS: &[&str] = &[
+    "apps/notebook/src/renderer-plugins/isolated-renderer.js",
+    "apps/notebook/src/renderer-plugins/isolated-renderer.css",
+    "apps/notebook/src/renderer-plugins/markdown.js",
+    "apps/notebook/src/renderer-plugins/markdown.css",
+    "apps/notebook/src/renderer-plugins/plotly.js",
+    "apps/notebook/src/renderer-plugins/vega.js",
+    "apps/notebook/src/renderer-plugins/leaflet.js",
+    "apps/notebook/src/renderer-plugins/leaflet.css",
+    "apps/notebook/src/renderer-plugins/sift.js",
+    "apps/notebook/src/renderer-plugins/sift.css",
+];
 
 /// Ensure gitignored wasm-pack outputs are current enough for regular
 /// build/dev commands without rewriting them on every run.
@@ -2991,7 +3118,7 @@ fn ensure_volatile_wasm_current() -> bool {
         SIFT_WASM_OUTPUTS,
         SIFT_WASM_INPUTS,
         SIFT_WASM_LOCK_ROOTS,
-        Path::new("target/xtask/sift-wasm.fingerprint"),
+        Path::new(SIFT_WASM_FINGERPRINT),
         || None,
         || cmd_wasm(Some("sift"), true),
     )
@@ -3003,7 +3130,7 @@ fn ensure_runtimed_wasm_current() -> bool {
         RUNTIMED_WASM_OUTPUTS,
         RUNTIMED_WASM_INPUTS,
         RUNTIMED_WASM_LOCK_ROOTS,
-        Path::new("target/xtask/runtimed-wasm.fingerprint"),
+        Path::new(RUNTIMED_WASM_FINGERPRINT),
         || {
             if genesis_seeds_embedded(false) {
                 None
@@ -3047,6 +3174,31 @@ fn ensure_wasm_package_current(
         }
         println!("[xtask] skipping {label} rebuild (outputs are up to date)");
         false
+    }
+}
+
+fn verify_wasm_package_current(
+    label: &str,
+    outputs: &[&str],
+    inputs: &[&str],
+    lock_roots: &[&str],
+    fingerprint_path: &Path,
+    extra_reason: impl FnOnce() -> Option<&'static str>,
+) -> bool {
+    let current_fingerprint = wasm_input_fingerprint(inputs, lock_roots);
+    let reason = wasm_package_verify_reason(
+        outputs,
+        fingerprint_path,
+        current_fingerprint.as_deref(),
+        extra_reason,
+    );
+
+    if let Some(reason) = reason {
+        eprintln!("::error::{label} prebuilt artifacts are not current ({reason})");
+        false
+    } else {
+        println!("[xtask] verified {label} prebuilt artifacts");
+        true
     }
 }
 
@@ -3097,6 +3249,41 @@ fn wasm_package_rebuild_reason(
     }
 }
 
+fn wasm_package_verify_reason(
+    outputs: &[&str],
+    fingerprint_path: &Path,
+    current_fingerprint: Option<&str>,
+    extra_reason: impl FnOnce() -> Option<&'static str>,
+) -> Option<&'static str> {
+    for output in outputs {
+        if !Path::new(output).exists() {
+            return Some("output file missing");
+        }
+    }
+
+    for output in outputs.iter().filter(|output| output.ends_with(".wasm")) {
+        match fs::read(output) {
+            Ok(bytes) if bytes.starts_with(b"\0asm") => {}
+            Ok(_) => return Some("wasm output is not a WebAssembly binary"),
+            Err(_) => return Some("could not read wasm output"),
+        }
+    }
+
+    if let Some(reason) = extra_reason() {
+        return Some(reason);
+    }
+
+    let Some(current_fingerprint) = current_fingerprint else {
+        return Some("could not fingerprint input files");
+    };
+
+    match read_fingerprint(fingerprint_path) {
+        Some(previous) if previous == current_fingerprint => None,
+        Some(_) => Some("input files changed"),
+        None => Some("input fingerprint missing"),
+    }
+}
+
 fn wasm_input_fingerprint(paths: &[&str], lock_roots: &[&str]) -> Option<String> {
     let mut files = Vec::new();
     for path in paths {
@@ -3109,7 +3296,7 @@ fn wasm_input_fingerprint(paths: &[&str], lock_roots: &[&str]) -> Option<String>
             return None;
         }
     }
-    files.sort();
+    sort_fingerprint_paths(&mut files);
 
     let mut hasher = StableHasher::new();
     for path in &files {
@@ -3170,9 +3357,46 @@ impl StableHasher {
 }
 
 fn hash_path_and_bytes(path: &Path, bytes: &[u8], hasher: &mut StableHasher) {
-    hasher.write_str(&path.to_string_lossy());
-    hasher.write(bytes);
+    hasher.write_str(&normalize_fingerprint_path(path));
+    if should_normalize_fingerprint_line_endings(path) {
+        hasher.write(&normalize_crlf_line_endings(bytes));
+    } else {
+        hasher.write(bytes);
+    }
     hasher.write(&[0xff]);
+}
+
+fn normalize_fingerprint_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn sort_fingerprint_paths(paths: &mut [PathBuf]) {
+    paths.sort_by_key(|path| normalize_fingerprint_path(path));
+}
+
+fn should_normalize_fingerprint_line_endings(path: &Path) -> bool {
+    if path.file_name().and_then(|name| name.to_str()) == Some("Cargo.lock") {
+        return true;
+    }
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("rs" | "toml")
+    )
+}
+
+fn normalize_crlf_line_endings(bytes: &[u8]) -> Vec<u8> {
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            normalized.push(b'\n');
+            i += 2;
+        } else {
+            normalized.push(bytes[i]);
+            i += 1;
+        }
+    }
+    normalized
 }
 
 #[derive(Debug)]
@@ -3187,7 +3411,8 @@ fn hash_filtered_cargo_lock(
     root_names: &[&str],
     hasher: &mut StableHasher,
 ) -> Option<()> {
-    let contents = fs::read_to_string(path).ok()?;
+    let contents = fs::read(path).ok()?;
+    let contents = String::from_utf8(normalize_crlf_line_endings(&contents)).ok()?;
     let (preamble, packages) = parse_cargo_lock_packages(&contents);
     if packages.is_empty() {
         return None;
@@ -3216,7 +3441,10 @@ fn hash_filtered_cargo_lock(
         }
     }
 
-    hasher.write_str(&format!("{}:filtered-lock", path.display()));
+    hasher.write_str(&format!(
+        "{}:filtered-lock",
+        normalize_fingerprint_path(path)
+    ));
     for root in root_names {
         hasher.write_str(root);
     }
@@ -3345,6 +3573,13 @@ fn write_fingerprint(path: &Path, fingerprint: &str) {
     let _ = fs::write(path, fingerprint);
 }
 
+fn write_wasm_package_fingerprint(label: &str, inputs: &[&str], lock_roots: &[&str], path: &Path) {
+    match wasm_input_fingerprint(inputs, lock_roots) {
+        Some(fingerprint) => write_fingerprint(path, &fingerprint),
+        None => eprintln!("[xtask] warning: could not write {label} fingerprint"),
+    }
+}
+
 /// Hash every `.rs` file under `crates/sift-wasm/src/` plus its `Cargo.toml`
 /// into a single u64. Returns `None` if the directory is missing (fresh
 /// pre-clone state — let the missing-files probe handle it).
@@ -3356,7 +3591,7 @@ fn sift_wasm_source_fingerprint() -> Option<String> {
     let mut files: Vec<PathBuf> = Vec::new();
     collect_rust_sources(&root.join("src"), &mut files);
     files.push(root.join("Cargo.toml"));
-    files.sort();
+    sort_fingerprint_paths(&mut files);
 
     let mut hasher = StableHasher::new();
     for path in &files {
@@ -3401,6 +3636,13 @@ fn write_renderer_plugins_fingerprint(fingerprint: &str) {
         let _ = fs::create_dir_all(parent);
     }
     let _ = fs::write(&path, fingerprint);
+}
+
+fn write_current_renderer_plugins_fingerprint() {
+    match sift_wasm_source_fingerprint() {
+        Some(fingerprint) => write_renderer_plugins_fingerprint(&fingerprint),
+        None => eprintln!("[xtask] warning: could not write renderer plugin fingerprint"),
+    }
 }
 
 /// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
@@ -4162,7 +4404,7 @@ fn cmd_check_dep_budget() {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_dev_options_reads_flags_and_path() {
@@ -4206,6 +4448,29 @@ mod tests {
                 "isolated-renderer".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn renderer_plugin_targets_include_sift_for_full_or_sift_builds() {
+        assert!(renderer_plugin_targets_include_sift(&[]));
+        assert!(renderer_plugin_targets_include_sift(&["sift"]));
+        assert!(renderer_plugin_targets_include_sift(&["markdown", "sift"]));
+        assert!(!renderer_plugin_targets_include_sift(&["markdown"]));
+        assert!(!renderer_plugin_targets_include_sift(&[
+            "isolated-renderer"
+        ]));
+    }
+
+    #[test]
+    fn fingerprint_path_sort_uses_normalized_separators() {
+        let mut paths = vec![PathBuf::from("src/a0.rs"), PathBuf::from(r"src\a\z.rs")];
+        sort_fingerprint_paths(&mut paths);
+
+        let normalized: Vec<String> = paths
+            .iter()
+            .map(|path| normalize_fingerprint_path(path))
+            .collect();
+        assert_eq!(normalized, vec!["src/a/z.rs", "src/a0.rs"]);
     }
 
     #[test]
@@ -4304,6 +4569,58 @@ mod tests {
             None
         );
 
+        set_modified_time(&output, UNIX_EPOCH + Duration::from_secs(1));
+        set_modified_time(&input, UNIX_EPOCH + Duration::from_secs(2));
+        assert_eq!(
+            wasm_package_rebuild_reason(
+                "test-wasm",
+                &output_refs,
+                &input_refs,
+                &stamp,
+                Some(&fingerprint),
+                || None,
+            ),
+            None
+        );
+
+        fs::remove_dir_all(dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn wasm_package_verify_reason_requires_current_fingerprint() {
+        let dir = test_temp_dir("wasm-verify-fingerprint");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let input = dir.join("input.rs");
+        let output = dir.join("out.wasm");
+        let stamp = dir.join("stamp");
+        fs::write(&input, "pub fn exported() {}").expect("write input");
+        fs::write(&output, b"\0asmcurrent").expect("write wasm");
+
+        let inputs = [input.to_string_lossy().to_string()];
+        let outputs = [output.to_string_lossy().to_string()];
+        let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let output_refs: Vec<&str> = outputs.iter().map(String::as_str).collect();
+        let fingerprint = wasm_input_fingerprint(&input_refs, &[]).expect("fingerprint input");
+
+        assert_eq!(
+            wasm_package_verify_reason(&output_refs, &stamp, Some(&fingerprint), || None),
+            Some("input fingerprint missing")
+        );
+
+        fs::write(&stamp, "stale").expect("write stale stamp");
+        assert_eq!(
+            wasm_package_verify_reason(&output_refs, &stamp, Some(&fingerprint), || None),
+            Some("input files changed")
+        );
+
+        fs::write(&stamp, &fingerprint).expect("write current stamp");
+        set_modified_time(&output, UNIX_EPOCH + Duration::from_secs(1));
+        set_modified_time(&input, UNIX_EPOCH + Duration::from_secs(2));
+        assert_eq!(
+            wasm_package_verify_reason(&output_refs, &stamp, Some(&fingerprint), || None),
+            None
+        );
+
         fs::remove_dir_all(dir).expect("remove temp dir");
     }
 
@@ -4345,6 +4662,11 @@ checksum = "old"
         let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
         let first = wasm_input_fingerprint(&input_refs, &["root-wasm"]).expect("fingerprint");
 
+        fs::write(&lock, base_lock.replace('\n', "\r\n")).expect("write crlf lock");
+        let crlf =
+            wasm_input_fingerprint(&input_refs, &["root-wasm"]).expect("fingerprint unchanged");
+        assert_eq!(first, crlf);
+
         fs::write(
             &lock,
             base_lock.replace("checksum = \"old\"", "checksum = \"new\""),
@@ -4366,12 +4688,56 @@ checksum = "old"
         fs::remove_dir_all(dir).expect("remove temp dir");
     }
 
+    #[test]
+    fn wasm_fingerprint_normalizes_text_paths_and_line_endings() {
+        let mut unix_text = StableHasher::new();
+        hash_path_and_bytes(
+            Path::new("crates/runtimed-wasm/src/lib.rs"),
+            b"pub fn demo() {}\n",
+            &mut unix_text,
+        );
+
+        let mut windows_text = StableHasher::new();
+        hash_path_and_bytes(
+            Path::new(r"crates\runtimed-wasm\src\lib.rs"),
+            b"pub fn demo() {}\r\n",
+            &mut windows_text,
+        );
+
+        assert_eq!(unix_text.finish_hex(), windows_text.finish_hex());
+
+        let mut unix_binary = StableHasher::new();
+        hash_path_and_bytes(
+            Path::new("crates/notebook-doc/assets/notebook_genesis_v5.am"),
+            b"seed\r\n",
+            &mut unix_binary,
+        );
+
+        let mut windows_binary = StableHasher::new();
+        hash_path_and_bytes(
+            Path::new(r"crates\notebook-doc\assets\notebook_genesis_v5.am"),
+            b"seed\n",
+            &mut windows_binary,
+        );
+
+        assert_ne!(unix_binary.finish_hex(), windows_binary.finish_hex());
+    }
+
     fn test_temp_dir(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()))
+    }
+
+    fn set_modified_time(path: &Path, timestamp: SystemTime) {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open file to set modified time");
+        file.set_times(fs::FileTimes::new().set_modified(timestamp))
+            .expect("set modified time");
     }
 
     #[test]

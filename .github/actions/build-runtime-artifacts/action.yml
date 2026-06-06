@@ -10,8 +10,10 @@ description: >-
   build.
 
   Pass skip-wasm: true when pre-built WASM artifacts have already been
-  downloaded from an earlier job (the build-wasm pattern). Node/pnpm setup
-  still runs so downstream steps like `pnpm build` work.
+  downloaded from an earlier job (the build-wasm pattern). The downloaded
+  bundle must include the generated outputs and target/xtask/*.fingerprint
+  files from the build job. Node/pnpm setup still runs so downstream steps
+  like `pnpm build` work.
 
 inputs:
   wasm-pack-version:
@@ -64,6 +66,11 @@ runs:
       run: |
         echo "CARGO=$(rustup which cargo)" >> "$GITHUB_ENV"
         echo "RUSTC=$(rustup which rustc)" >> "$GITHUB_ENV"
+
+    - name: Verify downloaded wasm artifacts
+      if: inputs.skip-wasm == 'true'
+      shell: bash
+      run: cargo xtask wasm-verify
 
     - name: Install wasm-pack
       if: inputs.skip-wasm != 'true'
