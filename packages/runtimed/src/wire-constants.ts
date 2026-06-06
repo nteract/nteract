@@ -14,10 +14,10 @@ export const FrameType = {
   BROADCAST: 0x03,
   PRESENCE: 0x04,
   RUNTIME_STATE_SYNC: 0x05,
+  COMMS_DOC_SYNC: 0x09,
   POOL_STATE_SYNC: 0x06,
   SESSION_CONTROL: 0x07,
   PUT_BLOB: 0x08,
-  COMMS_DOC_SYNC: 0x09,
 } as const;
 
 export type FrameTypeName = keyof typeof FrameType;
