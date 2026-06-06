@@ -347,6 +347,33 @@ describe("startNotebookSyncStoreBridge", () => {
     bridge.stop();
   });
 
+  it("waits for fresh initial sync after reconnect readiness reset", async () => {
+    const { bridge, materializeCells, setIsLoading, subjects } = startBridge();
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+
+    expect(materializeCells).toHaveBeenCalledTimes(1);
+
+    bridge.resetReadiness();
+    materializeCells.mockClear();
+    setIsLoading.mockClear();
+
+    subjects.sessionStatus$.next(streamingStatus());
+    await flushMicrotasks();
+
+    expect(materializeCells).not.toHaveBeenCalled();
+    expect(setIsLoading).not.toHaveBeenCalled();
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+
+    expect(materializeCells).toHaveBeenCalledTimes(1);
+    expect(setIsLoading).toHaveBeenLastCalledWith(true);
+
+    bridge.stop();
+  });
+
   it("ignores in-flight materializeCells result if stopped before it resolves", async () => {
     const materialize = deferred();
     const materializeCells = vi.fn(() => materialize.promise);

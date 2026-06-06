@@ -17,6 +17,7 @@ import {
   cellSnapshotsToNotebookCellsSync,
 } from "../lib/materialize-cells";
 import {
+  getCellIdsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
   updateCellById,
@@ -31,6 +32,10 @@ import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebo
 import { setNotebookHandle } from "../lib/notebook-metadata";
 import { resetPoolState } from "../lib/pool-state";
 import { resetRuntimeState, useRuntimeState } from "../lib/runtime-state";
+import {
+  notebookReadyIdentity,
+  shouldPreserveBootstrapProjection,
+} from "../lib/bootstrap-preservation";
 import { startNotebookSyncStoreBridge } from "../lib/notebook-sync-store-bridge";
 import type { JupyterOutput, NotebookCell } from "../types";
 import init, {
@@ -114,6 +119,7 @@ export function useNotebook() {
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const canWriteNotebookRef = useRef(true);
+  const readyNotebookIdentityRef = useRef<string | null>(null);
 
   const [handleHost] = useState(
     () =>
@@ -307,14 +313,27 @@ export function useNotebook() {
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
         canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);
+        const nextNotebookIdentity = notebookReadyIdentity(trigger.payload);
+        const preserveProjection = shouldPreserveBootstrapProjection({
+          previousIdentity: readyNotebookIdentityRef.current,
+          nextIdentity: nextNotebookIdentity,
+          visibleCellCount: getCellIdsSnapshot().length,
+        });
+        readyNotebookIdentityRef.current = nextNotebookIdentity;
         storeBridge.resetReadiness();
         refreshBlobPort();
-        resetNotebookCells();
-        resetRuntimeState();
-        resetRuntimeStoresProjection();
+        if (preserveProjection) {
+          logger.info(
+            "[automerge-notebook] preserving notebook projection across same-room rebootstrap",
+          );
+        } else {
+          resetNotebookCells();
+          resetRuntimeState();
+          resetRuntimeStoresProjection();
+          outputCacheRef.current.clear();
+        }
         resetPoolState();
         setCanAcceptCellMutations(false);
-        outputCacheRef.current.clear();
         setIsLoading(true);
         setLoadError(null);
       },
