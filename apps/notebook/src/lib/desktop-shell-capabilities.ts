@@ -5,6 +5,7 @@ import {
   notebookRoomAccessLevelFromConnectionScope,
   projectNotebookShellCapabilities,
   projectNotebookRoomEditAccess,
+  splitNotebookActorPrincipalOperator,
   type NotebookShellAccessLevel,
   type NotebookShellAccessSource,
   type NotebookShellCapabilities,
@@ -61,7 +62,12 @@ export function desktopNotebookShellCapabilities({
     // gates this further by document write authority.
     executionAvailable: sessionReady,
     source,
-    actorLabel: canWriteRuntimeState ? localActor : null,
+    actorLabel: desktopRuntimeActorLabel({
+      canWriteRuntimeState,
+      isRuntimePeer,
+      localActor,
+      source,
+    }),
     identityLabel: null,
   };
   return projectNotebookShellCapabilities({
@@ -94,6 +100,28 @@ export function desktopNotebookShellCapabilities({
       requiredSources: ["cloud"],
     },
   });
+}
+
+function desktopRuntimeActorLabel({
+  canWriteRuntimeState,
+  isRuntimePeer,
+  localActor,
+  source,
+}: {
+  canWriteRuntimeState: boolean;
+  isRuntimePeer: boolean;
+  localActor: string | null;
+  source: NotebookShellAccessSource;
+}): string | null {
+  if (!canWriteRuntimeState || !localActor) {
+    return null;
+  }
+  if (isRuntimePeer || source !== "local") {
+    return localActor;
+  }
+
+  const [principal] = splitNotebookActorPrincipalOperator(localActor);
+  return `${principal}/runtime:local`;
 }
 
 function desktopAccessLevelFromConnectionScope(

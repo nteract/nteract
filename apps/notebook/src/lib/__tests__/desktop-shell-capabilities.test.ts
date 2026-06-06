@@ -66,7 +66,7 @@ describe("desktopNotebookShellCapabilities", () => {
       canWriteRuntimeState: true,
       connected: true,
       source: "local",
-      actorLabel: "local:kyle/desktop:window",
+      actorLabel: "local:kyle/runtime:local",
     });
     expect(capabilities.access.actor).toMatchObject({
       principal: {
@@ -78,7 +78,7 @@ describe("desktopNotebookShellCapabilities", () => {
     });
     expect(capabilities.runtime.actor).toMatchObject({
       principal: { label: "Kyle" },
-      operator: { kind: "desktop" },
+      operator: { kind: "runtime", label: "Local" },
       scope: "runtime_peer",
     });
   });
