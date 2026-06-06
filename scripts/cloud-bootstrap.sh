@@ -49,13 +49,17 @@ else
 fi
 
 # Detect missing wasm + renderer-plugin artifacts. runtimed-wasm and sift-wasm
-# are gitignored wasm-pack outputs; sift.js is the one renderer-plugin bundle
-# that's rebuilt in lockstep with sift-wasm rather than LFS-tracked. The stable
-# renderer-plugin bundles come from LFS (see `.gitattributes`) and are present
-# after `git lfs pull`.
+# are gitignored wasm-pack outputs; isolated-renderer.*, markdown.*, and sift.*
+# are local renderer-plugin outputs rebuilt by xtask. The remaining stable
+# third-party renderer bundles come from LFS (see `.gitattributes`) and are
+# present after `git lfs pull`.
 ARTIFACT_PROBES=(
   crates/sift-wasm/pkg/sift_wasm_bg.wasm
   apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm
+  apps/notebook/src/renderer-plugins/isolated-renderer.js
+  apps/notebook/src/renderer-plugins/isolated-renderer.css
+  apps/notebook/src/renderer-plugins/markdown.js
+  apps/notebook/src/renderer-plugins/markdown.css
   apps/notebook/src/renderer-plugins/sift.js
 )
 NEEDS_BUILD=0
@@ -67,30 +71,30 @@ for probe in "${ARTIFACT_PROBES[@]}"; do
 done
 
 if [ "$NEEDS_BUILD" = "1" ]; then
-  log "  build artifacts: missing, running cargo xtask wasm"
+  log "  build artifacts: missing, running cargo xtask artifacts ensure runtime,sift,renderer"
   if command -v wasm-pack >/dev/null 2>&1; then
     # Retry on transient network failures. The dominant flake is rustup
     # re-fetching the toolchain channel manifest from static.rust-lang.org
     # and getting a 5xx; backoff is enough to ride out the blip.
     WASM_OK=0
     for attempt in 1 2 3; do
-      if run cargo xtask wasm; then
+      if run cargo xtask artifacts ensure runtime,sift,renderer; then
         WASM_OK=1
         break
       fi
       if [ "$attempt" -lt 3 ]; then
         delay=$((attempt * 4))
-        log "  cargo xtask wasm: attempt $attempt failed, retrying in ${delay}s"
+        log "  cargo xtask artifacts ensure: attempt $attempt failed, retrying in ${delay}s"
         sleep "$delay"
       fi
     done
     if [ "$WASM_OK" = "1" ]; then
-      log "  cargo xtask wasm: ok"
+      log "  cargo xtask artifacts ensure: ok"
     else
-      log "  cargo xtask wasm: FAILED after 3 attempts (see $LOG); runtimed/runt won't compile, frontend plugin tests will fail"
+      log "  cargo xtask artifacts ensure: FAILED after 3 attempts (see $LOG); runtimed/runt won't compile, frontend plugin tests will fail"
     fi
   else
-    log "  cargo xtask wasm: skipped (wasm-pack missing; configure cloud-env setup script. See contributing/cloud-sessions.md)"
+    log "  cargo xtask artifacts ensure: skipped (wasm-pack missing; configure cloud-env setup script. See contributing/cloud-sessions.md)"
   fi
 else
   log "  build artifacts: present (skipping wasm build)"

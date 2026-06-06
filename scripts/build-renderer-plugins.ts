@@ -2,9 +2,10 @@
  * Build pre-built renderer plugin artifacts into a single canonical dir.
  *
  * Output: `apps/notebook/src/renderer-plugins/` - core IIFE + CJS plugins.
- * Stable bundles (plotly, vega, leaflet, markdown, isolated-renderer) are
- * LFS-tracked; sift.{js,css} stay gitignored because they re-embed
- * sift-wasm's wasm-bindgen glue and must be rebuilt in lockstep.
+ * Stable third-party bundles (plotly, vega, leaflet) are LFS-tracked.
+ * Owned/generated bundles (isolated-renderer, markdown, sift) stay gitignored
+ * because they are local build outputs. Sift also re-embeds sift-wasm's
+ * wasm-bindgen glue and must be rebuilt in lockstep.
  *
  * The notebook Vite app loads these CJS bundles directly. runtimed
  * `include_bytes!`-es them, and the blob server wraps `.js` responses with
@@ -192,7 +193,7 @@ async function main() {
 
   // Build selected artifacts in parallel. `cargo xtask wasm` uses this to
   // refresh only sift after rebuilding sift-wasm, avoiding incidental churn in
-  // the LFS-tracked stable renderer bundles.
+  // unrelated renderer bundles.
   const [iife, plugins] = await Promise.all([
     selection.buildCore ? buildCoreIIFE() : Promise.resolve(null),
     selection.plugins.length > 0

@@ -2,9 +2,10 @@
  * Vite Plugin: Isolated Renderer
  *
  * Loads pre-built renderer plugin artifacts from disk and exposes them as
- * virtual modules. The artifacts live under `apps/notebook/src/renderer-plugins/`
- * (gitignored) and are produced by `cargo xtask wasm`, which chains into
- * the renderer-plugin builder after rebuilding sift-wasm.
+ * virtual modules. The artifacts live under `apps/notebook/src/renderer-plugins/`.
+ * Stable third-party plugin bundles are LFS-tracked; generated
+ * isolated-renderer, markdown, and sift bundles are produced locally by
+ * `cargo xtask renderer-plugins` or `cargo xtask artifacts ensure renderer`.
  *
  * In dev mode (Vite dev server), changes to isolated renderer source files
  * trigger a live rebuild + HMR reload so you don't need to re-run the
@@ -32,7 +33,7 @@ const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 const VIRTUAL_PLUGIN_PREFIX = "virtual:renderer-plugin/";
 const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
 
-/** Directory containing pre-built renderer plugin artifacts (gitignored, built by `cargo xtask wasm`). */
+/** Directory containing pre-built renderer plugin artifacts. */
 const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
 
 /** Plugin names that have pre-built artifacts. */
@@ -221,7 +222,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
         if (missing.length > 0) {
           throw new Error(
             `Pre-built renderer plugins missing: ${missing.join(", ")}\n` +
-              "Run `git lfs pull` for tracked stable bundles and `cargo xtask renderer-plugins` to rebuild generated bundles.",
+              "Run `git lfs pull` for tracked third-party bundles and `cargo xtask renderer-plugins` to rebuild generated bundles.",
           );
         }
       }

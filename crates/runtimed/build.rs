@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     // Renderer plugin bundles live under `apps/notebook/src/renderer-plugins/`.
-    // Stable bundles (plotly, vega, leaflet, markdown) are LFS-tracked;
-    // sift.{js,css} is gitignored and rebuilt via
-    // `cargo xtask artifacts ensure sift,renderer`.
+    // Stable third-party bundles (plotly, vega, leaflet) are LFS-tracked;
+    // owned/generated renderer bundles (isolated-renderer.*, markdown.*,
+    // sift.*) are gitignored and rebuilt via
+    // `cargo xtask artifacts ensure renderer`.
     // sift_wasm.wasm is embedded directly from `crates/sift-wasm/pkg/`.
     // Probe each path before `include_bytes!` so a missing file points at
     // the right recovery command instead of a generic "file not found".
@@ -25,10 +26,10 @@ fn main() {
         if !path.exists() {
             panic!(
                 "Missing renderer plugin asset: {}\n\n\
-                 Stable bundles (plotly, vega, leaflet, markdown, isolated-renderer) \
+                 Stable bundles (plotly, vega, leaflet) \
                  are LFS-tracked - run `git lfs pull` if your checkout has pointer \
                  files only.\n\
-                 Volatile bundles (sift.js, sift.css) are gitignored - run \
+                 Generated bundles (isolated-renderer.*, markdown.*, sift.*) are gitignored - run \
                  `cargo xtask artifacts ensure sift,renderer` from the \
                  workspace root to rebuild.",
                 path.display(),

@@ -8,10 +8,10 @@
 //!
 //! The canonical source directory is `apps/notebook/src/renderer-plugins/` -
 //! the same raw CJS bundles the notebook Vite app loads via its
-//! isolated-renderer virtual modules. Stable bundles (plotly, vega, leaflet,
-//! markdown, isolated-renderer) are LFS-tracked; sift.js / sift.css are
-//! rebuilt on every `cargo xtask wasm`. Sift's WASM blob comes straight from
-//! `crates/sift-wasm/pkg/sift_wasm_bg.wasm`.
+//! isolated-renderer virtual modules. Stable third-party bundles (plotly, vega,
+//! leaflet) are LFS-tracked; isolated-renderer, markdown, and sift JS/CSS
+//! bundles are generated locally by `cargo xtask renderer-plugins`. Sift's WASM
+//! blob comes straight from `crates/sift-wasm/pkg/sift_wasm_bg.wasm`.
 //!
 //! ## Adding or removing a plugin asset
 //!

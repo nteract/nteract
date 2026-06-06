@@ -10,7 +10,7 @@ const ISOLATED_RENDERER_ARTIFACT = new URL(
 );
 
 describe("renderer plugin artifacts", () => {
-  it("keeps the checked-in isolated renderer artifact compatible with the install context", async () => {
+  it("keeps the generated isolated renderer artifact compatible with the install context", async () => {
     const [registrySource, artifactSource] = await Promise.all([
       readFile(REGISTRY_SOURCE, "utf8"),
       readFile(ISOLATED_RENDERER_ARTIFACT, "utf8"),
@@ -18,7 +18,7 @@ describe("renderer plugin artifacts", () => {
 
     assert.ok(
       !artifactSource.startsWith("version https://git-lfs.github.com/spec/"),
-      "isolated renderer artifact must be checked out through Git LFS",
+      "isolated renderer artifact must be generated locally, not left as a Git LFS pointer",
     );
 
     const fields = rendererInstallContextFields(registrySource);
