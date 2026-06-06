@@ -60,6 +60,7 @@ These entries define the center of gravity for the system:
 | [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md) | Draft | Execution state, output ordering, and lifecycle priority. |
 | [Execution Liveness](execution-liveness.md) | Design memo | Divergence-detection framing; not a recovery decision yet. |
 | [Tokio Mutex Discipline](tokio-mutex-discipline.md) | Draft | Async lock and cancel-safety invariants. |
+| [Generated Runtime Artifacts](generated-runtime-artifacts.md) | Draft | Gitignored WASM/renderer outputs, LFS bundles, and `xtask artifacts` ownership. |
 | [Frontend Sync Bridge and Stable DOM Order](frontend-sync-bridge.md) | Draft | React/store projection and iframe-preserving cell order. |
 | [MCP Session Lifecycle and Daemon Supervision](mcp-session-lifecycle.md) | Draft | MCP proxy, daemon, and session lifetime boundaries. |
 | [MCP Resource Addressing](mcp-resource-addressing.md) | Draft | Local `nteract://` MCP resource namespace. |
