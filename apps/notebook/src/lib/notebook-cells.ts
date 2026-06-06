@@ -6,6 +6,7 @@ export {
   resetNotebookCells,
   subscribeIds,
   updateCellById,
+  updateCellSourceById,
   updateNotebookCells,
   useCell,
   useCellIds,

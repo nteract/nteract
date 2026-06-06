@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
-import type { MarkdownProjectionPlan } from "../../../lib/markdown-projection";
+import { projectMarkdownPlan, type MarkdownProjectionPlan } from "../../../lib/markdown-projection";
 
 export type NotebookCellMetadata = Record<string, unknown>;
 
@@ -307,6 +307,20 @@ export function updateCellById(
   if (updated.source !== cell.source) {
     emitSourceChange();
   }
+}
+
+export function updateCellSourceById(id: string, source: string): void {
+  updateCellById(id, (cell) => {
+    if (cell.cell_type !== "markdown") {
+      return { ...cell, source };
+    }
+
+    return {
+      ...cell,
+      source,
+      markdownProjection: projectMarkdownPlan(source) ?? undefined,
+    };
+  });
 }
 
 /**

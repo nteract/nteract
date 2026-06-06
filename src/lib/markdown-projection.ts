@@ -5,7 +5,10 @@ export const MARKDOWN_PROJECTION_MIME_TYPE =
 
 type MarkdownProjectionProjector = (source: string) => string;
 
+const MARKDOWN_PROJECTION_CACHE_LIMIT = 128;
+
 let markdownProjectionProjector: MarkdownProjectionProjector = project_markdown_json;
+const markdownProjectionCache = new Map<string, MarkdownProjectionPlan>();
 
 export interface MarkdownProjectionMeasurement {
   estimatedHeight: number;
@@ -27,6 +30,16 @@ export interface MarkdownProjectionBlock {
   sourceSpanUtf16: [number, number];
   syntaxSpans: unknown[];
   text: string;
+}
+
+export interface MarkdownProjectionAnchor {
+  anchorId: string;
+  blockId: string;
+  level: number;
+  slug: string;
+  sourceSpanByte: [number, number];
+  sourceSpanUtf16: [number, number];
+  title: string;
 }
 
 export interface MarkdownProjectionRun {
@@ -61,6 +74,7 @@ export interface MarkdownProjectionPlan {
   utf16Length: number;
   error?: string;
   measurement: MarkdownProjectionMeasurement;
+  anchors: MarkdownProjectionAnchor[];
   blocks: MarkdownProjectionBlock[];
   runs: MarkdownProjectionRun[];
 }
@@ -76,24 +90,55 @@ export function setMarkdownProjectionProjector(
 ): () => void {
   const previousProjector = markdownProjectionProjector;
   markdownProjectionProjector = projector;
+  markdownProjectionCache.clear();
   return () => {
     markdownProjectionProjector = previousProjector;
+    markdownProjectionCache.clear();
   };
 }
 
 export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | null {
   if (!source.trim()) return null;
+  const cached = markdownProjectionCache.get(source);
+  if (cached) {
+    markdownProjectionCache.delete(source);
+    markdownProjectionCache.set(source, cached);
+    return cached;
+  }
 
   try {
     const json = markdownProjectionProjector(source);
-    const plan = JSON.parse(json) as MarkdownProjectionPlan;
+    const plan = normalizeMarkdownProjectionPlan(JSON.parse(json) as MarkdownProjectionPlan);
     if (plan.error) {
       return null;
     }
-    return plan;
+    return cacheMarkdownProjectionPlan(source, plan);
   } catch {
     return null;
   }
+}
+
+function cacheMarkdownProjectionPlan(
+  source: string,
+  plan: MarkdownProjectionPlan,
+): MarkdownProjectionPlan {
+  const cachedPlan = freezeMarkdownProjectionPlan(plan);
+  markdownProjectionCache.set(source, cachedPlan);
+  if (markdownProjectionCache.size <= MARKDOWN_PROJECTION_CACHE_LIMIT) return cachedPlan;
+
+  const oldestSource = markdownProjectionCache.keys().next().value;
+  if (oldestSource !== undefined) {
+    markdownProjectionCache.delete(oldestSource);
+  }
+  return cachedPlan;
+}
+
+function freezeMarkdownProjectionPlan(plan: MarkdownProjectionPlan): MarkdownProjectionPlan {
+  Object.freeze(plan.anchors);
+  Object.freeze(plan.blocks);
+  Object.freeze(plan.runs);
+  Object.freeze(plan);
+  return plan;
 }
 
 function normalizeSourcePosition(plan: MarkdownProjectionPlan, position: number): number {
@@ -151,7 +196,12 @@ export function markdownProjectionPlanFromMimeData(data: unknown): MarkdownProje
     return null;
   }
 
-  return plan;
+  return normalizeMarkdownProjectionPlan(plan);
+}
+
+function normalizeMarkdownProjectionPlan(plan: MarkdownProjectionPlan): MarkdownProjectionPlan {
+  if (Array.isArray(plan.anchors)) return plan;
+  return { ...plan, anchors: [] };
 }
 
 export function projectedMarkdownPreviewHeight(

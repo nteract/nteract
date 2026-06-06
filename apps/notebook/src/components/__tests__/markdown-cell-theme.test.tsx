@@ -228,6 +228,7 @@ function makeTaskCell(): MarkdownCellType {
       confidence: "high",
       width: 720,
     },
+    anchors: [],
     blocks: [
       {
         blockId: "tasks",

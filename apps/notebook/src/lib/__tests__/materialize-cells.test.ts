@@ -33,6 +33,7 @@ beforeEach(() => {
         confidence: "medium",
         width: 720,
       },
+      anchors: [],
       blocks: [],
       runs: [],
     }),
@@ -520,6 +521,7 @@ describe("cellSnapshotsToNotebookCells", () => {
           confidence: "high",
           width: 720,
         },
+        anchors: [],
         blocks: [
           {
             blockId: "tasks",

@@ -10,6 +10,7 @@ function plan(overrides: Partial<MarkdownProjectionPlan> = {}): MarkdownProjecti
     byteLength: 0,
     utf16Length: 0,
     measurement: { estimatedHeight: 120, confidence: "high", width: 720 },
+    anchors: [],
     blocks: [],
     runs: [],
     ...overrides,

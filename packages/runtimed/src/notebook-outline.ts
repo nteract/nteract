@@ -14,6 +14,7 @@ export interface NotebookOutlineSourceCell {
   cellType?: string | null;
   execution_count?: number | null;
   metadata?: NotebookOutlineSourceMetadata | null;
+  markdownProjection?: NotebookOutlineMarkdownProjection | null;
 }
 
 export type NotebookOutlineSourceMetadata = Record<string, unknown> & {
@@ -21,6 +22,16 @@ export type NotebookOutlineSourceMetadata = Record<string, unknown> & {
   heading?: unknown;
   name?: unknown;
 };
+
+export interface NotebookOutlineMarkdownProjection {
+  anchors?: readonly NotebookOutlineMarkdownAnchor[] | null;
+}
+
+export interface NotebookOutlineMarkdownAnchor {
+  slug: string;
+  title: string;
+  level: number;
+}
 
 export interface NotebookOutlineItem {
   id: string;
@@ -48,6 +59,7 @@ export interface NotebookOutlineTreeNode {
 
 export interface ProjectNotebookOutlineOptions<TCell extends NotebookOutlineSourceCell> {
   getStatusLabel?: (cell: TCell) => string | null | undefined;
+  getMarkdownAnchors?: (cell: TCell) => readonly NotebookOutlineMarkdownAnchor[] | null | undefined;
   fallbackToCells?: boolean;
   hrefTarget?: NotebookOutlineHrefTarget;
 }
@@ -56,11 +68,6 @@ export interface NotebookOutlineSelectionInput {
   selectedItemId?: string | null;
   selectedCellId?: string | null;
   cellIds?: readonly string[];
-}
-
-export interface ParsedNotebookHeading {
-  title: string;
-  level: number;
 }
 
 const MAX_OUTLINE_TITLE_LENGTH = 96;
@@ -72,13 +79,12 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
   const fallbackToCells = options.fallbackToCells ?? true;
   const hrefTarget = options.hrefTarget ?? "cell";
   const headings: NotebookOutlineItem[] = [];
-  const anchorCounts = new Map<string, number>();
 
   for (const cell of cells) {
     if (cellKind(cell) !== "markdown") continue;
-    const parsed = parseMarkdownHeadings(cell.source ?? "");
+    const parsed = markdownHeadingAnchorsForOutline(cell, options);
     parsed.forEach((heading, index) => {
-      const anchor = nextHeadingAnchor(heading.title, anchorCounts);
+      const anchor = cleanHeadingAnchorSlug(heading.slug) || slugifyNotebookHeading(heading.title);
       const cellAnchorId = notebookCellAnchorId(cell.id);
       const headingAnchorId = notebookHeadingAnchorId(cell.id, anchor);
       headings.push({
@@ -124,39 +130,6 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
       };
     }),
   };
-}
-
-export function parseMarkdownHeadings(source: string): ParsedNotebookHeading[] {
-  const headings: ParsedNotebookHeading[] = [];
-  let fencedBy: string | null = null;
-
-  for (const rawLine of source.split(/\r?\n/)) {
-    const fence = rawLine.match(/^ {0,3}(`{3,}|~{3,})/);
-    if (fence) {
-      const marker = fence[1][0];
-      if (fencedBy === marker) {
-        fencedBy = null;
-      } else if (fencedBy === null) {
-        fencedBy = marker;
-      }
-      continue;
-    }
-
-    if (fencedBy !== null) continue;
-
-    const match = rawLine.match(/^ {0,3}(#{1,6})(?:\s+|$)(.*?)\s*$/);
-    if (!match) continue;
-
-    const title = cleanOutlineTitle(match[2].replace(/\s+#+\s*$/, ""));
-    if (!title) continue;
-
-    headings.push({
-      title,
-      level: match[1].length,
-    });
-  }
-
-  return headings;
 }
 
 export function deriveNotebookOutlineItems<TCell extends NotebookOutlineSourceCell>(
@@ -272,11 +245,28 @@ export function resolveNotebookOutlineContextItemId(
   return contextItem?.id ?? null;
 }
 
-function nextHeadingAnchor(title: string, anchorCounts: Map<string, number>): string {
-  const base = slugifyNotebookHeading(title);
-  const count = anchorCounts.get(base) ?? 0;
-  anchorCounts.set(base, count + 1);
-  return count === 0 ? base : `${base}-${count}`;
+function markdownHeadingAnchorsForOutline<TCell extends NotebookOutlineSourceCell>(
+  cell: TCell,
+  options: ProjectNotebookOutlineOptions<TCell>,
+): NotebookOutlineMarkdownAnchor[] {
+  const anchors = options.getMarkdownAnchors?.(cell) ?? cell.markdownProjection?.anchors ?? [];
+  return anchors.flatMap((anchor) => {
+    if (!anchor || typeof anchor !== "object") return [];
+    const title = typeof anchor.title === "string" ? cleanOutlineTitle(anchor.title) : "";
+    const level = normalizeMarkdownHeadingLevel(anchor.level);
+    if (!title || level === null) return [];
+    return [{ title, level, slug: cleanHeadingAnchorSlug(anchor.slug) }];
+  });
+}
+
+function normalizeMarkdownHeadingLevel(level: unknown): number | null {
+  if (typeof level !== "number") return null;
+  if (!Number.isInteger(level)) return null;
+  return Math.min(6, Math.max(1, level));
+}
+
+function cleanHeadingAnchorSlug(slug: unknown): string {
+  return typeof slug === "string" ? slug.trim() : "";
 }
 
 function notebookOutlineHref(

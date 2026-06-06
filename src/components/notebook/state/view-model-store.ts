@@ -46,6 +46,7 @@ export function notebookCellToViewCell(cell: NotebookStoreCell): NotebookViewCel
     executionCount: cell.cell_type === "code" ? cell.execution_count : null,
     outputs: cell.cell_type === "code" ? cell.outputs : [],
     metadata: cell.metadata,
+    markdownProjection: cell.cell_type === "markdown" ? cell.markdownProjection : undefined,
   };
 }
 

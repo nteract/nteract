@@ -6,6 +6,7 @@ import {
   canRenderMarkdownProjectionInHost,
   findMarkdownProjectionAtSourcePosition,
   projectMarkdownPlan,
+  setMarkdownProjectionProjector,
 } from "../markdown-projection";
 
 function readMarkdownFixture(name: string): string {
@@ -44,6 +45,77 @@ describe("markdown projection", () => {
       { checked: false, text: "waiting" },
       { checked: undefined, text: "regular" },
     ]);
+  });
+
+  it("projects Rust markdown engine heading anchors for outline consumers", () => {
+    const plan = projectMarkdownPlan(
+      [
+        "Intro",
+        "=====",
+        "",
+        "```md",
+        "# Not an outline heading",
+        "```",
+        "",
+        "## Intro",
+      ].join("\n"),
+    );
+
+    expect(
+      plan?.anchors.map((anchor) => ({
+        slug: anchor.slug,
+        title: anchor.title,
+        level: anchor.level,
+      })),
+    ).toEqual([
+      { slug: "intro", title: "Intro", level: 1 },
+      { slug: "intro-2", title: "Intro", level: 2 },
+    ]);
+  });
+
+  it("reuses immutable cached projections for identical source", () => {
+    let calls = 0;
+    const restore = setMarkdownProjectionProjector((source) => {
+      calls += 1;
+      return JSON.stringify({
+        version: 1,
+        engine: "test",
+        byteLength: source.length,
+        utf16Length: source.length,
+        measurement: {
+          estimatedHeight: 24,
+          confidence: "high",
+          width: 720,
+        },
+        anchors: [
+          {
+            anchorId: "anchor:cached",
+            blockId: "block:0",
+            level: 1,
+            slug: "cached",
+            sourceSpanByte: [0, source.length],
+            sourceSpanUtf16: [0, source.length],
+            title: "Cached",
+          },
+        ],
+        blocks: [],
+        runs: [],
+      });
+    });
+
+    try {
+      const first = projectMarkdownPlan("# Cached");
+      const second = projectMarkdownPlan("# Cached");
+
+      expect(calls).toBe(1);
+      expect(second).toBe(first);
+      expect(Object.isFrozen(first)).toBe(true);
+      expect(Object.isFrozen(first?.anchors)).toBe(true);
+      expect(Object.isFrozen(first?.blocks)).toBe(true);
+      expect(Object.isFrozen(first?.runs)).toBe(true);
+    } finally {
+      restore();
+    }
   });
 
   it("projects inline and display math without markdown delimiters", () => {

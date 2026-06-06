@@ -9,6 +9,7 @@ import {
   type NotebookViewCell,
 } from "../view-model";
 import type { SupportedLanguage } from "@/components/editor/languages";
+import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 
 const resolveTestLanguage = (language: string | null | undefined): SupportedLanguage | null =>
   (language ?? "plain") as SupportedLanguage;
@@ -69,16 +70,10 @@ describe("notebook shell view model", () => {
 
   it("projects shared notebook view cells into outline items", () => {
     const outline = notebookViewCellsToOutlineItems([
-      {
-        id: "intro",
-        cellType: "markdown",
-        source: "# Intro\n\n## Setup",
-        language: null,
-        executionId: null,
-        executionCount: null,
-        outputs: [],
-        metadata: {},
-      },
+      markdownViewCell("intro", "# Intro\n\n## Setup", [
+        { title: "Intro", level: 1, slug: "intro" },
+        { title: "Setup", level: 2, slug: "setup" },
+      ]),
     ]);
 
     expect(outline.map((item) => [item.id, item.cellId, item.title, item.level])).toEqual([
@@ -89,6 +84,33 @@ describe("notebook shell view model", () => {
       "#notebook-cell-intro-heading-intro",
       "#notebook-cell-intro-heading-setup",
     ]);
+  });
+
+  it("projects missing markdownProjection through the host markdown projector", () => {
+    const restore = setMarkdownProjectionProjector((source) =>
+      JSON.stringify(testMarkdownProjection(source, [{ title: "Intro", level: 1, slug: "intro" }])),
+    );
+
+    try {
+      const outline = notebookViewCellsToOutlineItems([
+        {
+          id: "intro",
+          cellType: "markdown",
+          source: "# Intro",
+          language: null,
+          executionId: null,
+          executionCount: null,
+          outputs: [],
+          metadata: {},
+        },
+      ]);
+
+      expect(outline.map((item) => [item.id, item.title, item.anchor])).toEqual([
+        ["intro:heading:0", "Intro", "intro"],
+      ]);
+    } finally {
+      restore();
+    }
   });
 
   it("projects Jupyter hidden metadata into read-only render cells", () => {
@@ -301,16 +323,10 @@ describe("notebook shell view model", () => {
 
   it("projects outline headings to markdown heading anchors by cell", () => {
     const outlineItems = notebookViewCellsToOutlineItems([
-      {
-        id: "intro",
-        cellType: "markdown",
-        source: "# Intro\n\n## Setup",
-        language: null,
-        executionId: null,
-        executionCount: null,
-        outputs: [],
-        metadata: {},
-      },
+      markdownViewCell("intro", "# Intro\n\n## Setup", [
+        { title: "Intro", level: 1, slug: "intro" },
+        { title: "Setup", level: 2, slug: "setup" },
+      ]),
     ]);
 
     expect(notebookOutlineItemsToMarkdownHeadingAnchors(outlineItems).get("intro")).toEqual([
@@ -331,3 +347,49 @@ describe("notebook shell view model", () => {
     ]);
   });
 });
+
+function markdownViewCell(
+  id: string,
+  source: string,
+  anchors: readonly { title: string; level: number; slug: string }[],
+): NotebookViewCell {
+  return {
+    id,
+    cellType: "markdown",
+    source,
+    language: null,
+    executionId: null,
+    executionCount: null,
+    outputs: [],
+    metadata: {},
+    markdownProjection: testMarkdownProjection(source, anchors),
+  };
+}
+
+function testMarkdownProjection(
+  source: string,
+  anchors: readonly { title: string; level: number; slug: string }[],
+) {
+  return {
+    version: 1 as const,
+    engine: "test",
+    byteLength: source.length,
+    utf16Length: source.length,
+    measurement: {
+      estimatedHeight: 32,
+      confidence: "high",
+      width: 720,
+    },
+    anchors: anchors.map((anchor, index) => ({
+      anchorId: `anchor:${anchor.slug}`,
+      blockId: `block:${index}`,
+      level: anchor.level,
+      slug: anchor.slug,
+      sourceSpanByte: [0, source.length] as [number, number],
+      sourceSpanUtf16: [0, source.length] as [number, number],
+      title: anchor.title,
+    })),
+    blocks: [],
+    runs: [],
+  };
+}
