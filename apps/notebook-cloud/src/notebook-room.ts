@@ -698,6 +698,11 @@ export class NotebookRoom {
   }
 
   /// Whether any currently-attached peer is a `runtime_peer`.
+  ///
+  /// Invariant: one DurableObject instance per notebook (`idFromName(notebookId)`),
+  /// so this unscoped scan and the single `RUNTIME_PEER_WATCH_KEY` are
+  /// notebook-scoped implicitly. If a DO ever hosts more than one notebook, both
+  /// this check and the watch key must be keyed per notebook id.
   private hasRuntimePeer(): boolean {
     for (const peer of this.peers.values()) {
       if (peer.identity.scope === "runtime_peer") {
