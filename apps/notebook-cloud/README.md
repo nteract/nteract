@@ -558,82 +558,35 @@ but never the stored token value.
 Live runtime-peer smoke with preview API-key credentials:
 
 ```bash
-# Run from the repo root after building the two smoke binaries:
-# cargo build --release -p runtimed -p runt-cloud-peer
-#
-# Requires NTERACT_CLOUD_URL and NTERACT_API_KEY in the environment.
-# On lab2, they are available in ${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}.
-env_file="${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}"
-if [ -f "$env_file" ]; then
-  set -a
-  . "$env_file"
-  set +a
-fi
-auth_headers=(
-  -H "Authorization: Bearer $NTERACT_API_KEY"
-  -H "X-Notebook-Cloud-Auth-Provider: anaconda-api-key"
-  -H "X-Scope: owner"
-)
-
-create_json="$(
-  curl -fsS -X POST "$NTERACT_CLOUD_URL/api/n" \
-    "${auth_headers[@]}" \
-    -H "Content-Type: application/json" \
-    --data '{"vanity_name":"lab2-dualpeer"}'
-)"
-notebook_id="$(printf "%s" "$create_json" | jq -r '.notebook_id')"
-owner_principal="$(
-  curl -fsS "$NTERACT_CLOUD_URL/api/n/$notebook_id/acl" "${auth_headers[@]}" \
-    | jq -r '.acl[] | select(.scope == "owner" and .subject_kind == "principal") | .subject' \
-    | head -1
-)"
-curl -fsS -X POST "$NTERACT_CLOUD_URL/api/n/$notebook_id/acl" \
-  "${auth_headers[@]}" \
-  -H "Content-Type: application/json" \
-  --data "$(
-    jq -n --arg subject "$owner_principal" \
-      '{subject_kind:"principal", subject:$subject, scope:"runtime_peer"}'
-  )"
-
-# Keep long-lived runtime peers in tmux. A short-lived shell or command runner
-# may clean up background children after the command exits, which makes later
-# execution requests look like room/runtime failures.
-python_path="${PYTHON_PATH:-$(command -v python3 || command -v python)}"
-tmux new-session -d -s "preview-runtime-$notebook_id" \
-  "bash -lc 'set -a; . \"$env_file\"; set +a; \
-    mkdir -p ~/rp-blobs ~/dualpeer-runs; \
-    RUNT_CLOUD_TOKEN=\"\$NTERACT_API_KEY\" RUST_LOG=info \
-      $(pwd)/target/release/runtimed cloud-runtime-agent \
-        --auth-kind anaconda-key \
-        --cloud-url \"\$NTERACT_CLOUD_URL\" \
-        --notebook-id \"$notebook_id\" \
-        --scope runtime_peer \
-        --python-path \"$python_path\" \
-        --blob-root ~/rp-blobs \
-        > ~/dualpeer-runs/compute-$notebook_id.log 2>&1'"
-
-token_file="$(mktemp)"
-trap 'rm -f "$token_file"' EXIT
-printf "%s" "$NTERACT_API_KEY" > "$token_file"
-
-$(pwd)/target/release/runt-cloud-peer \
-  --auth-mode anaconda-api-key \
-  --token-file "$token_file" \
-  --cloud-url "$NTERACT_CLOUD_URL" \
-  --notebook-id "$notebook_id" \
-  --scope owner \
-  --add-cell "print('preview runtime peer smoke')" \
-  --run-cell \
-  --seconds 35
+cargo xtask artifacts ensure sift,renderer
+cargo build --release -p runtimed -p runt-cloud-peer
+NTERACT_CLOUD_URL=https://preview.runt.run \
+pnpm --dir apps/notebook-cloud smoke:hosted:runtime-peer
 ```
 
-The owner peer should observe the new execution move from `queued` to `done`;
-the runtime log should show the kernel launch and an `execute_request`.
-`runt-cloud-peer` uses `--seconds` to control how long the peer remains
-attached. Do not use the old `--timeout` flag in smoke scripts. Rooms created
-with the API-key path are private; anonymous hosted render smokes may return a
-catalog 404 unless the browser context has a credential for the owning
-principal.
+The smoke script reads `NTERACT_API_KEY` from the environment. On lab2 it also
+loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
+creates a private room, grants `runtime_peer` to the owner principal, starts the
+real `runtimed cloud-runtime-agent`, then runs `runt-cloud-peer` as an owner
+that adds a cell and sends hosted `execute_cell`. The JSON result includes the
+viewer URL, timings, and log paths under `.context/smokes/`. A healthy run
+observes `queued` and `done`, and the runtime log shows a kernel launch plus an
+`execute_request`. The artifact ensure step rebuilds the gitignored sift
+WASM/renderer outputs that `runtimed` embeds and catches unhydrated stable
+renderer LFS bundles before `cargo build` fails. Set
+`NOTEBOOK_CLOUD_RUNTIME_PEER_PYTHON` when you need a specific interpreter;
+otherwise the script prefers lab2's `~/k/bin/python` before falling back to a
+system Python that can import `ipykernel`.
+
+Set `NOTEBOOK_CLOUD_KEEP_RUNTIME_PEER=1` to leave the runtime peer alive after
+the smoke for manual browser/OIDC inspection. For truly long-lived manual peers,
+run the command inside tmux; short-lived shells or agent command runners may
+clean up background children after the command exits, which makes later
+execution requests look like room/runtime failures. `runt-cloud-peer` uses
+`--seconds` to control how long the owner peer remains attached. Do not use the
+old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
+private; anonymous hosted render smokes may return a catalog 404 unless the
+browser context has a credential for the owning principal.
 
 Snapshot and blob stubs:
 
