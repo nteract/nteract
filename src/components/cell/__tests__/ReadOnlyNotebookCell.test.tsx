@@ -252,6 +252,48 @@ describe("ReadOnlyNotebookCell", () => {
     expect(screen.queryByTestId("output-area")).toBeNull();
   });
 
+  it("omits fully hidden code cells without notebook chrome", () => {
+    render(
+      <ReadOnlyNotebookCell
+        id="hidden-code"
+        cellType="code"
+        source="setup()"
+        sourceHidden
+        executionCount={2}
+        outputs={[]}
+      />,
+    );
+
+    expect(document.querySelector('[data-slot="cell-container"]')).toBeNull();
+    expect(document.querySelector('[data-slot="execution-count"]')).toBeNull();
+    expect(screen.queryByTestId("readonly-codemirror")).toBeNull();
+    expect(screen.queryByTestId("output-area")).toBeNull();
+  });
+
+  it("omits fully hidden code cells even when hidden outputs exist", () => {
+    render(
+      <ReadOnlyNotebookCell
+        id="hidden-code-with-output"
+        cellType="code"
+        source="setup()"
+        sourceHidden
+        outputsHidden
+        executionCount={3}
+        outputs={[
+          {
+            output_id: "hidden-code-stdout",
+            output_type: "stream",
+            name: "stdout",
+            text: "hidden\n",
+          },
+        ]}
+      />,
+    );
+
+    expect(document.querySelector('[data-slot="cell-container"]')).toBeNull();
+    expect(screen.queryByTestId("output-area")).toBeNull();
+  });
+
   it("keeps code output props stable across unrelated parent rerenders", () => {
     const outputs: JupyterOutput[] = [
       {

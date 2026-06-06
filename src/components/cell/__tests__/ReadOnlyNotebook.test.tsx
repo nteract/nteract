@@ -18,12 +18,14 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
     lineWrapping,
     onNavigateToTracebackCell,
     outputClassName,
+    outputsHidden,
     outputs,
     priority,
     resolveTracebackExecutionTarget,
     showSource,
     source,
     sourceClassName,
+    sourceHidden,
   }: {
     cellType: string;
     className?: string;
@@ -36,12 +38,14 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
     lineWrapping?: boolean;
     onNavigateToTracebackCell?: unknown;
     outputClassName?: string;
+    outputsHidden?: boolean;
     outputs?: readonly JupyterOutput[];
     priority?: readonly string[];
     resolveTracebackExecutionTarget?: unknown;
     showSource?: boolean;
     source: string;
     sourceClassName?: string;
+    sourceHidden?: boolean;
   }) => {
     if (id === "throws") {
       throwAttempts.count += 1;
@@ -62,9 +66,11 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
         data-has-traceback-resolver={String(Boolean(resolveTracebackExecutionTarget))}
         data-output-class-name={outputClassName ?? ""}
         data-output-count={outputs?.length ?? 0}
+        data-outputs-hidden={String(outputsHidden)}
         data-priority={priority?.join(",") ?? ""}
         data-show-source={String(showSource)}
         data-source-class-name={sourceClassName ?? ""}
+        data-source-hidden={String(sourceHidden)}
         data-testid="read-only-cell"
       >
         {id}:{source}
@@ -175,6 +181,25 @@ describe("ReadOnlyNotebook", () => {
     );
 
     expect(screen.getByTestId("read-only-cell")).toHaveAttribute("data-line-wrapping", "false");
+  });
+
+  it("passes per-cell hidden metadata to read-only cells", () => {
+    render(
+      <ReadOnlyNotebook
+        cells={[
+          {
+            id: "hidden-code",
+            cellType: "code",
+            source: "setup()",
+            sourceHidden: true,
+            outputsHidden: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId("read-only-cell")).toHaveAttribute("data-source-hidden", "true");
+    expect(screen.getByTestId("read-only-cell")).toHaveAttribute("data-outputs-hidden", "true");
   });
 
   it("supports report display mode with local code visibility", () => {

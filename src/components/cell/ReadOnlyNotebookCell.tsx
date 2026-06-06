@@ -25,6 +25,8 @@ export interface ReadOnlyNotebookCellProps {
   language?: SupportedLanguage | null;
   outputs?: readonly JupyterOutput[];
   executionCount?: number | null;
+  sourceHidden?: boolean;
+  outputsHidden?: boolean;
   priority?: readonly string[];
   hostContext?: NteractEmbedHostContextPatch;
   displayMode?: "notebook" | "report";
@@ -47,6 +49,8 @@ export function ReadOnlyNotebookCell({
   language = "plain",
   outputs = [],
   executionCount = null,
+  sourceHidden = false,
+  outputsHidden = false,
   priority,
   hostContext,
   displayMode = "notebook",
@@ -61,6 +65,11 @@ export function ReadOnlyNotebookCell({
   resolveTracebackExecutionTarget,
   onNavigateToTracebackCell,
 }: ReadOnlyNotebookCellProps) {
+  const isCodeCell = cellType === "code";
+  const shouldHideSource = isCodeCell && sourceHidden;
+  const shouldHideOutputs = isCodeCell && outputsHidden;
+  const fullyHidden = shouldHideSource && (shouldHideOutputs || outputs.length === 0);
+  const showCellSource = showSource && !shouldHideSource;
   const codeContent = useMemo(
     () =>
       renderReadOnlyCellSource({
@@ -75,10 +84,13 @@ export function ReadOnlyNotebookCell({
       }),
     [cellType, hostContext, id, language, lineWrapping, priority, source, sourceClassName],
   );
-  const outputArray = useMemo(() => [...outputs], [outputs]);
+  const outputArray = useMemo(
+    () => (shouldHideOutputs ? [] : [...outputs]),
+    [outputs, shouldHideOutputs],
+  );
 
   const outputContent =
-    outputs.length > 0 ? (
+    outputArray.length > 0 ? (
       <OutputArea
         cellId={id}
         executionCount={executionCount}
@@ -96,8 +108,10 @@ export function ReadOnlyNotebookCell({
       />
     ) : null;
 
+  if (fullyHidden) return null;
+
   if (displayMode === "report") {
-    if (!showSource && !outputContent) return null;
+    if (!showCellSource && !outputContent) return null;
 
     return (
       <article
@@ -107,7 +121,7 @@ export function ReadOnlyNotebookCell({
         data-cell-type={cellType}
         data-slot="read-only-report-cell"
       >
-        {showSource ? (
+        {showCellSource ? (
           <div className="min-w-0" data-slot="read-only-cell-source">
             {codeContent}
           </div>
@@ -125,7 +139,7 @@ export function ReadOnlyNotebookCell({
     <CellContainer
       id={id}
       cellType={cellType}
-      codeContent={showSource ? codeContent : null}
+      codeContent={showCellSource ? codeContent : null}
       outputContent={outputContent}
       gutterContent={cellType === "code" ? <ExecutionCount count={executionCount} /> : null}
       className={className}
