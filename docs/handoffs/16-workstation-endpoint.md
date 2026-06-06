@@ -1,6 +1,11 @@
 # Workstation endpoint on the daemon (#16, second half)
 
-**Status:** Draft / scoping, 2026-06-06. Branch `quod/16-workstation-endpoint`.
+**Status:** Phase B built (headless), 2026-06-06. Phase A scope: PR #3427.
+Phase B stack: B1 CLI #3428, B2 `list_environments` #3429, B3 launch-on-attach
+#3430, B4 `allocate_runtime_for_room` #3431. All daemon-side code lives under
+`crates/runtimed/src/workstation/`; each PR is additive/gated (UDS unchanged).
+Remaining: the live attach re-proof (Deferred — needs creds + a deployed worker)
+and prewarmed-pool allocation (needs a live daemon). See decisions 38–42.
 
 This is the second half of #16. The first half — making `runtime_agent`
 transport-agnostic, with `run_cloud_runtime_agent` as the cloud-attach path — is

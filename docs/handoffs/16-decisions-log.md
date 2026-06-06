@@ -573,3 +573,26 @@ environments it has, and allocate/start a runtime in env X for room Y, driving
     The hosted-side pieces (workstation registry D1 + routes, doc-agent control
     channel, room target-selection APIs) are Worker build items (ADR sequence
     3–9), out of scope for this daemon-side headless slice.
+
+### Workstation endpoint: Phase B (built, headless)
+
+Built as a stack of four PRs, each gated/additive (the desktop/UDS path is
+byte-for-byte unchanged): B1 `cloud-runtime-agent` CLI (#3428), B2
+`list_environments` (#3429), B3 launch-on-attach (#3430), B4
+`allocate_runtime_for_room` (#3431). All live under `crates/runtimed/src/workstation/`.
+
+42. **`allocate_runtime_for_room` resolves only the `current_python` policy
+    headlessly; prewarmed-pool allocation is a follow-up.** `current_python` is the
+    ADR's first-class Outerbounds policy (Decision 5): launch against an explicit
+    interpreter the connector already has, with no daemon env pool — so the launch
+    needs no `Daemon::take_uv_env` and the planning step is a pure mapping
+    (`RoomTarget` + auth + interpreter + reserved ports → `Allocation`), unit-tested
+    without a live daemon or a dialed room. Allocating a *prewarmed-pool* env
+    additionally needs a live daemon (the pool + `take_uv_env`) and its attach can't
+    be verified headlessly, so it's deferred. The launch trigger reuses B3's
+    launch-on-attach (the same `handle_runtime_agent_request` path an inbound RPC
+    uses), and the `cloud-runtime-agent` CLI exposes it via `--python-path` /
+    `--notebook-path`, making the full "allocate and start" path invocable for the
+    deferred live proof. The kernel-port reservation is held for the agent's whole
+    lifetime because, unlike the daemon UDS path, the cloud agent has no separate
+    coordinator holding the ports.
