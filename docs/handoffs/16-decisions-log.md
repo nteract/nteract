@@ -70,7 +70,7 @@ decision: what, the alternative, why.
     `Box<dyn>`.** Alternative: `Box<dyn FrameTransport>` for runtime polymorphism. Why:
     matches the neighbouring `KernelConnection` pattern in `runtimed`, keeps
     `notebook-protocol` free of an `async-trait` dependency (stays wasm-safe and
-    dependency-light per decision #3), and the agent has exactly one transport per process
+    dependency-light per decision 3), and the agent has exactly one transport per process
     so monomorphisation at the single call site is free. The cloud transport (Phase 2) is a
     second impl selected at construction, not at runtime per-call.
 
@@ -105,9 +105,9 @@ clean; `cargo fmt --check` clean. Net diff in `runtime_agent` is +48/-97 plus th
     to Phase 3.** Why deferred: wiring the spawn path requires two agent-loop changes that
     are unsafe before Phase 3's fixes: (a) authoring the NotebookDoc/RuntimeStateDoc under
     the `cloud_room_ready` principal (not the daemon's `runtime_agent_id`), and (b) the
-    consumer-side `receive_sync_message_with_changes` (decision #6) instead of the daemon's
+    consumer-side `receive_sync_message_with_changes` (decision 6) instead of the daemon's
     `receive_sync_and_foreign_comms_recovering`. Most critically, a cloud-WS EOF currently
-    falls into `kernel.shutdown()` (lifecycle-analysis req #1), so spawning the agent on the
+    falls into `kernel.shutdown()` (lifecycle-analysis req 1), so spawning the agent on the
     cloud transport *before* the EOF-policy-by-transport split would let a transient WS blip
     kill a healthy kernel. Shipping the transport alone keeps each PR independently safe and
     reviewable; Phase 3 adds the spawn path together with the EOF fix that makes it correct.
@@ -141,7 +141,7 @@ clean; `cargo fmt --check` clean. Net diff in `runtime_agent` is +48/-97 plus th
 Phase 2 verification: `cargo test -p notebook-cloud-transport` passes 11 tests; clippy clean;
 `cargo test -p runtimed` still 944 (no regression from the new workspace member). Live
 cross-machine re-proof is deferred with the Phase 3 spawn path, since there is no daemon path
-to *invoke* the cloud transport yet (decision #17).
+to *invoke* the cloud transport yet (decision 17).
 
 ## Phase 3a: transport-aware clean-EOF policy
 
@@ -150,7 +150,7 @@ to *invoke* the cloud transport yet (decision #17).
     channel) are planned but not yet built.** Why: Phase 3 spans three codebases (Rust agent,
     TS Cloudflare worker, `runtime-doc` policy) and its safety-critical pieces (the DO
     watchdog, the policy relaxation) need integration/live verification that isn't fully
-    headless. But lifecycle-analysis **req #1**, "a cloud-WS clean EOF must NOT fall into
+    headless. But lifecycle-analysis **req 1**, "a cloud-WS clean EOF must NOT fall into
     `kernel.shutdown()`", is a clean, behavior-preserving, unit-testable Rust change and is
     the keystone that makes spawning the agent on the cloud transport *safe*. Landing it
     first de-risks 3b and keeps each PR independently reviewable.
@@ -207,11 +207,11 @@ clean across all three; `cargo fmt --check` clean.
 
 25. **Flap floor extended to the framing-error reconnect arm
     (`RECOVERABLE_RECONNECT_FLOOR`, renamed from `CLEAN_EOF_RECONNECT_FLOOR`).**
-    Phase 3a (decision #23) added the 1s reconnect floor only to the clean-EOF
+    Phase 3a (decision 23) added the 1s reconnect floor only to the clean-EOF
     (`None`) arm. The framing-error (`Some(Err)`) arm plus `reconnect_with_backoff`
     only sleep between *failed* connects, so a cloud room that accepts the
     connection and then errors the stream every cycle would spin reconnects at RTT
-    rate (a self-inflicted DoS on the room) — the same hazard #23 fixed for clean
+    rate (a self-inflicted DoS on the room) — the same hazard 23 fixed for clean
     EOF, on the other arm. Fix: a pure `reconnect_floor_delay(recoverable,
     since_last_reconnect, floor) -> Option<Duration>` helper, called by *both*
     arms; the timestamp variable is renamed `last_recoverable_reconnect` and set
@@ -229,7 +229,7 @@ Phase 3b warm-up verification: `cargo test -p notebook-cloud-transport` 16;
 `cargo xtask lint --fix` clean; clippy `-D warnings` clean on both crates. No new
 workspace crate (no bump-targets change).
 
-## Phase 3b: WS reconnect/re-auth + full-resync on cloud reconnect (req #2)
+## Phase 3b: WS reconnect/re-auth + full-resync on cloud reconnect (req 2)
 
 26. **The reconnect *mechanism* was already complete after 3a; 3b adds the
     re-auth seam and the missing test coverage.** `reconnect_with_backoff` is
@@ -320,7 +320,7 @@ static-token path, so this is a forward-looking validation, not a regression ris
 31. **Cloud doc-actor label is `<principal>/<operator>:<nonce>` via
     `cloud_actor_label`.** Principal from `transport.principal()` (the room's
     authenticated identity; `validate_room_notebook_change_actors` drops changes
-    authored under anything else — decision #6). Operator is a caller-supplied
+    authored under anything else — decision 6). Operator is a caller-supplied
     role suffix (e.g. `agent:runt`). The nonce is a per-process random suffix
     because reusing one actor label across separate doc instances collides at
     `(actor, seq 1)` → Automerge `DuplicateSeqNumber` when the room syncs the prior
@@ -337,10 +337,10 @@ guard green — `notebook-cloud-transport` was already registered, now also a
 
 **Deferred (3c):** the live cross-machine re-proof. `run_cloud_runtime_agent` is
 built and unit-tested behind the transport gate, but nothing yet *calls* it from a
-CLI/daemon command, and it has never run against a real room. To close req #2/#3
+CLI/daemon command, and it has never run against a real room. To close req 2/3
 end-to-end an interactive session with creds must: (1) deploy a preview room (or
 use an existing one) and grant the agent's principal the explicit `runtime_peer`
-ACL row (decision #9); (2) wire a CLI subcommand (e.g. `runtimed cloud-runtime-agent
+ACL row (decision 9); (2) wire a CLI subcommand (e.g. `runtimed cloud-runtime-agent
 --cloud-url --notebook-id --operator`, plus a `CloudAuth` source) — trivial, but
 left out here since it can't be verified headlessly; (3) spawn it as `runtime_peer`
 and confirm a cloud-submitted cell runs on the daemon-managed kernel and renders in
@@ -349,7 +349,7 @@ the 3b token-refresher against an actually-expiring token. None of this is possi
 without preview deploy + staging creds, which this autonomous session does not have.
 The code path is additive and gated, so it cannot affect the desktop/daemon path.
 
-## Phase 3e: liveness model (`last_seen`) — the headless half of req #4
+## Phase 3e: liveness model (`last_seen`) — the headless half of req 4
 
 32. **3e is reordered ahead of 3d, and split: the headless model half
     (`last_seen`) lands now; the `Disconnected` variant + the policy relaxation
@@ -372,7 +372,7 @@ The code path is additive and gated, so it cannot affect the desktop/daemon path
       blast radius and its payoff is viewer-facing UX**, verifiable only against a
       deployed viewer (Deferred). Landing it unverified is higher
       risk than the watchdog needs. The lifecycle analysis explicitly sanctions a
-      `last_seen` timestamp as the *alternative* form of req #4(b); that is the
+      `last_seen` timestamp as the *alternative* form of req 4(b); that is the
       low-risk, fully-headless piece the watchdog actually reads.
 
 33. **`last_seen: Option<String>` on `KernelState` (doc.rs), with a `set_last_seen`
@@ -393,7 +393,7 @@ The code path is additive and gated, so it cannot affect the desktop/daemon path
       existing kernel-ownership rules already make it `runtime_peer`-writable and
       editor-blocked — pinned by a `last_seen_is_runtime_peer_writable_but_blocked_for_editor`
       test. The runtime peer stamps its own liveness; the room-host watchdog writes
-      directly (bypassing the sync policy per #32).
+      directly (bypassing the sync policy per 32).
     5 unit tests; runtime-doc 215 (was 211) + genesis tests green; dependent crates
     (`runtimed` 888, `notebook-sync`, `runtimed-py`, `runtimed-node`) green; clippy clean.
 
@@ -405,13 +405,13 @@ the existing `Error`/`Shutdown` terminal states in the meantime); (2) the
 rather than a DO-internal watchdog; the recommended DO-internal design needs no policy
 change. Decide (2) when 3d's mechanism is chosen.
 
-## Phase 3f req #6: writer-error recovery (the headless half of 3f)
+## Phase 3f req 6: writer-error recovery (the headless half of 3f)
 
-34. **3f is split: req #6 (writer-error must not kill the kernel on a recoverable
-    transport) lands now; req #5 (inbound request channel) defers — it needs the
-    3d worker.** req #5 routes interrupt/restart `RuntimeAgentRequest`s from the
+34. **3f is split: req 6 (writer-error must not kill the kernel on a recoverable
+    transport) lands now; req 5 (inbound request channel) defers — it needs the
+    3d worker.** req 5 routes interrupt/restart `RuntimeAgentRequest`s from the
     cloud room to the agent, which requires a hosted REQUEST dispatch on the
-    DurableObject (3d, Deferred). req #6 is pure Rust in `runtime_agent` and is the
+    DurableObject (3d, Deferred). req 6 is pure Rust in `runtime_agent` and is the
     last place a transient cloud blip still destroys a healthy kernel after 3a:
     the two outbound (writer) `select!` arms — the `state_changed_rx`
     RuntimeStateSync send and the `async_response_rx` reply send — `break` the loop
@@ -428,7 +428,7 @@ change. Decide (2) when 3d's mechanism is chosen.
     buffer-and-replay (the analysis's "buffer the change and replay"): the failed
     RuntimeStateSync delta is *durable in the local doc*, and the fresh sync state
     + resync kick re-send it on reconnect — **Automerge's own resync IS the replay**,
-    the same mechanism the framing-error arm has always relied on (decision #22/3a).
+    the same mechanism the framing-error arm has always relied on (decision 22/3a).
     The one genuinely-lost item is the one-shot `async_response` reply envelope
     (not re-derived by resync), but its *effect* (env progress/state from
     SyncEnvironment) is in the RuntimeStateDoc and does resync; only the reply
@@ -438,11 +438,11 @@ change. Decide (2) when 3d's mechanism is chosen.
     give-up propagation, the UDS discriminant the loop branches on); the read arms
     are left byte-for-byte unchanged.
 
-Phase 3f(req #6) verification: `cargo test -p runtimed` 891 lib (was 888) +
+Phase 3f(req 6) verification: `cargo test -p runtimed` 891 lib (was 888) +
 integration suites green (UDS unchanged); `cargo xtask lint --fix` clean; clippy
 `-D warnings` clean.
 
-**Deferred (3f req #5):** the inbound request channel — needs the 3d DurableObject
+**Deferred (3f req 5):** the inbound request channel — needs the 3d DurableObject
 hosted REQUEST dispatch to deliver interrupt/restart `RuntimeAgentRequest`s to the
 cloud agent. Detection of the kernel-side *effect* already survives (decision/req
 analysis); only the trigger path is missing, and it can't be built or verified
@@ -452,7 +452,7 @@ without the worker (3d) + a live room. Build it alongside 3d.
 
 36. **3d's DO-internal watchdog is built and unit-tested; the deploy + the
     live peer-drop re-proof are Deferred.** Implements the safety net the daemon
-    structurally cannot provide (reqs #3, #7): when the room's `runtime_peer`
+    structurally cannot provide (reqs 3, 7): when the room's `runtime_peer`
     (the daemon) vanishes, the room itself terminalizes the orphaned state. Three
     layers, each verifiable headlessly:
     - **Rust (`runtimed-wasm`): `RoomHostHandle::reconcile_runtime_peer_gone(reason)`**
@@ -463,7 +463,7 @@ without the worker (3d) + a live room. Build it alongside 3d.
       untouched so a clean shutdown that raced the disconnect isn't relabeled. Then
       broadcasts the corrected state to surviving peers. Authoring is **direct** on
       the room host's `state_doc`, which doesn't pass through
-      `validate_runtime_state_sync_scope` (decision #32), so no policy relaxation is
+      `validate_runtime_state_sync_scope` (decision 32), so no policy relaxation is
       needed. Native-testable via `reconcile_runtime_peer_gone_inner` (rlib `cargo
       test`, no wasm/node): 4 tests (terminalize+error, idempotent no-op,
       clean-shutdown-not-relabeled, broadcast-to-survivors).
@@ -485,7 +485,7 @@ without the worker (3d) + a live room. Build it alongside 3d.
 37. **Scope threading was simpler than the plan anticipated: the DO already had
     `peer.identity.scope` at every `removePeer`/attach site, so it did NOT need to be
     threaded through `room-materializer.removePeer` → `RoomHostHandle.remove_peer`.**
-    The original plan (and lifecycle-analysis req #3 bullet 1) assumed the watchdog
+    The original plan (and lifecycle-analysis req 3 bullet 1) assumed the watchdog
     had to learn the departing peer's scope by passing it down through those layers,
     because `removePeer(peerId)` is scope-blind. But the *decision* — "was that a
     runtime_peer? then arm the watchdog" — is made in the DO, which holds the full
@@ -510,12 +510,12 @@ and that a reconnect *within* 30s does NOT terminalize. (3) Tune `RUNTIME_PEER_G
 against real reconnect latencies. None of this is possible without a preview deploy and live credentials. The code is gated behind the alarm API feature-detect, so a
 storage backend without alarms (or the desktop/UDS path) is unaffected.
 
-## Phase 3 remaining (3f req #5 only)
+## Phase 3 remaining (3f req 5 only)
 
-3a (req #1), 3b (req #2), 3c CODE (doc-actor identity), 3d CODE (watchdog), 3e model
-half (`last_seen`), and 3f req #6 (writer-error recovery) are done. Remaining:
+3a (req 1), 3b (req 2), 3c CODE (doc-actor identity), 3d CODE (watchdog), 3e model
+half (`last_seen`), and 3f req 6 (writer-error recovery) are done. Remaining:
 
-- **3f req #5: inbound request channel.** Route interrupt/restart
+- **3f req 5: inbound request channel.** Route interrupt/restart
   `RuntimeAgentRequest`s to the cloud agent via the 3d DurableObject hosted REQUEST
-  dispatch. req #6 (don't tear the kernel down on a writer error) is DONE
-  (decisions #34–#35); req #5's trigger path needs the worker + a live room.
+  dispatch. req 6 (don't tear the kernel down on a writer error) is DONE
+  (decisions 34–35); req 5's trigger path needs the worker + a live room.
