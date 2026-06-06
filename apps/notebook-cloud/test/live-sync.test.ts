@@ -172,6 +172,39 @@ describe("cloud live sync", () => {
     assert.deepEqual(calls, []);
   });
 
+  it("tolerates deployed WASM handles without CommsDoc sync methods", () => {
+    const originalWarn = console.warn;
+    const warnings: unknown[] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      const wasmHandle = {
+        receive_frame: () => [],
+        flush_local_changes: () => undefined,
+        cancel_last_flush: () => undefined,
+        flush_runtime_state_sync: () => undefined,
+        cancel_last_runtime_state_flush: () => undefined,
+        generate_runtime_state_sync_reply: () => undefined,
+        reset_sync_state: () => undefined,
+        cell_count: () => 0,
+        get_heads_hex: () => [],
+        get_dependency_fingerprint: () => undefined,
+        resolve_comm_state: () => undefined,
+      } as unknown as Parameters<typeof syncableCloudHandle>[0];
+      const handle = syncableCloudHandle(wasmHandle);
+
+      assert.equal(handle.flush_comms_doc_sync(), null);
+      assert.equal(handle.generate_comms_doc_sync_reply(), null);
+      assert.doesNotThrow(() => handle.cancel_last_comms_doc_flush());
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1);
+  });
+
   it("notifies disconnect when a send sees a closing socket before the close event", async () => {
     const fake = installFakeWebSocket();
     const disconnects: string[] = [];

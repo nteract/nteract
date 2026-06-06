@@ -36,6 +36,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     principal: string,
     fallbackOperator: string,
   ): Uint8Array;
+  export function project_markdown_json(source: string): string;
 
   export class NotebookHandle {
     constructor(notebookId: string);

@@ -7,9 +7,11 @@ import {
   replaceNotebookCells,
   resetNotebookCells,
   updateCellById,
+  updateCellSourceById,
   updateNotebookCells,
   useMaterializeVersion,
 } from "../notebook-cells";
+import { setMarkdownProjectionProjector } from "../markdown-projection";
 
 const codeCell = (id: string, source = ""): NotebookCell => ({
   cell_type: "code",
@@ -27,7 +29,11 @@ const markdownCell = (id: string, source = ""): NotebookCell => ({
   metadata: {},
 });
 
+let restoreMarkdownProjectionProjector: (() => void) | undefined;
+
 afterEach(() => {
+  restoreMarkdownProjectionProjector?.();
+  restoreMarkdownProjectionProjector = undefined;
   resetNotebookCells();
 });
 
@@ -105,6 +111,7 @@ describe("updateCellById", () => {
           byteLength: 8,
           utf16Length: 8,
           measurement: { estimatedHeight: 24, confidence: "high", width: 720 },
+          anchors: [],
           blocks: [],
           runs: [],
         },
@@ -118,6 +125,40 @@ describe("updateCellById", () => {
     const cell = getCellById("a");
     expect(cell?.source).toBe("- [x] old");
     expect(cell?.cell_type === "markdown" ? cell.markdownProjection : null).toBeUndefined();
+  });
+
+  it("refreshes markdown projections when updating source through the source helper", () => {
+    restoreMarkdownProjectionProjector = setMarkdownProjectionProjector((source) =>
+      JSON.stringify({
+        version: 1,
+        engine: "test",
+        byteLength: source.length,
+        utf16Length: source.length,
+        measurement: { estimatedHeight: 24, confidence: "high", width: 720 },
+        anchors: [
+          {
+            anchorId: "anchor:updated",
+            blockId: "block:0",
+            level: 1,
+            slug: "updated",
+            sourceSpanByte: [0, source.length],
+            sourceSpanUtf16: [0, source.length],
+            title: "Updated",
+          },
+        ],
+        blocks: [],
+        runs: [],
+      }),
+    );
+    replaceNotebookCells([markdownCell("a", "# Old")]);
+
+    updateCellSourceById("a", "# Updated");
+
+    const cell = getCellById("a");
+    expect(cell?.source).toBe("# Updated");
+    expect(cell?.cell_type === "markdown" ? cell.markdownProjection?.anchors[0]?.title : null).toBe(
+      "Updated",
+    );
   });
 
   it("is a no-op for non-existent IDs", () => {

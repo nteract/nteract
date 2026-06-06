@@ -1,6 +1,7 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { ReadOnlyNotebookCellData } from "@/components/cell/ReadOnlyNotebook";
 import type { SupportedLanguage } from "@/components/editor/languages";
+import { projectMarkdownPlan, type MarkdownProjectionPlan } from "../../lib/markdown-projection";
 import {
   notebookMetadataToPackageViewModel as projectNotebookPackageViewModel,
   type NotebookPackageViewModel,
@@ -26,6 +27,7 @@ export interface NotebookViewCell {
   executionCount: number | null;
   outputs: JupyterOutput[];
   metadata: Record<string, unknown>;
+  markdownProjection?: MarkdownProjectionPlan;
 }
 
 export interface NotebookTracebackCellTarget {
@@ -132,8 +134,21 @@ export function notebookViewCellsToOutlineItems(
 ): NotebookOutlineItem[] {
   return projectNotebookOutline(cells, {
     hrefTarget: "heading",
+    getMarkdownAnchors: notebookViewCellMarkdownAnchors,
     getStatusLabel: options.getStatusLabel ?? notebookViewCellOutlineStatusLabel,
   }).items;
+}
+
+function notebookViewCellMarkdownAnchors(cell: NotebookViewCell) {
+  // Live adapters attach markdownProjection during materialization/source edits.
+  // Treat an attached projection as authoritative, including an empty anchor
+  // list for headingless markdown, so outline projection stays O(cells) and
+  // does not reparse markdown in the common path.
+  if (cell.markdownProjection) return cell.markdownProjection.anchors;
+
+  // This Rust/WASM fallback keeps older host adapters correct without reviving
+  // a second heading parser; projectMarkdownPlan is source-key cached.
+  return projectMarkdownPlan(cell.source)?.anchors ?? null;
 }
 
 export function notebookViewCellsToTracebackTargets(

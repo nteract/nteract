@@ -4,6 +4,7 @@ import {
   type NotebookStoreCell,
   type NotebookStoreOutput,
 } from "@/components/notebook/state/cell-store";
+import { projectMarkdownPlan } from "@/lib/markdown-projection";
 import {
   deleteExecutions,
   setCellExecutionPointer,
@@ -106,6 +107,7 @@ function resolvedCellToNotebookCell(
       id: cell.id,
       source: cell.source,
       metadata,
+      markdownProjection: projectMarkdownPlan(cell.source) ?? undefined,
     };
   }
 

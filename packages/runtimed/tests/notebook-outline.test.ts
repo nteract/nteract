@@ -6,40 +6,16 @@ import {
   notebookHeadingAnchorHref,
   notebookHeadingAnchorId,
   notebookOutlineItemHref,
-  parseMarkdownHeadings,
   projectNotebookOutline,
   resolveNotebookOutlineSelection,
   resolveNotebookOutlineContextItemId,
   slugifyNotebookHeading,
 } from "../src/notebook-outline";
 
-describe("parseMarkdownHeadings", () => {
-  it("extracts ATX headings and ignores fenced code blocks", () => {
-    expect(
-      parseMarkdownHeadings(
-        [
-          "# Load data",
-          "",
-          "```md",
-          "# Not a heading",
-          "```",
-          "## Clean columns ##",
-          "    # indented code",
-          "### `Model` run",
-        ].join("\n"),
-      ),
-    ).toEqual([
-      { title: "Load data", level: 1 },
-      { title: "Clean columns", level: 2 },
-      { title: "Model run", level: 3 },
-    ]);
-  });
-});
-
 describe("projectNotebookOutline", () => {
-  it("returns markdown headings before cell fallbacks", () => {
+  it("returns projected markdown headings before cell fallbacks", () => {
     const projection = projectNotebookOutline([
-      { id: "a", cell_type: "markdown", source: "# Load data\ntext" },
+      markdownCell("a", "# Load data\ntext", [{ title: "Load data", level: 1, slug: "load-data" }]),
       { id: "b", cell_type: "code", source: "df.head()", execution_count: 3 },
     ]);
 
@@ -62,17 +38,38 @@ describe("projectNotebookOutline", () => {
     });
   });
 
-  it("assigns deterministic duplicate heading anchors across cells", () => {
+  it("uses markdown engine duplicate heading anchors", () => {
     const projection = projectNotebookOutline([
-      { id: "a", cell_type: "markdown", source: "# Results\n## Results!" },
-      { id: "b", cell_type: "markdown", source: "# Results" },
+      markdownCell("a", "# Results\n## Results!", [
+        { title: "Results", level: 1, slug: "results" },
+        { title: "Results!", level: 2, slug: "results-2" },
+      ]),
+      markdownCell("b", "# Results", [{ title: "Results", level: 1, slug: "results" }]),
     ]);
 
     expect(projection.items.map((item) => item.anchor)).toEqual([
       "results",
-      "results-1",
       "results-2",
+      "results",
     ]);
+    expect(projection.items.map((item) => item.headingAnchorId)).toEqual([
+      "notebook-cell-a-heading-results",
+      "notebook-cell-a-heading-results-2",
+      "notebook-cell-b-heading-results",
+    ]);
+  });
+
+  it("does not parse markdown source when no projection anchors are available", () => {
+    const projection = projectNotebookOutline([
+      { id: "a", cell_type: "markdown", source: "# Intro" },
+    ]);
+
+    expect(projection.source).toBe("cells");
+    expect(projection.items[0]).toMatchObject({
+      id: "a:cell",
+      title: "Intro",
+      kind: "cell",
+    });
   });
 
   it("falls back to scrollable cell summaries when there are no headings", () => {
@@ -174,7 +171,11 @@ describe("projectNotebookOutline", () => {
 
   it("can project heading hrefs when a host exposes heading anchors", () => {
     const projection = projectNotebookOutline(
-      [{ id: "cell:1", cell_type: "markdown", source: "# Load data" }],
+      [
+        markdownCell("cell:1", "# Load data", [
+          { title: "Load data", level: 1, slug: "load-data" },
+        ]),
+      ],
       { hrefTarget: "heading" },
     );
 
@@ -187,7 +188,10 @@ describe("projectNotebookOutline", () => {
 
   it("keeps multiple markdown headings in one cell on the cell href by default", () => {
     const projection = projectNotebookOutline([
-      { id: "a", cell_type: "markdown", source: "# Load data\n\n## Clean columns" },
+      markdownCell("a", "# Load data\n\n## Clean columns", [
+        { title: "Load data", level: 1, slug: "load-data" },
+        { title: "Clean columns", level: 2, slug: "clean-columns" },
+      ]),
     ]);
 
     expect(projection.items.map((item) => item.href)).toEqual([
@@ -221,7 +225,7 @@ describe("notebook outline anchors", () => {
 
   it("resolves an outline item href for cell or heading targets", () => {
     const item = projectNotebookOutline([
-      { id: "cell:1", cell_type: "markdown", source: "# Load data" },
+      markdownCell("cell:1", "# Load data", [{ title: "Load data", level: 1, slug: "load-data" }]),
     ]).items[0];
 
     expect(notebookOutlineItemHref(item)).toBe("#notebook-cell-cell_3a_1");
@@ -234,8 +238,13 @@ describe("notebook outline anchors", () => {
 describe("resolveNotebookOutlineSelection", () => {
   it("prefers a valid pinned item over the focused cell fallback", () => {
     const items = projectNotebookOutline([
-      { id: "a", cell_type: "markdown", source: "# Load data\n## Load details" },
-      { id: "b", cell_type: "markdown", source: "# Clean columns" },
+      markdownCell("a", "# Load data\n## Load details", [
+        { title: "Load data", level: 1, slug: "load-data" },
+        { title: "Load details", level: 2, slug: "load-details" },
+      ]),
+      markdownCell("b", "# Clean columns", [
+        { title: "Clean columns", level: 1, slug: "clean-columns" },
+      ]),
     ]).items;
 
     expect(
@@ -248,7 +257,10 @@ describe("resolveNotebookOutlineSelection", () => {
 
   it("falls back to the first item for the focused cell", () => {
     const items = projectNotebookOutline([
-      { id: "a", cell_type: "markdown", source: "# Load data\n## Load details" },
+      markdownCell("a", "# Load data\n## Load details", [
+        { title: "Load data", level: 1, slug: "load-data" },
+        { title: "Load details", level: 2, slug: "load-details" },
+      ]),
     ]).items;
 
     expect(resolveNotebookOutlineSelection(items, { selectedCellId: "a" })).toBe("a:heading:0");
@@ -256,9 +268,11 @@ describe("resolveNotebookOutlineSelection", () => {
 
   it("resolves focused code cells to the nearest preceding heading when cell order is available", () => {
     const items = projectNotebookOutline([
-      { id: "intro", cell_type: "markdown", source: "# Load data" },
+      markdownCell("intro", "# Load data", [{ title: "Load data", level: 1, slug: "load-data" }]),
       { id: "load", cell_type: "code", source: "df = pandas.read_csv(path)" },
-      { id: "clean-heading", cell_type: "markdown", source: "## Clean columns" },
+      markdownCell("clean-heading", "## Clean columns", [
+        { title: "Clean columns", level: 2, slug: "clean-columns" },
+      ]),
       { id: "clean", cell_type: "code", source: "df = df.dropna()" },
     ]).items;
 
@@ -275,7 +289,10 @@ describe("resolveNotebookOutlineSelection", () => {
 
   it("keeps following code cells in the deepest trailing heading from a multi-heading cell", () => {
     const items = projectNotebookOutline([
-      { id: "intro", cell_type: "markdown", source: "# Load data\n\n## CSV import" },
+      markdownCell("intro", "# Load data\n\n## CSV import", [
+        { title: "Load data", level: 1, slug: "load-data" },
+        { title: "CSV import", level: 2, slug: "csv-import" },
+      ]),
       { id: "load", cell_type: "code", source: "df = pandas.read_csv(path)" },
     ]).items;
 
@@ -291,9 +308,13 @@ describe("resolveNotebookOutlineSelection", () => {
 describe("buildNotebookOutlineTree", () => {
   it("nests headings by markdown level without losing document order", () => {
     const items = projectNotebookOutline([
-      { id: "a", cell_type: "markdown", source: "# Load data\n\n## CSV\n\n### Schema" },
-      { id: "b", cell_type: "markdown", source: "## Warehouse" },
-      { id: "c", cell_type: "markdown", source: "# Model" },
+      markdownCell("a", "# Load data\n\n## CSV\n\n### Schema", [
+        { title: "Load data", level: 1, slug: "load-data" },
+        { title: "CSV", level: 2, slug: "csv" },
+        { title: "Schema", level: 3, slug: "schema" },
+      ]),
+      markdownCell("b", "## Warehouse", [{ title: "Warehouse", level: 2, slug: "warehouse" }]),
+      markdownCell("c", "# Model", [{ title: "Model", level: 1, slug: "model" }]),
     ]).items;
 
     const tree = buildNotebookOutlineTree(items);
@@ -303,3 +324,16 @@ describe("buildNotebookOutlineTree", () => {
     expect(tree[0].children[0].children.map((node) => node.item.title)).toEqual(["Schema"]);
   });
 });
+
+function markdownCell(
+  id: string,
+  source: string,
+  anchors: readonly { title: string; level: number; slug: string }[],
+) {
+  return {
+    id,
+    cell_type: "markdown" as const,
+    source,
+    markdownProjection: { anchors },
+  };
+}

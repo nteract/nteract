@@ -1,5 +1,6 @@
 use nteract_markdown_engine::{
-    project_markdown, MeasurementConfidence, MeasurementPlan, NodeKind, ProjectedNode, TableAlign,
+    project_markdown, MarkdownAnchor, MarkdownPlan, MeasurementConfidence, NodeKind, ProjectedNode,
+    TableAlign,
 };
 use std::sync::Mutex;
 
@@ -61,7 +62,7 @@ pub extern "C" fn nteract_markdown_result_len() -> usize {
 
 pub fn project_to_json(source: &str) -> String {
     match project_markdown(source) {
-        Ok(plan) => render_wasm_plan(source, &plan.blocks, &plan.measurement),
+        Ok(plan) => render_wasm_plan(source, &plan),
         Err(error) => error_to_json(&error.to_string()),
     }
 }
@@ -73,20 +74,22 @@ fn error_to_json(message: &str) -> String {
     output
 }
 
-fn render_wasm_plan(
-    source: &str,
-    blocks: &[ProjectedNode],
-    measurement: &MeasurementPlan,
-) -> String {
+fn render_wasm_plan(source: &str, plan: &MarkdownPlan) -> String {
     let position_index = PositionIndex::new(source);
     let mut output_blocks = Vec::new();
     let mut output_runs = Vec::new();
 
-    for (block_index, block) in blocks.iter().enumerate() {
+    for (block_index, block) in plan.blocks.iter().enumerate() {
         let (wasm_block, mut runs) = collect_block(source, &position_index, block_index, block);
         output_blocks.push(wasm_block);
         output_runs.append(&mut runs);
     }
+
+    let output_anchors = plan
+        .anchors
+        .iter()
+        .map(|anchor| WasmAnchor::new(&position_index, anchor))
+        .collect::<Vec<_>>();
 
     let mut output = String::new();
     output.push_str("{\"version\":1,\"engine\":\"rust-wasm\",\"byteLength\":");
@@ -95,12 +98,20 @@ fn render_wasm_plan(
     output.push_str(&position_index.utf16_len.to_string());
     output.push_str(",\"measurement\":{");
     output.push_str("\"estimatedHeight\":");
-    output.push_str(&measurement.estimated_height.to_string());
+    output.push_str(&plan.measurement.estimated_height.to_string());
     output.push_str(",\"confidence\":");
-    push_json_string(&mut output, confidence_label(measurement.confidence));
+    push_json_string(&mut output, confidence_label(plan.measurement.confidence));
     output.push_str(",\"width\":");
-    output.push_str(&measurement.width.to_string());
+    output.push_str(&plan.measurement.width.to_string());
     output.push('}');
+    output.push_str(",\"anchors\":[");
+    for (index, anchor) in output_anchors.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        anchor.push_json(&mut output);
+    }
+    output.push(']');
     output.push_str(",\"blocks\":[");
     for (index, block) in output_blocks.iter().enumerate() {
         if index > 0 {
@@ -925,6 +936,52 @@ struct WasmBlockMeasurement {
     basis: String,
     confidence: &'static str,
     estimated_height: usize,
+}
+
+struct WasmAnchor {
+    anchor_id: String,
+    block_id: String,
+    level: u8,
+    slug: String,
+    source_span_byte: [usize; 2],
+    source_span_utf16: [usize; 2],
+    title: String,
+}
+
+impl WasmAnchor {
+    fn new(position_index: &PositionIndex, anchor: &MarkdownAnchor) -> Self {
+        Self {
+            anchor_id: anchor.id.clone(),
+            block_id: anchor.block_id.clone(),
+            level: anchor.level,
+            slug: anchor.slug.clone(),
+            source_span_byte: [anchor.span.start, anchor.span.end],
+            source_span_utf16: [
+                position_index.byte_to_utf16(anchor.span.start),
+                position_index.byte_to_utf16(anchor.span.end),
+            ],
+            title: anchor.title.clone(),
+        }
+    }
+
+    fn push_json(&self, output: &mut String) {
+        output.push('{');
+        push_json_key_string(output, "anchorId", &self.anchor_id);
+        output.push(',');
+        push_json_key_string(output, "blockId", &self.block_id);
+        output.push(',');
+        output.push_str("\"level\":");
+        output.push_str(&self.level.to_string());
+        output.push(',');
+        push_json_key_string(output, "slug", &self.slug);
+        output.push(',');
+        push_json_key_span(output, "sourceSpanByte", self.source_span_byte);
+        output.push(',');
+        push_json_key_span(output, "sourceSpanUtf16", self.source_span_utf16);
+        output.push(',');
+        push_json_key_string(output, "title", &self.title);
+        output.push('}');
+    }
 }
 
 impl WasmBlock {

@@ -1,6 +1,6 @@
 import type { SyncEngine } from "runtimed";
 import { logger } from "./logger";
-import { getNotebookCellsSnapshot, updateCellById } from "./notebook-cells";
+import { getNotebookCellsSnapshot, updateCellSourceById } from "./notebook-cells";
 import type { NotebookCell } from "../types";
 
 export type NotebookControllerCellType = "code" | "markdown" | "raw";
@@ -119,7 +119,7 @@ export function createNotebookController<THandle extends NotebookControllerHandl
       const updated = handle.update_source(cellId, source);
       if (!updated) return;
 
-      updateCellById(cellId, (cell) => ({ ...cell, source }));
+      updateCellSourceById(cellId, source);
       afterMutation?.(handle, "source");
       syncAfterMutation(engine, "source");
     },
