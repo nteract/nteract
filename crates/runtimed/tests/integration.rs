@@ -251,6 +251,21 @@ fn assert_daemon_starter_cell(cells: &[notebook_doc::CellSnapshot]) {
     assert!(cells[0].source.is_empty());
 }
 
+async fn wait_for_daemon_starter_cell(
+    handle: &notebook_sync::DocHandle,
+    timeout: Duration,
+) -> Option<notebook_doc::CellSnapshot> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        let cells = handle.get_cells();
+        if cells.len() == 1 && cells[0].cell_type == "code" && cells[0].source.is_empty() {
+            return cells.into_iter().next();
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    None
+}
+
 async fn wait_for_presence_update_actor_label(
     frame_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
     peer_label: &str,
@@ -900,6 +915,10 @@ async fn test_notebook_sync_via_unified_socket() {
     )
     .await
     .expect("client1 should connect");
+    assert_eq!(
+        result1.info.cell_count, 1,
+        "CreateNotebook handshake should report the daemon starter cell"
+    );
     let notebook_id_1 = result1.info.notebook_id.clone();
     let client1 = result1.handle;
 
@@ -908,9 +927,16 @@ async fn test_notebook_sync_via_unified_socket() {
         "client1 should reach session-ready state within 2s"
     );
 
-    let cells = client1.get_cells();
-    assert_daemon_starter_cell(&cells);
-    let starter_id = cells[0].id.clone();
+    let starter = wait_for_daemon_starter_cell(&client1, SESSION_READY_TIMEOUT)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "client1 did not receive daemon starter cell within {:?}: {:?}",
+                SESSION_READY_TIMEOUT,
+                client1.get_cells()
+            )
+        });
+    let starter_id = starter.id.clone();
 
     // Update the daemon starter from client1
     client1
@@ -928,14 +954,21 @@ async fn test_notebook_sync_via_unified_socket() {
         "client2 should reach session-ready state within 2s"
     );
 
-    let cells = client2.get_cells();
-    assert_eq!(cells.len(), 1, "client2 should see the cell from client1");
-    assert_eq!(cells[0].id, starter_id);
-    assert_eq!(cells[0].source, "print('hello')");
-    assert_eq!(cells[0].cell_type, "code");
+    assert!(
+        wait_for_cells_matching(&client2, SESSION_READY_TIMEOUT, |cells| {
+            cells.len() == 1
+                && cells[0].id == starter_id
+                && cells[0].source == "print('hello')"
+                && cells[0].cell_type == "code"
+        })
+        .await,
+        "client2 should see the updated starter cell from client1 within {:?}: {:?}",
+        SESSION_READY_TIMEOUT,
+        client2.get_cells()
+    );
 
     // Create a different notebook — should be independent
-    let client3 = connect::connect_create(
+    let result3 = connect::connect_create(
         socket_path.clone(),
         "python",
         None,
@@ -945,15 +978,28 @@ async fn test_notebook_sync_via_unified_socket() {
         vec![],
     )
     .await
-    .expect("client3 should connect")
-    .handle;
+    .expect("client3 should connect");
+    assert_eq!(
+        result3.info.cell_count, 1,
+        "second CreateNotebook handshake should report its own daemon starter cell"
+    );
+    let client3 = result3.handle;
 
     assert!(
         wait_for_session_ready(&client3, SESSION_READY_TIMEOUT).await,
         "client3 should reach session-ready state within 2s"
     );
 
-    let cells = client3.get_cells();
+    let cells = wait_for_daemon_starter_cell(&client3, SESSION_READY_TIMEOUT)
+        .await
+        .map(|cell| vec![cell])
+        .unwrap_or_else(|| {
+            panic!(
+                "client3 did not receive daemon starter cell within {:?}: {:?}",
+                SESSION_READY_TIMEOUT,
+                client3.get_cells()
+            )
+        });
     assert_daemon_starter_cell(&cells);
 
     // Shutdown
