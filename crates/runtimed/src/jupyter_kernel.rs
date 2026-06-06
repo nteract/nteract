@@ -323,7 +323,7 @@ pub struct JupyterKernel {
     pub env_path: Option<PathBuf>,
     /// Session ID for Jupyter protocol.
     session_id: String,
-    /// Automerge actor ID for kernel writes (e.g. "rt:kernel:a1b2c3d4").
+    /// Automerge actor ID for kernel writes.
     kernel_actor_id: String,
     /// Connection info for the kernel.
     connection_info: Option<ConnectionInfo>,
@@ -1211,7 +1211,10 @@ impl KernelConnection for JupyterKernel {
 
         // Fresh session_id for ZMQ connections
         let session_id = Uuid::new_v4().to_string();
-        let kernel_actor_id = format!("rt:kernel:{}", &session_id[..8]);
+        let kernel_actor_id = match shared.kernel_actor_principal.as_deref() {
+            Some(principal) => format!("{principal}/runtime:kernel:{}", &session_id[..8]),
+            None => format!("rt:kernel:{}", &session_id[..8]),
+        };
 
         // ── ZMQ connections and background tasks ─────────────────────────
 

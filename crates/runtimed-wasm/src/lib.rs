@@ -3943,6 +3943,47 @@ mod tests {
     }
 
     #[test]
+    fn hosted_execute_cell_fans_out_runtime_state_to_runtime_peer() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.seed_initial_code_cell_if_empty("cell-1")
+            .expect("seed code cell");
+        host.doc
+            .update_source("cell-1", "print('from owner')")
+            .expect("set source");
+
+        // Register a runtime_peer the same way cloud_room_ready + sync_peer do:
+        // the initial sync advances that peer's room-host sync state, so a
+        // later ExecuteCell should fan out only the new queued execution.
+        let mut initial = Vec::new();
+        host.queue_current_sync_for_peer("runtime-peer", false, true, true, &mut initial)
+            .expect("initial runtime peer sync");
+        assert!(
+            initial
+                .iter()
+                .any(|f| f.peer_id == "runtime-peer"
+                    && f.frame_type == frame_types::RUNTIME_STATE_SYNC),
+            "initial sync registers the runtime peer for RuntimeStateDoc updates"
+        );
+
+        let result = host
+            .handle_execute_cell(
+                &json!({ "action": "execute_cell", "cell_id": "cell-1" }),
+                "owner-peer",
+                "user:anaconda:alice/browser:cloud",
+            )
+            .expect("dispatch ok");
+
+        assert!(result.runtime_state_changed);
+        assert!(
+            result.outbound.iter().any(|f| {
+                f.peer_id == "runtime-peer" && f.frame_type == frame_types::RUNTIME_STATE_SYNC
+            }),
+            "queued execution should be broadcast to the registered runtime peer"
+        );
+    }
+
+    #[test]
     fn hosted_execute_cell_honors_client_supplied_execution_id() {
         let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
             .expect("create room host");

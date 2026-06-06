@@ -72,12 +72,14 @@ export class NotebookRoom {
   private framePersistQueue: Promise<void> = Promise.resolve();
   private broadcastDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
+  private readonly restoredPeersReady: Promise<void>;
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
   ) {
-    this.restoreHibernatedPeers();
+    this.restoredPeersReady = this.restoreHibernatedPeers();
+    this.state.waitUntil(this.restoredPeersReady);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -98,6 +100,8 @@ export class NotebookRoom {
     } catch (error) {
       return json({ error: String(error) }, 401);
     }
+
+    await this.restoredPeersReady;
 
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -176,6 +180,7 @@ export class NotebookRoom {
       return;
     }
 
+    await this.restoredPeersReady;
     await this.handleMessage(attachment.notebookId, peer, message);
   }
 
@@ -187,26 +192,37 @@ export class NotebookRoom {
     this.removeAttachedPeer(socket);
   }
 
-  private restoreHibernatedPeers(): void {
+  private async restoreHibernatedPeers(): Promise<void> {
     const sockets = this.state.getWebSockets?.() ?? [];
+    const restored: Array<{ notebookId: string; peer: Peer }> = [];
     for (const socket of sockets) {
       const attachment = socketAttachment(socket);
       if (!attachment) {
         continue;
       }
 
-      this.peers.set(attachment.peerId, {
+      const peer = {
         id: attachment.peerId,
         socket,
         identity: attachment.identity,
         connectedAt: attachment.connectedAt,
-      });
+      };
+      this.peers.set(attachment.peerId, peer);
+      restored.push({ notebookId: attachment.notebookId, peer });
     }
     if (sockets.length > 0) {
       cloudLog("info", "room.hibernation.restored_peers", {
         restored_peer_count: this.peers.size,
       });
     }
+    await Promise.all(
+      restored.map(async ({ notebookId, peer }) => {
+        await this.syncPeerFromRoomHost(notebookId, peer);
+        if (peer.identity.scope === "runtime_peer") {
+          this.refreshRuntimePeerWatch(notebookId);
+        }
+      }),
+    );
   }
 
   private acceptPeerSocket(notebookId: string, peer: Peer): void {
