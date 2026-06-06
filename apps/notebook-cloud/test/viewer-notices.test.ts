@@ -56,7 +56,7 @@ test("cloud notebook notices render auth and connection policy through the share
   assert.match(html, /data-slot="notebook-notice-stack"/);
   assert.match(html, /Auth needs attention/);
   assert.match(html, /Sign-in refresh failed/);
-  assert.match(html, /Live room connection failed/);
+  assert.match(html, /Live room needs attention/);
   assert.match(html, /Reset to anonymous/);
 });
 
