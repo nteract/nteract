@@ -1,8 +1,5 @@
 import type { BlobResolver } from "runtimed";
-import {
-  snapshotWidgetCommsFromRuntimeAndCommsState,
-  type SnapshotWidgetComm,
-} from "../src/widget-comms";
+import { snapshotWidgetCommsFromRuntimeAndCommsState, type SnapshotWidgetComm } from "runtimed";
 import {
   resolveCellsProgressively,
   type ProgressiveCellResolutionCallbacks,

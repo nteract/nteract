@@ -249,6 +249,16 @@ export {
   type UnresolvedOutputs,
 } from "./comm-diff";
 
+// Snapshot widget comm projection
+export {
+  normalizeSnapshotWidgetComms,
+  resolveSnapshotWidgetComms,
+  snapshotWidgetCommsFromRuntimeAndCommsState,
+  snapshotWidgetCommsFromRuntimeState,
+  type SnapshotWidgetComm,
+  widgetCommStoreState,
+} from "./snapshot-widget-comms";
+
 // Derived state
 export {
   type DaemonQueueState,

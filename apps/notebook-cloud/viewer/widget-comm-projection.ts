@@ -1,5 +1,5 @@
 import type { WidgetStore } from "@/components/widgets/widget-store";
-import { widgetCommStoreState, type SnapshotWidgetComm } from "../src/widget-comms";
+import { widgetCommStoreState, type SnapshotWidgetComm } from "runtimed";
 import { inlineWidgetBlobUrls } from "./widget-blob-inlining";
 
 export interface ProjectCloudWidgetCommsOptions {

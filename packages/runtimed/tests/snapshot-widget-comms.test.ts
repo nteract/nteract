@@ -1,9 +1,13 @@
-import { describe, it } from "node:test";
-import assert from "node:assert/strict";
-import type { BlobRef, BlobResolver } from "runtimed";
-import { resolveSnapshotWidgetComms, type SnapshotWidgetComm } from "runtimed";
+import { describe, expect, it } from "vite-plus/test";
 
-describe("cloud widget comm projection", () => {
+import type { BlobRef, BlobResolver } from "../src";
+import {
+  resolveSnapshotWidgetComms,
+  snapshotWidgetCommsFromRuntimeAndCommsState,
+  type SnapshotWidgetComm,
+} from "../src";
+
+describe("snapshot widget comm projection", () => {
   it("preserves ordinary widget state objects with inline or blob properties", () => {
     const [comm] = resolveSnapshotWidgetComms(
       [
@@ -25,15 +29,15 @@ describe("cloud widget comm projection", () => {
       testBlobResolver,
     );
 
-    assert.deepEqual(comm.state.layout, { inline: true, display: "flex" });
-    assert.deepEqual(comm.state.marker, { blob: "not-a-content-ref" });
-    assert.deepEqual(comm.state.payload, {
+    expect(comm.state.layout).toEqual({ inline: true, display: "flex" });
+    expect(comm.state.marker).toEqual({ blob: "not-a-content-ref" });
+    expect(comm.state.payload).toEqual({
       blob: "also-not-a-content-ref",
       size: 3,
       extra: "state",
     });
-    assert.equal(comm.buffer_paths, undefined);
-    assert.equal(comm.text_paths, undefined);
+    expect(comm.buffer_paths).toBeUndefined();
+    expect(comm.text_paths).toBeUndefined();
   });
 
   it("resolves exact inline and blob ContentRef wrapper shapes", () => {
@@ -51,9 +55,26 @@ describe("cloud widget comm projection", () => {
       testBlobResolver,
     );
 
-    assert.equal(comm.state.label, "ready");
-    assert.equal(comm.state.image, "https://cloud.test/blobs/image-hash");
-    assert.deepEqual(comm.buffer_paths, [["image"]]);
+    expect(comm.state.label).toBe("ready");
+    expect(comm.state.image).toBe("https://cloud.test/blobs/image-hash");
+    expect(comm.buffer_paths).toEqual([["image"]]);
+  });
+
+  it("merges CommsDoc state over legacy RuntimeStateDoc topology state", () => {
+    const [comm] = snapshotWidgetCommsFromRuntimeAndCommsState(
+      {
+        comms: {
+          comm: widgetComm({ value: 1 }),
+        },
+      },
+      {
+        comms: {
+          comm: { value: 2 },
+        },
+      },
+    );
+
+    expect(comm.state.value).toBe(2);
   });
 });
 
