@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import initMarkdownWasm from "../../wasm/runtimed-wasm/runtimed_wasm.js";
+import initMarkdownWasm, {
+  project_markdown_json,
+} from "../../wasm/runtimed-wasm/runtimed_wasm.js";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
-import { projectMarkdownPlan } from "../markdown-projection";
+import { projectMarkdownPlan, setMarkdownProjectionProjector } from "../markdown-projection";
 import { toggleMarkdownTaskMarker } from "../markdown-task-source";
 
 describe("toggleMarkdownTaskMarker", () => {
@@ -16,6 +18,7 @@ describe("toggleMarkdownTaskMarker", () => {
         wasmBytes.byteOffset + wasmBytes.byteLength,
       ),
     });
+    setMarkdownProjectionProjector(project_markdown_json);
   });
 
   it("uses projected WASM task spans to update literal markdown source", () => {

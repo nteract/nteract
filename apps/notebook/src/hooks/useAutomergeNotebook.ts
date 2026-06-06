@@ -11,6 +11,7 @@ import {
   refreshBlobResolver,
 } from "../lib/blob-port";
 import { logger } from "../lib/logger";
+import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
@@ -41,6 +42,7 @@ import type { JupyterOutput, NotebookCell } from "../types";
 import init, {
   encode_heartbeat_presence,
   NotebookHandle,
+  project_markdown_json,
 } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 /**
@@ -51,6 +53,7 @@ import init, {
 const PRESENCE_HEARTBEAT_INTERVAL_MS = 15_000;
 
 const wasmReady: Promise<void> = init().then(() => {
+  setMarkdownProjectionProjector(project_markdown_json);
   logger.info("[automerge-notebook] WASM initialized");
 });
 
