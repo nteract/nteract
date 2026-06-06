@@ -1177,6 +1177,8 @@ fn test_room_with_path_and_store(
 
     let (state_changed_tx, _) = broadcast::channel(16);
     let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
+    let (comms_changed_tx, _) = broadcast::channel(16);
+    let comms = runtime_doc::CommsDocHandle::new(runtime_doc::CommsDoc::new(), comms_changed_tx);
     let room = NotebookRoom {
         id: uuid::Uuid::new_v4(),
         doc: Arc::new(RwLock::new(doc)),
@@ -1207,6 +1209,7 @@ fn test_room_with_path_and_store(
         })),
         trusted_packages,
         state,
+        comms,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
         runtime_agent_launched_config: Arc::new(RwLock::new(None)),

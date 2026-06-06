@@ -850,12 +850,20 @@ mod tests {
             &[stream_output("out-1", "live\n")],
             Some(1),
         );
+        {
+            let mut st = shared.lock().unwrap();
+            st.comms_doc
+                .put_comm_state("comm-1", &serde_json::json!({"value": 7}))
+                .unwrap();
+        }
 
         let snapshot = handle.save_snapshot_pair().unwrap();
         assert!(!snapshot.notebook_bytes.is_empty());
         assert!(!snapshot.runtime_state_bytes.is_empty());
+        assert!(!snapshot.comms_doc_bytes.is_empty());
         assert!(!snapshot.notebook_heads.is_empty());
         assert!(!snapshot.runtime_state_heads.is_empty());
+        assert!(!snapshot.comms_doc_heads.is_empty());
 
         let notebook_doc =
             automerge::AutoCommit::load(&snapshot.notebook_bytes).expect("notebook doc loads");
@@ -875,6 +883,14 @@ mod tests {
         assert_eq!(execution.status, "done");
         assert_eq!(execution.execution_count, Some(1));
         assert_eq!(execution.outputs.len(), 1);
+
+        let comms_doc = runtime_doc::CommsDoc::from_doc(
+            automerge::AutoCommit::load(&snapshot.comms_doc_bytes).expect("comms doc loads"),
+        );
+        assert_eq!(
+            comms_doc.get_comm_state("comm-1").unwrap(),
+            serde_json::json!({"value": 7})
+        );
     }
 
     #[test]

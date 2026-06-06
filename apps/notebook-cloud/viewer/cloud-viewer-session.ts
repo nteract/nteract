@@ -39,6 +39,7 @@ export interface CloudViewerConfig {
   catalogEndpoint: string;
   snapshotBasePath: string;
   runtimeSnapshotBasePath: string;
+  commsSnapshotBasePath: string;
   aclEndpoint: string;
   invitesEndpoint: string;
   accessRequestsEndpoint: string;
@@ -83,6 +84,7 @@ interface UseCloudViewerSessionOptions {
 interface CloudNotebookCatalogRevision {
   notebook_heads_hash: string;
   runtime_heads_hash: string | null;
+  comms_heads_hash: string | null;
   runtime_state_doc_id: string | null;
 }
 
@@ -180,39 +182,59 @@ export function useCloudViewerSession({
             snapshotResolvedRef.current = true;
             setStatus({
               kind: "empty",
-              message: "No complete snapshot pair is available for these pinned heads.",
+              message: "No complete snapshot set is available for these pinned heads.",
             });
           }
           return;
         }
 
-        const [notebookSnapshotResponse, runtimeSnapshotResponse] = await Promise.all([
-          fetch(
-            pinnedSnapshotEndpoint(config.snapshotBasePath, pinnedHeadsHash),
-            withCloudPrototypeAuthHeaders(
-              { headers: { Accept: "application/octet-stream" } },
-              authState,
-            ),
-          ),
-          fetch(
-            pinnedSnapshotEndpoint(config.runtimeSnapshotBasePath, revision.runtime_heads_hash),
-            withCloudPrototypeAuthHeaders(
-              {
-                headers: {
-                  Accept: "application/octet-stream",
-                  "X-Runtime-State-Doc-Id": revision.runtime_state_doc_id,
+        const commsSnapshotRequest = revision.comms_heads_hash
+          ? fetch(
+              pinnedSnapshotEndpoint(config.commsSnapshotBasePath, revision.comms_heads_hash),
+              withCloudPrototypeAuthHeaders(
+                {
+                  headers: {
+                    Accept: "application/octet-stream",
+                    "X-Runtime-State-Doc-Id": revision.runtime_state_doc_id,
+                  },
                 },
-              },
-              authState,
+                authState,
+              ),
+            )
+          : Promise.resolve(null);
+        const [notebookSnapshotResponse, runtimeSnapshotResponse, commsSnapshotResponse] =
+          await Promise.all([
+            fetch(
+              pinnedSnapshotEndpoint(config.snapshotBasePath, pinnedHeadsHash),
+              withCloudPrototypeAuthHeaders(
+                { headers: { Accept: "application/octet-stream" } },
+                authState,
+              ),
             ),
-          ),
-        ]);
-        if (!notebookSnapshotResponse.ok || !runtimeSnapshotResponse.ok) {
+            fetch(
+              pinnedSnapshotEndpoint(config.runtimeSnapshotBasePath, revision.runtime_heads_hash),
+              withCloudPrototypeAuthHeaders(
+                {
+                  headers: {
+                    Accept: "application/octet-stream",
+                    "X-Runtime-State-Doc-Id": revision.runtime_state_doc_id,
+                  },
+                },
+                authState,
+              ),
+            ),
+            commsSnapshotRequest,
+          ]);
+        if (
+          !notebookSnapshotResponse.ok ||
+          !runtimeSnapshotResponse.ok ||
+          (commsSnapshotResponse && !commsSnapshotResponse.ok)
+        ) {
           if (!cancelled) {
             snapshotResolvedRef.current = true;
             setStatus({
               kind: "error",
-              message: `Unable to load pinned snapshot pair: notebook ${notebookSnapshotResponse.status}, runtime ${runtimeSnapshotResponse.status}`,
+              message: `Unable to load pinned snapshot set: notebook ${notebookSnapshotResponse.status}, runtime ${runtimeSnapshotResponse.status}, comms ${commsSnapshotResponse?.status ?? "none"}`,
             });
           }
           return;
@@ -221,6 +243,9 @@ export function useCloudViewerSession({
         handle = await loadSnapshotPairHandle(
           new Uint8Array(await notebookSnapshotResponse.arrayBuffer()),
           new Uint8Array(await runtimeSnapshotResponse.arrayBuffer()),
+          commsSnapshotResponse
+            ? new Uint8Array(await commsSnapshotResponse.arrayBuffer())
+            : undefined,
           config.runtimedWasmModulePath,
           config.runtimedWasmPath,
         );
@@ -297,6 +322,7 @@ export function useCloudViewerSession({
     config.blobBasePath,
     config.headsHash,
     config.runtimeSnapshotBasePath,
+    config.commsSnapshotBasePath,
     config.runtimedWasmModulePath,
     config.runtimedWasmPath,
     config.snapshotBasePath,

@@ -25,7 +25,7 @@ async function createMathNetNotebook(rt) {
       [
         "# MathNet via notebook-cloud",
         "",
-        "This notebook was executed through a live local runtimed session, exported as a NotebookDoc + RuntimeStateDoc snapshot pair, and published to the Cloudflare notebook-cloud worker.",
+        "This notebook was executed through a live local runtimed session, exported as a NotebookDoc + RuntimeStateDoc + CommsDoc snapshot triplet, and published to the Cloudflare notebook-cloud worker.",
       ].join("\n"),
       { cellType: "markdown" },
     );

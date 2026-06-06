@@ -301,8 +301,10 @@ describe("@runtimed/node Session wrapper", () => {
       notebookId: "nb-1",
       notebookBytes: new Uint8Array([1, 2, 3]),
       runtimeStateBytes: new Uint8Array([4, 5, 6]),
+      commsDocBytes: new Uint8Array([7, 8, 9]),
       notebookHeads: ["a"],
       runtimeStateHeads: ["b"],
+      commsDocHeads: ["c"],
       blobBaseUrl: "http://127.0.0.1:1234",
       blobStorePath: "/tmp/runtimed-blobs",
     };

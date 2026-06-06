@@ -187,6 +187,7 @@ export class RoomMaterializer {
           const host = await loadRoomHostSnapshot(
             latestPublished.notebookBytes,
             latestPublished.runtimeStateBytes,
+            latestPublished.commsDocBytes,
           );
           this.markLoadedPublishedSnapshot(latestPublished.revisionId, host);
           cloudLog("info", "room.materializer.loaded", {
@@ -228,6 +229,7 @@ export class RoomMaterializer {
         const host = await loadRoomHostSnapshot(
           published.notebookBytes,
           published.runtimeStateBytes,
+          published.commsDocBytes,
         );
         this.markLoadedPublishedSnapshot(published.revisionId, host);
         cloudLog("info", "room.materializer.loaded", {
@@ -329,6 +331,7 @@ export class RoomMaterializer {
     createdAt: string;
     notebookBytes: Uint8Array;
     runtimeStateBytes: Uint8Array;
+    commsDocBytes?: Uint8Array;
   } | null> {
     try {
       return await this.loadLatestPublishedSnapshotPair();
@@ -362,6 +365,7 @@ export class RoomMaterializer {
     createdAt: string;
     notebookBytes: Uint8Array;
     runtimeStateBytes: Uint8Array;
+    commsDocBytes?: Uint8Array;
   } | null> {
     if (!this.env.DB || !this.env.NOTEBOOK_SNAPSHOTS) {
       return null;
@@ -375,15 +379,17 @@ export class RoomMaterializer {
       return null;
     }
 
-    const [notebookObject, runtimeObject] = await Promise.all([
+    const [notebookObject, runtimeObject, commsObject] = await Promise.all([
       this.env.NOTEBOOK_SNAPSHOTS.get(latest.snapshot_key),
       this.env.NOTEBOOK_SNAPSHOTS.get(latest.runtime_snapshot_key),
+      latest.comms_snapshot_key ? this.env.NOTEBOOK_SNAPSHOTS.get(latest.comms_snapshot_key) : null,
     ]);
-    if (!notebookObject || !runtimeObject) {
+    if (!notebookObject || !runtimeObject || (latest.comms_snapshot_key && !commsObject)) {
       cloudLog("warn", "room.materializer.snapshot_pair_missing", {
         notebook_id: this.notebookId,
         notebook_snapshot_missing: !notebookObject,
         runtime_state_snapshot_missing: !runtimeObject,
+        comms_doc_snapshot_missing: Boolean(latest.comms_snapshot_key && !commsObject),
         counter: "materializer_snapshot_pair_missing",
         counter_delta: 1,
       });
@@ -395,6 +401,7 @@ export class RoomMaterializer {
       createdAt: latest.created_at,
       notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
       runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
+      commsDocBytes: commsObject ? new Uint8Array(await commsObject.arrayBuffer()) : undefined,
     };
   }
 }

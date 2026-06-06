@@ -211,7 +211,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Publish a notebook snapshot pair to hosted nteract cloud.
+    /// Publish a notebook snapshot set to hosted nteract cloud.
     #[command(hide = true, disable_help_flag = true, disable_help_subcommand = true)]
     Publish {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

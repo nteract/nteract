@@ -151,6 +151,7 @@ function loadConfig(): CloudViewerConfig {
     !parsed.catalogEndpoint ||
     !parsed.snapshotBasePath ||
     !parsed.runtimeSnapshotBasePath ||
+    !parsed.commsSnapshotBasePath ||
     !parsed.aclEndpoint ||
     !parsed.invitesEndpoint ||
     !parsed.accessRequestsEndpoint ||
@@ -168,6 +169,7 @@ function loadConfig(): CloudViewerConfig {
     catalogEndpoint: parsed.catalogEndpoint,
     snapshotBasePath: parsed.snapshotBasePath,
     runtimeSnapshotBasePath: parsed.runtimeSnapshotBasePath,
+    commsSnapshotBasePath: parsed.commsSnapshotBasePath,
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
     accessRequestsEndpoint: parsed.accessRequestsEndpoint,

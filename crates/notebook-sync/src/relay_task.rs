@@ -336,6 +336,7 @@ fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::Typ
         | NotebookFrameType::Broadcast
         | NotebookFrameType::Presence
         | NotebookFrameType::RuntimeStateSync
+        | NotebookFrameType::CommsDocSync
         | NotebookFrameType::PoolStateSync
         | NotebookFrameType::SessionControl
         | NotebookFrameType::Response => {

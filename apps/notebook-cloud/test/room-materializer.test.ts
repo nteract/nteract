@@ -1858,8 +1858,10 @@ function fakePublishedSnapshotEnv(input: {
           : `runtime:${input.notebookId}`,
         notebook_heads_hash: "heads-published",
         runtime_heads_hash: "runtime-published",
+        comms_heads_hash: null,
         snapshot_key: snapshotKey,
         runtime_snapshot_key: runtimeSnapshotKey,
+        comms_snapshot_key: null,
         actor_label: input.actorLabel,
         created_at: "2026-05-28T00:00:00.000Z",
       },
@@ -1907,8 +1909,10 @@ class FakeCatalogD1 implements D1Database {
         runtime_state_doc_id: string | null;
         notebook_heads_hash: string;
         runtime_heads_hash: string;
+        comms_heads_hash: string | null;
         snapshot_key: string;
         runtime_snapshot_key: string;
+        comms_snapshot_key: string | null;
         actor_label: string;
         created_at: string;
       };
@@ -1955,7 +1959,12 @@ class FakeCatalogStatement implements D1PreparedStatement {
 
   async all<T = unknown>(): Promise<D1Result<T>> {
     if (/PRAGMA table_info\(notebook_revisions\)/.test(this.query)) {
-      return okResult([{ name: "runtime_snapshot_key" }, { name: "runtime_state_doc_id" }] as T[]);
+      return okResult([
+        { name: "runtime_snapshot_key" },
+        { name: "runtime_state_doc_id" },
+        { name: "comms_heads_hash" },
+        { name: "comms_snapshot_key" },
+      ] as T[]);
     }
     if (/FROM notebook_revisions/s.test(this.query)) {
       const notebookId = this.values[0];

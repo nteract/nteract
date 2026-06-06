@@ -362,14 +362,16 @@ pub struct CellResult {
     pub outputs: Vec<JsOutput>,
 }
 
-/// Serialized notebook + runtime-state snapshots for hosted publishing.
+/// Serialized notebook + runtime-state + comms snapshots for hosted publishing.
 #[napi(object)]
 pub struct SnapshotPair {
     pub notebook_id: String,
     pub notebook_bytes: Buffer,
     pub runtime_state_bytes: Buffer,
+    pub comms_doc_bytes: Buffer,
     pub notebook_heads: Vec<String>,
     pub runtime_state_heads: Vec<String>,
+    pub comms_doc_heads: Vec<String>,
     pub blob_base_url: Option<String>,
     pub blob_store_path: Option<String>,
 }
@@ -764,11 +766,11 @@ impl Session {
         }
     }
 
-    /// Export the live synced notebook and runtime-state documents.
+    /// Export the live synced notebook, runtime-state, and comms documents.
     ///
-    /// This waits for both document channels to converge with the daemon
+    /// This waits for all document channels to converge with the daemon
     /// before serializing, so hosted publish clients can upload a coherent
-    /// `NotebookDoc` + `RuntimeStateDoc` snapshot pair.
+    /// `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` snapshot triplet.
     #[napi]
     pub async fn export_snapshot_pair(&self) -> Result<SnapshotPair> {
         let (handle, blob_base_url, blob_store_path) = {
@@ -791,8 +793,10 @@ impl Session {
             notebook_id: self.notebook_id.clone(),
             notebook_bytes: snapshot.notebook_bytes.into(),
             runtime_state_bytes: snapshot.runtime_state_bytes.into(),
+            comms_doc_bytes: snapshot.comms_doc_bytes.into(),
             notebook_heads: snapshot.notebook_heads,
             runtime_state_heads: snapshot.runtime_state_heads,
+            comms_doc_heads: snapshot.comms_doc_heads,
             blob_base_url,
             blob_store_path,
         })

@@ -301,6 +301,8 @@ where
     // terminal events). u64 wraparound is a non-issue in practice.
     let sync_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut inflight_sync: Option<tokio::task::JoinHandle<()>> = None;
+    let mut runtime_state_doc_seen = false;
+    let mut orphan_comm_candidates: HashSet<String> = HashSet::new();
 
     info!("[runtime-agent] Infrastructure ready, entering main loop");
 
@@ -513,6 +515,7 @@ where
 
                                     match sync_result {
                                         Ok(Some(queued)) => {
+                                            runtime_state_doc_seen = true;
                                             queue_synced_executions(
                                                 queued,
                                                 &mut seen_execution_ids,
@@ -521,7 +524,9 @@ where
                                             )
                                             .await;
                                         }
-                                        Ok(None) => {}
+                                        Ok(None) => {
+                                            runtime_state_doc_seen = true;
+                                        }
                                         Err(e) => {
                                             warn!("[runtime-agent] Closing after RuntimeStateSync failure: {}", e);
                                             break;
@@ -572,8 +577,25 @@ where
                                             "runtime-agent-comms-receive",
                                         ) {
                                             Ok(view) if !view.applied_actors.is_empty() => {
-                                                let removed_orphans = comms_doc
-                                                    .prune_orphan_comm_states(&active_comm_ids)?;
+                                                let current_comm_ids: HashSet<String> =
+                                                    comms_doc.get_comms().keys().cloned().collect();
+                                                let should_prune_orphans =
+                                                    runtime_state_doc_seen
+                                                        && should_prune_orphan_comm_states(
+                                                            &active_comm_ids,
+                                                            &current_comm_ids,
+                                                            &orphan_comm_candidates,
+                                                        );
+                                                orphan_comm_candidates = current_comm_ids
+                                                    .difference(&active_comm_ids)
+                                                    .cloned()
+                                                    .collect();
+                                                let removed_orphans = if should_prune_orphans {
+                                                    comms_doc
+                                                        .prune_orphan_comm_states(&active_comm_ids)?
+                                                } else {
+                                                    Vec::new()
+                                                };
                                                 if !removed_orphans.is_empty() {
                                                     debug!(
                                                         "[runtime-agent] Pruned {} orphan CommsDoc state entries",
@@ -1875,6 +1897,24 @@ fn mark_interrupted_executions_failed(
     }
 }
 
+fn should_prune_orphan_comm_states(
+    active_comm_ids: &HashSet<String>,
+    current_comm_ids: &HashSet<String>,
+    previous_orphan_candidates: &HashSet<String>,
+) -> bool {
+    let mut saw_orphan = false;
+    for comm_id in current_comm_ids {
+        if active_comm_ids.contains(comm_id) {
+            continue;
+        }
+        saw_orphan = true;
+        if !previous_orphan_candidates.contains(comm_id) {
+            return false;
+        }
+    }
+    saw_orphan
+}
+
 /// Diff two comm state snapshots, returning `(comm_id, changed_properties)` pairs.
 ///
 /// Only diffs existing comms (new comms originate from kernel `comm_open` and
@@ -2190,6 +2230,24 @@ mod tests {
             reconnect_floor_delay(true, Some(Duration::from_secs(1)), Duration::from_secs(1)),
             None
         );
+    }
+
+    #[test]
+    fn orphan_comm_gc_waits_for_confirmed_absence() {
+        let active = HashSet::from(["alive".to_string()]);
+        let current = HashSet::from(["alive".to_string(), "loaded-before-topology".to_string()]);
+
+        assert!(!should_prune_orphan_comm_states(
+            &active,
+            &current,
+            &HashSet::new(),
+        ));
+
+        assert!(should_prune_orphan_comm_states(
+            &active,
+            &current,
+            &HashSet::from(["loaded-before-topology".to_string()]),
+        ));
     }
 
     // -- reconnect_with_backoff against a mock transport ------------------

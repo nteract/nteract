@@ -42,13 +42,15 @@ const session = sourceNotebookId
 
 try {
   const snapshot = await session.exportSnapshotPair();
-  const { cells, runtimeStateDocId } = await snapshotPairMetadata(
+  const { cells, runtimeState, commsState, runtimeStateDocId } = await snapshotPairMetadata(
     snapshot.notebookBytes,
     snapshot.runtimeStateBytes,
+    snapshot.commsDocBytes,
   );
-  const blobRefs = collectBlobRefs(cells);
+  const blobRefs = collectBlobRefs({ cells, runtimeState, commsState });
   const headsHash = headsDigest(snapshot.notebookHeads);
   const runtimeHeadsHash = headsDigest(snapshot.runtimeStateHeads);
+  const commsHeadsHash = headsDigest(snapshot.commsDocHeads);
 
   for (const ref of Object.values(blobRefs)) {
     await uploadLiveBlob(ref, snapshot);
@@ -63,11 +65,20 @@ try {
     },
   );
   await putBytes(
+    `/api/n/${encodeURIComponent(notebookId)}/comms-snapshots/${encodeURIComponent(commsHeadsHash)}`,
+    snapshot.commsDocBytes,
+    "application/octet-stream",
+    {
+      "X-Runtime-State-Doc-Id": runtimeStateDocId,
+    },
+  );
+  await putBytes(
     `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(headsHash)}`,
     snapshot.notebookBytes,
     "application/octet-stream",
     {
       "X-Runtime-Heads-Hash": runtimeHeadsHash,
+      "X-Comms-Heads-Hash": commsHeadsHash,
       "X-Runtime-State-Doc-Id": runtimeStateDocId,
     },
   );
@@ -77,9 +88,10 @@ try {
     catalog.revisions?.some(
       (revision) =>
         revision.notebook_heads_hash === headsHash &&
-        revision.runtime_heads_hash === runtimeHeadsHash,
+        revision.runtime_heads_hash === runtimeHeadsHash &&
+        revision.comms_heads_hash === commsHeadsHash,
     ),
-    "published catalog did not include the snapshot pair",
+    "published catalog did not include the snapshot triplet",
   );
 
   console.log(
@@ -96,11 +108,13 @@ try {
         runtimeStateDocId,
         headsHash,
         runtimeHeadsHash,
+        commsHeadsHash,
         cells: Array.isArray(cells) ? cells.length : null,
         blobs: Object.keys(blobRefs).length,
         checks: [
           "live_session_snapshot_pair",
           "runtime_state_output_manifests",
+          "comms_doc_widget_state",
           "local_blob_uploads",
           "published_snapshot_catalog",
         ],
@@ -116,14 +130,19 @@ try {
   await session.close().catch(() => {});
 }
 
-async function snapshotPairMetadata(notebookBytes, runtimeStateBytes) {
+async function snapshotPairMetadata(notebookBytes, runtimeStateBytes, commsBytes) {
   const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
   const wasmBytes = await readFile(wasmBytesUrl);
   initSync({ module: wasmBytes });
   const handle = NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+  if (commsBytes) {
+    handle.load_comms_doc(commsBytes);
+  }
   try {
     return {
       cells: JSON.parse(handle.get_cells_json()),
+      runtimeState: handle.get_runtime_state(),
+      commsState: handle.get_comms_state(),
       runtimeStateDocId: requiredRuntimeStateDocId(handle),
     };
   } finally {

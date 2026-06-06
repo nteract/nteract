@@ -446,6 +446,8 @@ impl SyncReactor {
             SyncCommand::ConfirmStateSync { reply } => {
                 if let Err(e) = send_state_sync_message(&self.io.doc, writer).await {
                     let _ = reply.send(Err(e));
+                } else if let Err(e) = send_comms_sync_message(&self.io.doc, writer).await {
+                    let _ = reply.send(Err(e));
                 } else {
                     let now = Instant::now();
                     self.state.state_sync_waiters.push(StateSyncWaiter {
@@ -749,6 +751,77 @@ impl SyncReactor {
                     {
                         warn!(
                             "[notebook-sync] Failed to send RuntimeStateSync reply for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                    }
+                }
+                Ok(())
+            }
+
+            NotebookFrameType::CommsDocSync => {
+                let msg = match sync::Message::decode(&frame.payload) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to decode CommsDocSync for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let reply_bytes = {
+                    let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    match state.receive_comms_sync_message_recovering(msg, "comms-doc-sync-receive")
+                    {
+                        Ok(()) => {}
+                        Err(e @ AutomergeOperationError::Panic(_))
+                        | Err(e @ AutomergeOperationError::RebuildFailed { .. }) => {
+                            warn!(
+                                "[notebook-sync] Closing sync task after CommsDocSync failure for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                            return Err(SyncError::Protocol(format!(
+                                "comms doc sync failure for {}: {e}",
+                                self.io.notebook_id
+                            )));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to apply CommsDocSync for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                            return Err(SyncError::Protocol(format!(
+                                "comms doc sync apply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
+                        }
+                    };
+                    match state.generate_comms_sync_message_recovering("comms-doc-sync-reply") {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to generate CommsDocSync reply for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                            return Err(SyncError::Protocol(format!(
+                                "comms doc sync reply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
+                        }
+                    }
+                };
+
+                if let Some(bytes) = reply_bytes {
+                    if let Err(e) = connection::send_typed_frame(
+                        writer,
+                        NotebookFrameType::CommsDocSync,
+                        &bytes,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "[notebook-sync] Failed to send CommsDocSync reply for {}: {}",
                             self.io.notebook_id, e
                         );
                     }
@@ -1064,6 +1137,27 @@ async fn send_state_sync_message<W: AsyncWrite + Unpin>(
 
     if let Some(bytes) = msg_bytes {
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &bytes)
+            .await
+            .map_err(SyncError::Io)?;
+    }
+
+    Ok(())
+}
+
+async fn send_comms_sync_message<W: AsyncWrite + Unpin>(
+    doc: &Arc<Mutex<SharedDocState>>,
+    writer: &mut W,
+) -> Result<(), SyncError> {
+    let msg_bytes = {
+        let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .generate_comms_sync_message_recovering("comms-doc-sync-outbound")
+            .map_err(|e| SyncError::Protocol(e.to_string()))?
+            .map(|msg| msg.encode())
+    };
+
+    if let Some(bytes) = msg_bytes {
+        connection::send_typed_frame(writer, NotebookFrameType::CommsDocSync, &bytes)
             .await
             .map_err(SyncError::Io)?;
     }

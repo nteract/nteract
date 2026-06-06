@@ -93,6 +93,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /"catalogEndpoint":"\/api\/n\/demo"/);
     assert.match(html, /"snapshotBasePath":"\/api\/n\/demo\/snapshots\/"/);
     assert.match(html, /"runtimeSnapshotBasePath":"\/api\/n\/demo\/runtime-snapshots\/"/);
+    assert.match(html, /"commsSnapshotBasePath":"\/api\/n\/demo\/comms-snapshots\/"/);
     assert.match(html, /"aclEndpoint":"\/api\/n\/demo\/acl"/);
     assert.match(html, /"invitesEndpoint":"\/api\/n\/demo\/invites"/);
     assert.match(html, /"accessRequestsEndpoint":"\/api\/n\/demo\/access-requests"/);

@@ -14,7 +14,7 @@ use automerge_recovery::{
 };
 use log::warn;
 use notebook_doc::presence::PresenceState;
-use runtime_doc::RuntimeStateDoc;
+use runtime_doc::{CommsDoc, RuntimeStateDoc};
 
 /// The shared state behind `Arc<Mutex<SharedDocState>>`.
 ///
@@ -40,6 +40,12 @@ pub struct SharedDocState {
     /// Automerge sync protocol state for the RuntimeStateDoc peer.
     pub(crate) state_peer_state: sync::State,
 
+    /// Widget comm state doc — synced alongside RuntimeStateDoc.
+    pub(crate) comms_doc: CommsDoc,
+
+    /// Automerge sync protocol state for the CommsDoc peer.
+    pub(crate) comms_peer_state: sync::State,
+
     #[cfg(test)]
     panic_on_next_doc_sync: bool,
     #[cfg(test)]
@@ -59,6 +65,8 @@ impl SharedDocState {
             presence: PresenceState::new(),
             state_doc: RuntimeStateDoc::try_new_empty()?,
             state_peer_state: sync::State::new(),
+            comms_doc: CommsDoc::try_new_empty()?,
+            comms_peer_state: sync::State::new(),
             #[cfg(test)]
             panic_on_next_doc_sync: false,
             #[cfg(test)]
@@ -197,6 +205,64 @@ impl SharedDocState {
             is_recoverable_sync_error,
             |context| context.state.rebuild_state_doc(),
         )
+    }
+
+    // ── CommsDoc sync ───────────────────────────────────────────────
+
+    pub(crate) fn generate_comms_sync_message_recovering(
+        &mut self,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        self.comms_doc
+            .generate_sync_message_recovering(&mut self.comms_peer_state, label)
+    }
+
+    pub(crate) fn receive_comms_sync_message(
+        &mut self,
+        message: sync::Message,
+    ) -> Result<(), automerge::AutomergeError> {
+        self.comms_doc
+            .doc_mut()
+            .sync()
+            .receive_sync_message(&mut self.comms_peer_state, message)
+    }
+
+    pub(crate) fn receive_comms_sync_message_recovering(
+        &mut self,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        let mut context = SharedDocReceiveRecoveryContext {
+            state: self,
+            next_message: Some(message.clone()),
+            retry_message: message,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| {
+                let message = context
+                    .next_message
+                    .take()
+                    .unwrap_or_else(|| context.retry_message.clone());
+                context.state.receive_comms_sync_message(message)
+            },
+            is_recoverable_sync_error,
+            |context| context.state.rebuild_comms_doc(),
+        )
+    }
+
+    pub(crate) fn rebuild_comms_doc(&mut self) -> Result<(), AutomergeRebuildError> {
+        let rebuilt = self.comms_doc.rebuild_from_save();
+        if let Err(err) = &rebuilt {
+            warn!(
+                "[notebook-sync] Failed to rebuild CommsDoc after recoverable Automerge failure: {}; \
+                 resetting comms sync protocol only",
+                err
+            );
+        }
+        self.comms_peer_state = sync::State::new();
+        rebuilt
     }
 
     /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.

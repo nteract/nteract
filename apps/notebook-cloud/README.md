@@ -4,7 +4,7 @@ This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It 
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
-`/n/:notebookId/:vanityName` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` Automerge snapshot pair directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, and catalog revision metadata. Snapshot-pair publishes validate that the pair can be loaded and that referenced output blobs exist before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
+`/n/:notebookId/:vanityName` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` Automerge snapshot set directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, `/api/n/:id/comms-snapshots/:commsHeadsHash`, and catalog revision metadata. Snapshot publishes validate that the documents can be loaded and that referenced output/widget blobs exist before recording the catalog revision, so missing runtime or comm snapshots, corrupt snapshot bytes, or missing blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, widgets, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
 ## Local dev
 
@@ -142,16 +142,17 @@ parent viewer document. Set
 catalog provenance checks, or set them to the expected owner/actor for another
 published notebook. `NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH`
 and `NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH` can pin the
-catalog check to a specific exported snapshot pair. Set
+catalog check to a specific exported snapshot set. Set
 `NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the target notebook does not include a
 Sift output.
 
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
-uploads its `NotebookDoc` + `RuntimeStateDoc` snapshot pair, walks the exported
-output manifests for blob refs, uploads the matching local daemon blobs, and
-verifies the catalog revision. By default it creates and executes a small
-`ShadenA/MathNet` Polars notebook. Set `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>`
-to publish an already-open live notebook room instead.
+uploads its `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` snapshot set, walks
+the exported output and widget manifests for blob refs, uploads the matching
+local daemon blobs, and verifies the catalog revision. By default it creates and
+executes a small `ShadenA/MathNet` Polars notebook. Set
+`NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>` to publish an already-open live
+notebook room instead.
 
 The hidden `runt publish` CLI follows the same source-room idea but lets the
 cloud allocate the hosted notebook id. It first posts the requested vanity name
@@ -304,8 +305,8 @@ Each hosted publish reserves a cloud notebook id before uploading snapshots. The
 cloud generates that id as a ULID; the vanity name only controls the readable
 path segment. To publish an already-open daemon room, pass its notebook UUID
 instead of a file path, or use `--source-notebook-id`. This exports the active
-session's `NotebookDoc` and `RuntimeStateDoc` snapshot pair, so executed outputs
-and widget/runtime state are included:
+session's `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` snapshot set, so
+executed outputs and widget/runtime state are included:
 
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
@@ -370,7 +371,7 @@ Bindings in `wrangler.toml`:
 
 - `NOTEBOOK_ROOMS`: Durable Object namespace, one object per notebook id.
 - `DB`: D1 catalog for notebooks, revisions, and blobs.
-- `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc` snapshots, `RuntimeStateDoc` snapshots, and blobs.
+- `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and blob snapshots.
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
 - `RUNTIMED_WASM_BASE_URL` (optional): base URL for `runtimed_wasm.js` and `runtimed_wasm_bg.wasm`. The prototype deployment also points this at the dedicated asset Worker so the large WASM module is loaded as a CDN cacheable file instead of being inlined into the viewer bundle.
@@ -393,6 +394,7 @@ Published revision artifacts follow `docs/adr/hosted-notebook-artifacts.md`:
 ```text
 n/{id}/snapshots/{notebookHeadsHash}.am
 docs/{runtimeStateDocId}/snapshots/{runtimeHeadsHash}.am
+docs/{comms:runtimeStateDocId}/snapshots/{commsHeadsHash}.am
 n/{id}/blobs/{sha256}
 ```
 
@@ -400,11 +402,13 @@ Notebook snapshots currently retain the `n/{id}` compatibility namespace.
 Runtime-state snapshots are keyed by first-class `runtime_state_doc_id`; publish
 and runtime-snapshot routes require `X-Runtime-State-Doc-Id`, and the catalog row
 stores both `runtime_state_doc_id` and the concrete `runtime_snapshot_key`.
+CommsDoc snapshots use the same runtime-state document id namespace with a
+`comms:` prefix and are referenced by `comms_snapshot_key`.
 Legacy revisions can still be read through their recorded snapshot keys.
 
-Snapshot-pair publishes validate that the pair can be loaded through
+Snapshot publishes validate that the documents can be loaded through
 `runtimed-wasm` and that all referenced blobs are present before recording a
-revision. The hosted viewer reads the snapshot pair directly for pinned
+revision. The hosted viewer reads the snapshot set directly for pinned
 revisions and uses `/n/:id/sync` for live latest views.
 
 ## Prototype deployment
@@ -467,15 +471,15 @@ Useful events while debugging collaboration:
   and reconnect churn.
 - `room.frame.rejected` - scope validation, malformed frames, and room-host
   write rejection. Count by `counter=rejected_frames`.
-- `room.materialized_frame.applied` - `NotebookDoc` / `RuntimeStateDoc` frame
+- `room.materialized_frame.applied` - `NotebookDoc` / `RuntimeStateDoc` / `CommsDoc` frame
   application duration, changed flags, whether the inbound frame was persisted,
   and outbound fanout.
 - `room.materializer.loaded`, `room.materializer.checkpoint.saved`, and
   `room.materializer.snapshot_pair_missing` - Durable Object materialization and
   persisted snapshot health.
 - `snapshot_pair.validation.completed`, `snapshot_pair.validation.failed`, and
-  `snapshot_pair.validation.missing_blobs` - publish-time snapshot-pair health
-  and missing output blob diagnosis.
+  `snapshot_pair.validation.missing_blobs` - publish-time snapshot-set health
+  and missing output/widget blob diagnosis.
 - `asset.fetch.completed` - viewer, `runtimed-wasm`, and renderer-plugin sidecar
   asset delivery. Filter by `asset_kind=renderer_plugin` for Sift WASM loading.
 - `blob.read.missing`, `blob.upload.completed`, and `blob.upload.rejected` -
