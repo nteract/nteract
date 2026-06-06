@@ -8,6 +8,10 @@ import {
   notebookViewCellsToTracebackTargets,
   type NotebookViewCell,
 } from "../view-model";
+import type { SupportedLanguage } from "@/components/editor/languages";
+
+const resolveTestLanguage = (language: string | null | undefined): SupportedLanguage | null =>
+  (language ?? "plain") as SupportedLanguage;
 
 describe("notebook shell view model", () => {
   it("projects shared notebook view cells into read-only render cells", () => {
@@ -41,7 +45,7 @@ describe("notebook shell view model", () => {
       },
     ];
 
-    expect(notebookViewCellsToReadOnlyCells(cells, (language) => language ?? "plain")).toEqual([
+    expect(notebookViewCellsToReadOnlyCells(cells, resolveTestLanguage)).toEqual([
       {
         id: "code-1",
         cellType: "code",
@@ -87,6 +91,54 @@ describe("notebook shell view model", () => {
     ]);
   });
 
+  it("projects Jupyter hidden metadata into read-only render cells", () => {
+    const cells: NotebookViewCell[] = [
+      {
+        id: "hidden-code",
+        cellType: "code",
+        source: "setup()",
+        language: "python",
+        executionId: null,
+        executionCount: 2,
+        outputs: [],
+        metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
+      },
+      {
+        id: "visible-markdown",
+        cellType: "markdown",
+        source: "# Visible",
+        language: null,
+        executionId: null,
+        executionCount: null,
+        outputs: [],
+        metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
+      },
+    ];
+
+    expect(notebookViewCellsToReadOnlyCells(cells, resolveTestLanguage)).toEqual([
+      {
+        id: "hidden-code",
+        cellType: "code",
+        source: "setup()",
+        language: "python",
+        outputs: [],
+        executionId: null,
+        executionCount: 2,
+        sourceHidden: true,
+        outputsHidden: true,
+      },
+      {
+        id: "visible-markdown",
+        cellType: "markdown",
+        source: "# Visible",
+        language: "plain",
+        outputs: [],
+        executionId: null,
+        executionCount: null,
+      },
+    ]);
+  });
+
   it("lets host adapters override outline status labels", () => {
     const outline = notebookViewCellsToOutlineItems(
       [
@@ -127,7 +179,7 @@ describe("notebook shell view model", () => {
     ];
 
     const viewModel = createNotebookViewModel(cells, {
-      resolveLanguage: (language) => language ?? "plain",
+      resolveLanguage: resolveTestLanguage,
     });
 
     expect(viewModel.cells).toBe(cells);

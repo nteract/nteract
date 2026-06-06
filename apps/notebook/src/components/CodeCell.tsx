@@ -635,7 +635,7 @@ export const CodeCell = memo(function CodeCell({
     />
   ) : null;
 
-  if (readOnly && bothHidden && !hasExecutionReadout) {
+  if (readOnly && bothHidden) {
     return null;
   }
 

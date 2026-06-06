@@ -18,6 +18,8 @@ export interface ReadOnlyNotebookCellData {
   outputs?: readonly JupyterOutput[];
   executionId?: string | null;
   executionCount?: number | null;
+  sourceHidden?: boolean;
+  outputsHidden?: boolean;
 }
 
 export interface ReadOnlyNotebookProps {
@@ -80,6 +82,8 @@ export function ReadOnlyNotebook({
                 cell.language,
                 cell.executionCount,
                 cell.outputs?.length ?? 0,
+                cell.sourceHidden,
+                cell.outputsHidden,
               ]}
               fallback={(error) =>
                 renderCellError
@@ -94,6 +98,8 @@ export function ReadOnlyNotebook({
                 language={cell.language}
                 outputs={cell.outputs}
                 executionCount={cell.executionCount}
+                sourceHidden={cell.sourceHidden}
+                outputsHidden={cell.outputsHidden}
                 priority={priority}
                 hostContext={hostContext}
                 displayMode={displayMode}

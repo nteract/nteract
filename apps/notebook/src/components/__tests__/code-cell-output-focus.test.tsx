@@ -565,11 +565,11 @@ describe("CodeCell output focus", () => {
     expect(queryByTestId("execute-button")).toBeNull();
   });
 
-  it("keeps runtime readout for fully hidden read-only cells after execution", () => {
+  it("omits fully hidden read-only cells after execution", () => {
     mockOutputs = [];
     mockExecution = { execution_count: 8, submitted_by_actor_label: null };
 
-    const { container, queryByTitle } = render(
+    const { container, queryByTestId, queryByTitle } = render(
       <CodeCell
         cell={makeCell({
           metadata: { jupyter: { source_hidden: true, outputs_hidden: true } },
@@ -583,9 +583,9 @@ describe("CodeCell output focus", () => {
       />,
     );
 
+    expect(container.firstChild).toBeNull();
     expect(queryByTitle("Show cell")).toBeNull();
-    expect(container.querySelector('[data-slot="code-cell-current-line"]')).not.toBeNull();
-    expect(container.textContent?.replace(/\s+/g, "")).toContain("Python/run8");
+    expect(queryByTestId("execute-button")).toBeNull();
   });
 
   it("omits output chrome for short stream output", () => {

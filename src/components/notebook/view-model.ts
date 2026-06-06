@@ -93,6 +93,8 @@ export function notebookViewCellToReadOnlyCell(
   cell: NotebookViewCell,
   resolveLanguage: NotebookViewLanguageResolver,
 ): ReadOnlyNotebookCellData {
+  const { sourceHidden, outputsHidden } = readOnlyHiddenFlags(cell);
+
   return {
     id: cell.id,
     cellType: cell.cellType,
@@ -101,6 +103,26 @@ export function notebookViewCellToReadOnlyCell(
     outputs: cell.outputs,
     executionId: cell.executionId,
     executionCount: cell.executionCount,
+    ...(sourceHidden ? { sourceHidden } : {}),
+    ...(outputsHidden ? { outputsHidden } : {}),
+  };
+}
+
+function readOnlyHiddenFlags(cell: NotebookViewCell): {
+  sourceHidden: boolean;
+  outputsHidden: boolean;
+} {
+  if (cell.cellType !== "code") {
+    return { sourceHidden: false, outputsHidden: false };
+  }
+
+  const jupyter = cell.metadata?.jupyter as
+    | { source_hidden?: boolean; outputs_hidden?: boolean }
+    | undefined;
+
+  return {
+    sourceHidden: jupyter?.source_hidden === true,
+    outputsHidden: jupyter?.outputs_hidden === true,
   };
 }
 
