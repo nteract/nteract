@@ -139,6 +139,43 @@ enum Commands {
         blob_root: PathBuf,
     },
 
+    /// Run a runtime agent attached to a hosted cloud room over WebSocket
+    /// (internal/automation). The daemon-managed kernel is unchanged; only the
+    /// sync wire differs from `runtime-agent`. The credential is read from the
+    /// environment (RUNT_CLOUD_TOKEN), never argv, so it can't leak into the
+    /// process command line.
+    #[command(hide = true, name = "cloud-runtime-agent")]
+    CloudRuntimeAgent {
+        /// Base URL of the notebook cloud (https/http; swapped to wss/ws).
+        #[arg(long, default_value = "https://preview.runt.run")]
+        cloud_url: String,
+        /// Notebook id to attach to (room is `/n/<id>/sync`).
+        #[arg(long)]
+        notebook_id: String,
+        /// Connection scope (a workstation runtime attaches as runtime_peer).
+        #[arg(long, default_value = "runtime_peer")]
+        scope: String,
+        /// Auth kind; the token itself comes from RUNT_CLOUD_TOKEN.
+        #[arg(long, value_enum, default_value_t = runtimed::workstation::CloudAuthKind::Oidc)]
+        auth_kind: runtimed::workstation::CloudAuthKind,
+        /// Operator suffix for the doc actor label (`<principal>/<operator>`).
+        #[arg(long, default_value = "agent:runt")]
+        operator: String,
+        /// Blob store root path.
+        #[arg(long)]
+        blob_root: PathBuf,
+        /// Launch-on-attach: start a kernel in this explicit Python interpreter
+        /// right after attaching (the `current_python` environment policy), so
+        /// the runtime *starts* without waiting for an inbound LaunchKernel RPC
+        /// (req #5, deferred). When omitted, the agent attaches only.
+        #[arg(long)]
+        python_path: Option<PathBuf>,
+        /// Notebook file path on this workstation, for the launch-on-attach
+        /// kernel (only used with --python-path).
+        #[arg(long)]
+        notebook_path: Option<String>,
+    },
+
     /// Warm a pool environment (internal, spawned by daemon warming loops).
     /// Reads JSON config from stdin, writes JSON events to stdout.
     #[command(hide = true, name = "warm-env")]
@@ -422,6 +459,60 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("[runtime-agent] Fatal: {}", e);
             e
         }),
+        Some(Commands::CloudRuntimeAgent {
+            cloud_url,
+            notebook_id,
+            scope,
+            auth_kind,
+            operator,
+            blob_root,
+            python_path,
+            notebook_path,
+        }) => {
+            let cli_args = runtimed::workstation::CloudAgentArgs {
+                cloud_url,
+                notebook_id,
+                scope,
+                auth_kind,
+            };
+            let config =
+                runtimed::workstation::build_cloud_config(&cli_args, |k| std::env::var(k).ok())
+                    .map_err(|e| {
+                        eprintln!("[cloud-runtime-agent] Config error: {}", e);
+                        e
+                    })?;
+            let result = match python_path {
+                // Launch-on-attach: allocate and *start* a current_python runtime.
+                Some(python_path) => {
+                    let target = runtimed::workstation::RoomTarget {
+                        cloud_url: config.cloud_url.clone(),
+                        notebook_id: config.notebook_id.clone(),
+                        scope: config.scope.clone(),
+                        operator,
+                    };
+                    runtimed::workstation::allocate_current_python_runtime(
+                        target,
+                        config.auth,
+                        python_path,
+                        notebook_path,
+                        std::collections::HashMap::new(),
+                        blob_root,
+                    )
+                    .await
+                }
+                // Attach-only: wait for an inbound launch (req #5, deferred).
+                None => {
+                    runtimed::runtime_agent::run_cloud_runtime_agent(
+                        config, operator, blob_root, None,
+                    )
+                    .await
+                }
+            };
+            result.map_err(|e| {
+                eprintln!("[cloud-runtime-agent] Fatal: {}", e);
+                e
+            })
+        }
         Some(Commands::WarmEnv) => {
             runtimed::warm_env::run().await;
             Ok(())

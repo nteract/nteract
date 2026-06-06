@@ -519,3 +519,80 @@ half (`last_seen`), and 3f req 6 (writer-error recovery) are done. Remaining:
   `RuntimeAgentRequest`s to the cloud agent via the 3d DurableObject hosted REQUEST
   dispatch. req 6 (don't tear the kernel down on a writer error) is DONE
   (decisions 34–35); req 5's trigger path needs the worker + a live room.
+
+## Workstation endpoint (the second half of 16): scoping
+
+The first half (transport-agnostic `runtime_agent` + `run_cloud_runtime_agent`)
+is merged (#3426). This is the daemon-side **workstation endpoint**: list the
+environments it has, and allocate/start a runtime in env X for room Y, driving
+`run_cloud_runtime_agent`. Full scope: `docs/handoffs/16-workstation-endpoint.md`.
+
+38. **Endpoint "start a runtime" is designed as launch-on-attach (option A), not
+    wait-for-req-5 (option B).** The cloud agent attaches as a `runtime_peer` and
+    then *waits for an inbound `RuntimeAgentRequest::LaunchKernel`* before it starts
+    a kernel (`runtime_agent.rs:1082`). Over the daemon UDS that frame comes from the
+    daemon; over the cloud transport it must come from the room — and that inbound
+    channel is req 5, **Deferred** (needs the 3d worker + a live room, decision 34).
+    So a cloud agent spawned today *attaches but is never told to launch*. The ADR
+    says the endpoint *allocates **and starts*** a runtime in env X. The only way to
+    honor "start" headlessly while req 5 is deferred is to resolve env X up front
+    (reusing the launcher) and hand the agent an *initial* `KernelLaunchConfig` it
+    applies right after bootstrap. Alternative (B, attach-only until req 5) was
+    rejected as not meeting "start" and leaving the endpoint un-demonstrable
+    headlessly. Why still safe: land launch-on-attach as a separate gated commit
+    *after* the lower-risk CLI + list-environments pieces, mirroring the
+    decision-22 recoverable-transport gate so the UDS/desktop path is byte-for-byte
+    unchanged. Until it lands, the CLI subcommand attaches only.
+
+39. **list-environments is a projection over the existing `PoolDoc`, not a new
+    enumerator.** `PoolDoc::read_state()` (`pool_state.rs:248`) already publishes
+    available/warming/health per env kind (synced to peers over PoolStateSync). The
+    endpoint maps that to a `WorkstationEnvironment` list. Alternative: a fresh disk
+    walk / pool inspection — rejected, it would duplicate `update_pool_doc`
+    (`daemon.rs:5423`) and drift from the authoritative state. Captured/inline named
+    envs (the `runt env list` cache-dir enumeration, `runt/src/main.rs:4126`) are a
+    second, optional projection behind the same `WorkstationEnvironment` shape so it
+    can later back both the workstation-target API and the Content-rail catalog
+    (ADR decision 8).
+
+40. **The missing invocable caller for `run_cloud_runtime_agent` is closed with a
+    hidden `runtimed cloud-runtime-agent` subcommand**, mirroring the internal
+    `runtime-agent` subcommand (`main.rs:126`). Auth token comes from the
+    environment (`RUNT_CLOUD_TOKEN` + an auth-kind selector), never argv — the ADR
+    security constraint ("never put API keys in URLs/argv for the long-running
+    process"). Alternative: a `runt` (user-facing) subcommand — deferred; the first
+    need is an internal/automation entry the control plane and the deferred live
+    proof drive, matching how `runtime-agent` is shaped.
+
+41. **Deferred (workstation endpoint): the live attach re-proof.** Spawning
+    `runtimed cloud-runtime-agent` against a real preview room (with the
+    `runtime_peer` ACL row, decision 9) and confirming a cell runs on the
+    daemon-managed kernel and renders in the viewer needs staging creds + a deployed
+    worker this autonomous session does not have. Exact run steps are in
+    `16-workstation-endpoint.md` ("Deferred — needs us"). Not attempted headlessly.
+    The hosted-side pieces (workstation registry D1 + routes, doc-agent control
+    channel, room target-selection APIs) are Worker build items (ADR sequence
+    3–9), out of scope for this daemon-side headless slice.
+
+### Workstation endpoint: Phase B (built, headless)
+
+Built as a stack of four PRs, each gated/additive (the desktop/UDS path is
+byte-for-byte unchanged): B1 `cloud-runtime-agent` CLI (#3428), B2
+`list_environments` (#3429), B3 launch-on-attach (#3430), B4
+`allocate_runtime_for_room` (#3431). All live under `crates/runtimed/src/workstation/`.
+
+42. **`allocate_runtime_for_room` resolves only the `current_python` policy
+    headlessly; prewarmed-pool allocation is a follow-up.** `current_python` is the
+    ADR's first-class Outerbounds policy (Decision 5): launch against an explicit
+    interpreter the connector already has, with no daemon env pool — so the launch
+    needs no `Daemon::take_uv_env` and the planning step is a pure mapping
+    (`RoomTarget` + auth + interpreter + reserved ports → `Allocation`), unit-tested
+    without a live daemon or a dialed room. Allocating a *prewarmed-pool* env
+    additionally needs a live daemon (the pool + `take_uv_env`) and its attach can't
+    be verified headlessly, so it's deferred. The launch trigger reuses B3's
+    launch-on-attach (the same `handle_runtime_agent_request` path an inbound RPC
+    uses), and the `cloud-runtime-agent` CLI exposes it via `--python-path` /
+    `--notebook-path`, making the full "allocate and start" path invocable for the
+    deferred live proof. The kernel-port reservation is held for the agent's whole
+    lifetime because, unlike the daemon UDS path, the cloud agent has no separate
+    coordinator holding the ports.
