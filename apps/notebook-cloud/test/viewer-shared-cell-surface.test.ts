@@ -98,7 +98,7 @@ test("cloud command toolbar inserts below the focused cell before falling back t
   );
   assert.match(
     sourceText,
-    /<NotebookCommandToolbar[\s\S]*addAfterCellId=\{toolbarAddAfterCellId\}/,
+    /<NotebookDocumentToolbar[\s\S]*commandToolbar=\{\{[\s\S]*addAfterCellId: toolbarAddAfterCellId/,
   );
 });
 
@@ -265,10 +265,10 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /disabled=\{accessPending\}/);
   assert.match(
     sourceText,
-    /const showCloudCommandToolbar =\s+shouldShowCloudNotebookCommandToolbar\(shellCapabilities\) \|\| editAccessPending/,
+    /const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar\(shellCapabilities, \{[\s\S]*reserve: editAccessPending,[\s\S]*\}\)/,
   );
-  assert.match(sourceText, /\{showCloudCommandToolbar \? \(/);
-  assert.match(sourceText, /addCellControlsDisabled=\{editAccessPending\}/);
+  assert.match(sourceText, /reserveCommandToolbar=\{editAccessPending\}/);
+  assert.match(sourceText, /addCellControlsDisabled: editAccessPending/);
   assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);

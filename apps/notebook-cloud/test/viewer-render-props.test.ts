@@ -128,23 +128,18 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
 
-  assert.match(sourceText, /NotebookCommandToolbar,/);
-  assert.match(sourceText, /NotebookDocumentHeader,/);
-  assert.match(sourceText, /NotebookToolbarFrame,/);
+  assert.match(sourceText, /NotebookDocumentToolbar,/);
+  assert.match(sourceText, /shouldShowNotebookDocumentCommandToolbar,/);
   assert.match(
     sourceText,
-    /const showCloudCommandToolbar =\s+shouldShowCloudNotebookCommandToolbar\(shellCapabilities\) \|\| editAccessPending/,
+    /const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar\(shellCapabilities, \{[\s\S]*reserve: editAccessPending,[\s\S]*\}\)/,
   );
   assert.match(
     sourceText,
-    /<NotebookToolbarFrame className="z-20">[\s\S]*<NotebookDocumentHeader[\s\S]*\{showCloudCommandToolbar \? \([\s\S]*<NotebookCommandToolbar/,
+    /<NotebookDocumentToolbar[\s\S]*frameClassName="z-20"[\s\S]*headerClassName="cloud-room-toolbar"[\s\S]*commandToolbar=\{\{[\s\S]*addAfterCellId: toolbarAddAfterCellId/,
   );
-  assert.match(sourceText, /<NotebookDocumentHeader[\s\S]*capabilities=\{shellCapabilities\}/);
-  assert.match(sourceText, /<NotebookCommandToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
-  assert.match(
-    sourceText,
-    /function shouldShowCloudNotebookCommandToolbar\(capabilities: NotebookShellCapabilities\): boolean \{[\s\S]*capabilities\.canEditStructure[\s\S]*capabilities\.canExecute[\s\S]*capabilities\.canManagePackages/,
-  );
+  assert.match(sourceText, /<NotebookDocumentToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
+  assert.doesNotMatch(sourceText, /function shouldShowCloudNotebookCommandToolbar/);
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
   assert.match(sourceText, /from "\.\/sharing-controls"/);
