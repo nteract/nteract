@@ -108,6 +108,7 @@ jobs:
             packages/sift/public/wasm/
             crates/runt-mcp/assets/plugins/
             apps/notebook/src/renderer-plugins/
+            target/xtask/*.fingerprint
 
   build-linux:
     name: Build Linux Executables
