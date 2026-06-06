@@ -78,8 +78,8 @@ Volatile artifacts stay gitignored and are regenerated:
 
 The Sift renderer bundle embeds wasm-bindgen glue from `sift-wasm`. Rebuilding
 `sift-wasm` without rebuilding `sift.js` can leave the plugin importing
-nonexistent `__wbg_*` names. `cargo xtask wasm sift` and
-`cargo xtask artifacts ensure sift,renderer` preserve that pairing.
+nonexistent `__wbg_*` names. `cargo xtask artifacts ensure sift,renderer`
+preserves that pairing.
 
 ## Decision 4: Fingerprints and semantic checks define freshness
 

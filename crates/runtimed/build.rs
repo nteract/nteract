@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 fn main() {
     // Renderer plugin bundles live under `apps/notebook/src/renderer-plugins/`.
     // Stable bundles (plotly, vega, leaflet, markdown) are LFS-tracked;
-    // sift.{js,css} is gitignored and rebuilt via `cargo xtask wasm`.
+    // sift.{js,css} is gitignored and rebuilt via
+    // `cargo xtask artifacts ensure sift,renderer`.
     // sift_wasm.wasm is embedded directly from `crates/sift-wasm/pkg/`.
     // Probe each path before `include_bytes!` so a missing file points at
     // the right recovery command instead of a generic "file not found".
@@ -28,7 +29,8 @@ fn main() {
                  are LFS-tracked - run `git lfs pull` if your checkout has pointer \
                  files only.\n\
                  Volatile bundles (sift.js, sift.css) are gitignored - run \
-                 `cargo xtask wasm` from the workspace root to rebuild.",
+                 `cargo xtask artifacts ensure sift,renderer` from the \
+                 workspace root to rebuild.",
                 path.display(),
             );
         }
@@ -39,7 +41,8 @@ fn main() {
     if !sift_wasm.exists() {
         panic!(
             "Missing sift WASM binary: {}\n\n\
-             Run `cargo xtask wasm` from the workspace root to rebuild it.",
+             Run `cargo xtask artifacts ensure sift,renderer` from the \
+             workspace root to rebuild it.",
             sift_wasm.display(),
         );
     }

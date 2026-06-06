@@ -4,10 +4,10 @@ description: >-
   embeds via include_bytes!. These outputs are gitignored; CI rebuilds
   them on every workflow run.
 
-  Idempotent: pnpm install --frozen-lockfile / wasm-pack install / cargo xtask wasm tolerate
-  a re-run. Caller is responsible for setting up Rust toolchain + rust-cache
-  before invoking; this action only adds Node, pnpm, wasm-pack, and runs the
-  build.
+  Idempotent: pnpm install --frozen-lockfile / wasm-pack install /
+  cargo xtask artifacts ensure runtime,sift,renderer tolerate a re-run. Caller
+  is responsible for setting up Rust toolchain + rust-cache before invoking;
+  this action only adds Node, pnpm, wasm-pack, and runs the build.
 
   Pass skip-wasm: true when pre-built WASM artifacts have already been
   downloaded from an earlier job (the build-wasm pattern). The downloaded
@@ -102,7 +102,7 @@ runs:
         fi
         echo "C:\\Program Files\\LLVM\\bin" >> "$GITHUB_PATH"
 
-    - name: Build wasm + renderer plugins
+    - name: Build runtime, sift, and renderer artifacts
       if: inputs.skip-wasm != 'true'
       shell: bash
-      run: cargo xtask wasm
+      run: cargo xtask artifacts ensure runtime,sift,renderer
