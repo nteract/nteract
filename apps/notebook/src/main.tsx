@@ -10,6 +10,7 @@ import { setKernelCompletionHost } from "./lib/kernel-completion";
 import { logger, setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
 import { setOpenUrlHost } from "./lib/open-url";
+import { ensureNotebookWasmReady } from "./lib/runtimed-wasm";
 
 // Register built-in widget components
 import "@/components/widgets/controls";
@@ -123,6 +124,7 @@ async function boot() {
   };
 
   void attachTauriDevLogMirror();
+  await ensureNotebookWasmReady();
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
