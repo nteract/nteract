@@ -221,7 +221,7 @@ fn is_kernel_authored_actor(actor: &automerge::ActorId, principal: Option<&str>)
     let Some(principal) = principal else {
         return false;
     };
-    let Ok(label) = std::str::from_utf8(&bytes) else {
+    let Ok(label) = std::str::from_utf8(bytes) else {
         return false;
     };
     let Some((actor_principal, operator)) = label.split_once('/') else {
