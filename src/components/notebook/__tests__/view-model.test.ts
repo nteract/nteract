@@ -113,6 +113,30 @@ describe("notebook shell view model", () => {
     }
   });
 
+  it("treats attached empty markdownProjection anchors as authoritative", () => {
+    let calls = 0;
+    const restore = setMarkdownProjectionProjector((source) => {
+      calls += 1;
+      return JSON.stringify(
+        testMarkdownProjection(source, [{ title: "Intro", level: 1, slug: "intro" }]),
+      );
+    });
+
+    try {
+      const outline = notebookViewCellsToOutlineItems([markdownViewCell("intro", "# Intro", [])]);
+
+      expect(calls).toBe(0);
+      expect(outline).toHaveLength(1);
+      expect(outline[0]).toMatchObject({
+        id: "intro:cell",
+        kind: "cell",
+        headingAnchorId: null,
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it("projects Jupyter hidden metadata into read-only render cells", () => {
     const cells: NotebookViewCell[] = [
       {

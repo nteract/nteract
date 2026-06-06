@@ -113,6 +113,8 @@ describe("markdown projection", () => {
       expect(Object.isFrozen(first?.anchors)).toBe(true);
       expect(Object.isFrozen(first?.blocks)).toBe(true);
       expect(Object.isFrozen(first?.runs)).toBe(true);
+      expect(Object.isFrozen(first?.measurement)).toBe(true);
+      expect(Object.isFrozen(first?.anchors[0])).toBe(true);
     } finally {
       restore();
     }

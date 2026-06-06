@@ -11,72 +11,72 @@ let markdownProjectionProjector: MarkdownProjectionProjector = project_markdown_
 const markdownProjectionCache = new Map<string, MarkdownProjectionPlan>();
 
 export interface MarkdownProjectionMeasurement {
-  estimatedHeight: number;
-  confidence: "low" | "medium" | "high" | string;
-  width: number;
+  readonly estimatedHeight: number;
+  readonly confidence: "low" | "medium" | "high" | string;
+  readonly width: number;
 }
 
 export interface MarkdownProjectionBlock {
-  anchorSlug?: string;
-  blockId: string;
-  blockIndex: number;
-  codeLanguage?: string;
-  codeMeta?: string;
-  element: string;
-  kind: string;
-  measurement: MarkdownProjectionMeasurement & { basis?: string };
-  ordered?: boolean;
-  sourceSpanByte: [number, number];
-  sourceSpanUtf16: [number, number];
-  syntaxSpans: unknown[];
-  text: string;
+  readonly anchorSlug?: string;
+  readonly blockId: string;
+  readonly blockIndex: number;
+  readonly codeLanguage?: string;
+  readonly codeMeta?: string;
+  readonly element: string;
+  readonly kind: string;
+  readonly measurement: MarkdownProjectionMeasurement & { readonly basis?: string };
+  readonly ordered?: boolean;
+  readonly sourceSpanByte: readonly [number, number];
+  readonly sourceSpanUtf16: readonly [number, number];
+  readonly syntaxSpans: readonly unknown[];
+  readonly text: string;
 }
 
 export interface MarkdownProjectionAnchor {
-  anchorId: string;
-  blockId: string;
-  level: number;
-  slug: string;
-  sourceSpanByte: [number, number];
-  sourceSpanUtf16: [number, number];
-  title: string;
+  readonly anchorId: string;
+  readonly blockId: string;
+  readonly level: number;
+  readonly slug: string;
+  readonly sourceSpanByte: readonly [number, number];
+  readonly sourceSpanUtf16: readonly [number, number];
+  readonly title: string;
 }
 
 export interface MarkdownProjectionRun {
-  blockId: string;
-  imageAlt?: string;
-  imageSrc?: string;
-  imageTitle?: string;
-  inlineId: string;
-  listItemIndex: number | null;
-  listItemChecked?: boolean;
-  listItemDepth?: number;
-  listItemOrdered?: boolean;
-  listItemPath?: string;
-  href?: string;
-  title?: string;
-  renderedHtml?: string;
-  renderedText: string;
-  renderedTextUtf16: [number, number];
-  semantic: string;
-  sourceSpanByte: [number, number];
-  sourceSpanUtf16: [number, number];
-  tableCellAlign?: "none" | "left" | "right" | "center" | string;
-  tableCellHeader?: boolean;
-  tableCellIndex?: number;
-  tableRowIndex?: number;
+  readonly blockId: string;
+  readonly imageAlt?: string;
+  readonly imageSrc?: string;
+  readonly imageTitle?: string;
+  readonly inlineId: string;
+  readonly listItemIndex: number | null;
+  readonly listItemChecked?: boolean;
+  readonly listItemDepth?: number;
+  readonly listItemOrdered?: boolean;
+  readonly listItemPath?: string;
+  readonly href?: string;
+  readonly title?: string;
+  readonly renderedHtml?: string;
+  readonly renderedText: string;
+  readonly renderedTextUtf16: readonly [number, number];
+  readonly semantic: string;
+  readonly sourceSpanByte: readonly [number, number];
+  readonly sourceSpanUtf16: readonly [number, number];
+  readonly tableCellAlign?: "none" | "left" | "right" | "center" | string;
+  readonly tableCellHeader?: boolean;
+  readonly tableCellIndex?: number;
+  readonly tableRowIndex?: number;
 }
 
 export interface MarkdownProjectionPlan {
-  version: 1;
-  engine: string;
-  byteLength: number;
-  utf16Length: number;
-  error?: string;
-  measurement: MarkdownProjectionMeasurement;
-  anchors: MarkdownProjectionAnchor[];
-  blocks: MarkdownProjectionBlock[];
-  runs: MarkdownProjectionRun[];
+  readonly version: 1;
+  readonly engine: string;
+  readonly byteLength: number;
+  readonly utf16Length: number;
+  readonly error?: string;
+  readonly measurement: MarkdownProjectionMeasurement;
+  readonly anchors: readonly MarkdownProjectionAnchor[];
+  readonly blocks: readonly MarkdownProjectionBlock[];
+  readonly runs: readonly MarkdownProjectionRun[];
 }
 
 export interface MarkdownProjectionSourceMatch {
@@ -134,6 +134,18 @@ function cacheMarkdownProjectionPlan(
 }
 
 function freezeMarkdownProjectionPlan(plan: MarkdownProjectionPlan): MarkdownProjectionPlan {
+  Object.freeze(plan.measurement);
+  for (const anchor of plan.anchors) {
+    Object.freeze(anchor);
+  }
+  for (const block of plan.blocks) {
+    Object.freeze(block.measurement);
+    Object.freeze(block.syntaxSpans);
+    Object.freeze(block);
+  }
+  for (const run of plan.runs) {
+    Object.freeze(run);
+  }
   Object.freeze(plan.anchors);
   Object.freeze(plan.blocks);
   Object.freeze(plan.runs);
@@ -147,7 +159,7 @@ function normalizeSourcePosition(plan: MarkdownProjectionPlan, position: number)
 }
 
 function spanContainsPosition(
-  span: [number, number],
+  span: readonly [number, number],
   position: number,
 ): boolean {
   const [start, end] = span;
@@ -155,7 +167,7 @@ function spanContainsPosition(
   return position >= start && position <= end;
 }
 
-function spanLength(span: [number, number]): number {
+function spanLength(span: readonly [number, number]): number {
   return Math.max(0, span[1] - span[0]);
 }
 

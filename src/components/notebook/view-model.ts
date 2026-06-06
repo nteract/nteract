@@ -141,9 +141,14 @@ export function notebookViewCellsToOutlineItems(
 
 function notebookViewCellMarkdownAnchors(cell: NotebookViewCell) {
   // Live adapters attach markdownProjection during materialization/source edits.
+  // Treat an attached projection as authoritative, including an empty anchor
+  // list for headingless markdown, so outline projection stays O(cells) and
+  // does not reparse markdown in the common path.
+  if (cell.markdownProjection) return cell.markdownProjection.anchors;
+
   // This Rust/WASM fallback keeps older host adapters correct without reviving
   // a second heading parser; projectMarkdownPlan is source-key cached.
-  return cell.markdownProjection?.anchors ?? projectMarkdownPlan(cell.source)?.anchors ?? null;
+  return projectMarkdownPlan(cell.source)?.anchors ?? null;
 }
 
 export function notebookViewCellsToTracebackTargets(
