@@ -70,7 +70,7 @@ runs:
     - name: Verify downloaded wasm artifacts
       if: inputs.skip-wasm == 'true'
       shell: bash
-      run: cargo xtask wasm-verify
+      run: cargo xtask artifacts verify runtime sift renderer
 
     - name: Install wasm-pack
       if: inputs.skip-wasm != 'true'

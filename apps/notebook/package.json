@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "prebuild": "cargo run -q -p xtask -- wasm-ensure",
+    "prebuild": "cargo run -q -p xtask -- wasm-ensure-runtime",
     "build": "tsc -b && vp build",
     "preview": "vp preview",
     "test:e2e:browser": "node e2e/run-browser-e2e.mjs",

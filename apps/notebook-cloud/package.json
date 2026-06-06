@@ -9,7 +9,7 @@
     "build": "pnpm run wasm && pnpm run renderer-plugins && pnpm run build:viewer",
     "deploy": "pnpm run build && wrangler deploy",
     "deploy:check": "curl -fsS https://preview.runt.run/api/health",
-    "pretypecheck": "cargo xtask wasm-ensure",
+    "pretypecheck": "cargo xtask wasm-ensure-runtime",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run wasm && node --import tsx --test test/*.test.ts test/*.test.mjs",
     "test:renderer-parity": "playwright test -c playwright.render-parity.config.ts",
