@@ -24,6 +24,7 @@ interface CloudAppSessionPayload {
 }
 
 export const NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME = "__Host-nteract_cloud_app_session";
+export const NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH = 128;
 export const NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS = 6 * 60 * 60;
 export const NOTEBOOK_CLOUD_APP_SESSION_SECRET_MIN_LENGTH = 32;
 
@@ -41,6 +42,7 @@ export async function createCloudAppSessionCookie(
   if (identity.metadata.provider !== "oidc") {
     throw new Error("app sessions require OIDC identity");
   }
+  const displayName = appSessionDisplayName(identity.metadata.displayName);
   const payload: CloudAppSessionPayload = {
     v: 1,
     provider: "oidc",
@@ -48,7 +50,7 @@ export async function createCloudAppSessionCookie(
     ns: identity.metadata.principalNamespace,
     iat: nowSeconds,
     exp: nowSeconds + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
-    ...(identity.metadata.displayName ? { display_name: identity.metadata.displayName } : {}),
+    ...(displayName ? { display_name: displayName } : {}),
   };
   const value = await signCloudAppSession(env, payload);
   return `${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=${value}; Path=/; Max-Age=${NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
@@ -145,6 +147,10 @@ function appSessionSecret(env: AppSessionEnvironment): string | null {
     return null;
   }
   return secret;
+}
+
+function appSessionDisplayName(value: string | undefined): string | undefined {
+  return value?.slice(0, NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH);
 }
 
 function cookieValue(header: string | null, name: string): string | null {
