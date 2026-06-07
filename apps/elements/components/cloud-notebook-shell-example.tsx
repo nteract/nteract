@@ -36,6 +36,7 @@ import {
   NotebookPresenceStatus,
   NotebookWorkstationsPanel,
   notebookActorIdentityFromAccess,
+  notebookWorkstationsSummary,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarStatus,
   type NotebookActorIdentity,
@@ -286,13 +287,7 @@ function CloudNotebookShellExampleContent() {
       viewModel={scenario.viewModel}
       activePanelId={railState.activePanelId}
       collapsed={railState.collapsed}
-      workstationsSummary={
-        shellCapabilities.runtime.executionAvailable
-          ? "Ready"
-          : shellCapabilities.runtime.connected
-            ? "Attached"
-            : "Offline"
-      }
+      workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
       workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
       packagesPanel={
         <NotebookPackageSummaryPanel

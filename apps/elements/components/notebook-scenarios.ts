@@ -10,6 +10,7 @@ import {
   createNotebookViewModel,
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
+  stabilizeNotebookShellCapabilities,
   type NotebookActorProjection,
   type EnvSyncState,
   type NotebookNoticeTone,
@@ -1561,7 +1562,7 @@ function createScenario({
   trustStatus?: NotebookTrustStatus | null;
   capabilities: NotebookShellCapabilities;
 }): ElementsNotebookScenario {
-  const projectedCapabilities: NotebookShellCapabilities = {
+  const capabilitiesWithActors: NotebookShellCapabilities = {
     ...capabilities,
     access: {
       ...capabilities.access,
@@ -1576,6 +1577,7 @@ function createScenario({
         notebookActorProjectionFromRuntime(capabilities.runtime, capabilities.auth),
     },
   };
+  const projectedCapabilities = stabilizeNotebookShellCapabilities(capabilitiesWithActors);
   const environment = createNotebookEnvironmentSurface({
     capabilities: projectedCapabilities,
     packages: viewModel.packages,

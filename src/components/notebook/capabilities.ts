@@ -1,6 +1,9 @@
 export {
+  notebookShellRuntimeTargetSummary,
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
+  resolveNotebookShellRuntimeTarget,
+  stabilizeNotebookShellCapabilities,
   type NotebookActorIdentity,
   type NotebookActorKind,
   type NotebookActorOperator,

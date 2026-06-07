@@ -128,6 +128,107 @@ export interface NotebookShellCapabilities {
   runtime: NotebookShellRuntimeCapabilities;
 }
 
+const LOCAL_READY_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
+  id: "local-daemon",
+  kind: "local_daemon",
+  status: "ready",
+  label: "This machine",
+  statusLabel: "Ready",
+  providerLabel: "Local",
+  defaultEnvironmentLabel: "Notebook runtime",
+  environmentLabel: "Notebook runtime",
+});
+
+const LOCAL_OFFLINE_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
+  id: "local-daemon",
+  kind: "local_daemon",
+  status: "offline",
+  label: "This machine",
+  statusLabel: "Offline",
+  providerLabel: "Local",
+  defaultEnvironmentLabel: "Unavailable",
+  environmentLabel: "Unavailable",
+});
+
+const CLOUD_READY_RUNTIME_PEER_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
+  id: "runtime-peer",
+  kind: "runtime_peer",
+  status: "ready",
+  label: "Runtime peer",
+  statusLabel: "Ready",
+  providerLabel: "Cloud room",
+  defaultEnvironmentLabel: "Runtime peer",
+  environmentLabel: "Runtime peer",
+});
+
+const CLOUD_ATTACHED_RUNTIME_PEER_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
+  id: "runtime-peer",
+  kind: "runtime_peer",
+  status: "attached",
+  label: "Runtime peer",
+  statusLabel: "Attached",
+  providerLabel: "Cloud room",
+  defaultEnvironmentLabel: "Runtime peer",
+  environmentLabel: "Runtime peer",
+});
+
+const CLOUD_NO_WORKSTATION_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
+  id: "workstation:none",
+  kind: "cloud_workstation",
+  status: "offline",
+  label: "No workstation attached",
+  statusLabel: "Offline",
+  providerLabel: "Cloud room",
+  defaultEnvironmentLabel: "Not attached",
+  environmentLabel: "Not attached",
+});
+
+const FIXTURE_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
+  id: "fixture-runtime",
+  kind: "fixture",
+  status: "ready",
+  label: "Fixture runtime",
+  statusLabel: "Ready",
+  providerLabel: "Fixture",
+  defaultEnvironmentLabel: "Fixture runtime",
+  environmentLabel: "Fixture runtime",
+});
+
+const UNKNOWN_RUNTIME_TARGET: NotebookShellRuntimeTargetProjection = Object.freeze({
+  id: "runtime:none",
+  kind: "unknown",
+  status: "offline",
+  label: "No runtime target",
+  statusLabel: "Offline",
+  providerLabel: "Unknown",
+  defaultEnvironmentLabel: "Not attached",
+  environmentLabel: "Not attached",
+});
+
+export function resolveNotebookShellRuntimeTarget(
+  runtime: NotebookShellRuntimeCapabilities,
+): NotebookShellRuntimeTargetProjection {
+  if (runtime.target) return runtime.target;
+  if (runtime.source === "local") {
+    return runtime.executionAvailable ? LOCAL_READY_RUNTIME_TARGET : LOCAL_OFFLINE_RUNTIME_TARGET;
+  }
+  if (runtime.source === "cloud") {
+    if (runtime.executionAvailable) return CLOUD_READY_RUNTIME_PEER_TARGET;
+    if (runtime.connected) return CLOUD_ATTACHED_RUNTIME_PEER_TARGET;
+    return CLOUD_NO_WORKSTATION_TARGET;
+  }
+  if (runtime.source === "fixture" && runtime.executionAvailable) {
+    return FIXTURE_RUNTIME_TARGET;
+  }
+  return UNKNOWN_RUNTIME_TARGET;
+}
+
+export function notebookShellRuntimeTargetSummary(
+  capabilities: Pick<NotebookShellCapabilities, "runtime">,
+): string {
+  return resolveNotebookShellRuntimeTarget(capabilities.runtime).label;
+}
+
 export interface NotebookShellControlPolicy {
   canToggleCode: boolean;
 }
@@ -265,7 +366,8 @@ const NOTEBOOK_SHELL_RUNTIME_CACHE_FIELDS = {
   actorLabel: (runtime) => runtime.actorLabel,
   identityLabel: (runtime) => runtime.identityLabel,
   actor: (runtime) => notebookActorProjectionCacheKey(runtime.actor),
-  target: (runtime) => notebookShellRuntimeTargetCacheKey(runtime.target),
+  target: (runtime) =>
+    notebookShellRuntimeTargetCacheKey(resolveNotebookShellRuntimeTarget(runtime)),
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeCapabilities>;
 const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   id: (target) => target.id ?? null,
@@ -338,7 +440,7 @@ const READ_ONLY_RUNTIME: NotebookShellRuntimeCapabilities = Object.freeze({
   source: "unknown",
   actorLabel: null,
   identityLabel: null,
-  target: null,
+  target: UNKNOWN_RUNTIME_TARGET,
 });
 
 export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = Object.freeze({
@@ -427,18 +529,40 @@ export function projectNotebookShellCapabilities({
     auth: authCapabilities,
     runtime: runtimeCapabilities,
   };
+  return stabilizeNotebookShellCapabilities(projectedCapabilities);
+}
+
+export function stabilizeNotebookShellCapabilities(
+  capabilities: NotebookShellCapabilities,
+): NotebookShellCapabilities {
+  const projectedCapabilities: NotebookShellCapabilities = {
+    canRead: capabilities.canRead,
+    canEditMarkdown: capabilities.canEditMarkdown,
+    canEditCells: capabilities.canEditCells,
+    canEditStructure: capabilities.canEditStructure,
+    canRequestEdit: capabilities.canRequestEdit,
+    canExecute: capabilities.canExecute,
+    canToggleCode: capabilities.canToggleCode,
+    canViewPackages: capabilities.canViewPackages,
+    canManagePackages: capabilities.canManagePackages,
+    canManageSharing: capabilities.canManageSharing,
+    interaction: capabilities.interaction,
+    access: stableNotebookShellAccessCapabilities(capabilities.access),
+    auth: stableNotebookShellAuthCapabilities(capabilities.auth),
+    runtime: stableNotebookShellRuntimeCapabilities(capabilities.runtime),
+  };
   const cacheKey = notebookShellCapabilitiesCacheKey(projectedCapabilities);
   const cached = getBoundedCacheValue(SHELL_CAPABILITIES_CACHE, cacheKey);
   if (cached) return cached;
 
-  const capabilities = Object.freeze(projectedCapabilities);
+  const stableCapabilities = Object.freeze(projectedCapabilities);
   setBoundedCacheValue(
     SHELL_CAPABILITIES_CACHE,
     cacheKey,
-    capabilities,
+    stableCapabilities,
     SHELL_CAPABILITIES_CACHE_LIMIT,
   );
-  return capabilities;
+  return stableCapabilities;
 }
 
 function notebookShellHasDocumentEditPermission(
@@ -521,7 +645,7 @@ function stableNotebookShellRuntimeCapabilities(
     actorLabel: runtime.actorLabel,
     identityLabel: runtime.identityLabel,
     ...(runtime.actor === undefined ? {} : { actor: runtime.actor }),
-    target: stableNotebookShellRuntimeTarget(runtime.target),
+    target: stableNotebookShellRuntimeTarget(resolveNotebookShellRuntimeTarget(runtime)),
   });
   setBoundedCacheValue(SHELL_RUNTIME_CACHE, cacheKey, stableRuntime, SHELL_PART_CACHE_LIMIT);
   return stableRuntime;

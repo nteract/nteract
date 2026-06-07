@@ -8,9 +8,11 @@ import {
   Monitor,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type {
-  NotebookShellCapabilities,
-  NotebookShellRuntimeTargetProjection,
+import {
+  notebookShellRuntimeTargetSummary,
+  resolveNotebookShellRuntimeTarget,
+  type NotebookShellCapabilities,
+  type NotebookShellRuntimeTargetProjection,
 } from "./capabilities";
 import { cn } from "@/lib/utils";
 
@@ -23,7 +25,7 @@ export function NotebookWorkstationsPanel({
   capabilities,
   className,
 }: NotebookWorkstationsPanelProps) {
-  const target = capabilities.runtime.target ?? fallbackRuntimeTarget(capabilities);
+  const target = resolveNotebookShellRuntimeTarget(capabilities.runtime);
   const status = workstationStatus(capabilities, target);
   const source = workstationSource(capabilities.runtime.source);
   const defaultEnvironmentLabel =
@@ -107,6 +109,8 @@ export function NotebookWorkstationsPanel({
   );
 }
 
+export const notebookWorkstationsSummary = notebookShellRuntimeTargetSummary;
+
 function WorkstationFact({
   icon: Icon,
   label,
@@ -141,7 +145,7 @@ function workstationStatus(
 } {
   if (capabilities.runtime.executionAvailable && capabilities.canExecute) {
     return {
-      title: target.kind === "local_daemon" ? target.label : `${target.label} ready`,
+      title: target.label,
       detail: null,
       badge: target.statusLabel ?? "Ready",
       icon: CircleCheck,
@@ -152,7 +156,7 @@ function workstationStatus(
   }
   if (capabilities.runtime.executionAvailable) {
     return {
-      title: `${target.label} available`,
+      title: target.label,
       detail: null,
       badge: target.statusLabel ?? "Limited",
       icon: Cpu,
@@ -163,7 +167,7 @@ function workstationStatus(
   }
   if (capabilities.runtime.connected) {
     return {
-      title: `${target.label} attached`,
+      title: target.label,
       detail: null,
       badge: target.statusLabel ?? "Attached",
       icon: Cpu,
@@ -215,51 +219,6 @@ function runtimeCapabilityLabel(capabilities: NotebookShellCapabilities): string
     return "Runtime state";
   }
   return "Not runnable";
-}
-
-function fallbackRuntimeTarget(
-  capabilities: NotebookShellCapabilities,
-): NotebookShellRuntimeTargetProjection {
-  const source = workstationSource(capabilities.runtime.source);
-  if (capabilities.runtime.source === "local") {
-    return {
-      id: "local-daemon",
-      kind: "local_daemon",
-      status: capabilities.runtime.executionAvailable ? "ready" : "offline",
-      label: "This machine",
-      statusLabel: capabilities.runtime.executionAvailable ? "Ready" : "Offline",
-      providerLabel: source.label,
-      defaultEnvironmentLabel: capabilities.runtime.executionAvailable
-        ? "Notebook runtime"
-        : "Unavailable",
-      environmentLabel: capabilities.runtime.executionAvailable
-        ? "Notebook runtime"
-        : "Unavailable",
-    };
-  }
-  if (capabilities.runtime.connected) {
-    return {
-      id: "runtime-peer",
-      kind: "runtime_peer",
-      status: capabilities.runtime.executionAvailable ? "ready" : "attached",
-      label: "Runtime peer",
-      statusLabel: capabilities.runtime.executionAvailable ? "Ready" : "Attached",
-      providerLabel: source.label,
-      defaultEnvironmentLabel: "Runtime peer",
-      environmentLabel: "Runtime peer",
-    };
-  }
-  return {
-    id: capabilities.runtime.source === "cloud" ? "workstation:none" : "runtime:none",
-    kind: capabilities.runtime.source === "fixture" ? "fixture" : "unknown",
-    status: "offline",
-    label:
-      capabilities.runtime.source === "cloud" ? "No workstation attached" : "No runtime target",
-    statusLabel: "Offline",
-    providerLabel: source.label,
-    defaultEnvironmentLabel: "Not attached",
-    environmentLabel: "Not attached",
-  };
 }
 
 function formatMemoryBytes(value: number | null | undefined): string | null {

@@ -203,8 +203,11 @@ export {
 
 // Notebook shell capability projection
 export {
+  notebookShellRuntimeTargetSummary,
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
+  resolveNotebookShellRuntimeTarget,
+  stabilizeNotebookShellCapabilities,
   type NotebookShellAccessCapabilities,
   type NotebookShellAccessLevel,
   type NotebookShellAccessSource,

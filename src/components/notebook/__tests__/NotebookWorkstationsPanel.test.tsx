@@ -2,7 +2,10 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
 import type { NotebookShellCapabilities } from "../capabilities";
 import { readOnlyNotebookShellCapabilities } from "../capabilities";
-import { NotebookWorkstationsPanel } from "../NotebookWorkstationsPanel";
+import {
+  notebookWorkstationsSummary,
+  NotebookWorkstationsPanel,
+} from "../NotebookWorkstationsPanel";
 
 const localReadyCapabilities: NotebookShellCapabilities = {
   ...readOnlyNotebookShellCapabilities,
@@ -151,12 +154,46 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Remote devbox ready" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Remote devbox" })).toBeVisible();
     expect(screen.getByText("Default env")).toBeVisible();
     expect(screen.getAllByText("Current Python")).toHaveLength(2);
     expect(screen.getByText("Resources")).toBeVisible();
     expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
     expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();
+  });
+
+  it("summarizes the active workstation by display name for the rail title row", () => {
+    expect(notebookWorkstationsSummary(localReadyCapabilities)).toBe("This machine");
+
+    const cloudOffline: NotebookShellCapabilities = {
+      ...readOnlyNotebookShellCapabilities,
+      runtime: {
+        ...readOnlyNotebookShellCapabilities.runtime,
+        source: "cloud",
+        target: {
+          id: "workstation:none",
+          kind: "cloud_workstation",
+          status: "offline",
+          label: "No workstation attached",
+          statusLabel: "Offline",
+        },
+      },
+    };
+    expect(notebookWorkstationsSummary(cloudOffline)).toBe("No workstation attached");
+
+    const remoteReady: NotebookShellCapabilities = {
+      ...localReadyCapabilities,
+      runtime: {
+        ...localReadyCapabilities.runtime,
+        target: {
+          id: "outerbounds-forecast-gpu",
+          kind: "cloud_workstation",
+          status: "ready",
+          label: "Forecast GPU",
+        },
+      },
+    };
+    expect(notebookWorkstationsSummary(remoteReady)).toBe("Forecast GPU");
   });
 });

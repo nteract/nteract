@@ -41,6 +41,7 @@ import {
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookWorkstationsPanel,
+  notebookWorkstationsSummary,
   PoolErrorBanner,
   shouldShowKernelLaunchErrorBanner,
   TrustDialog,
@@ -1622,13 +1623,7 @@ function AppContent() {
               selectedOutlineItemId={selectedOutlineItemId}
               selectedOutlineCellId={focusedCellId}
               packagesSummary={railPackageSummary}
-              workstationsSummary={
-                shellCapabilities.runtime.executionAvailable
-                  ? "Ready"
-                  : shellCapabilities.runtime.connected
-                    ? "Attached"
-                    : "Offline"
-              }
+              workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
               onActivePanelChange={handleRailPanelChange}
               onCollapsedChange={setRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
