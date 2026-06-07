@@ -9,6 +9,7 @@
 import Plotly from "plotly.js-dist-min";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { measureDocumentHeight } from "./layout-measure";
 
 // --- Theme helpers ---
 
@@ -67,6 +68,23 @@ interface RendererProps {
 }
 
 const DEFAULT_UI_REVISION = "nteract-display-update";
+
+function requestHostResize(): void {
+  const height = measureDocumentHeight();
+  window.parent.postMessage(
+    {
+      type: "resize",
+      payload: { height },
+    },
+    "*",
+  );
+}
+
+function scheduleHostResize(): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(requestHostResize);
+  });
+}
 
 // --- PlotlyRenderer component ---
 
@@ -146,12 +164,11 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
       frames: data.frames as Plotly.Frame[],
     };
 
-    if (plottedElementRef.current === el) {
-      Plotly.react(el, figure);
-    } else {
-      Plotly.newPlot(el, figure);
-      plottedElementRef.current = el;
-    }
+    const plotPromise =
+      plottedElementRef.current === el ? Plotly.react(el, figure) : Plotly.newPlot(el, figure);
+    plottedElementRef.current = el;
+
+    void Promise.resolve(plotPromise).then(scheduleHostResize, scheduleHostResize);
   }, [data, userLayout]);
 
   useEffect(() => {

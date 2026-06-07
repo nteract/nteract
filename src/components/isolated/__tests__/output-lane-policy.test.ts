@@ -9,6 +9,7 @@ import {
   hasWidgetOutputs,
   outputAllowsScrollPassthrough,
   outputSegmentLane,
+  outputUsesPlotly,
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,
@@ -146,9 +147,24 @@ describe("output lane policy", () => {
     ).toBe("dom");
   });
 
-  it("classifies interactive iframe outputs separately", () => {
+  it("routes Plotly charts onto standalone click-to-engage frames", () => {
+    const output = displayOutput("plotly-output", {
+      "application/vnd.plotly.v1+json": {},
+    });
+
+    expect(outputUsesPlotly(output)).toBe(true);
+    expect(outputUsesWheelOwningFrame(output)).toBe(true);
+    expect(outputAllowsScrollPassthrough(output)).toBe(true);
+    expect(outputSegmentLane(output)).toBe("plotly-frame");
+  });
+
+  it("classifies generic interactive iframe outputs separately", () => {
     expect(
-      outputSegmentLane(displayOutput("plotly-output", { "application/vnd.plotly.v1+json": {} })),
+      outputSegmentLane(
+        displayOutput("widget-output", {
+          "application/vnd.jupyter.widget-view+json": { model_id: "widget" },
+        }),
+      ),
     ).toBe("interactive-frame");
   });
 
@@ -164,9 +180,12 @@ describe("output lane policy", () => {
     expect(outputSegmentLane(output)).toBe("vega-frame");
   });
 
-  it("keeps Vega/Altair charts standalone instead of coalescing with sibling document outputs", () => {
+  it("keeps pan/zoom charts standalone instead of coalescing with sibling document outputs", () => {
     withMarkdownProjection("isolated");
     const markdown = displayOutput("markdown-1", { "text/markdown": "# heading" });
+    const plotly = displayOutput("plotly-1", {
+      "application/vnd.plotly.v1+json": { data: [] },
+    });
     const vegaOne = displayOutput("vega-1", {
       "application/vnd.vegalite.v5+json": { mark: "circle" },
     });
@@ -174,11 +193,17 @@ describe("output lane policy", () => {
       "application/vnd.vega.v5+json": { mark: "bar" },
     });
 
-    const segments = splitOutputSegments([markdown, vegaOne, vegaTwo]);
+    const segments = splitOutputSegments([markdown, plotly, vegaOne, vegaTwo]);
 
-    expect(segments.map((segment) => segment.lane)).toEqual(["dom", "vega-frame", "vega-frame"]);
+    expect(segments.map((segment) => segment.lane)).toEqual([
+      "dom",
+      "plotly-frame",
+      "vega-frame",
+      "vega-frame",
+    ]);
     expect(segments.map((segment) => segment.outputs.map((output) => output.output_id))).toEqual([
       ["markdown-1"],
+      ["plotly-1"],
       ["vega-1"],
       ["vega-2"],
     ]);
