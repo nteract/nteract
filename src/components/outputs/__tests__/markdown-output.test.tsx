@@ -64,4 +64,14 @@ describe("MarkdownOutput heading anchors", () => {
       "cell-a:heading:1",
     );
   });
+
+  it("renders links with a visible default underline", () => {
+    render(<MarkdownOutput content={"Read the [paper](https://example.com/paper)."} />);
+
+    expect(screen.getByRole("link", { name: "paper" })).toHaveClass(
+      "underline",
+      "decoration-primary/45",
+      "underline-offset-4",
+    );
+  });
 });

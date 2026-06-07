@@ -17,6 +17,7 @@
         "./components/isolated/iframe-libraries.ts"
       ],
       "@/components/isolated/*": ["../../src/components/isolated/*"],
+      "@/components/markdown/*": ["../../src/components/markdown/*"],
       "@/components/notebook": ["../../src/components/notebook/index.ts"],
       "@/components/notebook/*": ["../../src/components/notebook/*"],
       "@/components/notebook-rail": ["../../src/components/notebook-rail/index.ts"],

@@ -52,6 +52,9 @@
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
   --radius: 0.625rem;
+  --output-ui-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --output-mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --output-document-font: var(--output-ui-font);
 }
 
 .dark {

@@ -254,11 +254,52 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("First paragraph")).toHaveClass("my-3", "leading-relaxed");
     expect(screen.getByRole("list")).toHaveClass("my-3", "ml-6", "list-disc");
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
-      "border-l-4",
-      "border-border",
+      "border-l-[3px]",
+      "border-primary/30",
       "text-muted-foreground",
     );
     expect(screen.getByText("quoted").closest("blockquote")).not.toHaveClass("bg-muted/[0.22]");
+  });
+
+  it("renders links with visible affordance before hover", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "p0",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 24],
+              sourceSpanUtf16: [0, 24],
+              syntaxSpans: [],
+              text: "Read the paper",
+            },
+          ],
+          runs: [
+            {
+              blockId: "p0",
+              href: "https://example.com/paper",
+              inlineId: "link",
+              listItemIndex: null,
+              renderedText: "paper",
+              renderedTextUtf16: [0, 5],
+              semantic: "text",
+              sourceSpanByte: [9, 14],
+              sourceSpanUtf16: [9, 14],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "paper" })).toHaveClass(
+      "underline",
+      "decoration-primary/45",
+      "underline-offset-4",
+    );
   });
 
   it("does not trust projected math commands that can shape host DOM", () => {
@@ -848,6 +889,32 @@ describe("ProjectedMarkdownView", () => {
 
     expect(screen.getByText("datasets")).toBeInTheDocument();
     expect(document.querySelector("pre code span")).not.toBeNull();
+  });
+
+  it("lets callers pin static code blocks to the cream highlighter palette", () => {
+    render(
+      <ProjectedMarkdownView
+        colorTheme="cream"
+        plan={plan({
+          blocks: [
+            {
+              blockId: "code",
+              blockIndex: 0,
+              codeLanguage: "python",
+              element: "pre",
+              kind: "code",
+              measurement: { estimatedHeight: 72, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 20],
+              sourceSpanUtf16: [0, 20],
+              syntaxSpans: [],
+              text: "print('cream')",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(document.querySelector("pre")).toHaveStyle({ backgroundColor: "#f0ede7" });
   });
 
   it("renders projected inline HTML as plain text", () => {

@@ -11,6 +11,14 @@ import remarkMath from "remark-math";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
+import {
+  markdownBlockquoteClassName,
+  markdownDocumentClassName,
+  markdownHeadingClassName,
+  markdownInlineCodeClassName,
+  markdownLinkClassName,
+  markdownListMarkerClassName,
+} from "../markdown/markdown-typography";
 
 import "katex/dist/katex.min.css";
 
@@ -179,7 +187,7 @@ export function MarkdownOutput({
   }
 
   return (
-    <div data-slot="markdown-output" className={cn("not-prose py-2", className)}>
+    <div data-slot="markdown-output" className={cn(markdownDocumentClassName, className)}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
@@ -216,10 +224,7 @@ export function MarkdownOutput({
 
             // Inline code
             return (
-              <code
-                className="rounded bg-gray-100 dark:bg-gray-800 px-1 py-0.5 text-sm text-gray-800 dark:text-gray-200"
-                {...props}
-              >
+              <code className={markdownInlineCodeClassName} {...props}>
                 {children}
               </code>
             );
@@ -230,7 +235,7 @@ export function MarkdownOutput({
             return (
               <a
                 href={href}
-                className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 hover:underline"
+                className={markdownLinkClassName}
                 rel="noopener noreferrer"
                 target="_blank"
                 {...props}
@@ -243,9 +248,9 @@ export function MarkdownOutput({
           // Tables
           table({ children, ...props }) {
             return (
-              <div className="my-4 overflow-x-auto">
+              <div className="my-4 overflow-x-auto border-y border-border">
                 <table
-                  className="min-w-full border-collapse border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm"
+                  className="min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal"
                   {...props}
                 >
                   {children}
@@ -255,21 +260,21 @@ export function MarkdownOutput({
           },
           thead({ children, ...props }) {
             return (
-              <thead className="bg-gray-50 dark:bg-gray-800" {...props}>
+              <thead className="bg-muted/55" {...props}>
                 {children}
               </thead>
             );
           },
           tbody({ children, ...props }) {
             return (
-              <tbody className="divide-y divide-gray-200 dark:divide-gray-700" {...props}>
+              <tbody className="divide-y divide-border" {...props}>
                 {children}
               </tbody>
             );
           },
           tr({ children, ...props }) {
             return (
-              <tr className="hover:bg-gray-50 dark:hover:bg-gray-800" {...props}>
+              <tr className="odd:bg-muted/[0.04]" {...props}>
                 {children}
               </tr>
             );
@@ -277,7 +282,7 @@ export function MarkdownOutput({
           th({ children, ...props }) {
             return (
               <th
-                className="border border-gray-300 dark:border-gray-700 px-3 py-2 text-left font-semibold text-gray-900 dark:text-gray-100"
+                className="border-r border-border px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
                 {...props}
               >
                 {children}
@@ -287,7 +292,7 @@ export function MarkdownOutput({
           td({ children, ...props }) {
             return (
               <td
-                className="border border-gray-300 dark:border-gray-700 px-3 py-2 text-gray-700 dark:text-gray-300"
+                className="border-r border-t border-border px-3 py-2 align-top text-muted-foreground first:text-foreground last:border-r-0"
                 {...props}
               >
                 {children}
@@ -299,7 +304,7 @@ export function MarkdownOutput({
           h1({ children, ...props }) {
             return (
               <h1
-                className="mb-4 mt-6 text-2xl font-bold"
+                className={markdownHeadingClassName("h1")}
                 {...props}
                 {...headingAttributes(1, children)}
               >
@@ -310,7 +315,7 @@ export function MarkdownOutput({
           h2({ children, ...props }) {
             return (
               <h2
-                className="mb-3 mt-5 text-xl font-bold"
+                className={markdownHeadingClassName("h2")}
                 {...props}
                 {...headingAttributes(2, children)}
               >
@@ -321,7 +326,7 @@ export function MarkdownOutput({
           h3({ children, ...props }) {
             return (
               <h3
-                className="mb-2 mt-4 text-lg font-semibold"
+                className={markdownHeadingClassName("h3")}
                 {...props}
                 {...headingAttributes(3, children)}
               >
@@ -332,7 +337,7 @@ export function MarkdownOutput({
           h4({ children, ...props }) {
             return (
               <h4
-                className="mb-2 mt-3 text-base font-semibold"
+                className={markdownHeadingClassName("h4")}
                 {...props}
                 {...headingAttributes(4, children)}
               >
@@ -343,7 +348,7 @@ export function MarkdownOutput({
           h5({ children, ...props }) {
             return (
               <h5
-                className="mb-1 mt-2 text-sm font-semibold"
+                className={markdownHeadingClassName("h5")}
                 {...props}
                 {...headingAttributes(5, children)}
               >
@@ -354,7 +359,7 @@ export function MarkdownOutput({
           h6({ children, ...props }) {
             return (
               <h6
-                className="mb-1 mt-2 text-sm font-medium"
+                className={markdownHeadingClassName("h6")}
                 {...props}
                 {...headingAttributes(6, children)}
               >
@@ -375,14 +380,23 @@ export function MarkdownOutput({
           // Lists
           ul({ children, ...props }) {
             return (
-              <ul className="my-2 ml-6 list-disc" {...props}>
+              <ul
+                className={cn("my-3 ml-6 list-disc leading-relaxed", markdownListMarkerClassName)}
+                {...props}
+              >
                 {children}
               </ul>
             );
           },
           ol({ children, ...props }) {
             return (
-              <ol className="my-2 ml-6 list-decimal" {...props}>
+              <ol
+                className={cn(
+                  "my-3 ml-6 list-decimal leading-relaxed",
+                  markdownListMarkerClassName,
+                )}
+                {...props}
+              >
                 {children}
               </ol>
             );
@@ -398,10 +412,7 @@ export function MarkdownOutput({
           // Blockquotes
           blockquote({ children, ...props }) {
             return (
-              <blockquote
-                className="my-4 border-l-4 border-gray-300 dark:border-gray-600 pl-4 italic text-gray-600 dark:text-gray-400"
-                {...props}
-              >
+              <blockquote className={markdownBlockquoteClassName} {...props}>
                 {children}
               </blockquote>
             );

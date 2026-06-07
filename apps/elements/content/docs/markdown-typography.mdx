@@ -1,0 +1,27 @@
+---
+title: Markdown typography
+description: Visual fixtures for notebook markdown cells and markdown-rich documents.
+---
+
+import { MarkdownTypographyExample } from "@/components/markdown-typography-example";
+
+Markdown should read like an interactive research document: links need visible
+affordance before hover, tables need density without spreadsheet noise, and the
+document font should carry enough authority for proofs, notes, and experiment
+logs.
+
+<MarkdownTypographyExample />
+
+## What is real here
+
+This page renders the production `ProjectedMarkdownView` from
+`src/components/markdown/ProjectedMarkdownView.tsx` with the same projected plan
+shape that notebook markdown cells receive from the markdown engine. Link,
+heading, table, task list, math, inline code, and fenced-code styling all come
+from the shared markdown component path.
+
+## Boundary
+
+The page does not boot a notebook document, daemon, markdown WASM projector, or
+isolated renderer iframe. It owns deterministic fixture projection data so the
+visual surface can be reviewed quickly in Elements.

@@ -12,6 +12,14 @@ import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
+import {
+  markdownBlockquoteClassName,
+  markdownDocumentClassName,
+  markdownHeadingClassName,
+  markdownInlineCodeClassName,
+  markdownLinkClassName,
+  markdownListMarkerClassName,
+} from "./markdown-typography";
 
 import "katex/dist/katex.min.css";
 
@@ -19,6 +27,7 @@ interface ProjectedMarkdownViewProps {
   plan: MarkdownProjectionPlan;
   className?: string;
   activeSourcePosition?: number;
+  colorTheme?: "classic" | "cream";
   headingAnchors?: readonly MarkdownHeadingAnchor[];
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
@@ -28,13 +37,14 @@ export function ProjectedMarkdownView({
   plan,
   className,
   activeSourcePosition,
+  colorTheme: colorThemeOverride,
   headingAnchors = [],
   onLinkClick,
   onTaskCheckedChange,
 }: ProjectedMarkdownViewProps) {
   const isDark = useDarkMode();
   const rawTheme = useColorTheme();
-  const colorTheme = (rawTheme === "cream" ? "cream" : "classic") as "classic" | "cream";
+  const colorTheme = colorThemeOverride ?? (rawTheme === "cream" ? "cream" : "classic");
   const runsByBlock = new Map<string, MarkdownProjectionRun[]>();
   for (const run of plan.runs) {
     const runs = runsByBlock.get(run.blockId);
@@ -52,13 +62,7 @@ export function ProjectedMarkdownView({
   const activeInlineId = sourceMatch?.run?.inlineId;
 
   return (
-    <div
-      data-slot="projected-markdown-output"
-      className={cn(
-        "not-prose select-text py-2 text-base leading-[1.65] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [text-rendering:optimizeLegibility] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]",
-        className,
-      )}
-    >
+    <div data-slot="projected-markdown-output" className={cn(markdownDocumentClassName, className)}>
       {plan.blocks.map((block) => (
         <ProjectedMarkdownBlock
           key={block.blockId}
@@ -109,7 +113,7 @@ function ProjectedMarkdownBlock({
         data-nteract-outline-item-id={headingAnchor?.itemId}
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          headingClass(block.element),
+          markdownHeadingClassName(block.element),
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -165,7 +169,7 @@ function ProjectedMarkdownBlock({
       <blockquote
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          "my-4 border-l-4 border-border pl-4 text-muted-foreground italic",
+          markdownBlockquoteClassName,
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -242,15 +246,6 @@ function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
   return "h6";
 }
 
-function headingClass(element: string) {
-  if (element === "h1") return "mt-6 mb-4 text-[1.875rem] leading-tight font-bold";
-  if (element === "h2") return "mt-[1.35rem] mb-3 text-2xl leading-tight font-bold";
-  if (element === "h3") return "mt-[1.2rem] mb-2.5 text-xl leading-tight font-semibold";
-  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-semibold";
-  if (element === "h5") return "mt-3.5 mb-1.5 text-base leading-tight font-semibold";
-  return "mt-3 mb-1.5 text-sm leading-tight font-semibold text-muted-foreground";
-}
-
 interface ProjectedListItem {
   checked?: boolean;
   children: ProjectedListItem[];
@@ -284,6 +279,7 @@ function ProjectedList({
       className={cn(
         "my-3 ml-6 leading-relaxed",
         ordered ? "list-decimal" : "list-disc",
+        markdownListMarkerClassName,
         allItemsAreTasks && "ml-0 list-none",
         activeBlock && sourceActiveBlockClass,
       )}
@@ -669,7 +665,7 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
       <a
         href={run.href}
         title={run.title}
-        className="text-primary underline-offset-2 hover:underline"
+        className={markdownLinkClassName}
         onClick={(event) => {
           event.preventDefault();
           onLinkClick?.(run.href ?? "");
@@ -832,14 +828,5 @@ function renderLatex(latex: string, displayMode: boolean): string | null {
 }
 
 function InlineCode({ children, className }: { children: string; className?: string }) {
-  return (
-    <code
-      className={cn(
-        "rounded-sm bg-muted/75 px-1.5 py-0.5 font-mono text-[0.9em] text-foreground",
-        className,
-      )}
-    >
-      {children}
-    </code>
-  );
+  return <code className={cn(markdownInlineCodeClassName, className)}>{children}</code>;
 }
