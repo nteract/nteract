@@ -1,4 +1,3 @@
-import { Check } from "lucide-react";
 import { type ReactNode } from "react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import type { MarkdownHeadingAnchor } from "./markdown-heading-anchors";
@@ -20,6 +19,7 @@ import {
   MarkdownTableHeaderCell,
   MarkdownTableRow,
 } from "../markdown/MarkdownTable";
+import { MarkdownTaskCheckbox } from "../markdown/MarkdownTask";
 import {
   markdownBlockquoteClassName,
   markdownDeleteClassName,
@@ -41,8 +41,6 @@ import {
   markdownStrongClassName,
   markdownSummaryClassName,
   markdownSummaryIndicatorClassName,
-  markdownTaskCheckboxClassName,
-  markdownTaskCheckboxGlyphClassName,
   markdownTaskListClassName,
   markdownTaskListItemClassName,
   markdownThematicBreakClassName,
@@ -416,31 +414,11 @@ export function MarkdownOutput({
 
             const isChecked = Boolean(checked);
             return (
-              <span
-                className={markdownTaskCheckboxClassName}
-                data-slot="markdown-task-checkbox"
-                data-state={isChecked ? "checked" : "unchecked"}
-              >
-                <input
-                  {...props}
-                  type="checkbox"
-                  checked={isChecked}
-                  readOnly
-                  disabled
-                  className={cn("peer sr-only", className)}
-                />
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    markdownTaskCheckboxGlyphClassName,
-                    isChecked
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-background",
-                  )}
-                >
-                  {isChecked ? <Check className="size-2.5 stroke-[3]" /> : null}
-                </span>
-              </span>
+              <MarkdownTaskCheckbox
+                checked={isChecked}
+                inputClassName={className}
+                inputProps={props}
+              />
             );
           },
 

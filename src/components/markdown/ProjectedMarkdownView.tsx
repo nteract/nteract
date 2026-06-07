@@ -1,4 +1,3 @@
-import { Check } from "lucide-react";
 import { Fragment, type CSSProperties, type ReactNode } from "react";
 import katex from "katex";
 import type {
@@ -22,6 +21,7 @@ import {
   MarkdownTableHeaderRow,
   MarkdownTableRow,
 } from "./MarkdownTable";
+import { MarkdownTaskCheckbox, MarkdownTaskContent } from "./MarkdownTask";
 import {
   markdownBlockquoteClassName,
   markdownDeleteClassName,
@@ -39,9 +39,6 @@ import {
   markdownListMarkerClassName,
   markdownParagraphClassName,
   markdownStrongClassName,
-  markdownTaskCheckboxClassName,
-  markdownTaskCheckboxGlyphClassName,
-  markdownTaskContentClassName,
   markdownTaskListClassName,
   markdownTaskListItemClassName,
   markdownThematicBreakClassName,
@@ -516,44 +513,13 @@ function TaskCheckbox({
   label: string;
   onToggle?: () => void;
 }) {
-  const interactive = Boolean(onToggle);
-  const actionLabel = interactive
-    ? checked
-      ? "Mark task incomplete"
-      : "Mark task complete"
-    : checked
-      ? "Completed task"
-      : "Incomplete task";
-
   return (
-    <label
-      className={cn(markdownTaskCheckboxClassName, interactive && "cursor-pointer")}
-      data-slot="projected-markdown-task-checkbox"
-      data-state={checked ? "checked" : "unchecked"}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={!interactive}
-        readOnly={!interactive}
-        tabIndex={interactive ? 0 : -1}
-        aria-label={`${actionLabel}: ${label}`}
-        className="peer sr-only"
-        onChange={interactive ? onToggle : undefined}
-      />
-      <span
-        aria-hidden="true"
-        className={cn(
-          markdownTaskCheckboxGlyphClassName,
-          checked
-            ? "border-primary bg-primary text-primary-foreground"
-            : "border-border bg-background",
-          interactive && "group-hover/task:border-primary/70",
-        )}
-      >
-        {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
-      </span>
-    </label>
+    <MarkdownTaskCheckbox
+      checked={checked}
+      label={label}
+      onToggle={onToggle}
+      slot="projected-markdown-task-checkbox"
+    />
   );
 }
 
@@ -564,11 +530,7 @@ function ProjectedTaskContent({
   checked: boolean | undefined;
   children: ReactNode;
 }) {
-  return (
-    <span className={cn(markdownTaskContentClassName, checked === true && "text-muted-foreground")}>
-      {children}
-    </span>
-  );
+  return <MarkdownTaskContent checked={checked}>{children}</MarkdownTaskContent>;
 }
 
 function ProjectedTable({
