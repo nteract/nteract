@@ -178,6 +178,9 @@ interface WorkstationTarget {
   provider: "outerbounds" | "jupyterhub" | "local";
   detail: string;
   environment: string;
+  cpuCount?: number;
+  memoryLabel?: string;
+  workingDirectory?: string;
   status: WorkstationTargetState;
   statusLabel: string;
   selected: boolean;
@@ -191,6 +194,9 @@ const workstationTargets = [
     provider: "outerbounds",
     detail: "Outerbounds Workstation",
     environment: "Current Python",
+    cpuCount: 16,
+    memoryLabel: "64 GiB",
+    workingDirectory: "~/work/mathnet",
     status: "ready",
     statusLabel: "Ready",
     selected: true,
@@ -767,9 +773,21 @@ function CloudWorkstationSurface() {
           </div>
           <div className="grid grid-cols-2 gap-2 text-xs">
             <WorkstationMetric label="Provider" value="Outerbounds" />
-            <WorkstationMetric label="Runtime" value="Current Python" />
-            <WorkstationMetric label="Doc agent" value="Online" />
-            <WorkstationMetric label="Room role" value="runtime_peer" />
+            <WorkstationMetric label="Default env" value={activeWorkstationTarget.environment} />
+            <WorkstationMetric
+              label="CPUs"
+              value={
+                activeWorkstationTarget.cpuCount ? `${activeWorkstationTarget.cpuCount}` : "Unknown"
+              }
+            />
+            <WorkstationMetric
+              label="RAM"
+              value={activeWorkstationTarget.memoryLabel ?? "Unknown"}
+            />
+            <WorkstationMetric
+              label="Working dir"
+              value={activeWorkstationTarget.workingDirectory ?? "Provider default"}
+            />
           </div>
           <button
             type="button"
