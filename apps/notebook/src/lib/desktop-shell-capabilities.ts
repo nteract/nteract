@@ -119,6 +119,7 @@ function desktopRuntimeTarget({
 }): NotebookShellRuntimeTargetProjection | null {
   if (isRuntimePeer) {
     return {
+      id: "runtime-peer",
       kind: "runtime_peer",
       status: sessionReady ? "attached" : "offline",
       label: "Runtime peer",
@@ -134,6 +135,7 @@ function desktopRuntimeTarget({
     return null;
   }
   return {
+    id: "local-daemon",
     kind: "local_daemon",
     status: sessionReady ? "ready" : "offline",
     label: "This machine",

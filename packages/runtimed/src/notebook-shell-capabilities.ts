@@ -57,6 +57,12 @@ export type NotebookShellRuntimeTargetStatus =
   | "attention";
 
 export interface NotebookShellRuntimeTargetProjection {
+  /**
+   * Stable host-owned workstation identifier. This is intentionally not a
+   * principal: principals describe who can act, while workstation IDs describe
+   * where compute is expected to run.
+   */
+  id?: string | null;
   kind: NotebookShellRuntimeTargetKind;
   status: NotebookShellRuntimeTargetStatus;
   label: string;
@@ -64,6 +70,8 @@ export interface NotebookShellRuntimeTargetProjection {
   detail?: string | null;
   providerLabel?: string | null;
   environmentLabel?: string | null;
+  resourceLabel?: string | null;
+  workingDirectoryLabel?: string | null;
 }
 
 export interface NotebookShellRuntimeCapabilities {
@@ -252,6 +260,7 @@ const NOTEBOOK_SHELL_RUNTIME_CACHE_FIELDS = {
   target: (runtime) => notebookShellRuntimeTargetCacheKey(runtime.target),
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeCapabilities>;
 const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
+  id: (target) => target.id ?? null,
   kind: (target) => target.kind,
   status: (target) => target.status,
   label: (target) => target.label,
@@ -259,6 +268,8 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   detail: (target) => target.detail ?? null,
   providerLabel: (target) => target.providerLabel ?? null,
   environmentLabel: (target) => target.environmentLabel ?? null,
+  resourceLabel: (target) => target.resourceLabel ?? null,
+  workingDirectoryLabel: (target) => target.workingDirectoryLabel ?? null,
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
 const NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS = {
   actorLabel: (actor) => actor.actorLabel,
@@ -515,6 +526,7 @@ function stableNotebookShellRuntimeTarget(
   if (cached) return cached;
 
   const stableTarget = Object.freeze({
+    id: target.id ?? null,
     kind: target.kind,
     status: target.status,
     label: target.label,
@@ -522,6 +534,8 @@ function stableNotebookShellRuntimeTarget(
     detail: target.detail ?? null,
     providerLabel: target.providerLabel ?? null,
     environmentLabel: target.environmentLabel ?? null,
+    resourceLabel: target.resourceLabel ?? null,
+    workingDirectoryLabel: target.workingDirectoryLabel ?? null,
   });
   setBoundedCacheValue(SHELL_RUNTIME_TARGET_CACHE, cacheKey, stableTarget, SHELL_PART_CACHE_LIMIT);
   return stableTarget;

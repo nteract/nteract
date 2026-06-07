@@ -144,6 +144,7 @@ function cloudRuntimeTarget({
 }): NotebookShellRuntimeTargetProjection {
   if (isRuntimePeer) {
     return {
+      id: "runtime-peer",
       kind: "runtime_peer",
       status: "attached",
       label: "Runtime peer",
@@ -155,6 +156,7 @@ function cloudRuntimeTarget({
   }
   if (runtimeAvailable) {
     return {
+      id: "room-workstation",
       kind: "cloud_workstation",
       status: "ready",
       label: "Room workstation",
@@ -165,6 +167,7 @@ function cloudRuntimeTarget({
     };
   }
   return {
+    id: "workstation:none",
     kind: "cloud_workstation",
     status: "offline",
     label: "No workstation attached",

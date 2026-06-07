@@ -68,6 +68,7 @@ describe("desktopNotebookShellCapabilities", () => {
       source: "local",
       actorLabel: "local:kyle/runtime:local",
       target: {
+        id: "local-daemon",
         kind: "local_daemon",
         status: "ready",
         label: "This machine",
@@ -183,6 +184,7 @@ describe("desktopNotebookShellCapabilities", () => {
       source: "local",
       actorLabel: null,
       target: {
+        id: "local-daemon",
         kind: "local_daemon",
         status: "ready",
         label: "This machine",
@@ -252,6 +254,7 @@ describe("desktopNotebookShellCapabilities", () => {
       source: "cloud",
       actorLabel: "user:anaconda:alice/runtime:jupyterhub",
       target: {
+        id: "runtime-peer",
         kind: "runtime_peer",
         status: "attached",
         label: "Runtime peer",

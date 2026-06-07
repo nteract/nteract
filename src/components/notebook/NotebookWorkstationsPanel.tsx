@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, Cloud, Cpu, Monitor, UserRound } from "lucide-react";
+import { CircleAlert, CircleCheck, Cloud, Cpu, FolderOpen, Monitor } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type {
   NotebookShellCapabilities,
@@ -18,19 +18,6 @@ export function NotebookWorkstationsPanel({
   const target = capabilities.runtime.target ?? fallbackRuntimeTarget(capabilities);
   const status = workstationStatus(capabilities, target);
   const source = workstationSource(capabilities.runtime.source);
-  const principalLabel =
-    capabilities.runtime.actor?.principal.label ??
-    capabilities.access.actor?.principal.label ??
-    capabilities.runtime.identityLabel ??
-    capabilities.access.identityLabel ??
-    source.defaultPrincipalLabel;
-  const operatorLabel =
-    capabilities.runtime.actor?.operator.label ??
-    (target.kind === "local_daemon"
-      ? "Local daemon"
-      : capabilities.runtime.connected
-        ? "Runtime"
-        : "Not attached");
   const runtimeLabel = target.environmentLabel ?? runtimeResourceLabel(capabilities, target);
   const capabilityLabel = runtimeCapabilityLabel(capabilities);
 
@@ -46,6 +33,11 @@ export function NotebookWorkstationsPanel({
             aria-hidden="true"
           />
           <div className="min-w-0 flex-1">
+            {target.id ? (
+              <div className="mb-0.5 truncate text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
+                {target.id}
+              </div>
+            ) : null}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <h3 className="truncate text-sm font-semibold">{status.title}</h3>
               <span className={cn("shrink-0 text-xs font-medium", status.textClassName)}>
@@ -72,14 +64,22 @@ export function NotebookWorkstationsPanel({
           label="Provider"
           value={target.providerLabel ?? source.label}
         />
-        <WorkstationFact icon={Cpu} label="Runtime" value={runtimeLabel} />
-        <WorkstationFact icon={UserRound} label="Principal" value={principalLabel} />
+        <WorkstationFact icon={Cpu} label="Environment" value={runtimeLabel} />
+        {target.resourceLabel ? (
+          <WorkstationFact icon={Cpu} label="Resources" value={target.resourceLabel} />
+        ) : null}
+        {target.workingDirectoryLabel ? (
+          <WorkstationFact
+            icon={FolderOpen}
+            label="Working dir"
+            value={target.workingDirectoryLabel}
+          />
+        ) : null}
         <WorkstationFact
           icon={capabilities.runtime.canWriteRuntimeState ? CircleCheck : CircleAlert}
           label="State"
           value={capabilityLabel}
         />
-        <WorkstationFact icon={Cpu} label="Operator" value={operatorLabel} subtle />
         {target.kind === "local_daemon" ? (
           <WorkstationFact icon={Cloud} label="Remote" value="Coming soon" subtle />
         ) : null}
@@ -204,6 +204,7 @@ function fallbackRuntimeTarget(
   const source = workstationSource(capabilities.runtime.source);
   if (capabilities.runtime.source === "local") {
     return {
+      id: "local-daemon",
       kind: "local_daemon",
       status: capabilities.runtime.executionAvailable ? "ready" : "offline",
       label: "This machine",
@@ -216,6 +217,7 @@ function fallbackRuntimeTarget(
   }
   if (capabilities.runtime.connected) {
     return {
+      id: "runtime-peer",
       kind: "runtime_peer",
       status: capabilities.runtime.executionAvailable ? "ready" : "attached",
       label: "Runtime peer",
@@ -225,6 +227,7 @@ function fallbackRuntimeTarget(
     };
   }
   return {
+    id: capabilities.runtime.source === "cloud" ? "workstation:none" : "runtime:none",
     kind: capabilities.runtime.source === "fixture" ? "fixture" : "unknown",
     status: "offline",
     label:
@@ -237,32 +240,27 @@ function fallbackRuntimeTarget(
 
 function workstationSource(source: NotebookShellCapabilities["runtime"]["source"]): {
   label: string;
-  defaultPrincipalLabel: string;
   icon: LucideIcon;
 } {
   switch (source) {
     case "local":
       return {
         label: "Local",
-        defaultPrincipalLabel: "Local principal",
         icon: Monitor,
       };
     case "cloud":
       return {
         label: "Cloud",
-        defaultPrincipalLabel: "Room principal",
         icon: Cloud,
       };
     case "fixture":
       return {
         label: "Fixture",
-        defaultPrincipalLabel: "Fixture principal",
         icon: Cpu,
       };
     default:
       return {
         label: "Unknown",
-        defaultPrincipalLabel: "Unknown principal",
         icon: Cpu,
       };
   }

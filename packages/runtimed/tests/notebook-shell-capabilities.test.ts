@@ -232,6 +232,7 @@ describe("projectNotebookShellCapabilities", () => {
         connected: true,
         executionAvailable: true,
         target: {
+          id: "room-workstation",
           kind: "cloud_workstation",
           status: "ready",
           label: "Room workstation",
@@ -239,6 +240,8 @@ describe("projectNotebookShellCapabilities", () => {
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
           environmentLabel: "Current Python",
+          resourceLabel: "4 CPU / 16 GB RAM",
+          workingDirectoryLabel: "/home/kyle/notebooks",
         },
       }),
       execution: { available: true, requiresDocumentEditPermission: true },
@@ -258,6 +261,7 @@ describe("projectNotebookShellCapabilities", () => {
         connected: true,
         executionAvailable: true,
         target: {
+          id: "room-workstation",
           kind: "cloud_workstation",
           status: "ready",
           label: "Room workstation",
@@ -265,6 +269,8 @@ describe("projectNotebookShellCapabilities", () => {
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
           environmentLabel: "Current Python",
+          resourceLabel: "4 CPU / 16 GB RAM",
+          workingDirectoryLabel: "/home/kyle/notebooks",
         },
       }),
       execution: { available: true, requiresDocumentEditPermission: true },
@@ -282,6 +288,11 @@ describe("projectNotebookShellCapabilities", () => {
     expect(first.auth).toBe(second.auth);
     expect(first.runtime).toBe(second.runtime);
     expect(first.runtime.target).toBe(second.runtime.target);
+    expect(first.runtime.target).toMatchObject({
+      id: "room-workstation",
+      resourceLabel: "4 CPU / 16 GB RAM",
+      workingDirectoryLabel: "/home/kyle/notebooks",
+    });
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.access)).toBe(true);
     expect(Object.isFrozen(first.auth)).toBe(true);

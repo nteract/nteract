@@ -99,6 +99,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(withoutRuntime.runtime.executionAvailable, false);
   assert.equal(withoutRuntime.runtime.connected, false);
+  assert.equal(withoutRuntime.runtime.target?.id, "workstation:none");
   assert.equal(withoutRuntime.runtime.target?.label, "No workstation attached");
   assert.equal(withoutRuntime.runtime.target?.status, "offline");
   assert.equal(withoutRuntime.canExecute, false);
@@ -112,6 +113,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(withRuntime.runtime.executionAvailable, true);
   assert.equal(withRuntime.runtime.connected, true);
+  assert.equal(withRuntime.runtime.target?.id, "room-workstation");
   assert.equal(withRuntime.runtime.target?.label, "Room workstation");
   assert.equal(withRuntime.runtime.target?.status, "ready");
   assert.equal(withRuntime.canExecute, true);
@@ -125,6 +127,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(viewerWithRuntime.runtime.executionAvailable, true);
   assert.equal(viewerWithRuntime.runtime.connected, true);
+  assert.equal(viewerWithRuntime.runtime.target?.id, "room-workstation");
   assert.equal(viewerWithRuntime.runtime.target?.label, "Room workstation");
   assert.equal(viewerWithRuntime.canExecute, false);
 
@@ -140,6 +143,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(editorWithRuntime.runtime.executionAvailable, true);
   assert.equal(editorWithRuntime.runtime.connected, true);
+  assert.equal(editorWithRuntime.runtime.target?.id, "room-workstation");
   assert.equal(editorWithRuntime.runtime.target?.label, "Room workstation");
   assert.equal(editorWithRuntime.canExecute, false);
 });
@@ -423,6 +427,7 @@ test("cloud shell capabilities keep runtime peer authority separate from documen
   assert.equal(capabilities.runtime.actorLabel, "user:anaconda:alice/runtime:jupyterhub");
   assert.equal(capabilities.runtime.identityLabel, "user");
   assert.equal(capabilities.runtime.actor?.scope, "runtime_peer");
+  assert.equal(capabilities.runtime.target?.id, "runtime-peer");
   assert.equal(capabilities.runtime.target?.kind, "runtime_peer");
   assert.equal(capabilities.runtime.target?.status, "attached");
   assert.equal(capabilities.runtime.target?.label, "Runtime peer");
