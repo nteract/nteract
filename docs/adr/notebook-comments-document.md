@@ -451,6 +451,49 @@ Prototype policy:
 This mirrors the identity ADR: authorization uses authenticated principal and
 scope; operator labels and display names are attribution, not authority.
 
+### Attribution projection
+
+Durable author fields are the fast path for display, but they should not be the
+only integrity signal. The comments projection should also derive per-message
+edit attribution from the validated Automerge change actor.
+
+The repo already has the pieces for this pattern:
+
+- `notebook_doc::diff::extract_change_actors` extracts actors from changes after
+  a head range is applied.
+- The sync ingress paths validate change actors against the authenticated
+  connection principal before accepting client-authored changes.
+- The notebook materialization pipeline already computes head-range diffs such
+  as `CellChangeset`.
+- `notebook-actor-projection.ts` turns actor labels into stable principal,
+  operator, agent, and display projections.
+
+`CommentsDoc` should add a sibling projection, not a render-time history walk:
+
+```text
+CommentProjection/
+  threads/{thread_id}/messages/{message_id}/
+    created_by_actor_label          # durable, host/daemon-stamped or imported
+    created_by_authority
+    last_writer_actor_label         # derived from validated Automerge actor
+    last_writer_authority           # "validated_change_actor" | "unknown"
+    attribution_mismatch: Bool      # stamped field disagrees with actor evidence
+```
+
+The projection can tag `last_writer_actor_label` while applying
+`CommentsDoc` sync changes, or through a WASM helper similar to `diff_cells` that
+returns object-path to last-writer actor for the comments head range. The result
+is memoized by `CommentsDoc` heads alongside `commentsByCellId`.
+
+This matters for permissive Cloud convergence. Until this projection exists,
+Cloud should keep request-stamped writes as the only user-facing mutation path
+and may strip/reject raw non-empty client frames. If a later Cloud implementation
+allows permissive raw convergence, the UI must prefer the validated
+`last_writer_actor_label` for "edited by" display and use durable author fields
+as host-stamped fast-path data, not as the only source of truth. Principal-level
+change actors are verified; operator-level human-vs-agent labels remain advisory
+unless they were host/daemon-stamped on the request path.
+
 ## MCP Surface
 
 Expose a small mutating tool set once the daemon can mutate `CommentsDoc`:
@@ -589,10 +632,13 @@ Phase 1: schema and projection
   typed mutation methods.
 - Ship a committed `comments_doc_genesis_v1.am` asset following the existing
   schema-evolution and genesis-byte convention.
+- Add a comments changeset/projection surface that can derive per-message
+  `last_writer_actor_label` from validated Automerge change actors and cache it
+  by `CommentsDoc` heads.
 - Add unit tests for create thread, reply ordering, concurrent inserts into the
   same fractional-index gap, resolve/reopen, stale cell anchor projection,
-  projection keys, clone/import authority, and deterministic sorting by
-  `(position, id)`.
+  projection keys, clone/import authority, last-writer attribution, durable-field
+  mismatch detection, and deterministic sorting by `(position, id)`.
 - Keep it pure Rust with no UI dependency.
 
 Phase 2: local sync and MCP
@@ -611,6 +657,8 @@ Phase 3: UI prototype
 - Render cell comment markers in the existing right gutter.
 - Add a popover thread view and an all-comments panel.
 - Include stale/deleted-anchor handling.
+- Render stamped authorship plus derived `last_writer_actor_label` for edit
+  attribution, with a visible mismatch/unknown state for imported or raw changes.
 - Validate moves do not reload iframes or violate stable DOM order.
 
 Phase 4: hosted room host
