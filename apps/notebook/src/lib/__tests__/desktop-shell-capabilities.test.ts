@@ -99,12 +99,14 @@ describe("desktopNotebookShellCapabilities", () => {
       sessionReady: true,
       localActor: "local:kyle/desktop:window",
       connectionScope: null,
+      notebookPath: "/Users/kyle/notebooks/demo.ipynb",
       kernelStatusKey: RUNTIME_STATUS.RUNNING_IDLE,
     });
 
     expect(capabilities.runtime.target).toMatchObject({
       id: "local-daemon",
       kernelStatusLabel: "idle",
+      workingDirectoryLabel: "/Users/kyle/notebooks",
     });
   });
 

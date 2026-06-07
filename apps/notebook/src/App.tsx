@@ -623,10 +623,19 @@ function AppContent() {
         sessionReady,
         localActor,
         connectionScope,
+        notebookPath: runtimeState.path,
         kernelStatusKey: statusKey,
         kernelErrorReason: errorReason,
       }),
-    [canAcceptCellMutations, connectionScope, errorReason, localActor, sessionReady, statusKey],
+    [
+      canAcceptCellMutations,
+      connectionScope,
+      errorReason,
+      localActor,
+      runtimeState.path,
+      sessionReady,
+      statusKey,
+    ],
   );
 
   useEffect(() => {

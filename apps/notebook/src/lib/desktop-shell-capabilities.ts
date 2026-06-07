@@ -18,6 +18,7 @@ export interface DesktopNotebookShellCapabilityInput {
   sessionReady: boolean;
   localActor: string | null;
   connectionScope: string | null;
+  notebookPath?: string | null;
   kernelStatusKey?: RuntimeStatusKey | null;
   kernelErrorReason?: string | null;
   hostCapabilities?: {
@@ -30,6 +31,7 @@ export function desktopNotebookShellCapabilities({
   sessionReady,
   localActor,
   connectionScope,
+  notebookPath = null,
   kernelStatusKey = null,
   kernelErrorReason = null,
   hostCapabilities,
@@ -80,6 +82,7 @@ export function desktopNotebookShellCapabilities({
       kernelStatusLabel: kernelStatusKey
         ? getStatusKeyLabel(kernelStatusKey, kernelErrorReason)
         : null,
+      workingDirectoryLabel: notebookPathToWorkingDirectoryLabel(notebookPath),
       sessionReady,
       source,
     }),
@@ -121,11 +124,13 @@ function desktopRuntimeTarget({
   kernelStatusLabel,
   sessionReady,
   source,
+  workingDirectoryLabel,
 }: {
   isRuntimePeer: boolean;
   kernelStatusLabel: string | null;
   sessionReady: boolean;
   source: NotebookShellAccessSource;
+  workingDirectoryLabel: string | null;
 }): NotebookShellRuntimeTargetProjection | null {
   if (isRuntimePeer) {
     return {
@@ -159,6 +164,7 @@ function desktopRuntimeTarget({
     defaultEnvironmentLabel: "Notebook runtime",
     environmentLabel: "Notebook runtime",
     kernelStatusLabel,
+    workingDirectoryLabel,
     cpuCount: localCpuCount(),
   };
 }
@@ -166,6 +172,18 @@ function desktopRuntimeTarget({
 function localCpuCount(): number | null {
   const count = globalThis.navigator?.hardwareConcurrency;
   return typeof count === "number" && Number.isFinite(count) && count > 0 ? count : null;
+}
+
+function notebookPathToWorkingDirectoryLabel(
+  notebookPath: string | null | undefined,
+): string | null {
+  const trimmed = notebookPath?.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/\\/g, "/").replace(/\/+$/g, "");
+  const separatorIndex = normalized.lastIndexOf("/");
+  if (separatorIndex < 0) return null;
+  if (separatorIndex === 0) return "/";
+  return normalized.slice(0, separatorIndex);
 }
 
 function desktopRuntimeActorLabel({
