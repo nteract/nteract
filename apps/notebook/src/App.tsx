@@ -5,6 +5,8 @@ import {
   notebookCellAnchorId,
   resolveNotebookOutlineSelection,
   NotebookClient,
+  type ExecuteCellOptions,
+  type NotebookResponse,
   type NotebookOutlineItem,
   putBlob,
   type SessionStatus,
@@ -153,6 +155,36 @@ async function sendMessage(message: unknown): Promise<void> {
   } catch (e) {
     logger.error("[widget] send_comm_message failed:", e);
   }
+}
+
+function createClientExecutionId(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+function markClientExecuteResponse(
+  phase: string,
+  cellId: string,
+  response: NotebookResponse,
+  detail: Record<string, unknown> = {},
+  alreadyAttachedExecutionId?: string,
+): void {
+  const responseDetail: Record<string, unknown> = {
+    cellId,
+    result: response.result,
+    ...detail,
+  };
+
+  if (response.result === "cell_queued") {
+    responseDetail.executionId = response.execution_id;
+    if (response.execution_id !== alreadyAttachedExecutionId) {
+      attachExecutionPerformanceId(cellId, response.execution_id);
+    }
+  } else if (response.result === "execution_id_rejected") {
+    responseDetail.executionId = response.execution_id;
+    responseDetail.reason = response.reason;
+  }
+
+  markExecutionPerformance(phase, responseDetail);
 }
 
 // ── Output widget manifest resolution ─────────────────────────────────
@@ -1005,19 +1037,37 @@ function AppContent() {
 
   const executeCellWithPerf = useCallback(
     async (cellId: string) => {
-      markExecutionPerformance("client.execute.request.start", { cellId });
-      const response = await executeCell(cellId);
-      if (response.result === "cell_queued") {
-        attachExecutionPerformanceId(cellId, response.execution_id);
-        markExecutionPerformance("client.execute.response", {
+      const executionId = createClientExecutionId();
+      const options: ExecuteCellOptions = { executionId };
+      markExecutionPerformance("client.execute.request.start", {
+        cellId,
+        executionId,
+        clientGeneratedExecutionId: true,
+      });
+      attachExecutionPerformanceId(cellId, executionId);
+
+      let response = await executeCell(cellId, options);
+      markClientExecuteResponse(
+        "client.execute.response",
+        cellId,
+        response,
+        { clientGeneratedExecutionId: true },
+        executionId,
+      );
+
+      if (response.result === "execution_id_rejected") {
+        logger.warn(
+          "[App] client-generated execution_id rejected; retrying with daemon-generated id",
+          response.reason,
+        );
+        markExecutionPerformance("client.execute.retry_without_execution_id", {
           cellId,
-          executionId: response.execution_id,
-          result: response.result,
+          executionId,
+          reason: response.reason,
         });
-      } else {
-        markExecutionPerformance("client.execute.response", {
-          cellId,
-          result: response.result,
+        response = await executeCell(cellId);
+        markClientExecuteResponse("client.execute.retry_response", cellId, response, {
+          retryWithoutClientExecutionId: true,
         });
       }
       return response;
@@ -1027,19 +1077,37 @@ function AppContent() {
 
   const executeCellGuardedWithPerf = useCallback(
     async (cellId: string, provenance: Parameters<typeof executeCellGuarded>[1]) => {
-      markExecutionPerformance("client.execute_guarded.request.start", { cellId });
-      const response = await executeCellGuarded(cellId, provenance);
-      if (response.result === "cell_queued") {
-        attachExecutionPerformanceId(cellId, response.execution_id);
-        markExecutionPerformance("client.execute_guarded.response", {
+      const executionId = createClientExecutionId();
+      const options: ExecuteCellOptions = { executionId };
+      markExecutionPerformance("client.execute_guarded.request.start", {
+        cellId,
+        executionId,
+        clientGeneratedExecutionId: true,
+      });
+      attachExecutionPerformanceId(cellId, executionId);
+
+      let response = await executeCellGuarded(cellId, provenance, options);
+      markClientExecuteResponse(
+        "client.execute_guarded.response",
+        cellId,
+        response,
+        { clientGeneratedExecutionId: true },
+        executionId,
+      );
+
+      if (response.result === "execution_id_rejected") {
+        logger.warn(
+          "[App] client-generated guarded execution_id rejected; retrying with daemon-generated id",
+          response.reason,
+        );
+        markExecutionPerformance("client.execute_guarded.retry_without_execution_id", {
           cellId,
-          executionId: response.execution_id,
-          result: response.result,
+          executionId,
+          reason: response.reason,
         });
-      } else {
-        markExecutionPerformance("client.execute_guarded.response", {
-          cellId,
-          result: response.result,
+        response = await executeCellGuarded(cellId, provenance);
+        markClientExecuteResponse("client.execute_guarded.retry_response", cellId, response, {
+          retryWithoutClientExecutionId: true,
         });
       }
       return response;

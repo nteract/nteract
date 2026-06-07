@@ -14,6 +14,7 @@ import {
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
+  type ExecuteCellOptions,
   type GuardedNotebookProvenance,
   type KernelStatus,
   type NotebookClient,
@@ -290,13 +291,14 @@ export function useDaemonKernel({
   );
 
   const executeCell = useCallback(
-    (cellId: string) => client.executeCell(cellId) as Promise<NotebookResponse>,
+    (cellId: string, options?: ExecuteCellOptions) =>
+      client.executeCell(cellId, options) as Promise<NotebookResponse>,
     [client],
   );
 
   const executeCellGuarded = useCallback(
-    (cellId: string, provenance: GuardedNotebookProvenance) =>
-      client.executeCellGuarded(cellId, provenance) as Promise<NotebookResponse>,
+    (cellId: string, provenance: GuardedNotebookProvenance, options?: ExecuteCellOptions) =>
+      client.executeCellGuarded(cellId, provenance, options) as Promise<NotebookResponse>,
     [client],
   );
 
