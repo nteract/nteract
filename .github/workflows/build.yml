@@ -415,7 +415,7 @@ jobs:
         run: pnpm --filter @nteract/sift test
 
       - name: Run JS benchmarks
-        run: vp test bench --run apps/notebook/src/lib/__tests__/
+        run: pnpm test:bench
 
   browser-e2e:
     name: Browser E2E (Playwright)

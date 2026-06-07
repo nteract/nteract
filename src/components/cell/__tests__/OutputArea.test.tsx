@@ -538,7 +538,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
   });
 
-  it("keeps interactive plugin iframe outputs on the wheel-boundary path", () => {
+  it("puts Plotly outputs on the click-to-engage path so the page wheels through the chart", () => {
     const plotlyOutput: JupyterOutput[] = [
       {
         output_id: "plotly-output",
@@ -549,14 +549,19 @@ describe("OutputArea iframe theme sync", () => {
     ];
 
     const { getByTestId } = render(<OutputArea outputs={plotlyOutput} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
 
-    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
-    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
-      "true",
-    );
-    expect(getByTestId("isolated-frame").getAttribute("data-forward-wheel-boundary-scroll")).toBe(
-      "true",
-    );
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
   });
 
   it("puts parquet iframe outputs on scroll passthrough so the page wheels through sift", () => {

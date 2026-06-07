@@ -22,6 +22,50 @@ describe("notebook cloud blob resolver", () => {
     );
   });
 
+  it("retries transient hosted blob misses before returning the response", async () => {
+    const statuses = [404, 200];
+    const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    const resolver = createNotebookCloudBlobResolver({
+      baseUrl: "https://viewer.example.test/n/notebook-1",
+      blobBasePath: "/api/n/notebook-1/blobs/",
+      fetchImpl: async (input, init) => {
+        fetchCalls.push({ input, init });
+        const status = statuses.shift() ?? 500;
+        return new Response(status === 200 ? "ready" : "missing", { status });
+      },
+    });
+
+    const response = await resolver.fetch({ blob: "sha256:late" });
+
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "ready");
+    assert.equal(fetchCalls.length, 2);
+    assert.deepEqual(
+      fetchCalls.map((call) => call.input),
+      [
+        "https://viewer.example.test/api/n/notebook-1/blobs/sha256%3Alate",
+        "https://viewer.example.test/api/n/notebook-1/blobs/sha256%3Alate",
+      ],
+    );
+  });
+
+  it("returns the final hosted blob miss after retry attempts are exhausted", async () => {
+    let fetchCount = 0;
+    const resolver = createNotebookCloudBlobResolver({
+      baseUrl: "https://viewer.example.test/n/notebook-1",
+      blobBasePath: "/api/n/notebook-1/blobs/",
+      fetchImpl: async () => {
+        fetchCount += 1;
+        return new Response("missing", { status: 404 });
+      },
+    });
+
+    const response = await resolver.fetch({ blob: "sha256:missing" });
+
+    assert.equal(response.status, 404);
+    assert.equal(fetchCount, 3);
+  });
+
   it("can resolve protected binary blobs through authenticated display URLs", async () => {
     const originalFileReader = globalThis.FileReader;
     class TestFileReader {

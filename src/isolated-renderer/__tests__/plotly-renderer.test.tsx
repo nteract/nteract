@@ -48,6 +48,7 @@ describe("Plotly renderer plugin", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("uses Plotly.react for display updates instead of remounting the chart", () => {
@@ -133,5 +134,28 @@ describe("Plotly renderer plugin", () => {
     expect(plotlyMocks.newPlot).toHaveBeenCalledTimes(1);
     expect(plotlyMocks.react).toHaveBeenCalledTimes(1);
     expect(plotlyMocks.react.mock.calls[0][1].data).toEqual(nextFigure.data);
+  });
+
+  it("requests a host resize after Plotly completes its async render", async () => {
+    const Renderer = installPlotlyRenderer();
+    const postMessage = vi.spyOn(window.parent, "postMessage").mockImplementation(() => {});
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+
+    plotlyMocks.newPlot.mockReturnValueOnce(Promise.resolve());
+
+    render(<Renderer data={firstFigure} mimeType="application/vnd.plotly.v1+json" />);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(postMessage).toHaveBeenCalledWith(
+      {
+        type: "resize",
+        payload: { height: expect.any(Number) },
+      },
+      "*",
+    );
   });
 });

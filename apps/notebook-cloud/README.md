@@ -166,6 +166,44 @@ socket. Sandboxed output frames must not read localStorage; the smoke tracks
 that denial as a benign iframe error because only the first-party viewer shell
 needs the browser token cache.
 
+For long-tail notebook rendering sweeps, use `smoke:hosted:live-rooms`. By
+default it reads the same token cache, lists the most recent notebooks visible
+to that principal through `/api/n?limit=5`, and runs the live-room smoke against
+each URL with permissive expectations so empty or sparse notebooks still count:
+
+```bash
+pnpm --dir apps/notebook-cloud smoke:hosted:live-rooms
+```
+
+Increase the catalog sweep size or save per-notebook screenshots when chasing
+old-notebook regressions:
+
+```bash
+NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_LIMIT=20 \
+NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_SCREENSHOT_DIR=.context/live-room-matrix \
+pnpm --dir apps/notebook-cloud smoke:hosted:live-rooms
+```
+
+Pass an explicit matrix when a notebook needs stricter output assertions. URL
+strings are accepted with `|` or newline separators; JSON object entries can set
+per-notebook page/frame text, visible iframe, image, and blob requirements:
+
+```bash
+NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_URLS='[
+  {
+    "label": "topic-viz",
+    "url": "https://preview.runt.run/n/topic-viz/topic-viz",
+    "expectedText": "import plotly.graph_objects as go",
+    "expectedFrameTexts": ["PROBLEM_MARKDOWN"],
+    "minCells": 20,
+    "minVisibleIframes": 2,
+    "minImages": 3,
+    "requireBlobFetch": true,
+    "requireImagesLoaded": true
+  }
+]' pnpm --dir apps/notebook-cloud smoke:hosted:live-rooms
+```
+
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
 uploads its `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` snapshot set, walks
 the exported output and widget manifests for blob refs, uploads the matching
@@ -608,6 +646,20 @@ old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
 private; anonymous hosted render smokes may return a catalog 404 unless the
 browser context has a credential for the owning principal.
 
+Use the combined runtime/browser smoke when you want the full preview remote
+compute path in one command. It creates one API-key room per requested browser
+scope, keeps that room's runtime peer alive, clicks execution through Chromium
+for `owner` and `editor` scope by default, then stops each peer it started:
+
+```bash
+NTERACT_CLOUD_URL=https://preview.runt.run \
+pnpm --dir apps/notebook-cloud smoke:hosted:runtime-browser-execute
+```
+
+Set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES=owner` for a single-scope
+run, or set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_CODE` when you need a fixed
+source/output marker for a trace.
+
 To exercise the actual hosted browser execution path against a private room,
 seed Chromium with the same OIDC token cache the viewer stores in
 `localStorage` and click a rendered cell run button:
@@ -624,7 +676,8 @@ The smoke reads the token JSON from
 `${NTERACT_PREVIEW_OIDC_TOKEN_PATH:-$HOME/token.preview.json}` and writes no
 token material to stdout. It injects the cache only into the first-party
 notebook origin, requests `owner` scope by default, clicks the selected
-`data-testid="execute-button"`, waits for the optional expected text, and
+`data-testid="execute-button"`, waits for that button's execution ordinal to
+advance, waits for the optional expected text, and
 asserts that notebook blob fetches return 2xx. When
 `NOTEBOOK_CLOUD_BROWSER_EXECUTE_REQUIRE_BLOB_IMAGE=1`, at least one notebook
 blob must also render as a normal `<img src="/api/n/.../blobs/:hash">` image.

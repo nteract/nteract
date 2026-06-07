@@ -1,5 +1,7 @@
 import { createBlobResolver, type BlobRef, type BlobResolver } from "runtimed";
 
+const BLOB_FETCH_RETRY_DELAYS_MS = [150, 500];
+
 export function notebookCloudBlobBasePath(notebookId: string): string {
   return `/api/n/${encodeURIComponent(notebookId)}/blobs/`;
 }
@@ -16,10 +18,12 @@ export function createNotebookCloudBlobResolver(input: {
   const fetchImpl = input.fetchImpl ?? fetch;
   const displayUrls = new Map<string, string>();
   const url = (ref: BlobRef) => new URL(encodeURIComponent(ref.blob), blobBaseUrl).href;
+  const fetchWithBlobRetries: typeof fetch = (request, init) =>
+    fetchBlobWithRetries(fetchImpl, request, init);
   const authenticatedBinaryDisplayUrls =
     input.authenticatedBinaryDisplayUrls ?? input.authenticatedBinaryObjectUrls ?? false;
   return createBlobResolver({
-    fetchImpl,
+    fetchImpl: fetchWithBlobRetries,
     url,
     ...(authenticatedBinaryDisplayUrls
       ? {
@@ -29,7 +33,7 @@ export function createNotebookCloudBlobResolver(input: {
             const cached = displayUrls.get(cacheKey);
             if (cached) return cached;
 
-            const response = await fetchImpl(url(ref), { cache: "no-store" });
+            const response = await fetchBlobWithRetries(fetchImpl, url(ref), { cache: "no-store" });
             if (!response.ok) {
               throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
             }
@@ -56,6 +60,55 @@ export function createNotebookCloudBlobResolver(input: {
 
 export function withTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+async function fetchBlobWithRetries(
+  fetchImpl: typeof fetch,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= BLOB_FETCH_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const response = await fetchImpl(input, init);
+      if (!shouldRetryBlobResponse(response) || attempt === BLOB_FETCH_RETRY_DELAYS_MS.length) {
+        return response;
+      }
+      await cancelResponseBody(response);
+    } catch (error) {
+      lastError = error;
+      if (attempt === BLOB_FETCH_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+    }
+
+    await sleep(BLOB_FETCH_RETRY_DELAYS_MS[attempt]);
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function shouldRetryBlobResponse(response: Response): boolean {
+  return (
+    response.status === 404 ||
+    response.status === 409 ||
+    response.status === 425 ||
+    response.status === 429 ||
+    response.status >= 500
+  );
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Best effort; a failed cancel should not mask the retryable response.
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function displayUrlCacheKey(ref: BlobRef, mediaType?: string): string {

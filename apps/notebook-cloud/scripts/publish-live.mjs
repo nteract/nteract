@@ -3,7 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { collectBlobRefs } from "../src/blob-refs.ts";
+import { collectArrowStreamManifestBlobRefs, collectBlobRefs } from "../src/blob-refs.ts";
 import { createLiveNotebookFixture } from "./live-notebook-fixture.mjs";
 import {
   canonicalViewerUrl,
@@ -13,6 +13,7 @@ import {
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 import { loadRuntimedNode } from "./runtimed-node-loader.mjs";
+import { summarizeCatalog } from "./hosted-render-smoke-catalog.mjs";
 
 const rt = loadRuntimedNode();
 
@@ -48,6 +49,7 @@ try {
     snapshot.commsDocBytes,
   );
   const blobRefs = collectBlobRefs({ cells, runtimeState, commsState });
+  await expandArrowManifestBlobRefs(blobRefs, snapshot);
   const headsHash = headsDigest(snapshot.notebookHeads);
   const runtimeHeadsHash = headsDigest(snapshot.runtimeStateHeads);
   const commsHeadsHash = headsDigest(snapshot.commsDocHeads);
@@ -84,13 +86,14 @@ try {
   );
 
   const catalog = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}`);
+  const catalogSummary = summarizeCatalog(catalog);
+  const latestRevision = catalog.revisions?.find(
+    (revision) => revision.id === catalogSummary.latestRevisionId,
+  );
   assert(
-    catalog.revisions?.some(
-      (revision) =>
-        revision.notebook_heads_hash === headsHash &&
-        revision.runtime_heads_hash === runtimeHeadsHash &&
-        revision.comms_heads_hash === commsHeadsHash,
-    ),
+    latestRevision?.notebook_heads_hash === headsHash &&
+      latestRevision?.runtime_heads_hash === runtimeHeadsHash &&
+      latestRevision?.comms_heads_hash === commsHeadsHash,
     "published catalog did not include the snapshot triplet",
   );
 
@@ -109,6 +112,8 @@ try {
         headsHash,
         runtimeHeadsHash,
         commsHeadsHash,
+        ownerPrincipal: catalogSummary.ownerPrincipal,
+        latestRevisionActorLabel: catalogSummary.latestRevisionActorLabel,
         cells: Array.isArray(cells) ? cells.length : null,
         blobs: Object.keys(blobRefs).length,
         checks: [
@@ -176,6 +181,24 @@ async function uploadLiveBlob(ref, snapshot) {
     bytes,
     ref.media_type ?? "application/octet-stream",
   );
+}
+
+async function expandArrowManifestBlobRefs(blobRefs, snapshot) {
+  for (const ref of Object.values(blobRefs)) {
+    if (ref.media_type !== "application/vnd.nteract.arrow-stream-manifest+json") {
+      continue;
+    }
+    const bytes = await readLocalBlob(ref.blob, snapshot);
+    const manifest = new TextDecoder().decode(bytes);
+    const childRefs = collectArrowStreamManifestBlobRefs(manifest);
+    for (const childRef of Object.values(childRefs)) {
+      blobRefs[childRef.blob] = {
+        blob: childRef.blob,
+        size: blobRefs[childRef.blob]?.size ?? childRef.size,
+        media_type: blobRefs[childRef.blob]?.media_type ?? childRef.media_type,
+      };
+    }
+  }
 }
 
 async function readLocalBlob(hash, snapshot) {

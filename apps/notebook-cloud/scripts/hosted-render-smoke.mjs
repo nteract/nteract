@@ -29,6 +29,8 @@ import {
 } from "./hosted-render-smoke-performance.mjs";
 import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
 import { catalogApiUrlForViewer, isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
+import { firstPositionalArg } from "./cli-args.mjs";
+import { smokeOutputPath } from "./smoke-paths.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
@@ -38,7 +40,7 @@ const DEFAULT_CATALOG_OWNER_PRINCIPAL =
 const DEFAULT_LATEST_REVISION_ACTOR_LABEL =
   "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0/agent:runt-publish";
 
-const targetUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
+const targetUrl = firstPositionalArg() ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
 const expectedRendererAssetOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN ?? DEFAULT_RENDERER_ASSET_ORIGIN;
 const expectedOutputDocumentOrigin =
@@ -117,7 +119,7 @@ const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES"
   "dark",
   "system-dark",
 ]);
-const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
+const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT);
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
 const expectedRuntimeWasmOrigin =
