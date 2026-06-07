@@ -23,7 +23,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use notebook_protocol::connection::EnvSource;
-use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig, RuntimeAgentRequest};
+use notebook_protocol::protocol::{
+    FeatureFlags, KernelPorts, LaunchedEnvConfig, RuntimeAgentRequest,
+};
 
 /// Inputs for a `current_python` launch-on-attach request.
 #[derive(Debug, Clone)]
@@ -61,6 +63,7 @@ pub fn build_current_python_launch(
     let launched_config = LaunchedEnvConfig {
         // No pool env, no inline deps: the kernel runs against python_path as-is.
         python_path: Some(launch.python_path.clone()),
+        feature_flags: FeatureFlags { bootstrap_dx: true },
         ..Default::default()
     };
 
@@ -129,6 +132,7 @@ mod tests {
             launched_config.python_path,
             Some(PathBuf::from("/opt/ws/venv/bin/python"))
         );
+        assert!(launched_config.feature_flags.bootstrap_dx);
         assert_eq!(kernel_ports.iopub, 9004);
         assert_eq!(env_vars.get("FOO").map(String::as_str), Some("bar"));
         assert!(!redact_env_values_in_outputs);
