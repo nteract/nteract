@@ -174,6 +174,57 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /topic-viz.*render/);
   });
 
+  it("uses catalog-safe metadata for public published notebook viewers", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "public-meta-demo");
+    const notebook = env.DB.notebooks.get("public-meta-demo");
+    assert.ok(notebook);
+    notebook.title = "Public & Safe <Notebook>";
+    notebook.latest_revision_id = "revision-public-metadata";
+    seedAcl(env, {
+      notebookId: "public-meta-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/public-meta-demo/public-title"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<title>nteract notebook: Public &amp; Safe &lt;Notebook&gt;<\/title>/);
+    assert.match(
+      html,
+      /<meta property="og:title" content="nteract notebook: Public &amp; Safe &lt;Notebook&gt;" \/>/,
+    );
+    assert.match(html, /published revision revision-pub/);
+  });
+
+  it("keeps private notebook titles out of server-rendered viewer metadata", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "private-meta-demo");
+    const notebook = env.DB.notebooks.get("private-meta-demo");
+    assert.ok(notebook);
+    notebook.title = "Secret Research Plan";
+    notebook.latest_revision_id = "revision-private-metadata";
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/private-meta-demo/secret-plan"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<title>nteract cloud notebook private-meta-demo<\/title>/);
+    assert.match(html, /Private notebook metadata is shown after access is verified\./);
+    assert.doesNotMatch(html, /Secret Research Plan|revision-private-metadata/);
+  });
+
   it("serves the notebook list page at /n", async () => {
     const env = fakeEnv();
 
@@ -3993,6 +4044,22 @@ class FakeD1Statement implements D1PreparedStatement {
         );
       }
       return (this.db.invites.get(this.values[0] as string) as T | undefined) ?? null;
+    }
+    if (
+      this.query.includes("FROM notebooks n") &&
+      this.query.includes("JOIN notebook_acl a") &&
+      this.query.includes("a.subject_kind = 'public'")
+    ) {
+      const notebookId = this.values[0] as string;
+      const notebook = this.db.notebooks.get(notebookId);
+      const publicViewer = this.db.acl.some(
+        (row) =>
+          row.notebook_id === notebookId &&
+          row.subject_kind === "public" &&
+          row.subject === "anonymous" &&
+          row.scope === "viewer",
+      );
+      return (notebook?.latest_revision_id && publicViewer ? notebook : null) as T | null;
     }
     if (this.query.includes("FROM notebooks")) {
       return (this.db.notebooks.get(this.values[0] as string) as T | undefined) ?? null;

@@ -29,6 +29,7 @@ import {
   getNotebookAclRows,
   getNotebookRow,
   getNotebookCatalog,
+  getPublicPublishedNotebookRow,
   grantNotebookAclRow,
   listNotebooksForPrincipal,
   recordBlob,
@@ -2487,8 +2488,7 @@ async function viewer(
   env: Env,
   headsHash?: string,
 ): Promise<Response> {
-  const escaped = escapeHtml(notebookId);
-  const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
+  const shellMetadata = await publicViewerShellMetadata(env, notebookId, headsHash);
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
   const config = {
@@ -2511,12 +2511,7 @@ async function viewer(
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
   };
-  return viewerShell(
-    `nteract cloud notebook ${title}`,
-    env,
-    authConfigForRequest(request, env),
-    config,
-  );
+  return viewerShell(shellMetadata, env, authConfigForRequest(request, env), config);
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {
@@ -2527,34 +2522,100 @@ interface ViewerShellConfig extends Record<string, unknown> {
 }
 
 function homeViewer(request: Request, env: Env): Response {
-  return viewerShell("nteract", env, authConfigForRequest(request, env), null);
-}
-
-function notebookListViewer(request: Request, env: Env): Response {
-  return viewerShell("nteract cloud notebooks", env, authConfigForRequest(request, env), null);
-}
-
-function oidcCallbackViewer(request: Request, env: Env): Response {
   return viewerShell(
-    "nteract cloud notebook sign-in",
+    { title: "nteract", description: "A hosted nteract notebook workspace." },
     env,
     authConfigForRequest(request, env),
     null,
   );
 }
 
+function notebookListViewer(request: Request, env: Env): Response {
+  return viewerShell(
+    {
+      title: "nteract cloud notebooks",
+      description: "Open, create, and manage hosted nteract notebooks.",
+    },
+    env,
+    authConfigForRequest(request, env),
+    null,
+  );
+}
+
+function oidcCallbackViewer(request: Request, env: Env): Response {
+  return viewerShell(
+    {
+      title: "nteract cloud notebook sign-in",
+      description: "Complete hosted notebook sign-in.",
+    },
+    env,
+    authConfigForRequest(request, env),
+    null,
+  );
+}
+
+interface ViewerShellMetadata {
+  title: string;
+  description: string;
+}
+
+async function publicViewerShellMetadata(
+  env: Env,
+  notebookId: string,
+  headsHash?: string,
+): Promise<ViewerShellMetadata> {
+  const generic = genericNotebookShellMetadata(notebookId, headsHash);
+  if (!env.DB) {
+    return generic;
+  }
+
+  const row = await getPublicPublishedNotebookRow(env, notebookId);
+  if (!row?.latest_revision_id) {
+    return generic;
+  }
+
+  const displayTitle = row.title?.trim() || `Notebook ${shortNotebookId(notebookId)}`;
+  const revisionPart = headsHash
+    ? `revision ${shortNotebookId(headsHash)}`
+    : `published revision ${shortNotebookId(row.latest_revision_id)}`;
+  return {
+    title: `nteract notebook: ${displayTitle}`,
+    description: `${displayTitle} is a public nteract notebook at ${revisionPart}.`,
+  };
+}
+
+function genericNotebookShellMetadata(notebookId: string, headsHash?: string): ViewerShellMetadata {
+  const suffix = headsHash ? ` @ ${headsHash}` : "";
+  return {
+    title: `nteract cloud notebook ${notebookId}${suffix}`,
+    description:
+      "A hosted nteract notebook. Private notebook metadata is shown after access is verified.",
+  };
+}
+
+function shortNotebookId(value: string): string {
+  return value.length <= 12 ? value : value.slice(0, 12);
+}
+
 function viewerShell(
-  title: string,
+  metadata: ViewerShellMetadata,
   env: Env,
   authConfig: unknown,
   config: ViewerShellConfig | null,
 ): Response {
+  const title = escapeHtml(metadata.title);
+  const description = escapeHtml(metadata.description);
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${title}</title>
+  <meta name="description" content="${description}" />
+  <meta property="og:title" content="${title}" />
+  <meta property="og:description" content="${description}" />
+  <meta property="og:type" content="article" />
+  <meta name="twitter:card" content="summary" />
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>
   ${viewerResourceHints(config)}

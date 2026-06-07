@@ -350,6 +350,36 @@ export async function getNotebookRow(env: Env, notebookId: string): Promise<Note
     .first<NotebookRow>();
 }
 
+export async function getPublicPublishedNotebookRow(
+  env: Env,
+  notebookId: string,
+): Promise<NotebookRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return await env.DB.prepare(
+    `SELECT n.id,
+            n.owner_principal,
+            n.title,
+            n.created_at,
+            n.updated_at,
+            n.latest_revision_id
+       FROM notebooks n
+       JOIN notebook_acl a
+         ON a.notebook_id = n.id
+      WHERE n.id = ?
+        AND n.latest_revision_id IS NOT NULL
+        AND a.subject_kind = 'public'
+        AND a.subject = 'anonymous'
+        AND a.scope = 'viewer'
+      LIMIT 1`,
+  )
+    .bind(notebookId)
+    .first<NotebookRow>();
+}
+
 export async function updateNotebookTitle(
   env: Env,
   notebookId: string,
