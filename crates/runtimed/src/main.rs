@@ -174,6 +174,10 @@ enum Commands {
         /// kernel (only used with --python-path).
         #[arg(long)]
         notebook_path: Option<String>,
+        /// Working directory for notebook-id-only launch-on-attach kernels.
+        /// Defaults to the process current directory.
+        #[arg(long, alias = "cwd")]
+        working_dir: Option<PathBuf>,
     },
 
     /// Warm a pool environment (internal, spawned by daemon warming loops).
@@ -468,6 +472,7 @@ async fn main() -> anyhow::Result<()> {
             blob_root,
             python_path,
             notebook_path,
+            working_dir,
         }) => {
             let cli_args = runtimed::workstation::CloudAgentArgs {
                 cloud_url,
@@ -481,6 +486,7 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("[cloud-runtime-agent] Config error: {}", e);
                         e
                     })?;
+            let resolved_working_dir = working_dir.or_else(|| std::env::current_dir().ok());
             let result = match python_path {
                 // Launch-on-attach: allocate and *start* a current_python runtime.
                 Some(python_path) => {
@@ -489,12 +495,18 @@ async fn main() -> anyhow::Result<()> {
                         notebook_id: config.notebook_id.clone(),
                         scope: config.scope.clone(),
                         operator,
+                        workstation: Some(
+                            runtimed::workstation::current_python_workstation_metadata(
+                                resolved_working_dir.as_deref(),
+                            ),
+                        ),
                     };
                     runtimed::workstation::allocate_current_python_runtime(
                         target,
                         config.auth,
                         python_path,
                         notebook_path,
+                        resolved_working_dir,
                         std::collections::HashMap::new(),
                         blob_root,
                     )

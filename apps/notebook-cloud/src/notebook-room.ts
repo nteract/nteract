@@ -32,6 +32,7 @@ interface Peer {
   socket: CloudflareWebSocket;
   identity: AuthenticatedConnection;
   connectedAt: string;
+  workstation: RuntimePeerWorkstationMetadata | null;
 }
 
 interface StoredRoomFrame {
@@ -49,6 +50,15 @@ interface PeerAttachment {
   peerId: string;
   identity: AuthenticatedConnection;
   connectedAt: string;
+  workstation?: RuntimePeerWorkstationMetadata | null;
+}
+
+interface RuntimePeerWorkstationMetadata {
+  workstationId?: string;
+  displayName?: string;
+  defaultEnvironmentLabel?: string;
+  environmentPolicy?: string;
+  workingDirectory?: string;
 }
 
 const MAX_STORED_FRAMES = 500;
@@ -112,6 +122,7 @@ export class NotebookRoom {
       socket: server,
       identity,
       connectedAt: new Date().toISOString(),
+      workstation: runtimePeerWorkstationMetadataFromRequest(request, identity),
     };
 
     this.acceptPeerSocket(notebookId, peer);
@@ -211,6 +222,7 @@ export class NotebookRoom {
         socket,
         identity: attachment.identity,
         connectedAt: attachment.connectedAt,
+        workstation: normalizeRuntimePeerWorkstationMetadata(attachment.workstation),
       };
       this.peers.set(attachment.peerId, peer);
       restored.push({ notebookId: attachment.notebookId, peer });
@@ -236,6 +248,7 @@ export class NotebookRoom {
       peerId: peer.id,
       identity: peer.identity,
       connectedAt: peer.connectedAt,
+      workstation: peer.workstation,
     };
 
     if (this.state.acceptWebSocket && peer.socket.serializeAttachment) {
@@ -899,19 +912,107 @@ export function presencePeerLabel(identity: AuthenticatedConnection): string {
 }
 
 function runtimePeerWorkstationAttachment(peer: Peer): WorkstationAttachmentState {
+  const workstation = peer.workstation;
   return {
-    workstation_id: "runtime-peer",
-    display_name: "Attached workstation",
+    workstation_id: workstation?.workstationId ?? "runtime-peer",
+    display_name: workstation?.displayName ?? "Attached workstation",
     provider: "runtime_peer",
-    default_environment_label: "Current Python",
-    environment_policy: "runtime_peer",
+    default_environment_label: workstation?.defaultEnvironmentLabel ?? "Current Python",
+    environment_policy: workstation?.environmentPolicy ?? "runtime_peer",
     status: "ready",
     status_message: null,
     cpu_count: null,
     memory_bytes: null,
-    working_directory: null,
+    working_directory: workstation?.workingDirectory ?? null,
     updated_at: peer.connectedAt,
   };
+}
+
+export function runtimePeerWorkstationMetadataFromRequest(
+  request: Request,
+  identity: AuthenticatedConnection,
+): RuntimePeerWorkstationMetadata | null {
+  if (identity.scope !== "runtime_peer") {
+    return null;
+  }
+  return normalizeRuntimePeerWorkstationMetadata({
+    workstationId: boundedHeader(request, "x-nteract-workstation-id", 128),
+    displayName: boundedHeader(request, "x-nteract-workstation-display-name", 160),
+    defaultEnvironmentLabel: boundedHeader(
+      request,
+      "x-nteract-workstation-default-environment",
+      160,
+    ),
+    environmentPolicy: boundedHeader(request, "x-nteract-workstation-environment-policy", 80),
+    workingDirectory: boundedHeader(request, "x-nteract-workstation-working-directory", 512),
+  });
+}
+
+function normalizeRuntimePeerWorkstationMetadata(
+  value: unknown,
+): RuntimePeerWorkstationMetadata | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<RuntimePeerWorkstationMetadata>;
+  const metadata: RuntimePeerWorkstationMetadata = {};
+  setBoundedMetadataField(metadata, "workstationId", candidate.workstationId, 128);
+  setBoundedMetadataField(metadata, "displayName", candidate.displayName, 160);
+  setBoundedMetadataField(
+    metadata,
+    "defaultEnvironmentLabel",
+    candidate.defaultEnvironmentLabel,
+    160,
+  );
+  setBoundedMetadataField(metadata, "environmentPolicy", candidate.environmentPolicy, 80);
+  setBoundedMetadataField(metadata, "workingDirectory", candidate.workingDirectory, 512);
+
+  return Object.keys(metadata).length > 0 ? metadata : null;
+}
+
+function setBoundedMetadataField(
+  metadata: RuntimePeerWorkstationMetadata,
+  key: keyof RuntimePeerWorkstationMetadata,
+  value: unknown,
+  maxLength: number,
+): void {
+  if (typeof value !== "string") {
+    return;
+  }
+  const bounded = value.trim().slice(0, maxLength);
+  if (!bounded) {
+    return;
+  }
+  switch (key) {
+    case "workstationId":
+      metadata.workstationId = bounded;
+      break;
+    case "displayName":
+      metadata.displayName = bounded;
+      break;
+    case "defaultEnvironmentLabel":
+      metadata.defaultEnvironmentLabel = bounded;
+      break;
+    case "environmentPolicy":
+      metadata.environmentPolicy = bounded;
+      break;
+    case "workingDirectory":
+      metadata.workingDirectory = bounded;
+      break;
+  }
+}
+
+function boundedHeader(
+  request: Request,
+  headerName: string,
+  maxLength: number,
+): string | undefined {
+  const value = request.headers.get(headerName)?.trim();
+  if (!value) {
+    return undefined;
+  }
+  return value.slice(0, maxLength);
 }
 
 function notebookIdFromPath(pathname: string): string | undefined {

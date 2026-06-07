@@ -49,7 +49,7 @@ use notebook_protocol::connection::{FrameSink, FrameSource, FrameTransport};
 use notebook_wire::{NotebookFrameType, TypedNotebookFrame};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
+use tokio_tungstenite::tungstenite::http::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
@@ -86,6 +86,20 @@ pub enum CloudAuth {
     Dev { token: String, user: String },
 }
 
+/// Non-secret workstation facts the runtime peer can present on connect.
+///
+/// The hosted room remains the authority that writes RuntimeStateDoc
+/// attachment state; this metadata is only a bounded self-description of the
+/// process that is attaching as a runtime peer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CloudWorkstationMetadata {
+    pub workstation_id: Option<String>,
+    pub display_name: Option<String>,
+    pub default_environment_label: Option<String>,
+    pub environment_policy: Option<String>,
+    pub working_directory: Option<String>,
+}
+
 impl CloudAuth {
     /// Return a copy of this auth with its credential replaced by `token`,
     /// preserving the variant (and the `Dev` user label). Used by the
@@ -120,6 +134,30 @@ pub type TokenRefresher = Arc<
         + Sync,
 >;
 
+fn insert_workstation_header(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: Option<&str>,
+    max_len: usize,
+) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let value = truncate_header_value(value, max_len);
+    let Ok(header_value) = HeaderValue::from_str(&value) else {
+        warn!(
+            "[cloud-transport] skipping non-HTTP-safe workstation metadata header {}",
+            name
+        );
+        return;
+    };
+    headers.insert(HeaderName::from_static(name), header_value);
+}
+
+fn truncate_header_value(value: &str, max_len: usize) -> String {
+    value.chars().take(max_len).collect()
+}
+
 /// Connection parameters for a cloud room. Immutable for the life of the
 /// transport, so [`CloudWsFrameTransport::connect`] can be called repeatedly on
 /// reconnect.
@@ -133,6 +171,8 @@ pub struct CloudWsConfig {
     pub scope: String,
     /// How to authenticate the upgrade.
     pub auth: CloudAuth,
+    /// Optional non-secret workstation metadata presented on the upgrade.
+    pub workstation: Option<CloudWorkstationMetadata>,
 }
 
 /// Build the `wss://.../n/<id>/sync` URL from a base cloud URL.
@@ -468,7 +508,49 @@ impl CloudWsFrameTransport {
                 );
             }
         }
+        self.apply_workstation_headers(request);
         Ok(())
+    }
+
+    fn apply_workstation_headers(
+        &self,
+        request: &mut tokio_tungstenite::tungstenite::handshake::client::Request,
+    ) {
+        let Some(workstation) = self.config.workstation.as_ref() else {
+            return;
+        };
+
+        let h = request.headers_mut();
+        insert_workstation_header(
+            h,
+            "x-nteract-workstation-id",
+            workstation.workstation_id.as_deref(),
+            128,
+        );
+        insert_workstation_header(
+            h,
+            "x-nteract-workstation-display-name",
+            workstation.display_name.as_deref(),
+            160,
+        );
+        insert_workstation_header(
+            h,
+            "x-nteract-workstation-default-environment",
+            workstation.default_environment_label.as_deref(),
+            160,
+        );
+        insert_workstation_header(
+            h,
+            "x-nteract-workstation-environment-policy",
+            workstation.environment_policy.as_deref(),
+            80,
+        );
+        insert_workstation_header(
+            h,
+            "x-nteract-workstation-working-directory",
+            workstation.working_directory.as_deref(),
+            512,
+        );
     }
 
     /// Dial + auth + split + wait for `cloud_room_ready`, returning the halves
@@ -735,6 +817,7 @@ mod tests {
             auth: CloudAuth::OidcBearer {
                 token: "tok".into(),
             },
+            workstation: None,
         });
         assert_eq!(t.ws_url(), "wss://preview.runt.run/n/abc/sync");
         assert!(t.principal().is_none());
@@ -751,6 +834,7 @@ mod tests {
             auth: CloudAuth::OidcBearer {
                 token: "tok".into(),
             },
+            workstation: None,
         });
         assert!(t.clean_eof_is_recoverable());
     }
@@ -790,7 +874,56 @@ mod tests {
             auth: CloudAuth::OidcBearer {
                 token: "static-tok".into(),
             },
+            workstation: None,
         }
+    }
+
+    #[test]
+    fn apply_auth_headers_includes_bounded_workstation_metadata() {
+        let t = CloudWsFrameTransport::new(CloudWsConfig {
+            cloud_url: "https://preview.runt.run".into(),
+            notebook_id: "abc".into(),
+            scope: "runtime_peer".into(),
+            auth: CloudAuth::OidcBearer {
+                token: "tok".into(),
+            },
+            workstation: Some(CloudWorkstationMetadata {
+                workstation_id: Some("ws-lab2".into()),
+                display_name: Some("Lab2 workstation".into()),
+                default_environment_label: Some("Current Python".into()),
+                environment_policy: Some("current_python".into()),
+                working_directory: Some("/home/ubuntu/codex/nteract".into()),
+            }),
+        });
+        let mut request = t.ws_url().into_client_request().unwrap();
+
+        t.apply_auth_headers(
+            &mut request,
+            &CloudAuth::OidcBearer {
+                token: "tok".into(),
+            },
+        )
+        .unwrap();
+
+        let headers = request.headers();
+        assert_eq!(
+            headers
+                .get("x-nteract-workstation-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("ws-lab2")
+        );
+        assert_eq!(
+            headers
+                .get("x-nteract-workstation-working-directory")
+                .and_then(|value| value.to_str().ok()),
+            Some("/home/ubuntu/codex/nteract")
+        );
+        assert_eq!(
+            headers
+                .get("x-nteract-workstation-environment-policy")
+                .and_then(|value| value.to_str().ok()),
+            Some("current_python")
+        );
     }
 
     #[tokio::test]

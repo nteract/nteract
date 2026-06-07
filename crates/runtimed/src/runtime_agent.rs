@@ -2684,6 +2684,7 @@ mod tests {
             notebook_id: "abc".into(),
             scope: "runtime_peer".into(),
             auth: CloudAuth::OidcBearer { token: "t".into() },
+            workstation: None,
         });
         let operator = "agent:runt".to_string();
         // Mirror the resolver body in run_cloud_runtime_agent.

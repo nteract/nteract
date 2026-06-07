@@ -20,7 +20,7 @@
 //! attach) is the deferred proof.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use notebook_protocol::connection::EnvSource;
 use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig, RuntimeAgentRequest};
@@ -34,6 +34,9 @@ pub struct CurrentPythonLaunch {
     pub python_path: PathBuf,
     /// Notebook path, if the room maps to a file on the workstation.
     pub notebook_path: Option<String>,
+    /// Working directory for notebook-id-only rooms. Used as the launch cwd
+    /// when no workstation file path is available.
+    pub working_dir: Option<PathBuf>,
     /// Extra environment variables for the kernel process.
     pub env_vars: HashMap<String, String>,
 }
@@ -64,13 +67,20 @@ pub fn build_current_python_launch(
     RuntimeAgentRequest::LaunchKernel {
         kernel_type: "python".to_string(),
         env_source: EnvSource::parse(CURRENT_PYTHON_ENV_SOURCE),
-        notebook_path: launch.notebook_path.clone(),
+        notebook_path: launch
+            .notebook_path
+            .clone()
+            .or_else(|| launch.working_dir.as_deref().map(path_to_string)),
         launched_config,
         kernel_ports,
         env_vars: launch.env_vars.clone(),
         // current_python does not redact (no daemon-managed secret env overlay).
         redact_env_values_in_outputs: false,
     }
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -92,6 +102,7 @@ mod tests {
         CurrentPythonLaunch {
             python_path: PathBuf::from("/opt/ws/venv/bin/python"),
             notebook_path: Some("/home/ws/analysis.ipynb".into()),
+            working_dir: None,
             env_vars: HashMap::from([("FOO".to_string(), "bar".to_string())]),
         }
     }
@@ -139,6 +150,23 @@ mod tests {
         assert!(launched_config.conda_deps.is_none());
         assert!(launched_config.pixi_deps.is_none());
         assert!(launched_config.prewarmed_packages.is_empty());
+    }
+
+    #[test]
+    fn uses_working_dir_when_no_notebook_path_is_available() {
+        let req = build_current_python_launch(
+            &CurrentPythonLaunch {
+                python_path: PathBuf::from("/opt/ws/venv/bin/python"),
+                notebook_path: None,
+                working_dir: Some(PathBuf::from("/home/ws/project")),
+                env_vars: HashMap::new(),
+            },
+            ports(),
+        );
+        let RuntimeAgentRequest::LaunchKernel { notebook_path, .. } = req else {
+            panic!("expected LaunchKernel");
+        };
+        assert_eq!(notebook_path.as_deref(), Some("/home/ws/project"));
     }
 
     #[test]
