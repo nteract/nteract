@@ -30,7 +30,7 @@ import {
 import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
 import { catalogApiUrlForViewer, isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
 import { firstPositionalArg } from "./cli-args.mjs";
-import { smokeOutputPath } from "./smoke-paths.mjs";
+import { smokeJsonReportPath, smokeOutputPath, writeSmokeJsonReport } from "./smoke-paths.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
@@ -120,6 +120,7 @@ const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES"
   "system-dark",
 ]);
 const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT);
+const reportPath = smokeJsonReportPath("hosted-render-smoke");
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
 const expectedRuntimeWasmOrigin =
@@ -550,52 +551,48 @@ async function main() {
     }
     markTiming("total");
 
-    console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          targetUrl,
-          expectedSourceText,
-          expectedPageTexts,
-          expectedExecutionCount,
-          requireRenderedCellMarker,
-          expectedPresenceTitle,
-          expectedFrameTexts,
-          expectedOutputDocumentOrigin,
-          expectedCatalogOwnerPrincipal,
-          expectedLatestRevisionActorLabel,
-          expectedLatestRevisionNotebookHeadsHash,
-          expectedLatestRevisionRuntimeHeadsHash,
-          expectedLatestRevisionRuntimeStateDocId,
-          requireLatestRevisionRuntimeStateDocId,
-          timings_ms: timingsMs,
-          viewer_milestones_ms: viewerMilestones,
-          performanceDiagnostics,
-          performanceBudgets,
-          browserResourceTimingCount: browserResourceTimings.length,
-          catalogApiCheck,
-          viewerCssCheck,
-          runtimeWasmHintCheck,
-          forbidRenderCacheRequests,
-          renderCacheRequests,
-          executionCounts,
-          renderedCellCount,
-          presenceTitle,
-          siftLoadMilestoneMatches,
-          frameTextMatches,
-          pageTextMatches,
-          themeModeChecks,
-          iframeMetrics,
-          siftWasmRequests,
-          runtimedWasmRequests,
-          rendererCompletions: rendererCompletions.length,
-          siftDiagnostics,
-          warnings,
-        },
-        null,
-        2,
-      ),
-    );
+    const report = {
+      ok: true,
+      targetUrl,
+      expectedSourceText,
+      expectedPageTexts,
+      expectedExecutionCount,
+      requireRenderedCellMarker,
+      expectedPresenceTitle,
+      expectedFrameTexts,
+      expectedOutputDocumentOrigin,
+      expectedCatalogOwnerPrincipal,
+      expectedLatestRevisionActorLabel,
+      expectedLatestRevisionNotebookHeadsHash,
+      expectedLatestRevisionRuntimeHeadsHash,
+      expectedLatestRevisionRuntimeStateDocId,
+      requireLatestRevisionRuntimeStateDocId,
+      timings_ms: timingsMs,
+      viewer_milestones_ms: viewerMilestones,
+      performanceDiagnostics,
+      performanceBudgets,
+      browserResourceTimingCount: browserResourceTimings.length,
+      catalogApiCheck,
+      viewerCssCheck,
+      runtimeWasmHintCheck,
+      forbidRenderCacheRequests,
+      renderCacheRequests,
+      executionCounts,
+      renderedCellCount,
+      presenceTitle,
+      siftLoadMilestoneMatches,
+      frameTextMatches,
+      pageTextMatches,
+      themeModeChecks,
+      iframeMetrics,
+      siftWasmRequests,
+      runtimedWasmRequests,
+      rendererCompletions: rendererCompletions.length,
+      siftDiagnostics,
+      warnings,
+    };
+    await writeSmokeJsonReport(report, reportPath);
+    console.log(JSON.stringify(report, null, 2));
   } catch (error) {
     await flushDiagnosticTasks();
     if (screenshotPath && !screenshotSaved) {

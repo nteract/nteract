@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { saveSmokeScreenshot, smokeOutputPath } from "../scripts/smoke-paths.mjs";
+import {
+  saveSmokeScreenshot,
+  smokeJsonReportPath,
+  smokeOutputPath,
+  writeSmokeJsonReport,
+} from "../scripts/smoke-paths.mjs";
 
 describe("notebook-cloud smoke paths", () => {
   it("returns undefined for absent output paths", () => {
@@ -28,6 +33,45 @@ describe("notebook-cloud smoke paths", () => {
     assert.equal(smokeOutputPath(".context/smoke.png", {}), path.resolve(".context/smoke.png"));
   });
 
+  it("preserves explicit JSON report paths", () => {
+    const absolute = path.join(os.tmpdir(), "notebook-cloud-smoke.json");
+    assert.equal(
+      smokeJsonReportPath("hosted", { NOTEBOOK_CLOUD_SMOKE_REPORT: absolute }),
+      absolute,
+    );
+  });
+
+  it("resolves explicit relative JSON report paths against INIT_CWD", () => {
+    assert.equal(
+      smokeJsonReportPath("hosted", {
+        INIT_CWD: "/workspace",
+        NOTEBOOK_CLOUD_SMOKE_REPORT: ".context/hosted.json",
+      }),
+      path.resolve("/workspace", ".context/hosted.json"),
+    );
+  });
+
+  it("returns undefined when JSON reports are not requested", () => {
+    assert.equal(smokeJsonReportPath("hosted", {}), undefined);
+  });
+
+  it("creates automatic JSON report paths under .context when requested", () => {
+    assert.equal(
+      smokeJsonReportPath(
+        "hosted-render-smoke",
+        {
+          INIT_CWD: "/workspace",
+          NOTEBOOK_CLOUD_WRITE_SMOKE_REPORT: "1",
+        },
+        new Date("2026-06-07T14:28:36.789Z"),
+      ),
+      path.resolve(
+        "/workspace",
+        ".context/smokes/reports/hosted-render-smoke-20260607-142836.json",
+      ),
+    );
+  });
+
   it("creates screenshot parent directories before capture", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "notebook-cloud-smoke-"));
     try {
@@ -48,5 +92,22 @@ describe("notebook-cloud smoke paths", () => {
     } finally {
       await rm(root, { force: true, recursive: true });
     }
+  });
+
+  it("creates JSON report parent directories before writing", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "notebook-cloud-smoke-"));
+    try {
+      const reportPath = path.join(root, "nested", "smoke.json");
+      const written = await writeSmokeJsonReport({ ok: true, count: 2 }, reportPath);
+
+      assert.equal(written, true);
+      assert.equal(await readFile(reportPath, "utf8"), '{\n  "ok": true,\n  "count": 2\n}\n');
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("skips JSON report writes when no path is configured", async () => {
+    assert.equal(await writeSmokeJsonReport({ ok: true }, undefined), false);
   });
 });
