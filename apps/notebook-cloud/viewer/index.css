@@ -482,6 +482,7 @@ body {
   display: grid;
   gap: 1.25rem;
   width: min(100%, 72rem);
+  justify-self: center;
 }
 
 .cloud-dashboard-continue {
@@ -622,8 +623,8 @@ body {
 
 .cloud-dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 18rem;
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
   align-items: start;
 }
 
@@ -703,7 +704,9 @@ body {
 
 .cloud-dashboard-aside {
   display: grid;
-  gap: 1.25rem;
+  order: -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
 }
 
 .cloud-dashboard-aside section {
@@ -932,6 +935,10 @@ body {
   }
 
   .cloud-dashboard-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cloud-dashboard-aside {
     grid-template-columns: minmax(0, 1fr);
   }
 
