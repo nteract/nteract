@@ -94,12 +94,16 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(container.querySelector('[data-slot="projected-markdown-output"]')).toHaveClass(
-      "leading-[1.65]",
+      "leading-[1.68]",
       "[&>*:first-child]:mt-0",
       "[&>*:last-child]:mb-0",
     );
-    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-[1.875rem]", "font-bold");
-    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-[2rem]", "font-semibold");
+    expect(screen.getByRole("heading", { level: 2 })).toHaveClass(
+      "text-2xl",
+      "font-semibold",
+      "after:bg-primary/50",
+    );
     expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-xl", "font-semibold");
     expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-lg", "font-semibold");
   });
@@ -255,10 +259,10 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("list")).toHaveClass("my-3", "ml-6", "list-disc");
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
       "border-l-[3px]",
-      "border-primary/30",
+      "border-primary/45",
+      "bg-muted/[0.20]",
       "text-muted-foreground",
     );
-    expect(screen.getByText("quoted").closest("blockquote")).not.toHaveClass("bg-muted/[0.22]");
   });
 
   it("renders links with visible affordance before hover", () => {
@@ -414,7 +418,9 @@ describe("ProjectedMarkdownView", () => {
       document.querySelector('[data-slot="projected-markdown-task-checkbox"] span'),
     ).toHaveClass("bg-primary");
     expect(screen.getByText("important").tagName).toBe("EM");
+    expect(screen.getByText("important")).toHaveClass("text-muted-foreground");
     expect(screen.getByText("removed").tagName).toBe("DEL");
+    expect(screen.getByText("removed")).toHaveClass("decoration-destructive/55");
   });
 
   it("lets editable projections toggle task markers without changing output semantics", () => {
@@ -780,10 +786,12 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
-    expect(screen.getByRole("table").parentElement).toHaveClass("border-y");
-    expect(screen.getByRole("table").parentElement).not.toHaveClass("rounded-md");
-    expect(screen.getByRole("table").parentElement).not.toHaveClass("bg-background/80");
-    expect(screen.getByRole("row", { name: "rows 128" })).toHaveClass("odd:bg-muted/[0.04]");
+    expect(screen.getByRole("table").parentElement).toHaveClass(
+      "rounded-sm",
+      "border",
+      "shadow-sm",
+    );
+    expect(screen.getByRole("row", { name: "rows 128" })).toHaveClass("odd:bg-muted/[0.05]");
     expect(screen.getByRole("table").parentElement).toHaveAttribute(
       "data-slot",
       "projected-markdown-table",
@@ -835,7 +843,7 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByText("value").tagName).toBe("CODE");
-    expect(screen.getByText("value")).toHaveClass("bg-muted/75", "font-mono");
+    expect(screen.getByText("value")).toHaveClass("border", "bg-muted/70", "font-mono");
   });
 
   it("keeps projected code block copy controls reachable without hover", () => {
@@ -1101,6 +1109,7 @@ describe("ProjectedMarkdownView", () => {
     const image = screen.getByRole("img", { name: "Plot alt" });
     expect(image).toHaveAttribute("src", "attachment:plot.png");
     expect(image).toHaveAttribute("title", "Daily plot");
+    expect(image).toHaveClass("border", "shadow-sm");
   });
 
   it("does not render projected images with unsafe sources", () => {
@@ -1191,5 +1200,6 @@ describe("ProjectedMarkdownView", () => {
       "Before focus",
     );
     expect(container.querySelector('[data-source-active-run="true"]')).toHaveTextContent("focus");
+    expect(screen.getByText("focus")).toHaveClass("font-semibold");
   });
 });

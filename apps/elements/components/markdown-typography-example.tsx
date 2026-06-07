@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpenText, Link2, Pilcrow, Table2 } from "lucide-react";
+import { BookOpenText, Image, Link2, Pilcrow, Table2 } from "lucide-react";
 import { useCallback } from "react";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
 import type {
@@ -90,11 +90,14 @@ const markdownPlan: MarkdownProjectionPlan = {
     ),
     block(4, "evidence", "heading", "h2", "Evidence table"),
     block(5, "table", "table", "table", "metric baseline candidate delta"),
-    block(6, "checklist-heading", "heading", "h2", "Experiment checklist"),
-    block(7, "checklist", "list", "ul", "tasks"),
-    block(8, "math", "math", "div", "\\mathbb{E}[L_t] \\leq \\epsilon + \\lambda\\|A_t-A_0\\|_2"),
+    block(6, "ledger", "heading", "h3", "Observation ledger"),
+    block(7, "nested-list", "list", "ol", "notes", { ordered: true }),
+    block(8, "figure", "paragraph", "p", "Residual topology sketch"),
+    block(9, "checklist-heading", "heading", "h2", "Experiment checklist"),
+    block(10, "checklist", "list", "ul", "tasks"),
+    block(11, "math", "math", "div", "\\mathbb{E}[L_t] \\leq \\epsilon + \\lambda\\|A_t-A_0\\|_2"),
     block(
-      9,
+      12,
       "code",
       "code",
       "pre",
@@ -103,8 +106,9 @@ const markdownPlan: MarkdownProjectionPlan = {
         codeLanguage: "python",
       },
     ),
+    block(13, "rule", "thematic-break", "hr", ""),
     block(
-      10,
+      14,
       "closing",
       "paragraph",
       "p",
@@ -163,6 +167,38 @@ const markdownPlan: MarkdownProjectionPlan = {
       tableCellIndex: 2,
       tableRowIndex: 2,
     }),
+    run("ledger", "ledger-text", "Observation ledger"),
+    run("nested-list", "nested-0", "Treat the schedule as a bounded operator", {
+      listItemIndex: 0,
+      listItemOrdered: true,
+      listItemPath: "0",
+      semantic: "list-item",
+    }),
+    run("nested-list", "nested-0-0", "Measure local topic neighborhoods after every prior update", {
+      listItemIndex: 0,
+      listItemOrdered: false,
+      listItemPath: "0.0",
+      semantic: "list-item",
+    }),
+    run("nested-list", "nested-1a", "Escalate drift into a ", {
+      listItemIndex: 1,
+      listItemOrdered: true,
+      listItemPath: "1",
+      semantic: "list-item",
+    }),
+    run("nested-list", "nested-1b", "follow-up cell", {
+      href: "https://example.com/follow-up",
+      listItemIndex: 1,
+      listItemOrdered: true,
+      listItemPath: "1",
+      semantic: "list-item",
+    }),
+    run("figure", "figure-image", "Residual topology sketch", {
+      imageAlt: "Residual topology sketch",
+      imageSrc: "/fixtures/widget-buffer-url-image.svg",
+      imageTitle: "Residual topology sketch",
+      semantic: "image",
+    }),
     run("checklist-heading", "checklist-heading-text", "Experiment checklist"),
     run("checklist", "task-0", "Reproduce the baseline paper", {
       listItemChecked: true,
@@ -211,6 +247,11 @@ const auditRows = [
     icon: Table2,
     label: "Dense evidence",
     detail: "Tables use notebook tokens without becoming heavy spreadsheet chrome.",
+  },
+  {
+    icon: Image,
+    label: "Figure rhythm",
+    detail: "Images sit in the document flow with a quiet boundary and reusable output tokens.",
   },
   {
     icon: BookOpenText,

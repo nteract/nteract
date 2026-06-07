@@ -13,11 +13,25 @@ import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import {
   markdownBlockquoteClassName,
+  markdownDeleteClassName,
   markdownDocumentClassName,
+  markdownEmphasisClassName,
+  markdownFootnoteBackrefClassName,
+  markdownFootnotesClassName,
+  markdownImageClassName,
   markdownHeadingClassName,
   markdownInlineCodeClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
+  markdownParagraphClassName,
+  markdownStrongClassName,
+  markdownTableCellClassName,
+  markdownTableClassName,
+  markdownTableHeadClassName,
+  markdownTableHeaderCellClassName,
+  markdownTableRowClassName,
+  markdownTableWrapperClassName,
+  markdownThematicBreakClassName,
 } from "../markdown/markdown-typography";
 
 import "katex/dist/katex.min.css";
@@ -231,14 +245,25 @@ export function MarkdownOutput({
           },
 
           // Links open in new tab
-          a({ href, children, ...props }) {
+          a({ href, children, className, ...props }) {
+            const linkProps = props as typeof props & {
+              "data-footnote-backref"?: string | boolean;
+            };
+            const isFootnoteBackref =
+              linkProps["data-footnote-backref"] !== undefined ||
+              className?.split(/\s+/).includes("data-footnote-backref");
+            const isDocumentAnchor = href?.startsWith("#") ?? false;
             return (
               <a
-                href={href}
-                className={markdownLinkClassName}
-                rel="noopener noreferrer"
-                target="_blank"
                 {...props}
+                href={href}
+                className={cn(
+                  markdownLinkClassName,
+                  isFootnoteBackref && markdownFootnoteBackrefClassName,
+                  className,
+                )}
+                rel={isDocumentAnchor ? undefined : "noopener noreferrer"}
+                target={isDocumentAnchor ? undefined : "_blank"}
               >
                 {children}
               </a>
@@ -248,11 +273,8 @@ export function MarkdownOutput({
           // Tables
           table({ children, ...props }) {
             return (
-              <div className="my-4 overflow-x-auto border-y border-border">
-                <table
-                  className="min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal"
-                  {...props}
-                >
+              <div className={markdownTableWrapperClassName}>
+                <table className={markdownTableClassName} {...props}>
                   {children}
                 </table>
               </div>
@@ -260,7 +282,7 @@ export function MarkdownOutput({
           },
           thead({ children, ...props }) {
             return (
-              <thead className="bg-muted/55" {...props}>
+              <thead className={markdownTableHeadClassName} {...props}>
                 {children}
               </thead>
             );
@@ -274,27 +296,21 @@ export function MarkdownOutput({
           },
           tr({ children, ...props }) {
             return (
-              <tr className="odd:bg-muted/[0.04]" {...props}>
+              <tr className={markdownTableRowClassName} {...props}>
                 {children}
               </tr>
             );
           },
           th({ children, ...props }) {
             return (
-              <th
-                className="border-r border-border px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
-                {...props}
-              >
+              <th className={markdownTableHeaderCellClassName} {...props}>
                 {children}
               </th>
             );
           },
           td({ children, ...props }) {
             return (
-              <td
-                className="border-r border-t border-border px-3 py-2 align-top text-muted-foreground first:text-foreground last:border-r-0"
-                {...props}
-              >
+              <td className={markdownTableCellClassName} {...props}>
                 {children}
               </td>
             );
@@ -371,7 +387,7 @@ export function MarkdownOutput({
           // Paragraphs
           p({ children, ...props }) {
             return (
-              <p className="my-2 leading-relaxed" {...props}>
+              <p className={markdownParagraphClassName} {...props}>
                 {children}
               </p>
             );
@@ -420,13 +436,52 @@ export function MarkdownOutput({
 
           // Horizontal rule
           hr({ ...props }) {
-            return <hr className="my-6 border-t border-gray-300 dark:border-gray-600" {...props} />;
+            return <hr className={markdownThematicBreakClassName} {...props} />;
           },
 
           // Images
           img({ src, alt, ...props }) {
             if (!src) return null;
-            return <img src={src} alt={alt || ""} className="my-4 max-w-full h-auto" {...props} />;
+            return <img src={src} alt={alt || ""} className={markdownImageClassName} {...props} />;
+          },
+
+          strong({ children, ...props }) {
+            return (
+              <strong className={markdownStrongClassName} {...props}>
+                {children}
+              </strong>
+            );
+          },
+
+          em({ children, ...props }) {
+            return (
+              <em className={markdownEmphasisClassName} {...props}>
+                {children}
+              </em>
+            );
+          },
+
+          del({ children, ...props }) {
+            return (
+              <del className={markdownDeleteClassName} {...props}>
+                {children}
+              </del>
+            );
+          },
+
+          section({ children, className, ...props }) {
+            const sectionProps = props as typeof props & {
+              "data-footnotes"?: string | boolean;
+            };
+            const isFootnotes = sectionProps["data-footnotes"] !== undefined;
+            return (
+              <section
+                className={cn(isFootnotes && markdownFootnotesClassName, className)}
+                {...props}
+              >
+                {children}
+              </section>
+            );
           },
         }}
       >

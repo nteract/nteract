@@ -74,4 +74,30 @@ describe("MarkdownOutput heading anchors", () => {
       "underline-offset-4",
     );
   });
+
+  it("uses the shared evidence table treatment", () => {
+    render(<MarkdownOutput content={"| metric | value |\n| --- | ---: |\n| rows | 128 |"} />);
+
+    expect(screen.getByRole("table").parentElement).toHaveClass(
+      "rounded-sm",
+      "border",
+      "shadow-sm",
+    );
+    expect(screen.getByRole("columnheader", { name: "metric" })).toHaveClass(
+      "border-border/80",
+      "py-2.5",
+    );
+    expect(screen.getByRole("cell", { name: "128" })).toHaveClass(
+      "border-border/70",
+      "text-muted-foreground",
+    );
+  });
+
+  it("styles GFM footnotes as a compact document apparatus", () => {
+    render(<MarkdownOutput content={"Claim with a note.[^1]\n\n[^1]: Detailed citation."} />);
+
+    const footnotes = document.querySelector("section[data-footnotes]");
+    expect(footnotes).toHaveClass("border-t", "font-[var(--output-ui-font)]", "text-sm");
+    expect(screen.getByText("↩")).toHaveClass("text-xs", "no-underline");
+  });
 });

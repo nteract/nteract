@@ -14,11 +14,23 @@ import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import {
   markdownBlockquoteClassName,
+  markdownDeleteClassName,
   markdownDocumentClassName,
+  markdownEmphasisClassName,
+  markdownImageClassName,
   markdownHeadingClassName,
   markdownInlineCodeClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
+  markdownParagraphClassName,
+  markdownStrongClassName,
+  markdownTableCellClassName,
+  markdownTableClassName,
+  markdownTableHeadClassName,
+  markdownTableHeaderCellClassName,
+  markdownTableRowClassName,
+  markdownTableWrapperClassName,
+  markdownThematicBreakClassName,
 } from "./markdown-typography";
 
 import "katex/dist/katex.min.css";
@@ -179,7 +191,7 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "thematic-break") {
-    return <hr className="my-6 border-border" />;
+    return <hr className={markdownThematicBreakClassName} />;
   }
 
   if (block.kind === "table") {
@@ -203,7 +215,7 @@ function ProjectedMarkdownBlock({
       <p
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          "my-3 leading-relaxed",
+          markdownParagraphClassName,
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -546,19 +558,16 @@ function ProjectedTable({
     <div
       data-slot="projected-markdown-table"
       data-source-active={activeBlock ? "true" : undefined}
-      className={cn(
-        "my-4 overflow-x-auto border-y border-border",
-        activeBlock && sourceActiveBlockClass,
-      )}
+      className={cn(markdownTableWrapperClassName, activeBlock && sourceActiveBlockClass)}
     >
-      <table className="min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal">
+      <table className={markdownTableClassName}>
         {hasHeader ? (
-          <thead>
+          <thead className={markdownTableHeadClassName}>
             <tr>
               {headerRow.cells.map((cell) => (
                 <th
                   key={cell.key}
-                  className="border-b border-r border-border bg-muted/55 px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
+                  className={markdownTableHeaderCellClassName}
                   style={tableCellStyle(cell.align)}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
@@ -569,11 +578,11 @@ function ProjectedTable({
         ) : null}
         <tbody>
           {(hasHeader ? bodyRows : rows).map((row) => (
-            <tr key={row.key} className="odd:bg-muted/[0.04]">
+            <tr key={row.key} className={markdownTableRowClassName}>
               {row.cells.map((cell) => (
                 <td
                   key={cell.key}
-                  className="border-r border-t border-border px-3 py-2 align-top text-muted-foreground first:text-foreground last:border-r-0"
+                  className={markdownTableCellClassName}
                   style={tableCellStyle(cell.align)}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
@@ -676,9 +685,9 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
     );
   }
 
-  if (run.semantic === "strong") return <strong>{text}</strong>;
-  if (run.semantic === "emphasis") return <em>{text}</em>;
-  if (run.semantic === "delete") return <del>{text}</del>;
+  if (run.semantic === "strong") return <strong className={markdownStrongClassName}>{text}</strong>;
+  if (run.semantic === "emphasis") return <em className={markdownEmphasisClassName}>{text}</em>;
+  if (run.semantic === "delete") return <del className={markdownDeleteClassName}>{text}</del>;
   if (run.semantic === "inline-code") return <InlineCode>{text}</InlineCode>;
   if (run.semantic === "math-source") return <ProjectedMath latex={text} />;
   if (run.semantic === "code-block") return text;
@@ -699,7 +708,7 @@ function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
       src={src}
       alt={alt}
       title={run.imageTitle}
-      className="my-4 max-w-full h-auto rounded-sm"
+      className={markdownImageClassName}
       loading="lazy"
     />
   );

@@ -108,7 +108,7 @@
       :is([data-slot="markdown-output"], [data-slot="html-output"]) {
         font-family: var(--output-document-font);
         font-size: 1rem;
-        line-height: 1.65;
+        line-height: 1.68;
         font-kerning: normal;
         text-rendering: optimizeLegibility;
       }
@@ -121,22 +121,36 @@
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 {
         color: var(--text-primary);
         font-family: var(--output-document-font);
-        font-weight: 700;
+        font-weight: 600;
         line-height: 1.2;
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 {
-        margin: 1.5rem 0 1rem;
-        font-size: 1.875rem;
+        margin: 1.75rem 0 1rem;
+        font-size: 2rem;
+        line-height: 1.08;
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 {
-        margin: 1.35rem 0 0.75rem;
+        position: relative;
+        margin: 1.75rem 0 0.75rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--border-color);
         font-size: 1.5rem;
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h2::after {
+        position: absolute;
+        bottom: -1px;
+        left: 0;
+        width: 4rem;
+        height: 1px;
+        background: color-mix(in oklch, var(--accent-color) 55%, transparent);
+        content: "";
+      }
+
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 {
-        margin: 1.2rem 0 0.625rem;
+        margin: 1.5rem 0 0.625rem;
         font-size: 1.25rem;
       }
 
@@ -172,9 +186,10 @@
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) blockquote {
-        margin: 1rem 0;
-        padding-left: 1rem;
-        border-left: 4px solid var(--border-color);
+        margin: 1.25rem 0;
+        padding: 0.75rem 1rem 0.75rem 1.25rem;
+        border-left: 3px solid color-mix(in oklch, var(--accent-color) 52%, transparent);
+        background: color-mix(in oklch, var(--bg-secondary) 62%, transparent);
         color: var(--text-secondary);
         font-style: italic;
       }
@@ -188,6 +203,29 @@
       :is([data-slot="markdown-output"], [data-slot="html-output"]) pre,
       :is([data-slot="markdown-output"], [data-slot="html-output"]) code {
         font-family: var(--output-mono-font);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) :not(pre) > code {
+        padding: 0.125rem 0.375rem;
+        border: 1px solid var(--border-color);
+        border-radius: 0.125rem;
+        background: color-mix(in oklch, var(--bg-secondary) 72%, transparent);
+        color: var(--text-primary);
+        font-size: 0.88em;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) strong {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) em {
+        color: var(--text-secondary);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) del {
+        color: var(--text-secondary);
+        text-decoration-thickness: 2px;
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) table,
@@ -218,11 +256,25 @@
         font-size: 0.875rem;
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) table {
+        margin: 1.25rem 0;
+        border: 1px solid var(--border-color);
+        border-radius: 0.125rem;
+        background: var(--bg-primary);
+        box-shadow: 0 1px 2px color-mix(in oklch, var(--text-primary) 10%, transparent);
+        overflow: hidden;
+      }
+
       th,
       td {
         border: 1px solid var(--border-color);
         padding: 4px 8px;
         text-align: left;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) th,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) td {
+        padding: 0.625rem 0.75rem;
       }
 
       th {
@@ -234,6 +286,24 @@
       img {
         max-width: 100%;
         height: auto;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) img {
+        margin: 1.25rem 0;
+        border: 1px solid var(--border-color);
+        border-radius: 0.125rem;
+        background: color-mix(in oklch, var(--bg-secondary) 38%, transparent);
+        box-shadow: 0 1px 2px color-mix(in oklch, var(--text-primary) 10%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) section[data-footnotes] {
+        margin-top: 2rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        font-family: var(--output-ui-font);
+        font-size: 0.875rem;
+        line-height: 1.5rem;
       }
 
       /* Links */
