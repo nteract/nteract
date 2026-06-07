@@ -108,6 +108,56 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-lg", "font-semibold");
   });
 
+  it("renders heading anchors when outline metadata is available", () => {
+    render(
+      <ProjectedMarkdownView
+        headingAnchors={[
+          {
+            itemId: "cell-a:heading:0",
+            title: "Claim",
+            level: 2,
+            anchor: "claim",
+            headingAnchorId: "notebook-cell-cell-a-heading-claim",
+          },
+        ]}
+        plan={plan({
+          blocks: [
+            {
+              anchorSlug: "claim",
+              blockId: "claim",
+              blockIndex: 0,
+              element: "h2",
+              kind: "heading",
+              measurement: { estimatedHeight: 40, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 8],
+              sourceSpanUtf16: [0, 8],
+              syntaxSpans: [],
+              text: "Claim",
+            },
+          ],
+          runs: [
+            {
+              blockId: "claim",
+              inlineId: "claim-text",
+              listItemIndex: null,
+              renderedText: "Claim",
+              renderedTextUtf16: [0, 5],
+              semantic: "text",
+              sourceSpanByte: [0, 5],
+              sourceSpanUtf16: [0, 5],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const heading = screen.getByRole("heading", { level: 2 });
+    const anchor = screen.getByRole("link", { name: "Link to Claim" });
+    expect(heading).toHaveAttribute("id", "notebook-cell-cell-a-heading-claim");
+    expect(anchor).toHaveAttribute("href", "#notebook-cell-cell-a-heading-claim");
+    expect(anchor).toHaveClass("text-muted-foreground/40", "hover:text-primary");
+  });
+
   it("renders projected inline and display math with KaTeX", () => {
     render(
       <ProjectedMarkdownView
@@ -1110,6 +1160,8 @@ describe("ProjectedMarkdownView", () => {
     expect(image).toHaveAttribute("src", "attachment:plot.png");
     expect(image).toHaveAttribute("title", "Daily plot");
     expect(image).toHaveClass("border", "shadow-sm");
+    expect(image.closest("figure")).toHaveClass("my-5");
+    expect(screen.getByText("Daily plot")).toHaveClass("text-xs", "text-muted-foreground");
   });
 
   it("does not render projected images with unsafe sources", () => {

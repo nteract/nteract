@@ -16,10 +16,13 @@ import {
   markdownDeleteClassName,
   markdownDocumentClassName,
   markdownEmphasisClassName,
+  markdownFigureCaptionClassName,
+  markdownFigureClassName,
   markdownFootnoteBackrefClassName,
   markdownFootnotesClassName,
-  markdownImageClassName,
+  markdownHeadingAnchorClassName,
   markdownHeadingClassName,
+  markdownImageClassName,
   markdownInlineCodeClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
@@ -188,6 +191,24 @@ export function MarkdownOutput({
     };
   };
 
+  const renderHeadingAnchor = (
+    attributes: ReturnType<typeof headingAttributes>,
+    children: ReactNode,
+  ) => {
+    const id = (attributes as { id?: string }).id;
+    if (!id) return null;
+
+    return (
+      <a
+        aria-label={`Link to ${normalizeHeadingText(textFromReactNode(children))}`}
+        className={markdownHeadingAnchorClassName}
+        href={`#${id}`}
+      >
+        #
+      </a>
+    );
+  };
+
   if (!content) {
     return null;
   }
@@ -318,68 +339,56 @@ export function MarkdownOutput({
 
           // Headings
           h1({ children, ...props }) {
+            const attributes = headingAttributes(1, children);
             return (
-              <h1
-                className={markdownHeadingClassName("h1")}
-                {...props}
-                {...headingAttributes(1, children)}
-              >
+              <h1 className={markdownHeadingClassName("h1")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h1>
             );
           },
           h2({ children, ...props }) {
+            const attributes = headingAttributes(2, children);
             return (
-              <h2
-                className={markdownHeadingClassName("h2")}
-                {...props}
-                {...headingAttributes(2, children)}
-              >
+              <h2 className={markdownHeadingClassName("h2")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h2>
             );
           },
           h3({ children, ...props }) {
+            const attributes = headingAttributes(3, children);
             return (
-              <h3
-                className={markdownHeadingClassName("h3")}
-                {...props}
-                {...headingAttributes(3, children)}
-              >
+              <h3 className={markdownHeadingClassName("h3")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h3>
             );
           },
           h4({ children, ...props }) {
+            const attributes = headingAttributes(4, children);
             return (
-              <h4
-                className={markdownHeadingClassName("h4")}
-                {...props}
-                {...headingAttributes(4, children)}
-              >
+              <h4 className={markdownHeadingClassName("h4")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h4>
             );
           },
           h5({ children, ...props }) {
+            const attributes = headingAttributes(5, children);
             return (
-              <h5
-                className={markdownHeadingClassName("h5")}
-                {...props}
-                {...headingAttributes(5, children)}
-              >
+              <h5 className={markdownHeadingClassName("h5")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h5>
             );
           },
           h6({ children, ...props }) {
+            const attributes = headingAttributes(6, children);
             return (
-              <h6
-                className={markdownHeadingClassName("h6")}
-                {...props}
-                {...headingAttributes(6, children)}
-              >
+              <h6 className={markdownHeadingClassName("h6")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h6>
             );
           },
@@ -443,6 +452,22 @@ export function MarkdownOutput({
           img({ src, alt, ...props }) {
             if (!src) return null;
             return <img src={src} alt={alt || ""} className={markdownImageClassName} {...props} />;
+          },
+
+          figure({ children, ...props }) {
+            return (
+              <figure className={markdownFigureClassName} {...props}>
+                {children}
+              </figure>
+            );
+          },
+
+          figcaption({ children, ...props }) {
+            return (
+              <figcaption className={markdownFigureCaptionClassName} {...props}>
+                {children}
+              </figcaption>
+            );
           },
 
           strong({ children, ...props }) {

@@ -42,23 +42,35 @@ export const markdownTableCellClassName =
 export const markdownImageClassName =
   "my-5 h-auto max-w-full rounded-sm border border-border/80 bg-muted/15 shadow-sm";
 
+export const markdownFigureClassName = "my-5";
+
+export const markdownFigureCaptionClassName =
+  "mt-2 font-[var(--output-ui-font)] text-xs leading-5 text-muted-foreground";
+
 export const markdownFootnotesClassName =
   "mt-8 border-t border-border/70 pt-4 font-[var(--output-ui-font)] text-sm leading-6 text-muted-foreground";
 
 export const markdownFootnoteBackrefClassName =
   "ml-1 font-[var(--output-ui-font)] text-xs no-underline hover:bg-transparent";
 
+export const markdownHeadingAnchorClassName =
+  "ml-2 inline-flex translate-y-[-0.08em] rounded-[2px] font-[var(--output-ui-font)] text-[0.58em] font-medium text-muted-foreground/40 no-underline decoration-transparent transition-colors hover:bg-primary/5 hover:text-primary focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+
 export function markdownHeadingClassName(element: string) {
   if (element === "h1") {
-    return "mt-7 mb-4 text-[2rem] leading-[1.08] font-semibold [text-wrap:balance]";
+    return "group/markdown-heading scroll-mt-16 mt-7 mb-4 text-[2rem] leading-[1.08] font-semibold [text-wrap:balance]";
   }
   if (element === "h2") {
-    return "relative mt-7 mb-3 border-b border-border/70 pb-2 text-2xl leading-tight font-semibold [text-wrap:balance] after:absolute after:bottom-[-1px] after:left-0 after:h-px after:w-16 after:bg-primary/50 after:content-['']";
+    return "group/markdown-heading relative scroll-mt-16 mt-7 mb-3 border-b border-border/70 pb-2 text-2xl leading-tight font-semibold [text-wrap:balance] after:absolute after:bottom-[-1px] after:left-0 after:h-px after:w-16 after:bg-primary/50 after:content-['']";
   }
   if (element === "h3") {
-    return "mt-6 mb-2.5 text-xl leading-tight font-semibold [text-wrap:balance]";
+    return "group/markdown-heading scroll-mt-16 mt-6 mb-2.5 text-xl leading-tight font-semibold [text-wrap:balance]";
   }
-  if (element === "h4") return "mt-4 mb-2 text-lg leading-tight font-semibold";
-  if (element === "h5") return "mt-3.5 mb-1.5 text-base leading-tight font-semibold";
-  return "mt-3 mb-1.5 text-sm leading-tight font-semibold text-muted-foreground";
+  if (element === "h4") {
+    return "group/markdown-heading scroll-mt-16 mt-4 mb-2 text-lg leading-tight font-semibold";
+  }
+  if (element === "h5") {
+    return "group/markdown-heading scroll-mt-16 mt-3.5 mb-1.5 text-base leading-tight font-semibold";
+  }
+  return "group/markdown-heading scroll-mt-16 mt-3 mb-1.5 text-sm leading-tight font-semibold text-muted-foreground";
 }

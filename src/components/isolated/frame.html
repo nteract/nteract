@@ -149,6 +149,31 @@
         content: "";
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h4 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h5 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 > a[href^="#"] {
+        display: inline-flex;
+        margin-left: 0.5rem;
+        transform: translateY(-0.08em);
+        color: color-mix(in oklch, var(--text-secondary) 42%, transparent);
+        font-family: var(--output-ui-font);
+        font-size: 0.58em;
+        font-weight: 500;
+        text-decoration: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h4 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h5 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 > a[href^="#"]:hover {
+        color: var(--accent-color);
+      }
+
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 {
         margin: 1.5rem 0 0.625rem;
         font-size: 1.25rem;
@@ -294,6 +319,22 @@
         border-radius: 0.125rem;
         background: color-mix(in oklch, var(--bg-secondary) 38%, transparent);
         box-shadow: 0 1px 2px color-mix(in oklch, var(--text-primary) 10%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) figure {
+        margin: 1.25rem 0;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) figure > img {
+        margin-bottom: 0;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) figcaption {
+        margin-top: 0.5rem;
+        color: var(--text-secondary);
+        font-family: var(--output-ui-font);
+        font-size: 0.75rem;
+        line-height: 1.25rem;
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) section[data-footnotes] {

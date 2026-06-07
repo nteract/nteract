@@ -17,6 +17,9 @@ import {
   markdownDeleteClassName,
   markdownDocumentClassName,
   markdownEmphasisClassName,
+  markdownFigureCaptionClassName,
+  markdownFigureClassName,
+  markdownHeadingAnchorClassName,
   markdownImageClassName,
   markdownHeadingClassName,
   markdownInlineCodeClassName,
@@ -130,6 +133,15 @@ function ProjectedMarkdownBlock({
         )}
       >
         {renderRuns(runs, onLinkClick, activeInlineId)}
+        {headingAnchor?.headingAnchorId ? (
+          <a
+            aria-label={`Link to ${block.text}`}
+            className={markdownHeadingAnchorClassName}
+            href={`#${headingAnchor.headingAnchorId}`}
+          >
+            #
+          </a>
+        ) : null}
       </Heading>
     );
   }
@@ -211,6 +223,17 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "paragraph") {
+    const figureRun = imageOnlyRun(runs);
+    if (figureRun) {
+      return (
+        <ProjectedFigure
+          active={activeBlockId === block.blockId}
+          activeInlineId={activeInlineId}
+          run={figureRun}
+        />
+      );
+    }
+
     return (
       <p
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
@@ -694,6 +717,41 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
   if (run.semantic === "link-label") return text;
 
   return text;
+}
+
+function imageOnlyRun(runs: MarkdownProjectionRun[]): MarkdownProjectionRun | null {
+  const visibleRuns = runs.filter((run) => run.semantic !== "isolated-placeholder");
+  if (visibleRuns.length !== 1) return null;
+  const [run] = visibleRuns;
+  return run.semantic === "image" && run.imageSrc ? run : null;
+}
+
+function ProjectedFigure({
+  active,
+  activeInlineId,
+  run,
+}: {
+  active: boolean;
+  activeInlineId?: string;
+  run: MarkdownProjectionRun;
+}) {
+  const image = <ProjectedImage run={run} />;
+  const title = run.imageTitle?.trim();
+  return (
+    <figure
+      data-source-active={active ? "true" : undefined}
+      className={cn(markdownFigureClassName, active && sourceActiveBlockClass)}
+    >
+      {activeInlineId === run.inlineId ? (
+        <span data-source-active-run="true" className={sourceActiveRunClass}>
+          {image}
+        </span>
+      ) : (
+        image
+      )}
+      {title ? <figcaption className={markdownFigureCaptionClassName}>{title}</figcaption> : null}
+    </figure>
+  );
 }
 
 function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {

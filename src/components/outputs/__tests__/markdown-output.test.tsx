@@ -55,13 +55,17 @@ describe("MarkdownOutput heading anchors", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Load data" })).toHaveAttribute(
+    expect(screen.getByRole("heading", { name: /Load data/ })).toHaveAttribute(
       "id",
       "notebook-cell-cell-a-heading-load-data",
     );
-    expect(screen.getByRole("heading", { name: "Clean columns" })).toHaveAttribute(
+    expect(screen.getByRole("heading", { name: /Clean columns/ })).toHaveAttribute(
       "data-nteract-outline-item-id",
       "cell-a:heading:1",
+    );
+    expect(screen.getByRole("link", { name: "Link to Load data" })).toHaveAttribute(
+      "href",
+      "#notebook-cell-cell-a-heading-load-data",
     );
   });
 
@@ -99,5 +103,22 @@ describe("MarkdownOutput heading anchors", () => {
     const footnotes = document.querySelector("section[data-footnotes]");
     expect(footnotes).toHaveClass("border-t", "font-[var(--output-ui-font)]", "text-sm");
     expect(screen.getByText("↩")).toHaveClass("text-xs", "no-underline");
+  });
+
+  it("styles raw figure captions with the shared document treatment", () => {
+    render(
+      <MarkdownOutput
+        content={
+          '<figure><img src="https://example.com/plot.png" alt="Plot"><figcaption>Figure 1. Residual topology.</figcaption></figure>'
+        }
+      />,
+    );
+
+    expect(screen.getByRole("figure")).toHaveClass("my-5");
+    expect(screen.getByRole("img", { name: "Plot" })).toHaveClass("border", "shadow-sm");
+    expect(screen.getByText("Figure 1. Residual topology.")).toHaveClass(
+      "font-[var(--output-ui-font)]",
+      "text-xs",
+    );
   });
 });

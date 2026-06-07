@@ -232,6 +232,44 @@ const markdownPlan: MarkdownProjectionPlan = {
   ],
 };
 
+const headingAnchors = [
+  {
+    anchor: "discrete-diffusion-notebook",
+    headingAnchorId: "elements-markdown-heading-discrete-diffusion-notebook",
+    itemId: "elements-markdown:title",
+    level: 1,
+    title: "Discrete diffusion notebook",
+  },
+  {
+    anchor: "claim",
+    headingAnchorId: "elements-markdown-heading-claim",
+    itemId: "elements-markdown:claim",
+    level: 2,
+    title: "Claim",
+  },
+  {
+    anchor: "evidence-table",
+    headingAnchorId: "elements-markdown-heading-evidence-table",
+    itemId: "elements-markdown:evidence",
+    level: 2,
+    title: "Evidence table",
+  },
+  {
+    anchor: "observation-ledger",
+    headingAnchorId: "elements-markdown-heading-observation-ledger",
+    itemId: "elements-markdown:ledger",
+    level: 3,
+    title: "Observation ledger",
+  },
+  {
+    anchor: "experiment-checklist",
+    headingAnchorId: "elements-markdown-heading-experiment-checklist",
+    itemId: "elements-markdown:checklist",
+    level: 2,
+    title: "Experiment checklist",
+  },
+] as const;
+
 const auditRows = [
   {
     icon: Link2,
@@ -240,8 +278,8 @@ const auditRows = [
   },
   {
     icon: Pilcrow,
-    label: "Document rhythm",
-    detail: "Section spacing, subdued list markers, and legible paragraph measure.",
+    label: "Anchorable sections",
+    detail: "Headings expose quiet permalink anchors from the notebook outline metadata.",
   },
   {
     icon: Table2,
@@ -279,7 +317,11 @@ export function MarkdownTypographyExample() {
 
       <section className="grid gap-4 min-[1500px]:grid-cols-[minmax(0,1fr)_320px]">
         <article className="min-w-0 border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
-          <ProjectedMarkdownView plan={markdownPlan} onLinkClick={handleLinkClick} />
+          <ProjectedMarkdownView
+            headingAnchors={headingAnchors}
+            plan={markdownPlan}
+            onLinkClick={handleLinkClick}
+          />
         </article>
 
         <aside className="grid content-start gap-3 border border-border bg-muted/20 p-4 text-foreground">
@@ -306,6 +348,7 @@ export function MarkdownTypographyExample() {
           <div className="mb-3 font-mono text-[11px] text-muted-foreground">classic tokens</div>
           <ProjectedMarkdownView
             colorTheme="classic"
+            headingAnchors={headingAnchors}
             plan={markdownPlan}
             onLinkClick={handleLinkClick}
           />
@@ -317,6 +360,7 @@ export function MarkdownTypographyExample() {
           <div className="mb-3 font-mono text-[11px] text-muted-foreground">cream tokens</div>
           <ProjectedMarkdownView
             colorTheme="cream"
+            headingAnchors={headingAnchors}
             plan={markdownPlan}
             onLinkClick={handleLinkClick}
           />
