@@ -10,6 +10,18 @@ export {
   applyOutputChangeset,
   resetRuntimeStoresProjection,
 } from "./lib/project-runtime-stores";
+export {
+  materializeChangeset,
+  type CellChangeset,
+  type MaterializeDeps,
+} from "./lib/frame-pipeline";
+export {
+  getCellById,
+  getCellIdsSnapshot,
+  getNotebookCellsSnapshot,
+  type NotebookCell,
+} from "./lib/notebook-cells";
+export type { JupyterOutput } from "./types";
 export { resetPoolState, setPoolState } from "./lib/pool-state";
 export {
   resetRuntimeState,

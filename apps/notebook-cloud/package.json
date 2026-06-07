@@ -37,6 +37,7 @@
     "lucide-react": "^0.513.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "rxjs": "^7.8.2",
     "runtimed": "workspace:*"
   },
   "devDependencies": {

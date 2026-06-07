@@ -86,6 +86,7 @@ import {
   createNotebookController,
   NotebookView,
   PresenceValueProvider,
+  getCellById,
   setLoggerHost,
   setOpenUrlHost,
   useRuntimeState,
@@ -1561,7 +1562,6 @@ function NotebookViewer({
     [config.blobBasePath, config.rendererAssetsBasePath],
   );
   const {
-    cellsByIdRef,
     connectionActorLabel,
     connectionError,
     connectionPeerId,
@@ -1744,11 +1744,11 @@ function NotebookViewer({
   }, [canAcceptCellMutations, connectionPeerId, connectionScope, requestedEditAccess]);
   const canWriteCellSource = useCallback(
     (cellId: string) => {
-      const cell = cellsByIdRef.current.get(cellId);
+      const cell = getCellById(cellId);
       if (!cell) {
         return false;
       }
-      if (cell.cellType === "markdown") {
+      if (cell.cell_type === "markdown") {
         return shellCapabilities.canEditMarkdown;
       }
       return shellCapabilities.canEditCells;

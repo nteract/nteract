@@ -10,7 +10,11 @@ import {
   needsPlugin,
   preWarmForMimes,
 } from "@/components/isolated/iframe-libraries";
-import { isDisplayCapableJupyterOutputType, planCellChangesetProjection } from "runtimed";
+import {
+  isDisplayCapableJupyterOutputType,
+  planCellChangesetProjection,
+  type BlobResolver,
+} from "runtimed";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobResolver } from "./blob-port";
@@ -46,6 +50,9 @@ export interface MaterializeDeps {
 
   /** Shared output manifest cache (mutated in place). */
   outputCache: Map<string, JupyterOutput>;
+
+  /** Host-provided blob resolver. Defaults to the desktop daemon resolver. */
+  blobResolver?: BlobResolver | null;
 }
 
 // ── Plugin pre-warm helper ──────────────────────────────────────────
@@ -119,7 +126,7 @@ export async function materializeChangeset(
   // ── Per-cell incremental materialization ───────────────────────────
 
   const cache = deps.outputCache;
-  const blobResolver = getBlobResolver();
+  const blobResolver = "blobResolver" in deps ? (deps.blobResolver ?? null) : getBlobResolver();
   let cellStoreTouched = 0;
   let outputOnlySkipped = 0;
 
