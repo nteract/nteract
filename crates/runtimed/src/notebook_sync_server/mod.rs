@@ -73,6 +73,7 @@ mod room;
 mod runtime_bridge;
 #[cfg(test)]
 mod tests;
+mod workstation_attachment;
 
 pub(crate) use attachments::*;
 pub(crate) use catalog::*;
@@ -89,6 +90,7 @@ pub(crate) use persist::*;
 pub(crate) use registry::*;
 pub(crate) use room::*;
 pub(crate) use runtime_bridge::*;
+pub(crate) use workstation_attachment::*;
 
 /// Global shutdown trigger registered by the daemon at startup.
 ///

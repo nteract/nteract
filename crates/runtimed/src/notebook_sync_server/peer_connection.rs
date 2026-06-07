@@ -64,8 +64,18 @@ where
 
     // Set working_dir on the room if provided (for untitled notebook project detection)
     if let Some(wd) = working_dir {
-        let mut room_wd = room.identity.working_dir.write().await;
-        *room_wd = Some(wd);
+        let update_workstation_directory = room.file_binding.path().await.is_none();
+        {
+            let mut room_wd = room.identity.working_dir.write().await;
+            *room_wd = Some(wd.clone());
+        }
+
+        if update_workstation_directory {
+            super::workstation_attachment::publish_local_workstation_attachment_for_working_dir(
+                &room.state,
+                Some(wd.as_path()),
+            );
+        }
     }
 
     // Seed initial metadata into the Automerge doc if provided and doc has no metadata yet.
