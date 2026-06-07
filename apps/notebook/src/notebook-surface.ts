@@ -11,7 +11,12 @@ export {
   resetRuntimeStoresProjection,
 } from "./lib/project-runtime-stores";
 export { resetPoolState, setPoolState } from "./lib/pool-state";
-export { resetRuntimeState, setRuntimeState } from "./lib/runtime-state";
+export {
+  resetRuntimeState,
+  setRuntimeState,
+  useRuntimeState,
+  useRuntimeStateLoaded,
+} from "./lib/runtime-state";
 export { startCursorDispatch } from "./lib/cursor-registry";
 export { setLoggerHost } from "./lib/logger";
 export { setOpenUrlHost } from "./lib/open-url";
