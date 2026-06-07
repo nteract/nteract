@@ -3,7 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { collectBlobRefs } from "../src/blob-refs.ts";
+import { collectArrowStreamManifestBlobRefs, collectBlobRefs } from "../src/blob-refs.ts";
 import { createLiveNotebookFixture } from "./live-notebook-fixture.mjs";
 import {
   canonicalViewerUrl,
@@ -48,6 +48,7 @@ try {
     snapshot.commsDocBytes,
   );
   const blobRefs = collectBlobRefs({ cells, runtimeState, commsState });
+  await expandArrowManifestBlobRefs(blobRefs, snapshot);
   const headsHash = headsDigest(snapshot.notebookHeads);
   const runtimeHeadsHash = headsDigest(snapshot.runtimeStateHeads);
   const commsHeadsHash = headsDigest(snapshot.commsDocHeads);
@@ -176,6 +177,24 @@ async function uploadLiveBlob(ref, snapshot) {
     bytes,
     ref.media_type ?? "application/octet-stream",
   );
+}
+
+async function expandArrowManifestBlobRefs(blobRefs, snapshot) {
+  for (const ref of Object.values(blobRefs)) {
+    if (ref.media_type !== "application/vnd.nteract.arrow-stream-manifest+json") {
+      continue;
+    }
+    const bytes = await readLocalBlob(ref.blob, snapshot);
+    const manifest = new TextDecoder().decode(bytes);
+    const childRefs = collectArrowStreamManifestBlobRefs(manifest);
+    for (const childRef of Object.values(childRefs)) {
+      blobRefs[childRef.blob] = {
+        blob: childRef.blob,
+        size: blobRefs[childRef.blob]?.size ?? childRef.size,
+        media_type: blobRefs[childRef.blob]?.media_type ?? childRef.media_type,
+      };
+    }
+  }
 }
 
 async function readLocalBlob(hash, snapshot) {

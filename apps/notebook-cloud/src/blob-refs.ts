@@ -14,6 +14,12 @@ export function collectBlobUrls(value: unknown, resolver: BlobResolver): Record<
   );
 }
 
+export function collectArrowStreamManifestBlobRefs(content: string): Record<string, BlobRef> {
+  const refs: Record<string, BlobRef> = {};
+  visitArrowStreamManifest(content, refs);
+  return refs;
+}
+
 function visitBlobRefs(value: unknown, refs: Record<string, BlobRef>): void {
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -34,6 +40,8 @@ function visitBlobRefs(value: unknown, refs: Record<string, BlobRef>): void {
   const arrowManifestRef = record[ARROW_STREAM_MANIFEST_MIME];
   if (isInlineContentRef(arrowManifestRef)) {
     visitArrowStreamManifest(arrowManifestRef.inline, refs);
+  } else if (isRecord(arrowManifestRef)) {
+    addArrowManifestPointerRef(arrowManifestRef, refs);
   }
 
   for (const item of Object.values(record)) {
@@ -100,6 +108,9 @@ function visitArrowStreamManifest(content: string, refs: Record<string, BlobRef>
   }
   if (typeof manifest !== "object" || manifest === null) return;
   const record = manifest as Record<string, unknown>;
+  if (addArrowManifestPointerRef(record, refs)) {
+    return;
+  }
   const chunks = record.chunks;
 
   addManifestBlobRef(record, refs);
@@ -133,8 +144,37 @@ function addManifestBlobRef(value: unknown, refs: Record<string, BlobRef>): void
   mergeBlobRef(refs, {
     blob: hash,
     size: typeof value.size === "number" ? value.size : undefined,
-    media_type: typeof value.media_type === "string" ? value.media_type : undefined,
+    media_type:
+      typeof value.media_type === "string"
+        ? value.media_type
+        : typeof value.content_type === "string"
+          ? value.content_type
+          : undefined,
   });
+}
+
+function addArrowManifestPointerRef(
+  value: Record<string, unknown>,
+  refs: Record<string, BlobRef>,
+): boolean {
+  if (!isArrowManifestPointer(value)) return false;
+  const blob = typeof value.blob === "string" ? value.blob : value.hash;
+  if (typeof blob !== "string") return false;
+  mergeBlobRef(refs, {
+    blob,
+    size: typeof value.size === "number" ? value.size : undefined,
+    media_type: ARROW_STREAM_MANIFEST_MIME,
+  });
+  return true;
+}
+
+function isArrowManifestPointer(value: Record<string, unknown>): boolean {
+  return (
+    (typeof value.blob === "string" || typeof value.hash === "string") &&
+    !Array.isArray(value.chunks) &&
+    !Array.isArray(value.blobs) &&
+    !isRecord(value.coalesced)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

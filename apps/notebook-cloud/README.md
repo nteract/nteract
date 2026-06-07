@@ -166,6 +166,44 @@ socket. Sandboxed output frames must not read localStorage; the smoke tracks
 that denial as a benign iframe error because only the first-party viewer shell
 needs the browser token cache.
 
+For long-tail notebook rendering sweeps, use `smoke:hosted:live-rooms`. By
+default it reads the same token cache, lists the most recent notebooks visible
+to that principal through `/api/n?limit=5`, and runs the live-room smoke against
+each URL with permissive expectations so empty or sparse notebooks still count:
+
+```bash
+pnpm --dir apps/notebook-cloud smoke:hosted:live-rooms
+```
+
+Increase the catalog sweep size or save per-notebook screenshots when chasing
+old-notebook regressions:
+
+```bash
+NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_LIMIT=20 \
+NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_SCREENSHOT_DIR=.context/live-room-matrix \
+pnpm --dir apps/notebook-cloud smoke:hosted:live-rooms
+```
+
+Pass an explicit matrix when a notebook needs stricter output assertions. URL
+strings are accepted with `|` or newline separators; JSON object entries can set
+per-notebook page/frame text, visible iframe, image, and blob requirements:
+
+```bash
+NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_URLS='[
+  {
+    "label": "topic-viz",
+    "url": "https://preview.runt.run/n/topic-viz/topic-viz",
+    "expectedText": "import plotly.graph_objects as go",
+    "expectedFrameTexts": ["PROBLEM_MARKDOWN"],
+    "minCells": 20,
+    "minVisibleIframes": 2,
+    "minImages": 3,
+    "requireBlobFetch": true,
+    "requireImagesLoaded": true
+  }
+]' pnpm --dir apps/notebook-cloud smoke:hosted:live-rooms
+```
+
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
 uploads its `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` snapshot set, walks
 the exported output and widget manifests for blob refs, uploads the matching
