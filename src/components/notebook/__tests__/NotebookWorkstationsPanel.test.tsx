@@ -39,6 +39,7 @@ const localReadyCapabilities: NotebookShellCapabilities = {
       statusLabel: "Ready",
       detail: "The local daemon is available for this notebook.",
       providerLabel: "Local daemon",
+      environmentLabel: "Notebook runtime",
     },
     actor: {
       actorLabel: "local:kyle/runtime:python",
@@ -61,11 +62,13 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByRole("heading", { name: "This machine" })).toBeVisible();
     expect(screen.getByText("Ready")).toBeVisible();
     expect(screen.getByText("The local daemon is available for this notebook.")).toBeVisible();
-    expect(screen.getAllByText("This machine")).toHaveLength(2);
-    expect(screen.getByText("Local daemon")).toBeVisible();
+    expect(screen.getAllByText("Local daemon")).toHaveLength(2);
+    expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
     expect(screen.getByText("Kyle")).toBeVisible();
     expect(screen.getByText("Python runtime")).toBeVisible();
-    expect(screen.getByText("Writable")).toBeVisible();
+    expect(screen.getByText("Can run")).toBeVisible();
+    expect(screen.getByText("Remote")).toBeVisible();
+    expect(screen.getByText("Coming soon")).toBeVisible();
   });
 
   it("renders cloud rooms without runtime peers as offline workstations", () => {
@@ -86,6 +89,7 @@ describe("NotebookWorkstationsPanel", () => {
           statusLabel: "Offline",
           detail: "Attach a user-owned workstation to run cells in this room.",
           providerLabel: "Cloud room",
+          environmentLabel: "Not attached",
         },
       },
     };
@@ -97,10 +101,10 @@ describe("NotebookWorkstationsPanel", () => {
     expect(
       screen.getByText("Attach a user-owned workstation to run cells in this room."),
     ).toBeVisible();
-    expect(screen.getAllByText("No workstation attached")).toHaveLength(2);
-    expect(screen.getByText("Cloud room")).toBeVisible();
+    expect(screen.getAllByText("Cloud room")).toHaveLength(2);
     expect(screen.getByText("Kyle")).toBeVisible();
-    expect(screen.getByText("Not attached")).toBeVisible();
-    expect(screen.getByText("Read-only")).toBeVisible();
+    expect(screen.getAllByText("Not attached")).toHaveLength(3);
+    expect(screen.getByText("Not runnable")).toBeVisible();
+    expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
   });
 });

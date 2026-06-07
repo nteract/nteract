@@ -150,6 +150,7 @@ function cloudRuntimeTarget({
       statusLabel: "Attached",
       detail: "This connection can author runtime state for the room.",
       providerLabel: "Cloud room",
+      environmentLabel: "Runtime peer",
     };
   }
   if (runtimeAvailable) {
@@ -160,6 +161,7 @@ function cloudRuntimeTarget({
       statusLabel: "Ready",
       detail: "A runtime peer is attached to this room.",
       providerLabel: "Cloud room",
+      environmentLabel: "Current Python",
     };
   }
   return {
@@ -169,6 +171,7 @@ function cloudRuntimeTarget({
     statusLabel: "Offline",
     detail: "Attach a user-owned workstation to run cells in this room.",
     providerLabel: "Cloud room",
+    environmentLabel: "Not attached",
   };
 }
 

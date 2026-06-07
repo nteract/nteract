@@ -127,6 +127,7 @@ function desktopRuntimeTarget({
         ? "This connection can author runtime state for the room."
         : "This runtime peer is not connected.",
       providerLabel: "Cloud room",
+      environmentLabel: "Runtime peer",
     };
   }
   if (source !== "local") {
@@ -141,6 +142,7 @@ function desktopRuntimeTarget({
       ? "The local daemon is available for this notebook."
       : "The local daemon is not exposing an executable runtime.",
     providerLabel: "Local daemon",
+    environmentLabel: "Notebook runtime",
   };
 }
 
