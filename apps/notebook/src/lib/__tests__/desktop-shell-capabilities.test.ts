@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { desktopNotebookShellCapabilities } from "../desktop-shell-capabilities";
+import { RUNTIME_STATUS } from "../kernel-status";
 
 describe("desktopNotebookShellCapabilities", () => {
   it("exposes runtime execution availability from the daemon session", () => {
@@ -89,6 +90,23 @@ describe("desktopNotebookShellCapabilities", () => {
       principal: { label: "Kyle" },
       operator: { kind: "runtime", label: "Local" },
       scope: "runtime_peer",
+    });
+  });
+
+  it("projects daemon kernel status into the local workstation target", () => {
+    const capabilities = desktopNotebookShellCapabilities({
+      canAcceptCellMutations: true,
+      sessionReady: true,
+      localActor: "local:kyle/desktop:window",
+      connectionScope: null,
+      notebookPath: "/Users/kyle/notebooks/demo.ipynb",
+      kernelStatusKey: RUNTIME_STATUS.RUNNING_IDLE,
+    });
+
+    expect(capabilities.runtime.target).toMatchObject({
+      id: "local-daemon",
+      kernelStatusLabel: "idle",
+      workingDirectoryLabel: "/Users/kyle/notebooks",
     });
   });
 

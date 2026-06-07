@@ -89,6 +89,7 @@ pub fn build_cloud_config(
         notebook_id: args.notebook_id.clone(),
         scope: args.scope.clone(),
         auth,
+        workstation: None,
     })
 }
 

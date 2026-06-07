@@ -112,6 +112,7 @@ export {
   type RuntimeState,
   type TrustState,
   type TrustStatus,
+  type WorkstationAttachmentState,
   diffExecutions,
 } from "./runtime-state";
 
@@ -204,10 +205,14 @@ export {
 // Notebook shell capability projection
 export {
   notebookShellRuntimeTargetSummary,
+  notebookShellWorkstationAttachmentCacheKey,
   projectNotebookShellCapabilities,
+  projectNotebookRuntimeTargetFromWorkstationAttachment,
   readOnlyNotebookShellCapabilities,
   resolveNotebookShellRuntimeTarget,
   stabilizeNotebookShellCapabilities,
+  workstationAttachmentCanExecute,
+  workstationAttachmentIsConnected,
   type NotebookShellAccessCapabilities,
   type NotebookShellAccessLevel,
   type NotebookShellAccessSource,
@@ -221,8 +226,19 @@ export {
   type NotebookShellRuntimeTargetProjection,
   type NotebookShellRuntimeTargetStatus,
   type NotebookShellSharingPolicy,
+  type ProjectNotebookRuntimeTargetFromWorkstationAttachmentOptions,
   type ProjectNotebookShellCapabilitiesOptions,
 } from "./notebook-shell-capabilities";
+
+// Notebook workstation panel projection
+export {
+  clearNotebookWorkstationPanelProjectionCacheForTests,
+  projectNotebookWorkstationPanel,
+  type NotebookWorkstationFactKind,
+  type NotebookWorkstationFactProjection,
+  type NotebookWorkstationPanelProjection,
+  type NotebookWorkstationPanelTone,
+} from "./notebook-workstation-panel";
 
 // Projection cache helpers
 export { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";

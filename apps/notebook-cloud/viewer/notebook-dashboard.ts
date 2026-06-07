@@ -25,6 +25,21 @@ export interface CloudNotebookDashboardModel {
   continueNotebook: CloudNotebookListItem | null;
   metrics: readonly CloudNotebookDashboardMetric[];
   notebooks: readonly CloudNotebookListItem[];
+  sections: readonly CloudNotebookDashboardSection[];
+}
+
+export interface CloudNotebookDashboardSection {
+  action: CloudNotebookDashboardSectionAction | null;
+  detail: string;
+  id: "titled" | "untitled";
+  notebooks: readonly CloudNotebookListItem[];
+  title: string;
+}
+
+export interface CloudNotebookDashboardSectionAction {
+  kind: "rename";
+  label: string;
+  notebook: CloudNotebookListItem;
 }
 
 export function projectCloudNotebookDashboard(
@@ -41,6 +56,8 @@ export function projectCloudNotebookDashboard(
       left.notebook_id.localeCompare(right.notebook_id)
     );
   });
+  const titled = sorted.filter(cloudNotebookHasTitle);
+  const untitled = sorted.filter((notebook) => !cloudNotebookHasTitle(notebook));
   const editableCount = notebooks.filter(
     (notebook) => notebook.scope === "owner" || notebook.scope === "editor",
   ).length;
@@ -50,13 +67,14 @@ export function projectCloudNotebookDashboard(
   ).length;
 
   return {
-    continueNotebook: sorted[0] ?? null,
+    continueNotebook: titled[0] ?? sorted[0] ?? null,
     notebooks: sorted,
+    sections: cloudNotebookDashboardSections({ titled, untitled }),
     metrics: [
       {
         label: "Visible notebooks",
         value: String(notebooks.length),
-        detail: `${editableCount} editable`,
+        detail: `${titled.length} titled, ${editableCount} editable`,
         icon: "notebooks",
       },
       {
@@ -119,6 +137,53 @@ function notebookScopeRank(scope: CloudNotebookListItem["scope"]): number {
     case "viewer":
       return 1;
   }
+}
+
+function cloudNotebookHasTitle(notebook: CloudNotebookListItem): boolean {
+  return Boolean(notebook.title?.trim());
+}
+
+function cloudNotebookDashboardSections({
+  titled,
+  untitled,
+}: {
+  titled: readonly CloudNotebookListItem[];
+  untitled: readonly CloudNotebookListItem[];
+}): CloudNotebookDashboardSection[] {
+  const sections: CloudNotebookDashboardSection[] = [];
+  if (titled.length > 0) {
+    sections.push({
+      action: null,
+      id: "titled",
+      title: "Named notebooks",
+      detail: `${titled.length} notebook${titled.length === 1 ? "" : "s"} with titles`,
+      notebooks: titled,
+    });
+  }
+  if (untitled.length > 0) {
+    const nextRenameable = untitled.find(cloudNotebookCanRename);
+    sections.push({
+      action: nextRenameable
+        ? {
+            kind: "rename",
+            label: "Title next",
+            notebook: nextRenameable,
+          }
+        : null,
+      id: "untitled",
+      title: titled.length > 0 ? "Untitled notebooks" : "Notebooks",
+      detail:
+        titled.length > 0
+          ? "Scratch rooms and older notebooks without titles. Rename the ones worth keeping."
+          : "Rename notebooks you want to keep at the top of your home.",
+      notebooks: untitled,
+    });
+  }
+  return sections;
+}
+
+function cloudNotebookCanRename(notebook: CloudNotebookListItem): boolean {
+  return notebook.scope === "owner" || notebook.scope === "editor";
 }
 
 function isNotebookScope(value: unknown): value is CloudNotebookListItem["scope"] {

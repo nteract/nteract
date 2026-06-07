@@ -57,6 +57,18 @@
 //!       requires_python: Str|null
 //!       prerelease: Str|null
 //!       extras: Str           (JSON-encoded ProjectFileExtras)
+//!   workstation/            Map|null (room-host-owned current compute attachment)
+//!     workstation_id: Str
+//!     display_name: Str
+//!     provider: Str
+//!     default_environment_label: Str
+//!     environment_policy: Str
+//!     status: Str             ("disconnected" | "connecting" | "ready" | "busy" | "error")
+//!     status_message: Str|null
+//!     cpu_count: Uint|null
+//!     memory_bytes: Uint|null
+//!     working_directory: Str|null
+//!     updated_at: Str|null
 //!   display_index/          Map (keyed by display_id)
 //!     {display_id}/         Map
 //!       {execution_id\0output_id}: Bool
@@ -315,6 +327,33 @@ fn default_empty_state() -> serde_json::Value {
     serde_json::json!({})
 }
 
+/// Room-host-owned snapshot of the active workstation attachment for this
+/// notebook room.
+///
+/// This is the notebook-visible projection of the selected compute target. The
+/// workstation registry/control plane can provide richer host-owned data, but
+/// this snapshot is what late joiners and collaborators read through
+/// RuntimeStateDoc while deciding whether the room can execute.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkstationAttachmentState {
+    pub workstation_id: String,
+    pub display_name: String,
+    pub provider: String,
+    pub default_environment_label: String,
+    pub environment_policy: String,
+    pub status: String,
+    #[serde(default)]
+    pub status_message: Option<String>,
+    #[serde(default)]
+    pub cpu_count: Option<u64>,
+    #[serde(default)]
+    pub memory_bytes: Option<u64>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeState {
@@ -341,6 +380,9 @@ pub struct RuntimeState {
     /// consumers read it alongside the rest of runtime state.
     #[serde(default)]
     pub project_context: ProjectContext,
+    /// Room-host-owned active workstation attachment projection.
+    #[serde(default)]
+    pub workstation: Option<WorkstationAttachmentState>,
 }
 
 use crate::RuntimeStateError;
@@ -739,6 +781,20 @@ impl RuntimeStateDoc {
             .ok_or(RuntimeStateError::MissingScaffold(key))
     }
 
+    /// Get or create a top-level map for additive room-host-owned fields that
+    /// are intentionally absent from the frozen v2 genesis scaffold.
+    fn get_or_create_root_map(
+        &mut self,
+        key: &'static str,
+    ) -> Result<automerge::ObjId, RuntimeStateError> {
+        if let Some(obj) = self.get_map(key) {
+            return Ok(obj);
+        }
+        self.doc
+            .put_object(&ROOT, key, ObjType::Map)
+            .map_err(RuntimeStateError::from)
+    }
+
     /// Get a scaffold list nested under a map, returning error if absent.
     fn scaffold_list(
         &self,
@@ -782,6 +838,23 @@ impl RuntimeStateDoc {
                 Value::Scalar(s) => match s.as_ref() {
                     ScalarValue::Null => None,
                     ScalarValue::Str(s) => Some(s.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
+    /// Read an optional unsigned integer (null → None) from a map object.
+    fn read_opt_u64(&self, obj: &automerge::ObjId, key: &str) -> Option<u64> {
+        self.doc
+            .get(obj, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Uint(n) => Some(*n),
+                    ScalarValue::Int(n) if *n >= 0 => Some(*n as u64),
+                    ScalarValue::Null => None,
                     _ => None,
                 },
                 _ => None,
@@ -2313,6 +2386,84 @@ impl RuntimeStateDoc {
         self.set_optional_str("runtime_state_doc_id", runtime_state_doc_id)
     }
 
+    // ── Workstation attachment ──────────────────────────────────────
+
+    /// Current room-selected workstation attachment, if the room host has
+    /// published one.
+    pub fn workstation_attachment(&self) -> Option<WorkstationAttachmentState> {
+        let workstation = self.get_map("workstation")?;
+        Some(WorkstationAttachmentState {
+            workstation_id: self.read_str(&workstation, "workstation_id"),
+            display_name: self.read_str(&workstation, "display_name"),
+            provider: self.read_str(&workstation, "provider"),
+            default_environment_label: self.read_str(&workstation, "default_environment_label"),
+            environment_policy: self.read_str(&workstation, "environment_policy"),
+            status: self.read_str(&workstation, "status"),
+            status_message: self.read_opt_str(&workstation, "status_message"),
+            cpu_count: self.read_opt_u64(&workstation, "cpu_count"),
+            memory_bytes: self.read_opt_u64(&workstation, "memory_bytes"),
+            working_directory: self.read_opt_str(&workstation, "working_directory"),
+            updated_at: self.read_opt_str(&workstation, "updated_at"),
+        })
+    }
+
+    /// Publish or clear the room-selected workstation attachment.
+    ///
+    /// This is room-host/daemon-owned state. Runtime peers report provider
+    /// observations through their control path, but the room host owns the
+    /// notebook-visible attachment projection because it also owns execution
+    /// intent dispatch.
+    pub fn set_workstation_attachment(
+        &mut self,
+        state: Option<&WorkstationAttachmentState>,
+    ) -> Result<(), RuntimeStateError> {
+        if self.workstation_attachment().as_ref() == state {
+            return Ok(());
+        }
+
+        let Some(state) = state else {
+            self.doc.put(&ROOT, "workstation", ScalarValue::Null)?;
+            return Ok(());
+        };
+
+        let workstation = self.get_or_create_root_map("workstation")?;
+        self.doc.put(
+            &workstation,
+            "workstation_id",
+            state.workstation_id.as_str(),
+        )?;
+        self.doc
+            .put(&workstation, "display_name", state.display_name.as_str())?;
+        self.doc
+            .put(&workstation, "provider", state.provider.as_str())?;
+        self.doc.put(
+            &workstation,
+            "default_environment_label",
+            state.default_environment_label.as_str(),
+        )?;
+        self.doc.put(
+            &workstation,
+            "environment_policy",
+            state.environment_policy.as_str(),
+        )?;
+        self.doc
+            .put(&workstation, "status", state.status.as_str())?;
+        self.put_optional_str_at(
+            &workstation,
+            "status_message",
+            state.status_message.as_deref(),
+        )?;
+        self.put_optional_u64_at(&workstation, "cpu_count", state.cpu_count)?;
+        self.put_optional_u64_at(&workstation, "memory_bytes", state.memory_bytes)?;
+        self.put_optional_str_at(
+            &workstation,
+            "working_directory",
+            state.working_directory.as_deref(),
+        )?;
+        self.put_optional_str_at(&workstation, "updated_at", state.updated_at.as_deref())?;
+        Ok(())
+    }
+
     // ── Project context ─────────────────────────────────────────────
 
     /// Read the daemon-observed project context.
@@ -2495,6 +2646,32 @@ impl RuntimeStateDoc {
         match value {
             Some(s) => self.doc.put(&ROOT, key, s)?,
             None => self.doc.put(&ROOT, key, ScalarValue::Null)?,
+        }
+        Ok(())
+    }
+
+    fn put_optional_str_at(
+        &mut self,
+        obj: &automerge::ObjId,
+        key: &'static str,
+        value: Option<&str>,
+    ) -> Result<(), RuntimeStateError> {
+        match value {
+            Some(s) => self.doc.put(obj, key, s)?,
+            None => self.doc.put(obj, key, ScalarValue::Null)?,
+        }
+        Ok(())
+    }
+
+    fn put_optional_u64_at(
+        &mut self,
+        obj: &automerge::ObjId,
+        key: &'static str,
+        value: Option<u64>,
+    ) -> Result<(), RuntimeStateError> {
+        match value {
+            Some(n) => self.doc.put(obj, key, ScalarValue::Uint(n))?,
+            None => self.doc.put(obj, key, ScalarValue::Null)?,
         }
         Ok(())
     }
@@ -2876,6 +3053,7 @@ impl RuntimeStateDoc {
         let last_saved = self.read_opt_str(&ROOT, "last_saved");
         let path = self.read_opt_str(&ROOT, "path");
         let runtime_state_doc_id = self.runtime_state_doc_id();
+        let workstation = self.workstation_attachment();
 
         let trust_state = trust
             .as_ref()
@@ -2905,6 +3083,7 @@ impl RuntimeStateDoc {
             executions,
             comms,
             project_context: self.project_context(),
+            workstation,
         }
     }
 
@@ -3670,6 +3849,22 @@ mod tests {
             .unwrap_or_else(|_| actor.to_hex_string())
     }
 
+    fn workstation_attachment_fixture() -> WorkstationAttachmentState {
+        WorkstationAttachmentState {
+            workstation_id: "ws-lab2".to_string(),
+            display_name: "Lab 2".to_string(),
+            provider: "local_daemon".to_string(),
+            default_environment_label: "Current Python".to_string(),
+            environment_policy: "current_python".to_string(),
+            status: "ready".to_string(),
+            status_message: Some("kernel attached".to_string()),
+            cpu_count: Some(8),
+            memory_bytes: Some(32 * 1024 * 1024 * 1024),
+            working_directory: Some("/home/ubuntu/notebooks".to_string()),
+            updated_at: Some("2026-06-07T21:00:00Z".to_string()),
+        }
+    }
+
     fn change_hashes_for_actor(
         doc: &mut AutoCommit,
         actor_label: &str,
@@ -4010,6 +4205,41 @@ mod tests {
         doc.set_runtime_state_doc_id(None).unwrap();
         let state = doc.read_state();
         assert_eq!(state.runtime_state_doc_id, None);
+    }
+
+    #[test]
+    fn workstation_attachment_defaults_to_none_on_a_fresh_doc() {
+        let doc = RuntimeStateDoc::new();
+        assert_eq!(doc.workstation_attachment(), None);
+        assert_eq!(doc.read_state().workstation, None);
+    }
+
+    #[test]
+    fn set_workstation_attachment_roundtrips_and_clears() {
+        let mut doc = RuntimeStateDoc::new();
+        let attachment = workstation_attachment_fixture();
+
+        doc.set_workstation_attachment(Some(&attachment)).unwrap();
+        assert_eq!(doc.workstation_attachment(), Some(attachment.clone()));
+        assert_eq!(doc.read_state().workstation, Some(attachment));
+
+        doc.set_workstation_attachment(None).unwrap();
+        assert_eq!(doc.workstation_attachment(), None);
+        assert_eq!(doc.read_state().workstation, None);
+    }
+
+    #[test]
+    fn set_workstation_attachment_is_idempotent_no_head_churn() {
+        let mut doc = RuntimeStateDoc::new();
+        let attachment = workstation_attachment_fixture();
+        doc.set_workstation_attachment(Some(&attachment)).unwrap();
+        let heads_before = doc.doc_mut().get_heads();
+        doc.set_workstation_attachment(Some(&attachment)).unwrap();
+        let heads_after = doc.doc_mut().get_heads();
+        assert_eq!(
+            heads_before, heads_after,
+            "re-publishing the same workstation attachment must not change heads"
+        );
     }
 
     #[test]

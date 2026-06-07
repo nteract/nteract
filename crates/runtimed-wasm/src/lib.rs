@@ -26,7 +26,7 @@ use runtime_doc::{
     diff_output_ids_in_place, output_ids_for_execution, runtime_state_policy_snapshot,
     validate_runtime_state_sync_scope, CommsDoc, CommsState, ExecutionState,
     ExecutionViewChangeset, ExecutionViewProjector, RuntimeLifecycle, RuntimeState,
-    RuntimeStateDoc, RuntimeStateWriteScope,
+    RuntimeStateDoc, RuntimeStateWriteScope, WorkstationAttachmentState,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -635,6 +635,29 @@ impl RoomHostHandle {
         let result = self.reconcile_runtime_peer_gone_inner(reason)?;
         serialize_to_js(&result)
             .map_err(|e| JsError::new(&format!("serialize reconcile result: {e}")))
+    }
+
+    /// Publish the room-host-owned workstation attachment snapshot into
+    /// RuntimeStateDoc and return outbound runtime-state sync frames.
+    ///
+    /// `attachment_json` is either a JSON `WorkstationAttachmentState` object
+    /// or `null` to clear the current attachment. This is a room-host API,
+    /// intentionally separate from incoming runtime-peer sync frames: runtime
+    /// peers can report provider facts through control paths, but the host owns
+    /// the notebook-visible selected-compute projection.
+    pub fn set_workstation_attachment_json(
+        &mut self,
+        attachment_json: &str,
+    ) -> Result<JsValue, JsError> {
+        let attachment =
+            serde_json::from_str::<Option<WorkstationAttachmentState>>(attachment_json)
+                .map_err(|e| JsError::new(&format!("parse workstation attachment: {e}")))?;
+        let result = self.set_workstation_attachment_inner(attachment.as_ref())?;
+        serialize_to_js(&result).map_err(|e| {
+            JsError::new(&format!(
+                "serialize workstation attachment sync result: {e}"
+            ))
+        })
     }
 
     /// Generate current sync frames for a peer.
@@ -1264,6 +1287,15 @@ impl RoomHostHandle {
                 .map_err(|e| JsError::new(&format!("reconcile lifecycle: {e}")))?;
         }
 
+        let current_attachment = self.state_doc.workstation_attachment();
+        if current_attachment.is_some() || self.state_doc.get_heads() != heads_before {
+            let next_attachment =
+                runtime_peer_gone_workstation_attachment(current_attachment, reason);
+            self.state_doc
+                .set_workstation_attachment(Some(&next_attachment))
+                .map_err(|e| JsError::new(&format!("reconcile workstation attachment: {e}")))?;
+        }
+
         let changed = self.state_doc.get_heads() != heads_before;
         let mut result = RoomHostFrameResult {
             changed,
@@ -1280,6 +1312,50 @@ impl RoomHostHandle {
         }
         Ok(result)
     }
+
+    /// Native-testable core of [`Self::set_workstation_attachment_json`].
+    fn set_workstation_attachment_inner(
+        &mut self,
+        attachment: Option<&WorkstationAttachmentState>,
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let heads_before = self.state_doc.get_heads();
+        self.state_doc
+            .set_workstation_attachment(attachment)
+            .map_err(|e| JsError::new(&format!("set workstation attachment: {e}")))?;
+        let changed = self.state_doc.get_heads() != heads_before;
+        let mut result = RoomHostFrameResult {
+            changed,
+            notebook_changed: false,
+            runtime_state_changed: changed,
+            outbound: Vec::new(),
+        };
+        if changed {
+            self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+}
+
+fn runtime_peer_gone_workstation_attachment(
+    current: Option<WorkstationAttachmentState>,
+    reason: &str,
+) -> WorkstationAttachmentState {
+    let mut attachment = current.unwrap_or_else(|| WorkstationAttachmentState {
+        workstation_id: "runtime-peer".to_string(),
+        display_name: "Attached workstation".to_string(),
+        provider: "runtime_peer".to_string(),
+        default_environment_label: "Current Python".to_string(),
+        environment_policy: "runtime_peer".to_string(),
+        status: "ready".to_string(),
+        status_message: None,
+        cpu_count: None,
+        memory_bytes: None,
+        working_directory: None,
+        updated_at: None,
+    });
+    attachment.status = "error".to_string();
+    attachment.status_message = Some(format!("runtime peer disconnected: {reason}"));
+    attachment
 }
 
 /// Whether a kernel lifecycle still reads as "alive" — i.e. a viewer would see
@@ -3809,9 +3885,27 @@ mod tests {
         host
     }
 
+    fn workstation_attachment_fixture() -> WorkstationAttachmentState {
+        WorkstationAttachmentState {
+            workstation_id: "runtime-peer".to_string(),
+            display_name: "Attached workstation".to_string(),
+            provider: "runtime_peer".to_string(),
+            default_environment_label: "Current Python".to_string(),
+            environment_policy: "runtime_peer".to_string(),
+            status: "ready".to_string(),
+            status_message: None,
+            cpu_count: None,
+            memory_bytes: None,
+            working_directory: None,
+            updated_at: Some("2026-06-07T00:00:00.000Z".to_string()),
+        }
+    }
+
     #[test]
     fn reconcile_runtime_peer_gone_terminalizes_inflight_and_errors_live_kernel() {
         let mut host = host_with_inflight_work();
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("seed attachment");
 
         let result = host
             .reconcile_runtime_peer_gone_inner("daemon dropped")
@@ -3830,6 +3924,17 @@ mod tests {
         assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Error);
         assert_eq!(
             state.kernel.error_details.as_deref(),
+            Some("runtime peer disconnected: daemon dropped")
+        );
+        assert_eq!(
+            state.workstation.as_ref().map(|ws| ws.status.as_str()),
+            Some("error")
+        );
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .and_then(|ws| ws.status_message.as_deref()),
             Some("runtime peer disconnected: daemon dropped")
         );
     }
@@ -3856,7 +3961,37 @@ mod tests {
     fn reconcile_runtime_peer_gone_does_not_relabel_a_clean_shutdown() {
         // A clean shutdown that raced the disconnect: kernel already Shutdown,
         // no in-flight work. Reconciliation must leave the terminal lifecycle
-        // intact rather than rewriting it to Error.
+        // intact rather than rewriting it to Error, while still marking the
+        // selected runtime-peer workstation as disconnected for viewers.
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Shutdown)
+            .unwrap();
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("seed attachment");
+
+        let result = host
+            .reconcile_runtime_peer_gone_inner("late disconnect")
+            .expect("reconcile ok");
+        assert!(
+            result.changed,
+            "workstation attachment still records the disconnect"
+        );
+        let state = host.state_doc.read_state();
+        assert_eq!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Shutdown,
+            "a clean shutdown is not relabeled to Error"
+        );
+        assert_eq!(
+            state.workstation.as_ref().map(|ws| ws.status.as_str()),
+            Some("error")
+        );
+    }
+
+    #[test]
+    fn reconcile_runtime_peer_gone_is_noop_for_clean_shutdown_without_attachment() {
         let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
             .expect("create room host");
         host.state_doc
@@ -3866,12 +4001,10 @@ mod tests {
         let result = host
             .reconcile_runtime_peer_gone_inner("late disconnect")
             .expect("reconcile ok");
-        assert!(!result.changed, "nothing to reconcile on a clean shutdown");
-        assert_eq!(
-            host.state_doc.read_state().kernel.lifecycle,
-            RuntimeLifecycle::Shutdown,
-            "a clean shutdown is not relabeled to Error"
-        );
+        assert!(!result.changed);
+        let state = host.state_doc.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
+        assert!(state.workstation.is_none());
     }
 
     #[test]
@@ -3893,6 +4026,53 @@ mod tests {
                     && f.frame_type == frame_types::RUNTIME_STATE_SYNC),
             "the reconciled state is broadcast to the surviving viewer"
         );
+    }
+
+    #[test]
+    fn set_workstation_attachment_broadcasts_to_registered_peers() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.runtime_peer_states
+            .insert("viewer-1".to_string(), room_peer_sync_state(false));
+
+        let result = host
+            .set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("set attachment");
+
+        assert!(result.changed);
+        assert!(result.runtime_state_changed);
+        assert!(result.outbound.iter().any(|f| {
+            f.peer_id == "viewer-1" && f.frame_type == frame_types::RUNTIME_STATE_SYNC
+        }));
+        let state = host.state_doc.read_state();
+        assert_eq!(
+            state
+                .workstation
+                .as_ref()
+                .map(|ws| ws.workstation_id.as_str()),
+            Some("runtime-peer")
+        );
+        assert_eq!(
+            state.workstation.as_ref().map(|ws| ws.provider.as_str()),
+            Some("runtime_peer")
+        );
+    }
+
+    #[test]
+    fn set_workstation_attachment_is_idempotent() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        let attachment = workstation_attachment_fixture();
+        let first = host
+            .set_workstation_attachment_inner(Some(&attachment))
+            .expect("first set");
+        assert!(first.changed);
+
+        let second = host
+            .set_workstation_attachment_inner(Some(&attachment))
+            .expect("second set");
+        assert!(!second.changed);
+        assert!(second.outbound.is_empty());
     }
 
     #[test]

@@ -11,12 +11,16 @@ import {
   type NotebookShellCapabilities,
   type NotebookShellRuntimeTargetProjection,
 } from "runtimed";
+import { getStatusKeyLabel, type RuntimeStatusKey } from "./kernel-status";
 
 export interface DesktopNotebookShellCapabilityInput {
   canAcceptCellMutations: boolean;
   sessionReady: boolean;
   localActor: string | null;
   connectionScope: string | null;
+  notebookPath?: string | null;
+  kernelStatusKey?: RuntimeStatusKey | null;
+  kernelErrorReason?: string | null;
   hostCapabilities?: {
     canManageSharing?: boolean;
   };
@@ -27,6 +31,9 @@ export function desktopNotebookShellCapabilities({
   sessionReady,
   localActor,
   connectionScope,
+  notebookPath = null,
+  kernelStatusKey = null,
+  kernelErrorReason = null,
   hostCapabilities,
 }: DesktopNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
@@ -72,6 +79,10 @@ export function desktopNotebookShellCapabilities({
     identityLabel: null,
     target: desktopRuntimeTarget({
       isRuntimePeer,
+      kernelStatusLabel: kernelStatusKey
+        ? getStatusKeyLabel(kernelStatusKey, kernelErrorReason)
+        : null,
+      workingDirectoryLabel: notebookPathToWorkingDirectoryLabel(notebookPath),
       sessionReady,
       source,
     }),
@@ -110,12 +121,16 @@ export function desktopNotebookShellCapabilities({
 
 function desktopRuntimeTarget({
   isRuntimePeer,
+  kernelStatusLabel,
   sessionReady,
   source,
+  workingDirectoryLabel,
 }: {
   isRuntimePeer: boolean;
+  kernelStatusLabel: string | null;
   sessionReady: boolean;
   source: NotebookShellAccessSource;
+  workingDirectoryLabel: string | null;
 }): NotebookShellRuntimeTargetProjection | null {
   if (isRuntimePeer) {
     return {
@@ -130,6 +145,7 @@ function desktopRuntimeTarget({
       providerLabel: "Cloud room",
       defaultEnvironmentLabel: "Runtime peer",
       environmentLabel: "Runtime peer",
+      kernelStatusLabel,
     };
   }
   if (source !== "local") {
@@ -147,6 +163,8 @@ function desktopRuntimeTarget({
     providerLabel: "Local daemon",
     defaultEnvironmentLabel: "Notebook runtime",
     environmentLabel: "Notebook runtime",
+    kernelStatusLabel,
+    workingDirectoryLabel,
     cpuCount: localCpuCount(),
   };
 }
@@ -154,6 +172,18 @@ function desktopRuntimeTarget({
 function localCpuCount(): number | null {
   const count = globalThis.navigator?.hardwareConcurrency;
   return typeof count === "number" && Number.isFinite(count) && count > 0 ? count : null;
+}
+
+function notebookPathToWorkingDirectoryLabel(
+  notebookPath: string | null | undefined,
+): string | null {
+  const trimmed = notebookPath?.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/\\/g, "/").replace(/\/+$/g, "");
+  const separatorIndex = normalized.lastIndexOf("/");
+  if (separatorIndex < 0) return null;
+  if (separatorIndex === 0) return "/";
+  return normalized.slice(0, separatorIndex);
 }
 
 function desktopRuntimeActorLabel({

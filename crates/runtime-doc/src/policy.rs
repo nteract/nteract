@@ -208,6 +208,13 @@ fn validate_runtime_peer_room_host_owned_delta(
             "room-host/daemon-owned",
         ));
     }
+    if before.state.workstation != after.state.workstation {
+        return Err(runtime_state_policy_error(
+            scope,
+            "workstation",
+            "room-host/daemon-owned",
+        ));
+    }
 
     Ok(())
 }
@@ -558,7 +565,9 @@ fn runtime_state_policy_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{KernelActivity, ProjectContext, QueueEntry, RuntimeLifecycle};
+    use crate::{
+        KernelActivity, ProjectContext, QueueEntry, RuntimeLifecycle, WorkstationAttachmentState,
+    };
     use automerge::transaction::Transactable;
     use serde_json::json;
 
@@ -874,6 +883,31 @@ mod tests {
             },
             "project_context",
         );
+        assert_runtime_peer_rejects_field(
+            |doc| doc.set_workstation_attachment(Some(&workstation_attachment())),
+            "schema",
+        );
+
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .set_workstation_attachment(Some(&workstation_attachment()))
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        let mut next = workstation_attachment();
+        next.status = "error".to_string();
+        next.status_message = Some("runtime peer disconnected".to_string());
+        after_doc.set_workstation_attachment(Some(&next)).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("workstation"),
+            "error should identify workstation writes: {err}"
+        );
     }
 
     #[test]
@@ -1031,5 +1065,21 @@ mod tests {
             "name": "stdout",
             "text": text
         })
+    }
+
+    fn workstation_attachment() -> WorkstationAttachmentState {
+        WorkstationAttachmentState {
+            workstation_id: "ws-lab2".to_string(),
+            display_name: "Lab 2".to_string(),
+            provider: "local_daemon".to_string(),
+            default_environment_label: "Current Python".to_string(),
+            environment_policy: "current_python".to_string(),
+            status: "ready".to_string(),
+            status_message: None,
+            cpu_count: Some(8),
+            memory_bytes: None,
+            working_directory: None,
+            updated_at: Some("2026-06-07T21:00:00Z".to_string()),
+        }
     }
 }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   projectNotebookRoomEditAccess,
+  projectNotebookRuntimeTargetFromWorkstationAttachment,
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
   resolveNotebookShellRuntimeTarget,
@@ -8,6 +9,7 @@ import {
   type NotebookShellAccessCapabilities,
   type NotebookShellAuthCapabilities,
   type NotebookShellRuntimeCapabilities,
+  type WorkstationAttachmentState,
 } from "../src";
 import { clearNotebookShellCapabilitiesCachesForTests } from "../src/notebook-shell-capabilities";
 
@@ -283,18 +285,20 @@ describe("projectNotebookShellCapabilities", () => {
         connected: true,
         executionAvailable: true,
         target: {
-          id: "room-workstation",
+          id: "attached-workstation",
           kind: "cloud_workstation",
           status: "ready",
-          label: "Room workstation",
+          label: "Attached workstation",
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          kernelStatusLabel: "idle",
           cpuCount: 4,
           memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
+          runtimePeerCount: 2,
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
       }),
@@ -315,18 +319,20 @@ describe("projectNotebookShellCapabilities", () => {
         connected: true,
         executionAvailable: true,
         target: {
-          id: "room-workstation",
+          id: "attached-workstation",
           kind: "cloud_workstation",
           status: "ready",
-          label: "Room workstation",
+          label: "Attached workstation",
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          kernelStatusLabel: "idle",
           cpuCount: 4,
           memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
+          runtimePeerCount: 2,
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
       }),
@@ -346,11 +352,13 @@ describe("projectNotebookShellCapabilities", () => {
     expect(first.runtime).toBe(second.runtime);
     expect(first.runtime.target).toBe(second.runtime.target);
     expect(first.runtime.target).toMatchObject({
-      id: "room-workstation",
+      id: "attached-workstation",
       defaultEnvironmentLabel: "Current Python",
+      kernelStatusLabel: "idle",
       cpuCount: 4,
       memoryBytes: 16 * 1024 ** 3,
       resourceLabel: "4 CPU / 16 GB RAM",
+      runtimePeerCount: 2,
       workingDirectoryLabel: "/home/kyle/notebooks",
     });
     expect(Object.isFrozen(first)).toBe(true);
@@ -358,5 +366,62 @@ describe("projectNotebookShellCapabilities", () => {
     expect(Object.isFrozen(first.auth)).toBe(true);
     expect(Object.isFrozen(first.runtime)).toBe(true);
     expect(Object.isFrozen(first.runtime.target)).toBe(true);
+  });
+});
+
+describe("projectNotebookRuntimeTargetFromWorkstationAttachment", () => {
+  function attachment(
+    overrides: Partial<WorkstationAttachmentState> = {},
+  ): WorkstationAttachmentState {
+    return {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 32 * 1024 ** 3,
+      working_directory: "/home/ubuntu/notebooks",
+      updated_at: "2026-06-07T21:00:00Z",
+      ...overrides,
+    };
+  }
+
+  it("projects a RuntimeStateDoc workstation attachment into a shell target", () => {
+    const target = projectNotebookRuntimeTargetFromWorkstationAttachment(attachment(), {
+      runtimePeerCount: 1,
+    });
+
+    expect(target).toMatchObject({
+      id: "ws-lab2",
+      kind: "cloud_workstation",
+      status: "ready",
+      label: "Lab 2",
+      statusLabel: "Ready",
+      providerLabel: "Local daemon",
+      defaultEnvironmentLabel: "Current Python",
+      environmentLabel: "Current Python",
+      cpuCount: 8,
+      memoryBytes: 32 * 1024 ** 3,
+      runtimePeerCount: 1,
+      workingDirectoryLabel: "/home/ubuntu/notebooks",
+    });
+  });
+
+  it("keeps connecting attachments connected but not executable", () => {
+    const target = projectNotebookRuntimeTargetFromWorkstationAttachment(
+      attachment({
+        status: "connecting",
+        status_message: "Waiting for runtime peer heartbeat",
+      }),
+    );
+
+    expect(target).toMatchObject({
+      status: "connecting",
+      statusLabel: "Connecting",
+      detail: "Waiting for runtime peer heartbeat",
+    });
   });
 });

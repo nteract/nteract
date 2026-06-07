@@ -140,6 +140,10 @@ impl NotebookFileBinding {
         if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
             warn!("[notebook-sync] set_path failed for {:?}: {}", canonical, e);
         }
+        super::workstation_attachment::publish_local_workstation_attachment_for_notebook_path(
+            &room.state,
+            Some(canonical),
+        );
     }
 
     pub async fn bind_existing(room: &Arc<NotebookRoom>, canonical: &Path) {
@@ -922,6 +926,10 @@ impl NotebookRoom {
             let path_str = p.to_string_lossy().into_owned();
             let _ = state.with_doc(|sd| sd.set_path(Some(&path_str)));
         }
+        super::workstation_attachment::publish_local_workstation_attachment_for_notebook_path(
+            &state,
+            path.as_deref(),
+        );
 
         let persistence = match persist_tx.zip(flush_request_tx) {
             Some((p, f)) => RoomPersistence::with_debouncer(p, f),
@@ -1030,6 +1038,10 @@ impl NotebookRoom {
             let path_str = p.to_string_lossy().into_owned();
             let _ = state.with_doc(|sd| sd.set_path(Some(&path_str)));
         }
+        super::workstation_attachment::publish_local_workstation_attachment_for_notebook_path(
+            &state,
+            path.as_deref(),
+        );
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),

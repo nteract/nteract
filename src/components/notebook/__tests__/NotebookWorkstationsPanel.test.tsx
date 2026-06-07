@@ -45,6 +45,7 @@ const localReadyCapabilities: NotebookShellCapabilities = {
       providerLabel: "Local daemon",
       defaultEnvironmentLabel: "Notebook runtime",
       environmentLabel: "Notebook runtime",
+      kernelStatusLabel: "idle",
       cpuCount: 8,
       memoryBytes: 16 * 1024 ** 3,
       workingDirectoryLabel: "~/notebooks",
@@ -74,6 +75,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getAllByText("Local daemon")).toHaveLength(2);
     expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
     expect(screen.getByText("Default env")).toBeVisible();
+    expect(screen.getByText("Kernel")).toBeVisible();
+    expect(screen.getByText("idle")).toBeVisible();
     expect(screen.getByText("CPUs")).toBeVisible();
     expect(screen.getByText("8")).toBeVisible();
     expect(screen.getByText("RAM")).toBeVisible();
@@ -148,6 +151,7 @@ describe("NotebookWorkstationsPanel", () => {
               providerLabel: "JupyterHub",
               defaultEnvironmentLabel: "Current Python",
               resourceLabel: "4 CPU / 16 GB RAM",
+              runtimePeerCount: 1,
             },
           },
         }}
@@ -159,6 +163,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getAllByText("Current Python")).toHaveLength(2);
     expect(screen.getByText("Resources")).toBeVisible();
     expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
+    expect(screen.getByText("Runtime peers")).toBeVisible();
+    expect(screen.getByText("1")).toBeVisible();
     expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();
   });

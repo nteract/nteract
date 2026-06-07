@@ -5,6 +5,7 @@ import type {
 } from "./notebook-edit-access";
 import type { NotebookActorProjection } from "./notebook-actor-projection";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
+import type { WorkstationAttachmentState } from "./runtime-state";
 
 export type {
   NotebookActorOperator,
@@ -76,9 +77,19 @@ export interface NotebookShellRuntimeTargetProjection {
    */
   defaultEnvironmentLabel?: string | null;
   environmentLabel?: string | null;
+  /**
+   * User-facing kernel lifecycle label for the active target, when the host
+   * has authoritative RuntimeStateDoc lifecycle data.
+   */
+  kernelStatusLabel?: string | null;
   cpuCount?: number | null;
   memoryBytes?: number | null;
   resourceLabel?: string | null;
+  /**
+   * Room-observed runtime peer count for hosted workstation attachments. This
+   * is presence/runtime state, not an ACL or workstation registry fact.
+   */
+  runtimePeerCount?: number | null;
   workingDirectoryLabel?: string | null;
 }
 
@@ -109,6 +120,17 @@ export interface NotebookShellRuntimeCapabilities {
    * authorship still comes from runtime peers.
    */
   target?: NotebookShellRuntimeTargetProjection | null;
+}
+
+export interface ProjectNotebookRuntimeTargetFromWorkstationAttachmentOptions {
+  /**
+   * Workstation attachments usually describe a hosted workstation from a
+   * browser's point of view. Runtime-peer and fixture callers can override the
+   * kind when they intentionally project a different host surface.
+   */
+  kind?: NotebookShellRuntimeTargetKind;
+  kernelStatusLabel?: string | null;
+  runtimePeerCount?: number | null;
 }
 
 export interface NotebookShellCapabilities {
@@ -221,6 +243,75 @@ export function resolveNotebookShellRuntimeTarget(
     return FIXTURE_RUNTIME_TARGET;
   }
   return UNKNOWN_RUNTIME_TARGET;
+}
+
+export function notebookShellWorkstationAttachmentCacheKey(
+  attachment: WorkstationAttachmentState | null | undefined,
+): string {
+  if (attachment === undefined) return "undefined";
+  if (attachment === null) return "null";
+  return stableCacheKey([
+    attachment.workstation_id,
+    attachment.display_name,
+    attachment.provider,
+    attachment.default_environment_label,
+    attachment.environment_policy,
+    attachment.status,
+    attachment.status_message ?? null,
+    attachment.cpu_count ?? null,
+    attachment.memory_bytes ?? null,
+    attachment.working_directory ?? null,
+    attachment.updated_at ?? null,
+  ]);
+}
+
+export function projectNotebookRuntimeTargetFromWorkstationAttachment(
+  attachment: WorkstationAttachmentState | null | undefined,
+  options: ProjectNotebookRuntimeTargetFromWorkstationAttachmentOptions = {},
+): NotebookShellRuntimeTargetProjection | null {
+  if (!attachment) return null;
+
+  const statusProjection = workstationAttachmentStatusProjection(attachment.status);
+  const defaultEnvironmentLabel =
+    trimToNull(attachment.default_environment_label) ??
+    trimToNull(attachment.environment_policy) ??
+    "Notebook runtime";
+  const runtimePeerCount = normalizePositiveInteger(options.runtimePeerCount);
+
+  return {
+    id: trimToNull(attachment.workstation_id) ?? "attached-workstation",
+    kind: options.kind ?? "cloud_workstation",
+    status: statusProjection.status,
+    label: trimToNull(attachment.display_name) ?? "Attached workstation",
+    statusLabel: statusProjection.statusLabel,
+    detail: trimToNull(attachment.status_message) ?? statusProjection.detail,
+    providerLabel: workstationAttachmentProviderLabel(attachment.provider),
+    defaultEnvironmentLabel,
+    environmentLabel: defaultEnvironmentLabel,
+    kernelStatusLabel: options.kernelStatusLabel ?? null,
+    cpuCount: normalizePositiveInteger(attachment.cpu_count),
+    memoryBytes: normalizePositiveInteger(attachment.memory_bytes),
+    runtimePeerCount,
+    workingDirectoryLabel: trimToNull(attachment.working_directory),
+  };
+}
+
+export function workstationAttachmentCanExecute(
+  attachment: WorkstationAttachmentState | null | undefined,
+): boolean {
+  if (!attachment) return false;
+  return attachment.status === "ready" || attachment.status === "busy";
+}
+
+export function workstationAttachmentIsConnected(
+  attachment: WorkstationAttachmentState | null | undefined,
+): boolean {
+  if (!attachment) return false;
+  return (
+    attachment.status === "ready" ||
+    attachment.status === "busy" ||
+    attachment.status === "connecting"
+  );
 }
 
 export function notebookShellRuntimeTargetSummary(
@@ -379,9 +470,11 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   providerLabel: (target) => target.providerLabel ?? null,
   defaultEnvironmentLabel: (target) => target.defaultEnvironmentLabel ?? null,
   environmentLabel: (target) => target.environmentLabel ?? null,
+  kernelStatusLabel: (target) => target.kernelStatusLabel ?? null,
   cpuCount: (target) => target.cpuCount ?? null,
   memoryBytes: (target) => target.memoryBytes ?? null,
   resourceLabel: (target) => target.resourceLabel ?? null,
+  runtimePeerCount: (target) => target.runtimePeerCount ?? null,
   workingDirectoryLabel: (target) => target.workingDirectoryLabel ?? null,
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
 const NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS = {
@@ -670,9 +763,11 @@ function stableNotebookShellRuntimeTarget(
     providerLabel: target.providerLabel ?? null,
     defaultEnvironmentLabel: target.defaultEnvironmentLabel ?? null,
     environmentLabel: target.environmentLabel ?? null,
+    kernelStatusLabel: target.kernelStatusLabel ?? null,
     cpuCount: target.cpuCount ?? null,
     memoryBytes: target.memoryBytes ?? null,
     resourceLabel: target.resourceLabel ?? null,
+    runtimePeerCount: target.runtimePeerCount ?? null,
     workingDirectoryLabel: target.workingDirectoryLabel ?? null,
   });
   setBoundedCacheValue(SHELL_RUNTIME_TARGET_CACHE, cacheKey, stableTarget, SHELL_PART_CACHE_LIMIT);
@@ -740,4 +835,63 @@ function notebookActorPrincipalSourceCacheKey(
 
 function notebookActorOperatorCacheKey(actor: NotebookActorProjection["operator"]): string {
   return projectionCacheKey(actor, NOTEBOOK_ACTOR_OPERATOR_CACHE_FIELDS);
+}
+
+function workstationAttachmentStatusProjection(status: string): {
+  status: NotebookShellRuntimeTargetStatus;
+  statusLabel: string;
+  detail: string | null;
+} {
+  switch (status) {
+    case "ready":
+      return { status: "ready", statusLabel: "Ready", detail: null };
+    case "busy":
+      return { status: "attached", statusLabel: "Busy", detail: null };
+    case "connecting":
+      return {
+        status: "connecting",
+        statusLabel: "Connecting",
+        detail: "The selected workstation is attaching to this room.",
+      };
+    case "error":
+      return {
+        status: "attention",
+        statusLabel: "Needs attention",
+        detail: "The selected workstation could not attach to this room.",
+      };
+    case "disconnected":
+      return {
+        status: "offline",
+        statusLabel: "Offline",
+        detail: "The selected workstation is not connected to this room.",
+      };
+    default:
+      return { status: "attached", statusLabel: "Attached", detail: null };
+  }
+}
+
+function workstationAttachmentProviderLabel(provider: string): string {
+  switch (provider) {
+    case "local_daemon":
+      return "Local daemon";
+    case "runtime_peer":
+      return "Runtime peer";
+    case "cloud_room":
+      return "Cloud room";
+    case "cloud_workstation":
+      return "Cloud workstation";
+    default:
+      return trimToNull(provider) ?? "Workstation";
+  }
+}
+
+function normalizePositiveInteger(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const rounded = Math.floor(value);
+  return rounded > 0 ? rounded : null;
+}
+
+function trimToNull(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
 }

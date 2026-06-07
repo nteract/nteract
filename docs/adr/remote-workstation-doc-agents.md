@@ -321,10 +321,12 @@ can reuse generic `AsyncWrite` plumbing, but the dialer, read path, auth
 handshake, reconnect behavior, and revocation close path need to be explicit
 implementation items rather than hidden inside the adapter step.
 
-## Decision 7: Target selection is explicit room state
+## Decision 7: Target selection and attachment progress are explicit room state
 
 Hosted rooms need an explicit active workstation target, distinct from access
-control.
+control. The registry answers "what workstations can this user choose?" The
+room state answers "what compute is this notebook trying to use right now, and
+is it ready to execute?"
 
 Minimum target state:
 
@@ -342,6 +344,13 @@ workstation_status = disconnected | connecting | ready | busy | error
 workstation_capabilities
 ```
 
+That state must be visible to late joiners and collaborators without polling a
+separate workstation-control resource. The room host therefore mirrors the
+selected target, attach/detach progress, readiness, disconnect, and error facts
+into a room-owned `RuntimeStateDoc` field. The doc agent can report provider
+facts over the control channel, but the room host writes the notebook-visible
+projection because it is also the authority that dispatches execution intent.
+
 The visible rail/header projection should lead with the workstation id as
 small metadata, the display name as the primary label, and compact resource
 facts such as CPU count, RAM, default environment, and working directory. The
@@ -354,19 +363,12 @@ editor authorization. A user can edit a hosted notebook without a connected
 workstation target. Run/restart/package controls appear only when the room has
 an active, ready target and the user's role permits execution requests.
 
-Open detail: this state can live in a small room-host-owned portion of
-`RuntimeStateDoc` or as Durable Object side state mirrored through
-`SessionControl`. If it affects execution behavior or late-join rendering, it
-should become durable room-host-owned runtime state rather than only an
-ephemeral control message.
-
-Because target readiness affects execution dispatch and late joiners, the v1
-default should be room-host-owned runtime state. The doc agent may report
-provider facts over the control channel, but the room host writes the selected
-target, readiness, disconnect, and current-Python environment projection that
-viewers render. That keeps the design aligned with the current policy: `env`
-and other deployment facts are room-host/daemon-owned fields, not fields a
-`runtime_peer` may mutate directly.
+`SessionControl` can still carry transient wake-up messages, and the workstation
+registry can still serve app-shell lists, but neither is the notebook's durable
+attachment display. Because target readiness affects execution dispatch and
+late joiners, the v1 default is room-host-owned runtime state. That keeps the
+design aligned with the current policy: `env` and other deployment facts are
+room-host/daemon-owned fields, not fields a `runtime_peer` may mutate directly.
 
 ## Decision 8: Content discovery and runtime attachment stay separate
 

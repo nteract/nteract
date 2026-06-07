@@ -61,11 +61,11 @@ body {
 
 .cloud-notebook-notices [data-slot="notebook-notice"] {
   border: 0;
-  border-left: 2px solid currentColor;
+  border-top: 2px solid currentColor;
   border-radius: 0;
   padding: 0.625rem clamp(0.5rem, 2vw, 1rem) 0.625rem clamp(0.75rem, 4vw, 2rem);
   background: linear-gradient(
-    90deg,
+    180deg,
     color-mix(in srgb, currentColor 9%, var(--background)) 0%,
     color-mix(in srgb, currentColor 4%, var(--background)) 42%,
     var(--background) 100%
@@ -482,6 +482,7 @@ body {
   display: grid;
   gap: 1.25rem;
   width: min(100%, 72rem);
+  justify-self: center;
 }
 
 .cloud-dashboard-continue {
@@ -489,12 +490,12 @@ body {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1rem;
   align-items: end;
-  border-left: 2px solid color-mix(in srgb, #10b981 70%, transparent);
-  padding: 1rem 0 1rem 1rem;
+  border-top: 1px solid color-mix(in srgb, #10b981 30%, transparent);
+  padding: 1rem 0.25rem 0.875rem;
   background: linear-gradient(
-    90deg,
+    180deg,
     color-mix(in srgb, #10b981 7%, var(--background)) 0%,
-    color-mix(in srgb, var(--background) 98%, transparent) 68%,
+    color-mix(in srgb, var(--background) 98%, transparent) 58%,
     transparent 100%
   );
 }
@@ -525,19 +526,6 @@ body {
   font-size: clamp(1.25rem, 3vw, 1.875rem);
   font-weight: 720;
   line-height: 1.1;
-}
-
-.cloud-dashboard-continue-id {
-  display: block;
-  margin-top: 0.375rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: color-mix(in srgb, var(--foreground) 54%, transparent);
-  font-family:
-    ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 0.75rem;
-  line-height: 1.2;
 }
 
 .cloud-dashboard-continue-facts {
@@ -592,8 +580,8 @@ body {
 }
 
 .cloud-dashboard-summary-item {
-  border-left: 2px solid color-mix(in srgb, var(--foreground) 16%, transparent);
-  padding: 0.625rem 0 0.625rem 0.875rem;
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
+  padding: 0.75rem 0 0.375rem;
 }
 
 .cloud-dashboard-summary-item span {
@@ -622,9 +610,23 @@ body {
 
 .cloud-dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 18rem;
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
   align-items: start;
+}
+
+.cloud-dashboard-notebooks {
+  display: grid;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.cloud-dashboard-notebook-section {
+  min-width: 0;
+}
+
+.cloud-dashboard-notebook-section[data-section="untitled"] {
+  color: color-mix(in srgb, var(--foreground) 86%, transparent);
 }
 
 .cloud-dashboard-section-heading {
@@ -636,6 +638,7 @@ body {
 }
 
 .cloud-dashboard-section-heading h2,
+.cloud-dashboard-section-heading p,
 .cloud-dashboard-aside h2,
 .cloud-dashboard-aside p {
   margin: 0;
@@ -647,14 +650,55 @@ body {
   line-height: 1.2;
 }
 
+.cloud-dashboard-section-heading p {
+  margin-top: 0.25rem;
+  color: color-mix(in srgb, var(--foreground) 56%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.cloud-dashboard-section-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 2rem;
+  border: 0;
+  border-radius: 6px;
+  padding-inline: 0.625rem;
+  color: color-mix(in srgb, var(--foreground) 64%, transparent);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.cloud-dashboard-section-action:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+.cloud-dashboard-section-action svg {
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
+.cloud-dashboard-notebook-section[data-section="untitled"] .cloud-dashboard-section-heading h2 {
+  color: color-mix(in srgb, var(--foreground) 76%, transparent);
+}
+
 .cloud-dashboard-aside {
   display: grid;
-  gap: 1.25rem;
+  order: -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
 }
 
 .cloud-dashboard-aside section {
-  border-left: 2px solid color-mix(in srgb, var(--foreground) 16%, transparent);
-  padding-left: 0.875rem;
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
+  padding-top: 0.75rem;
 }
 
 .cloud-dashboard-aside-kicker {
@@ -716,7 +760,7 @@ body {
 }
 
 .cloud-notebook-list-title,
-.cloud-notebook-list-id {
+.cloud-notebook-list-detail {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -729,10 +773,8 @@ body {
   line-height: 1.2;
 }
 
-.cloud-notebook-list-id {
+.cloud-notebook-list-detail {
   color: color-mix(in srgb, var(--foreground) 54%, transparent);
-  font-family:
-    ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.75rem;
   line-height: 1.2;
 }
@@ -831,7 +873,7 @@ body {
   gap: 0.625rem;
   width: fit-content;
   max-width: 100%;
-  border-left: 2px solid color-mix(in srgb, var(--foreground) 24%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 20%, transparent);
   padding: 0.75rem 1rem;
   color: color-mix(in srgb, var(--foreground) 68%, transparent);
   background: color-mix(in srgb, var(--background) 96%, var(--foreground) 4%);
@@ -878,6 +920,10 @@ body {
   }
 
   .cloud-dashboard-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cloud-dashboard-aside {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -965,12 +1011,12 @@ main.flex > .cloud-report-toolbar {
   gap: 0.875rem;
   --cloud-home-panel-border: color-mix(in srgb, #10b981 68%, transparent);
   --cloud-home-panel-wash: color-mix(in srgb, #10b981 5%, var(--background));
-  border-left: 2px solid var(--cloud-home-panel-border);
-  padding: 0.75rem 0 0.75rem 1rem;
+  border-top: 1px solid var(--cloud-home-panel-border);
+  padding: 0.75rem 0.25rem;
   background: linear-gradient(
-    90deg,
+    180deg,
     var(--cloud-home-panel-wash) 0%,
-    color-mix(in srgb, var(--background) 98%, transparent) 72%,
+    color-mix(in srgb, var(--background) 98%, transparent) 64%,
     transparent 100%
   );
 }
@@ -1331,8 +1377,8 @@ main.flex > .cloud-report-toolbar {
   justify-content: space-between;
   gap: 0.75rem;
   margin: 0.75rem 1rem 0;
-  border-left: 2px solid color-mix(in srgb, #10b981 72%, transparent);
-  padding: 0.625rem 0.625rem 0.625rem 0.75rem;
+  border-top: 1px solid color-mix(in srgb, #10b981 36%, transparent);
+  padding: 0.625rem;
   background: color-mix(in srgb, #10b981 6%, var(--background));
 }
 
@@ -1638,8 +1684,8 @@ main.flex > .cloud-report-toolbar {
   display: grid;
   gap: 0.375rem;
   margin: 0.375rem 0 0;
-  border-left: 2px solid color-mix(in srgb, var(--foreground) 16%, transparent);
-  padding: 0.25rem 0 0.25rem 0.625rem;
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
+  padding-top: 0.5rem;
 }
 
 .cloud-auth-diagnostics div {

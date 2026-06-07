@@ -1236,6 +1236,91 @@ fn notebook_text_mime(value: Option<&serde_json::Value>) -> Option<String> {
 }
 
 #[tokio::test]
+async fn test_new_fresh_seeds_local_workstation_attachment() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let notebook_path = tmp.path().join("workstation.ipynb");
+    std::fs::write(&notebook_path, "{}").unwrap();
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
+        Uuid::new_v4(),
+        Some(notebook_path),
+        tmp.path(),
+        test_blob_store(&tmp),
+        false,
+        test_trusted_packages(),
+    )
+    .unwrap();
+
+    let attachment = room
+        .state
+        .with_doc(|sd| Ok(sd.workstation_attachment()))
+        .unwrap()
+        .expect("new local room should publish workstation attachment");
+
+    assert_eq!(attachment.workstation_id, "local-daemon");
+    assert_eq!(attachment.display_name, "This machine");
+    assert_eq!(attachment.provider, "local_daemon");
+    assert_eq!(attachment.default_environment_label, "Notebook runtime");
+    assert_eq!(attachment.environment_policy, "daemon");
+    assert_eq!(attachment.status, "ready");
+    assert!(attachment.cpu_count.is_some_and(|count| count > 0));
+    assert_eq!(
+        attachment.working_directory.as_deref(),
+        Some(tmp.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(attachment.updated_at, None);
+}
+
+#[test]
+fn test_local_workstation_attachment_publish_is_idempotent() {
+    let (state_changed_tx, _) = broadcast::channel(16);
+    let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
+    let working_directory = Some("/tmp/nteract-workstation".to_string());
+
+    super::workstation_attachment::publish_local_workstation_attachment_for_test(
+        &state,
+        working_directory.clone(),
+    )
+    .unwrap();
+    let heads_after_first = state.with_doc(|sd| Ok(sd.get_heads())).unwrap();
+
+    super::workstation_attachment::publish_local_workstation_attachment_for_test(
+        &state,
+        working_directory,
+    )
+    .unwrap();
+    let heads_after_second = state.with_doc(|sd| Ok(sd.get_heads())).unwrap();
+
+    assert_eq!(
+        heads_after_second, heads_after_first,
+        "republishing identical local workstation facts must not churn RuntimeStateDoc heads"
+    );
+}
+
+#[tokio::test]
+async fn test_set_runtime_path_updates_local_workstation_working_directory() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "original.ipynb");
+    let nested = tmp.path().join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let notebook_path = nested.join("saved.ipynb");
+
+    NotebookFileBinding::set_runtime_path(&room, &notebook_path).await;
+
+    let state = room.state.with_doc(|sd| Ok(sd.read_state())).unwrap();
+    assert_eq!(
+        state.path.as_deref(),
+        Some(notebook_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        state
+            .workstation
+            .as_ref()
+            .and_then(|attachment| attachment.working_directory.as_deref()),
+        Some(nested.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
 async fn test_save_notebook_to_disk_creates_valid_nbformat() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "test.ipynb");
@@ -8062,6 +8147,14 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
     assert_eq!(
         clone_room.identity.working_dir.read().await.as_deref(),
         Some(tmp.path())
+    );
+    assert_eq!(
+        clone_room
+            .state
+            .with_doc(|sd| Ok(sd.workstation_attachment()))
+            .unwrap()
+            .and_then(|attachment| attachment.working_directory),
+        Some(tmp.path().to_string_lossy().into_owned())
     );
 
     // Doc content: same cells, execution_count cleared on code cells.

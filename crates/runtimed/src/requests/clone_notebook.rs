@@ -88,6 +88,10 @@ pub(crate) async fn handle_inner(
     //    same pyproject.toml / environment.yml / pixi.toml the source uses.
     if let Some(ref wd) = working_dir_path {
         *clone_room.identity.working_dir.write().await = Some(wd.clone());
+        crate::notebook_sync_server::publish_local_workstation_attachment_for_working_dir(
+            &clone_room.state,
+            Some(wd.as_path()),
+        );
     }
 
     // 6. Fork cells + metadata + attachments.

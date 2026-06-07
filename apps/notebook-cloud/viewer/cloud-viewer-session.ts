@@ -6,7 +6,11 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
-import type { BlobResolver } from "runtimed";
+import {
+  notebookShellWorkstationAttachmentCacheKey,
+  type BlobResolver,
+  type WorkstationAttachmentState,
+} from "runtimed";
 import type { WidgetStore } from "@/components/widgets/widget-store";
 import {
   applyExecutionViewChangeset,
@@ -76,6 +80,7 @@ export interface CloudViewerSession {
   retryLiveConnection: () => void;
   snapshotResolvedRef: MutableRefObject<boolean>;
   status: ViewerStatus;
+  workstationAttachment: WorkstationAttachmentState | null;
 }
 
 interface UseCloudViewerSessionOptions {
@@ -114,9 +119,12 @@ export function useCloudViewerSession({
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
+  const [workstationAttachment, setWorkstationAttachment] =
+    useState<WorkstationAttachmentState | null>(null);
   const cellsRef = useRef<ResolvedCell[]>([]);
   const cellsByIdRef = useRef(new Map<string, ResolvedCell>());
   const notebookLanguageRef = useRef("python");
+  const workstationAttachmentKeyRef = useRef(notebookShellWorkstationAttachmentCacheKey(null));
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const materializeLiveRuntimeRef = useRef<((runtime: CloudSyncRuntime) => void) | null>(null);
   const liveMaterializedRef = useRef(false);
@@ -365,6 +373,8 @@ export function useCloudViewerSession({
       setConnectionScope(null);
       setConnectionActorLabel(null);
       setConnectionError(reason.message);
+      setWorkstationAttachment(null);
+      workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
       disposeCurrentRuntime();
       if (reconnectTimer) return;
       reconnectTimer = setTimeout(() => {
@@ -454,6 +464,8 @@ export function useCloudViewerSession({
     materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
     presenceStore.reset();
+    setWorkstationAttachment(null);
+    workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
     setConnectionError(null);
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
@@ -508,6 +520,12 @@ export function useCloudViewerSession({
           }),
           liveRuntime.engine.runtimeState$.subscribe((state) => {
             setRuntimeState(state);
+            const nextAttachment = state.workstation ?? null;
+            const nextKey = notebookShellWorkstationAttachmentCacheKey(nextAttachment);
+            if (nextKey !== workstationAttachmentKeyRef.current) {
+              workstationAttachmentKeyRef.current = nextKey;
+              setWorkstationAttachment(nextAttachment);
+            }
           }),
           liveRuntime.engine.executionViewChanges$.subscribe((changeset) => {
             applyExecutionViewChangeset(changeset);
@@ -540,6 +558,8 @@ export function useCloudViewerSession({
         setConnectionScope(null);
         setConnectionActorLabel(null);
         setConnectionPeerId(null);
+        setWorkstationAttachment(null);
+        workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
         setConnectionError(error instanceof Error ? error.message : String(error));
         console.warn("[notebook-cloud] live room connection failed", error);
       });
@@ -561,6 +581,8 @@ export function useCloudViewerSession({
       livePresenceStore = null;
       presenceStore.reduceConnection("disconnected");
       setConnectionPeerId(null);
+      setWorkstationAttachment(null);
+      workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
     };
   }, [
     authRenewalKind,
@@ -600,6 +622,7 @@ export function useCloudViewerSession({
     retryLiveConnection,
     snapshotResolvedRef,
     status,
+    workstationAttachment,
   };
 }
 

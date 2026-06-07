@@ -19,9 +19,9 @@
 //! its live attach is the deferred proof.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use notebook_cloud_transport::{CloudAuth, CloudWsConfig};
+use notebook_cloud_transport::{CloudAuth, CloudWorkstationMetadata, CloudWsConfig};
 use notebook_protocol::protocol::{KernelPorts, RuntimeAgentRequest};
 
 use super::launch_on_attach::{build_current_python_launch, CurrentPythonLaunch};
@@ -37,6 +37,9 @@ pub struct RoomTarget {
     pub scope: String,
     /// Operator suffix for the doc actor label (`<principal>/<operator>`).
     pub operator: String,
+    /// Optional non-secret workstation facts to present to the room host when
+    /// this runtime peer attaches.
+    pub workstation: Option<CloudWorkstationMetadata>,
 }
 
 /// A resolved allocation ready to drive [`run_cloud_runtime_agent`]: the cloud
@@ -59,6 +62,7 @@ pub fn plan_current_python_allocation(
     auth: CloudAuth,
     python_path: PathBuf,
     notebook_path: Option<String>,
+    working_dir: Option<PathBuf>,
     env_vars: HashMap<String, String>,
     kernel_ports: KernelPorts,
 ) -> Allocation {
@@ -67,10 +71,12 @@ pub fn plan_current_python_allocation(
         notebook_id: target.notebook_id.clone(),
         scope: target.scope.clone(),
         auth,
+        workstation: target.workstation.clone(),
     };
     let launch = CurrentPythonLaunch {
         python_path,
         notebook_path,
+        working_dir,
         env_vars,
     };
     let initial_launch = build_current_python_launch(&launch, kernel_ports);
@@ -96,6 +102,7 @@ pub async fn allocate_current_python_runtime(
     auth: CloudAuth,
     python_path: PathBuf,
     notebook_path: Option<String>,
+    working_dir: Option<PathBuf>,
     env_vars: HashMap<String, String>,
     blob_root: PathBuf,
 ) -> anyhow::Result<()> {
@@ -105,6 +112,7 @@ pub async fn allocate_current_python_runtime(
         auth,
         python_path,
         notebook_path,
+        working_dir,
         env_vars,
         reservation.ports(),
     );
@@ -120,6 +128,34 @@ pub async fn allocate_current_python_runtime(
     .await
 }
 
+pub fn current_python_workstation_metadata(working_dir: Option<&Path>) -> CloudWorkstationMetadata {
+    CloudWorkstationMetadata {
+        workstation_id: None,
+        display_name: None,
+        default_environment_label: Some("Current Python".to_string()),
+        environment_policy: Some("current_python".to_string()),
+        working_directory: working_dir.map(|path| path.to_string_lossy().into_owned()),
+    }
+}
+
+/// Resolve the working directory a current-Python launch will present to the
+/// room. Saved notebooks launch relative to their file directory, while
+/// notebook-id-only rooms use the spawner/process cwd.
+pub fn current_python_launch_working_dir(
+    notebook_path: Option<&str>,
+    fallback_working_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(notebook_path) = notebook_path.map(PathBuf::from) {
+        if notebook_path.is_dir() {
+            return Some(notebook_path);
+        }
+        if let Some(parent) = notebook_path.parent() {
+            return Some(parent.to_path_buf());
+        }
+    }
+    fallback_working_dir.map(Path::to_path_buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +167,7 @@ mod tests {
             notebook_id: "nb-xyz".into(),
             scope: "runtime_peer".into(),
             operator: "agent:runt".into(),
+            workstation: None,
         }
     }
 
@@ -153,6 +190,7 @@ mod tests {
             },
             PathBuf::from("/opt/ws/bin/python"),
             Some("/ws/nb.ipynb".into()),
+            None,
             HashMap::from([("K".to_string(), "V".to_string())]),
             ports(),
         );
@@ -199,11 +237,68 @@ mod tests {
             },
             PathBuf::from("/usr/bin/python3"),
             None,
+            Some(PathBuf::from("/srv/work")),
             HashMap::new(),
             ports(),
         );
         assert_eq!(alloc.config.scope, "owner");
         assert_eq!(alloc.operator, "agent:custom");
         assert!(matches!(alloc.config.auth, CloudAuth::Dev { .. }));
+        let RuntimeAgentRequest::LaunchKernel { notebook_path, .. } = alloc.initial_launch else {
+            panic!("expected LaunchKernel");
+        };
+        assert_eq!(notebook_path.as_deref(), Some("/srv/work"));
+    }
+
+    #[test]
+    fn carries_workstation_metadata_into_cloud_config() {
+        let mut t = target();
+        t.workstation = Some(current_python_workstation_metadata(Some(Path::new(
+            "/home/ws/project",
+        ))));
+
+        let alloc = plan_current_python_allocation(
+            &t,
+            CloudAuth::OidcBearer {
+                token: "tok".into(),
+            },
+            PathBuf::from("/usr/bin/python3"),
+            None,
+            Some(PathBuf::from("/home/ws/project")),
+            HashMap::new(),
+            ports(),
+        );
+
+        assert_eq!(
+            alloc
+                .config
+                .workstation
+                .as_ref()
+                .and_then(|metadata| metadata.working_directory.as_deref()),
+            Some("/home/ws/project")
+        );
+        assert_eq!(
+            alloc
+                .config
+                .workstation
+                .as_ref()
+                .and_then(|metadata| metadata.environment_policy.as_deref()),
+            Some("current_python")
+        );
+    }
+
+    #[test]
+    fn derives_current_python_launch_working_dir_from_notebook_path_or_spawner_cwd() {
+        assert_eq!(
+            current_python_launch_working_dir(
+                Some("/home/ws/project/notebook.ipynb"),
+                Some(Path::new("/tmp/spawner"))
+            ),
+            Some(PathBuf::from("/home/ws/project"))
+        );
+        assert_eq!(
+            current_python_launch_working_dir(None, Some(Path::new("/tmp/spawner"))),
+            Some(PathBuf::from("/tmp/spawner"))
+        );
     }
 }

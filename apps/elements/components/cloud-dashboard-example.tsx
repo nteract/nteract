@@ -173,7 +173,7 @@ function CloudDashboardFrame() {
       <main className="grid gap-5 px-4 py-5 md:px-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
         <section className="grid gap-5">
           <section
-            className="border-l-2 border-emerald-500/70 bg-gradient-to-r from-emerald-500/[0.08] via-fd-background to-fd-background py-4 pl-4 pr-3"
+            className="border-t border-emerald-500/30 bg-gradient-to-b from-emerald-500/[0.08] via-fd-background to-fd-background px-1 py-4"
             aria-labelledby="cloud-dashboard-continue"
           >
             <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -236,7 +236,7 @@ function CloudDashboardFrame() {
 
         <aside className="grid content-start gap-5">
           <section
-            className="border-l-2 border-fd-border py-1 pl-4"
+            className="border-t border-fd-border pt-4"
             aria-labelledby="cloud-dashboard-account"
           >
             <div className="flex items-start gap-2">
@@ -254,7 +254,7 @@ function CloudDashboardFrame() {
           </section>
 
           <section
-            className="border-l-2 border-emerald-500/70 py-1 pl-4"
+            className="border-t border-emerald-500/30 pt-4"
             aria-labelledby="cloud-dashboard-workstation"
           >
             <p className="font-mono text-[0.68rem] uppercase tracking-normal text-fd-muted-foreground">
@@ -315,7 +315,7 @@ function InlineFact({ icon: Icon, label }: { icon: LucideIcon; label: string }) 
 function DashboardMetricCell({ metric }: { metric: DashboardMetric }) {
   const Icon = metric.icon;
   return (
-    <div className="border-l-2 border-fd-border py-2 pl-3">
+    <div className="border-t border-fd-border pt-3">
       <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
         <Icon className="size-3.5" aria-hidden="true" />
         {metric.label}
@@ -336,7 +336,7 @@ function NotebookDashboardRow({ notebook }: { notebook: DashboardNotebook }) {
         <span className="min-w-0 px-2 md:px-3">
           <span className="block truncate text-sm font-semibold">{notebook.title}</span>
           <span className="mt-1 block truncate text-xs text-fd-muted-foreground">
-            {notebook.id} · {notebook.summary}
+            {notebook.summary}
           </span>
           <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
             <NotebookScope access={notebook.access} />
@@ -408,7 +408,7 @@ function SharePreview({ notebook }: { notebook: DashboardNotebook }) {
             </p>
           </div>
           <div className="flex items-center justify-between gap-3 text-xs text-fd-muted-foreground">
-            <span>{notebook.id}</span>
+            <span>Published preview</span>
             <span className="inline-flex items-center gap-1.5">
               {notebook.public ? (
                 <Globe2 className="size-3.5" aria-hidden="true" />

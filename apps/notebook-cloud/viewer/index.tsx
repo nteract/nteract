@@ -101,6 +101,7 @@ import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
   cloudPresenceHasRuntimePeer,
+  cloudPresenceRuntimePeerCount,
   type CloudViewerPresencePeer,
   type CloudViewerPresenceStore,
   cloudViewerPresenceDisplay,
@@ -116,6 +117,7 @@ import {
   projectCloudNotebookDashboard,
   type CloudNotebookDashboardMetric,
   type CloudNotebookDashboardModel,
+  type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
 import {
@@ -866,9 +868,6 @@ function CloudNotebookDashboard({
           <div className="cloud-dashboard-continue-main">
             <p>Continue</p>
             <h2 id="cloud-dashboard-continue">{cloudNotebookDisplayTitle(continued)}</h2>
-            <span className="cloud-dashboard-continue-id">
-              {cloudNotebookShortId(continued.notebook_id)}
-            </span>
             <div className="cloud-dashboard-continue-facts">
               <span>
                 <Clock aria-hidden="true" />
@@ -902,28 +901,20 @@ function CloudNotebookDashboard({
       </section>
 
       <section className="cloud-dashboard-grid">
-        <section aria-label="Notebook rooms">
-          <div className="cloud-dashboard-section-heading">
-            <h2>Notebooks</h2>
-          </div>
-          <ul className="cloud-notebook-list">
-            {model.notebooks.map((notebook) => (
-              <li key={notebook.notebook_id}>
-                <CloudNotebookDashboardRow
-                  notebook={notebook}
-                  canRename={canRename}
-                  renameTitle={
-                    renameState?.notebookId === notebook.notebook_id ? renameState.title : null
-                  }
-                  renameSaving={renameSavingId === notebook.notebook_id}
-                  onOpenRename={onOpenRename}
-                  onCancelRename={onCancelRename}
-                  onRenameTitleChange={onRenameTitleChange}
-                  onSaveRename={onSaveRename}
-                />
-              </li>
-            ))}
-          </ul>
+        <section className="cloud-dashboard-notebooks" aria-label="Notebook rooms">
+          {model.sections.map((section) => (
+            <CloudNotebookDashboardSectionView
+              key={section.id}
+              section={section}
+              canRename={canRename}
+              renameState={renameState}
+              renameSavingId={renameSavingId}
+              onOpenRename={onOpenRename}
+              onCancelRename={onCancelRename}
+              onRenameTitleChange={onRenameTitleChange}
+              onSaveRename={onSaveRename}
+            />
+          ))}
         </section>
         <aside className="cloud-dashboard-aside" aria-label="Notebook workspace">
           <section>
@@ -942,6 +933,67 @@ function CloudNotebookDashboard({
         </aside>
       </section>
     </div>
+  );
+}
+
+function CloudNotebookDashboardSectionView({
+  section,
+  canRename,
+  renameState,
+  renameSavingId,
+  onOpenRename,
+  onCancelRename,
+  onRenameTitleChange,
+  onSaveRename,
+}: {
+  section: CloudNotebookDashboardSection;
+  canRename: boolean;
+  renameState: CloudNotebookRenameState | null;
+  renameSavingId: string | null;
+  onOpenRename: (notebook: CloudNotebookListItem) => void;
+  onCancelRename: () => void;
+  onRenameTitleChange: (title: string) => void;
+  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const action = canRename ? section.action : null;
+
+  return (
+    <section className="cloud-dashboard-notebook-section" data-section={section.id}>
+      <div className="cloud-dashboard-section-heading">
+        <div>
+          <h2>{section.title}</h2>
+          <p>{section.detail}</p>
+        </div>
+        {action?.kind === "rename" ? (
+          <button
+            type="button"
+            className="cloud-dashboard-section-action"
+            onClick={() => onOpenRename(action.notebook)}
+          >
+            <PencilLine aria-hidden="true" />
+            {action.label}
+          </button>
+        ) : null}
+      </div>
+      <ul className="cloud-notebook-list">
+        {section.notebooks.map((notebook) => (
+          <li key={notebook.notebook_id}>
+            <CloudNotebookDashboardRow
+              notebook={notebook}
+              canRename={canRename}
+              renameTitle={
+                renameState?.notebookId === notebook.notebook_id ? renameState.title : null
+              }
+              renameSaving={renameSavingId === notebook.notebook_id}
+              onOpenRename={onOpenRename}
+              onCancelRename={onCancelRename}
+              onRenameTitleChange={onRenameTitleChange}
+              onSaveRename={onSaveRename}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -1016,11 +1068,17 @@ function CloudNotebookDashboardRow({
     );
   }
 
+  const hasTitle = Boolean(notebook.title?.trim());
+
   return (
     <div className="cloud-notebook-list-row">
       <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
-        <span className="cloud-notebook-list-id">{cloudNotebookShortId(notebook.notebook_id)}</span>
+        {hasTitle ? null : (
+          <span className="cloud-notebook-list-detail">
+            Created {formatNotebookUpdatedAt(notebook.created_at)}
+          </span>
+        )}
         <span className="cloud-notebook-list-row-facts">
           <span>
             <UserRound aria-hidden="true" />
@@ -1514,6 +1572,7 @@ function NotebookViewer({
     retryLiveConnection,
     snapshotResolvedRef,
     status,
+    workstationAttachment,
   } = useCloudViewerSession({
     authRenewalKind: authRenewal.kind,
     authState,
@@ -1528,6 +1587,7 @@ function NotebookViewer({
     presenceStore.getSnapshot,
     presenceStore.getSnapshot,
   );
+  const runtimePeerCount = cloudPresenceRuntimePeerCount(presenceSnapshot);
   const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
     () => ({
@@ -1630,6 +1690,8 @@ function NotebookViewer({
         canAcceptCellMutations,
         editAccessRequestPending,
         runtimeAvailable: runtimePeerAvailable,
+        runtimePeerCount,
+        workstationAttachment,
         hostCapabilities: config.hostCapabilities,
       }),
     [
@@ -1640,8 +1702,10 @@ function NotebookViewer({
       connectionActorLabel,
       connectionScope,
       editAccessRequestPending,
+      runtimePeerCount,
       runtimePeerAvailable,
       selectedInteractionMode,
+      workstationAttachment,
     ],
   );
   useEffect(() => {
