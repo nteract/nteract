@@ -10,8 +10,9 @@ reserved control capacity, explicit barriers, and runtime-state catch-up.
 
 ## Context
 
-The three-document split gives `NotebookDoc`, `RuntimeStateDoc`, and `PoolDoc`
-separate sync states, frame types, ingress validators, and broadcast sources.
+The document split gives `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and
+daemon-scoped `PoolDoc` separate sync states, frame types, ingress validators,
+and broadcast sources.
 The original investigation found that the split still collapsed at the final
 per-peer egress point:
 

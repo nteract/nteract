@@ -47,6 +47,20 @@ projection semantics. Shared projection helpers may accept a host-provided blob
 resolver so desktop can use the daemon blob port while cloud can use an
 authenticated HTTP/R2 resolver.
 
+## Implementation Status, 2026-06-07
+
+The shared desktop bridge already follows the intended path: it consumes
+`SyncEngine.cellChanges$` changesets and applies narrow cell/output/runtime
+store updates where possible.
+
+The hosted live room path currently diverges. Its cloud session subscribes to
+cell-change notifications but rematerializes live cells instead of consuming
+the `CellChangeset` and applying the same narrow projection path. That is an
+intentional cleanup item, not the desired steady state. Cloud should share the
+same changeset-driven projection helpers so live edits, output updates, and
+future attribution lines arrive through one projection path across desktop and
+Cloud.
+
 ## Consequences
 
 The desired steady-state cost is proportional to the update:
@@ -72,4 +86,3 @@ moving runtime/output hot paths to narrow projections.
 This ADR also does not change the cell execution pipeline, output transport, or
 runtime control-plane ordering invariants. Those remain governed by
 [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md).
-

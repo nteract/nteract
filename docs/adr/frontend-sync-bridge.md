@@ -17,7 +17,7 @@ The bridge was extracted in commit `4baa957e` from `useAutomergeNotebook` (the h
 Neighbors:
 
 - `docs/adr/typed-frame-v4-wire-protocol.md` - what arrives at `frameIn$` before WASM decodes it.
-- `docs/adr/three-document-split.md` - `NotebookDoc` vs `RuntimeStateDoc` vs `BlobMap`, and why two of them feed the React tree on different paths.
+- `docs/adr/document-split.md` - `NotebookDoc` vs `RuntimeStateDoc` vs `BlobMap`, and why two of them feed the React tree on different paths.
 - `docs/adr/execution-pipeline.md` - the `flushSync` -> `get_heads_hex()` -> required-heads handshake that this layer is responsible for honoring.
 - `docs/adr/blob-storage-and-content-addressing.md` - manifests that resolve through `blob-port.ts` before a cell can finish materializing.
 - `docs/adr/identity-and-trust.md` - actor labels live in the WASM handle the bridge subscribes to.

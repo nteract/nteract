@@ -9,12 +9,15 @@ document split.
 
 ## Short Decision
 
-Create a fourth per-notebook Automerge document, `CommentsDoc`, instead of
-storing comments in `NotebookDoc` cells or in `RuntimeStateDoc`.
+Create another per-notebook Automerge document, `CommentsDoc`, instead of
+storing comments in `NotebookDoc` cells or in `RuntimeStateDoc`. In the current
+room model this makes comments the next notebook-room sidecar after
+`CommsDoc`; `PoolDoc` remains daemon-scoped and is not part of the per-notebook
+count.
 
-`CommentsDoc` is durable collaboration state with different write frequency,
-authority, fan-out, persistence, and UI projection from cells, outputs, widgets,
-or runtime lifecycle. It should sync over its own typed frame, likely
+`CommentsDoc` is durable collaboration state with different authority,
+durability, attachment, fan-out, and publish policy from cells, outputs,
+widgets, or runtime lifecycle. It should sync over its own typed frame, likely
 `COMMENTS_DOC_SYNC = 0x0a`. User-facing comment writes should still use
 Automerge for immediate local-first rendering: the client writes a tentative
 comment mutation into its local `CommentsDoc` replica, and the daemon or Cloud
@@ -35,8 +38,10 @@ https://automerge.org/llms-full.txt
 
 nteract already follows the same shape:
 
-- `docs/adr/three-document-split.md` says the split is load-bearing for
-  bandwidth, write-frequency isolation, fan-out, persistence, and trust.
+- `docs/adr/document-split.md` says the split is load-bearing for
+  permission boundaries, durability/lifetime, attachment identity, fan-out
+  scope, and trust, and deliberately avoids naming the architecture by a fixed
+  document count.
 - `NotebookDoc` carries durable cells keyed by `cell_id`, with fractional
   `position` strings for order.
 - `RuntimeStateDoc` carries kernel, execution, output, env, trust, project, and
@@ -706,9 +711,9 @@ Published snapshots:
 Phase 0: ADR alignment
 
 - Land this decision as an ADR before implementation.
-- Amend or cross-link `three-document-split.md` because `CommentsDoc` becomes
-  another per-notebook split document alongside `NotebookDoc`, `RuntimeStateDoc`,
-  and `CommsDoc`.
+- Amend or cross-link `document-split.md` because `CommentsDoc` becomes
+  another notebook-room document alongside `NotebookDoc`, `RuntimeStateDoc`,
+  and `CommsDoc`, while `PoolDoc` remains daemon-scoped.
 
 Phase 1: schema and projection
 

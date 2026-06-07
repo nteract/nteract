@@ -1,7 +1,7 @@
 # Architecture Cleanup Punchlist
 
 **Status:** Living. 2026-05-22.
-**Source:** Gaps surfaced while drafting `typed-frame-v4-wire-protocol.md`, `three-document-split.md`, `execution-pipeline.md`, and `blob-storage-and-content-addressing.md`.
+**Source:** Gaps surfaced while drafting `typed-frame-v4-wire-protocol.md`, `document-split.md`, `execution-pipeline.md`, and `blob-storage-and-content-addressing.md`.
 
 This is a triage list, not a plan. Each item is a real smell found in code while writing the ADRs. Severity is intent-of-fix, not bug-blast-radius.
 
@@ -28,7 +28,7 @@ Severity legend:
 | WP-11 | `recv_typed_frame` reads and allocates the body buffer up to the per-type cap *before* `try_from` rejects the unknown type. For unknown frame types the cap falls back to the outer 100 MiB ceiling, so a v4 daemon receiving forward-compat unknown bytes can allocate up to 100 MiB before skipping. | Targeted PR | `crates/notebook-protocol/src/connection/framing.rs:204-222` |
 | ~~WP-12~~ | **Done** in `quill/lab1/becca/wp12-wire-constants`. The existing `notebook-protocol` TypeScript generator now emits `packages/runtimed/src/wire-constants.ts` from `notebook_wire::{frame_types, frame_size_limits, MAX_FRAME_SIZE, MAX_CONTROL_FRAME_SIZE}`. `transport.ts` re-exports those generated values, and the old parser-based Rust drift test was removed because the duplicate TS table no longer exists. | Done | `crates/notebook-protocol/src/typescript.rs`, `packages/runtimed/src/wire-constants.ts`, `packages/runtimed/src/transport.ts` |
 
-## Three-document split
+## Document split (legacy 3D IDs)
 
 | ID | Smell | Severity | Where |
 |----|-------|----------|-------|
@@ -40,6 +40,7 @@ Severity legend:
 | 3D-6 | `PoolDoc` does not participate in the clone-preview validator. Mitigation is `strip_changes`, not `validate`. Future write-bearing pool features would need the validator path wired back in. | Design | `crates/runtimed/src/notebook_sync_server/` |
 | 3D-7 | Hosted runtime execution needs a request-routing contract that targets the active `runtime_peer` through the room host or `RuntimeStateDoc`, not the local `RuntimeAgent` socket. The audit in `runtime-peer-and-blob-authority-audit.md` narrows this to contract work before code, and `remote-workstation-doc-agents.md` sketches the provider-neutral workstation/doc-agent path. | Design | hosted runtime request dispatch |
 | 3D-8 | The first peer-egress lane split has landed: `PeerWriter` separates reliable sync/response traffic from ephemeral presence/broadcast traffic. Remaining design work is reserved control capacity, explicit session-control barriers, and RuntimeStateDoc catch-up when reliable runtime traffic saturates. See `peer-egress-lanes.md`. | Design | `crates/runtimed/src/notebook_sync_server/peer_writer.rs` |
+| 3D-9 | `CommsDoc` now exists as a room document, but `NotebookDoc.comms_doc_id` has not landed. ADR 0002 requires a deterministic durable pointer so clone/save-as/publish/snapshot flows do not rely on room attachment alone. | Targeted PR | `crates/notebook-doc/`, `crates/runtime-doc/src/comms.rs`, sync bootstrap/load paths |
 
 ## Execution pipeline
 
@@ -65,6 +66,7 @@ Severity legend:
 | FSB-1 | `notebook-sync-store-bridge.ts:163-167` swallows `applyOutputChangeset` failures at `warn`. There is no retry, banner, or in-flight error count. A partial output projection silently shows a stale manifest. | Targeted PR | `apps/notebook/src/lib/notebook-sync-store-bridge.ts` |
 | FSB-2 | Stable DOM order invariant lives in three places — `stableDomOrder` memo (`NotebookView.tsx:519`), `order: index` style (`:307`), parent `flex-direction: column` (`:952`) — with no CI guard. Regressing any of the three silently reintroduces the iframe-loss flash that the invariant exists to prevent. | Targeted PR | `apps/notebook/src/components/NotebookView.tsx` |
 | FSB-3 | `[...cellIds].sort()` uses default JS string sort, not locale-aware. Works under the current UUID-only ID format; breaks if non-UUID IDs are ever introduced. No assertion of "IDs are UUIDs" exists in the bridge or the materialiser. | Inline | comment + sanity assertion |
+| LNP-1 | Hosted live cells currently subscribe to cell changes but rematerialize the live cell list instead of consuming the `CellChangeset`. Cloud should use the same narrow projection path as the shared desktop bridge so attribution and live-update rendering share one implementation. | Targeted PR | `apps/notebook-cloud/viewer/`, `apps/notebook/src/lib/notebook-sync-store-bridge.ts`, `docs/adr/live-notebook-projection-policy.md` |
 | MSL-3 | `tool_list_changed` divergence reports `Incompatible` with a single "reinstall the nteract extension" error string, hard-coded for the MCPB bundle install path. The `nteract-dev` supervisor-managed path gets the same message even though the recovery action is different (relaunch the dev daemon, not reinstall an extension). | Targeted PR | `crates/runt-mcp-proxy/src/proxy.rs` `should_exit` text |
 | MSL-4 | When a dev worktree daemon's socket path changes (worktree switch in isolated mode, manual relocation), `mcp-supervisor` compares daemon versions across child restart but not socket paths. The `McpProxy.last_notebook_id` from the old daemon is meaningless in the new daemon's room space; rejoin fails with `SessionDropReason::Evicted` and the agent sees a confusing trail. | Design | `crates/runt-mcp-proxy/src/proxy.rs` |
 
@@ -78,6 +80,8 @@ Severity legend:
 | HCA-4 | Live peer validators must reject incoming changes authored by `system`/legacy schema actors. Schema/system actors are tolerated only as trusted seed or import history already present before peer ingress, not as newly received peer-authored deltas. | Targeted PR | `crates/notebook-doc/src/lib.rs`, `crates/runtime-doc/src/doc.rs`, `docs/adr/identity-and-trust.md` |
 | ~~HCA-5~~ | **Done** in the ADR alignment pass. The durable blob-ref contract is bare lowercase SHA-256 hex, matching `blob-storage-and-content-addressing.md`, local CAS keys, hosted storage keys, and blob-ref/chunk manifest examples. `sha256:` remains valid only for non-blob semantic hashes such as traceback source hashes. | Done | `docs/adr/blob-storage-and-content-addressing.md`, `docs/adr/blob-ref-and-chunk-manifest-protocol.md`, `docs/adr/hosted-notebook-artifacts.md`, `apps/notebook-cloud/src/storage.ts` |
 | HCA-6 | Private hosted blob-read authority is split between future capability URLs and current viewer-authenticated app-origin routes with public CORS. Before private sharing ships, choose and enforce the credential/CORS or signed-capability policy for `/api/n/:id/blobs/:hash`. | Design | `docs/adr/hosted-room-authorization.md`, `docs/adr/hosted-output-origin-isolation.md`, `apps/notebook-cloud/src/index.ts` |
+| HCA-7 | Hosted execution request authority is documented as owner-only until an explicit execute capability exists, but current cloud gates and shell capability projection still allow editor-or-owner execution when a live `runtime_peer` exists. Align UI capability projection, WebSocket request prefiltering, and WASM room-host request validation with owner-only compute. | Targeted PR | `apps/notebook-cloud/src/notebook-room.ts`, `apps/notebook-cloud/viewer/shell-capabilities.ts`, `apps/notebook-cloud/src/room-materializer.ts` |
+| HCA-8 | Durable Object checkpoint storage must be treated as a live-room recovery cache, not durable notebook truth. Decide whether to keep it as hibernation/reconnect cache with R2/D1 checkpoint writes, or remove/migrate it so R2 snapshot bundles and D1 revision rows remain the long-term source of truth. | Design | `apps/notebook-cloud/src/room-materializer.ts`, `docs/adr/hosted-room-authorization.md` |
 
 ## Schema evolution
 
@@ -116,8 +120,8 @@ Severity legend:
 
 - **Done:** WP-1, WP-2, WP-3, WP-5, WP-9, EP-2, EP-7, EP-12, BS-1, BS-8, BS-11, SE-1, CEL-1, HCA-5. Fourteen landed across #2813, cleanup/inline-pass, targeted cleanup stacks, the SE-1 read-side fix, CEL-1 typed captured-env disk state, and the ADR alignment pass.
 - **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
-- **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2, HCA-1, HCA-4. Nineteen open.
-- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-5, 3D-6, 3D-7, 3D-8, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-6, KE-1. Twenty-six open.
+- **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, 3D-1, 3D-2, 3D-9, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2, LNP-1, HCA-1, HCA-4, HCA-7. Twenty-two open.
+- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-5, 3D-6, 3D-7, 3D-8, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-6, HCA-8, KE-1. Twenty-seven open.
 
 ## Next steps
 

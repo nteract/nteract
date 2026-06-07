@@ -32,7 +32,7 @@ Neighbors:
 
 - `docs/adr/typed-frame-v4-wire-protocol.md` — the `PUT_BLOB` frame
   shape and the per-type cap.
-- `docs/adr/three-document-split.md` — which document each blob ref
+- `docs/adr/document-split.md` — which document each blob ref
   comes from (`RuntimeStateDoc` executions / comms, `NotebookDoc` assets /
   attachments).
 - `docs/adr/execution-pipeline.md` — when the daemon decides to

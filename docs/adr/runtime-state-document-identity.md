@@ -276,7 +276,8 @@ and runtime-state doc over separate frame types.
 
 ## References
 
-- [The Three-Document Split](three-document-split.md)
+- [The Document Split](document-split.md)
+- [ADR 0002: CommsDoc split](0002-comms-document-split.md)
 - [Hosted Notebook Artifacts](hosted-notebook-artifacts.md)
 - [Blob Storage and Content Addressing](blob-storage-and-content-addressing.md)
 - [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md)

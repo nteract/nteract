@@ -141,13 +141,15 @@ implementation, the cloud viewer surfaces run controls only when:
 1. a live `runtime_peer` is attached to the room; and
 2. the browser connection is scoped as `owner`.
 
-This is an interim policy, not the final shape. The long-term model should add
-an explicit execute capability/scope so principals that own both a document
-editing connection and a runtime-peer connection can be granted execution intent
-without conflating `editor`, `runtime_peer`, and `owner`. Local-only kernels
-should continue to author runtime state under a local principal; when a local
-kernel is promoted into a hosted room, it should adopt the authenticated room
-principal/operator it uses for that connection.
+This is the current product policy. `editor` means notebook-editing authority,
+not compute authority. Edit mode in the UI and an `editor` ACL row must not
+imply that the principal can spend hosted compute or create execution intent.
+The long-term model can add an explicit execute capability/scope so a non-owner
+principal can be granted compute deliberately, but that capability is separate
+from document editing, `runtime_peer`, and owner ACL management. Local-only
+kernels should continue to author runtime state under a local principal; when a
+local kernel is promoted into a hosted room, it should adopt the authenticated
+room principal/operator it uses for that connection.
 
 The provider gives a maximum capability set for the credential. The ACL gives
 one or more room grants. A connection also has a requested role. Anonymous
@@ -267,8 +269,11 @@ DO hosts documents, presence, auth context, snapshots, scope enforcement, and
 the request path that creates execution intent.
 
 Durable Object storage is not the source of truth for notebook content. It may
-hold hibernation metadata and a small amount of transient room state. R2
-snapshot bundles and D1 catalog/ACL rows are durable.
+hold hibernation metadata and a recovery cache for the currently materialized
+room, but R2 snapshot bundles and D1 catalog/ACL/revision rows are the durable
+long-term truth. A future implementation may use DO storage to survive
+hibernation or short disconnect windows, but readers must not treat that cache
+as the published revision record or the portability boundary.
 
 For a connected browser page, the materialized live room is the active source
 of truth. A render cache or `/api/n/:id/render` response may warm-start first
@@ -276,6 +281,19 @@ paint, but it must not become a separate read lane once the live room
 materializes. Read-only viewers and editors consume the same live
 `NotebookDoc`/`RuntimeStateDoc`; scope only limits what each connection may
 author.
+
+### Documented implementation divergence, 2026-06-07
+
+Two current cloud implementation details diverge from the decisions above and
+should be cleaned up in follow-up PRs:
+
+1. Some hosted request gates and shell capability projections still treat
+   execution request authority as editor-or-owner when a `runtime_peer` exists.
+   The accepted policy is owner-only compute until an explicit execute
+   capability exists.
+2. The live-room materializer currently uses Durable Object checkpoint storage
+   as a recovery layer. That may remain as an internal cache, but the ADR source
+   of truth is R2/D1 for durable revisions and snapshots.
 
 ## Decision 7: Editor collaboration is full cell editing behind a semantic gate
 
@@ -312,12 +330,11 @@ fabricated persisted count surfacing on `.ipynb` export, which is out of the
 current threat model. Revisit if export fidelity from a malicious editor ever
 enters scope.
 
-Execution is a separate axis from the document write surface. There is no kernel
-provider in the hosted prototype yet, so run/restart/interrupt stay hidden
-behind a runtime-availability capability rather than an ACL scope. When a kernel
-provider is later attached, execution authority is granted through
-`runtime_peer` scope and the kernel protocol, not by widening the editor
-document surface.
+Execution is a separate axis from the document write surface. Hosted execution
+controls require owner request authority plus runtime availability for now.
+When a kernel provider is attached, execution requests go through the room host
+and are consumed by an authorized `runtime_peer`; they are not granted by
+widening the editor document surface.
 
 The editor `RuntimeStateDoc` write surface is closed by the shared runtime-doc
 policy used by the hosted room host and daemon. Editor and owner scopes write

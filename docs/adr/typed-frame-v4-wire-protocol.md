@@ -11,7 +11,7 @@ The wire crate (`crates/notebook-wire/src/lib.rs`) is intentionally tiny: magic 
 This ADR pins down what every peer must agree on so the format does not silently drift between Rust, the `packages/runtimed` TypeScript surface, the Python client, and any future browser transport. The semantic neighbors:
 
 - `docs/adr/identity-and-trust.md` — who is allowed to send which frame.
-- `docs/adr/three-document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
+- `docs/adr/document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
 - `docs/adr/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
 - `docs/adr/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
 - `docs/adr/cleanup-punchlist.md` — open gaps surfaced while writing this.

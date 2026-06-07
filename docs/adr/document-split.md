@@ -1,18 +1,29 @@
-# The Document Split: NotebookDoc, RuntimeStateDoc, CommsDoc, PoolDoc
+# The Document Split
 
 **Status:** Draft, 2026-05-22.
 
 **Update, 2026-06-07:** ADR 0002 intentionally supersedes the original
 three-document model by extracting mutable widget comm state into `CommsDoc`.
 This document remains the historical baseline for the original split and its
-document-boundary reasoning. Current runtime sync includes `NotebookDoc`,
-`RuntimeStateDoc`, `CommsDoc`, and daemon-scoped `PoolDoc`; the proposed
-`CommentsDoc` is tracked separately in `notebook-comments-document.md`.
+document-boundary reasoning. Do not use the document count as the concept:
+current notebook rooms sync `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`;
+`PoolDoc` is daemon-scoped and sync-adjacent; the proposed `CommentsDoc` is
+another per-notebook sidecar tracked separately in
+`notebook-comments-document.md`.
 
 ## Context
 
 nteract syncs state through Automerge CRDTs. Separate documents carry that
-state today, not one:
+state today, not one. They split into two scopes:
+
+- **Notebook-room documents** are attached to one notebook collaboration room.
+  Today that set is `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`. Proposed
+  comment work adds `CommentsDoc` to this room set.
+- **Daemon-scoped documents** are fanned out to room peers because they affect
+  the room UI, but they do not belong to the room identity. `PoolDoc` is the
+  current example.
+
+The current documents are:
 
 - **`NotebookDoc`** (`crates/notebook-doc/src/lib.rs`) - one per notebook room. Carries cells, source text, notebook metadata, attachments. Schema version 5. Wire frame `0x00` (AutomergeSync).
 - **`RuntimeStateDoc`** (`crates/runtime-doc/src/doc.rs`) - one per runtime state surface; today each notebook room creates one. Carries kernel lifecycle, execution queue, executions and their outputs, env-sync state, trust state, project-file context, and widget comm topology/routing. Mutable widget comm state moved to `CommsDoc`. Schema version 2. Wire frame `0x05` (RuntimeStateSync).
@@ -28,7 +39,10 @@ handshake is a JSON-IPC channel for pool status, env claims, and daemon admin;
 it does not carry typed-frame Automerge sync at all. Frame caps differ per type
 (see `crates/notebook-wire/src/lib.rs`).
 
-The split is load-bearing for sync bandwidth, write-frequency isolation, fan-out scope, persistence, and trust. It is not written down in one place. This ADR records the decision so the boundaries become visible to anyone changing them.
+The split is load-bearing for permission boundaries, document authority,
+durability/lifetime, attachment identity, and fan-out scope. It is not written
+down in one place. This ADR records the decision so the boundaries become
+visible to anyone changing them.
 
 This ADR is desktop-first, but the hosted publish/cloud viewer now consumes the
 same notebook/runtime/comms snapshot bundle. A closing section sketches what
@@ -73,29 +87,14 @@ control/resync lanes.
 
 The reasons for keeping them separate, not just logically but physically on the wire:
 
-1. **Different write frequencies.** `NotebookDoc` writes on user-paced events:
-   keystrokes, cell adds, structural moves. `RuntimeStateDoc` writes on
-   kernel-paced events: queue advances, IOPub output streams, lifecycle, and
-   env-sync recalculation. `CommsDoc` writes on widget interaction cadence.
-   `PoolDoc` writes on prewarm-pool-paced events: maybe seconds apart when
-   idle, sub-second under load. Interleaving them in one Automerge document
-   would make every frontend re-render on stdout flood, and every typing change
-   generate cross-cutting sync messages to peers that only care about pool
-   health.
-2. **Different fan-out scopes.** `PoolDoc` sync frames fan out to notebook-room
-   typed peers so each open notebook can render daemon pool state. `Handshake::Pool`
-   clients, such as system-tray UI or env-management tools, use the separate
-   JSON-IPC pool/admin channel instead of Automerge `PoolStateSync`. `NotebookDoc`
-   and `RuntimeStateDoc` fan out only to peers attached to that room.
-3. **Different write authority.** `NotebookDoc` is multi-writer (any
+1. **Different write authority.** `NotebookDoc` is multi-writer (any
    editor-scope peer authors cells). `RuntimeStateDoc` is daemon-authored for
    execution intent and daemon/runtime-peer authored for lifecycle, execution
    progress, output, and comm topology. `CommsDoc` is room-writable widget
    state, but RuntimeStateDoc topology gates which comm state can reach the
    kernel. `PoolDoc` is daemon-only, with all client changes stripped at ingress
    (`pool_state.rs:341`, `message.changes = Vec::<Vec<u8>>::new().into()`).
-4. **Different lifetimes.** `NotebookDoc` persists to disk (`.automerge` for ephemeral rooms; `.ipynb` for file-backed). `RuntimeStateDoc` is in-memory only. `PoolDoc` lives for the daemon's lifetime. See Decision 4.
-5. **Different trust scopes.** The identity ADR
+2. **Different trust scopes.** The identity ADR
    (`docs/adr/identity-and-trust.md` Decision 5) carves four scopes precisely
    along these lines. `viewer` reads the room docs. `editor` writes allowed
    `NotebookDoc` fields and mutable widget state in `CommsDoc`. `runtime_peer`
@@ -103,6 +102,23 @@ The reasons for keeping them separate, not just logically but physically on the 
    write `NotebookDoc` or create execution intent. `owner` writes allowed
    notebook fields and manages the ACL; it does not imply runtime authorship.
    `PoolDoc` is daemon-write-only across every scope.
+3. **Different lifetimes and durability.** `NotebookDoc` persists to disk
+   (`.automerge` for ephemeral rooms; `.ipynb` for file-backed).
+   `RuntimeStateDoc` and desktop `CommsDoc` are live room state, not standalone
+   persisted notebook content. `CommentsDoc`, when added, is durable
+   collaboration state with its own attachment and persistence policy. `PoolDoc`
+   lives for the daemon's lifetime. See Decision 4.
+4. **Different fan-out and attachment scopes.** `PoolDoc` sync frames fan out
+   to notebook-room typed peers so each open notebook can observe daemon pool
+   state. `Handshake::Pool` clients, such as system-tray UI or env-management
+   tools, use the separate JSON-IPC pool/admin channel instead of Automerge
+   `PoolStateSync`. `NotebookDoc` and `RuntimeStateDoc` fan out only to peers
+   attached to that room.
+5. **Different operational traffic shapes.** The documents do have different
+   write cadences, but that is not the primary architectural reason for the
+   split. Rendering efficiency is handled by changesets, narrow store
+   projections, and independent streams; document boundaries should not be
+   justified as a workaround for projection performance.
 
 The split is not bandwidth optimization. It is what makes the trust model expressible at the frame layer at all. A single doc would force scope enforcement into path-level Automerge ACLs, which Automerge does not provide.
 

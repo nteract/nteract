@@ -30,7 +30,7 @@ These entries define the center of gravity for the system:
 |------|-------|--------|
 | Identity, actors, scopes | [Identity and Trust](identity-and-trust.md) | Accepted |
 | Wire format | [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md) | Draft |
-| Document boundaries | [The Three-Document Split](three-document-split.md) | Draft |
+| Document boundaries | [The Document Split](document-split.md) | Draft |
 | Schema evolution | [Notebook Schema Evolution and the Frozen Genesis](schema-evolution-and-genesis.md) | Draft |
 | Runtime-state identity | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft |
 | Environment lifecycle | [Captured Environment Lifecycle](captured-environment-lifecycle.md) | Draft |
@@ -50,7 +50,7 @@ These entries define the center of gravity for the system:
 | Entry | Status | Notes |
 |-------|--------|-------|
 | [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md) | Draft | Frame bytes, channels, caps, and compatibility. |
-| [The Document Split](three-document-split.md) | Draft | Historical NotebookDoc, RuntimeStateDoc, and PoolDoc baseline; partially superseded by CommsDoc and CommentsDoc follow-ons. |
+| [The Document Split](document-split.md) | Draft | Count-neutral document-boundary baseline for notebook-room docs and daemon-scoped PoolDoc; extended by CommsDoc and CommentsDoc follow-ons. |
 | [Peer Egress Lane Split Investigation](peer-egress-lanes.md) | Draft | Reliable/ephemeral peer-writer lane split investigation; implementation has partially landed. |
 | [ADR 0001: Notebook seeding invariant](0001-notebook-seeding-invariant.md) | Accepted | Causal `is_pristine` seeding gate replacing the cell-count/metadata proxy. |
 | [Notebook Pristine-Seeding Implementation Plan](notebook-pristine-seeding-implementation-plan.md) | Implementation plan | Task breakdown for ADR 0001; shipped in #3342. |

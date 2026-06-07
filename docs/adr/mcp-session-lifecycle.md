@@ -4,7 +4,7 @@
 
 **Neighbors:**
 - `docs/adr/typed-frame-v4-wire-protocol.md` - the wire that backs every `DocHandle` the MCP server holds.
-- `docs/adr/three-document-split.md` - what `NotebookSession.handle` actually points at (`NotebookDoc`, `RuntimeStateDoc`, plus the runtime broadcast).
+- `docs/adr/document-split.md` - what `NotebookSession.handle` actually points at (`NotebookDoc`, `RuntimeStateDoc`, plus the runtime broadcast).
 - `docs/adr/execution-pipeline.md` - why a stale `DocHandle` is so painful for the agent: `required_heads`, output sync, and broadcast replay all run through it.
 - `docs/adr/blob-storage-and-content-addressing.md` - the blob HTTP port lives on the same `Daemon` the MCP proxy supervises.
 - `docs/adr/identity-and-trust.md` - the principal/operator model the proxy/child will eventually enforce per connection; today the MCP child connects as `local:<uid>` via peer creds.

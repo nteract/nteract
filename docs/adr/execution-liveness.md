@@ -7,7 +7,7 @@ This is a design memo, not an ADR. It explores what "stuck execution" actually m
 Neighbors:
 
 - `docs/adr/execution-pipeline.md` — the seven invariants behind cell execution.
-- `docs/adr/three-document-split.md` — `RuntimeStateDoc` as the durable record.
+- `docs/adr/document-split.md` — `RuntimeStateDoc` as the durable record.
 - `docs/adr/identity-and-trust.md` — who is allowed to interrupt or restart.
 - `docs/adr/cleanup-punchlist.md` — EP-3 row links here.
 

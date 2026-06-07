@@ -25,7 +25,7 @@ Authorization boundaries should line up with **document boundaries**, not field 
 
 - `docs/adr/notebook-host-shell-convergence.md` - shared shell + capability vocabulary across desktop/cloud/elements.
 - `docs/adr/hosted-room-authorization.md` - ACL model, scopes, **Decision 7** (editor write surface; the part this work most directly touches).
-- `docs/adr/three-document-split.md` - NotebookDoc / RuntimeStateDoc / PoolDoc boundaries. **Thread 1 proposes superseding this.**
+- `docs/adr/document-split.md` - NotebookDoc / RuntimeStateDoc / PoolDoc boundaries. **Thread 1 proposes superseding this.**
 - `docs/adr/frontend-sync-bridge.md` - per-document RxJS streams, stable DOM order, local-first writes.
 - `docs/adr/schema-evolution-and-genesis.md` - frozen genesis, cross-version sync hazards (relevant to both threads' migration story).
 - `docs/adr/runtime-state-document-identity.md` - the `runtime_state_doc_id` pointer model (the thing #3316 hardened).
@@ -47,7 +47,7 @@ The subtlety that keeps it clean: split comm **topology** (which comms exist, ta
 
 **Open questions to resolve in the brainstorm:** topology/state boundary exactly; is Automerge even the right substrate for live comm state vs a presence-style ephemeral-but-persisted channel; closed-comm GC authority; cross-version sync during migration.
 
-Status: **not started.** Should become a `four-document-split` ADR superseding `three-document-split.md` plus a simplification pass on `hosted-room-authorization.md` Decision 7. Brainstorm first, then ADR, then implement.
+Status: **not started.** Should become a `four-document-split` ADR superseding `document-split.md` plus a simplification pass on `hosted-room-authorization.md` Decision 7. Brainstorm first, then ADR, then implement.
 
 ## Active design thread 2: sync-divergence recovery (user's priority)
 
