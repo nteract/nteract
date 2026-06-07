@@ -91,6 +91,9 @@ describe("MarkdownOutput heading anchors", () => {
       "border-border/80",
       "py-2.5",
     );
+    expect(screen.getByRole("columnheader", { name: "value" })).toHaveStyle({
+      textAlign: "right",
+    });
     expect(screen.getByRole("cell", { name: "128" })).toHaveClass(
       "border-border/70",
       "text-muted-foreground",
@@ -112,11 +115,12 @@ describe("MarkdownOutput heading anchors", () => {
     expect(displayMath).not.toBeNull();
     expect(container.querySelector('[data-slot="markdown-output"]')).toHaveClass(
       "[&_.katex-display]:my-5",
-      "[&_.katex-display]:overflow-x-hidden",
+      "[&_.katex-display]:overflow-x-clip",
       "[&_.katex-display]:text-center",
     );
     expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
       "[&_.katex-display]:overflow-x-auto",
+      "[&_.katex-display]:overflow-x-hidden",
     );
     expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
       "[&_.katex-display]:border-y",
@@ -130,7 +134,15 @@ describe("MarkdownOutput heading anchors", () => {
     expect(screen.getByText("python")).toHaveAttribute("title", "python code block");
     expect(screen.getByText("python")).toHaveClass("text-muted-foreground/80");
     expect(screen.getByText("python")).not.toHaveClass("uppercase", "tracking-[0.08em]");
-    expect(screen.getByTitle("Copy code")).toHaveClass("inline-flex", "bg-background/80");
+    expect(screen.getByTitle("Copy code")).toHaveClass("inline-flex", "bg-transparent");
+    expect(screen.getByText("python").closest('[data-slot="markdown-code-block"]')).toHaveClass(
+      "border-l-2",
+      "bg-muted/[0.14]",
+    );
+    expect(screen.getByText("python").closest('[data-slot="markdown-code-block"]')).not.toHaveClass(
+      "rounded-md",
+      "shadow-sm",
+    );
     expect(screen.getByText("print")).toBeInTheDocument();
   });
 

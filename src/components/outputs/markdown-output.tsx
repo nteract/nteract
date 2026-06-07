@@ -15,6 +15,7 @@ import {
   markdownBlockquoteClassName,
   markdownCodeBlockCopyButtonClassName,
   markdownCodeBlockLabelClassName,
+  markdownCodeBlockPreStyle,
   markdownCodeBlockShellClassName,
   markdownCodeBlockToolbarClassName,
   markdownDeleteClassName,
@@ -112,6 +113,7 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
 
   return (
     <div
+      data-slot="markdown-code-block"
       className={markdownCodeBlockShellClassName}
       data-code-language={languageLabel === "code" ? undefined : languageLabel}
     >
@@ -138,6 +140,7 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
         language={language}
         isDark={isDark}
         colorTheme={colorTheme}
+        style={markdownCodeBlockPreStyle}
       />
     </div>
   );

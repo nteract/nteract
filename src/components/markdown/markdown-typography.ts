@@ -1,5 +1,7 @@
+import type { CSSProperties } from "react";
+
 export const markdownDocumentClassName =
-  "not-prose select-text py-2 text-base leading-[1.68] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:font-[var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_.katex-display]:my-5 [&_.katex-display]:overflow-x-hidden [&_.katex-display]:text-center [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:font-[var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
+  "not-prose select-text py-2 text-base leading-[1.68] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:font-[var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_.katex-display]:my-5 [&_.katex-display]:overflow-x-clip [&_.katex-display]:text-center [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:font-[var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
 
 export const markdownLinkClassName =
   "rounded-[2px] font-medium text-primary underline decoration-primary/45 decoration-1 underline-offset-4 transition-[background-color,color,text-decoration-color] hover:bg-primary/5 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
@@ -8,20 +10,25 @@ export const markdownInlineCodeClassName =
   "rounded-sm border border-border/70 bg-muted/70 px-1.5 py-0.5 font-mono text-[0.88em] text-foreground break-words";
 
 export const markdownCodeBlockShellClassName =
-  "group/codeblock my-4 overflow-hidden rounded-md border border-border/75 bg-muted/[0.14] shadow-sm";
+  "group/codeblock my-4 overflow-hidden border-l-2 border-border bg-muted/[0.14]";
 
 export const markdownCodeBlockToolbarClassName =
-  "flex min-h-8 items-center justify-between gap-3 border-b border-border/70 px-3 py-1.5 font-[var(--output-ui-font)] text-[11px] leading-none text-muted-foreground";
+  "flex min-h-7 items-center justify-between gap-3 px-3 pt-1.5 pb-0.5 font-[var(--output-ui-font)] text-[11px] leading-none text-muted-foreground";
 
 export const markdownCodeBlockLabelClassName = "truncate font-medium text-muted-foreground/80";
 
 export const markdownCodeBlockCopyButtonClassName =
-  "inline-flex size-6 shrink-0 items-center justify-center rounded border border-border bg-background/80 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+  "inline-flex size-6 shrink-0 items-center justify-center rounded-sm border border-transparent bg-transparent text-muted-foreground transition-colors hover:border-border/70 hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+
+export const markdownCodeBlockPreStyle = {
+  borderRadius: 0,
+  padding: "0.5rem 1rem 0.875rem",
+} satisfies CSSProperties;
 
 export const markdownParagraphClassName = "my-3 leading-relaxed [text-wrap:pretty]";
 
 export const markdownDisplayMathClassName =
-  "my-5 overflow-x-hidden text-center [&_.katex-display]:my-0";
+  "my-5 overflow-x-clip text-center [&_.katex-display]:my-0";
 
 export const markdownInlineMathClassName =
   "inline align-baseline text-foreground [&_.katex]:text-[1.03em]";
@@ -34,7 +41,7 @@ export const markdownDeleteClassName =
   "text-muted-foreground decoration-destructive/55 decoration-2";
 
 export const markdownBlockquoteClassName =
-  "relative my-5 border-l-[3px] border-primary/45 bg-muted/[0.20] py-3 pr-4 pl-5 text-[0.98em] leading-[1.72] text-muted-foreground italic";
+  "relative my-5 border-l-2 border-foreground/35 py-1.5 pr-2 pl-5 text-[1.01em] leading-[1.72] text-foreground/80 italic";
 
 export const markdownDetailsClassName =
   "group/details my-5 overflow-hidden rounded-md border border-border/75 bg-muted/[0.14] shadow-sm open:bg-muted/[0.18] [&>:not(summary)]:mx-4 [&>:not(summary)]:my-3 [&>:last-child]:mb-4 [&>summary+*]:mt-3";

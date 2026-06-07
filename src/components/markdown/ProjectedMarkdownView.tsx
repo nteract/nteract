@@ -16,6 +16,7 @@ import {
   markdownBlockquoteClassName,
   markdownCodeBlockCopyButtonClassName,
   markdownCodeBlockLabelClassName,
+  markdownCodeBlockPreStyle,
   markdownCodeBlockShellClassName,
   markdownCodeBlockToolbarClassName,
   markdownDeleteClassName,
@@ -598,6 +599,7 @@ function ProjectedTable({
 
   const [headerRow, ...bodyRows] = rows;
   const hasHeader = headerRow?.cells.some((cell) => cell.header);
+  const columnAlign = tableColumnAlignments(rows);
 
   return (
     <div
@@ -613,7 +615,7 @@ function ProjectedTable({
                 <th
                   key={cell.key}
                   className={markdownTableHeaderCellClassName}
-                  style={tableCellStyle(cell.align)}
+                  style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
                 </th>
@@ -628,7 +630,7 @@ function ProjectedTable({
                 <td
                   key={cell.key}
                   className={markdownTableCellClassName}
-                  style={tableCellStyle(cell.align)}
+                  style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
                 </td>
@@ -663,11 +665,51 @@ function groupTableRuns(runs: MarkdownProjectionRun[]) {
     key: rowIndex,
     cells: Array.from(cells, ([cellIndex, runs]) => ({
       align: runs.find((run) => run.tableCellAlign)?.tableCellAlign,
+      cellIndex,
       header: runs.some((run) => run.tableCellHeader),
       key: `${rowIndex}:${cellIndex}`,
       runs,
     })),
   }));
+}
+
+function tableColumnAlignments(rows: ReturnType<typeof groupTableRuns>) {
+  const alignments = new Map<number, MarkdownProjectionRun["tableCellAlign"]>();
+
+  for (const row of rows) {
+    for (const cell of row.cells) {
+      if (cell.align) {
+        alignments.set(cell.cellIndex, cell.align);
+      }
+    }
+  }
+
+  for (const row of rows.slice(1)) {
+    for (const cell of row.cells) {
+      if (alignments.has(cell.cellIndex)) continue;
+      const columnCells = rows
+        .slice(1)
+        .flatMap((bodyRow) =>
+          bodyRow.cells.filter((bodyCell) => bodyCell.cellIndex === cell.cellIndex),
+        );
+      if (
+        columnCells.length > 0 &&
+        columnCells.every((bodyCell) => isNumericTableCell(bodyCell.runs))
+      ) {
+        alignments.set(cell.cellIndex, "right");
+      }
+    }
+  }
+
+  return alignments;
+}
+
+function isNumericTableCell(runs: MarkdownProjectionRun[]) {
+  const text = runs
+    .map((run) => run.renderedText)
+    .join("")
+    .trim();
+  return /^[-+]?(?:[$]\s*)?\d[\d,]*(?:\.\d+)?(?:\s?(?:%|[a-zA-Z]+))?$/.test(text);
 }
 
 function tableCellStyle(align: MarkdownProjectionRun["tableCellAlign"]): CSSProperties | undefined {
@@ -851,6 +893,7 @@ function ProjectedCodeBlock({
 
   return (
     <div
+      data-slot="markdown-code-block"
       className={markdownCodeBlockShellClassName}
       data-code-language={languageLabel === "code" ? undefined : languageLabel}
     >
@@ -877,6 +920,7 @@ function ProjectedCodeBlock({
         isDark={isDark}
         language={language}
         className="max-w-full"
+        style={markdownCodeBlockPreStyle}
       />
     </div>
   );

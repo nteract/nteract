@@ -215,10 +215,11 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector(".katex-display")?.parentElement).toHaveClass(
       "my-5",
       "text-center",
-      "overflow-x-hidden",
+      "overflow-x-clip",
     );
     expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
       "overflow-x-auto",
+      "overflow-x-hidden",
     );
     expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
       "border-y",
@@ -309,11 +310,11 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("First paragraph")).toHaveClass("my-3", "leading-relaxed");
     expect(screen.getByRole("list")).toHaveClass("my-3", "ml-6", "list-disc");
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
-      "border-l-[3px]",
-      "border-primary/45",
-      "bg-muted/[0.20]",
-      "text-muted-foreground",
+      "border-l-2",
+      "border-foreground/35",
+      "text-foreground/80",
     );
+    expect(screen.getByText("quoted").closest("blockquote")).not.toHaveClass("bg-muted/[0.20]");
   });
 
   it("renders links with visible affordance before hover", () => {
@@ -854,7 +855,6 @@ describe("ProjectedMarkdownView", () => {
               semantic: "table-cell",
               sourceSpanByte: [11, 16],
               sourceSpanUtf16: [11, 16],
-              tableCellAlign: "right",
               tableCellHeader: true,
               tableCellIndex: 1,
               tableRowIndex: 0,
@@ -893,6 +893,9 @@ describe("ProjectedMarkdownView", () => {
 
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "value" })).toHaveStyle({
+      textAlign: "right",
+    });
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
     expect(screen.getByRole("table").parentElement).toHaveClass(
       "rounded-sm",
@@ -979,8 +982,16 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("code")).not.toHaveClass("uppercase", "tracking-[0.08em]");
     expect(screen.getByRole("button", { name: "Copy code" })).toHaveClass(
       "inline-flex",
-      "border",
-      "bg-background/80",
+      "border-transparent",
+      "bg-transparent",
+    );
+    expect(screen.getByText("code").closest('[data-slot="markdown-code-block"]')).toHaveClass(
+      "border-l-2",
+      "bg-muted/[0.14]",
+    );
+    expect(screen.getByText("code").closest('[data-slot="markdown-code-block"]')).not.toHaveClass(
+      "rounded-md",
+      "shadow-sm",
     );
   });
 

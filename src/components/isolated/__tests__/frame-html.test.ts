@@ -168,7 +168,8 @@ describe("generateFrameHtml", () => {
       expect(html).not.toMatch(
         /\.katex-display\s*\{[^}]*border-top: 1px solid var\(--border-color\)/,
       );
-      expect(html).toContain("overflow-x: hidden");
+      expect(html).toMatch(/\.katex-display\s*\{[^}]*overflow-x: clip/);
+      expect(html).not.toMatch(/\.katex-display\s*\{[^}]*overflow-x: hidden/);
       expect(html).not.toContain(".katex-display::-webkit-scrollbar");
       expect(html).toContain("font-family: var(--output-mono-font)");
       expect(html).toContain("--output-document-font: var(--output-ui-font)");
