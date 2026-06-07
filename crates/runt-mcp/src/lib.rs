@@ -205,7 +205,10 @@ impl ServerHandler for NteractMcp {
              Each connection has one active notebook session. \
              Use list_active_notebooks to discover open notebooks, \
              then connect_notebook or create_notebook to set your active session. \
-             Calling these again switches your active session.",
+             Calling these again switches your active session. \
+             Read cells through MCP resources: \
+             nteract://notebooks/{notebook_id}/cells and \
+             nteract://notebooks/{notebook_id}/cells/{cell_id}.",
         )
     }
 

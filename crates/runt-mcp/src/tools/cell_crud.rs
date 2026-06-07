@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -165,7 +165,11 @@ pub async fn create_cell(
 
     confirm_document_sync(&handle, "create_cell").await?;
 
-    tool_success(&format!("Created cell: {cell_id}"))
+    cell_resource_success(
+        format!("Created cell: {cell_id}"),
+        handle.notebook_id(),
+        &cell_id,
+    )
 }
 
 /// Update a cell's source and/or type.
@@ -194,9 +198,11 @@ pub async fn set_cell(
     assert_cell_exists(&handle, cell_id)?;
 
     if source.is_none() && cell_type.is_none() {
-        return tool_success(&format!(
-            "Cell \"{cell_id}\" unchanged (no updates specified)"
-        ));
+        return cell_resource_success(
+            format!("Cell \"{cell_id}\" unchanged (no updates specified)"),
+            handle.notebook_id(),
+            cell_id,
+        );
     }
 
     if let Some(src) = source {
@@ -237,7 +243,11 @@ pub async fn set_cell(
         return super::build_execution_result(&result, &handle, server).await;
     }
 
-    tool_success(&format!("Cell \"{cell_id}\" updated"))
+    cell_resource_success(
+        format!("Cell \"{cell_id}\" updated"),
+        handle.notebook_id(),
+        cell_id,
+    )
 }
 
 /// Delete a cell by ID.
@@ -261,8 +271,12 @@ pub async fn delete_cell(
 
     confirm_document_sync(&handle, "delete_cell").await?;
 
-    let result = serde_json::json!({ "cell_id": cell_id, "deleted": true });
-    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+    let result = serde_json::json!({
+        "cell_id": cell_id,
+        "deleted": true,
+        "resources": crate::resources::notebook_resources_json(handle.notebook_id()),
+    });
+    cells_resource_json_success(result, handle.notebook_id())
 }
 
 /// Move a cell after another cell, or to the start.
@@ -296,8 +310,9 @@ pub async fn move_cell(
         "cell_id": cell_id,
         "after_cell_id": after_cell_id,
         "moved": true,
+        "uri": crate::resources::notebook_cell_uri(handle.notebook_id(), cell_id),
     });
-    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+    cell_resource_json_success(result, handle.notebook_id(), cell_id)
 }
 
 /// Clear a cell's outputs.
@@ -350,6 +365,44 @@ pub async fn clear_outputs(
 
     let result = serde_json::json!({ "cleared": cleared });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
+fn cell_resource_success(
+    message: String,
+    notebook_id: &str,
+    cell_id: &str,
+) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::success(vec![
+        Content::text(message),
+        Content::resource_link(crate::resources::notebook_cell_resource_link(
+            notebook_id,
+            cell_id,
+        )),
+    ]))
+}
+
+fn cell_resource_json_success(
+    result: serde_json::Value,
+    notebook_id: &str,
+    cell_id: &str,
+) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::success(vec![
+        Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
+        Content::resource_link(crate::resources::notebook_cell_resource_link(
+            notebook_id,
+            cell_id,
+        )),
+    ]))
+}
+
+fn cells_resource_json_success(
+    result: serde_json::Value,
+    notebook_id: &str,
+) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::success(vec![
+        Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
+        Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+    ]))
 }
 
 async fn confirm_document_sync(

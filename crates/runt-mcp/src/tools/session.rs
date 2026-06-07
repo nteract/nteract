@@ -414,6 +414,14 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
         .join("\n\n")
 }
 
+fn notebook_session_response(mut response: serde_json::Value, notebook_id: &str) -> CallToolResult {
+    response["resources"] = crate::resources::notebook_resources_json(notebook_id);
+    CallToolResult::success(vec![
+        Content::text(serde_json::to_string_pretty(&response).unwrap_or_default()),
+        Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+    ])
+}
+
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenNotebookParams {
@@ -677,9 +685,7 @@ pub async fn open_notebook(
                     }
 
                     *server.session.write().await = Some(parked);
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        serde_json::to_string_pretty(&response).unwrap_or_default(),
-                    )]));
+                    return Ok(notebook_session_response(response, &notebook_id));
                 }
 
                 if let Err(e) = handle
@@ -712,6 +718,7 @@ pub async fn open_notebook(
                 let peer_label = server.get_peer_label().await;
                 crate::presence::announce(handle, &peer_label).await;
 
+                let call_result = notebook_session_response(response, &notebook_id);
                 let session = NotebookSession {
                     handle: result.handle,
                     broadcast_rx: result.broadcast_rx,
@@ -720,9 +727,7 @@ pub async fn open_notebook(
                 };
                 *server.session.write().await = Some(session);
 
-                Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&response).unwrap_or_default(),
-                )]))
+                Ok(call_result)
             }
             Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", path, e)),
         }
@@ -772,9 +777,7 @@ pub async fn open_notebook(
             }
 
             *server.session.write().await = Some(parked);
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&response).unwrap_or_default(),
-            )]));
+            return Ok(notebook_session_response(response, &notebook_id));
         }
 
         match notebook_sync::connect::connect(
@@ -819,6 +822,7 @@ pub async fn open_notebook(
                 let peer_label = server.get_peer_label().await;
                 crate::presence::announce(handle, &peer_label).await;
 
+                let call_result = notebook_session_response(response, &notebook_id);
                 let session = NotebookSession {
                     handle: result.handle,
                     broadcast_rx: result.broadcast_rx,
@@ -827,9 +831,7 @@ pub async fn open_notebook(
                 };
                 *server.session.write().await = Some(session);
 
-                Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&response).unwrap_or_default(),
-                )]))
+                Ok(call_result)
             }
             Err(e) => tool_error(&format!("Failed to join notebook: {}", e)),
         }
@@ -976,9 +978,7 @@ pub async fn create_notebook(
                 info["info"] = serde_json::json!("Used 'kernel' parameter (alias for 'runtime')");
             }
 
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&info).unwrap_or_default(),
-            )]))
+            Ok(notebook_session_response(info, &notebook_id))
         }
         Err(e) => tool_error(&format!("Failed to create notebook: {}", e)),
     }
@@ -1034,9 +1034,7 @@ pub async fn save_notebook(
                 "notebook_id": notebook_id,
             });
 
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
-            )]))
+            Ok(notebook_session_response(result, &notebook_id))
         }
         Ok(NotebookResponse::SaveError { error }) => match error {
             SaveErrorKind::PathAlreadyOpen {
@@ -1122,7 +1120,7 @@ pub async fn show_notebook(
                 "This notebook is ephemeral. Use save_notebook(path) to persist."
             );
         }
-        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
+        return Ok(notebook_session_response(result, &target));
     }
 
     if let Some(path) = resolved_path {
@@ -1147,7 +1145,7 @@ pub async fn show_notebook(
         result["warning"] =
             serde_json::json!("This notebook is ephemeral. Save it from the app to keep it.");
     }
-    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+    Ok(notebook_session_response(result, &target))
 }
 
 #[cfg(test)]

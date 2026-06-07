@@ -445,19 +445,48 @@ fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String>
     }
 }
 
-fn notebook_cells_uri(notebook_id: &str) -> String {
+pub(crate) fn notebook_cells_uri(notebook_id: &str) -> String {
     format!(
         "{NOTEBOOKS_RESOURCE_URI}/{}/cells",
         encode_segment(notebook_id)
     )
 }
 
-fn notebook_cell_uri(notebook_id: &str, cell_id: &str) -> String {
+pub(crate) fn notebook_cell_uri(notebook_id: &str, cell_id: &str) -> String {
     format!(
         "{}/{}",
         notebook_cells_uri(notebook_id),
         encode_segment(cell_id)
     )
+}
+
+pub(crate) fn notebook_resources_json(notebook_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "cells": notebook_cells_uri(notebook_id),
+        "cell_template": format!("{}/{{cell_id}}", notebook_cells_uri(notebook_id)),
+    })
+}
+
+pub(crate) fn notebook_cells_resource_link(notebook_id: &str) -> RawResource {
+    let mut resource = RawResource::new(
+        notebook_cells_uri(notebook_id),
+        format!("nteract cells {notebook_id}"),
+    );
+    resource.description = Some("Ordered cell list for the notebook session".into());
+    resource.mime_type = Some(CELLS_MIME_TYPE.into());
+    resource.icons = Some(icons::icons(IconKind::ListActiveNotebooks));
+    resource
+}
+
+pub(crate) fn notebook_cell_resource_link(notebook_id: &str, cell_id: &str) -> RawResource {
+    let mut resource = RawResource::new(
+        notebook_cell_uri(notebook_id, cell_id),
+        format!("nteract cell {cell_id}"),
+    );
+    resource.description = Some("Notebook cell snapshot".into());
+    resource.mime_type = Some(CELLS_MIME_TYPE.into());
+    resource.icons = Some(icons::icons(IconKind::ReadCell));
+    resource
 }
 
 fn encode_segment(value: &str) -> String {
@@ -647,6 +676,34 @@ mod tests {
                 cell_id: "cell/with/slash".to_string()
             }
         );
+    }
+
+    #[test]
+    fn notebook_resources_json_points_to_encoded_cell_resources() {
+        let resources = notebook_resources_json("nb 1");
+
+        assert_eq!(
+            resources.get("cells"),
+            Some(&serde_json::json!("nteract://notebooks/nb%201/cells"))
+        );
+        assert_eq!(
+            resources.get("cell_template"),
+            Some(&serde_json::json!(
+                "nteract://notebooks/nb%201/cells/{cell_id}"
+            ))
+        );
+    }
+
+    #[test]
+    fn notebook_cell_resource_link_uses_encoded_uri() {
+        let resource = notebook_cell_resource_link("nb 1", "cell/with/slash");
+
+        assert_eq!(
+            resource.uri,
+            "nteract://notebooks/nb%201/cells/cell%2Fwith%2Fslash"
+        );
+        assert_eq!(resource.mime_type.as_deref(), Some(CELLS_MIME_TYPE));
+        assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
     }
 
     #[test]

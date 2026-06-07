@@ -132,19 +132,6 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<session::DisconnectNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
-        // -- Cell read --
-        Tool::new(
-            "get_cell",
-            "Get a cell by ID, including execution status/id and compact output summaries.",
-            schema_for::<cell_read::GetCellParams>(),
-        )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "get_all_cells",
-            "Get all cells as summary, json, or rich format with compact execution/output summaries.",
-            schema_for::<cell_read::GetAllCellsParams>(),
-        )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         // -- Cell CRUD --
         Tool::new(
             "create_cell",
@@ -277,7 +264,8 @@ pub async fn dispatch(
         "save_notebook" => session::save_notebook(server, request).await,
         "show_notebook" | "launch_app" => session::show_notebook(server, request).await,
         "disconnect_notebook" => session::disconnect_notebook(server, request).await,
-        // Cell read
+        // Cell read. Hidden from tool listing but still callable for backwards compat;
+        // resource-aware clients should read nteract://notebooks/{notebook_id}/cells.
         "get_cell" => cell_read::get_cell(server, request).await,
         "get_all_cells" => cell_read::get_all_cells(server, request).await,
         // Cell CRUD
@@ -529,7 +517,13 @@ pub async fn build_execution_result(
         result.execution_id.as_deref(),
     );
 
-    let mut items = vec![Content::text(header)];
+    let mut items = vec![
+        Content::text(header),
+        Content::resource_link(crate::resources::notebook_cell_resource_link(
+            handle.notebook_id(),
+            &result.cell_id,
+        )),
+    ];
     let output_summaries = crate::formatting::format_outputs_summary_lines(&result.outputs, 120);
     if output_summaries.is_empty() {
         items.push(Content::text("Output summary: 0 outputs".to_string()));
@@ -572,11 +566,18 @@ pub async fn build_execution_result(
     };
 
     let mut call_result = CallToolResult::success(items);
-    // Inject execution_id into structured content so MCP App renderers
-    // can associate outputs with a specific execution.
-    if let Some(ref eid) = result.execution_id {
-        if let Some(ref mut sc) = structured_content {
-            if let Some(cell_obj) = sc.get_mut("cell").and_then(|c| c.as_object_mut()) {
+    if let Some(ref mut sc) = structured_content {
+        if let Some(cell_obj) = sc.get_mut("cell").and_then(|c| c.as_object_mut()) {
+            cell_obj.insert(
+                "uri".to_string(),
+                serde_json::Value::String(crate::resources::notebook_cell_uri(
+                    handle.notebook_id(),
+                    &result.cell_id,
+                )),
+            );
+            // Inject execution_id into structured content so MCP App renderers
+            // can associate outputs with a specific execution.
+            if let Some(ref eid) = result.execution_id {
                 cell_obj.insert(
                     "execution_id".to_string(),
                     serde_json::Value::String(eid.clone()),
@@ -744,20 +745,11 @@ mod tests {
     }
 
     #[test]
-    fn get_all_cells_tool_names_output_summaries_explicitly() {
-        let tool = registered_tool("get_all_cells");
-        let properties = tool
-            .input_schema
-            .get("properties")
-            .and_then(serde_json::Value::as_object)
-            .expect("get_all_cells schema should expose properties");
+    fn cell_read_tools_are_hidden_from_advertised_tool_list() {
+        let tools = all_tools();
 
-        assert!(properties.contains_key("include_output_summaries"));
-        assert!(!properties.contains_key("include_outputs"));
-        assert_eq!(
-            tool.input_schema.get("additionalProperties"),
-            Some(&serde_json::Value::Bool(false))
-        );
+        assert!(tools.iter().all(|tool| tool.name != "get_cell"));
+        assert!(tools.iter().all(|tool| tool.name != "get_all_cells"));
     }
 
     #[test]
