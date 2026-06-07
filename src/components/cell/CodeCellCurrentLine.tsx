@@ -425,7 +425,7 @@ export function CodeCellCurrentLine({
       data-execution-label={countLabel ?? undefined}
       className={cn(
         "mt-1.5 flex items-center gap-1.5 text-[11px] leading-none text-muted-foreground/60",
-        isCompactIdle ? "min-h-3.5" : isQuietResting ? "min-h-4" : "min-h-5",
+        isCompactIdle ? "min-h-3.5" : "min-h-4",
         className,
       )}
     >
