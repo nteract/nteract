@@ -113,7 +113,7 @@ describe("hosted live smoke environment", () => {
     assert.equal(smokeEnv.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT, "ShadenA/MathNet");
     assert.equal(
       smokeEnv.NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS,
-      JSON.stringify(["MathNet via notebook-cloud", "Loaded 25 rows"]),
+      JSON.stringify(["MathNet topic visualization", "Loading the slice", "Loaded 25 rows"]),
     );
     assert.equal(smokeEnv.NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS, "");
     assert.equal(smokeEnv.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE, "");
