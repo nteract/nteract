@@ -105,7 +105,7 @@ async function main() {
       events.blobResponses.push({
         url: safeDiagnosticUrl(responseUrl),
         status: response.status(),
-        contentType: response.headers().get("content-type"),
+        contentType: response.headers()["content-type"] ?? null,
       });
     }
   });
