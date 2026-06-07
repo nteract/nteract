@@ -151,6 +151,12 @@ describe("generateFrameHtml", () => {
       expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) h3');
       expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) table');
       expect(html).toContain(
+        ':is([data-slot="markdown-output"], [data-slot="html-output"]) details',
+      );
+      expect(html).toContain(
+        ':is([data-slot="markdown-output"], [data-slot="html-output"]) summary::before',
+      );
+      expect(html).toContain(
         ':is([data-slot="markdown-output"], [data-slot="html-output"]) button',
       );
       expect(html).toContain("font-family: var(--output-mono-font)");

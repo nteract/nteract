@@ -18,6 +18,7 @@ import {
   markdownCodeBlockShellClassName,
   markdownCodeBlockToolbarClassName,
   markdownDeleteClassName,
+  markdownDetailsClassName,
   markdownDocumentClassName,
   markdownEmphasisClassName,
   markdownFigureCaptionClassName,
@@ -33,6 +34,8 @@ import {
   markdownListMarkerClassName,
   markdownParagraphClassName,
   markdownStrongClassName,
+  markdownSummaryClassName,
+  markdownSummaryIndicatorClassName,
   markdownTableCellClassName,
   markdownTableClassName,
   markdownTableHeadClassName,
@@ -512,6 +515,25 @@ export function MarkdownOutput({
               <del className={markdownDeleteClassName} {...props}>
                 {children}
               </del>
+            );
+          },
+
+          details({ children, ...props }) {
+            return (
+              <details className={markdownDetailsClassName} {...props}>
+                {children}
+              </details>
+            );
+          },
+
+          summary({ children, ...props }) {
+            return (
+              <summary className={markdownSummaryClassName} {...props}>
+                <span aria-hidden="true" className={markdownSummaryIndicatorClassName}>
+                  ›
+                </span>
+                <span className="min-w-0">{children}</span>
+              </summary>
             );
           },
 

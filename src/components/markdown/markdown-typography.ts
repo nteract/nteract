@@ -37,6 +37,18 @@ export const markdownDeleteClassName =
 export const markdownBlockquoteClassName =
   "relative my-5 border-l-[3px] border-primary/45 bg-muted/[0.20] py-3 pr-4 pl-5 text-[0.98em] leading-[1.72] text-muted-foreground italic";
 
+export const markdownDetailsClassName =
+  "group/details my-5 overflow-hidden rounded-md border border-border/75 bg-muted/[0.14] shadow-sm open:bg-muted/[0.18] [&>:not(summary)]:mx-4 [&>:not(summary)]:my-3 [&>:last-child]:mb-4 [&>summary+*]:mt-3";
+
+export const markdownSummaryClassName =
+  "flex cursor-pointer list-none items-center gap-2 border-b border-transparent px-4 py-3 font-[var(--output-ui-font)] text-sm leading-5 font-semibold text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 group-open/details:border-border/65 [&::-webkit-details-marker]:hidden";
+
+export const markdownSummaryIndicatorClassName =
+  "inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/25 bg-primary/6 font-[var(--output-ui-font)] text-[12px] leading-none text-primary transition-transform group-open/details:rotate-90";
+
+export const markdownDetailsBodyClassName =
+  "px-4 pt-1 pb-4 text-[0.96em] leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0";
+
 export const markdownListMarkerClassName = "marker:text-primary/65 marker:font-semibold";
 
 export const markdownThematicBreakClassName = "my-7 border-0 border-t border-border/70";

@@ -146,4 +146,28 @@ describe("MarkdownOutput heading anchors", () => {
       "text-xs",
     );
   });
+
+  it("styles native disclosure blocks as compact appendices", () => {
+    render(
+      <MarkdownOutput
+        content={
+          "<details open><summary>Failure appendix</summary><p>Keep failed priors near the claim.</p></details>"
+        }
+      />,
+    );
+
+    expect(screen.getByText("Failure appendix").closest("details")).toHaveClass(
+      "group/details",
+      "rounded-md",
+      "shadow-sm",
+      "[&>:not(summary)]:mx-4",
+    );
+    expect(screen.getByText("Failure appendix").closest("summary")).toHaveClass(
+      "cursor-pointer",
+      "font-[var(--output-ui-font)]",
+      "group-open/details:border-border/65",
+    );
+    expect(screen.getByText("›")).toHaveClass("group-open/details:rotate-90");
+    expect(screen.getByText("Keep failed priors near the claim.")).toHaveClass("my-3");
+  });
 });

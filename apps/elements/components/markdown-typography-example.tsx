@@ -3,6 +3,15 @@
 import { BookOpenText, Image, Link2, Pilcrow, Table2 } from "lucide-react";
 import { useCallback } from "react";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
+import {
+  markdownDetailsBodyClassName,
+  markdownDetailsClassName,
+  markdownInlineCodeClassName,
+  markdownLinkClassName,
+  markdownParagraphClassName,
+  markdownSummaryClassName,
+  markdownSummaryIndicatorClassName,
+} from "@/components/markdown/markdown-typography";
 import type {
   MarkdownProjectionBlock,
   MarkdownProjectionPlan,
@@ -300,6 +309,11 @@ const auditRows = [
     label: "Research voice",
     detail: "Cream switches markdown to the serif document font used by output frames.",
   },
+  {
+    icon: BookOpenText,
+    label: "Appendix motion",
+    detail: "Native disclosure blocks read as compact experimental appendices.",
+  },
 ];
 
 export function MarkdownTypographyExample() {
@@ -342,6 +356,34 @@ export function MarkdownTypographyExample() {
             );
           })}
         </aside>
+      </section>
+
+      <section className="border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
+        <div className="mb-4 font-mono text-[11px] text-muted-foreground">
+          shared native markdown affordance
+        </div>
+        <details className={markdownDetailsClassName} open>
+          <summary className={markdownSummaryClassName}>
+            <span aria-hidden="true" className={markdownSummaryIndicatorClassName}>
+              ›
+            </span>
+            <span className="min-w-0">Appendix: surprising failure modes</span>
+          </summary>
+          <div className={markdownDetailsBodyClassName}>
+            <p className={markdownParagraphClassName}>
+              Keep compact digressions close to the claim: failed priors, odd notebook states, and{" "}
+              <code className={markdownInlineCodeClassName}>seed=13</code> observations can hide in
+              a native disclosure block without losing their place in the paper-like flow.
+            </p>
+            <p className={markdownParagraphClassName}>
+              The appendix can still carry a{" "}
+              <a href="https://example.com/appendix" className={markdownLinkClassName}>
+                visible citation
+              </a>{" "}
+              and should feel tactile before the reader opens it.
+            </p>
+          </div>
+        </details>
       </section>
 
       <section className="grid gap-4 min-[1500px]:grid-cols-2">
