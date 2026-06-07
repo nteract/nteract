@@ -15,6 +15,7 @@ import { summarizeCollabPerformanceTimings } from "./hosted-collab-smoke-perform
 import { performanceBudgetFailures } from "./hosted-render-smoke-performance.mjs";
 import { isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
 import { firstPositionalArg } from "./cli-args.mjs";
+import { saveSmokeScreenshot, smokeOutputPath } from "./smoke-paths.mjs";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requestedBaseUrl = notebookCloudBaseUrl();
@@ -22,7 +23,7 @@ const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const providedViewerUrl = firstPositionalArg() ?? process.env.NOTEBOOK_CLOUD_COLLAB_VIEWER_URL;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const convergenceRounds = Number(process.env.NOTEBOOK_CLOUD_COLLAB_ROUNDS ?? 4);
-const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
+const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT);
 const forbidRenderCacheRequests = process.env.NOTEBOOK_CLOUD_FORBID_RENDER_CACHE_REQUESTS !== "0";
 const timingsMs = {};
 const editableMarkdownCellSelector = '[data-slot="cell-container"][data-cell-type="markdown"]';
@@ -240,7 +241,7 @@ ${bobMarker}
     failures.push(...performanceBudgetFailures(performanceDiagnostics, performanceBudgets));
 
     if (screenshotPath) {
-      await alice.page.screenshot({ path: screenshotPath, fullPage: true });
+      await saveSmokeScreenshot(alice.page, screenshotPath);
       checks.push("screenshot_saved");
     }
 

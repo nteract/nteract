@@ -3,6 +3,7 @@ import os from "node:os";
 
 import { chromium } from "@playwright/test";
 import { firstPositionalArg } from "./cli-args.mjs";
+import { saveSmokeScreenshot, smokeOutputPath } from "./smoke-paths.mjs";
 
 const viewerUrl =
   firstPositionalArg() ??
@@ -37,7 +38,7 @@ const expectedText = process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_EXPECTED_TEXT;
 const requireBlobImage = process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_REQUIRE_BLOB_IMAGE === "1";
 const allowFailedRequests =
   process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_ALLOW_FAILED_REQUESTS === "1";
-const screenshotPath = process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_SCREENSHOT;
+const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_SCREENSHOT);
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -173,7 +174,7 @@ async function main() {
 
     const after = await pageDiagnostics(page);
     if (screenshotPath) {
-      await page.screenshot({ path: screenshotPath, fullPage: true });
+      await saveSmokeScreenshot(page, screenshotPath);
     }
 
     const failedBlobResponses = events.blobResponses.filter((response) => response.status >= 400);

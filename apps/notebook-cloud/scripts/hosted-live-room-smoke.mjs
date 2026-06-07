@@ -3,6 +3,7 @@ import os from "node:os";
 
 import { chromium } from "@playwright/test";
 import { firstPositionalArg } from "./cli-args.mjs";
+import { saveSmokeScreenshot, smokeOutputPath } from "./smoke-paths.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz/topic-viz";
 const viewerUrl =
@@ -51,7 +52,7 @@ const requireResolved = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_RESOLVED !=
 const requireOpenSocket = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_OPEN_SOCKET !== "0";
 const requireBlobFetch = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_BLOB_FETCH === "1";
 const requireImagesLoaded = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_IMAGES_LOADED === "1";
-const screenshotPath = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCREENSHOT;
+const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCREENSHOT);
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -182,7 +183,7 @@ async function main() {
 
     const diagnostics = await pageDiagnostics(page);
     if (screenshotPath) {
-      await page.screenshot({ path: screenshotPath, fullPage: true });
+      await saveSmokeScreenshot(page, screenshotPath);
     }
 
     const failures = [];
