@@ -93,6 +93,12 @@ describe("generateFrameHtml", () => {
     expect(source).toContain("{ capture: true }");
   });
 
+  it("intercepts iframe link clicks during capture phase", () => {
+    expect(source).toMatch(/document\.addEventListener\(\s*'click'/);
+    expect(source).toContain("sendRpc('nteract/linkClick'");
+    expect(source).toContain("{ capture: true }");
+  });
+
   it("keeps the iframe bootstrap script parseable", () => {
     const scripts = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g), (match) => match[1]);
 
