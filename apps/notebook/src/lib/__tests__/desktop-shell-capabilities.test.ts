@@ -74,6 +74,7 @@ describe("desktopNotebookShellCapabilities", () => {
         label: "This machine",
         statusLabel: "Ready",
         providerLabel: "Local daemon",
+        defaultEnvironmentLabel: "Notebook runtime",
       },
     });
     expect(capabilities.access.actor).toMatchObject({
@@ -259,6 +260,7 @@ describe("desktopNotebookShellCapabilities", () => {
         status: "attached",
         label: "Runtime peer",
         providerLabel: "Cloud room",
+        defaultEnvironmentLabel: "Runtime peer",
       },
     });
     expect(capabilities.runtime.actor).toMatchObject({

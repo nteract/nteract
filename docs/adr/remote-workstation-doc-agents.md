@@ -333,10 +333,21 @@ workstation_id
 workstation_provider = "outerbounds" | "jupyterhub" | ...
 workstation_display_name
 workstation_principal
+workstation_default_environment_label
 workstation_environment_policy
+workstation_cpu_count
+workstation_memory_bytes
+workstation_working_directory
 workstation_status = disconnected | connecting | ready | busy | error
 workstation_capabilities
 ```
+
+The visible rail/header projection should lead with the workstation id as
+small metadata, the display name as the primary label, and compact resource
+facts such as CPU count, RAM, default environment, and working directory. The
+principal remains authority/provenance metadata rather than the primary
+workstation label; UI should not make the workstation look like it owns the
+document.
 
 The UI should treat workstation availability as runtime capability, not as
 editor authorization. A user can edit a hosted notebook without a connected

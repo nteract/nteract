@@ -69,7 +69,15 @@ export interface NotebookShellRuntimeTargetProjection {
   statusLabel?: string | null;
   detail?: string | null;
   providerLabel?: string | null;
+  /**
+   * User-facing default environment or interpreter label for this target. This
+   * is the workstation's default compute context, distinct from notebook
+   * package declarations. `environmentLabel` remains accepted for older hosts.
+   */
+  defaultEnvironmentLabel?: string | null;
   environmentLabel?: string | null;
+  cpuCount?: number | null;
+  memoryBytes?: number | null;
   resourceLabel?: string | null;
   workingDirectoryLabel?: string | null;
 }
@@ -267,7 +275,10 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   statusLabel: (target) => target.statusLabel ?? null,
   detail: (target) => target.detail ?? null,
   providerLabel: (target) => target.providerLabel ?? null,
+  defaultEnvironmentLabel: (target) => target.defaultEnvironmentLabel ?? null,
   environmentLabel: (target) => target.environmentLabel ?? null,
+  cpuCount: (target) => target.cpuCount ?? null,
+  memoryBytes: (target) => target.memoryBytes ?? null,
   resourceLabel: (target) => target.resourceLabel ?? null,
   workingDirectoryLabel: (target) => target.workingDirectoryLabel ?? null,
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
@@ -533,7 +544,10 @@ function stableNotebookShellRuntimeTarget(
     statusLabel: target.statusLabel ?? null,
     detail: target.detail ?? null,
     providerLabel: target.providerLabel ?? null,
+    defaultEnvironmentLabel: target.defaultEnvironmentLabel ?? null,
     environmentLabel: target.environmentLabel ?? null,
+    cpuCount: target.cpuCount ?? null,
+    memoryBytes: target.memoryBytes ?? null,
     resourceLabel: target.resourceLabel ?? null,
     workingDirectoryLabel: target.workingDirectoryLabel ?? null,
   });

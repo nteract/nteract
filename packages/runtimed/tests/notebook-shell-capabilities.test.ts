@@ -239,7 +239,10 @@ describe("projectNotebookShellCapabilities", () => {
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          cpuCount: 4,
+          memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
@@ -268,7 +271,10 @@ describe("projectNotebookShellCapabilities", () => {
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          cpuCount: 4,
+          memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
@@ -290,6 +296,9 @@ describe("projectNotebookShellCapabilities", () => {
     expect(first.runtime.target).toBe(second.runtime.target);
     expect(first.runtime.target).toMatchObject({
       id: "room-workstation",
+      defaultEnvironmentLabel: "Current Python",
+      cpuCount: 4,
+      memoryBytes: 16 * 1024 ** 3,
       resourceLabel: "4 CPU / 16 GB RAM",
       workingDirectoryLabel: "/home/kyle/notebooks",
     });

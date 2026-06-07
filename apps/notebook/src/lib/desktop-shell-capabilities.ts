@@ -128,6 +128,7 @@ function desktopRuntimeTarget({
         ? "This connection can author runtime state for the room."
         : "This runtime peer is not connected.",
       providerLabel: "Cloud room",
+      defaultEnvironmentLabel: "Runtime peer",
       environmentLabel: "Runtime peer",
     };
   }
@@ -144,8 +145,15 @@ function desktopRuntimeTarget({
       ? "The local daemon is available for this notebook."
       : "The local daemon is not exposing an executable runtime.",
     providerLabel: "Local daemon",
+    defaultEnvironmentLabel: "Notebook runtime",
     environmentLabel: "Notebook runtime",
+    cpuCount: localCpuCount(),
   };
+}
+
+function localCpuCount(): number | null {
+  const count = globalThis.navigator?.hardwareConcurrency;
+  return typeof count === "number" && Number.isFinite(count) && count > 0 ? count : null;
 }
 
 function desktopRuntimeActorLabel({

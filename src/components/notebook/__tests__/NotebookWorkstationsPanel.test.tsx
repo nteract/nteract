@@ -40,7 +40,11 @@ const localReadyCapabilities: NotebookShellCapabilities = {
       statusLabel: "Ready",
       detail: "The local daemon is available for this notebook.",
       providerLabel: "Local daemon",
+      defaultEnvironmentLabel: "Notebook runtime",
       environmentLabel: "Notebook runtime",
+      cpuCount: 8,
+      memoryBytes: 16 * 1024 ** 3,
+      workingDirectoryLabel: "~/notebooks",
     },
     actor: {
       actorLabel: "local:kyle/runtime:python",
@@ -66,6 +70,14 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.queryByText("The local daemon is available for this notebook.")).toBeNull();
     expect(screen.getAllByText("Local daemon")).toHaveLength(2);
     expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
+    expect(screen.getByText("Default env")).toBeVisible();
+    expect(screen.getByText("CPUs")).toBeVisible();
+    expect(screen.getByText("8")).toBeVisible();
+    expect(screen.getByText("RAM")).toBeVisible();
+    expect(screen.getByText("16 GiB")).toBeVisible();
+    expect(screen.getByText("Working dir")).toBeVisible();
+    expect(screen.getByText("~/notebooks")).toBeVisible();
+    expect(screen.queryByText("Resources")).not.toBeInTheDocument();
     expect(screen.queryByText("Kyle")).not.toBeInTheDocument();
     expect(screen.queryByText("Python runtime")).not.toBeInTheDocument();
     expect(screen.queryByText("Principal")).not.toBeInTheDocument();
@@ -94,6 +106,7 @@ describe("NotebookWorkstationsPanel", () => {
           statusLabel: "Offline",
           detail: "Attach a user-owned workstation to run cells in this room.",
           providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Not attached",
           environmentLabel: "Not attached",
         },
       },
@@ -114,5 +127,36 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.queryByText("Operator")).not.toBeInTheDocument();
     expect(screen.getByText("Not runnable")).toBeVisible();
     expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy resource labels when structured resources are absent", () => {
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={{
+          ...localReadyCapabilities,
+          runtime: {
+            ...localReadyCapabilities.runtime,
+            target: {
+              id: "remote-devbox",
+              kind: "cloud_workstation",
+              status: "ready",
+              label: "Remote devbox",
+              statusLabel: "Ready",
+              providerLabel: "JupyterHub",
+              defaultEnvironmentLabel: "Current Python",
+              resourceLabel: "4 CPU / 16 GB RAM",
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Remote devbox ready" })).toBeVisible();
+    expect(screen.getByText("Default env")).toBeVisible();
+    expect(screen.getAllByText("Current Python")).toHaveLength(2);
+    expect(screen.getByText("Resources")).toBeVisible();
+    expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
+    expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
+    expect(screen.queryByText("RAM")).not.toBeInTheDocument();
   });
 });
