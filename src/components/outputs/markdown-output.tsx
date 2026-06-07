@@ -10,6 +10,7 @@ import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock";
+import { MarkdownFigure, MarkdownFigureCaption, MarkdownImage } from "../markdown/MarkdownFigure";
 import {
   MarkdownTableBody,
   MarkdownTableCell,
@@ -26,14 +27,11 @@ import {
   markdownDetailsClassName,
   markdownDocumentClassName,
   markdownEmphasisClassName,
-  markdownFigureCaptionClassName,
-  markdownFigureClassName,
   markdownFootnoteBackrefClassName,
   markdownFootnotesClassName,
   markdownFootnoteRefClassName,
   markdownHeadingAnchorClassName,
   markdownHeadingClassName,
-  markdownImageClassName,
   markdownInlineCodeClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
@@ -439,23 +437,15 @@ export function MarkdownOutput({
           // Images
           img({ src, alt, ...props }) {
             if (!src) return null;
-            return <img src={src} alt={alt || ""} className={markdownImageClassName} {...props} />;
+            return <MarkdownImage src={src} alt={alt || ""} {...props} />;
           },
 
           figure({ children, ...props }) {
-            return (
-              <figure className={markdownFigureClassName} {...props}>
-                {children}
-              </figure>
-            );
+            return <MarkdownFigure {...props}>{children}</MarkdownFigure>;
           },
 
           figcaption({ children, ...props }) {
-            return (
-              <figcaption className={markdownFigureCaptionClassName} {...props}>
-                {children}
-              </figcaption>
-            );
+            return <MarkdownFigureCaption {...props}>{children}</MarkdownFigureCaption>;
           },
 
           strong({ children, ...props }) {

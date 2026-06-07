@@ -11,6 +11,7 @@ import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
+import { MarkdownFigure, MarkdownFigureCaption, MarkdownImage } from "./MarkdownFigure";
 import {
   MarkdownTableBody,
   MarkdownTableCell,
@@ -28,11 +29,8 @@ import {
   markdownDisplayMathClassName,
   markdownDocumentClassName,
   markdownEmphasisClassName,
-  markdownFigureCaptionClassName,
-  markdownFigureClassName,
   markdownHeadingAnchorClassName,
   markdownHeadingClassName,
-  markdownImageClassName,
   markdownInlineCodeClassName,
   markdownInlineMathClassName,
   markdownLinkClassName,
@@ -764,9 +762,9 @@ function ProjectedFigure({
   const image = <ProjectedImage run={run} />;
   const title = run.imageTitle?.trim();
   return (
-    <figure
+    <MarkdownFigure
       data-source-active={active ? "true" : undefined}
-      className={cn(markdownFigureClassName, active && sourceActiveBlockClass)}
+      className={cn(active && sourceActiveBlockClass)}
     >
       {activeInlineId === run.inlineId ? (
         <span data-source-active-run="true" className={sourceActiveRunClass}>
@@ -775,8 +773,8 @@ function ProjectedFigure({
       ) : (
         image
       )}
-      {title ? <figcaption className={markdownFigureCaptionClassName}>{title}</figcaption> : null}
-    </figure>
+      {title ? <MarkdownFigureCaption>{title}</MarkdownFigureCaption> : null}
+    </MarkdownFigure>
   );
 }
 
@@ -787,15 +785,7 @@ function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
     return alt ? <span>{alt}</span> : null;
   }
 
-  return (
-    <img
-      src={src}
-      alt={alt}
-      title={run.imageTitle}
-      className={markdownImageClassName}
-      loading="lazy"
-    />
-  );
+  return <MarkdownImage src={src} alt={alt} title={run.imageTitle} loading="lazy" />;
 }
 
 function safeImageSrc(src: string | undefined): string | null {
