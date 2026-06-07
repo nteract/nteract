@@ -59,7 +59,7 @@ the `CellChangeset` and applying the same narrow projection path. That is an
 intentional cleanup item, not the desired steady state. Cloud should share the
 same changeset-driven projection helpers so live edits, output updates, and
 future attribution lines arrive through one projection path across desktop and
-Cloud.
+Cloud. Tracked in [cleanup-punchlist.md](cleanup-punchlist.md) as `LNP-1`.
 
 ## Consequences
 

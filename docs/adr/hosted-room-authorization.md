@@ -290,10 +290,12 @@ should be cleaned up in follow-up PRs:
 1. Some hosted request gates and shell capability projections still treat
    execution request authority as editor-or-owner when a `runtime_peer` exists.
    The accepted policy is owner-only compute until an explicit execute
-   capability exists.
+   capability exists. Tracked in
+   [cleanup-punchlist.md](cleanup-punchlist.md) as `HCA-7`.
 2. The live-room materializer currently uses Durable Object checkpoint storage
    as a recovery layer. That may remain as an internal cache, but the ADR source
-   of truth is R2/D1 for durable revisions and snapshots.
+   of truth is R2/D1 for durable revisions and snapshots. Tracked in
+   [cleanup-punchlist.md](cleanup-punchlist.md) as `HCA-8`.
 
 ## Decision 7: Editor collaboration is full cell editing behind a semantic gate
 

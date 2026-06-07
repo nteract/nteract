@@ -53,6 +53,7 @@ The revision row records:
 - `runtime_heads_hash`
 - `snapshot_key`
 - `runtime_snapshot_key`
+- `comms_heads_hash`
 - `comms_snapshot_key`
 - `actor_label`
 
@@ -77,7 +78,7 @@ Runtime-state snapshots already use the first-class document namespace from
 `runtime-state-document-identity.md`; publish and runtime-snapshot routes
 require `runtime_state_doc_id`, and the revision row records the exact
 `runtime_snapshot_key`. `CommsDoc` snapshots are recorded separately through
-`comms_snapshot_key` when present.
+`comms_heads_hash` and `comms_snapshot_key` when present.
 
 Longer-term storage work should move all document snapshots toward the
 first-class document namespace:
