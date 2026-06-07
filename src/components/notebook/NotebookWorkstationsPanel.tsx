@@ -1,6 +1,9 @@
 import { CircleAlert, CircleCheck, Cloud, Cpu, Monitor, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { NotebookShellCapabilities } from "./capabilities";
+import type {
+  NotebookShellCapabilities,
+  NotebookShellRuntimeTargetProjection,
+} from "./capabilities";
 import { cn } from "@/lib/utils";
 
 export interface NotebookWorkstationsPanelProps {
@@ -12,7 +15,8 @@ export function NotebookWorkstationsPanel({
   capabilities,
   className,
 }: NotebookWorkstationsPanelProps) {
-  const status = workstationStatus(capabilities);
+  const target = capabilities.runtime.target ?? fallbackRuntimeTarget(capabilities);
+  const status = workstationStatus(capabilities, target);
   const source = workstationSource(capabilities.runtime.source);
   const principalLabel =
     capabilities.runtime.actor?.principal.label ??
@@ -22,7 +26,11 @@ export function NotebookWorkstationsPanel({
     source.defaultPrincipalLabel;
   const operatorLabel =
     capabilities.runtime.actor?.operator.label ??
-    (capabilities.runtime.connected ? "Runtime" : "Not attached");
+    (target.kind === "local_daemon"
+      ? "Local daemon"
+      : capabilities.runtime.connected
+        ? "Runtime"
+        : "Not attached");
 
   return (
     <div className={cn("space-y-3", className)} data-testid="notebook-workstations-panel">
@@ -54,7 +62,12 @@ export function NotebookWorkstationsPanel({
       </section>
 
       <section className="space-y-2" aria-label="Runtime attachment details">
-        <WorkstationDetail icon={source.icon} label="Source" value={source.label} />
+        <WorkstationDetail icon={source.icon} label="Target" value={target.label} />
+        <WorkstationDetail
+          icon={source.icon}
+          label="Provider"
+          value={target.providerLabel ?? source.label}
+        />
         <WorkstationDetail icon={UserRound} label="Principal" value={principalLabel} />
         <WorkstationDetail icon={Cpu} label="Operator" value={operatorLabel} />
         <WorkstationDetail
@@ -87,7 +100,10 @@ function WorkstationDetail({
   );
 }
 
-function workstationStatus(capabilities: NotebookShellCapabilities): {
+function workstationStatus(
+  capabilities: NotebookShellCapabilities,
+  target: NotebookShellRuntimeTargetProjection,
+): {
   title: string;
   detail: string;
   badge: string;
@@ -97,9 +113,9 @@ function workstationStatus(capabilities: NotebookShellCapabilities): {
 } {
   if (capabilities.runtime.executionAvailable && capabilities.canExecute) {
     return {
-      title: workstationSource(capabilities.runtime.source).readyTitle,
-      detail: "Execution requests are enabled for this notebook.",
-      badge: "Ready",
+      title: target.kind === "local_daemon" ? target.label : `${target.label} ready`,
+      detail: target.detail ?? "Execution requests are enabled for this notebook.",
+      badge: target.statusLabel ?? "Ready",
       icon: CircleCheck,
       iconClassName: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
       badgeClassName: "bg-emerald-500/10 text-emerald-700",
@@ -107,9 +123,9 @@ function workstationStatus(capabilities: NotebookShellCapabilities): {
   }
   if (capabilities.runtime.executionAvailable) {
     return {
-      title: "Runtime available",
+      title: `${target.label} available`,
       detail: "A runtime is available, but this connection cannot request execution.",
-      badge: "Limited",
+      badge: target.statusLabel ?? "Limited",
       icon: Cpu,
       iconClassName: "border-sky-500/30 bg-sky-500/10 text-sky-700",
       badgeClassName: "bg-sky-500/10 text-sky-700",
@@ -117,9 +133,9 @@ function workstationStatus(capabilities: NotebookShellCapabilities): {
   }
   if (capabilities.runtime.connected) {
     return {
-      title: "Runtime peer attached",
-      detail: "Runtime state is connected without executable cell controls.",
-      badge: "Attached",
+      title: `${target.label} attached`,
+      detail: target.detail ?? "Runtime state is connected without executable cell controls.",
+      badge: target.statusLabel ?? "Attached",
       icon: Cpu,
       iconClassName: "border-sky-500/30 bg-sky-500/10 text-sky-700",
       badgeClassName: "bg-sky-500/10 text-sky-700",
@@ -127,21 +143,53 @@ function workstationStatus(capabilities: NotebookShellCapabilities): {
   }
 
   return {
-    title: capabilities.runtime.source === "local" ? "Local runtime unavailable" : "No workstation",
+    title: capabilities.runtime.source === "local" ? `${target.label} unavailable` : target.label,
     detail:
-      capabilities.runtime.source === "local"
+      target.detail ??
+      (capabilities.runtime.source === "local"
         ? "The local daemon is not exposing an executable runtime."
-        : "No runtime peer is attached to this room.",
-    badge: "Offline",
+        : "No runtime peer is attached to this room."),
+    badge: target.statusLabel ?? "Offline",
     icon: CircleAlert,
     iconClassName: "border-muted bg-background text-muted-foreground",
     badgeClassName: "bg-muted text-muted-foreground",
   };
 }
 
+function fallbackRuntimeTarget(
+  capabilities: NotebookShellCapabilities,
+): NotebookShellRuntimeTargetProjection {
+  const source = workstationSource(capabilities.runtime.source);
+  if (capabilities.runtime.source === "local") {
+    return {
+      kind: "local_daemon",
+      status: capabilities.runtime.executionAvailable ? "ready" : "offline",
+      label: "This machine",
+      statusLabel: capabilities.runtime.executionAvailable ? "Ready" : "Offline",
+      providerLabel: source.label,
+    };
+  }
+  if (capabilities.runtime.connected) {
+    return {
+      kind: "runtime_peer",
+      status: capabilities.runtime.executionAvailable ? "ready" : "attached",
+      label: "Runtime peer",
+      statusLabel: capabilities.runtime.executionAvailable ? "Ready" : "Attached",
+      providerLabel: source.label,
+    };
+  }
+  return {
+    kind: capabilities.runtime.source === "fixture" ? "fixture" : "unknown",
+    status: "offline",
+    label:
+      capabilities.runtime.source === "cloud" ? "No workstation attached" : "No runtime target",
+    statusLabel: "Offline",
+    providerLabel: source.label,
+  };
+}
+
 function workstationSource(source: NotebookShellCapabilities["runtime"]["source"]): {
   label: string;
-  readyTitle: string;
   defaultPrincipalLabel: string;
   icon: LucideIcon;
 } {
@@ -149,28 +197,24 @@ function workstationSource(source: NotebookShellCapabilities["runtime"]["source"
     case "local":
       return {
         label: "Local",
-        readyTitle: "Local runtime ready",
         defaultPrincipalLabel: "Local principal",
         icon: Monitor,
       };
     case "cloud":
       return {
         label: "Cloud",
-        readyTitle: "Room workstation ready",
         defaultPrincipalLabel: "Room principal",
         icon: Cloud,
       };
     case "fixture":
       return {
         label: "Fixture",
-        readyTitle: "Fixture runtime ready",
         defaultPrincipalLabel: "Fixture principal",
         icon: Cpu,
       };
     default:
       return {
         label: "Unknown",
-        readyTitle: "Runtime ready",
         defaultPrincipalLabel: "Unknown principal",
         icon: Cpu,
       };

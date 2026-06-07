@@ -32,6 +32,14 @@ const localReadyCapabilities: NotebookShellCapabilities = {
     source: "local",
     actorLabel: "local:kyle/runtime:python",
     identityLabel: "Kyle",
+    target: {
+      kind: "local_daemon",
+      status: "ready",
+      label: "This machine",
+      statusLabel: "Ready",
+      detail: "The local daemon is available for this notebook.",
+      providerLabel: "Local daemon",
+    },
     actor: {
       actorLabel: "local:kyle/runtime:python",
       principal: {
@@ -50,10 +58,11 @@ describe("NotebookWorkstationsPanel", () => {
   it("renders a local executable runtime with runtime attribution", () => {
     render(<NotebookWorkstationsPanel capabilities={localReadyCapabilities} />);
 
-    expect(screen.getByRole("heading", { name: "Local runtime ready" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "This machine" })).toBeVisible();
     expect(screen.getByText("Ready")).toBeVisible();
-    expect(screen.getByText("Execution requests are enabled for this notebook.")).toBeVisible();
-    expect(screen.getByText("Local")).toBeVisible();
+    expect(screen.getByText("The local daemon is available for this notebook.")).toBeVisible();
+    expect(screen.getAllByText("This machine")).toHaveLength(2);
+    expect(screen.getByText("Local daemon")).toBeVisible();
     expect(screen.getByText("Kyle")).toBeVisible();
     expect(screen.getByText("Python runtime")).toBeVisible();
     expect(screen.getByText("Writable")).toBeVisible();
@@ -70,15 +79,26 @@ describe("NotebookWorkstationsPanel", () => {
       runtime: {
         ...readOnlyNotebookShellCapabilities.runtime,
         source: "cloud",
+        target: {
+          kind: "cloud_workstation",
+          status: "offline",
+          label: "No workstation attached",
+          statusLabel: "Offline",
+          detail: "Attach a user-owned workstation to run cells in this room.",
+          providerLabel: "Cloud room",
+        },
       },
     };
 
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
 
-    expect(screen.getByRole("heading", { name: "No workstation" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No workstation attached" })).toBeVisible();
     expect(screen.getByText("Offline")).toBeVisible();
-    expect(screen.getByText("No runtime peer is attached to this room.")).toBeVisible();
-    expect(screen.getByText("Cloud")).toBeVisible();
+    expect(
+      screen.getByText("Attach a user-owned workstation to run cells in this room."),
+    ).toBeVisible();
+    expect(screen.getAllByText("No workstation attached")).toHaveLength(2);
+    expect(screen.getByText("Cloud room")).toBeVisible();
     expect(screen.getByText("Kyle")).toBeVisible();
     expect(screen.getByText("Not attached")).toBeVisible();
     expect(screen.getByText("Read-only")).toBeVisible();

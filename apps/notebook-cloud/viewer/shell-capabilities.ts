@@ -5,6 +5,7 @@ import {
   projectNotebookShellCapabilities,
   type NotebookEditMode,
   type NotebookShellCapabilities,
+  type NotebookShellRuntimeTargetProjection,
 } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { projectCloudNotebookEditAccess } from "./edit-access";
@@ -93,6 +94,7 @@ export function cloudNotebookShellCapabilities({
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
     identityLabel: isRuntimePeer ? identityLabel : null,
+    target: cloudRuntimeTarget({ isRuntimePeer, runtimeAvailable }),
   };
   const accessActor = notebookActorProjectionWithPrincipalImage(
     notebookActorProjectionFromAccess(access, auth),
@@ -131,6 +133,43 @@ export function cloudNotebookShellCapabilities({
       requiresAuthenticatedIdentity: true,
     },
   });
+}
+
+function cloudRuntimeTarget({
+  isRuntimePeer,
+  runtimeAvailable,
+}: {
+  isRuntimePeer: boolean;
+  runtimeAvailable: boolean;
+}): NotebookShellRuntimeTargetProjection {
+  if (isRuntimePeer) {
+    return {
+      kind: "runtime_peer",
+      status: "attached",
+      label: "Runtime peer",
+      statusLabel: "Attached",
+      detail: "This connection can author runtime state for the room.",
+      providerLabel: "Cloud room",
+    };
+  }
+  if (runtimeAvailable) {
+    return {
+      kind: "cloud_workstation",
+      status: "ready",
+      label: "Room workstation",
+      statusLabel: "Ready",
+      detail: "A runtime peer is attached to this room.",
+      providerLabel: "Cloud room",
+    };
+  }
+  return {
+    kind: "cloud_workstation",
+    status: "offline",
+    label: "No workstation attached",
+    statusLabel: "Offline",
+    detail: "Attach a user-owned workstation to run cells in this room.",
+    providerLabel: "Cloud room",
+  };
 }
 
 function cloudIdentityDisplayLabel(authState: CloudPrototypeAuthState): string | null {

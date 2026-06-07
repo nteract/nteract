@@ -99,6 +99,8 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(withoutRuntime.runtime.executionAvailable, false);
   assert.equal(withoutRuntime.runtime.connected, false);
+  assert.equal(withoutRuntime.runtime.target?.label, "No workstation attached");
+  assert.equal(withoutRuntime.runtime.target?.status, "offline");
   assert.equal(withoutRuntime.canExecute, false);
 
   const withRuntime = cloudNotebookShellCapabilities({
@@ -110,6 +112,8 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(withRuntime.runtime.executionAvailable, true);
   assert.equal(withRuntime.runtime.connected, true);
+  assert.equal(withRuntime.runtime.target?.label, "Room workstation");
+  assert.equal(withRuntime.runtime.target?.status, "ready");
   assert.equal(withRuntime.canExecute, true);
 
   // A live runtime is visible to viewers, but viewing is not execution authority.
@@ -121,6 +125,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(viewerWithRuntime.runtime.executionAvailable, true);
   assert.equal(viewerWithRuntime.runtime.connected, true);
+  assert.equal(viewerWithRuntime.runtime.target?.label, "Room workstation");
   assert.equal(viewerWithRuntime.canExecute, false);
 
   // Runtime presence is visible to editors too, but the room host grants
@@ -135,6 +140,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(editorWithRuntime.runtime.executionAvailable, true);
   assert.equal(editorWithRuntime.runtime.connected, true);
+  assert.equal(editorWithRuntime.runtime.target?.label, "Room workstation");
   assert.equal(editorWithRuntime.canExecute, false);
 });
 
@@ -391,9 +397,11 @@ test("cloud shell capabilities return stable frozen objects for equivalent input
   assert.equal(first.access, second.access);
   assert.equal(first.auth, second.auth);
   assert.equal(first.runtime, second.runtime);
+  assert.equal(first.runtime.target, second.runtime.target);
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(first.access), true);
   assert.equal(Object.isFrozen(first.runtime), true);
+  assert.equal(Object.isFrozen(first.runtime.target), true);
 });
 
 test("cloud shell capabilities keep runtime peer authority separate from document access", () => {
@@ -415,6 +423,9 @@ test("cloud shell capabilities keep runtime peer authority separate from documen
   assert.equal(capabilities.runtime.actorLabel, "user:anaconda:alice/runtime:jupyterhub");
   assert.equal(capabilities.runtime.identityLabel, "user");
   assert.equal(capabilities.runtime.actor?.scope, "runtime_peer");
+  assert.equal(capabilities.runtime.target?.kind, "runtime_peer");
+  assert.equal(capabilities.runtime.target?.status, "attached");
+  assert.equal(capabilities.runtime.target?.label, "Runtime peer");
   assert.equal(capabilities.runtime.actor?.principal.label, "user");
   assert.equal(capabilities.runtime.actor?.operator.kind, "runtime");
   assert.equal(capabilities.runtime.actor?.operator.label, "JupyterHub");

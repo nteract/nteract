@@ -41,6 +41,31 @@ export interface NotebookShellAuthCapabilities {
   needsAttention: boolean;
 }
 
+export type NotebookShellRuntimeTargetKind =
+  | "local_daemon"
+  | "cloud_workstation"
+  | "runtime_peer"
+  | "fixture"
+  | "unknown";
+
+export type NotebookShellRuntimeTargetStatus =
+  | "ready"
+  | "attached"
+  | "available"
+  | "connecting"
+  | "offline"
+  | "attention";
+
+export interface NotebookShellRuntimeTargetProjection {
+  kind: NotebookShellRuntimeTargetKind;
+  status: NotebookShellRuntimeTargetStatus;
+  label: string;
+  statusLabel?: string | null;
+  detail?: string | null;
+  providerLabel?: string | null;
+  environmentLabel?: string | null;
+}
+
 export interface NotebookShellRuntimeCapabilities {
   /**
    * Runtime peers author execution lifecycle, output, and comm state. This is
@@ -62,6 +87,12 @@ export interface NotebookShellRuntimeCapabilities {
   actorLabel: string | null;
   identityLabel: string | null;
   actor?: NotebookActorProjection | null;
+  /**
+   * Host-owned compute target projection. This is intentionally descriptive:
+   * execution authority still comes from the host/room, and runtime-state
+   * authorship still comes from runtime peers.
+   */
+  target?: NotebookShellRuntimeTargetProjection | null;
 }
 
 export interface NotebookShellCapabilities {
@@ -119,6 +150,7 @@ export interface ProjectNotebookShellCapabilitiesOptions {
 const SHELL_ACCESS_CACHE = new Map<string, NotebookShellAccessCapabilities>();
 const SHELL_AUTH_CACHE = new Map<string, NotebookShellAuthCapabilities>();
 const SHELL_RUNTIME_CACHE = new Map<string, NotebookShellRuntimeCapabilities>();
+const SHELL_RUNTIME_TARGET_CACHE = new Map<string, NotebookShellRuntimeTargetProjection>();
 const SHELL_CAPABILITIES_CACHE = new Map<string, NotebookShellCapabilities>();
 const SHELL_PART_CACHE_LIMIT = 256;
 const SHELL_CAPABILITIES_CACHE_LIMIT = 512;
@@ -217,7 +249,17 @@ const NOTEBOOK_SHELL_RUNTIME_CACHE_FIELDS = {
   actorLabel: (runtime) => runtime.actorLabel,
   identityLabel: (runtime) => runtime.identityLabel,
   actor: (runtime) => notebookActorProjectionCacheKey(runtime.actor),
+  target: (runtime) => notebookShellRuntimeTargetCacheKey(runtime.target),
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeCapabilities>;
+const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
+  kind: (target) => target.kind,
+  status: (target) => target.status,
+  label: (target) => target.label,
+  statusLabel: (target) => target.statusLabel ?? null,
+  detail: (target) => target.detail ?? null,
+  providerLabel: (target) => target.providerLabel ?? null,
+  environmentLabel: (target) => target.environmentLabel ?? null,
+} satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
 const NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS = {
   actorLabel: (actor) => actor.actorLabel,
   principal: (actor) => notebookActorPrincipalCacheKey(actor.principal),
@@ -274,6 +316,7 @@ const READ_ONLY_RUNTIME: NotebookShellRuntimeCapabilities = Object.freeze({
   source: "unknown",
   actorLabel: null,
   identityLabel: null,
+  target: null,
 });
 
 export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = Object.freeze({
@@ -297,6 +340,7 @@ export function clearNotebookShellCapabilitiesCachesForTests(): void {
   SHELL_ACCESS_CACHE.clear();
   SHELL_AUTH_CACHE.clear();
   SHELL_RUNTIME_CACHE.clear();
+  SHELL_RUNTIME_TARGET_CACHE.clear();
   SHELL_CAPABILITIES_CACHE.clear();
 }
 
@@ -327,6 +371,7 @@ export function projectNotebookShellCapabilities({
     actorLabel: runtime?.actorLabel ?? null,
     identityLabel: runtime?.identityLabel ?? null,
     actor: runtime?.actor,
+    target: runtime?.target ?? null,
   });
   const canRead = accessCapabilities.level !== "none";
   const canExecute =
@@ -454,9 +499,32 @@ function stableNotebookShellRuntimeCapabilities(
     actorLabel: runtime.actorLabel,
     identityLabel: runtime.identityLabel,
     ...(runtime.actor === undefined ? {} : { actor: runtime.actor }),
+    target: stableNotebookShellRuntimeTarget(runtime.target),
   });
   setBoundedCacheValue(SHELL_RUNTIME_CACHE, cacheKey, stableRuntime, SHELL_PART_CACHE_LIMIT);
   return stableRuntime;
+}
+
+function stableNotebookShellRuntimeTarget(
+  target: NotebookShellRuntimeTargetProjection | null | undefined,
+): NotebookShellRuntimeTargetProjection | null {
+  if (!target) return null;
+
+  const cacheKey = notebookShellRuntimeTargetCacheKey(target);
+  const cached = getBoundedCacheValue(SHELL_RUNTIME_TARGET_CACHE, cacheKey);
+  if (cached) return cached;
+
+  const stableTarget = Object.freeze({
+    kind: target.kind,
+    status: target.status,
+    label: target.label,
+    statusLabel: target.statusLabel ?? null,
+    detail: target.detail ?? null,
+    providerLabel: target.providerLabel ?? null,
+    environmentLabel: target.environmentLabel ?? null,
+  });
+  setBoundedCacheValue(SHELL_RUNTIME_TARGET_CACHE, cacheKey, stableTarget, SHELL_PART_CACHE_LIMIT);
+  return stableTarget;
 }
 
 function notebookShellCapabilitiesCacheKey(capabilities: NotebookShellCapabilities): string {
@@ -490,6 +558,14 @@ function notebookShellAuthCacheKey(auth: NotebookShellAuthCapabilities): string 
 
 function notebookShellRuntimeCacheKey(runtime: NotebookShellRuntimeCapabilities): string {
   return projectionCacheKey(runtime, NOTEBOOK_SHELL_RUNTIME_CACHE_FIELDS);
+}
+
+function notebookShellRuntimeTargetCacheKey(
+  target: NotebookShellRuntimeTargetProjection | null | undefined,
+): string {
+  if (target === undefined) return "undefined";
+  if (target === null) return "null";
+  return projectionCacheKey(target, NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS);
 }
 
 function notebookActorProjectionCacheKey(

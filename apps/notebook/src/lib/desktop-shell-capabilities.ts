@@ -9,6 +9,7 @@ import {
   type NotebookShellAccessLevel,
   type NotebookShellAccessSource,
   type NotebookShellCapabilities,
+  type NotebookShellRuntimeTargetProjection,
 } from "runtimed";
 
 export interface DesktopNotebookShellCapabilityInput {
@@ -69,6 +70,11 @@ export function desktopNotebookShellCapabilities({
       source,
     }),
     identityLabel: null,
+    target: desktopRuntimeTarget({
+      isRuntimePeer,
+      sessionReady,
+      source,
+    }),
   };
   return projectNotebookShellCapabilities({
     interaction,
@@ -100,6 +106,42 @@ export function desktopNotebookShellCapabilities({
       requiredSources: ["cloud"],
     },
   });
+}
+
+function desktopRuntimeTarget({
+  isRuntimePeer,
+  sessionReady,
+  source,
+}: {
+  isRuntimePeer: boolean;
+  sessionReady: boolean;
+  source: NotebookShellAccessSource;
+}): NotebookShellRuntimeTargetProjection | null {
+  if (isRuntimePeer) {
+    return {
+      kind: "runtime_peer",
+      status: sessionReady ? "attached" : "offline",
+      label: "Runtime peer",
+      statusLabel: sessionReady ? "Attached" : "Offline",
+      detail: sessionReady
+        ? "This connection can author runtime state for the room."
+        : "This runtime peer is not connected.",
+      providerLabel: "Cloud room",
+    };
+  }
+  if (source !== "local") {
+    return null;
+  }
+  return {
+    kind: "local_daemon",
+    status: sessionReady ? "ready" : "offline",
+    label: "This machine",
+    statusLabel: sessionReady ? "Ready" : "Offline",
+    detail: sessionReady
+      ? "The local daemon is available for this notebook."
+      : "The local daemon is not exposing an executable runtime.",
+    providerLabel: "Local daemon",
+  };
 }
 
 function desktopRuntimeActorLabel({

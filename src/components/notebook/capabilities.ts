@@ -16,6 +16,9 @@ export {
   type NotebookShellExecutionPolicy,
   type NotebookShellPackagePolicy,
   type NotebookShellRuntimeCapabilities,
+  type NotebookShellRuntimeTargetKind,
+  type NotebookShellRuntimeTargetProjection,
+  type NotebookShellRuntimeTargetStatus,
   type NotebookShellSharingPolicy,
   type ProjectNotebookShellCapabilitiesOptions,
 } from "runtimed";
