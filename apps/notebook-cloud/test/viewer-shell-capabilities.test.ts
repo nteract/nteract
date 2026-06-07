@@ -111,13 +111,15 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
     hasCodeCells: true,
     selectedMode: "edit",
     runtimeAvailable: true,
+    runtimePeerCount: 2,
   });
   assert.equal(withRuntime.runtime.executionAvailable, true);
   assert.equal(withRuntime.runtime.connected, true);
-  assert.equal(withRuntime.runtime.target?.id, "room-workstation");
-  assert.equal(withRuntime.runtime.target?.label, "Room workstation");
+  assert.equal(withRuntime.runtime.target?.id, "attached-workstation");
+  assert.equal(withRuntime.runtime.target?.label, "Attached workstation");
   assert.equal(withRuntime.runtime.target?.status, "ready");
   assert.equal(withRuntime.runtime.target?.defaultEnvironmentLabel, "Current Python");
+  assert.equal(withRuntime.runtime.target?.runtimePeerCount, 2);
   assert.equal(withRuntime.canExecute, true);
 
   // A live runtime is visible to viewers, but viewing is not execution authority.
@@ -129,8 +131,9 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(viewerWithRuntime.runtime.executionAvailable, true);
   assert.equal(viewerWithRuntime.runtime.connected, true);
-  assert.equal(viewerWithRuntime.runtime.target?.id, "room-workstation");
-  assert.equal(viewerWithRuntime.runtime.target?.label, "Room workstation");
+  assert.equal(viewerWithRuntime.runtime.target?.id, "attached-workstation");
+  assert.equal(viewerWithRuntime.runtime.target?.label, "Attached workstation");
+  assert.equal(viewerWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(viewerWithRuntime.canExecute, false);
 
   // Runtime presence is visible to editors too, and non-viewer room peers may
@@ -144,8 +147,9 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(editorWithRuntime.runtime.executionAvailable, true);
   assert.equal(editorWithRuntime.runtime.connected, true);
-  assert.equal(editorWithRuntime.runtime.target?.id, "room-workstation");
-  assert.equal(editorWithRuntime.runtime.target?.label, "Room workstation");
+  assert.equal(editorWithRuntime.runtime.target?.id, "attached-workstation");
+  assert.equal(editorWithRuntime.runtime.target?.label, "Attached workstation");
+  assert.equal(editorWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(editorWithRuntime.canExecute, true);
 });
 

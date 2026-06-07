@@ -79,6 +79,11 @@ export interface NotebookShellRuntimeTargetProjection {
   cpuCount?: number | null;
   memoryBytes?: number | null;
   resourceLabel?: string | null;
+  /**
+   * Room-observed runtime peer count for hosted workstation attachments. This
+   * is presence/runtime state, not an ACL or workstation registry fact.
+   */
+  runtimePeerCount?: number | null;
   workingDirectoryLabel?: string | null;
 }
 
@@ -382,6 +387,7 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   cpuCount: (target) => target.cpuCount ?? null,
   memoryBytes: (target) => target.memoryBytes ?? null,
   resourceLabel: (target) => target.resourceLabel ?? null,
+  runtimePeerCount: (target) => target.runtimePeerCount ?? null,
   workingDirectoryLabel: (target) => target.workingDirectoryLabel ?? null,
 } satisfies ProjectionCacheFieldReaders<NotebookShellRuntimeTargetProjection>;
 const NOTEBOOK_ACTOR_PROJECTION_CACHE_FIELDS = {
@@ -673,6 +679,7 @@ function stableNotebookShellRuntimeTarget(
     cpuCount: target.cpuCount ?? null,
     memoryBytes: target.memoryBytes ?? null,
     resourceLabel: target.resourceLabel ?? null,
+    runtimePeerCount: target.runtimePeerCount ?? null,
     workingDirectoryLabel: target.workingDirectoryLabel ?? null,
   });
   setBoundedCacheValue(SHELL_RUNTIME_TARGET_CACHE, cacheKey, stableTarget, SHELL_PART_CACHE_LIMIT);

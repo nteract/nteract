@@ -36,6 +36,11 @@ export interface CloudNotebookShellCapabilityInput {
    */
   runtimeAvailable?: boolean;
   /**
+   * Runtime peers currently visible through room presence. This is a
+   * room-observed runtime fact, not workstation registry metadata.
+   */
+  runtimePeerCount?: number;
+  /**
    * Whether this browser connection may create execution intent in the hosted
    * room. This is a capability, not an interaction mode: owners and editors can
    * submit execution requests when compute is attached, while future
@@ -61,6 +66,7 @@ export function cloudNotebookShellCapabilities({
   canAcceptCellMutations = true,
   editAccessRequestPending = false,
   runtimeAvailable = false,
+  runtimePeerCount = runtimeAvailable ? 1 : 0,
   canSubmitExecutionRequests = connectionScope === "owner" || connectionScope === "editor",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
@@ -96,7 +102,7 @@ export function cloudNotebookShellCapabilities({
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
     identityLabel: isRuntimePeer ? identityLabel : null,
-    target: cloudRuntimeTarget({ isRuntimePeer, runtimeAvailable }),
+    target: cloudRuntimeTarget({ isRuntimePeer, runtimeAvailable, runtimePeerCount }),
   };
   const accessActor = notebookActorProjectionWithPrincipalImage(
     notebookActorProjectionFromAccess(access, auth),
@@ -140,10 +146,13 @@ export function cloudNotebookShellCapabilities({
 function cloudRuntimeTarget({
   isRuntimePeer,
   runtimeAvailable,
+  runtimePeerCount,
 }: {
   isRuntimePeer: boolean;
   runtimeAvailable: boolean;
+  runtimePeerCount: number;
 }): NotebookShellRuntimeTargetProjection {
+  const visibleRuntimePeerCount = Math.max(0, Math.floor(runtimePeerCount));
   if (isRuntimePeer) {
     return {
       id: "runtime-peer",
@@ -155,19 +164,21 @@ function cloudRuntimeTarget({
       providerLabel: "Cloud room",
       defaultEnvironmentLabel: "Runtime peer",
       environmentLabel: "Runtime peer",
+      runtimePeerCount: visibleRuntimePeerCount || 1,
     };
   }
   if (runtimeAvailable) {
     return {
-      id: "room-workstation",
+      id: "attached-workstation",
       kind: "cloud_workstation",
       status: "ready",
-      label: "Room workstation",
+      label: "Attached workstation",
       statusLabel: "Ready",
       detail: "A runtime peer is attached to this room.",
       providerLabel: "Cloud room",
       defaultEnvironmentLabel: "Current Python",
       environmentLabel: "Current Python",
+      runtimePeerCount: visibleRuntimePeerCount || 1,
     };
   }
   return {

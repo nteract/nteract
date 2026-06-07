@@ -297,10 +297,14 @@ export function cloudViewerPresenceDisplay(
 }
 
 export function cloudPresenceHasRuntimePeer(state: CloudViewerPresenceState): boolean {
-  return (
-    state.runtimePeerCount > 0 ||
-    state.peers.some((peer) => peer.connectionScope === "runtime_peer")
-  );
+  return cloudPresenceRuntimePeerCount(state) > 0;
+}
+
+export function cloudPresenceRuntimePeerCount(state: CloudViewerPresenceState): number {
+  const visibleRuntimePeers = state.peers.filter(
+    (peer) => peer.connectionScope === "runtime_peer",
+  ).length;
+  return Math.max(state.runtimePeerCount, visibleRuntimePeers);
 }
 
 export interface CloudFriendlyPeerLabelInput {

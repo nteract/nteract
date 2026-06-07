@@ -150,4 +150,43 @@ describe("projectNotebookWorkstationPanel", () => {
     ]);
     expect(projection.facts.map((fact) => fact.value)).not.toContain("Kyle");
   });
+
+  it("projects attached cloud runtime peers as workstation facts", () => {
+    const projection = projectNotebookWorkstationPanel(
+      capabilities({
+        accessOverrides: { level: "editor", source: "cloud" },
+        runtimeOverrides: {
+          canWriteRuntimeState: false,
+          connected: true,
+          executionAvailable: true,
+          source: "cloud",
+          target: {
+            id: "attached-workstation",
+            kind: "cloud_workstation",
+            status: "ready",
+            label: "Attached workstation",
+            statusLabel: "Ready",
+            detail: "A runtime peer is attached to this room.",
+            providerLabel: "Cloud room",
+            defaultEnvironmentLabel: "Current Python",
+            runtimePeerCount: 2,
+          },
+        },
+      }),
+    );
+
+    expect(projection).toMatchObject({
+      targetId: "attached-workstation",
+      title: "Attached workstation",
+      statusLabel: "Ready",
+      tone: "ready",
+      summary: "Attached workstation",
+    });
+    expect(projection.facts.map((fact) => [fact.kind, fact.label, fact.value])).toEqual([
+      ["provider", "Provider", "Cloud room"],
+      ["default_environment", "Default env", "Current Python"],
+      ["runtime_peers", "Runtime peers", "2"],
+      ["execution_state", "State", "Can run"],
+    ]);
+  });
 });

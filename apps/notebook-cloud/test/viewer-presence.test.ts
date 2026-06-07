@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   cloudFriendlyPeerLabel,
   cloudPresenceHasRuntimePeer,
+  cloudPresenceRuntimePeerCount,
   cloudVisiblePeerLabel,
   cloudViewerPresenceDisplay,
   initialCloudViewerPresence,
@@ -197,6 +198,7 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:00.000Z",
     });
     assert.equal(cloudPresenceHasRuntimePeer(state), false);
+    assert.equal(cloudPresenceRuntimePeerCount(state), 0);
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_joined",
@@ -209,6 +211,7 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:01.000Z",
     });
     assert.equal(cloudPresenceHasRuntimePeer(state), true);
+    assert.equal(cloudPresenceRuntimePeerCount(state), 1);
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_left",
@@ -221,6 +224,7 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:02.000Z",
     });
     assert.equal(cloudPresenceHasRuntimePeer(state), false);
+    assert.equal(cloudPresenceRuntimePeerCount(state), 0);
   });
 
   it("detects runtime peers already present when this browser joins", () => {
@@ -237,6 +241,32 @@ describe("cloud viewer presence", () => {
     });
 
     assert.equal(cloudPresenceHasRuntimePeer(state), true);
+    assert.equal(cloudPresenceRuntimePeerCount(state), 1);
+  });
+
+  it("counts visible runtime peers when aggregate runtime peer count is absent", () => {
+    let state = reduceCloudViewerPresenceMessage(initialCloudViewerPresence(), {
+      type: "cloud_room_ready",
+      protocol: "v4",
+      notebook_id: "demo",
+      peer_id: "peer-owner",
+      actor_label: "user:anaconda:alice/browser:tab",
+      connection_scope: "owner",
+      room_peer_count: 1,
+      timestamp: "2026-05-23T00:00:00.000Z",
+    });
+    state = reduceCloudViewerPresenceMessage(state, {
+      type: "cloud_peer_joined",
+      notebook_id: "demo",
+      peer_id: "peer-runtime",
+      actor_label: "user:anaconda:alice/agent:runt-cloud-peer",
+      connection_scope: "runtime_peer",
+      room_peer_count: 2,
+      timestamp: "2026-05-23T00:00:01.000Z",
+    });
+
+    assert.equal(cloudPresenceHasRuntimePeer(state), true);
+    assert.equal(cloudPresenceRuntimePeerCount(state), 1);
   });
 
   it("falls back to readable cloud peer labels instead of raw actor labels", () => {

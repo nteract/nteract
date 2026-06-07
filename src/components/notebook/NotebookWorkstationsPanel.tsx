@@ -154,6 +154,8 @@ function workstationFactIcon(
       return MemoryStick;
     case "working_directory":
       return FolderOpen;
+    case "runtime_peers":
+      return Cloud;
     case "execution_state":
       return fact.value === "Can run" || fact.value === "Runtime state" ? CircleCheck : CircleAlert;
     case "remote_hint":

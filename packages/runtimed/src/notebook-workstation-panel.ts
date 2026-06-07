@@ -15,6 +15,7 @@ export type NotebookWorkstationFactKind =
   | "cpu"
   | "memory"
   | "resource"
+  | "runtime_peers"
   | "working_directory"
   | "execution_state"
   | "remote_hint";
@@ -65,6 +66,7 @@ export function projectNotebookWorkstationPanel(
     target.cpuCount ?? null,
     target.memoryBytes ?? null,
     target.resourceLabel ?? null,
+    target.runtimePeerCount ?? null,
     target.workingDirectoryLabel ?? null,
   ]);
   const cached = getBoundedCacheValue(WORKSTATION_PANEL_CACHE, cacheKey);
@@ -92,6 +94,9 @@ export function projectNotebookWorkstationPanel(
   }
   if (!hasCpuCount && !memoryLabel && target.resourceLabel) {
     facts.push(workstationFact("resource", "Resources", target.resourceLabel));
+  }
+  if (typeof target.runtimePeerCount === "number" && target.runtimePeerCount > 0) {
+    facts.push(workstationFact("runtime_peers", "Runtime peers", `${target.runtimePeerCount}`));
   }
   if (target.workingDirectoryLabel) {
     facts.push(workstationFact("working_directory", "Working dir", target.workingDirectoryLabel));

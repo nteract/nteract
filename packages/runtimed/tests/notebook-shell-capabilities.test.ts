@@ -283,10 +283,10 @@ describe("projectNotebookShellCapabilities", () => {
         connected: true,
         executionAvailable: true,
         target: {
-          id: "room-workstation",
+          id: "attached-workstation",
           kind: "cloud_workstation",
           status: "ready",
-          label: "Room workstation",
+          label: "Attached workstation",
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
@@ -295,6 +295,7 @@ describe("projectNotebookShellCapabilities", () => {
           cpuCount: 4,
           memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
+          runtimePeerCount: 2,
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
       }),
@@ -315,10 +316,10 @@ describe("projectNotebookShellCapabilities", () => {
         connected: true,
         executionAvailable: true,
         target: {
-          id: "room-workstation",
+          id: "attached-workstation",
           kind: "cloud_workstation",
           status: "ready",
-          label: "Room workstation",
+          label: "Attached workstation",
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
@@ -327,6 +328,7 @@ describe("projectNotebookShellCapabilities", () => {
           cpuCount: 4,
           memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
+          runtimePeerCount: 2,
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
       }),
@@ -346,11 +348,12 @@ describe("projectNotebookShellCapabilities", () => {
     expect(first.runtime).toBe(second.runtime);
     expect(first.runtime.target).toBe(second.runtime.target);
     expect(first.runtime.target).toMatchObject({
-      id: "room-workstation",
+      id: "attached-workstation",
       defaultEnvironmentLabel: "Current Python",
       cpuCount: 4,
       memoryBytes: 16 * 1024 ** 3,
       resourceLabel: "4 CPU / 16 GB RAM",
+      runtimePeerCount: 2,
       workingDirectoryLabel: "/home/kyle/notebooks",
     });
     expect(Object.isFrozen(first)).toBe(true);

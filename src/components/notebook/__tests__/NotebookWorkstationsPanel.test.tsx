@@ -148,6 +148,7 @@ describe("NotebookWorkstationsPanel", () => {
               providerLabel: "JupyterHub",
               defaultEnvironmentLabel: "Current Python",
               resourceLabel: "4 CPU / 16 GB RAM",
+              runtimePeerCount: 1,
             },
           },
         }}
@@ -159,6 +160,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getAllByText("Current Python")).toHaveLength(2);
     expect(screen.getByText("Resources")).toBeVisible();
     expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
+    expect(screen.getByText("Runtime peers")).toBeVisible();
+    expect(screen.getByText("1")).toBeVisible();
     expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();
   });

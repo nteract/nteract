@@ -101,6 +101,7 @@ import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
   cloudPresenceHasRuntimePeer,
+  cloudPresenceRuntimePeerCount,
   type CloudViewerPresencePeer,
   type CloudViewerPresenceStore,
   cloudViewerPresenceDisplay,
@@ -1570,6 +1571,7 @@ function NotebookViewer({
     presenceStore.getSnapshot,
     presenceStore.getSnapshot,
   );
+  const runtimePeerCount = cloudPresenceRuntimePeerCount(presenceSnapshot);
   const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
     () => ({
@@ -1672,6 +1674,7 @@ function NotebookViewer({
         canAcceptCellMutations,
         editAccessRequestPending,
         runtimeAvailable: runtimePeerAvailable,
+        runtimePeerCount,
         hostCapabilities: config.hostCapabilities,
       }),
     [
@@ -1682,6 +1685,7 @@ function NotebookViewer({
       connectionActorLabel,
       connectionScope,
       editAccessRequestPending,
+      runtimePeerCount,
       runtimePeerAvailable,
       selectedInteractionMode,
     ],
