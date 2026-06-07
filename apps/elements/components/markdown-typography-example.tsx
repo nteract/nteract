@@ -96,8 +96,9 @@ const markdownPlan: MarkdownProjectionPlan = {
     block(9, "checklist-heading", "heading", "h2", "Experiment checklist"),
     block(10, "checklist", "list", "ul", "tasks"),
     block(11, "math", "math", "div", "\\mathbb{E}[L_t] \\leq \\epsilon + \\lambda\\|A_t-A_0\\|_2"),
+    block(12, "bound", "paragraph", "p", "where beta controls the experimental tolerance."),
     block(
-      12,
+      13,
       "code",
       "code",
       "pre",
@@ -106,9 +107,9 @@ const markdownPlan: MarkdownProjectionPlan = {
         codeLanguage: "python",
       },
     ),
-    block(13, "rule", "thematic-break", "hr", ""),
+    block(14, "rule", "thematic-break", "hr", ""),
     block(
-      14,
+      15,
       "closing",
       "paragraph",
       "p",
@@ -226,6 +227,9 @@ const markdownPlan: MarkdownProjectionPlan = {
     run("math", "math-source", "\\mathbb{E}[L_t] \\leq \\epsilon + \\lambda\\|A_t-A_0\\|_2", {
       semantic: "math-source",
     }),
+    run("bound", "bound-0", "where "),
+    run("bound", "bound-beta", "\\beta", { semantic: "math-source" }),
+    run("bound", "bound-1", " controls the experimental tolerance."),
     run("closing", "closing-text", "The rendered markdown should feel like a "),
     run("closing", "closing-em", "paper margin", { semantic: "emphasis" }),
     run("closing", "closing-tail", " and a runnable lab bench at the same time."),

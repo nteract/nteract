@@ -15,14 +15,16 @@ import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-headin
 import {
   markdownBlockquoteClassName,
   markdownDeleteClassName,
+  markdownDisplayMathClassName,
   markdownDocumentClassName,
   markdownEmphasisClassName,
   markdownFigureCaptionClassName,
   markdownFigureClassName,
   markdownHeadingAnchorClassName,
-  markdownImageClassName,
   markdownHeadingClassName,
+  markdownImageClassName,
   markdownInlineCodeClassName,
+  markdownInlineMathClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
   markdownParagraphClassName,
@@ -852,7 +854,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
   if (!html) {
     if (displayMode) {
       return (
-        <div className="my-4 overflow-x-auto">
+        <div className={markdownDisplayMathClassName}>
           <InlineCode className="block px-3 py-2">{latex}</InlineCode>
         </div>
       );
@@ -866,7 +868,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
       <div
         data-slot="projected-markdown-math"
         data-display-mode="true"
-        className="my-4 overflow-x-auto px-1 py-1 text-center [&_.katex-display]:my-0"
+        className={markdownDisplayMathClassName}
         dangerouslySetInnerHTML={{ __html: html }}
       />
     );
@@ -876,7 +878,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
     <span
       data-slot="projected-markdown-math"
       data-display-mode="false"
-      className="inline align-baseline [&_.katex]:text-[1.03em]"
+      className={markdownInlineMathClassName}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

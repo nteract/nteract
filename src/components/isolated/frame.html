@@ -347,6 +347,17 @@
         line-height: 1.5rem;
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) .katex-display {
+        margin: 1.25rem 0;
+        padding: 1rem;
+        overflow-x: auto;
+        border-top: 1px solid var(--border-color);
+        border-bottom: 1px solid var(--border-color);
+        border-radius: 0.125rem;
+        background: color-mix(in oklch, var(--bg-secondary) 46%, transparent);
+        text-align: center;
+      }
+
       /* Links */
       a {
         color: var(--accent-color);

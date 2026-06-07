@@ -1,5 +1,5 @@
 export const markdownDocumentClassName =
-  "not-prose select-text py-2 text-base leading-[1.68] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:font-[var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:font-[var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
+  "not-prose select-text py-2 text-base leading-[1.68] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:font-[var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_.katex-display]:my-5 [&_.katex-display]:overflow-x-auto [&_.katex-display]:rounded-sm [&_.katex-display]:border-y [&_.katex-display]:border-border/70 [&_.katex-display]:bg-muted/[0.16] [&_.katex-display]:px-4 [&_.katex-display]:py-4 [&_.katex-display]:text-center [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:font-[var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
 
 export const markdownLinkClassName =
   "rounded-[2px] font-medium text-primary underline decoration-primary/45 decoration-1 underline-offset-4 transition-[background-color,color,text-decoration-color] hover:bg-primary/5 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
@@ -8,6 +8,12 @@ export const markdownInlineCodeClassName =
   "rounded-sm border border-border/70 bg-muted/70 px-1.5 py-0.5 font-mono text-[0.88em] text-foreground break-words";
 
 export const markdownParagraphClassName = "my-3 leading-relaxed [text-wrap:pretty]";
+
+export const markdownDisplayMathClassName =
+  "my-5 overflow-x-auto rounded-sm border-y border-border/70 bg-muted/[0.16] px-4 py-4 text-center [&_.katex-display]:my-0";
+
+export const markdownInlineMathClassName =
+  "inline align-baseline text-foreground [&_.katex]:text-[1.03em]";
 
 export const markdownStrongClassName = "font-semibold text-foreground";
 

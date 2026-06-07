@@ -216,12 +216,11 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(2);
     expect(document.querySelector(".katex-display")).not.toBeNull();
     expect(document.querySelector(".katex-display")?.parentElement).toHaveClass(
+      "my-5",
       "text-center",
       "overflow-x-auto",
-      "px-1",
-    );
-    expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
-      "bg-muted/[0.18]",
+      "border-y",
+      "bg-muted/[0.16]",
     );
     expect(document.querySelector(".katex-display")?.parentElement).toHaveAttribute(
       "data-display-mode",

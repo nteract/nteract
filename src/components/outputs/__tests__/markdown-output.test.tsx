@@ -97,6 +97,18 @@ describe("MarkdownOutput heading anchors", () => {
     );
   });
 
+  it("frames display math as a document equation object", () => {
+    const { container } = render(<MarkdownOutput content={"$$\n\\\\int_0^1 x dx\n$$"} />);
+
+    const displayMath = document.querySelector(".katex-display");
+    expect(displayMath).not.toBeNull();
+    expect(container.querySelector('[data-slot="markdown-output"]')).toHaveClass(
+      "[&_.katex-display]:my-5",
+      "[&_.katex-display]:border-y",
+      "[&_.katex-display]:bg-muted/[0.16]",
+    );
+  });
+
   it("styles GFM footnotes as a compact document apparatus", () => {
     render(<MarkdownOutput content={"Claim with a note.[^1]\n\n[^1]: Detailed citation."} />);
 
