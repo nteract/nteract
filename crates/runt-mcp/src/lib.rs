@@ -118,6 +118,11 @@ impl NteractMcp {
         self.peer_label.read().await.clone()
     }
 
+    /// Set the peer label for notebook connections.
+    pub async fn set_peer_label(&self, label: impl Into<String>) {
+        *self.peer_label.write().await = label.into();
+    }
+
     /// Get the shared session (for the daemon watcher).
     pub fn session(&self) -> &Arc<RwLock<Option<NotebookSession>>> {
         &self.session

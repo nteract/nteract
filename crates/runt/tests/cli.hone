@@ -16,6 +16,25 @@ RUN runt --version
 ASSERT exit_code == 0
 ASSERT stdout matches /runt \d+\.\d+\.\d+/
 
+TEST "nb namespace exposes notebook tool bridge"
+RUN runt nb --help
+ASSERT exit_code == 0
+ASSERT stdout contains "Headless notebook operations backed by the MCP tool surface"
+
+TEST "nb tools lists MCP-compatible notebook operations"
+RUN runt nb tools
+ASSERT exit_code == 0
+ASSERT stdout contains "create_cell"
+ASSERT stdout contains "execute_cell"
+ASSERT stdout contains "manage_dependencies"
+ASSERT stdout contains "Additional callable read tools: get_cell, get_all_cells"
+
+TEST "nb tools all includes dispatch-only read operations"
+RUN runt nb tools --all
+ASSERT exit_code == 0
+ASSERT stdout contains "get_cell"
+ASSERT stdout contains "get_all_cells"
+
 TEST "invalid command fails"
 RUN runt invalid_command
 ASSERT exit_code != 0

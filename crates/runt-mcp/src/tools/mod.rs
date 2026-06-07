@@ -240,13 +240,47 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(app_tool_meta()),
     ];
 
-    for tool in &mut tools {
+    attach_icons(&mut tools);
+
+    tools
+}
+
+/// Return read tools intentionally hidden from the advertised MCP tool list.
+pub fn hidden_tools() -> Vec<Tool> {
+    let mut tools = vec![
+        Tool::new(
+            "get_cell",
+            "Get a cell by ID. Dispatch-only read path; resource-aware MCP clients can read nteract://notebooks/{id}/cells.",
+            schema_for::<cell_read::GetCellParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false))
+        .with_meta(app_tool_meta()),
+        Tool::new(
+            "get_all_cells",
+            "Get all cells as summary, json, or rich output. Dispatch-only read path; resource-aware MCP clients can read nteract://notebooks/{id}/cells.",
+            schema_for::<cell_read::GetAllCellsParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false))
+        .with_meta(app_tool_meta()),
+    ];
+
+    attach_icons(&mut tools);
+    tools
+}
+
+/// Return the advertised tool list plus CLI-discoverable hidden read tools.
+pub fn cli_discoverable_tools() -> Vec<Tool> {
+    let mut tools = all_tools();
+    tools.extend(hidden_tools());
+    tools
+}
+
+fn attach_icons(tools: &mut [Tool]) {
+    for tool in tools {
         if let Some(icon) = crate::icons::tool_icon(tool.name.as_ref()) {
             tool.icons = Some(crate::icons::icons(icon));
         }
     }
-
-    tools
 }
 
 /// Dispatch a tool call to its handler.
@@ -764,6 +798,24 @@ mod tests {
 
         assert!(tools.iter().all(|tool| tool.name != "get_cell"));
         assert!(tools.iter().all(|tool| tool.name != "get_all_cells"));
+    }
+
+    #[test]
+    fn hidden_cell_read_tools_are_discoverable_as_callable_tools() {
+        let hidden_names = hidden_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert!(hidden_names.iter().any(|name| name == "get_cell"));
+        assert!(hidden_names.iter().any(|name| name == "get_all_cells"));
+
+        let callable_names = cli_discoverable_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert!(callable_names.iter().any(|name| name == "create_cell"));
+        assert!(callable_names.iter().any(|name| name == "get_cell"));
+        assert!(callable_names.iter().any(|name| name == "get_all_cells"));
     }
 
     #[tokio::test]
