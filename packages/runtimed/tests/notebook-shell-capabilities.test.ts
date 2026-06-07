@@ -3,6 +3,8 @@ import {
   projectNotebookRoomEditAccess,
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
+  resolveNotebookShellRuntimeTarget,
+  stabilizeNotebookShellCapabilities,
   type NotebookShellAccessCapabilities,
   type NotebookShellAuthCapabilities,
   type NotebookShellRuntimeCapabilities,
@@ -208,12 +210,61 @@ describe("projectNotebookShellCapabilities", () => {
       canExecute: false,
       canManagePackages: false,
       access: { level: "viewer", source: "unknown" },
-      runtime: { connected: false, executionAvailable: false, target: null },
+      runtime: {
+        connected: false,
+        executionAvailable: false,
+        target: {
+          id: "runtime:none",
+          kind: "unknown",
+          status: "offline",
+          label: "No runtime target",
+        },
+      },
     });
     expect(Object.isFrozen(readOnlyNotebookShellCapabilities)).toBe(true);
     expect(Object.isFrozen(readOnlyNotebookShellCapabilities.access)).toBe(true);
     expect(Object.isFrozen(readOnlyNotebookShellCapabilities.auth)).toBe(true);
     expect(Object.isFrozen(readOnlyNotebookShellCapabilities.runtime)).toBe(true);
+    expect(Object.isFrozen(readOnlyNotebookShellCapabilities.runtime.target)).toBe(true);
+  });
+
+  it("projects missing runtime targets into stable defaults before React consumes them", () => {
+    const interaction = projectNotebookRoomEditAccess({
+      accessLevel: "viewer",
+      requestedScope: "viewer",
+      selectedMode: "view",
+      canAcceptDocumentMutations: true,
+      canRequestEdit: false,
+    });
+
+    const first = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ source: "cloud" }),
+      runtime: runtime({ source: "cloud", connected: false, executionAvailable: false }),
+    });
+    const second = projectNotebookShellCapabilities({
+      interaction,
+      access: access({ source: "cloud" }),
+      runtime: runtime({ source: "cloud", connected: false, executionAvailable: false }),
+    });
+
+    expect(first).toBe(second);
+    expect(first.runtime).toBe(second.runtime);
+    expect(first.runtime.target).toBe(second.runtime.target);
+    expect(first.runtime.target).toMatchObject({
+      id: "workstation:none",
+      kind: "cloud_workstation",
+      status: "offline",
+      label: "No workstation attached",
+      defaultEnvironmentLabel: "Not attached",
+    });
+    expect(resolveNotebookShellRuntimeTarget(first.runtime)).toBe(first.runtime.target);
+
+    const stabilized = stabilizeNotebookShellCapabilities({
+      ...first,
+      runtime: { ...first.runtime, target: null },
+    });
+    expect(stabilized).toBe(first);
   });
 
   it("returns stable frozen capabilities for equivalent shell inputs", () => {
@@ -239,7 +290,10 @@ describe("projectNotebookShellCapabilities", () => {
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          cpuCount: 4,
+          memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
@@ -268,7 +322,10 @@ describe("projectNotebookShellCapabilities", () => {
           statusLabel: "Ready",
           detail: "A runtime peer is attached to this room.",
           providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          cpuCount: 4,
+          memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
           workingDirectoryLabel: "/home/kyle/notebooks",
         },
@@ -290,6 +347,9 @@ describe("projectNotebookShellCapabilities", () => {
     expect(first.runtime.target).toBe(second.runtime.target);
     expect(first.runtime.target).toMatchObject({
       id: "room-workstation",
+      defaultEnvironmentLabel: "Current Python",
+      cpuCount: 4,
+      memoryBytes: 16 * 1024 ** 3,
       resourceLabel: "4 CPU / 16 GB RAM",
       workingDirectoryLabel: "/home/kyle/notebooks",
     });

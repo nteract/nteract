@@ -10,6 +10,7 @@ import {
   safeScreenshotName,
   smokeEnvForMatrixEntry,
 } from "./hosted-live-room-matrix.mjs";
+import { smokeJsonReportPath, writeSmokeJsonReport } from "./smoke-paths.mjs";
 
 const DEFAULT_BASE_URL = "https://preview.runt.run";
 const scriptPath = fileURLToPath(new URL("./hosted-live-room-smoke.mjs", import.meta.url));
@@ -35,6 +36,7 @@ const tokenPath =
   process.env.NOTEBOOK_CLOUD_OIDC_TOKEN_PATH ??
   `${os.homedir()}/token.preview.json`;
 const screenshotDir = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_SCREENSHOT_DIR;
+const reportPath = smokeJsonReportPath("hosted-live-room-matrix-smoke");
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -69,6 +71,7 @@ async function main() {
     results,
   };
 
+  await writeSmokeJsonReport(summary, reportPath);
   if (failures.length > 0) {
     throw new Error(`hosted live room matrix smoke failed:\n${JSON.stringify(summary, null, 2)}`);
   }

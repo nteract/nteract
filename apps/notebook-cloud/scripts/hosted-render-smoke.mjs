@@ -28,9 +28,13 @@ import {
   withTiming,
 } from "./hosted-render-smoke-performance.mjs";
 import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
-import { catalogApiUrlForViewer, isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
+import {
+  catalogApiUrlForViewer,
+  isRenderCacheApiUrl,
+  pinnedNotebookViewerUrl,
+} from "./hosted-render-smoke-routes.mjs";
 import { firstPositionalArg } from "./cli-args.mjs";
-import { smokeOutputPath } from "./smoke-paths.mjs";
+import { smokeJsonReportPath, smokeOutputPath, writeSmokeJsonReport } from "./smoke-paths.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
@@ -41,6 +45,7 @@ const DEFAULT_LATEST_REVISION_ACTOR_LABEL =
   "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0/agent:runt-publish";
 
 const targetUrl = firstPositionalArg() ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
+const isPinnedSnapshotUrl = pinnedNotebookViewerUrl(targetUrl) !== null;
 const expectedRendererAssetOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN ?? DEFAULT_RENDERER_ASSET_ORIGIN;
 const expectedOutputDocumentOrigin =
@@ -49,7 +54,8 @@ const expectedSourceText =
   process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "import plotly.graph_objects as go";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
-const expectedPresenceTitle = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE ?? "participant";
+const expectedPresenceTitle =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE ?? (isPinnedSnapshotUrl ? "" : "participant");
 const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", [
   "MathNet topic visualization",
   "Loading the slice",
@@ -120,6 +126,7 @@ const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES"
   "system-dark",
 ]);
 const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT);
+const reportPath = smokeJsonReportPath("hosted-render-smoke");
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
 const expectedRuntimeWasmOrigin =
@@ -550,67 +557,120 @@ async function main() {
     }
     markTiming("total");
 
-    console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          targetUrl,
-          expectedSourceText,
-          expectedPageTexts,
-          expectedExecutionCount,
-          requireRenderedCellMarker,
-          expectedPresenceTitle,
-          expectedFrameTexts,
-          expectedOutputDocumentOrigin,
-          expectedCatalogOwnerPrincipal,
-          expectedLatestRevisionActorLabel,
-          expectedLatestRevisionNotebookHeadsHash,
-          expectedLatestRevisionRuntimeHeadsHash,
-          expectedLatestRevisionRuntimeStateDocId,
-          requireLatestRevisionRuntimeStateDocId,
-          timings_ms: timingsMs,
-          viewer_milestones_ms: viewerMilestones,
-          performanceDiagnostics,
-          performanceBudgets,
-          browserResourceTimingCount: browserResourceTimings.length,
-          catalogApiCheck,
-          viewerCssCheck,
-          runtimeWasmHintCheck,
-          forbidRenderCacheRequests,
-          renderCacheRequests,
-          executionCounts,
-          renderedCellCount,
-          presenceTitle,
-          siftLoadMilestoneMatches,
-          frameTextMatches,
-          pageTextMatches,
-          themeModeChecks,
-          iframeMetrics,
-          siftWasmRequests,
-          runtimedWasmRequests,
-          rendererCompletions: rendererCompletions.length,
-          siftDiagnostics,
-          warnings,
-        },
-        null,
-        2,
-      ),
-    );
+    const report = {
+      ok: true,
+      targetUrl,
+      expectedSourceText,
+      expectedPageTexts,
+      expectedExecutionCount,
+      requireRenderedCellMarker,
+      expectedPresenceTitle,
+      expectedFrameTexts,
+      expectedOutputDocumentOrigin,
+      expectedCatalogOwnerPrincipal,
+      expectedLatestRevisionActorLabel,
+      expectedLatestRevisionNotebookHeadsHash,
+      expectedLatestRevisionRuntimeHeadsHash,
+      expectedLatestRevisionRuntimeStateDocId,
+      requireLatestRevisionRuntimeStateDocId,
+      timings_ms: timingsMs,
+      viewer_milestones_ms: viewerMilestones,
+      performanceDiagnostics,
+      performanceBudgets,
+      browserResourceTimingCount: browserResourceTimings.length,
+      catalogApiCheck,
+      viewerCssCheck,
+      runtimeWasmHintCheck,
+      forbidRenderCacheRequests,
+      renderCacheRequests,
+      executionCounts,
+      renderedCellCount,
+      presenceTitle,
+      siftLoadMilestoneMatches,
+      frameTextMatches,
+      pageTextMatches,
+      themeModeChecks,
+      iframeMetrics,
+      siftWasmRequests,
+      runtimedWasmRequests,
+      rendererCompletions: rendererCompletions.length,
+      siftDiagnostics,
+      warnings,
+    };
+    await writeSmokeJsonReport(report, reportPath);
+    console.log(JSON.stringify(report, null, 2));
   } catch (error) {
     await flushDiagnosticTasks();
     if (screenshotPath && !screenshotSaved) {
       await saveScreenshot(page).catch(() => {});
     }
+    let finalError = error;
     if (!(error instanceof SmokeFailure) && fatalIsolatedDiagnostics.length > 0) {
-      throw new SmokeFailure([
+      finalError = new SmokeFailure([
         ...fatalIsolatedDiagnostics.map(isolatedDiagnosticFailure),
         { kind: "smoke-error", text: error instanceof Error ? error.message : String(error) },
       ]);
     }
-    throw error;
+    const failureReport = buildFailureReport(finalError);
+    await writeSmokeJsonReport(failureReport, reportPath).catch((writeError) => {
+      console.error(
+        `[notebook-cloud-smoke] failed to write JSON failure report: ${
+          writeError instanceof Error ? writeError.message : String(writeError)
+        }`,
+      );
+    });
+    throw finalError;
   } finally {
     await browser.close();
   }
+}
+
+function buildFailureReport(error) {
+  const reportFailures =
+    error instanceof SmokeFailure
+      ? error.failures
+      : [{ kind: "smoke-error", text: error instanceof Error ? error.message : String(error) }];
+  return {
+    ok: false,
+    targetUrl,
+    expectedSourceText,
+    expectedPageTexts,
+    expectedExecutionCount,
+    requireRenderedCellMarker,
+    expectedPresenceTitle,
+    expectedFrameTexts,
+    expectedOutputDocumentOrigin,
+    expectedCatalogOwnerPrincipal,
+    expectedLatestRevisionActorLabel,
+    expectedLatestRevisionNotebookHeadsHash,
+    expectedLatestRevisionRuntimeHeadsHash,
+    expectedLatestRevisionRuntimeStateDocId,
+    requireLatestRevisionRuntimeStateDocId,
+    error: {
+      name: error instanceof Error ? error.name : "Error",
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : null,
+    },
+    failures: reportFailures,
+    timings_ms: timingsMs,
+    viewer_milestones_ms: viewerMilestones,
+    performanceDiagnostics: summarizePerformanceResources(performanceResources, timingsMs),
+    performanceBudgets,
+    catalogApiCheck,
+    viewerCssCheck,
+    runtimeWasmHintCheck,
+    forbidRenderCacheRequests,
+    renderCacheRequests,
+    siftLoadMilestoneMatches,
+    pageTextMatches,
+    themeModeChecks,
+    siftWasmRequests,
+    runtimedWasmRequests,
+    rendererCompletions: rendererCompletions.length,
+    siftDiagnostics,
+    warnings,
+    screenshotPath: screenshotSaved ? screenshotPath : null,
+  };
 }
 
 function parseExpectedTexts(envName, fallback) {
@@ -1136,5 +1196,6 @@ class SmokeFailure extends Error {
   constructor(failures) {
     super(`Hosted render smoke failed:\n${JSON.stringify(failures, null, 2)}`);
     this.name = "SmokeFailure";
+    this.failures = failures;
   }
 }

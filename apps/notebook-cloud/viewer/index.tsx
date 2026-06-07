@@ -30,6 +30,7 @@ import {
   NotebookDocumentToolbar,
   NotebookEditModeButton,
   navigateNotebookOutlineItem,
+  notebookWorkstationsSummary,
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
@@ -1347,13 +1348,7 @@ function NotebookViewer({
       collapsed={railCollapsed}
       selectedOutlineItemId={selectedOutlineItemId}
       packagesSummary={null}
-      workstationsSummary={
-        shellCapabilities.runtime.executionAvailable
-          ? "Ready"
-          : shellCapabilities.runtime.connected
-            ? "Attached"
-            : "Offline"
-      }
+      workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
       workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
       packagesPanel={
         <NotebookPackageSummaryPanel

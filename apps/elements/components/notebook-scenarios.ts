@@ -10,6 +10,7 @@ import {
   createNotebookViewModel,
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
+  stabilizeNotebookShellCapabilities,
   type NotebookActorProjection,
   type EnvSyncState,
   type NotebookNoticeTone,
@@ -1129,6 +1130,19 @@ export const elementsNotebookScenarios: Record<
         source: "cloud",
         actorLabel: outerboundsWorkstationActor.actorLabel,
         identityLabel: "Kyle",
+        target: {
+          id: "outerbounds-forecast-gpu",
+          kind: "cloud_workstation",
+          status: "ready",
+          label: "Forecast GPU",
+          statusLabel: "Ready",
+          detail: "Outerbounds workstation attached to this room.",
+          providerLabel: "Outerbounds",
+          defaultEnvironmentLabel: "Current Python",
+          cpuCount: 16,
+          memoryBytes: 64 * 1024 ** 3,
+          workingDirectoryLabel: "~/work/mathnet",
+        },
         actor: outerboundsWorkstationActor,
       },
     },
@@ -1548,7 +1562,7 @@ function createScenario({
   trustStatus?: NotebookTrustStatus | null;
   capabilities: NotebookShellCapabilities;
 }): ElementsNotebookScenario {
-  const projectedCapabilities: NotebookShellCapabilities = {
+  const capabilitiesWithActors: NotebookShellCapabilities = {
     ...capabilities,
     access: {
       ...capabilities.access,
@@ -1563,6 +1577,7 @@ function createScenario({
         notebookActorProjectionFromRuntime(capabilities.runtime, capabilities.auth),
     },
   };
+  const projectedCapabilities = stabilizeNotebookShellCapabilities(capabilitiesWithActors);
   const environment = createNotebookEnvironmentSurface({
     capabilities: projectedCapabilities,
     packages: viewModel.packages,

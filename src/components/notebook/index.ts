@@ -15,8 +15,11 @@ export {
   notebookActorProjectionFromRuntime,
 } from "./actor-projection";
 export {
+  notebookShellRuntimeTargetSummary,
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
+  resolveNotebookShellRuntimeTarget,
+  stabilizeNotebookShellCapabilities,
   type NotebookActorIdentity,
   type NotebookActorKind,
   type NotebookActorOperator,
@@ -32,6 +35,9 @@ export {
   type NotebookShellExecutionPolicy,
   type NotebookShellPackagePolicy,
   type NotebookShellRuntimeCapabilities,
+  type NotebookShellRuntimeTargetKind,
+  type NotebookShellRuntimeTargetProjection,
+  type NotebookShellRuntimeTargetStatus,
   type NotebookShellSharingPolicy,
   type ProjectNotebookShellCapabilitiesOptions,
 } from "./capabilities";
@@ -139,6 +145,7 @@ export {
   type NotebookPackageSummaryPanelProps,
 } from "./NotebookPackageSummaryPanel";
 export {
+  notebookWorkstationsSummary,
   NotebookWorkstationsPanel,
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";

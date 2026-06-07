@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { smokeJsonReportPath, writeSmokeJsonReport } from "./smoke-paths.mjs";
+
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimePeerScript = path.join(appDir, "scripts", "hosted-runtime-peer-smoke.mjs");
 const browserExecuteScript = path.join(appDir, "scripts", "hosted-browser-execute-smoke.mjs");
@@ -12,6 +14,7 @@ const source =
     .replace(/[-:.]/g, "")
     .slice(0, 15)}')`;
 const scopes = parseScopes(process.env.NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES);
+const reportPath = smokeJsonReportPath("hosted-runtime-browser-execute-smoke");
 
 if (isMainModule()) {
   main().catch((error) => {
@@ -26,22 +29,18 @@ async function main() {
     runs.push(await runScope(scope));
   }
 
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        source,
-        scopes,
-        checks: [
-          "runtime_peer_browser_execute_passed_for_requested_scopes",
-          "runtime_peers_stopped_after_browser_smokes",
-        ],
-        runs,
-      },
-      null,
-      2,
-    ),
-  );
+  const report = {
+    ok: true,
+    source,
+    scopes,
+    checks: [
+      "runtime_peer_browser_execute_passed_for_requested_scopes",
+      "runtime_peers_stopped_after_browser_smokes",
+    ],
+    runs,
+  };
+  await writeSmokeJsonReport(report, reportPath);
+  console.log(JSON.stringify(report, null, 2));
 }
 
 async function runScope(scope) {

@@ -1,8 +1,18 @@
-import { CircleAlert, CircleCheck, Cloud, Cpu, FolderOpen, Monitor } from "lucide-react";
+import {
+  CircleAlert,
+  CircleCheck,
+  Cloud,
+  Cpu,
+  FolderOpen,
+  MemoryStick,
+  Monitor,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type {
-  NotebookShellCapabilities,
-  NotebookShellRuntimeTargetProjection,
+import {
+  notebookShellRuntimeTargetSummary,
+  resolveNotebookShellRuntimeTarget,
+  type NotebookShellCapabilities,
+  type NotebookShellRuntimeTargetProjection,
 } from "./capabilities";
 import { cn } from "@/lib/utils";
 
@@ -15,11 +25,16 @@ export function NotebookWorkstationsPanel({
   capabilities,
   className,
 }: NotebookWorkstationsPanelProps) {
-  const target = capabilities.runtime.target ?? fallbackRuntimeTarget(capabilities);
+  const target = resolveNotebookShellRuntimeTarget(capabilities.runtime);
   const status = workstationStatus(capabilities, target);
   const source = workstationSource(capabilities.runtime.source);
-  const runtimeLabel = target.environmentLabel ?? runtimeResourceLabel(capabilities, target);
+  const defaultEnvironmentLabel =
+    target.defaultEnvironmentLabel ??
+    target.environmentLabel ??
+    runtimeResourceLabel(capabilities, target);
   const capabilityLabel = runtimeCapabilityLabel(capabilities);
+  const hasCpuCount = typeof target.cpuCount === "number" && target.cpuCount > 0;
+  const memoryLabel = formatMemoryBytes(target.memoryBytes);
 
   return (
     <div className={cn("space-y-3 text-sm", className)} data-testid="notebook-workstations-panel">
@@ -46,7 +61,7 @@ export function NotebookWorkstationsPanel({
             </div>
             <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="truncate">{target.providerLabel ?? source.label}</span>
-              <span className="truncate">{runtimeLabel}</span>
+              <span className="truncate">{defaultEnvironmentLabel}</span>
             </div>
             {status.detail ? (
               <p className="mt-2 text-xs leading-5 text-muted-foreground">{status.detail}</p>
@@ -64,8 +79,14 @@ export function NotebookWorkstationsPanel({
           label="Provider"
           value={target.providerLabel ?? source.label}
         />
-        <WorkstationFact icon={Cpu} label="Environment" value={runtimeLabel} />
-        {target.resourceLabel ? (
+        <WorkstationFact icon={Cpu} label="Default env" value={defaultEnvironmentLabel} />
+        {hasCpuCount ? (
+          <WorkstationFact icon={Cpu} label="CPUs" value={`${target.cpuCount}`} />
+        ) : null}
+        {memoryLabel ? (
+          <WorkstationFact icon={MemoryStick} label="RAM" value={memoryLabel} />
+        ) : null}
+        {!hasCpuCount && !memoryLabel && target.resourceLabel ? (
           <WorkstationFact icon={Cpu} label="Resources" value={target.resourceLabel} />
         ) : null}
         {target.workingDirectoryLabel ? (
@@ -87,6 +108,8 @@ export function NotebookWorkstationsPanel({
     </div>
   );
 }
+
+export const notebookWorkstationsSummary = notebookShellRuntimeTargetSummary;
 
 function WorkstationFact({
   icon: Icon,
@@ -122,7 +145,7 @@ function workstationStatus(
 } {
   if (capabilities.runtime.executionAvailable && capabilities.canExecute) {
     return {
-      title: target.kind === "local_daemon" ? target.label : `${target.label} ready`,
+      title: target.label,
       detail: null,
       badge: target.statusLabel ?? "Ready",
       icon: CircleCheck,
@@ -133,7 +156,7 @@ function workstationStatus(
   }
   if (capabilities.runtime.executionAvailable) {
     return {
-      title: `${target.label} available`,
+      title: target.label,
       detail: null,
       badge: target.statusLabel ?? "Limited",
       icon: Cpu,
@@ -144,7 +167,7 @@ function workstationStatus(
   }
   if (capabilities.runtime.connected) {
     return {
-      title: `${target.label} attached`,
+      title: target.label,
       detail: null,
       badge: target.statusLabel ?? "Attached",
       icon: Cpu,
@@ -198,44 +221,26 @@ function runtimeCapabilityLabel(capabilities: NotebookShellCapabilities): string
   return "Not runnable";
 }
 
-function fallbackRuntimeTarget(
-  capabilities: NotebookShellCapabilities,
-): NotebookShellRuntimeTargetProjection {
-  const source = workstationSource(capabilities.runtime.source);
-  if (capabilities.runtime.source === "local") {
-    return {
-      id: "local-daemon",
-      kind: "local_daemon",
-      status: capabilities.runtime.executionAvailable ? "ready" : "offline",
-      label: "This machine",
-      statusLabel: capabilities.runtime.executionAvailable ? "Ready" : "Offline",
-      providerLabel: source.label,
-      environmentLabel: capabilities.runtime.executionAvailable
-        ? "Notebook runtime"
-        : "Unavailable",
-    };
+function formatMemoryBytes(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
   }
-  if (capabilities.runtime.connected) {
-    return {
-      id: "runtime-peer",
-      kind: "runtime_peer",
-      status: capabilities.runtime.executionAvailable ? "ready" : "attached",
-      label: "Runtime peer",
-      statusLabel: capabilities.runtime.executionAvailable ? "Ready" : "Attached",
-      providerLabel: source.label,
-      environmentLabel: "Runtime peer",
-    };
+  const gib = value / 1024 ** 3;
+  if (gib >= 1) {
+    return `${formatNumber(gib)} GiB`;
   }
-  return {
-    id: capabilities.runtime.source === "cloud" ? "workstation:none" : "runtime:none",
-    kind: capabilities.runtime.source === "fixture" ? "fixture" : "unknown",
-    status: "offline",
-    label:
-      capabilities.runtime.source === "cloud" ? "No workstation attached" : "No runtime target",
-    statusLabel: "Offline",
-    providerLabel: source.label,
-    environmentLabel: "Not attached",
-  };
+  const mib = value / 1024 ** 2;
+  if (mib >= 1) {
+    return `${formatNumber(mib)} MiB`;
+  }
+  return `${Math.round(value / 1024)} KiB`;
+}
+
+function formatNumber(value: number): string {
+  if (Number.isInteger(value)) {
+    return `${value}`;
+  }
+  return value >= 10 ? value.toFixed(1) : value.toFixed(2);
 }
 
 function workstationSource(source: NotebookShellCapabilities["runtime"]["source"]): {

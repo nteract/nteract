@@ -102,6 +102,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(withoutRuntime.runtime.target?.id, "workstation:none");
   assert.equal(withoutRuntime.runtime.target?.label, "No workstation attached");
   assert.equal(withoutRuntime.runtime.target?.status, "offline");
+  assert.equal(withoutRuntime.runtime.target?.defaultEnvironmentLabel, "Not attached");
   assert.equal(withoutRuntime.canExecute, false);
 
   const withRuntime = cloudNotebookShellCapabilities({
@@ -116,6 +117,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(withRuntime.runtime.target?.id, "room-workstation");
   assert.equal(withRuntime.runtime.target?.label, "Room workstation");
   assert.equal(withRuntime.runtime.target?.status, "ready");
+  assert.equal(withRuntime.runtime.target?.defaultEnvironmentLabel, "Current Python");
   assert.equal(withRuntime.canExecute, true);
 
   // A live runtime is visible to viewers, but viewing is not execution authority.
