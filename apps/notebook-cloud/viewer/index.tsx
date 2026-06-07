@@ -817,6 +817,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         ) : dashboardModel ? (
           <CloudNotebookDashboard
             model={dashboardModel}
+            canRename={hasExplicitAuth}
             renameState={renameState}
             renameSavingId={renameSavingId}
             onOpenRename={openRenameForm}
@@ -839,6 +840,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
 function CloudNotebookDashboard({
   model,
+  canRename,
   renameState,
   renameSavingId,
   onOpenRename,
@@ -847,6 +849,7 @@ function CloudNotebookDashboard({
   onSaveRename,
 }: {
   model: CloudNotebookDashboardModel;
+  canRename: boolean;
   renameState: CloudNotebookRenameState | null;
   renameSavingId: string | null;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
@@ -908,6 +911,7 @@ function CloudNotebookDashboard({
               <li key={notebook.notebook_id}>
                 <CloudNotebookDashboardRow
                   notebook={notebook}
+                  canRename={canRename}
                   renameTitle={
                     renameState?.notebookId === notebook.notebook_id ? renameState.title : null
                   }
@@ -963,6 +967,7 @@ const cloudNotebookDashboardMetricIcons = {
 
 function CloudNotebookDashboardRow({
   notebook,
+  canRename,
   renameTitle,
   renameSaving,
   onOpenRename,
@@ -971,6 +976,7 @@ function CloudNotebookDashboardRow({
   onSaveRename,
 }: {
   notebook: CloudNotebookListItem;
+  canRename: boolean;
   renameTitle: string | null;
   renameSaving: boolean;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
@@ -1035,7 +1041,7 @@ function CloudNotebookDashboardRow({
         {formatNotebookUpdatedAt(notebook.updated_at)}
       </span>
       <span className="cloud-notebook-list-row-actions">
-        {canRenameCloudNotebook(notebook) ? (
+        {canRename && canRenameCloudNotebook(notebook) ? (
           <button
             type="button"
             className="cloud-notebook-list-icon-button"
