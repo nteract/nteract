@@ -564,6 +564,62 @@ describe("ProjectedMarkdownView", () => {
     expect(onTaskCheckedChange).toHaveBeenCalledWith(taskRun, true);
   });
 
+  it("frames all-task projected lists as lab protocols", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 48, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 24],
+              sourceSpanUtf16: [0, 24],
+              syntaxSpans: [],
+              text: "done waiting",
+            },
+          ],
+          runs: [
+            {
+              blockId: "list",
+              inlineId: "done",
+              listItemChecked: true,
+              listItemIndex: 0,
+              renderedText: "done",
+              renderedTextUtf16: [0, 4],
+              semantic: "list-item",
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+            },
+            {
+              blockId: "list",
+              inlineId: "waiting",
+              listItemChecked: false,
+              listItemIndex: 1,
+              renderedText: "waiting",
+              renderedTextUtf16: [0, 7],
+              semantic: "list-item",
+              sourceSpanByte: [11, 24],
+              sourceSpanUtf16: [11, 24],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("list")).toHaveClass("rounded-md", "border", "p-2");
+    expect(screen.getByRole("list")).not.toHaveClass("list-disc");
+    expect(screen.getByText("waiting").closest("li")).toHaveClass(
+      "grid",
+      "grid-cols-[auto_minmax(0,1fr)]",
+    );
+    expect(
+      document.querySelector('[data-slot="projected-markdown-task-checkbox"] span'),
+    ).toHaveClass("size-4");
+  });
+
   it("keeps list markers available for mixed task and regular lists", () => {
     render(
       <ProjectedMarkdownView

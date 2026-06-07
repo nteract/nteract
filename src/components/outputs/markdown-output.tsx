@@ -36,6 +36,10 @@ import {
   markdownStrongClassName,
   markdownSummaryClassName,
   markdownSummaryIndicatorClassName,
+  markdownTaskCheckboxClassName,
+  markdownTaskCheckboxGlyphClassName,
+  markdownTaskListClassName,
+  markdownTaskListItemClassName,
   markdownTableCellClassName,
   markdownTableClassName,
   markdownTableHeadClassName,
@@ -427,22 +431,31 @@ export function MarkdownOutput({
           },
 
           // Lists
-          ul({ children, ...props }) {
+          ul({ children, className, ...props }) {
+            const classNames = className?.split(/\s+/) ?? [];
+            const isTaskList = classNames.includes("contains-task-list");
             return (
               <ul
-                className={cn("my-3 ml-6 list-disc leading-relaxed", markdownListMarkerClassName)}
+                className={cn(
+                  isTaskList ? markdownTaskListClassName : "my-3 ml-6 list-disc leading-relaxed",
+                  !isTaskList && markdownListMarkerClassName,
+                  className,
+                )}
                 {...props}
               >
                 {children}
               </ul>
             );
           },
-          ol({ children, ...props }) {
+          ol({ children, className, ...props }) {
+            const classNames = className?.split(/\s+/) ?? [];
+            const isTaskList = classNames.includes("contains-task-list");
             return (
               <ol
                 className={cn(
-                  "my-3 ml-6 list-decimal leading-relaxed",
-                  markdownListMarkerClassName,
+                  isTaskList ? markdownTaskListClassName : "my-3 ml-6 list-decimal leading-relaxed",
+                  !isTaskList && markdownListMarkerClassName,
+                  className,
                 )}
                 {...props}
               >
@@ -450,11 +463,50 @@ export function MarkdownOutput({
               </ol>
             );
           },
-          li({ children, ...props }) {
+          li({ children, className, ...props }) {
+            const classNames = className?.split(/\s+/) ?? [];
+            const isTaskItem = classNames.includes("task-list-item");
             return (
-              <li className="my-1" {...props}>
+              <li
+                className={cn(isTaskItem ? markdownTaskListItemClassName : "my-1", className)}
+                {...props}
+              >
                 {children}
               </li>
+            );
+          },
+          input({ type, checked, className, ...props }) {
+            if (type !== "checkbox") {
+              return <input type={type} className={className} {...props} />;
+            }
+
+            const isChecked = Boolean(checked);
+            return (
+              <span
+                className={markdownTaskCheckboxClassName}
+                data-slot="markdown-task-checkbox"
+                data-state={isChecked ? "checked" : "unchecked"}
+              >
+                <input
+                  {...props}
+                  type="checkbox"
+                  checked={isChecked}
+                  readOnly
+                  disabled
+                  className={cn("peer sr-only", className)}
+                />
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    markdownTaskCheckboxGlyphClassName,
+                    isChecked
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-background",
+                  )}
+                >
+                  {isChecked ? <Check className="size-2.5 stroke-[3]" /> : null}
+                </span>
+              </span>
             );
           },
 

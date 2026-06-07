@@ -33,6 +33,11 @@ import {
   markdownListMarkerClassName,
   markdownParagraphClassName,
   markdownStrongClassName,
+  markdownTaskCheckboxClassName,
+  markdownTaskCheckboxGlyphClassName,
+  markdownTaskContentClassName,
+  markdownTaskListClassName,
+  markdownTaskListItemClassName,
   markdownTableCellClassName,
   markdownTableClassName,
   markdownTableHeadClassName,
@@ -318,10 +323,13 @@ function ProjectedList({
     <List
       data-source-active={activeBlock ? "true" : undefined}
       className={cn(
-        "my-3 ml-6 leading-relaxed",
-        ordered ? "list-decimal" : "list-disc",
-        markdownListMarkerClassName,
-        allItemsAreTasks && "ml-0 list-none",
+        allItemsAreTasks
+          ? markdownTaskListClassName
+          : cn(
+              "my-3 ml-6 leading-relaxed",
+              ordered ? "list-decimal" : "list-disc",
+              markdownListMarkerClassName,
+            ),
         activeBlock && sourceActiveBlockClass,
       )}
     >
@@ -330,6 +338,7 @@ function ProjectedList({
           key={item.key}
           item={item}
           activeInlineId={activeInlineId}
+          taskProtocol={allItemsAreTasks}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
         />
@@ -341,11 +350,13 @@ function ProjectedList({
 function ProjectedListItem({
   item,
   activeInlineId,
+  taskProtocol,
   onLinkClick,
   onTaskCheckedChange,
 }: {
   item: ProjectedListItem;
   activeInlineId?: string;
+  taskProtocol: boolean;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }) {
@@ -380,12 +391,20 @@ function ProjectedListItem({
         "group/task my-1",
         item.checked !== undefined && "list-none",
         item.checked !== undefined && item.children.length === 0
-          ? "flex min-w-0 items-start gap-2"
+          ? taskProtocol
+            ? markdownTaskListItemClassName
+            : "flex min-w-0 items-start gap-2"
           : null,
       )}
     >
       {item.checked !== undefined && item.children.length > 0 ? (
-        <div className="flex min-w-0 items-start gap-2">{content}</div>
+        <div
+          className={cn(
+            taskProtocol ? markdownTaskListItemClassName : "flex min-w-0 items-start gap-2",
+          )}
+        >
+          {content}
+        </div>
       ) : (
         content
       )}
@@ -505,10 +524,7 @@ function TaskCheckbox({
 
   return (
     <label
-      className={cn(
-        "relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center",
-        interactive && "cursor-pointer",
-      )}
+      className={cn(markdownTaskCheckboxClassName, interactive && "cursor-pointer")}
       data-slot="projected-markdown-task-checkbox"
       data-state={checked ? "checked" : "unchecked"}
     >
@@ -525,7 +541,7 @@ function TaskCheckbox({
       <span
         aria-hidden="true"
         className={cn(
-          "pointer-events-none grid size-3.5 place-items-center rounded-sm border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-ring/40 peer-focus-visible:ring-offset-1 peer-disabled:opacity-100",
+          markdownTaskCheckboxGlyphClassName,
           checked
             ? "border-primary bg-primary text-primary-foreground"
             : "border-border bg-background",
@@ -546,7 +562,7 @@ function ProjectedTaskContent({
   children: ReactNode;
 }) {
   return (
-    <span className={cn("min-w-0 leading-relaxed", checked === true && "text-muted-foreground")}>
+    <span className={cn(markdownTaskContentClassName, checked === true && "text-muted-foreground")}>
       {children}
     </span>
   );

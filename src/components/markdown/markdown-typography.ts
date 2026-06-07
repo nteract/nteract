@@ -51,6 +51,20 @@ export const markdownDetailsBodyClassName =
 
 export const markdownListMarkerClassName = "marker:text-primary/65 marker:font-semibold";
 
+export const markdownTaskListClassName =
+  "my-4 ml-0 list-none space-y-1 rounded-md border border-border/70 bg-muted/[0.12] p-2";
+
+export const markdownTaskListItemClassName =
+  "group/task grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-sm px-2 py-1.5 transition-colors hover:bg-muted/35";
+
+export const markdownTaskCheckboxClassName =
+  "relative mt-[0.18em] inline-grid size-5 shrink-0 place-items-center";
+
+export const markdownTaskCheckboxGlyphClassName =
+  "pointer-events-none grid size-4 place-items-center rounded-sm border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-ring/40 peer-focus-visible:ring-offset-1 peer-disabled:opacity-100";
+
+export const markdownTaskContentClassName = "min-w-0 leading-relaxed";
+
 export const markdownThematicBreakClassName = "my-7 border-0 border-t border-border/70";
 
 export const markdownTableWrapperClassName =

@@ -117,6 +117,24 @@ describe("MarkdownOutput heading anchors", () => {
     expect(screen.getByText("print")).toBeInTheDocument();
   });
 
+  it("frames GFM task lists as compact protocol blocks", () => {
+    render(<MarkdownOutput content={"- [x] Reproduce baseline\n- [ ] Compare candidate"} />);
+
+    expect(document.querySelector("ul.contains-task-list")).toHaveClass(
+      "rounded-md",
+      "border",
+      "p-2",
+    );
+    expect(screen.getByText("Compare candidate").closest("li")).toHaveClass(
+      "grid",
+      "grid-cols-[auto_minmax(0,1fr)]",
+      "task-list-item",
+    );
+    expect(document.querySelector('[data-slot="markdown-task-checkbox"] span')).toHaveClass(
+      "size-4",
+    );
+  });
+
   it("styles GFM footnotes as a compact document apparatus", () => {
     render(<MarkdownOutput content={"Claim with a note.[^1]\n\n[^1]: Detailed citation."} />);
 

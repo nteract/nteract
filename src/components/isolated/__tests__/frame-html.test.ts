@@ -156,6 +156,8 @@ describe("generateFrameHtml", () => {
       expect(html).toContain(
         ':is([data-slot="markdown-output"], [data-slot="html-output"]) summary::before',
       );
+      expect(html).toContain("ul.contains-task-list");
+      expect(html).toContain("li.task-list-item");
       expect(html).toContain(
         ':is([data-slot="markdown-output"], [data-slot="html-output"]) button',
       );

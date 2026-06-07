@@ -210,6 +210,39 @@
         margin: 0.25rem 0;
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) ul.contains-task-list,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) ol.contains-task-list {
+        margin: 1rem 0;
+        padding: 0.5rem;
+        border: 1px solid color-mix(in oklch, var(--border-color) 76%, transparent);
+        border-radius: 0.375rem;
+        background: color-mix(in oklch, var(--bg-secondary) 30%, transparent);
+        list-style: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) li.task-list-item {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 0.5rem;
+        align-items: start;
+        margin: 0.25rem 0;
+        padding: 0.375rem 0.5rem;
+        border-radius: 0.125rem;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) li.task-list-item:hover {
+        background: color-mix(in oklch, var(--bg-secondary) 62%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"])
+        li.task-list-item
+        > input[type="checkbox"] {
+        width: 1rem;
+        height: 1rem;
+        margin: 0.18em 0 0;
+        accent-color: var(--accent-color);
+      }
+
       :is([data-slot="markdown-output"], [data-slot="html-output"]) blockquote {
         margin: 1.25rem 0;
         padding: 0.75rem 1rem 0.75rem 1.25rem;

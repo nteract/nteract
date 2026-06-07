@@ -229,6 +229,7 @@ const markdownPlan: MarkdownProjectionPlan = {
       semantic: "list-item",
     }),
     run("checklist", "task-2", "Promote surprising failures into follow-up cells", {
+      listItemChecked: false,
       listItemIndex: 2,
       listItemPath: "2",
       semantic: "list-item",
