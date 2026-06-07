@@ -61,7 +61,7 @@ describe("NotebookWorkstationsPanel", () => {
 
     expect(screen.getByRole("heading", { name: "This machine" })).toBeVisible();
     expect(screen.getByText("Ready")).toBeVisible();
-    expect(screen.getByText("The local daemon is available for this notebook.")).toBeVisible();
+    expect(screen.queryByText("The local daemon is available for this notebook.")).toBeNull();
     expect(screen.getAllByText("Local daemon")).toHaveLength(2);
     expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
     expect(screen.getByText("Kyle")).toBeVisible();

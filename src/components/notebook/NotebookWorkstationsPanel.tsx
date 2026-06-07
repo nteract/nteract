@@ -113,7 +113,7 @@ function workstationStatus(
   target: NotebookShellRuntimeTargetProjection,
 ): {
   title: string;
-  detail: string;
+  detail: string | null;
   badge: string;
   icon: LucideIcon;
   iconClassName: string;
@@ -123,7 +123,7 @@ function workstationStatus(
   if (capabilities.runtime.executionAvailable && capabilities.canExecute) {
     return {
       title: target.kind === "local_daemon" ? target.label : `${target.label} ready`,
-      detail: target.detail ?? "Execution requests are enabled for this notebook.",
+      detail: null,
       badge: target.statusLabel ?? "Ready",
       icon: CircleCheck,
       iconClassName: "text-emerald-700 dark:text-emerald-300",
@@ -134,7 +134,7 @@ function workstationStatus(
   if (capabilities.runtime.executionAvailable) {
     return {
       title: `${target.label} available`,
-      detail: "A runtime is available, but this connection cannot request execution.",
+      detail: null,
       badge: target.statusLabel ?? "Limited",
       icon: Cpu,
       iconClassName: "text-sky-700 dark:text-sky-300",
@@ -145,7 +145,7 @@ function workstationStatus(
   if (capabilities.runtime.connected) {
     return {
       title: `${target.label} attached`,
-      detail: target.detail ?? "Runtime state is connected without executable cell controls.",
+      detail: null,
       badge: target.statusLabel ?? "Attached",
       icon: Cpu,
       iconClassName: "text-sky-700 dark:text-sky-300",
