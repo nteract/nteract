@@ -8,6 +8,7 @@
 
 /* Source paths for Tailwind to scan for isolated iframe class names */
 @source "../components/outputs/**/*.{ts,tsx}";
+@source "../components/markdown/**/*.{ts,tsx}";
 @source "../components/widgets/**/*.{ts,tsx}";
 @source "../components/ui/**/*.{ts,tsx}";
 @source "./**/*.{ts,tsx}";
@@ -66,6 +67,7 @@
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
   --radius: 0.625rem;
+  --markdown-link-underline: color-mix(in oklch, var(--primary) 48%, transparent);
 }
 
 /* Dark mode theme variables (matching main app) */
@@ -90,6 +92,7 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --markdown-link-underline: color-mix(in oklch, var(--primary) 56%, transparent);
 }
 
 /* Base styles */
@@ -133,7 +136,11 @@ img {
 /* Links */
 a {
   color: oklch(0.546 0.245 262.881);
-  text-decoration: none;
+  font-weight: 500;
+  text-decoration-line: underline;
+  text-decoration-color: var(--markdown-link-underline);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
 }
 
 .dark a,
@@ -142,7 +149,7 @@ a {
 }
 
 a:hover {
-  text-decoration: underline;
+  text-decoration-color: currentColor;
 }
 
 /* Error styling */

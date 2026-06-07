@@ -35,6 +35,7 @@
   --border: #d8cec3;
   --input: #d8cec3;
   --ring: #955f3b;
+  --output-document-font: KaTeX_Main, Georgia, "Times New Roman", serif;
 
   /* ── Gruvbox green (idle status, success) ── */
   --color-green-50: #f4f3e6;
@@ -173,6 +174,7 @@
   --border: rgba(255, 255, 255, 0.1);
   --input: rgba(255, 255, 255, 0.15);
   --ring: #d4896a;
+  --output-document-font: KaTeX_Main, Georgia, "Times New Roman", serif;
 
   /* ── Gruvbox green (dark) ── */
   --color-green-50: #2a2a0a;

@@ -37,6 +37,7 @@
         --text-secondary: #666666;
         --border-color: #e0e0e0;
         --accent-color: #3b82f6;
+        --link-underline-color: color-mix(in oklch, var(--accent-color) 55%, transparent);
         --error-color: #ef4444;
         --success-color: #22c55e;
         --color-background-primary: var(--bg-primary);
@@ -62,6 +63,7 @@
         --text-secondary: #a0a0a0;
         --border-color: #333333;
         --accent-color: #60a5fa;
+        --link-underline-color: color-mix(in oklch, var(--accent-color) 60%, transparent);
       }
 
       [data-color-theme="cream"] {
@@ -237,11 +239,15 @@
       /* Links */
       a {
         color: var(--accent-color);
-        text-decoration: none;
+        font-weight: 500;
+        text-decoration-line: underline;
+        text-decoration-color: var(--link-underline-color);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 0.22em;
       }
 
       a:hover {
-        text-decoration: underline;
+        text-decoration-color: currentColor;
       }
 
       /* Error styling */

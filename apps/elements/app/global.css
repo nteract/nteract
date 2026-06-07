@@ -10,6 +10,7 @@
 @source "../../../src/components/cell/**/*.{ts,tsx}";
 @source "../../../src/components/editor/**/*.{ts,tsx}";
 @source "../../../src/components/isolated/**/*.{ts,tsx}";
+@source "../../../src/components/markdown/**/*.{ts,tsx}";
 @source "../../../src/components/notebook-rail/**/*.{ts,tsx}";
 @source "../../../src/components/notebook/**/*.{ts,tsx}";
 @source "../../../src/components/outputs/**/*.{ts,tsx}";
