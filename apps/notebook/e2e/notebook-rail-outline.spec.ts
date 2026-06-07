@@ -34,7 +34,11 @@ test.describe("notebook rail outline", () => {
     await expect(page.getByTestId("notebook-rail")).toHaveAttribute("data-collapsed", "true");
     await page.getByLabel("Outline").click();
 
-    const validateHeading = page.getByRole("link", { name: "Validate ranges" });
+    const outlinePanel = page.getByTestId("notebook-outline-panel");
+    const validateHeading = outlinePanel.getByRole("link", {
+      name: "Validate ranges",
+      exact: true,
+    });
     await expect(validateHeading).toBeVisible();
     await expect(page.locator('li[data-outline-level="2"] li[data-outline-level="3"]')).toHaveCount(
       1,
@@ -75,7 +79,10 @@ test.describe("notebook rail outline", () => {
     const beforeClickY = (await childHeading.boundingBox())?.y ?? Infinity;
 
     await page.getByLabel("Outline").click();
-    await page.getByRole("link", { name: "Deep child" }).click();
+    await page
+      .getByTestId("notebook-outline-panel")
+      .getByRole("link", { name: "Deep child", exact: true })
+      .click();
 
     await expect
       .poll(async () => page.evaluate(() => window.location.hash))
