@@ -8,6 +8,7 @@ import {
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
 export type NotebookWorkstationPanelTone = "ready" | "available" | "offline";
+export type NotebookWorkstationFactTone = "neutral" | "positive" | "attention";
 
 export type NotebookWorkstationFactKind =
   | "provider"
@@ -25,6 +26,7 @@ export interface NotebookWorkstationFactProjection {
   kind: NotebookWorkstationFactKind;
   label: string;
   subtle: boolean;
+  tone: NotebookWorkstationFactTone;
   value: string;
 }
 
@@ -80,7 +82,7 @@ export function projectNotebookWorkstationPanel(
     target.defaultEnvironmentLabel ??
     target.environmentLabel ??
     runtimeResourceLabel(capabilities, target.kind);
-  const executionLabel = runtimeCapabilityLabel(capabilities);
+  const execution = runtimeCapability(capabilities);
   const hasCpuCount = typeof target.cpuCount === "number" && target.cpuCount > 0;
   const memoryLabel = formatMemoryBytes(target.memoryBytes);
   const facts: NotebookWorkstationFactProjection[] = [
@@ -106,7 +108,7 @@ export function projectNotebookWorkstationPanel(
   if (target.workingDirectoryLabel) {
     facts.push(workstationFact("working_directory", "Working dir", target.workingDirectoryLabel));
   }
-  facts.push(workstationFact("execution_state", "State", executionLabel));
+  facts.push(workstationFact("execution_state", "State", execution.label, false, execution.tone));
   if (target.kind === "local_daemon") {
     facts.push(workstationFact("remote_hint", "Remote", "Coming soon", true));
   }
@@ -199,17 +201,20 @@ function runtimeResourceLabel(
   return "Not attached";
 }
 
-function runtimeCapabilityLabel(capabilities: NotebookShellCapabilities): string {
+function runtimeCapability(capabilities: NotebookShellCapabilities): {
+  label: string;
+  tone: NotebookWorkstationFactTone;
+} {
   if (capabilities.runtime.executionAvailable && capabilities.canExecute) {
-    return "Can run";
+    return { label: "Can run", tone: "positive" };
   }
   if (capabilities.runtime.executionAvailable) {
-    return "View only";
+    return { label: "View only", tone: "attention" };
   }
   if (capabilities.runtime.canWriteRuntimeState) {
-    return "Runtime state";
+    return { label: "Runtime state", tone: "positive" };
   }
-  return "Not runnable";
+  return { label: "Not runnable", tone: "attention" };
 }
 
 function formatMemoryBytes(value: number | null | undefined): string | null {
@@ -252,6 +257,7 @@ function workstationFact(
   label: string,
   value: string,
   subtle = false,
+  tone: NotebookWorkstationFactTone = "neutral",
 ): NotebookWorkstationFactProjection {
-  return Object.freeze({ kind, label, subtle, value });
+  return Object.freeze({ kind, label, subtle, tone, value });
 }

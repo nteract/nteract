@@ -159,7 +159,7 @@ function workstationFactIcon(
     case "runtime_peers":
       return Cloud;
     case "execution_state":
-      return fact.value === "Can run" || fact.value === "Runtime state" ? CircleCheck : CircleAlert;
+      return fact.tone === "positive" ? CircleCheck : CircleAlert;
     case "remote_hint":
       return Cloud;
     default:

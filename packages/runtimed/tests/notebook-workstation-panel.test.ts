@@ -109,6 +109,7 @@ describe("projectNotebookWorkstationPanel", () => {
       ["execution_state", "State", "Can run"],
       ["remote_hint", "Remote", "Coming soon"],
     ]);
+    expect(first.facts.find((fact) => fact.kind === "execution_state")?.tone).toBe("positive");
   });
 
   it("projects missing cloud workstations as offline without identity facts", () => {
@@ -150,6 +151,9 @@ describe("projectNotebookWorkstationPanel", () => {
       "Not attached",
       "Not runnable",
     ]);
+    expect(projection.facts.find((fact) => fact.kind === "execution_state")?.tone).toBe(
+      "attention",
+    );
     expect(projection.facts.map((fact) => fact.value)).not.toContain("Kyle");
   });
 
