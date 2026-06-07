@@ -3,7 +3,6 @@
 import {
   ArrowRight,
   BookOpen,
-  CheckCircle2,
   Clock3,
   Cpu,
   Database,
@@ -14,19 +13,15 @@ import {
   Link2,
   LockKeyhole,
   MoreHorizontal,
-  Radio,
   RefreshCw,
   Search,
   Share2,
   UserRound,
-  UsersRound,
-  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type NotebookAccess = "owner" | "editor" | "viewer";
-type NotebookComputeState = "ready" | "available" | "offline";
 
 interface DashboardNotebook {
   id: string;
@@ -34,10 +29,8 @@ interface DashboardNotebook {
   access: NotebookAccess;
   updatedAt: string;
   summary: string;
-  latestRevision: "live" | "published" | "draft";
-  compute: NotebookComputeState;
+  latestRevision: "published" | "draft";
   public: boolean;
-  people: number;
 }
 
 interface DashboardMetric {
@@ -54,10 +47,8 @@ const notebooks = [
     access: "owner",
     updatedAt: "18 minutes ago",
     summary: "Embeddings, clustering, Plotly charts, and narrative markdown.",
-    latestRevision: "live",
-    compute: "ready",
+    latestRevision: "draft",
     public: true,
-    people: 2,
   },
   {
     id: "01KTHAZR",
@@ -66,9 +57,7 @@ const notebooks = [
     updatedAt: "42 minutes ago",
     summary: "Remote workstation lifecycle with queued execution probes.",
     latestRevision: "draft",
-    compute: "available",
     public: false,
-    people: 1,
   },
   {
     id: "01KTEYJH",
@@ -77,9 +66,7 @@ const notebooks = [
     updatedAt: "Yesterday",
     summary: "Shared cloud room, Python kernel, and browser editor checks.",
     latestRevision: "published",
-    compute: "offline",
     public: false,
-    people: 3,
   },
   {
     id: "01KSQKEP",
@@ -88,9 +75,7 @@ const notebooks = [
     updatedAt: "May 31",
     summary: "Long document outline, tables, callouts, and heading anchors.",
     latestRevision: "published",
-    compute: "offline",
     public: true,
-    people: 0,
   },
 ] satisfies readonly DashboardNotebook[];
 
@@ -104,8 +89,8 @@ function projectDashboard(source: readonly DashboardNotebook[]) {
   const editableCount = source.filter(
     (notebook) => notebook.access === "owner" || notebook.access === "editor",
   ).length;
+  const ownedCount = source.filter((notebook) => notebook.access === "owner").length;
   const publicCount = source.filter((notebook) => notebook.public).length;
-  const runnableCount = source.filter((notebook) => notebook.compute === "ready").length;
 
   return {
     continueNotebook: source[0]!,
@@ -118,10 +103,10 @@ function projectDashboard(source: readonly DashboardNotebook[]) {
         icon: BookOpen,
       },
       {
-        label: "Runnable now",
-        value: String(runnableCount),
-        detail: "selected workstation ready",
-        icon: Zap,
+        label: "Owned",
+        value: String(ownedCount),
+        detail: "can manage access",
+        icon: UserRound,
       },
       {
         label: "Public links",
@@ -174,7 +159,8 @@ function CloudDashboardFrame() {
             Good morning, Kyle
           </h2>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-fd-muted-foreground">
-            Continue recent work, open shared notebooks, and attach compute when the room is ready.
+            Continue recent work, open shared notebooks, and choose compute when a notebook needs
+            it.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -215,8 +201,7 @@ function CloudDashboardFrame() {
             </div>
             <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-fd-muted-foreground">
               <InlineFact icon={Clock3} label={continued.updatedAt} />
-              <InlineFact icon={Radio} label={computeLabel(continued.compute)} />
-              <InlineFact icon={UsersRound} label={`${continued.people} active`} />
+              <InlineFact icon={UserRound} label={continued.access} />
               <InlineFact
                 icon={continued.public ? Globe2 : LockKeyhole}
                 label={shareLabel(continued)}
@@ -261,7 +246,8 @@ function CloudDashboardFrame() {
                   Signed in
                 </h3>
                 <p className="mt-1 text-sm leading-5 text-fd-muted-foreground">
-                  Owner and editor notebooks can create rooms, manage access, and attach compute.
+                  Owner and editor notebooks can manage access and request compute from a
+                  workstation.
                 </p>
               </div>
             </div>
@@ -283,8 +269,7 @@ function CloudDashboardFrame() {
               <WorkstationFact icon={Database} label="Current Python" />
             </div>
             <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-              <CheckCircle2 className="size-3.5" aria-hidden="true" />
-              Default compute target
+              Default workstation candidate
             </div>
           </section>
         </aside>
@@ -355,10 +340,6 @@ function NotebookDashboardRow({ notebook }: { notebook: DashboardNotebook }) {
           </span>
           <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
             <NotebookScope access={notebook.access} />
-            <span className="inline-flex items-center gap-1.5 text-xs text-fd-muted-foreground">
-              <Radio className="size-3.5" aria-hidden="true" />
-              {computeLabel(notebook.compute)}
-            </span>
             <span className="inline-flex items-center gap-1.5 text-xs text-fd-muted-foreground">
               {notebook.public ? (
                 <Globe2 className="size-3.5" aria-hidden="true" />
@@ -469,20 +450,9 @@ function DashboardPrinciples() {
   );
 }
 
-function computeLabel(state: NotebookComputeState): string {
-  switch (state) {
-    case "ready":
-      return "ready";
-    case "available":
-      return "available";
-    case "offline":
-      return "offline";
-  }
-}
-
 function shareLabel(notebook: DashboardNotebook): string {
   if (notebook.public) {
-    return notebook.latestRevision === "live" ? "public latest" : "public revision";
+    return notebook.latestRevision === "published" ? "public revision" : "public draft";
   }
   return notebook.latestRevision === "published" ? "private revision" : "private draft";
 }

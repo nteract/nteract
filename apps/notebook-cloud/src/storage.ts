@@ -552,6 +552,7 @@ export async function createNotebookWithOwnerAcl(
   env: Env,
   notebookId: string,
   identity: AuthenticatedConnection,
+  options: { title?: string | null } = {},
 ): Promise<CreateNotebookWithOwnerAclResult> {
   if (!env.DB) {
     return { ownerPrincipal: identity.principal, created: true };
@@ -563,10 +564,10 @@ export async function createNotebookWithOwnerAcl(
     (await getCanonicalPrincipalForTransport(env, identity.principal)) ?? identity.principal;
   const [notebookInsertResult] = await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO notebooks (id, owner_principal, created_at, updated_at)
-         VALUES (?, ?, ?, ?)
+      `INSERT INTO notebooks (id, owner_principal, title, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(id) DO NOTHING`,
-    ).bind(notebookId, ownerSubject, now, now),
+    ).bind(notebookId, ownerSubject, options.title ?? null, now, now),
     notebookOwnerAclInsert(env, {
       notebookId,
       subject: ownerSubject,

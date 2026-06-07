@@ -643,10 +643,12 @@ describe("Worker artifact routes", () => {
       notebook_id: string;
       source_notebook_id: string;
       source_notebook_name: string;
+      title: string;
       vanity_name: string;
       viewer_url: string;
     };
     assert.match(body.notebook_id, /^[0-9A-HJKMNP-TV-Z]{26}$/);
+    assert.equal(body.title, "Markdown Harness");
     assert.equal(body.vanity_name, "markdown-harness");
     assert.equal(body.source_notebook_id, "332dd3e3-b1d5-4d16-8ad6-16919b3157d1");
     assert.equal(body.source_notebook_name, "Markdown Harness");
@@ -661,6 +663,7 @@ describe("Worker artifact routes", () => {
     });
     assert.ok(accountPrincipal);
     assert.equal(env.DB.notebooks.get(body.notebook_id)?.owner_principal, accountPrincipal);
+    assert.equal(env.DB.notebooks.get(body.notebook_id)?.title, "Markdown Harness");
     assert.equal(
       env.DB.acl.some(
         (row) =>
@@ -670,6 +673,37 @@ describe("Worker artifact routes", () => {
       ),
       true,
     );
+  });
+
+  it("uses a notebook title as the initial vanity URL when creating from the cloud home", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ title: "Exploration Notes" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 201);
+    const body = (await response.json()) as {
+      notebook_id: string;
+      title: string;
+      vanity_name: string | null;
+      viewer_url: string;
+    };
+    assert.equal(body.title, "Exploration Notes");
+    assert.equal(body.vanity_name, null);
+    assert.equal(env.DB.notebooks.get(body.notebook_id)?.title, "Exploration Notes");
+    assert.equal(body.viewer_url, `http://localhost/n/${body.notebook_id}/Exploration%20Notes`);
   });
 
   it("lists notebooks visible to the authenticated principal", async () => {
@@ -3624,14 +3658,17 @@ class FakeD1Statement implements D1PreparedStatement {
       }
       return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebooks")) {
-      const [id, ownerPrincipal, createdAtOrUpdatedAt, maybeUpdatedAt] = this.values as [
-        string,
-        string,
-        string,
-        string | undefined,
-      ];
-      const createdAt = maybeUpdatedAt ? createdAtOrUpdatedAt : undefined;
-      const updatedAt = maybeUpdatedAt ?? createdAtOrUpdatedAt;
+      const [id, ownerPrincipal, maybeTitleOrCreatedAt, createdAtOrUpdatedAt, maybeUpdatedAt] = this
+        .values as [string, string, string | null, string | undefined, string | undefined];
+      const hasTitleColumn = this.query.includes(" title,");
+      const title = hasTitleColumn ? maybeTitleOrCreatedAt : null;
+      const createdAtSource = hasTitleColumn ? createdAtOrUpdatedAt : maybeTitleOrCreatedAt;
+      const updatedAtSource = hasTitleColumn ? maybeUpdatedAt : createdAtOrUpdatedAt;
+      const createdAt = updatedAtSource ? createdAtSource : undefined;
+      const updatedAt = updatedAtSource ?? createdAtSource;
+      if (!updatedAt) {
+        throw new Error("fake notebook insert did not receive an updated_at value");
+      }
       const existing = this.db.notebooks.get(id);
       if (existing && this.query.includes("DO NOTHING")) {
         return okResult(undefined, { changes: 0 });
@@ -3639,7 +3676,7 @@ class FakeD1Statement implements D1PreparedStatement {
       this.db.notebooks.set(id, {
         id,
         owner_principal: existing?.owner_principal ?? ownerPrincipal,
-        title: existing?.title ?? null,
+        title: existing?.title ?? title,
         created_at: existing?.created_at ?? createdAt ?? updatedAt,
         updated_at: updatedAt,
         latest_revision_id: existing?.latest_revision_id ?? null,

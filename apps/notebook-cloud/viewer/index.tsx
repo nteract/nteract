@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type FormEvent,
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
@@ -163,6 +164,7 @@ interface CloudNotebookListResponse {
 
 interface CloudNotebookCreateResponse {
   ok: boolean;
+  title?: string | null;
   viewer_url?: string;
 }
 
@@ -430,6 +432,8 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [createState, setCreateState] = useState<"idle" | "starting">("idle");
   const [createError, setCreateError] = useState<string | null>(null);
+  const [createFormOpen, setCreateFormOpen] = useState(false);
+  const [createTitle, setCreateTitle] = useState(() => defaultCloudNotebookTitle());
   const signedIn = authState.mode === "dev" || authState.mode === "oidc";
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
@@ -482,10 +486,29 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     setRefreshIndex((value) => value + 1);
   };
 
-  const createNotebook = async () => {
+  const openCreateForm = () => {
+    if (!signedIn) {
+      return;
+    }
+    setCreateError(null);
+    setCreateTitle(defaultCloudNotebookTitle());
+    setCreateFormOpen(true);
+  };
+
+  const closeCreateForm = () => {
+    if (createState === "starting") {
+      return;
+    }
+    setCreateError(null);
+    setCreateFormOpen(false);
+  };
+
+  const createNotebook = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     if (!signedIn || createState === "starting") {
       return;
     }
+    const title = createTitle.trim() || defaultCloudNotebookTitle();
     try {
       setCreateError(null);
       setCreateState("starting");
@@ -497,7 +520,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
             Accept: "application/json",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ title }),
         },
         authState,
       );
@@ -522,7 +545,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const headerDetail =
     authState.mode === "oidc" || authState.mode === "dev"
-      ? (authState.user ?? "Signed in")
+      ? "Signed in"
       : authState.mode === "oidc_expired"
         ? "Session expired"
         : "Signed out";
@@ -549,7 +572,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           <button
             type="button"
             disabled={!signedIn || createState === "starting"}
-            onClick={createNotebook}
+            onClick={openCreateForm}
           >
             {createState === "starting" ? (
               <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
@@ -583,6 +606,30 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
           {createError}
         </div>
+      ) : null}
+      {createFormOpen ? (
+        <form className="cloud-new-notebook-form" onSubmit={createNotebook}>
+          <label htmlFor="cloud-new-notebook-title">Notebook title</label>
+          <input
+            id="cloud-new-notebook-title"
+            type="text"
+            value={createTitle}
+            maxLength={160}
+            disabled={createState === "starting"}
+            onChange={(event) => setCreateTitle(event.currentTarget.value)}
+          />
+          <button type="submit" disabled={createState === "starting"}>
+            {createState === "starting" ? (
+              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+            ) : (
+              <FilePlus2 aria-hidden="true" />
+            )}
+            Create
+          </button>
+          <button type="button" disabled={createState === "starting"} onClick={closeCreateForm}>
+            Cancel
+          </button>
+        </form>
       ) : null}
 
       <section className="cloud-notebook-list-content" aria-label="Notebook list">
@@ -647,7 +694,7 @@ function CloudNotebookDashboard({ model }: { model: CloudNotebookDashboardModel 
                 ) : (
                   <Radio aria-hidden="true" />
                 )}
-                {continued.latest_revision_id ? "published revision" : "live room"}
+                {continued.latest_revision_id ? "published revision" : "not published"}
               </span>
             </div>
           </div>
@@ -720,23 +767,21 @@ const cloudNotebookDashboardMetricIcons = {
 function CloudNotebookDashboardRow({ notebook }: { notebook: CloudNotebookListItem }) {
   return (
     <a className="cloud-notebook-list-row" href={notebook.viewer_url}>
-      <span className="cloud-notebook-list-icon" aria-hidden="true">
-        <BookOpen />
-      </span>
       <span className="cloud-notebook-list-main">
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
         <span className="cloud-notebook-list-id">{cloudNotebookShortId(notebook.notebook_id)}</span>
         <span className="cloud-notebook-list-row-facts">
-          <span className="cloud-notebook-list-scope" data-scope={notebook.scope}>
+          <span>
+            <UserRound aria-hidden="true" />
             {formatNotebookScope(notebook.scope)}
           </span>
-          <span>
+          <span data-state={notebook.latest_revision_id ? "published" : "unpublished"}>
             {notebook.latest_revision_id ? (
               <Share2 aria-hidden="true" />
             ) : (
               <Radio aria-hidden="true" />
             )}
-            {notebook.latest_revision_id ? "published revision" : "live room"}
+            {notebook.latest_revision_id ? "published revision" : "not published"}
           </span>
         </span>
       </span>
@@ -755,6 +800,19 @@ function cloudNotebookListEndpoint(): string {
 
 function cloudNotebookCollectionEndpoint(): string {
   return new URL("api/n", `${window.location.origin}/`).href;
+}
+
+function defaultCloudNotebookTitle(now = new Date()): string {
+  const date = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(now);
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(now);
+  return `Notebook ${date} ${time}`;
 }
 
 function isCloudNotebookListResponse(value: unknown): value is CloudNotebookListResponse {

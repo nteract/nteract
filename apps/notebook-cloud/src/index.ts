@@ -508,6 +508,13 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
   if (vanityName instanceof Response) {
     return vanityName;
   }
+  const title = optionalPayloadString(payload, ["title"], {
+    field: "title",
+    maxLength: 160,
+  });
+  if (title instanceof Response) {
+    return title;
+  }
   const sourceNotebookId = optionalPayloadString(
     payload,
     ["source_notebook_id", "sourceNotebookId"],
@@ -524,12 +531,15 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
   if (sourceNotebookName instanceof Response) {
     return sourceNotebookName;
   }
+  const notebookTitle = title ?? sourceNotebookName;
 
   const notebookId = await createUniqueNotebookId(env);
   if (!notebookId) {
     return json({ error: "could not allocate notebook id" }, 500);
   }
-  const notebookCreation = await createNotebookWithOwnerAcl(env, notebookId, identity);
+  const notebookCreation = await createNotebookWithOwnerAcl(env, notebookId, identity, {
+    title: notebookTitle,
+  });
   if (!notebookCreation.created) {
     return json({ error: "could not allocate notebook id" }, 500);
   }
@@ -543,12 +553,13 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     counter_delta: 1,
   });
 
-  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName);
+  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle);
   const apiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   return json(
     {
       ok: true,
       notebook_id: notebookId,
+      title: notebookTitle,
       vanity_name: vanityName,
       viewer_url: viewerUrl,
       source_notebook_id: sourceNotebookId,
