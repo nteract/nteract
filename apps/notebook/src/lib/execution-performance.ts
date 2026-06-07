@@ -35,6 +35,9 @@ interface ExecutionPerformanceWindow extends Window {
 }
 
 const STORAGE_KEY = "nteract:execution-performance";
+const MAX_MARKS = 10_000;
+const MAX_TRACES = 50;
+const MAX_MARKS_PER_TRACE = 2_000;
 
 let sequence = 0;
 let marks: ExecutionPerformanceMark[] = [];
@@ -42,6 +45,7 @@ const traces = new Map<string, ExecutionPerformanceTrace>();
 const activeTraceByCellId = new Map<string, string>();
 const traceByExecutionId = new Map<string, string>();
 let latestTraceId: string | null = null;
+let enabledCache: boolean | null = null;
 
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -74,11 +78,13 @@ function setLocalStorageEnabled(win: ExecutionPerformanceWindow, enabled: boolea
 function isEnabled(): boolean {
   const win = getWindow();
   if (!win) return false;
-  return (
-    win.__NTERACT_EXECUTION_PERF_ENABLED === true ||
-    localStorageEnabled(win) ||
-    import.meta.env.VITE_E2E === "1"
-  );
+  if (win.__NTERACT_EXECUTION_PERF_ENABLED === true) {
+    enabledCache = true;
+    return true;
+  }
+  if (enabledCache !== null) return enabledCache;
+  enabledCache = localStorageEnabled(win);
+  return enabledCache;
 }
 
 function cloneMark(mark: ExecutionPerformanceMark): ExecutionPerformanceMark {
@@ -146,10 +152,42 @@ function appendMark(
 
   if (traceId) {
     const trace = traces.get(traceId);
-    if (trace) trace.marks.push(mark);
+    if (trace) {
+      trace.marks.push(mark);
+      pruneTraceMarks(trace);
+    }
   }
 
+  pruneGlobalMarks();
   return mark;
+}
+
+function pruneGlobalMarks(): void {
+  if (marks.length <= MAX_MARKS) return;
+  marks.splice(0, marks.length - MAX_MARKS);
+}
+
+function pruneTraceMarks(trace: ExecutionPerformanceTrace): void {
+  if (trace.marks.length <= MAX_MARKS_PER_TRACE) return;
+  trace.marks.splice(0, trace.marks.length - MAX_MARKS_PER_TRACE);
+}
+
+function pruneTraces(): void {
+  while (traces.size > MAX_TRACES) {
+    const oldestTraceId = traces.keys().next().value;
+    if (!oldestTraceId) return;
+    const oldestTrace = traces.get(oldestTraceId);
+    traces.delete(oldestTraceId);
+    if (oldestTrace) {
+      if (activeTraceByCellId.get(oldestTrace.cellId) === oldestTraceId) {
+        activeTraceByCellId.delete(oldestTrace.cellId);
+      }
+      for (const [executionId, traceId] of traceByExecutionId) {
+        if (traceId === oldestTraceId) traceByExecutionId.delete(executionId);
+      }
+    }
+    if (latestTraceId === oldestTraceId) latestTraceId = null;
+  }
 }
 
 export function installExecutionPerformanceApi(): void {
@@ -159,10 +197,12 @@ export function installExecutionPerformanceApi(): void {
   win.__nteractExecutionPerf = {
     enable() {
       win.__NTERACT_EXECUTION_PERF_ENABLED = true;
+      enabledCache = true;
       setLocalStorageEnabled(win, true);
     },
     disable() {
       win.__NTERACT_EXECUTION_PERF_ENABLED = false;
+      enabledCache = false;
       setLocalStorageEnabled(win, false);
     },
     reset() {
@@ -196,6 +236,7 @@ export function startExecutionPerformanceTrace(
   });
   activeTraceByCellId.set(cellId, traceId);
   latestTraceId = traceId;
+  pruneTraces();
   appendMark("app.execute.invoke", { ...detail, cellId, traceId });
   return traceId;
 }
