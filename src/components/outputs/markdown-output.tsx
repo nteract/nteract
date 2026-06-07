@@ -1,7 +1,6 @@
-import { Check, Copy } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { Check } from "lucide-react";
+import { type ReactNode } from "react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
-import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import type { MarkdownHeadingAnchor } from "./markdown-heading-anchors";
 import type { Options as RehypeKatexOptions } from "rehype-katex";
 import rehypeKatex from "rehype-katex";
@@ -11,13 +10,9 @@ import remarkMath from "remark-math";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
+import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock";
 import {
   markdownBlockquoteClassName,
-  markdownCodeBlockCopyButtonClassName,
-  markdownCodeBlockLabelClassName,
-  markdownCodeBlockPreStyle,
-  markdownCodeBlockShellClassName,
-  markdownCodeBlockToolbarClassName,
   markdownDeleteClassName,
   markdownDetailsClassName,
   markdownDocumentClassName,
@@ -96,60 +91,18 @@ interface CodeBlockProps {
 }
 
 function CodeBlock({ children, language = "", enableCopy = true, isDark = false }: CodeBlockProps) {
-  const [copied, setCopied] = useState(false);
   const rawTheme = useColorTheme();
   const colorTheme = (rawTheme === "cream" ? "cream" : "classic") as "classic" | "cream";
-  const languageLabel = codeBlockLanguageLabel(language);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(children);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy code:", err);
-    }
-  };
 
   return (
-    <div
-      data-slot="markdown-code-block"
-      className={markdownCodeBlockShellClassName}
-      data-code-language={languageLabel === "code" ? undefined : languageLabel}
-    >
-      <div className={markdownCodeBlockToolbarClassName}>
-        <span
-          className={markdownCodeBlockLabelClassName}
-          title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
-        >
-          {languageLabel}
-        </span>
-        {enableCopy && (
-          <button
-            onClick={handleCopy}
-            className={markdownCodeBlockCopyButtonClassName}
-            title={copied ? "Copied!" : "Copy code"}
-            type="button"
-          >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-          </button>
-        )}
-      </div>
-      <StaticCodeBlock
-        code={children}
-        language={language}
-        isDark={isDark}
-        colorTheme={colorTheme}
-        style={markdownCodeBlockPreStyle}
-      />
-    </div>
+    <MarkdownCodeBlock
+      code={children}
+      colorTheme={colorTheme}
+      enableCopy={enableCopy}
+      isDark={isDark}
+      language={language}
+    />
   );
-}
-
-function codeBlockLanguageLabel(language: string | undefined): string {
-  const trimmed = language?.trim();
-  if (!trimmed) return "code";
-  return trimmed;
 }
 
 function textFromReactNode(node: ReactNode): string {
