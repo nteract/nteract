@@ -490,6 +490,11 @@ async fn main() -> anyhow::Result<()> {
             let result = match python_path {
                 // Launch-on-attach: allocate and *start* a current_python runtime.
                 Some(python_path) => {
+                    let launch_working_dir =
+                        runtimed::workstation::current_python_launch_working_dir(
+                            notebook_path.as_deref(),
+                            resolved_working_dir.as_deref(),
+                        );
                     let target = runtimed::workstation::RoomTarget {
                         cloud_url: config.cloud_url.clone(),
                         notebook_id: config.notebook_id.clone(),
@@ -497,7 +502,7 @@ async fn main() -> anyhow::Result<()> {
                         operator,
                         workstation: Some(
                             runtimed::workstation::current_python_workstation_metadata(
-                                resolved_working_dir.as_deref(),
+                                launch_working_dir.as_deref(),
                             ),
                         ),
                     };
@@ -506,7 +511,7 @@ async fn main() -> anyhow::Result<()> {
                         config.auth,
                         python_path,
                         notebook_path,
-                        resolved_working_dir,
+                        launch_working_dir,
                         std::collections::HashMap::new(),
                         blob_root,
                     )

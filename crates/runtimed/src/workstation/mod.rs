@@ -24,8 +24,8 @@ pub mod environments;
 pub mod launch_on_attach;
 
 pub use allocate::{
-    allocate_current_python_runtime, current_python_workstation_metadata,
-    plan_current_python_allocation, Allocation, RoomTarget,
+    allocate_current_python_runtime, current_python_launch_working_dir,
+    current_python_workstation_metadata, plan_current_python_allocation, Allocation, RoomTarget,
 };
 pub use cloud_agent_cli::{build_cloud_config, CloudAgentArgs, CloudAuthKind};
 pub use environments::{

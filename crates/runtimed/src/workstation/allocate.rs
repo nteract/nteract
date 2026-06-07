@@ -138,6 +138,24 @@ pub fn current_python_workstation_metadata(working_dir: Option<&Path>) -> CloudW
     }
 }
 
+/// Resolve the working directory a current-Python launch will present to the
+/// room. Saved notebooks launch relative to their file directory, while
+/// notebook-id-only rooms use the spawner/process cwd.
+pub fn current_python_launch_working_dir(
+    notebook_path: Option<&str>,
+    fallback_working_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(notebook_path) = notebook_path.map(PathBuf::from) {
+        if notebook_path.is_dir() {
+            return Some(notebook_path);
+        }
+        if let Some(parent) = notebook_path.parent() {
+            return Some(parent.to_path_buf());
+        }
+    }
+    fallback_working_dir.map(Path::to_path_buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +284,21 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.environment_policy.as_deref()),
             Some("current_python")
+        );
+    }
+
+    #[test]
+    fn derives_current_python_launch_working_dir_from_notebook_path_or_spawner_cwd() {
+        assert_eq!(
+            current_python_launch_working_dir(
+                Some("/home/ws/project/notebook.ipynb"),
+                Some(Path::new("/tmp/spawner"))
+            ),
+            Some(PathBuf::from("/home/ws/project"))
+        );
+        assert_eq!(
+            current_python_launch_working_dir(None, Some(Path::new("/tmp/spawner"))),
+            Some(PathBuf::from("/tmp/spawner"))
         );
     }
 }
