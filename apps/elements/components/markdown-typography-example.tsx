@@ -334,8 +334,8 @@ export function MarkdownTypographyExample() {
         <NotebookPaletteToggle />
       </div>
 
-      <section className="grid gap-4 min-[1500px]:grid-cols-[minmax(0,1fr)_320px]">
-        <article className="min-w-0 border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
+      <section className="space-y-4">
+        <article className="mx-auto min-w-0 max-w-[980px] border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
           <ProjectedMarkdownView
             headingAnchors={headingAnchors}
             plan={markdownPlan}
@@ -343,20 +343,28 @@ export function MarkdownTypographyExample() {
           />
         </article>
 
-        <aside className="grid content-start gap-3 border border-border bg-muted/20 p-4 text-foreground">
-          {auditRows.map((row) => {
-            const Icon = row.icon;
-            return (
-              <div key={row.label} className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
-                <Icon className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold">{row.label}</div>
-                  <div className="mt-1 text-xs leading-5 text-muted-foreground">{row.detail}</div>
+        <details className={markdownDetailsClassName}>
+          <summary className={markdownSummaryClassName}>
+            <span aria-hidden="true" className={markdownSummaryIndicatorClassName}>
+              ›
+            </span>
+            <span className="min-w-0">Typography audit notes</span>
+          </summary>
+          <aside className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {auditRows.map((row) => {
+              const Icon = row.icon;
+              return (
+                <div key={row.label} className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
+                  <Icon className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{row.label}</div>
+                    <div className="mt-1 text-xs leading-5 text-muted-foreground">{row.detail}</div>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </aside>
+              );
+            })}
+          </aside>
+        </details>
       </section>
 
       <section className="border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
