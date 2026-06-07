@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimePeerScript = path.join(appDir, "scripts", "hosted-runtime-peer-smoke.mjs");
@@ -13,10 +13,12 @@ const source =
     .slice(0, 15)}')`;
 const scopes = parseScopes(process.env.NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES);
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (isMainModule()) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const runs = [];
@@ -105,7 +107,7 @@ async function runScope(scope) {
   }
 }
 
-function browserRunSummary(run, scope) {
+export function browserRunSummary(run, scope) {
   return {
     scope,
     clickedAria: run.click?.clickedAria ?? null,
@@ -116,7 +118,7 @@ function browserRunSummary(run, scope) {
   };
 }
 
-function assertBrowserRunAdvanced(run) {
+export function assertBrowserRunAdvanced(run) {
   if (!Number.isInteger(run.afterExecutionOrdinal) || run.afterExecutionOrdinal < 2) {
     throw new Error(
       `browser execute smoke for ${run.scope} did not advance past the runtime-peer seed execution: ${stringify(
@@ -162,7 +164,7 @@ function runProcess(command, args, options) {
   });
 }
 
-function parseJsonOutput(stdout, label) {
+export function parseJsonOutput(stdout, label) {
   const trimmed = stdout.trim();
   try {
     return JSON.parse(trimmed);
@@ -205,7 +207,7 @@ async function processExists(pid) {
   }
 }
 
-function parseScopes(value) {
+export function parseScopes(value) {
   const raw = value ?? "owner,editor";
   const parsed = raw
     .split(/,|\s+/)
@@ -234,4 +236,8 @@ function sleep(ms) {
 
 function stringify(value) {
   return JSON.stringify(value, null, 2);
+}
+
+function isMainModule() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
 }
