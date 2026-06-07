@@ -146,6 +146,26 @@ catalog check to a specific exported snapshot set. Set
 `NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the target notebook does not include a
 Sift output.
 
+To verify the live-room path for an already-published notebook, seed Chromium
+with the OIDC token cache and require that the authenticated sync socket stays
+open after cells and output payloads materialize:
+
+```bash
+NOTEBOOK_CLOUD_LIVE_ROOM_MIN_CELLS=20 \
+NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_BLOB_FETCH=1 \
+pnpm --dir apps/notebook-cloud smoke:hosted:live-room \
+  https://preview.runt.run/n/topic-viz/topic-viz
+```
+
+This smoke reads the token JSON from
+`${NTERACT_PREVIEW_OIDC_TOKEN_PATH:-$HOME/token.preview.json}` and writes no
+token material to stdout. It is meant for old/live-room regressions rather than
+renderer bundle checks: it fails on `cloud sync socket` churn, output resolution
+errors, failed notebook blob responses, missing cells, or a closed final room
+socket. Sandboxed output frames must not read localStorage; the smoke tracks
+that denial as a benign iframe error because only the first-party viewer shell
+needs the browser token cache.
+
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
 uploads its `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` snapshot set, walks
 the exported output and widget manifests for blob refs, uploads the matching
