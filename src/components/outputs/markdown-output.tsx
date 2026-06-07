@@ -20,6 +20,7 @@ import {
   markdownFigureClassName,
   markdownFootnoteBackrefClassName,
   markdownFootnotesClassName,
+  markdownFootnoteRefClassName,
   markdownHeadingAnchorClassName,
   markdownHeadingClassName,
   markdownImageClassName,
@@ -269,10 +270,15 @@ export function MarkdownOutput({
           a({ href, children, className, ...props }) {
             const linkProps = props as typeof props & {
               "data-footnote-backref"?: string | boolean;
+              "data-footnote-ref"?: string | boolean;
             };
+            const classNames = className?.split(/\s+/) ?? [];
             const isFootnoteBackref =
               linkProps["data-footnote-backref"] !== undefined ||
-              className?.split(/\s+/).includes("data-footnote-backref");
+              classNames.includes("data-footnote-backref");
+            const isFootnoteRef =
+              linkProps["data-footnote-ref"] !== undefined ||
+              classNames.includes("data-footnote-ref");
             const isDocumentAnchor = href?.startsWith("#") ?? false;
             return (
               <a
@@ -280,6 +286,7 @@ export function MarkdownOutput({
                 href={href}
                 className={cn(
                   markdownLinkClassName,
+                  isFootnoteRef && markdownFootnoteRefClassName,
                   isFootnoteBackref && markdownFootnoteBackrefClassName,
                   className,
                 )}

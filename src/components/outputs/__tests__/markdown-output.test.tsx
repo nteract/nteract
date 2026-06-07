@@ -114,6 +114,11 @@ describe("MarkdownOutput heading anchors", () => {
 
     const footnotes = document.querySelector("section[data-footnotes]");
     expect(footnotes).toHaveClass("border-t", "font-[var(--output-ui-font)]", "text-sm");
+    expect(screen.getByRole("link", { name: "1" })).toHaveClass(
+      "rounded-full",
+      "bg-primary/6",
+      "no-underline",
+    );
     expect(screen.getByText("↩")).toHaveClass("text-xs", "no-underline");
   });
 

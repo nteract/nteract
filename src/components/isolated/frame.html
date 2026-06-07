@@ -347,6 +347,30 @@
         line-height: 1.5rem;
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a[data-footnote-ref],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a.data-footnote-ref {
+        display: inline-flex;
+        min-width: 1rem;
+        justify-content: center;
+        margin: 0 0.125rem;
+        padding: 0 0.25rem;
+        transform: translateY(-0.22em);
+        border: 1px solid color-mix(in oklch, var(--accent-color) 24%, transparent);
+        border-radius: 999px;
+        background: color-mix(in oklch, var(--accent-color) 8%, transparent);
+        color: var(--accent-color);
+        font-family: var(--output-ui-font);
+        font-size: 0.68em;
+        line-height: 1rem;
+        text-decoration: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a[data-footnote-ref]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a.data-footnote-ref:hover {
+        background: color-mix(in oklch, var(--accent-color) 12%, transparent);
+        text-decoration: none;
+      }
+
       :is([data-slot="markdown-output"], [data-slot="html-output"]) .katex-display {
         margin: 1.25rem 0;
         padding: 1rem;
