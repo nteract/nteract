@@ -292,6 +292,7 @@ describe("projectNotebookShellCapabilities", () => {
           providerLabel: "Cloud room",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          kernelStatusLabel: "idle",
           cpuCount: 4,
           memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
@@ -325,6 +326,7 @@ describe("projectNotebookShellCapabilities", () => {
           providerLabel: "Cloud room",
           defaultEnvironmentLabel: "Current Python",
           environmentLabel: "Current Python",
+          kernelStatusLabel: "idle",
           cpuCount: 4,
           memoryBytes: 16 * 1024 ** 3,
           resourceLabel: "4 CPU / 16 GB RAM",
@@ -350,6 +352,7 @@ describe("projectNotebookShellCapabilities", () => {
     expect(first.runtime.target).toMatchObject({
       id: "attached-workstation",
       defaultEnvironmentLabel: "Current Python",
+      kernelStatusLabel: "idle",
       cpuCount: 4,
       memoryBytes: 16 * 1024 ** 3,
       resourceLabel: "4 CPU / 16 GB RAM",

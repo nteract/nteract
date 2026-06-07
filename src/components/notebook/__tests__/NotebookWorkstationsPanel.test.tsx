@@ -45,6 +45,7 @@ const localReadyCapabilities: NotebookShellCapabilities = {
       providerLabel: "Local daemon",
       defaultEnvironmentLabel: "Notebook runtime",
       environmentLabel: "Notebook runtime",
+      kernelStatusLabel: "idle",
       cpuCount: 8,
       memoryBytes: 16 * 1024 ** 3,
       workingDirectoryLabel: "~/notebooks",
@@ -74,6 +75,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getAllByText("Local daemon")).toHaveLength(2);
     expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
     expect(screen.getByText("Default env")).toBeVisible();
+    expect(screen.getByText("Kernel")).toBeVisible();
+    expect(screen.getByText("idle")).toBeVisible();
     expect(screen.getByText("CPUs")).toBeVisible();
     expect(screen.getByText("8")).toBeVisible();
     expect(screen.getByText("RAM")).toBeVisible();

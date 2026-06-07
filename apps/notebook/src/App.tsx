@@ -415,17 +415,6 @@ function AppContent() {
   // `useObservable` seeds with `null` until the engine emits.
   const sessionStatus = useObservable<SessionStatus | null>(sessionStatus$, null);
   const sessionReady = sessionStatus?.runtime_state === "ready";
-  const shellCapabilities = useMemo(
-    () =>
-      desktopNotebookShellCapabilities({
-        canAcceptCellMutations,
-        sessionReady,
-        localActor,
-        connectionScope,
-      }),
-    [canAcceptCellMutations, connectionScope, localActor, sessionReady],
-  );
-
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cellIds);
 
@@ -627,6 +616,18 @@ function AppContent() {
 
   // Derive values from daemon kernel
   const envSource = kernelInfo.envSource ?? null;
+  const shellCapabilities = useMemo(
+    () =>
+      desktopNotebookShellCapabilities({
+        canAcceptCellMutations,
+        sessionReady,
+        localActor,
+        connectionScope,
+        kernelStatusKey: statusKey,
+        kernelErrorReason: errorReason,
+      }),
+    [canAcceptCellMutations, connectionScope, errorReason, localActor, sessionReady, statusKey],
+  );
 
   useEffect(() => {
     installExecutionPerformanceApi();

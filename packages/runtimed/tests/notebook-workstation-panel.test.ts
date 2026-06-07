@@ -45,6 +45,7 @@ function runtime(
       statusLabel: "Ready",
       providerLabel: "Local daemon",
       defaultEnvironmentLabel: "Notebook runtime",
+      kernelStatusLabel: "idle",
       cpuCount: 8,
       memoryBytes: 16 * 1024 ** 3,
       workingDirectoryLabel: "~/notebooks",
@@ -101,6 +102,7 @@ describe("projectNotebookWorkstationPanel", () => {
     expect(first.facts.map((fact) => [fact.kind, fact.label, fact.value])).toEqual([
       ["provider", "Provider", "Local daemon"],
       ["default_environment", "Default env", "Notebook runtime"],
+      ["kernel", "Kernel", "idle"],
       ["cpu", "CPUs", "8"],
       ["memory", "RAM", "16 GiB"],
       ["working_directory", "Working dir", "~/notebooks"],

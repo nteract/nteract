@@ -76,6 +76,11 @@ export interface NotebookShellRuntimeTargetProjection {
    */
   defaultEnvironmentLabel?: string | null;
   environmentLabel?: string | null;
+  /**
+   * User-facing kernel lifecycle label for the active target, when the host
+   * has authoritative RuntimeStateDoc lifecycle data.
+   */
+  kernelStatusLabel?: string | null;
   cpuCount?: number | null;
   memoryBytes?: number | null;
   resourceLabel?: string | null;
@@ -384,6 +389,7 @@ const NOTEBOOK_SHELL_RUNTIME_TARGET_CACHE_FIELDS = {
   providerLabel: (target) => target.providerLabel ?? null,
   defaultEnvironmentLabel: (target) => target.defaultEnvironmentLabel ?? null,
   environmentLabel: (target) => target.environmentLabel ?? null,
+  kernelStatusLabel: (target) => target.kernelStatusLabel ?? null,
   cpuCount: (target) => target.cpuCount ?? null,
   memoryBytes: (target) => target.memoryBytes ?? null,
   resourceLabel: (target) => target.resourceLabel ?? null,
@@ -676,6 +682,7 @@ function stableNotebookShellRuntimeTarget(
     providerLabel: target.providerLabel ?? null,
     defaultEnvironmentLabel: target.defaultEnvironmentLabel ?? null,
     environmentLabel: target.environmentLabel ?? null,
+    kernelStatusLabel: target.kernelStatusLabel ?? null,
     cpuCount: target.cpuCount ?? null,
     memoryBytes: target.memoryBytes ?? null,
     resourceLabel: target.resourceLabel ?? null,

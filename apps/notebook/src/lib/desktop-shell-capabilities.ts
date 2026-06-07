@@ -11,12 +11,15 @@ import {
   type NotebookShellCapabilities,
   type NotebookShellRuntimeTargetProjection,
 } from "runtimed";
+import { getStatusKeyLabel, type RuntimeStatusKey } from "./kernel-status";
 
 export interface DesktopNotebookShellCapabilityInput {
   canAcceptCellMutations: boolean;
   sessionReady: boolean;
   localActor: string | null;
   connectionScope: string | null;
+  kernelStatusKey?: RuntimeStatusKey | null;
+  kernelErrorReason?: string | null;
   hostCapabilities?: {
     canManageSharing?: boolean;
   };
@@ -27,6 +30,8 @@ export function desktopNotebookShellCapabilities({
   sessionReady,
   localActor,
   connectionScope,
+  kernelStatusKey = null,
+  kernelErrorReason = null,
   hostCapabilities,
 }: DesktopNotebookShellCapabilityInput): NotebookShellCapabilities {
   const accessLevel = desktopAccessLevelFromConnectionScope(connectionScope);
@@ -72,6 +77,9 @@ export function desktopNotebookShellCapabilities({
     identityLabel: null,
     target: desktopRuntimeTarget({
       isRuntimePeer,
+      kernelStatusLabel: kernelStatusKey
+        ? getStatusKeyLabel(kernelStatusKey, kernelErrorReason)
+        : null,
       sessionReady,
       source,
     }),
@@ -110,10 +118,12 @@ export function desktopNotebookShellCapabilities({
 
 function desktopRuntimeTarget({
   isRuntimePeer,
+  kernelStatusLabel,
   sessionReady,
   source,
 }: {
   isRuntimePeer: boolean;
+  kernelStatusLabel: string | null;
   sessionReady: boolean;
   source: NotebookShellAccessSource;
 }): NotebookShellRuntimeTargetProjection | null {
@@ -130,6 +140,7 @@ function desktopRuntimeTarget({
       providerLabel: "Cloud room",
       defaultEnvironmentLabel: "Runtime peer",
       environmentLabel: "Runtime peer",
+      kernelStatusLabel,
     };
   }
   if (source !== "local") {
@@ -147,6 +158,7 @@ function desktopRuntimeTarget({
     providerLabel: "Local daemon",
     defaultEnvironmentLabel: "Notebook runtime",
     environmentLabel: "Notebook runtime",
+    kernelStatusLabel,
     cpuCount: localCpuCount(),
   };
 }

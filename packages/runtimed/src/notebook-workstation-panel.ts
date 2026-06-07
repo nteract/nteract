@@ -12,6 +12,7 @@ export type NotebookWorkstationPanelTone = "ready" | "available" | "offline";
 export type NotebookWorkstationFactKind =
   | "provider"
   | "default_environment"
+  | "kernel"
   | "cpu"
   | "memory"
   | "resource"
@@ -63,6 +64,7 @@ export function projectNotebookWorkstationPanel(
     target.providerLabel ?? null,
     target.defaultEnvironmentLabel ?? null,
     target.environmentLabel ?? null,
+    target.kernelStatusLabel ?? null,
     target.cpuCount ?? null,
     target.memoryBytes ?? null,
     target.resourceLabel ?? null,
@@ -86,6 +88,9 @@ export function projectNotebookWorkstationPanel(
     workstationFact("default_environment", "Default env", defaultEnvironmentLabel),
   ];
 
+  if (target.kernelStatusLabel) {
+    facts.push(workstationFact("kernel", "Kernel", target.kernelStatusLabel));
+  }
   if (hasCpuCount) {
     facts.push(workstationFact("cpu", "CPUs", `${target.cpuCount}`));
   }

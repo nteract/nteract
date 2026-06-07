@@ -150,6 +150,8 @@ function workstationFactIcon(
   switch (fact.kind) {
     case "provider":
       return workstationSourceIcon(source);
+    case "kernel":
+      return Cpu;
     case "memory":
       return MemoryStick;
     case "working_directory":
