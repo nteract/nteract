@@ -2,6 +2,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 extern crate runtimed_client as runtimed;
+mod notebook_cli;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -169,6 +171,12 @@ enum Commands {
         /// Output directory for the archive (default: ~/Desktop)
         #[arg(long, short)]
         output: Option<PathBuf>,
+    },
+    /// Headless notebook operations backed by the MCP tool surface
+    #[command(name = "nb")]
+    Nb {
+        #[command(subcommand)]
+        command: Box<notebook_cli::NotebookCommands>,
     },
 
     // =========================================================================
@@ -549,6 +557,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
+        Some(Commands::Nb { command }) => notebook_cli::command(*command).await?,
         Some(Commands::Config { command }) => config_command(command).await?,
         Some(Commands::Mcp { no_show, socket }) => {
             if let Some(socket) = socket {
