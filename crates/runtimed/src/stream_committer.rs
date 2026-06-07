@@ -10,13 +10,12 @@
 
 use std::sync::Arc;
 
-use runtime_doc::RuntimeStateHandle;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
-use crate::blob_store::BlobStore;
+use crate::output_blob_publisher::publish_or_warn;
+use crate::output_commit_context::OutputCommitContext;
 use crate::output_prep::LifecycleSignal;
-use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::stream_flush::PendingStreamFlush;
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
@@ -32,12 +31,8 @@ struct PriorityStreamCommit {
 }
 
 struct StreamCommitterContext {
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
+    output: OutputCommitContext,
     stream_terminals: Arc<Mutex<StreamTerminals>>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
-    output_redactor: Arc<OutputRedactor>,
 }
 
 #[derive(Clone)]
@@ -125,51 +120,20 @@ impl StreamCommitterHandle {
     }
 }
 
-async fn commit_priority_streams(
-    request: PriorityStreamCommit,
-    state: &RuntimeStateHandle,
-    blob_store: &BlobStore,
-    stream_terminals: &Arc<Mutex<StreamTerminals>>,
-    kernel_actor_id: &str,
-    lifecycle_tx: &mpsc::UnboundedSender<LifecycleSignal>,
-    output_redactor: &OutputRedactor,
-) {
+async fn commit_priority_streams(request: PriorityStreamCommit, context: &StreamCommitterContext) {
     for flush in request.flushes {
-        commit_stream_flush(
-            state,
-            blob_store,
-            stream_terminals,
-            kernel_actor_id,
-            flush,
-            output_redactor,
-        )
-        .await;
+        commit_stream_flush(&context.output, &context.stream_terminals, flush).await;
     }
     if let Some(signal) = request.signal {
-        let _ = lifecycle_tx.send(signal);
+        let _ = context.output.lifecycle_tx.send(signal);
     }
     if let Some(ack) = request.ack {
         let _ = ack.send(());
     }
 }
 
-async fn commit_periodic_stream(
-    flush: PendingStreamFlush,
-    state: &RuntimeStateHandle,
-    blob_store: &BlobStore,
-    stream_terminals: &Arc<Mutex<StreamTerminals>>,
-    kernel_actor_id: &str,
-    output_redactor: &OutputRedactor,
-) {
-    commit_stream_flush(
-        state,
-        blob_store,
-        stream_terminals,
-        kernel_actor_id,
-        flush,
-        output_redactor,
-    )
-    .await;
+async fn commit_periodic_stream(flush: PendingStreamFlush, context: &StreamCommitterContext) {
+    commit_stream_flush(&context.output, &context.stream_terminals, flush).await;
 }
 
 async fn run_stream_committer(
@@ -184,23 +148,14 @@ async fn run_stream_committer(
             Some(request) = priority_rx.recv() => {
                 commit_priority_streams(
                     request,
-                    &context.state,
-                    &context.blob_store,
-                    &context.stream_terminals,
-                    &context.kernel_actor_id,
-                    &context.lifecycle_tx,
-                    &context.output_redactor,
+                    &context,
                 ).await;
             }
 
             Some(flush) = periodic_rx.recv() => {
                 commit_periodic_stream(
                     flush,
-                    &context.state,
-                    &context.blob_store,
-                    &context.stream_terminals,
-                    &context.kernel_actor_id,
-                    &context.output_redactor,
+                    &context,
                 ).await;
             }
 
@@ -210,23 +165,16 @@ async fn run_stream_committer(
 }
 
 pub(crate) fn start_stream_committer(
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
+    output: OutputCommitContext,
     stream_terminals: Arc<Mutex<StreamTerminals>>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
-    output_redactor: Arc<OutputRedactor>,
 ) -> StreamCommitterHandle {
     let (periodic_tx, periodic_rx) = mpsc::channel(STREAM_COMMITTER_QUEUE_CAPACITY);
     let (priority_tx, priority_rx) = mpsc::unbounded_channel();
+    let lifecycle_tx = output.lifecycle_tx.clone();
     let panic_lifecycle_tx = lifecycle_tx.clone();
     let context = StreamCommitterContext {
-        state,
-        blob_store,
+        output,
         stream_terminals,
-        kernel_actor_id,
-        lifecycle_tx: lifecycle_tx.clone(),
-        output_redactor,
     };
     // If the committer task panics, route `KernelDied` to the lifecycle
     // channel so the queue releases. The runtime agent treats this signal
@@ -248,12 +196,9 @@ pub(crate) fn start_stream_committer(
 }
 
 pub(crate) async fn commit_stream_flush(
-    state: &RuntimeStateHandle,
-    blob_store: &BlobStore,
+    context: &OutputCommitContext,
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
-    kernel_actor_id: &str,
     flush: PendingStreamFlush,
-    output_redactor: &OutputRedactor,
 ) {
     let (known_state, rendered_text) = {
         let terminals = stream_terminals.lock().await;
@@ -282,9 +227,9 @@ pub(crate) async fn commit_stream_flush(
 
     let manifest = match output_store::create_manifest_with_redactor(
         &nbformat_value,
-        blob_store,
+        &context.blob_store,
         DEFAULT_INLINE_THRESHOLD,
-        output_redactor,
+        &context.redactor,
     )
     .await
     {
@@ -295,6 +240,17 @@ pub(crate) async fn commit_stream_flush(
         }
     };
     let manifest_json = manifest.to_json();
+    if publish_or_warn(
+        &context.blob_publisher,
+        &manifest,
+        &context.blob_store,
+        "stream output blob publish failed",
+    )
+    .await
+    .is_err()
+    {
+        return;
+    }
 
     let blob_hash = if let OutputManifest::Stream { ref text, .. } = manifest {
         match text {
@@ -305,8 +261,8 @@ pub(crate) async fn commit_stream_flush(
         String::new()
     };
 
-    let upsert_result = match state.transact_at_current_heads(
-        Some(kernel_actor_id),
+    let upsert_result = match context.state.transact_at_current_heads(
+        Some(&context.kernel_actor_id),
         "runtime-state-iopub-stream-transaction",
         |sd| match sd.upsert_stream_output(
             &flush.execution_id,
@@ -343,6 +299,11 @@ pub(crate) async fn commit_stream_flush(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_doc::RuntimeStateHandle;
+
+    use crate::blob_store::BlobStore;
+    use crate::output_blob_publisher::OutputBlobPublisher;
+    use crate::output_redaction::OutputRedactor;
 
     fn runtime_state() -> RuntimeStateHandle {
         let state_doc =
@@ -360,6 +321,21 @@ mod tests {
             .expect("execution entry");
     }
 
+    fn commit_context(
+        state: RuntimeStateHandle,
+        blob_store: Arc<BlobStore>,
+        lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
+    ) -> OutputCommitContext {
+        OutputCommitContext::new(
+            state,
+            blob_store,
+            OutputBlobPublisher::none(),
+            "rt:kernel:test".to_string(),
+            lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
+        )
+    }
+
     #[tokio::test]
     async fn flush_then_signal_commits_stream_before_lifecycle_signal() {
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -375,12 +351,8 @@ mod tests {
 
         let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
         let handle = start_stream_committer(
-            state.clone(),
-            blob_store,
+            commit_context(state.clone(), blob_store, lifecycle_tx),
             terminals,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
         );
 
         handle.flush_then_signal(
@@ -421,12 +393,8 @@ mod tests {
 
         let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
         let handle = start_stream_committer(
-            state.clone(),
-            blob_store,
+            commit_context(state.clone(), blob_store, lifecycle_tx),
             terminals,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
         );
 
         handle
@@ -446,21 +414,20 @@ mod tests {
     #[tokio::test]
     async fn stale_stream_flush_after_clear_is_ignored() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().to_path_buf());
+        let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
         let state = runtime_state();
         create_execution(&state);
         let terminals = Arc::new(Mutex::new(StreamTerminals::new()));
+        let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
+        let context = commit_context(state.clone(), blob_store, lifecycle_tx);
 
         commit_stream_flush(
-            &state,
-            &blob_store,
+            &context,
             &terminals,
-            "rt:kernel:test",
             PendingStreamFlush {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
             },
-            &OutputRedactor::disabled(),
         )
         .await;
 

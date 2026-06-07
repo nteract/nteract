@@ -1351,32 +1351,28 @@ impl KernelConnection for JupyterKernel {
         let state_for_iopub = shared.state.clone();
         let comms_for_iopub = shared.comms.clone();
         let iopub_output_redactor = output_redactor.clone();
+        let iopub_output_blob_publisher = shared.output_blob_publisher.clone();
         // IOPub writes use transactions with the base kernel actor. Async
         // blob/manifest work is completed before the document transaction.
         let iopub_kernel_actor_id = kernel_actor_id.clone();
-        let stream_committer = crate::stream_committer::start_stream_committer(
+        let output_commit_context = crate::output_commit_context::OutputCommitContext::new(
             state_for_iopub.clone(),
             blob_store.clone(),
-            iopub_stream_terminals.clone(),
+            iopub_output_blob_publisher,
             iopub_kernel_actor_id.clone(),
             iopub_lifecycle_tx.clone(),
             iopub_output_redactor.clone(),
+        );
+        let stream_committer = crate::stream_committer::start_stream_committer(
+            output_commit_context.clone(),
+            iopub_stream_terminals.clone(),
         );
         let display_update_committer =
             crate::display_update_committer::start_display_update_committer(
-                state_for_iopub.clone(),
-                blob_store.clone(),
-                iopub_kernel_actor_id.clone(),
-                iopub_lifecycle_tx.clone(),
-                iopub_output_redactor.clone(),
+                output_commit_context.clone(),
             );
-        let output_committer = crate::output_committer::start_output_committer(
-            state_for_iopub.clone(),
-            blob_store.clone(),
-            iopub_kernel_actor_id.clone(),
-            iopub_lifecycle_tx.clone(),
-            iopub_output_redactor.clone(),
-        );
+        let output_committer =
+            crate::output_committer::start_output_committer(output_commit_context);
 
         // Create coalescing channel early so the IOPub task can capture the sender.
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();

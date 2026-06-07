@@ -6,15 +6,12 @@
 //! terminal lifecycle signals must still wait until all queued output commits
 //! are durable in RuntimeStateDoc.
 
-use std::sync::Arc;
-
-use runtime_doc::RuntimeStateHandle;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
-use crate::blob_store::BlobStore;
+use crate::output_blob_publisher::publish_or_warn;
+use crate::output_commit_context::OutputCommitContext;
 use crate::output_prep::LifecycleSignal;
-use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
 use crate::task_supervisor::spawn_supervised;
 
@@ -59,14 +56,6 @@ struct PriorityOutputRequest {
     output: Option<OrdinaryOutputCommit>,
     signal: Option<LifecycleSignal>,
     ack: Option<oneshot::Sender<()>>,
-}
-
-struct OutputCommitterContext {
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
-    output_redactor: Arc<OutputRedactor>,
 }
 
 #[derive(Clone)]
@@ -135,7 +124,7 @@ impl OutputCommitterHandle {
 async fn commit_priority_request(
     request: PriorityOutputRequest,
     output_rx: &mut mpsc::Receiver<OrdinaryOutputCommit>,
-    context: &OutputCommitterContext,
+    context: &OutputCommitContext,
 ) {
     drain_queued_outputs(output_rx, context).await;
     if let Some(output) = request.output {
@@ -151,7 +140,7 @@ async fn commit_priority_request(
 
 async fn drain_queued_outputs(
     output_rx: &mut mpsc::Receiver<OrdinaryOutputCommit>,
-    context: &OutputCommitterContext,
+    context: &OutputCommitContext,
 ) {
     loop {
         let mut batch = Vec::with_capacity(OUTPUT_COMMIT_BATCH_SIZE);
@@ -171,7 +160,7 @@ async fn drain_queued_outputs(
 async fn run_output_committer(
     mut output_rx: mpsc::Receiver<OrdinaryOutputCommit>,
     mut priority_rx: mpsc::UnboundedReceiver<PriorityOutputRequest>,
-    context: OutputCommitterContext,
+    context: OutputCommitContext,
 ) {
     loop {
         tokio::select! {
@@ -206,41 +195,18 @@ async fn run_output_committer(
     }
 }
 
-pub(crate) fn start_output_committer(
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
-    output_redactor: Arc<OutputRedactor>,
-) -> OutputCommitterHandle {
-    start_output_committer_with_capacity(
-        state,
-        blob_store,
-        kernel_actor_id,
-        lifecycle_tx,
-        output_redactor,
-        OUTPUT_COMMITTER_QUEUE_CAPACITY,
-    )
+pub(crate) fn start_output_committer(context: OutputCommitContext) -> OutputCommitterHandle {
+    start_output_committer_with_capacity(context, OUTPUT_COMMITTER_QUEUE_CAPACITY)
 }
 
 fn start_output_committer_with_capacity(
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
-    output_redactor: Arc<OutputRedactor>,
+    context: OutputCommitContext,
     capacity: usize,
 ) -> OutputCommitterHandle {
     let (output_tx, output_rx) = mpsc::channel(capacity);
     let (priority_tx, priority_rx) = mpsc::unbounded_channel();
+    let lifecycle_tx = context.lifecycle_tx.clone();
     let panic_lifecycle_tx = lifecycle_tx.clone();
-    let context = OutputCommitterContext {
-        state,
-        blob_store,
-        kernel_actor_id,
-        lifecycle_tx: lifecycle_tx.clone(),
-        output_redactor,
-    };
     spawn_supervised(
         "output-committer",
         run_output_committer(output_rx, priority_rx, context),
@@ -255,7 +221,7 @@ fn start_output_committer_with_capacity(
     }
 }
 
-async fn commit_output_batch(outputs: Vec<OrdinaryOutputCommit>, context: &OutputCommitterContext) {
+async fn commit_output_batch(outputs: Vec<OrdinaryOutputCommit>, context: &OutputCommitContext) {
     if outputs.is_empty() {
         return;
     }
@@ -289,7 +255,7 @@ async fn commit_output_batch(outputs: Vec<OrdinaryOutputCommit>, context: &Outpu
 
 async fn create_manifest_json(
     output: &OrdinaryOutputCommit,
-    context: &OutputCommitterContext,
+    context: &OutputCommitContext,
 ) -> serde_json::Value {
     if output.kind.uses_buffer_preflight() {
         output_store::preflight_ref_buffers(
@@ -304,28 +270,56 @@ async fn create_manifest_json(
         &output.nbformat_value,
         &context.blob_store,
         DEFAULT_INLINE_THRESHOLD,
-        &context.output_redactor,
+        &context.redactor,
     )
     .await
     {
-        Ok(manifest) => manifest.to_json(),
+        Ok(manifest) => {
+            if let Err(error) = publish_or_warn(
+                &context.blob_publisher,
+                &manifest,
+                &context.blob_store,
+                "ordinary output blob publish failed",
+            )
+            .await
+            {
+                return blob_publish_failure_output(output.kind.label(), &error);
+            }
+            manifest.to_json()
+        }
         Err(e) => {
             warn!(
                 "[output-committer] Failed to create {} manifest: {}",
                 output.kind.label(),
                 e
             );
-            let redacted = context
-                .output_redactor
-                .redact_output_value(&output.nbformat_value);
+            let redacted = context.redactor.redact_output_value(&output.nbformat_value);
             crate::notebook_sync_server::fallback_output_with_id(&redacted)
         }
     }
 }
 
+fn blob_publish_failure_output(kind: &str, error: &dyn std::error::Error) -> serde_json::Value {
+    serde_json::json!({
+        "output_type": "error",
+        "ename": "OutputBlobPublishError",
+        "evalue": format!("Unable to publish {kind} blob before syncing output: {error}"),
+        "traceback": [
+            format!("Unable to publish {kind} blob before syncing output: {error}")
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use runtime_doc::RuntimeStateHandle;
+
+    use crate::blob_store::BlobStore;
+    use crate::output_blob_publisher::OutputBlobPublisher;
+    use crate::output_redaction::OutputRedactor;
 
     fn runtime_state() -> RuntimeStateHandle {
         let state_doc =
@@ -341,6 +335,21 @@ mod tests {
                 Ok(())
             })
             .expect("execution entry");
+    }
+
+    fn commit_context(
+        state: RuntimeStateHandle,
+        blob_store: Arc<BlobStore>,
+        lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
+    ) -> OutputCommitContext {
+        OutputCommitContext::new(
+            state,
+            blob_store,
+            OutputBlobPublisher::none(),
+            "rt:kernel:test".to_string(),
+            lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
+        )
     }
 
     fn display_output(text: &str) -> serde_json::Value {
@@ -377,11 +386,7 @@ mod tests {
         create_execution(&state);
         let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
         let handle = start_output_committer_with_capacity(
-            state.clone(),
-            blob_store,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
+            commit_context(state.clone(), blob_store, lifecycle_tx),
             8,
         );
 
@@ -421,11 +426,7 @@ mod tests {
         create_execution(&state);
         let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
         let handle = start_output_committer_with_capacity(
-            state.clone(),
-            blob_store,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
+            commit_context(state.clone(), blob_store, lifecycle_tx),
             1,
         );
 
@@ -463,11 +464,7 @@ mod tests {
         create_execution(&state);
         let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
         let handle = start_output_committer_with_capacity(
-            state.clone(),
-            blob_store,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
+            commit_context(state.clone(), blob_store, lifecycle_tx),
             8,
         );
 
@@ -503,14 +500,9 @@ mod tests {
         let state = runtime_state();
         create_execution(&state);
         let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
-        let output_handle = start_output_committer_with_capacity(
-            state.clone(),
-            blob_store.clone(),
-            "rt:kernel:test".to_string(),
-            lifecycle_tx.clone(),
-            Arc::new(OutputRedactor::disabled()),
-            8,
-        );
+        let output_context =
+            commit_context(state.clone(), blob_store.clone(), lifecycle_tx.clone());
+        let output_handle = start_output_committer_with_capacity(output_context.clone(), 8);
 
         let terminals = Arc::new(tokio::sync::Mutex::new(
             crate::stream_terminal::StreamTerminals::new(),
@@ -519,14 +511,8 @@ mod tests {
             let mut terminals = terminals.lock().await;
             terminals.feed_chunk("exec-1", "stdout", "stream-after-display\n");
         }
-        let stream_handle = crate::stream_committer::start_stream_committer(
-            state.clone(),
-            blob_store,
-            terminals,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
-        );
+        let stream_handle =
+            crate::stream_committer::start_stream_committer(output_context, terminals);
 
         output_handle
             .enqueue_output(OrdinaryOutputCommit {
@@ -572,21 +558,11 @@ mod tests {
         let state = runtime_state();
         create_execution(&state);
         let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
-        let output_handle = start_output_committer_with_capacity(
-            state.clone(),
-            blob_store.clone(),
-            "rt:kernel:test".to_string(),
-            lifecycle_tx.clone(),
-            Arc::new(OutputRedactor::disabled()),
-            8,
-        );
-        let display_handle = crate::display_update_committer::start_display_update_committer(
-            state.clone(),
-            blob_store,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
-        );
+        let output_context =
+            commit_context(state.clone(), blob_store.clone(), lifecycle_tx.clone());
+        let output_handle = start_output_committer_with_capacity(output_context.clone(), 8);
+        let display_handle =
+            crate::display_update_committer::start_display_update_committer(output_context);
 
         output_handle
             .enqueue_output(OrdinaryOutputCommit {

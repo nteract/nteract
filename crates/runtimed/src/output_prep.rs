@@ -13,6 +13,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::blob_store::BlobStore;
+use crate::output_blob_publisher::{publish_or_warn, OutputBlobPublisher};
 use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use runtime_doc::RuntimeStateDoc;
@@ -363,6 +364,7 @@ pub(crate) async fn build_display_manifest_updates(
     new_data: &serde_json::Value,
     new_metadata: &serde_json::Map<String, serde_json::Value>,
     blob_store: &BlobStore,
+    output_blob_publisher: &OutputBlobPublisher,
     redactor: &OutputRedactor,
 ) -> Result<Vec<DisplayManifestUpdate>, Box<dyn std::error::Error + Send + Sync>> {
     let mut updates = Vec::new();
@@ -378,6 +380,13 @@ pub(crate) async fn build_display_manifest_updates(
         )
         .await?
         {
+            publish_or_warn(
+                output_blob_publisher,
+                &updated,
+                blob_store,
+                "display update blob publish failed",
+            )
+            .await?;
             updates.push(DisplayManifestUpdate {
                 execution_id: target.execution_id,
                 output_id: target.output_id,
@@ -662,6 +671,7 @@ mod tests {
             new_data,
             new_metadata,
             blob_store,
+            &OutputBlobPublisher::none(),
             redactor,
         )
         .await?;
