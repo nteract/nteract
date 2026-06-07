@@ -117,6 +117,11 @@ import {
   type CloudNotebookDashboardModel,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
+import {
+  clearCachedCloudNotebookList,
+  readCachedCloudNotebookList,
+  writeCachedCloudNotebookList,
+} from "./notebook-list-cache";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
 import { CloudSharingControls } from "./sharing-controls";
 import { cloudResponseError } from "./cloud-response";
@@ -442,7 +447,9 @@ function CloudNotebookProviders({
 function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
-  const [listState, setListState] = useState<CloudNotebookListState>({ kind: "loading" });
+  const [listState, setListState] = useState<CloudNotebookListState>(() =>
+    initialCloudNotebookListState(authState),
+  );
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [createState, setCreateState] = useState<"idle" | "starting">("idle");
   const [createError, setCreateError] = useState<string | null>(null);
@@ -463,12 +470,16 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   useEffect(() => {
     if (!signedIn) {
+      clearCachedCloudNotebookListFromWindow();
       setListState({ kind: "signed_out" });
       return;
     }
 
     const controller = new AbortController();
-    setListState({ kind: "loading" });
+    const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState);
+    setListState(
+      cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" },
+    );
     void (async () => {
       try {
         const response = await fetchWithCloudPrototypeAuth(
@@ -484,6 +495,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         if (!isCloudNotebookListResponse(body)) {
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
+        writeCachedCloudNotebookListToWindow(authState, body.notebooks);
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -605,18 +617,20 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         if (current.kind !== "ready") {
           return current;
         }
+        const notebooks = current.notebooks.map((notebook) =>
+          notebook.notebook_id === notebookId
+            ? {
+                ...notebook,
+                title: body.title ?? null,
+                updated_at: body.updated_at ?? notebook.updated_at,
+                viewer_url: body.viewer_url ?? notebook.viewer_url,
+              }
+            : notebook,
+        );
+        writeCachedCloudNotebookListToWindow(authState, notebooks);
         return {
           kind: "ready",
-          notebooks: current.notebooks.map((notebook) =>
-            notebook.notebook_id === notebookId
-              ? {
-                  ...notebook,
-                  title: body.title ?? null,
-                  updated_at: body.updated_at ?? notebook.updated_at,
-                  viewer_url: body.viewer_url ?? notebook.viewer_url,
-                }
-              : notebook,
-          ),
+          notebooks,
         };
       });
       setRenameState(null);
@@ -628,6 +642,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   };
 
   const signOut = () => {
+    clearCachedCloudNotebookListFromWindow();
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
   };
@@ -1014,6 +1029,45 @@ function cloudAuthWithScope(
         ...authState,
         requestedScope,
       };
+}
+
+function initialCloudNotebookListState(authState: CloudPrototypeAuthState): CloudNotebookListState {
+  const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState);
+  return cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" };
+}
+
+function readCachedCloudNotebookListFromWindow(
+  authState: CloudPrototypeAuthState,
+): CloudNotebookListItem[] | null {
+  const storage = cloudNotebookListCacheStorage();
+  return storage ? readCachedCloudNotebookList(storage, authState) : null;
+}
+
+function writeCachedCloudNotebookListToWindow(
+  authState: CloudPrototypeAuthState,
+  notebooks: CloudNotebookListItem[],
+): void {
+  const storage = cloudNotebookListCacheStorage();
+  if (!storage) {
+    return;
+  }
+  writeCachedCloudNotebookList(storage, authState, notebooks);
+}
+
+function clearCachedCloudNotebookListFromWindow(): void {
+  const storage = cloudNotebookListCacheStorage();
+  if (!storage) {
+    return;
+  }
+  clearCachedCloudNotebookList(storage);
+}
+
+function cloudNotebookListCacheStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 function defaultCloudNotebookTitle(now = new Date()): string {
