@@ -14,6 +14,10 @@ import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import {
   markdownBlockquoteClassName,
+  markdownCodeBlockCopyButtonClassName,
+  markdownCodeBlockLabelClassName,
+  markdownCodeBlockShellClassName,
+  markdownCodeBlockToolbarClassName,
   markdownDeleteClassName,
   markdownDisplayMathClassName,
   markdownDocumentClassName,
@@ -827,8 +831,22 @@ function ProjectedCodeBlock({
     }
   };
 
+  const languageLabel = codeBlockLanguageLabel(language);
+
   return (
-    <div className="group/codeblock relative my-3">
+    <div className={markdownCodeBlockShellClassName}>
+      <div className={markdownCodeBlockToolbarClassName}>
+        <span className={markdownCodeBlockLabelClassName}>{languageLabel}</span>
+        <button
+          type="button"
+          aria-label={copied ? "Copied code" : "Copy code"}
+          className={markdownCodeBlockCopyButtonClassName}
+          title={copied ? "Copied" : "Copy code"}
+          onClick={copyCode}
+        >
+          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+        </button>
+      </div>
       <StaticCodeBlock
         code={code}
         colorTheme={colorTheme}
@@ -836,17 +854,14 @@ function ProjectedCodeBlock({
         language={language}
         className="max-w-full"
       />
-      <button
-        type="button"
-        aria-label={copied ? "Copied code" : "Copy code"}
-        className="absolute top-2 right-2 z-10 rounded border border-border bg-background p-1.5 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover/codeblock:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-        title={copied ? "Copied" : "Copy code"}
-        onClick={copyCode}
-      >
-        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-      </button>
     </div>
   );
+}
+
+function codeBlockLanguageLabel(language: string | undefined): string {
+  const trimmed = language?.trim();
+  if (!trimmed) return "code";
+  return trimmed;
 }
 
 function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; latex: string }) {

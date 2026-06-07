@@ -895,7 +895,7 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("value")).toHaveClass("border", "bg-muted/70", "font-mono");
   });
 
-  it("keeps projected code block copy controls reachable without hover", () => {
+  it("renders projected code blocks with visible lab bench controls", () => {
     render(
       <ProjectedMarkdownView
         plan={plan({
@@ -916,8 +916,11 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
+    expect(screen.getByText("code")).toHaveClass("uppercase", "tracking-[0.08em]");
     expect(screen.getByRole("button", { name: "Copy code" })).toHaveClass(
-      "focus-visible:opacity-100",
+      "inline-flex",
+      "border",
+      "bg-background/80",
     );
   });
 
@@ -945,6 +948,7 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByText("datasets")).toBeInTheDocument();
+    expect(screen.getByText("python")).toHaveClass("uppercase", "tracking-[0.08em]");
     expect(document.querySelector("pre code span")).not.toBeNull();
   });
 

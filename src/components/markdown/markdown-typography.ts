@@ -7,6 +7,18 @@ export const markdownLinkClassName =
 export const markdownInlineCodeClassName =
   "rounded-sm border border-border/70 bg-muted/70 px-1.5 py-0.5 font-mono text-[0.88em] text-foreground break-words";
 
+export const markdownCodeBlockShellClassName =
+  "group/codeblock my-4 overflow-hidden rounded-md border border-border/75 bg-muted/[0.14] shadow-sm";
+
+export const markdownCodeBlockToolbarClassName =
+  "flex min-h-8 items-center justify-between gap-3 border-b border-border/70 px-3 py-1.5 font-[var(--output-ui-font)] text-[11px] leading-none text-muted-foreground";
+
+export const markdownCodeBlockLabelClassName =
+  "truncate font-medium uppercase tracking-[0.08em] text-muted-foreground";
+
+export const markdownCodeBlockCopyButtonClassName =
+  "inline-flex size-6 shrink-0 items-center justify-center rounded border border-border bg-background/80 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+
 export const markdownParagraphClassName = "my-3 leading-relaxed [text-wrap:pretty]";
 
 export const markdownDisplayMathClassName =

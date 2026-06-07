@@ -13,6 +13,10 @@ import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import {
   markdownBlockquoteClassName,
+  markdownCodeBlockCopyButtonClassName,
+  markdownCodeBlockLabelClassName,
+  markdownCodeBlockShellClassName,
+  markdownCodeBlockToolbarClassName,
   markdownDeleteClassName,
   markdownDocumentClassName,
   markdownEmphasisClassName,
@@ -87,6 +91,7 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
   const [copied, setCopied] = useState(false);
   const rawTheme = useColorTheme();
   const colorTheme = (rawTheme === "cream" ? "cream" : "classic") as "classic" | "cream";
+  const languageLabel = codeBlockLanguageLabel(language);
 
   const handleCopy = async () => {
     try {
@@ -99,25 +104,34 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
   };
 
   return (
-    <div className="group/codeblock relative">
+    <div className={markdownCodeBlockShellClassName}>
+      <div className={markdownCodeBlockToolbarClassName}>
+        <span className={markdownCodeBlockLabelClassName}>{languageLabel}</span>
+        {enableCopy && (
+          <button
+            onClick={handleCopy}
+            className={markdownCodeBlockCopyButtonClassName}
+            title={copied ? "Copied!" : "Copy code"}
+            type="button"
+          >
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          </button>
+        )}
+      </div>
       <StaticCodeBlock
         code={children}
         language={language}
         isDark={isDark}
         colorTheme={colorTheme}
       />
-      {enableCopy && (
-        <button
-          onClick={handleCopy}
-          className="absolute top-2 right-2 z-10 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-1.5 text-gray-600 dark:text-gray-400 opacity-0 shadow-sm transition-opacity group-hover/codeblock:opacity-100 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200"
-          title={copied ? "Copied!" : "Copy code"}
-          type="button"
-        >
-          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-        </button>
-      )}
     </div>
   );
+}
+
+function codeBlockLanguageLabel(language: string | undefined): string {
+  const trimmed = language?.trim();
+  if (!trimmed) return "code";
+  return trimmed;
 }
 
 function textFromReactNode(node: ReactNode): string {

@@ -109,6 +109,14 @@ describe("MarkdownOutput heading anchors", () => {
     );
   });
 
+  it("renders fenced code with a visible language and copy rail", () => {
+    render(<MarkdownOutput content={"```python\nprint('hi')\n```"} />);
+
+    expect(screen.getByText("python")).toHaveClass("uppercase", "tracking-[0.08em]");
+    expect(screen.getByTitle("Copy code")).toHaveClass("inline-flex", "bg-background/80");
+    expect(screen.getByText("print")).toBeInTheDocument();
+  });
+
   it("styles GFM footnotes as a compact document apparatus", () => {
     render(<MarkdownOutput content={"Claim with a note.[^1]\n\n[^1]: Detailed citation."} />);
 
