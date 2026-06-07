@@ -116,6 +116,7 @@ These entries define the center of gravity for the system:
 | Entry | Status | Notes |
 |-------|--------|-------|
 | [Notebook Identity and Environment Surface Audit](notebook-identity-environment-surface-audit.md) | Audit | Current shared shell, Elements, desktop, and cloud gaps against the identity/environment PRD. |
+| [ADR Implementation Divergence Audit](adr-implementation-divergence-audit.md) | Audit | Current ADR-vs-implementation drift after the CommentsDoc ADR merge. |
 
 ## Maintenance Rules
 
