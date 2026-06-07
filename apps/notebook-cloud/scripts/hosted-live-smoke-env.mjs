@@ -97,7 +97,8 @@ function livePresetSmokeDefaults(preset) {
     return {
       NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT: "ShadenA/MathNet",
       NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS: JSON.stringify([
-        "MathNet via notebook-cloud",
+        "MathNet topic visualization",
+        "Loading the slice",
         "Loaded 25 rows",
       ]),
       NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS: "",

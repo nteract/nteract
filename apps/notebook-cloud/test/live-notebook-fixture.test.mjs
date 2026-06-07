@@ -23,14 +23,36 @@ describe("live notebook fixture", () => {
 
     assert.equal(result, session);
     assert.deepEqual(
-      calls.map(([name]) => name),
-      ["createNotebook", "createCell", "approveTrust", "syncEnvironment", "runCell"],
+      calls.slice(0, 4).map(([name]) => name),
+      ["createNotebook", "createCell", "approveTrust", "syncEnvironment"],
     );
-    assert.deepEqual(calls[0][1].dependencies, ["polars", "pyarrow", "datasets", "pillow"]);
-    assert.equal(calls[1][2].cellType, "markdown");
-    assert.match(calls[3][0], /syncEnvironment/);
-    assert.match(calls[4][1], /ShadenA\/MathNet/);
-    assert.equal(calls[4][2].timeoutMs, 10 * 60 * 1000);
+    assert.deepEqual(calls[0][1].dependencies, [
+      "polars",
+      "pyarrow",
+      "datasets",
+      "pillow",
+      "numpy",
+      "matplotlib",
+      "plotly",
+    ]);
+
+    const markdownCalls = calls.filter(([name]) => name === "createCell");
+    const runCalls = calls.filter(([name]) => name === "runCell");
+    assert.equal(markdownCalls.length, 10);
+    assert.equal(runCalls.length, 9);
+    assert.equal(markdownCalls[0][2].cellType, "markdown");
+    assert.match(markdownCalls[0][1], /# MathNet topic visualization/);
+    assert.match(markdownCalls[0][1], /## Loading the slice/);
+    assert.match(markdownCalls.map(([, source]) => source).join("\n"), /## Topic hierarchy/);
+    assert.match(markdownCalls.map(([, source]) => source).join("\n"), /## Treemap/);
+    assert.match(
+      markdownCalls.map(([, source]) => source).join("\n"),
+      /## Where to take this next/,
+    );
+    assert.match(runCalls[0][1], /ShadenA\/MathNet/);
+    assert.match(runCalls.map(([, source]) => source).join("\n"), /plotly\.graph_objects/);
+    assert.match(runCalls.map(([, source]) => source).join("\n"), /matplotlib\.pyplot/);
+    assert.equal(runCalls[0][2].timeoutMs, 10 * 60 * 1000);
   });
 
   it("shuts down the created notebook if fixture setup fails", async () => {
