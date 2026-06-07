@@ -796,16 +796,24 @@
         resizeObserver.observe(document.body);
 
         // --- Link Click Interception ---
-        document.addEventListener("click", function (e) {
-          const link = e.target.closest("a");
-          if (link && link.href) {
-            e.preventDefault();
-            sendRpc("nteract/linkClick", {
-              url: link.href,
-              newTab: e.metaKey || e.ctrlKey,
-            });
-          }
-        });
+        document.addEventListener(
+          "click",
+          function (e) {
+            var target =
+              e.target && e.target.nodeType === Node.ELEMENT_NODE
+                ? e.target
+                : e.target && e.target.parentElement;
+            var link = target && target.closest ? target.closest("a") : null;
+            if (link && link.href) {
+              e.preventDefault();
+              sendRpc("nteract/linkClick", {
+                url: link.href,
+                newTab: e.metaKey || e.ctrlKey,
+              });
+            }
+          },
+          { capture: true },
+        );
 
         // --- Mouse Down Forwarding ---
         // Notify parent that the iframe received a click so it can

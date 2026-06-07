@@ -2,7 +2,9 @@ import type { NotebookHost } from "@nteract/notebook-host";
 
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
 
-let _host: NotebookHost | null = null;
+type ExternalLinkHost = Pick<NotebookHost, "externalLinks">;
+
+let _host: ExternalLinkHost | null = null;
 
 /**
  * Register the `NotebookHost` instance for `openUrl`. Called once from
@@ -11,7 +13,7 @@ let _host: NotebookHost | null = null;
  * (`openUrl(url)`) untouched so the migration to host-based URL opening
  * doesn't need to thread a host parameter through every markdown cell.
  */
-export function setOpenUrlHost(host: NotebookHost | null): void {
+export function setOpenUrlHost(host: ExternalLinkHost | null): void {
   _host = host;
 }
 

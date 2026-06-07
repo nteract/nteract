@@ -77,6 +77,7 @@ import {
   NotebookView,
   PresenceValueProvider,
   setLoggerHost,
+  setOpenUrlHost,
   type PresenceContextValue,
 } from "../../notebook/src/notebook-surface";
 import {
@@ -123,6 +124,14 @@ setLoggerHost({
   info: () => {},
   warn: (message: string, ...args: unknown[]) => console.warn(message, ...args),
   error: (message: string, ...args: unknown[]) => console.error(message, ...args),
+});
+
+setOpenUrlHost({
+  externalLinks: {
+    async open(url: string): Promise<void> {
+      window.open(url, "_blank", "noopener,noreferrer");
+    },
+  },
 });
 
 interface CloudViewerAuthConfig {
