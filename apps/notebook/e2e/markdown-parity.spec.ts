@@ -63,7 +63,10 @@ test.describe("markdown parity", () => {
     expect(copyText.clipboard).toContain("Selectable paragraph");
 
     await page.getByLabel("Outline").click();
-    await page.getByRole("link", { name: "Deep parity section" }).click();
+    await page
+      .getByTestId("notebook-outline-panel")
+      .getByRole("link", { name: "Deep parity section", exact: true })
+      .click();
 
     const deepHeading = renderedMarkdown.getByRole("heading", { name: "Deep parity section" });
     await expect

@@ -310,9 +310,9 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("First paragraph")).toHaveClass("my-3", "leading-relaxed");
     expect(screen.getByRole("list")).toHaveClass("my-3", "ml-6", "list-disc");
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
-      "border-l-2",
-      "border-foreground/35",
-      "text-foreground/80",
+      "border-l-[3px]",
+      "border-primary/35",
+      "text-foreground/90",
     );
     expect(screen.getByText("quoted").closest("blockquote")).not.toHaveClass("bg-muted/[0.20]");
   });

@@ -39,13 +39,15 @@ export default async function Page({ params }: PageProps) {
     notFound();
   }
 
+  const pagePath = slug.join("/");
+  const isReadingFixturePage = pagePath === "markdown-typography";
   const MdxContent = page.data.body;
 
   return (
-    <DocsPage toc={page.data.toc}>
+    <DocsPage full={isReadingFixturePage} toc={isReadingFixturePage ? [] : page.data.toc}>
       <DocsTitle>{page.data.title}</DocsTitle>
       {page.data.description ? <DocsDescription>{page.data.description}</DocsDescription> : null}
-      <DocsBody>
+      <DocsBody className={isReadingFixturePage ? "max-w-none" : undefined}>
         <MdxContent
           components={getMDXComponents({
             a: createRelativeLink(source, page),

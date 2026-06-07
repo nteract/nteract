@@ -41,7 +41,7 @@ export const markdownDeleteClassName =
   "text-muted-foreground decoration-destructive/55 decoration-2";
 
 export const markdownBlockquoteClassName =
-  "relative my-5 border-l-2 border-foreground/35 py-1.5 pr-2 pl-5 text-[1.01em] leading-[1.72] text-foreground/80 italic";
+  "relative my-5 border-l-[3px] border-primary/35 py-1.5 pr-2 pl-5 text-[1.02em] leading-[1.75] text-foreground/90 italic [&_strong]:text-foreground";
 
 export const markdownDetailsClassName =
   "group/details my-5 overflow-hidden rounded-md border border-border/75 bg-muted/[0.14] shadow-sm open:bg-muted/[0.18] [&>:not(summary)]:mx-4 [&>:not(summary)]:my-3 [&>:last-child]:mb-4 [&>summary+*]:mt-3";
