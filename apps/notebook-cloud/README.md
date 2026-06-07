@@ -646,6 +646,20 @@ old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
 private; anonymous hosted render smokes may return a catalog 404 unless the
 browser context has a credential for the owning principal.
 
+Use the combined runtime/browser smoke when you want the full preview remote
+compute path in one command. It creates one API-key room per requested browser
+scope, keeps that room's runtime peer alive, clicks execution through Chromium
+for `owner` and `editor` scope by default, then stops each peer it started:
+
+```bash
+NTERACT_CLOUD_URL=https://preview.runt.run \
+pnpm --dir apps/notebook-cloud smoke:hosted:runtime-browser-execute
+```
+
+Set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES=owner` for a single-scope
+run, or set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_CODE` when you need a fixed
+source/output marker for a trace.
+
 To exercise the actual hosted browser execution path against a private room,
 seed Chromium with the same OIDC token cache the viewer stores in
 `localStorage` and click a rendered cell run button:

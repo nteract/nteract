@@ -27,6 +27,11 @@ const settleMs = parsePositiveInteger(
   "NOTEBOOK_CLOUD_BROWSER_EXECUTE_SETTLE_MS",
   6_000,
 );
+const preClickSettleMs = parseNonNegativeInteger(
+  process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_PRE_CLICK_SETTLE_MS,
+  "NOTEBOOK_CLOUD_BROWSER_EXECUTE_PRE_CLICK_SETTLE_MS",
+  2_000,
+);
 const expectedText = process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_EXPECTED_TEXT;
 const requireBlobImage = process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_REQUIRE_BLOB_IMAGE === "1";
 const allowFailedRequests =
@@ -134,12 +139,18 @@ async function main() {
     await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
     await waitForExecuteButtons(page, executeButtonIndex, timeoutMs);
+    if (preClickSettleMs > 0) {
+      await page.waitForTimeout(preClickSettleMs);
+    }
 
     const before = await pageDiagnostics(page);
     const button = page.locator('[data-testid="execute-button"]').nth(executeButtonIndex);
     await button.scrollIntoViewIfNeeded();
     const clickedAria = await button.getAttribute("aria-label");
-    const beforeExecutionOrdinal = executionOrdinal(clickedAria);
+    const beforeExecutionOrdinal = maxExecutionOrdinal(
+      executionOrdinal(clickedAria),
+      before.maxExecutionOrdinal,
+    );
     await button.click({ timeout: timeoutMs });
     await waitForExecutionOrdinalAdvance(
       page,
@@ -171,7 +182,10 @@ async function main() {
     const loadedBlobBackedImages = after.images.filter(
       (image) => isBlobBackedImageSource(image.src) && isLoadedImage(image),
     );
-    const afterExecutionOrdinal = executionOrdinal(after.executeButtons[executeButtonIndex]?.aria);
+    const afterExecutionOrdinal = maxExecutionOrdinal(
+      executionOrdinal(after.executeButtons[executeButtonIndex]?.aria),
+      after.maxExecutionOrdinal,
+    );
     if (events.pageErrors.length > 0) {
       throw new Error(`browser page errors:\n${events.pageErrors.join("\n")}`);
     }
@@ -219,6 +233,7 @@ async function main() {
             afterAria: after.executeButtons[executeButtonIndex]?.aria ?? null,
             beforeExecutionOrdinal,
             afterExecutionOrdinal,
+            preClickSettleMs,
           },
           checks: [
             "oidc_token_seeded_in_browser_storage",
@@ -300,6 +315,13 @@ async function pageDiagnostics(page) {
         disabled: button.disabled,
       }))
       .slice(0, 80);
+    const maxExecutionOrdinal = maxOrdinal(
+      [
+        ...executeButtons.flatMap((button) => [button.aria]),
+        ...visibleButtons.flatMap((button) => [button.aria, button.title, button.text]),
+        text,
+      ].flatMap(executionOrdinals),
+    );
     const images = Array.from(document.querySelectorAll("img"))
       .map((image) => ({
         src: image.currentSrc || image.src,
@@ -312,8 +334,20 @@ async function pageDiagnostics(page) {
       textSample: text.slice(0, 2_000),
       executeButtons,
       visibleButtons,
+      maxExecutionOrdinal,
       images,
     };
+
+    function executionOrdinals(value) {
+      if (!value) return [];
+      return Array.from(value.matchAll(/last execution\s+(\d+)|last run\s+(\d+)/gi))
+        .map((match) => Number(match[1] ?? match[2]))
+        .filter(Number.isInteger);
+    }
+
+    function maxOrdinal(values) {
+      return values.length > 0 ? Math.max(...values) : null;
+    }
   });
 }
 
@@ -338,10 +372,15 @@ function isBenignPageError(text) {
 }
 
 function executionOrdinal(value) {
-  const match = value?.match(/last execution\s+(\d+)/i);
+  const match = value?.match(/last execution\s+(\d+)|last run\s+(\d+)/i);
   if (!match) return null;
-  const parsed = Number(match[1]);
+  const parsed = Number(match[1] ?? match[2]);
   return Number.isInteger(parsed) ? parsed : null;
+}
+
+function maxExecutionOrdinal(...values) {
+  const ordinals = values.filter(Number.isInteger);
+  return ordinals.length > 0 ? Math.max(...ordinals) : null;
 }
 
 function executionOrdinalAdvanced(before, after) {
