@@ -85,14 +85,6 @@
       "name": "disconnect_notebook"
     },
     {
-      "description": "Get a cell by ID, including execution status/id and compact output summaries.",
-      "name": "get_cell"
-    },
-    {
-      "description": "Get all cells as summary, json, or rich format with compact execution/output summaries.",
-      "name": "get_all_cells"
-    },
-    {
       "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
       "name": "create_cell"
     },
