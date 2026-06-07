@@ -25,16 +25,23 @@ description: Frontend development, design exploration for UI and Elements surfac
 
 Use this mode when the user asks to iterate on UI, including notebook UI,
 Elements docs, rail/sidebar surfaces, toolbar chrome, cell affordances, runtime
-state language, or says the goal is to make the design "very fluid with a
-natural language."
+state language, or says the goal is to make the design feel fluid with natural
+grouping.
 
 ### Working Shape
 
 - Start a task branch early and treat it as an exploratory design branch.
 - Bring up the dev daemon and Vite unless the user only wants discussion.
 - Prefer real fixture notebooks and existing Elements scenarios over synthetic empty states.
-- If the production app is hard to drive, prototype the visual language in `apps/elements`,
-  then pull only the durable parts back into the main app.
+- If the production app is hard to drive, prototype the visual language in
+  `apps/elements`, then pull only the durable parts back into the main app.
+- Add or update an Elements page when a new surface needs product/design review:
+  create the fixture component in `apps/elements/components/*-example.tsx`,
+  document it in `apps/elements/content/docs/*.mdx`, and link it from
+  `apps/elements/app/page.tsx` plus `apps/elements/content/docs/index.mdx`.
+- Treat Elements fixtures as stable review artifacts: keep data deterministic,
+  avoid live network dependencies, and cover dense, empty, error, and narrow
+  viewport states when the surface needs them.
 - Commit each promising design state as a separate conventional commit so the user can
   review, cherry-pick, or backtrack.
 - Do not rush to PR until there is a tangible visual direction the user likes.
@@ -45,12 +52,19 @@ natural language."
 - Use color as subtle state and focus language, not decoration.
 - Favor fluid separators, ribbons, inline controls, and calm state vocabulary over raised
   pills, bubbles, boxed badges, or noisy status text.
+- Use shared shadcn/nteract primitives from `src/components/ui` where they fit;
+  add new primitives through the repo shadcn workflow instead of one-off
+  component copies.
 - Avoid duplicating identity/mode/status labels when another nearby control already carries
   that meaning.
 - Keep desktop-local identity quiet; reserve explicit auth/account chrome for cloud surfaces.
 - For cloud, separate app-level controls from notebook-level controls:
   presence, connection, sharing, auth, and view/edit mode belong in cloud/app chrome;
   execution, runtime/package language, and cell insertion belong in notebook chrome.
+- For product-surface PRs and docs, describe nteract in concrete system terms:
+  live documents, explicit runtime state, workstation/compute attachment, and
+  collaboration mechanics. Avoid named comparisons to other products in PR
+  descriptions or shipped docs.
 
 ### Visual Verification
 
@@ -59,6 +73,52 @@ natural language."
 - Inspect common states: ready, queued, running, completed, failed, hidden input/output,
   markdown-heavy notebooks, and package/outline rail panels.
 - If motion is involved, verify fast-path behavior so short executions do not flicker.
+
+## Hosted Product Surface Work
+
+Use this subsection for hosted notebook home, sharing, workstation, auth/session,
+and public-notebook polish. These surfaces are app chrome around notebooks; they
+should not fork cell, output, rail, toolbar, or execution UI.
+
+### Product Shape
+
+- Prototype in `apps/elements` first when the visual or interaction model is
+  still uncertain, then promote only stable pieces into `apps/notebook-cloud`.
+- Keep `/n` useful as a notebook home, not just a file list: continuation,
+  ownership/access state, created/open flows, and workstation/runtime readiness
+  should read together.
+- Treat notebook titles as first-class product data. Untitled notebooks must
+  degrade cleanly, but a dashboard full of IDs is a signal that title capture,
+  rename, or cleanup tooling needs attention.
+- Share previews and OG metadata must be safe by default. Private notebooks
+  should not leak content through server-rendered metadata; public notebooks
+  should use explicit published/revision-safe facts.
+- Workstation state belongs to host/app chrome until it becomes the active
+  notebook runtime. Runtime controls stay in the shared notebook toolbar.
+
+### App-Shell Latency
+
+- Avoid first-frame empty states when the route already owns the data. Prefer
+  server bootstrap or retained state for app-shell data such as `/n` lists and
+  sharing ledgers.
+- Do not solve app-shell data freshness by overusing Automerge when the source
+  of truth is an ACL/catalog/session resource. Use Automerge for notebook and
+  runtime documents; use host APIs for catalog, auth, sharing, and account data.
+- If browser auth is localStorage-only, the Worker cannot server-render
+  authenticated HTML on first navigation. A first-party session/cookie layer can
+  bootstrap app-owned pages, but room WebSocket credentials should remain
+  explicit/ticketed and output frames must stay on the separate isolated origin.
+
+### Projection Discipline
+
+- Derive dashboard/list/sidebar summaries in pure projection helpers outside
+  component render bodies. React should consume stable arrays/objects rather
+  than recreating ad hoc projections in JSX.
+- When adding new API facts for UI, keep them structured and host-owned. Avoid
+  parsing principal strings, display labels, or notebook IDs in React except as
+  compatibility fallback.
+- Capture product/architecture decisions in `.context/` during exploration and
+  graduate them to ADRs when they become durable.
 
 ## Hot Reload
 

@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type FormEvent,
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
@@ -14,13 +15,19 @@ import {
   Check,
   Clock,
   ExternalLink,
+  FilePlus2,
+  Globe2,
   KeyRound,
   Loader2,
   LogIn,
   LogOut,
+  PencilLine,
+  Radio,
   RotateCcw,
+  Share2,
   UserRound,
   X,
+  Zap,
 } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
@@ -102,6 +109,19 @@ import type { ResolvedCell } from "./render-resolution";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
+import {
+  cloudNotebookDisplayTitle,
+  cloudNotebookShortId,
+  projectCloudNotebookDashboard,
+  type CloudNotebookDashboardMetric,
+  type CloudNotebookDashboardModel,
+  type CloudNotebookListItem,
+} from "./notebook-dashboard";
+import {
+  clearCachedCloudNotebookList,
+  readCachedCloudNotebookList,
+  writeCachedCloudNotebookList,
+} from "./notebook-list-cache";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
 import { CloudSharingControls } from "./sharing-controls";
 import { cloudResponseError } from "./cloud-response";
@@ -143,25 +163,23 @@ interface ViewerRuntime {
   config: CloudViewerConfig;
 }
 
-interface CloudNotebookListItem {
-  notebook_id: string;
-  title: string | null;
-  owner_principal: string;
-  scope: "viewer" | "editor" | "runtime_peer" | "owner";
-  created_at: string;
-  updated_at: string;
-  latest_revision_id: string | null;
-  viewer_url: string;
-  endpoints: {
-    catalog: string;
-    acl: string;
-    access_requests: string;
-  };
-}
-
 interface CloudNotebookListResponse {
   ok: boolean;
   notebooks: CloudNotebookListItem[];
+}
+
+interface CloudNotebookCreateResponse {
+  ok: boolean;
+  title?: string | null;
+  viewer_url?: string;
+}
+
+interface CloudNotebookUpdateResponse {
+  ok: boolean;
+  notebook_id?: string;
+  title?: string | null;
+  updated_at?: string;
+  viewer_url?: string;
 }
 
 type CloudNotebookListState =
@@ -169,6 +187,11 @@ type CloudNotebookListState =
   | { kind: "ready"; notebooks: CloudNotebookListItem[] }
   | { kind: "signed_out" }
   | { kind: "error"; message: string };
+
+interface CloudNotebookRenameState {
+  notebookId: string;
+  title: string;
+}
 
 type ViewerRuntimeState =
   | { kind: "ready"; runtime: ViewerRuntime }
@@ -424,9 +447,22 @@ function CloudNotebookProviders({
 function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
-  const [listState, setListState] = useState<CloudNotebookListState>({ kind: "loading" });
+  const [listState, setListState] = useState<CloudNotebookListState>(() =>
+    initialCloudNotebookListState(authState),
+  );
   const [refreshIndex, setRefreshIndex] = useState(0);
+  const [createState, setCreateState] = useState<"idle" | "starting">("idle");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createFormOpen, setCreateFormOpen] = useState(false);
+  const [createTitle, setCreateTitle] = useState(() => defaultCloudNotebookTitle());
+  const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
+  const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const signedIn = authState.mode === "dev" || authState.mode === "oidc";
+  const dashboardModel = useMemo(
+    () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
+    [listState],
+  );
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
@@ -434,12 +470,16 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   useEffect(() => {
     if (!signedIn) {
+      clearCachedCloudNotebookListFromWindow();
       setListState({ kind: "signed_out" });
       return;
     }
 
     const controller = new AbortController();
-    setListState({ kind: "loading" });
+    const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState);
+    setListState(
+      cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" },
+    );
     void (async () => {
       try {
         const response = await fetchWithCloudPrototypeAuth(
@@ -455,6 +495,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         if (!isCloudNotebookListResponse(body)) {
           throw new Error("Unable to list notebooks: response shape was invalid");
         }
+        writeCachedCloudNotebookListToWindow(authState, body.notebooks);
         setListState({ kind: "ready", notebooks: body.notebooks });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -474,14 +515,141 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     setRefreshIndex((value) => value + 1);
   };
 
+  const openCreateForm = () => {
+    if (!signedIn) {
+      return;
+    }
+    setCreateError(null);
+    setCreateTitle(defaultCloudNotebookTitle());
+    setCreateFormOpen(true);
+  };
+
+  const closeCreateForm = () => {
+    if (createState === "starting") {
+      return;
+    }
+    setCreateError(null);
+    setCreateFormOpen(false);
+  };
+
+  const createNotebook = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!signedIn || createState === "starting") {
+      return;
+    }
+    const title = createTitle.trim() || defaultCloudNotebookTitle();
+    try {
+      setCreateError(null);
+      setCreateState("starting");
+      const response = await fetchWithCloudPrototypeAuth(
+        cloudNotebookCollectionEndpoint(),
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ title }),
+        },
+        cloudAuthWithScope(authState, "owner"),
+      );
+      if (!response.ok) {
+        throw await cloudResponseError(response, "Unable to create notebook");
+      }
+      const body = (await response.json()) as CloudNotebookCreateResponse;
+      if (body.ok !== true || typeof body.viewer_url !== "string") {
+        throw new Error("Unable to create notebook: response shape was invalid");
+      }
+      window.location.assign(body.viewer_url);
+    } catch (error) {
+      setCreateState("idle");
+      setCreateError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const openRenameForm = useCallback((notebook: CloudNotebookListItem) => {
+    setRenameError(null);
+    setRenameState({
+      notebookId: notebook.notebook_id,
+      title: notebook.title?.trim() ?? "",
+    });
+  }, []);
+
+  const closeRenameForm = useCallback(() => {
+    if (renameSavingId) {
+      return;
+    }
+    setRenameError(null);
+    setRenameState(null);
+  }, [renameSavingId]);
+
+  const saveNotebookTitle = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!signedIn || !renameState || renameSavingId) {
+      return;
+    }
+
+    const notebookId = renameState.notebookId;
+    const nextTitle = renameState.title.trim();
+    try {
+      setRenameError(null);
+      setRenameSavingId(notebookId);
+      const response = await fetchWithCloudPrototypeAuth(
+        cloudNotebookCatalogEndpoint(notebookId),
+        {
+          method: "PATCH",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ title: nextTitle || null }),
+        },
+        cloudAuthWithScope(authState, "editor"),
+      );
+      if (!response.ok) {
+        throw await cloudResponseError(response, "Unable to rename notebook");
+      }
+      const body = (await response.json()) as CloudNotebookUpdateResponse;
+      if (body.ok !== true || body.notebook_id !== notebookId) {
+        throw new Error("Unable to rename notebook: response shape was invalid");
+      }
+      setListState((current) => {
+        if (current.kind !== "ready") {
+          return current;
+        }
+        const notebooks = current.notebooks.map((notebook) =>
+          notebook.notebook_id === notebookId
+            ? {
+                ...notebook,
+                title: body.title ?? null,
+                updated_at: body.updated_at ?? notebook.updated_at,
+                viewer_url: body.viewer_url ?? notebook.viewer_url,
+              }
+            : notebook,
+        );
+        writeCachedCloudNotebookListToWindow(authState, notebooks);
+        return {
+          kind: "ready",
+          notebooks,
+        };
+      });
+      setRenameState(null);
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRenameSavingId(null);
+    }
+  };
+
   const signOut = () => {
+    clearCachedCloudNotebookListFromWindow();
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
   };
 
   const headerDetail =
     authState.mode === "oidc" || authState.mode === "dev"
-      ? (authState.user ?? "Signed in")
+      ? "Signed in"
       : authState.mode === "oidc_expired"
         ? "Session expired"
         : "Signed out";
@@ -493,7 +661,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           <a className="cloud-notebook-list-brand" href="/">
             nteract
           </a>
-          <h1>Notebooks</h1>
+          <h1>Notebook home</h1>
           <p>{headerDetail}</p>
         </div>
         <div className="cloud-notebook-list-actions">
@@ -504,6 +672,18 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           >
             <RotateCcw aria-hidden="true" />
             Refresh
+          </button>
+          <button
+            type="button"
+            disabled={!signedIn || createState === "starting"}
+            onClick={openCreateForm}
+          >
+            {createState === "starting" ? (
+              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+            ) : (
+              <FilePlus2 aria-hidden="true" />
+            )}
+            {createState === "starting" ? "Creating" : "New notebook"}
           </button>
           {signedIn ? null : (
             <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
@@ -525,6 +705,40 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         >
           {authRenewal.message}
         </div>
+      ) : null}
+      {createError ? (
+        <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
+          {createError}
+        </div>
+      ) : null}
+      {renameError ? (
+        <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
+          {renameError}
+        </div>
+      ) : null}
+      {createFormOpen ? (
+        <form className="cloud-new-notebook-form" onSubmit={createNotebook}>
+          <label htmlFor="cloud-new-notebook-title">Notebook title</label>
+          <input
+            id="cloud-new-notebook-title"
+            type="text"
+            value={createTitle}
+            maxLength={160}
+            disabled={createState === "starting"}
+            onChange={(event) => setCreateTitle(event.currentTarget.value)}
+          />
+          <button type="submit" disabled={createState === "starting"}>
+            {createState === "starting" ? (
+              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+            ) : (
+              <FilePlus2 aria-hidden="true" />
+            )}
+            Create
+          </button>
+          <button type="button" disabled={createState === "starting"} onClick={closeCreateForm}>
+            Cancel
+          </button>
+        </form>
       ) : null}
 
       <section className="cloud-notebook-list-content" aria-label="Notebook list">
@@ -548,41 +762,325 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
             <BookOpen aria-hidden="true" />
             <span>No notebooks yet.</span>
           </div>
+        ) : dashboardModel ? (
+          <CloudNotebookDashboard
+            model={dashboardModel}
+            renameState={renameState}
+            renameSavingId={renameSavingId}
+            onOpenRename={openRenameForm}
+            onCancelRename={closeRenameForm}
+            onRenameTitleChange={(title) =>
+              setRenameState((current) => (current ? { ...current, title } : current))
+            }
+            onSaveRename={saveNotebookTitle}
+          />
         ) : (
-          <ul className="cloud-notebook-list" aria-label="Notebook rooms">
-            {listState.notebooks.map((notebook) => (
-              <li key={notebook.notebook_id}>
-                <a className="cloud-notebook-list-row" href={notebook.viewer_url}>
-                  <span className="cloud-notebook-list-icon" aria-hidden="true">
-                    <BookOpen />
-                  </span>
-                  <span className="cloud-notebook-list-main">
-                    <span className="cloud-notebook-list-title">
-                      {notebook.title?.trim() || notebook.notebook_id}
-                    </span>
-                    <span className="cloud-notebook-list-id">{notebook.notebook_id}</span>
-                  </span>
-                  <span className="cloud-notebook-list-scope" data-scope={notebook.scope}>
-                    {formatNotebookScope(notebook.scope)}
-                  </span>
-                  <span className="cloud-notebook-list-updated">
-                    <Clock aria-hidden="true" />
-                    {formatNotebookUpdatedAt(notebook.updated_at)}
-                  </span>
-                  <ExternalLink className="cloud-notebook-list-open" aria-hidden="true" />
-                </a>
-              </li>
-            ))}
-          </ul>
+          <div className="cloud-notebook-list-state" data-kind="error" role="alert">
+            <AlertCircle aria-hidden="true" />
+            <span>Unable to project notebook dashboard.</span>
+          </div>
         )}
       </section>
     </main>
   );
 }
 
+function CloudNotebookDashboard({
+  model,
+  renameState,
+  renameSavingId,
+  onOpenRename,
+  onCancelRename,
+  onRenameTitleChange,
+  onSaveRename,
+}: {
+  model: CloudNotebookDashboardModel;
+  renameState: CloudNotebookRenameState | null;
+  renameSavingId: string | null;
+  onOpenRename: (notebook: CloudNotebookListItem) => void;
+  onCancelRename: () => void;
+  onRenameTitleChange: (title: string) => void;
+  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const continued = model.continueNotebook;
+
+  return (
+    <div className="cloud-dashboard">
+      {continued ? (
+        <section className="cloud-dashboard-continue" aria-labelledby="cloud-dashboard-continue">
+          <div className="cloud-dashboard-continue-main">
+            <p>Continue</p>
+            <h2 id="cloud-dashboard-continue">{cloudNotebookDisplayTitle(continued)}</h2>
+            <span className="cloud-dashboard-continue-id">
+              {cloudNotebookShortId(continued.notebook_id)}
+            </span>
+            <div className="cloud-dashboard-continue-facts">
+              <span>
+                <Clock aria-hidden="true" />
+                {formatNotebookUpdatedAt(continued.updated_at)}
+              </span>
+              <span>
+                <UserRound aria-hidden="true" />
+                {formatNotebookScope(continued.scope)}
+              </span>
+              <span>
+                {continued.latest_revision_id ? (
+                  <Globe2 aria-hidden="true" />
+                ) : (
+                  <Radio aria-hidden="true" />
+                )}
+                {continued.latest_revision_id ? "published revision" : "not published"}
+              </span>
+            </div>
+          </div>
+          <a className="cloud-dashboard-primary-link" href={continued.viewer_url}>
+            Open
+            <ExternalLink aria-hidden="true" />
+          </a>
+        </section>
+      ) : null}
+
+      <section className="cloud-dashboard-summary" aria-label="Notebook summary">
+        {model.metrics.map((metric) => (
+          <CloudNotebookDashboardMetric key={metric.label} metric={metric} />
+        ))}
+      </section>
+
+      <section className="cloud-dashboard-grid">
+        <section aria-label="Notebook rooms">
+          <div className="cloud-dashboard-section-heading">
+            <h2>Notebooks</h2>
+          </div>
+          <ul className="cloud-notebook-list">
+            {model.notebooks.map((notebook) => (
+              <li key={notebook.notebook_id}>
+                <CloudNotebookDashboardRow
+                  notebook={notebook}
+                  renameTitle={
+                    renameState?.notebookId === notebook.notebook_id ? renameState.title : null
+                  }
+                  renameSaving={renameSavingId === notebook.notebook_id}
+                  onOpenRename={onOpenRename}
+                  onCancelRename={onCancelRename}
+                  onRenameTitleChange={onRenameTitleChange}
+                  onSaveRename={onSaveRename}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+        <aside className="cloud-dashboard-aside" aria-label="Notebook workspace">
+          <section>
+            <p className="cloud-dashboard-aside-kicker">Compute</p>
+            <h2>Workstations</h2>
+            <p>
+              Workstation status appears inside each notebook room once a compute target is
+              selected.
+            </p>
+          </section>
+          <section>
+            <p className="cloud-dashboard-aside-kicker">Sharing</p>
+            <h2>Public previews</h2>
+            <p>Published notebooks can expose safe metadata and revision-aware preview images.</p>
+          </section>
+        </aside>
+      </section>
+    </div>
+  );
+}
+
+function CloudNotebookDashboardMetric({ metric }: { metric: CloudNotebookDashboardMetric }) {
+  const Icon = cloudNotebookDashboardMetricIcons[metric.icon];
+  return (
+    <div className="cloud-dashboard-summary-item">
+      <span>
+        <Icon aria-hidden="true" />
+        {metric.label}
+      </span>
+      <strong>{metric.value}</strong>
+      <p>{metric.detail}</p>
+    </div>
+  );
+}
+
+const cloudNotebookDashboardMetricIcons = {
+  notebooks: BookOpen,
+  owned: UserRound,
+  published: Zap,
+} satisfies Record<CloudNotebookDashboardMetric["icon"], typeof BookOpen>;
+
+function CloudNotebookDashboardRow({
+  notebook,
+  renameTitle,
+  renameSaving,
+  onOpenRename,
+  onCancelRename,
+  onRenameTitleChange,
+  onSaveRename,
+}: {
+  notebook: CloudNotebookListItem;
+  renameTitle: string | null;
+  renameSaving: boolean;
+  onOpenRename: (notebook: CloudNotebookListItem) => void;
+  onCancelRename: () => void;
+  onRenameTitleChange: (title: string) => void;
+  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  if (renameTitle !== null) {
+    return (
+      <form className="cloud-notebook-list-rename-form" onSubmit={onSaveRename}>
+        <input
+          aria-label={`Notebook title for ${cloudNotebookShortId(notebook.notebook_id)}`}
+          type="text"
+          value={renameTitle}
+          maxLength={160}
+          placeholder="Untitled notebook"
+          disabled={renameSaving}
+          onChange={(event) => onRenameTitleChange(event.currentTarget.value)}
+        />
+        <button type="submit" disabled={renameSaving} title="Save title" aria-label="Save title">
+          {renameSaving ? (
+            <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+          ) : (
+            <Check aria-hidden="true" />
+          )}
+        </button>
+        <button
+          type="button"
+          disabled={renameSaving}
+          title="Cancel rename"
+          aria-label="Cancel rename"
+          onClick={onCancelRename}
+        >
+          <X aria-hidden="true" />
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <div className="cloud-notebook-list-row">
+      <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
+        <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
+        <span className="cloud-notebook-list-id">{cloudNotebookShortId(notebook.notebook_id)}</span>
+        <span className="cloud-notebook-list-row-facts">
+          <span>
+            <UserRound aria-hidden="true" />
+            {formatNotebookScope(notebook.scope)}
+          </span>
+          <span data-state={notebook.latest_revision_id ? "published" : "unpublished"}>
+            {notebook.latest_revision_id ? (
+              <Share2 aria-hidden="true" />
+            ) : (
+              <Radio aria-hidden="true" />
+            )}
+            {notebook.latest_revision_id ? "published revision" : "not published"}
+          </span>
+        </span>
+      </a>
+      <span className="cloud-notebook-list-updated">
+        <Clock aria-hidden="true" />
+        {formatNotebookUpdatedAt(notebook.updated_at)}
+      </span>
+      <span className="cloud-notebook-list-row-actions">
+        {canRenameCloudNotebook(notebook) ? (
+          <button
+            type="button"
+            className="cloud-notebook-list-icon-button"
+            title="Rename notebook"
+            aria-label={`Rename ${cloudNotebookDisplayTitle(notebook)}`}
+            onClick={() => onOpenRename(notebook)}
+          >
+            <PencilLine aria-hidden="true" />
+          </button>
+        ) : null}
+        <a
+          className="cloud-notebook-list-icon-button"
+          href={notebook.viewer_url}
+          title="Open notebook"
+          aria-label={`Open ${cloudNotebookDisplayTitle(notebook)}`}
+        >
+          <ExternalLink aria-hidden="true" />
+        </a>
+      </span>
+    </div>
+  );
+}
+
 function cloudNotebookListEndpoint(): string {
-  const path = ["api", "n"].join("/");
-  return new URL(`${path}?limit=100`, `${window.location.origin}/`).href;
+  return new URL("api/n?limit=100", `${window.location.origin}/`).href;
+}
+
+function cloudNotebookCollectionEndpoint(): string {
+  return new URL("api/n", `${window.location.origin}/`).href;
+}
+
+function cloudNotebookCatalogEndpoint(notebookId: string): string {
+  return new URL(`api/n/${encodeURIComponent(notebookId)}`, `${window.location.origin}/`).href;
+}
+
+function cloudAuthWithScope(
+  authState: CloudPrototypeAuthState,
+  requestedScope: NonNullable<CloudPrototypeAuthState["requestedScope"]>,
+): CloudPrototypeAuthState {
+  return authState.requestedScope === requestedScope
+    ? authState
+    : {
+        ...authState,
+        requestedScope,
+      };
+}
+
+function initialCloudNotebookListState(authState: CloudPrototypeAuthState): CloudNotebookListState {
+  const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState);
+  return cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" };
+}
+
+function readCachedCloudNotebookListFromWindow(
+  authState: CloudPrototypeAuthState,
+): CloudNotebookListItem[] | null {
+  const storage = cloudNotebookListCacheStorage();
+  return storage ? readCachedCloudNotebookList(storage, authState) : null;
+}
+
+function writeCachedCloudNotebookListToWindow(
+  authState: CloudPrototypeAuthState,
+  notebooks: CloudNotebookListItem[],
+): void {
+  const storage = cloudNotebookListCacheStorage();
+  if (!storage) {
+    return;
+  }
+  writeCachedCloudNotebookList(storage, authState, notebooks);
+}
+
+function clearCachedCloudNotebookListFromWindow(): void {
+  const storage = cloudNotebookListCacheStorage();
+  if (!storage) {
+    return;
+  }
+  clearCachedCloudNotebookList(storage);
+}
+
+function cloudNotebookListCacheStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function defaultCloudNotebookTitle(now = new Date()): string {
+  const date = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(now);
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(now);
+  return `Notebook ${date} ${time}`;
 }
 
 function isCloudNotebookListResponse(value: unknown): value is CloudNotebookListResponse {
@@ -591,6 +1089,10 @@ function isCloudNotebookListResponse(value: unknown): value is CloudNotebookList
   }
   const candidate = value as Record<string, unknown>;
   return candidate.ok === true && Array.isArray(candidate.notebooks);
+}
+
+function canRenameCloudNotebook(notebook: CloudNotebookListItem): boolean {
+  return notebook.scope === "owner" || notebook.scope === "editor";
 }
 
 function formatNotebookScope(scope: CloudNotebookListItem["scope"]): string {

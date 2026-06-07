@@ -350,6 +350,61 @@ export async function getNotebookRow(env: Env, notebookId: string): Promise<Note
     .first<NotebookRow>();
 }
 
+export async function getPublicPublishedNotebookRow(
+  env: Env,
+  notebookId: string,
+): Promise<NotebookRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return await env.DB.prepare(
+    `SELECT n.id,
+            n.owner_principal,
+            n.title,
+            n.created_at,
+            n.updated_at,
+            n.latest_revision_id
+       FROM notebooks n
+       JOIN notebook_acl a
+         ON a.notebook_id = n.id
+      WHERE n.id = ?
+        AND n.latest_revision_id IS NOT NULL
+        AND a.subject_kind = 'public'
+        AND a.subject = 'anonymous'
+        AND a.scope = 'viewer'
+      LIMIT 1`,
+  )
+    .bind(notebookId)
+    .first<NotebookRow>();
+}
+
+export async function updateNotebookTitle(
+  env: Env,
+  notebookId: string,
+  title: string | null,
+): Promise<NotebookRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const updatedAt = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE notebooks
+        SET title = ?,
+            updated_at = ?
+      WHERE id = ?`,
+  )
+    .bind(title, updatedAt, notebookId)
+    .run();
+  if (d1Changes(result) === 0) {
+    return null;
+  }
+  return await getNotebookRow(env, notebookId);
+}
+
 export async function getNotebookAclRowsForPrincipal(
   env: Env,
   notebookId: string,
@@ -552,6 +607,7 @@ export async function createNotebookWithOwnerAcl(
   env: Env,
   notebookId: string,
   identity: AuthenticatedConnection,
+  options: { title?: string | null } = {},
 ): Promise<CreateNotebookWithOwnerAclResult> {
   if (!env.DB) {
     return { ownerPrincipal: identity.principal, created: true };
@@ -563,10 +619,10 @@ export async function createNotebookWithOwnerAcl(
     (await getCanonicalPrincipalForTransport(env, identity.principal)) ?? identity.principal;
   const [notebookInsertResult] = await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO notebooks (id, owner_principal, created_at, updated_at)
-         VALUES (?, ?, ?, ?)
+      `INSERT INTO notebooks (id, owner_principal, title, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(id) DO NOTHING`,
-    ).bind(notebookId, ownerSubject, now, now),
+    ).bind(notebookId, ownerSubject, options.title ?? null, now, now),
     notebookOwnerAclInsert(env, {
       notebookId,
       subject: ownerSubject,

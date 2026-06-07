@@ -411,10 +411,273 @@ body {
   background: color-mix(in srgb, #b42318 6%, var(--background));
 }
 
+.cloud-new-notebook-form {
+  display: grid;
+  grid-template-columns: auto minmax(14rem, 24rem) auto auto;
+  gap: 0.5rem;
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  padding: 0.75rem clamp(1rem, 4vw, 2rem);
+  background: color-mix(in srgb, var(--background) 97%, var(--foreground) 3%);
+}
+
+.cloud-new-notebook-form label {
+  color: color-mix(in srgb, var(--foreground) 60%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.cloud-new-notebook-form input {
+  width: 100%;
+  min-width: 0;
+  height: 2.25rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
+  border-radius: 6px;
+  padding-inline: 0.625rem;
+  color: var(--foreground);
+  background: var(--background);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.cloud-new-notebook-form input:focus-visible {
+  outline: 2px solid color-mix(in srgb, #0f766e 42%, transparent);
+  outline-offset: 2px;
+}
+
+.cloud-new-notebook-form button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 2.25rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
+  border-radius: 6px;
+  padding-inline: 0.75rem;
+  color: var(--foreground);
+  background: var(--background);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.cloud-new-notebook-form button[type="submit"] {
+  color: var(--background);
+  background: var(--foreground);
+}
+
+.cloud-new-notebook-form button svg {
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
 .cloud-notebook-list-content {
   display: grid;
   align-content: start;
   padding: clamp(0.75rem, 3vw, 1.5rem) clamp(1rem, 4vw, 2rem) 2rem;
+}
+
+.cloud-dashboard {
+  display: grid;
+  gap: 1.25rem;
+  width: min(100%, 72rem);
+}
+
+.cloud-dashboard-continue {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
+  border-left: 2px solid color-mix(in srgb, #10b981 70%, transparent);
+  padding: 1rem 0 1rem 1rem;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, #10b981 7%, var(--background)) 0%,
+    color-mix(in srgb, var(--background) 98%, transparent) 68%,
+    transparent 100%
+  );
+}
+
+.cloud-dashboard-continue-main {
+  min-width: 0;
+}
+
+.cloud-dashboard-continue-main p,
+.cloud-dashboard-continue-main h2 {
+  margin: 0;
+}
+
+.cloud-dashboard-continue-main p {
+  color: #0f766e;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.cloud-dashboard-continue-main h2 {
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(1.25rem, 3vw, 1.875rem);
+  font-weight: 720;
+  line-height: 1.1;
+}
+
+.cloud-dashboard-continue-id {
+  display: block;
+  margin-top: 0.375rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--foreground) 54%, transparent);
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.cloud-dashboard-continue-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 1rem;
+  margin-top: 0.75rem;
+  color: color-mix(in srgb, var(--foreground) 60%, transparent);
+  font-size: 0.8125rem;
+}
+
+.cloud-dashboard-continue-facts span,
+.cloud-notebook-list-row-facts span,
+.cloud-dashboard-summary-item span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.cloud-dashboard-continue-facts svg,
+.cloud-notebook-list-row-facts svg,
+.cloud-dashboard-summary-item svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex: 0 0 auto;
+}
+
+.cloud-dashboard-primary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 2.25rem;
+  border-radius: 6px;
+  padding-inline: 0.875rem;
+  color: var(--background);
+  background: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.cloud-dashboard-primary-link svg {
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
+.cloud-dashboard-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.cloud-dashboard-summary-item {
+  border-left: 2px solid color-mix(in srgb, var(--foreground) 16%, transparent);
+  padding: 0.625rem 0 0.625rem 0.875rem;
+}
+
+.cloud-dashboard-summary-item span {
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.cloud-dashboard-summary-item strong {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 1.75rem;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.cloud-dashboard-summary-item p {
+  margin: 0.375rem 0 0;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.cloud-dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.cloud-dashboard-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.625rem;
+}
+
+.cloud-dashboard-section-heading h2,
+.cloud-dashboard-aside h2,
+.cloud-dashboard-aside p {
+  margin: 0;
+}
+
+.cloud-dashboard-section-heading h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.cloud-dashboard-aside {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.cloud-dashboard-aside section {
+  border-left: 2px solid color-mix(in srgb, var(--foreground) 16%, transparent);
+  padding-left: 0.875rem;
+}
+
+.cloud-dashboard-aside-kicker {
+  color: color-mix(in srgb, var(--foreground) 54%, transparent);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.cloud-dashboard-aside h2 {
+  margin-top: 0.25rem;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.cloud-dashboard-aside section > p:not(.cloud-dashboard-aside-kicker) {
+  margin-top: 0.5rem;
+  color: color-mix(in srgb, var(--foreground) 62%, transparent);
+  font-size: 0.875rem;
+  line-height: 1.45;
 }
 
 .cloud-notebook-list {
@@ -427,31 +690,19 @@ body {
 
 .cloud-notebook-list-row {
   display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr) auto minmax(10rem, auto) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, auto) auto;
   align-items: center;
-  gap: 0.75rem;
-  min-height: 4rem;
+  gap: 1rem;
+  min-height: 4.75rem;
   border-bottom: 1px solid var(--border);
   color: var(--foreground);
-  text-decoration: none;
 }
 
 .cloud-notebook-list-row:hover {
   background: color-mix(in srgb, var(--background) 94%, var(--foreground) 5%);
 }
 
-.cloud-notebook-list-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  color: color-mix(in srgb, #0f766e 82%, var(--foreground));
-}
-
-.cloud-notebook-list-icon svg,
-.cloud-notebook-list-updated svg,
-.cloud-notebook-list-open {
+.cloud-notebook-list-updated svg {
   width: 1rem;
   height: 1rem;
 }
@@ -460,6 +711,8 @@ body {
   display: grid;
   min-width: 0;
   gap: 0.1875rem;
+  color: inherit;
+  text-decoration: none;
 }
 
 .cloud-notebook-list-title,
@@ -484,27 +737,17 @@ body {
   line-height: 1.2;
 }
 
-.cloud-notebook-list-scope {
-  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
-  border-radius: 999px;
-  padding: 0.1875rem 0.5rem;
-  color: color-mix(in srgb, var(--foreground) 68%, transparent);
-  background: color-mix(in srgb, var(--background) 92%, var(--foreground) 7%);
+.cloud-notebook-list-row-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 0.875rem;
+  margin-top: 0.5rem;
+  color: color-mix(in srgb, var(--foreground) 58%, transparent);
   font-size: 0.75rem;
-  font-weight: 650;
-  line-height: 1.2;
 }
 
-.cloud-notebook-list-scope[data-scope="owner"] {
-  border-color: color-mix(in srgb, #0f766e 38%, transparent);
-  color: #0f766e;
-  background: color-mix(in srgb, #0f766e 7%, var(--background));
-}
-
-.cloud-notebook-list-scope[data-scope="editor"] {
-  border-color: color-mix(in srgb, #2563eb 34%, transparent);
-  color: #2563eb;
-  background: color-mix(in srgb, #2563eb 6%, var(--background));
+.cloud-notebook-list-row-facts [data-state="published"] {
+  color: color-mix(in srgb, #0f766e 84%, var(--foreground));
 }
 
 .cloud-notebook-list-updated {
@@ -517,8 +760,69 @@ body {
   white-space: nowrap;
 }
 
-.cloud-notebook-list-open {
-  color: color-mix(in srgb, var(--foreground) 48%, transparent);
+.cloud-notebook-list-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.cloud-notebook-list-icon-button,
+.cloud-notebook-list-rename-form button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--foreground) 54%, transparent);
+  background: transparent;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.cloud-notebook-list-icon-button:hover,
+.cloud-notebook-list-rename-form button:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
+.cloud-notebook-list-icon-button:disabled,
+.cloud-notebook-list-rename-form button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.cloud-notebook-list-icon-button svg,
+.cloud-notebook-list-rename-form button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.cloud-notebook-list-rename-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 4.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.cloud-notebook-list-rename-form input {
+  min-width: 0;
+  height: 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding-inline: 0.625rem;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--background) 96%, var(--foreground) 4%);
+  font: inherit;
+}
+
+.cloud-notebook-list-rename-form input:focus {
+  outline: 2px solid color-mix(in srgb, #0f766e 42%, transparent);
+  outline-offset: 1px;
 }
 
 .cloud-notebook-list-state {
@@ -556,16 +860,36 @@ body {
     justify-content: flex-start;
   }
 
+  .cloud-new-notebook-form {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .cloud-new-notebook-form label {
+    grid-column: 1 / -1;
+  }
+
+  .cloud-dashboard-continue,
+  .cloud-dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cloud-dashboard-primary-link {
+    width: fit-content;
+  }
+
+  .cloud-dashboard-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .cloud-notebook-list-row {
-    grid-template-columns: 2rem minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     min-height: 4.5rem;
-    gap: 0.5rem;
+    gap: 0.5rem 0.75rem;
     padding-block: 0.625rem;
   }
 
-  .cloud-notebook-list-scope,
   .cloud-notebook-list-updated {
-    grid-column: 2 / -1;
+    grid-column: 1 / -1;
     justify-self: start;
   }
 
@@ -573,9 +897,15 @@ body {
     margin-top: -0.25rem;
   }
 
-  .cloud-notebook-list-open {
-    grid-column: 3;
+  .cloud-notebook-list-row-actions {
+    grid-column: 2;
     grid-row: 1;
+  }
+
+  .cloud-notebook-list-rename-form {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    min-height: 4.5rem;
+    padding-block: 0.625rem;
   }
 }
 

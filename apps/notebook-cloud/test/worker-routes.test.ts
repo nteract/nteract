@@ -174,6 +174,57 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /topic-viz.*render/);
   });
 
+  it("uses catalog-safe metadata for public published notebook viewers", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "public-meta-demo");
+    const notebook = env.DB.notebooks.get("public-meta-demo");
+    assert.ok(notebook);
+    notebook.title = "Public & Safe <Notebook>";
+    notebook.latest_revision_id = "revision-public-metadata";
+    seedAcl(env, {
+      notebookId: "public-meta-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/public-meta-demo/public-title"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<title>nteract notebook: Public &amp; Safe &lt;Notebook&gt;<\/title>/);
+    assert.match(
+      html,
+      /<meta property="og:title" content="nteract notebook: Public &amp; Safe &lt;Notebook&gt;" \/>/,
+    );
+    assert.match(html, /published revision revision-pub/);
+  });
+
+  it("keeps private notebook titles out of server-rendered viewer metadata", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "private-meta-demo");
+    const notebook = env.DB.notebooks.get("private-meta-demo");
+    assert.ok(notebook);
+    notebook.title = "Secret Research Plan";
+    notebook.latest_revision_id = "revision-private-metadata";
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/private-meta-demo/secret-plan"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<title>nteract cloud notebook private-meta-demo<\/title>/);
+    assert.match(html, /Private notebook metadata is shown after access is verified\./);
+    assert.doesNotMatch(html, /Secret Research Plan|revision-private-metadata/);
+  });
+
   it("serves the notebook list page at /n", async () => {
     const env = fakeEnv();
 
@@ -643,10 +694,12 @@ describe("Worker artifact routes", () => {
       notebook_id: string;
       source_notebook_id: string;
       source_notebook_name: string;
+      title: string;
       vanity_name: string;
       viewer_url: string;
     };
     assert.match(body.notebook_id, /^[0-9A-HJKMNP-TV-Z]{26}$/);
+    assert.equal(body.title, "Markdown Harness");
     assert.equal(body.vanity_name, "markdown-harness");
     assert.equal(body.source_notebook_id, "332dd3e3-b1d5-4d16-8ad6-16919b3157d1");
     assert.equal(body.source_notebook_name, "Markdown Harness");
@@ -661,6 +714,7 @@ describe("Worker artifact routes", () => {
     });
     assert.ok(accountPrincipal);
     assert.equal(env.DB.notebooks.get(body.notebook_id)?.owner_principal, accountPrincipal);
+    assert.equal(env.DB.notebooks.get(body.notebook_id)?.title, "Markdown Harness");
     assert.equal(
       env.DB.acl.some(
         (row) =>
@@ -670,6 +724,101 @@ describe("Worker artifact routes", () => {
       ),
       true,
     );
+  });
+
+  it("uses a notebook title as the initial vanity URL when creating from the cloud home", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ title: "Exploration Notes" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 201);
+    const body = (await response.json()) as {
+      notebook_id: string;
+      title: string;
+      vanity_name: string | null;
+      viewer_url: string;
+    };
+    assert.equal(body.title, "Exploration Notes");
+    assert.equal(body.vanity_name, null);
+    assert.equal(env.DB.notebooks.get(body.notebook_id)?.title, "Exploration Notes");
+    assert.equal(body.viewer_url, `http://localhost/n/${body.notebook_id}/Exploration%20Notes`);
+  });
+
+  it("renames notebook titles for editors", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "rename-demo");
+    seedAcl(env, { notebookId: "rename-demo", subject: "user:dev:alice", scope: "editor" });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n/rename-demo", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "editor",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ title: "Renamed Notebook" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      notebook_id: string;
+      ok: boolean;
+      title: string | null;
+      updated_at: string;
+      viewer_url: string;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.notebook_id, "rename-demo");
+    assert.equal(body.title, "Renamed Notebook");
+    assert.equal(env.DB.notebooks.get("rename-demo")?.title, "Renamed Notebook");
+    assert.equal(env.DB.notebooks.get("rename-demo")?.updated_at, body.updated_at);
+    assert.equal(body.viewer_url, "http://localhost/n/rename-demo/Renamed%20Notebook");
+  });
+
+  it("rejects notebook title updates from viewers", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "viewer-rename-demo");
+    seedAcl(env, {
+      notebookId: "viewer-rename-demo",
+      subject: "user:dev:alice",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n/viewer-rename-demo", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "viewer",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ title: "Not Allowed" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.equal(env.DB.notebooks.get("viewer-rename-demo")?.title, null);
   });
 
   it("lists notebooks visible to the authenticated principal", async () => {
@@ -3624,14 +3773,17 @@ class FakeD1Statement implements D1PreparedStatement {
       }
       return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebooks")) {
-      const [id, ownerPrincipal, createdAtOrUpdatedAt, maybeUpdatedAt] = this.values as [
-        string,
-        string,
-        string,
-        string | undefined,
-      ];
-      const createdAt = maybeUpdatedAt ? createdAtOrUpdatedAt : undefined;
-      const updatedAt = maybeUpdatedAt ?? createdAtOrUpdatedAt;
+      const [id, ownerPrincipal, maybeTitleOrCreatedAt, createdAtOrUpdatedAt, maybeUpdatedAt] = this
+        .values as [string, string, string | null, string | undefined, string | undefined];
+      const hasTitleColumn = this.query.includes(" title,");
+      const title = hasTitleColumn ? maybeTitleOrCreatedAt : null;
+      const createdAtSource = hasTitleColumn ? createdAtOrUpdatedAt : maybeTitleOrCreatedAt;
+      const updatedAtSource = hasTitleColumn ? maybeUpdatedAt : createdAtOrUpdatedAt;
+      const createdAt = updatedAtSource ? createdAtSource : undefined;
+      const updatedAt = updatedAtSource ?? createdAtSource;
+      if (!updatedAt) {
+        throw new Error("fake notebook insert did not receive an updated_at value");
+      }
       const existing = this.db.notebooks.get(id);
       if (existing && this.query.includes("DO NOTHING")) {
         return okResult(undefined, { changes: 0 });
@@ -3639,7 +3791,7 @@ class FakeD1Statement implements D1PreparedStatement {
       this.db.notebooks.set(id, {
         id,
         owner_principal: existing?.owner_principal ?? ownerPrincipal,
-        title: existing?.title ?? null,
+        title: existing?.title ?? title,
         created_at: existing?.created_at ?? createdAt ?? updatedAt,
         updated_at: updatedAt,
         latest_revision_id: existing?.latest_revision_id ?? null,
@@ -3692,6 +3844,15 @@ class FakeD1Statement implements D1PreparedStatement {
         existing.latest_revision_id = revisionId;
         existing.updated_at = updatedAt;
       }
+    } else if (this.query.includes("UPDATE notebooks") && this.query.includes("SET title")) {
+      const [title, updatedAt, notebookId] = this.values as [string | null, string, string];
+      const existing = this.db.notebooks.get(notebookId);
+      if (!existing) {
+        return okResult(undefined, { changes: 0 });
+      }
+      existing.title = title;
+      existing.updated_at = updatedAt;
+      return okResult(undefined, { changes: 1 });
     } else if (this.query.includes("UPDATE notebooks") && this.query.includes("owner_principal")) {
       const [canonicalPrincipal, updatedAt, transportPrincipal] = this.values as [
         string,
@@ -3883,6 +4044,22 @@ class FakeD1Statement implements D1PreparedStatement {
         );
       }
       return (this.db.invites.get(this.values[0] as string) as T | undefined) ?? null;
+    }
+    if (
+      this.query.includes("FROM notebooks n") &&
+      this.query.includes("JOIN notebook_acl a") &&
+      this.query.includes("a.subject_kind = 'public'")
+    ) {
+      const notebookId = this.values[0] as string;
+      const notebook = this.db.notebooks.get(notebookId);
+      const publicViewer = this.db.acl.some(
+        (row) =>
+          row.notebook_id === notebookId &&
+          row.subject_kind === "public" &&
+          row.subject === "anonymous" &&
+          row.scope === "viewer",
+      );
+      return (notebook?.latest_revision_id && publicViewer ? notebook : null) as T | null;
     }
     if (this.query.includes("FROM notebooks")) {
       return (this.db.notebooks.get(this.values[0] as string) as T | undefined) ?? null;

@@ -7,6 +7,7 @@ import {
   FileCode2,
   Frame,
   IdCard,
+  LayoutDashboard,
   ListPlus,
   PackageCheck,
   Palette,
@@ -49,6 +50,12 @@ const catalogGroups = [
         description: "Presence, sync, workstations, sharing, mode, and auth.",
         href: "/docs/cloud-notebook-shell",
         icon: Cloud,
+      },
+      {
+        title: "Cloud dashboard",
+        description: "Notebook home, continuation, workstation context, and sharing previews.",
+        href: "/docs/cloud-dashboard",
+        icon: LayoutDashboard,
       },
       {
         title: "Compute placement",

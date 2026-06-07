@@ -29,6 +29,7 @@ import {
   getNotebookAclRows,
   getNotebookRow,
   getNotebookCatalog,
+  getPublicPublishedNotebookRow,
   grantNotebookAclRow,
   listNotebooksForPrincipal,
   recordBlob,
@@ -36,6 +37,7 @@ import {
   revokeNotebookAclRow,
   runtimeStateSnapshotKey,
   snapshotKey,
+  updateNotebookTitle,
   type NotebookAclRow,
   type NotebookAccessRequestRow,
   type NotebookAccessRequestStatus,
@@ -178,6 +180,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
     methods: ["GET"],
     handler: ({ params }, request, env) => routeCatalog(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
+    methods: ["PATCH"],
+    handler: ({ params }, request, env) =>
+      routeUpdateNotebookMetadata(request, env, params.notebookId),
   },
   {
     match: routePath("/api/n/:notebookId/acl", { trailingSlash: "optional" }),
@@ -508,6 +516,13 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
   if (vanityName instanceof Response) {
     return vanityName;
   }
+  const title = optionalPayloadString(payload, ["title"], {
+    field: "title",
+    maxLength: 160,
+  });
+  if (title instanceof Response) {
+    return title;
+  }
   const sourceNotebookId = optionalPayloadString(
     payload,
     ["source_notebook_id", "sourceNotebookId"],
@@ -524,12 +539,15 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
   if (sourceNotebookName instanceof Response) {
     return sourceNotebookName;
   }
+  const notebookTitle = title ?? sourceNotebookName;
 
   const notebookId = await createUniqueNotebookId(env);
   if (!notebookId) {
     return json({ error: "could not allocate notebook id" }, 500);
   }
-  const notebookCreation = await createNotebookWithOwnerAcl(env, notebookId, identity);
+  const notebookCreation = await createNotebookWithOwnerAcl(env, notebookId, identity, {
+    title: notebookTitle,
+  });
   if (!notebookCreation.created) {
     return json({ error: "could not allocate notebook id" }, 500);
   }
@@ -543,12 +561,13 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     counter_delta: 1,
   });
 
-  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName);
+  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle);
   const apiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   return json(
     {
       ok: true,
       notebook_id: notebookId,
+      title: notebookTitle,
       vanity_name: vanityName,
       viewer_url: viewerUrl,
       source_notebook_id: sourceNotebookId,
@@ -1701,6 +1720,61 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   return json(catalog);
 }
 
+async function routeUpdateNotebookMetadata(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "editor");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  const payload = await readCreateNotebookPayload(request);
+  if (payload instanceof Response) {
+    return payload;
+  }
+  if (!Object.hasOwn(payload, "title")) {
+    return json({ error: "title is required" }, 400);
+  }
+  const title = optionalPayloadString(payload, ["title"], {
+    field: "title",
+    maxLength: 160,
+  });
+  if (title instanceof Response) {
+    return title;
+  }
+
+  const notebook = await updateNotebookTitle(env, notebookId, title);
+  if (!notebook) {
+    return json({ error: "notebook not found" }, 404);
+  }
+  cloudLog("info", "notebook.metadata.updated", {
+    notebook_id: notebookId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    title_present: title !== null,
+    counter: "notebook_metadata_updates",
+    counter_delta: 1,
+  });
+
+  return json({
+    ok: true,
+    notebook_id: notebook.id,
+    title: notebook.title,
+    updated_at: notebook.updated_at,
+    viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+  });
+}
+
 async function validateSnapshotPair(options: {
   request: Request;
   env: Env;
@@ -2414,8 +2488,7 @@ async function viewer(
   env: Env,
   headsHash?: string,
 ): Promise<Response> {
-  const escaped = escapeHtml(notebookId);
-  const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
+  const shellMetadata = await publicViewerShellMetadata(env, notebookId, headsHash);
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
   const config = {
@@ -2438,12 +2511,7 @@ async function viewer(
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
   };
-  return viewerShell(
-    `nteract cloud notebook ${title}`,
-    env,
-    authConfigForRequest(request, env),
-    config,
-  );
+  return viewerShell(shellMetadata, env, authConfigForRequest(request, env), config);
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {
@@ -2454,34 +2522,100 @@ interface ViewerShellConfig extends Record<string, unknown> {
 }
 
 function homeViewer(request: Request, env: Env): Response {
-  return viewerShell("nteract", env, authConfigForRequest(request, env), null);
-}
-
-function notebookListViewer(request: Request, env: Env): Response {
-  return viewerShell("nteract cloud notebooks", env, authConfigForRequest(request, env), null);
-}
-
-function oidcCallbackViewer(request: Request, env: Env): Response {
   return viewerShell(
-    "nteract cloud notebook sign-in",
+    { title: "nteract", description: "A hosted nteract notebook workspace." },
     env,
     authConfigForRequest(request, env),
     null,
   );
 }
 
+function notebookListViewer(request: Request, env: Env): Response {
+  return viewerShell(
+    {
+      title: "nteract cloud notebooks",
+      description: "Open, create, and manage hosted nteract notebooks.",
+    },
+    env,
+    authConfigForRequest(request, env),
+    null,
+  );
+}
+
+function oidcCallbackViewer(request: Request, env: Env): Response {
+  return viewerShell(
+    {
+      title: "nteract cloud notebook sign-in",
+      description: "Complete hosted notebook sign-in.",
+    },
+    env,
+    authConfigForRequest(request, env),
+    null,
+  );
+}
+
+interface ViewerShellMetadata {
+  title: string;
+  description: string;
+}
+
+async function publicViewerShellMetadata(
+  env: Env,
+  notebookId: string,
+  headsHash?: string,
+): Promise<ViewerShellMetadata> {
+  const generic = genericNotebookShellMetadata(notebookId, headsHash);
+  if (!env.DB) {
+    return generic;
+  }
+
+  const row = await getPublicPublishedNotebookRow(env, notebookId);
+  if (!row?.latest_revision_id) {
+    return generic;
+  }
+
+  const displayTitle = row.title?.trim() || `Notebook ${shortNotebookId(notebookId)}`;
+  const revisionPart = headsHash
+    ? `revision ${shortNotebookId(headsHash)}`
+    : `published revision ${shortNotebookId(row.latest_revision_id)}`;
+  return {
+    title: `nteract notebook: ${displayTitle}`,
+    description: `${displayTitle} is a public nteract notebook at ${revisionPart}.`,
+  };
+}
+
+function genericNotebookShellMetadata(notebookId: string, headsHash?: string): ViewerShellMetadata {
+  const suffix = headsHash ? ` @ ${headsHash}` : "";
+  return {
+    title: `nteract cloud notebook ${notebookId}${suffix}`,
+    description:
+      "A hosted nteract notebook. Private notebook metadata is shown after access is verified.",
+  };
+}
+
+function shortNotebookId(value: string): string {
+  return value.length <= 12 ? value : value.slice(0, 12);
+}
+
 function viewerShell(
-  title: string,
+  metadata: ViewerShellMetadata,
   env: Env,
   authConfig: unknown,
   config: ViewerShellConfig | null,
 ): Response {
+  const title = escapeHtml(metadata.title);
+  const description = escapeHtml(metadata.description);
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${title}</title>
+  <meta name="description" content="${description}" />
+  <meta property="og:title" content="${title}" />
+  <meta property="og:description" content="${description}" />
+  <meta property="og:type" content="article" />
+  <meta name="twitter:card" content="summary" />
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>
   ${viewerResourceHints(config)}
