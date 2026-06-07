@@ -1,5 +1,5 @@
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
-import type { CloudNotebookListItem } from "./notebook-dashboard";
+import { isCloudNotebookListItem, type CloudNotebookListItem } from "./notebook-dashboard";
 
 export const CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY =
   "nteract:notebook-cloud:notebook-list-cache:v1";
@@ -44,7 +44,7 @@ export function readCachedCloudNotebookList(
     !Number.isFinite(parsed.savedAt) ||
     now - Number(parsed.savedAt) > CLOUD_NOTEBOOK_LIST_CACHE_TTL_MS ||
     !Array.isArray(parsed.notebooks) ||
-    !parsed.notebooks.every(isCachedCloudNotebookListItem)
+    !parsed.notebooks.every(isCloudNotebookListItem)
   ) {
     return null;
   }
@@ -87,29 +87,4 @@ export function cloudNotebookListCacheAuthKey(authState: CloudPrototypeAuthState
     return `dev:${authState.user}`;
   }
   return null;
-}
-
-function isCachedCloudNotebookListItem(value: unknown): value is CloudNotebookListItem {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const candidate = value as Partial<CloudNotebookListItem>;
-  return (
-    typeof candidate.notebook_id === "string" &&
-    (candidate.title === null || typeof candidate.title === "string") &&
-    typeof candidate.owner_principal === "string" &&
-    isNotebookScope(candidate.scope) &&
-    typeof candidate.created_at === "string" &&
-    typeof candidate.updated_at === "string" &&
-    (candidate.latest_revision_id === null || typeof candidate.latest_revision_id === "string") &&
-    typeof candidate.viewer_url === "string" &&
-    Boolean(candidate.endpoints) &&
-    typeof candidate.endpoints?.catalog === "string" &&
-    typeof candidate.endpoints?.acl === "string" &&
-    typeof candidate.endpoints?.access_requests === "string"
-  );
-}
-
-function isNotebookScope(value: unknown): value is CloudNotebookListItem["scope"] {
-  return value === "viewer" || value === "editor" || value === "runtime_peer" || value === "owner";
 }

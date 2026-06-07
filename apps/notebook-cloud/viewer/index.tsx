@@ -112,6 +112,7 @@ import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   cloudNotebookDisplayTitle,
   cloudNotebookShortId,
+  isCloudNotebookListItem,
   projectCloudNotebookDashboard,
   type CloudNotebookDashboardMetric,
   type CloudNotebookDashboardModel,
@@ -128,6 +129,11 @@ import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { loadSupplementalViewerCss } from "./supplemental-css";
+import {
+  clearCloudAppSession,
+  establishCloudAppSession,
+  establishCloudAppSessionFromOidcToken,
+} from "./app-session";
 import {
   applyDocumentTheme,
   CLOUD_VIEWER_THEME_STORAGE_KEY,
@@ -166,6 +172,12 @@ interface ViewerRuntime {
 interface CloudNotebookListResponse {
   ok: boolean;
   notebooks: CloudNotebookListItem[];
+}
+
+interface CloudNotebookListBootstrap {
+  kind: "notebook-list";
+  notebooks: CloudNotebookListItem[];
+  saved_at: string;
 }
 
 interface CloudNotebookCreateResponse {
@@ -279,6 +291,22 @@ function loadAuthConfig(): CloudViewerAuthConfig {
   }
 }
 
+function loadCloudNotebookListBootstrap(): CloudNotebookListBootstrap | null {
+  const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-bootstrap");
+  if (!element) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(element.textContent ?? "{}") as unknown;
+    if (isCloudNotebookListBootstrap(parsed)) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function isOidcCallbackPath(): boolean {
   return window.location.pathname.replace(/\/+$/, "") === "/oidc";
 }
@@ -388,6 +416,24 @@ function shouldRefreshStoredOidcToken(): boolean {
   }
 }
 
+function useCloudAppSessionBridge(authState: CloudPrototypeAuthState): void {
+  const establishedTokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (authState.mode !== "oidc" || !authState.token) {
+      establishedTokenRef.current = null;
+      return;
+    }
+    if (establishedTokenRef.current === authState.token) {
+      return;
+    }
+    establishedTokenRef.current = authState.token;
+    void establishCloudAppSession(authState).catch((error: unknown) => {
+      establishedTokenRef.current = null;
+      console.warn("[notebook-cloud] app session exchange failed", error);
+    });
+  }, [authState]);
+}
+
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
@@ -447,8 +493,12 @@ function CloudNotebookProviders({
 function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
+  useCloudAppSessionBridge(authState);
+  const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
+    loadCloudNotebookListBootstrap(),
+  );
   const [listState, setListState] = useState<CloudNotebookListState>(() =>
-    initialCloudNotebookListState(authState),
+    initialCloudNotebookListState(authState, bootstrap),
   );
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [createState, setCreateState] = useState<"idle" | "starting">("idle");
@@ -458,7 +508,8 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  const signedIn = authState.mode === "dev" || authState.mode === "oidc";
+  const hasExplicitAuth = authState.mode === "dev" || authState.mode === "oidc";
+  const signedIn = hasExplicitAuth || Boolean(bootstrap);
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],
@@ -476,17 +527,14 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     }
 
     const controller = new AbortController();
-    const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState);
+    const cachedNotebooks =
+      readCachedCloudNotebookListFromWindow(authState) ?? bootstrap?.notebooks ?? null;
     setListState(
       cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" },
     );
     void (async () => {
       try {
-        const response = await fetchWithCloudPrototypeAuth(
-          cloudNotebookListEndpoint(),
-          { headers: { Accept: "application/json" }, signal: controller.signal },
-          authState,
-        );
+        const response = await fetchCloudNotebookList(authState, controller.signal);
         if (controller.signal.aborted) return;
         if (!response.ok) {
           throw await cloudResponseError(response, "Unable to list notebooks");
@@ -509,7 +557,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     return () => {
       controller.abort();
     };
-  }, [authState, refreshIndex, signedIn]);
+  }, [authState, bootstrap, refreshIndex, signedIn]);
 
   const refreshList = () => {
     setRefreshIndex((value) => value + 1);
@@ -534,7 +582,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const createNotebook = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!signedIn || createState === "starting") {
+    if (!hasExplicitAuth || createState === "starting") {
       return;
     }
     const title = createTitle.trim() || defaultCloudNotebookTitle();
@@ -585,7 +633,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const saveNotebookTitle = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!signedIn || !renameState || renameSavingId) {
+    if (!hasExplicitAuth || !renameState || renameSavingId) {
       return;
     }
 
@@ -642,7 +690,11 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   };
 
   const signOut = () => {
+    setBootstrap(null);
     clearCachedCloudNotebookListFromWindow();
+    void clearCloudAppSession().catch((error: unknown) => {
+      console.warn("[notebook-cloud] app session clear failed", error);
+    });
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
   };
@@ -675,7 +727,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           </button>
           <button
             type="button"
-            disabled={!signedIn || createState === "starting"}
+            disabled={!hasExplicitAuth || createState === "starting"}
             onClick={openCreateForm}
           >
             {createState === "starting" ? (
@@ -765,6 +817,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         ) : dashboardModel ? (
           <CloudNotebookDashboard
             model={dashboardModel}
+            canRename={hasExplicitAuth}
             renameState={renameState}
             renameSavingId={renameSavingId}
             onOpenRename={openRenameForm}
@@ -787,6 +840,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
 function CloudNotebookDashboard({
   model,
+  canRename,
   renameState,
   renameSavingId,
   onOpenRename,
@@ -795,6 +849,7 @@ function CloudNotebookDashboard({
   onSaveRename,
 }: {
   model: CloudNotebookDashboardModel;
+  canRename: boolean;
   renameState: CloudNotebookRenameState | null;
   renameSavingId: string | null;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
@@ -856,6 +911,7 @@ function CloudNotebookDashboard({
               <li key={notebook.notebook_id}>
                 <CloudNotebookDashboardRow
                   notebook={notebook}
+                  canRename={canRename}
                   renameTitle={
                     renameState?.notebookId === notebook.notebook_id ? renameState.title : null
                   }
@@ -911,6 +967,7 @@ const cloudNotebookDashboardMetricIcons = {
 
 function CloudNotebookDashboardRow({
   notebook,
+  canRename,
   renameTitle,
   renameSaving,
   onOpenRename,
@@ -919,6 +976,7 @@ function CloudNotebookDashboardRow({
   onSaveRename,
 }: {
   notebook: CloudNotebookListItem;
+  canRename: boolean;
   renameTitle: string | null;
   renameSaving: boolean;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
@@ -983,7 +1041,7 @@ function CloudNotebookDashboardRow({
         {formatNotebookUpdatedAt(notebook.updated_at)}
       </span>
       <span className="cloud-notebook-list-row-actions">
-        {canRenameCloudNotebook(notebook) ? (
+        {canRename && canRenameCloudNotebook(notebook) ? (
           <button
             type="button"
             className="cloud-notebook-list-icon-button"
@@ -1031,9 +1089,30 @@ function cloudAuthWithScope(
       };
 }
 
-function initialCloudNotebookListState(authState: CloudPrototypeAuthState): CloudNotebookListState {
-  const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState);
+function initialCloudNotebookListState(
+  authState: CloudPrototypeAuthState,
+  bootstrap: CloudNotebookListBootstrap | null,
+): CloudNotebookListState {
+  const cachedNotebooks = readCachedCloudNotebookListFromWindow(authState) ?? bootstrap?.notebooks;
   return cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" };
+}
+
+function fetchCloudNotebookList(
+  authState: CloudPrototypeAuthState,
+  signal: AbortSignal,
+): Promise<Response> {
+  if (authState.mode === "dev" || authState.mode === "oidc") {
+    return fetchWithCloudPrototypeAuth(
+      cloudNotebookListEndpoint(),
+      { headers: { Accept: "application/json" }, signal },
+      authState,
+    );
+  }
+  return fetch(cloudNotebookListEndpoint(), {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+    signal,
+  });
 }
 
 function readCachedCloudNotebookListFromWindow(
@@ -1091,6 +1170,19 @@ function isCloudNotebookListResponse(value: unknown): value is CloudNotebookList
   return candidate.ok === true && Array.isArray(candidate.notebooks);
 }
 
+function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookListBootstrap {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudNotebookListBootstrap>;
+  return (
+    candidate.kind === "notebook-list" &&
+    typeof candidate.saved_at === "string" &&
+    Array.isArray(candidate.notebooks) &&
+    candidate.notebooks.every(isCloudNotebookListItem)
+  );
+}
+
 function canRenameCloudNotebook(notebook: CloudNotebookListItem): boolean {
   return notebook.scope === "owner" || notebook.scope === "editor";
 }
@@ -1122,6 +1214,7 @@ function formatNotebookUpdatedAt(value: string): string {
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
+  useCloudAppSessionBridge(authState);
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
   const oidcConfigured = Boolean(authConfig.oidc);
@@ -1150,6 +1243,9 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   };
 
   const resetAuth = () => {
+    void clearCloudAppSession().catch((error: unknown) => {
+      console.warn("[notebook-cloud] app session clear failed", error);
+    });
     clearCloudPrototypeDevAuth(window.localStorage);
     setFormError(null);
     refreshAuthState();
@@ -1203,6 +1299,9 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
               <button
                 type="button"
                 onClick={() => {
+                  void clearCloudAppSession().catch((error: unknown) => {
+                    console.warn("[notebook-cloud] app session clear failed", error);
+                  });
                   clearCloudPrototypeDevAuth(window.localStorage);
                   refreshAuthState();
                 }}
@@ -1272,7 +1371,11 @@ function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig })
       callbackUrl: window.location.href,
       storage: window.localStorage,
     })
-      .then(({ returnUrl }) => {
+      .then(async ({ returnUrl, token }) => {
+        if (cancelled) return;
+        await establishCloudAppSessionFromOidcToken(token).catch((error: unknown) => {
+          console.warn("[notebook-cloud] app session exchange failed", error);
+        });
         if (cancelled) return;
         setStatus({ kind: "ready", message: "Signed in. Returning to the notebook..." });
         window.location.replace(returnUrl);
@@ -1362,6 +1465,7 @@ function NotebookViewer({
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
+  useCloudAppSessionBridge(authState);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
@@ -1704,6 +1808,9 @@ function NotebookViewer({
     liveRuntimeRef.current?.engine.scheduleFlush();
   }, [shellCapabilities.canEditCells, shellCapabilities.canEditMarkdown]);
   const resetPrototypeAuth = useCallback(() => {
+    void clearCloudAppSession().catch((error: unknown) => {
+      console.warn("[notebook-cloud] app session clear failed", error);
+    });
     clearCloudPrototypeDevAuth(window.localStorage);
     setLatestAccessRequest(null);
     setAccessRequestError(null);

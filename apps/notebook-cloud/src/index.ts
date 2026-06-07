@@ -38,6 +38,7 @@ import {
   runtimeStateSnapshotKey,
   snapshotKey,
   updateNotebookTitle,
+  type ListedNotebookRow,
   type NotebookAclRow,
   type NotebookAccessRequestRow,
   type NotebookAccessRequestStatus,
@@ -90,6 +91,13 @@ import {
   withBrowserSecurityHeaders,
   withCors,
 } from "./http-responses.ts";
+import {
+  NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+  appSessionConfigured,
+  clearCloudAppSessionCookie,
+  createCloudAppSessionCookie,
+  readCloudAppSession,
+} from "./app-session.ts";
 
 export { NotebookRoom };
 
@@ -131,6 +139,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: exactPath("/api/health"),
     methods: ["GET"],
     handler: routeHealth,
+  },
+  {
+    match: exactPath("/api/auth/session"),
+    methods: ["POST", "DELETE"],
+    handler: (_match, request, env) => routeAppSession(request, env),
   },
   {
     match: exactPath("/", "/index.html"),
@@ -269,6 +282,7 @@ async function routeHealth(
     deployment_env: env.DEPLOYMENT_ENV ?? "development",
     auth: {
       anaconda_api_key: anacondaApiKeyHealth(env),
+      app_session: appSessionHealth(env),
       oidc: oidcHealth(env),
     },
   });
@@ -482,6 +496,46 @@ function anacondaApiKeyHealth(env: Env): {
   };
 }
 
+function appSessionHealth(env: Env): { status: "configured" | "disabled" } {
+  return { status: appSessionConfigured(env) ? "configured" : "disabled" };
+}
+
+async function routeAppSession(request: Request, env: Env): Promise<Response> {
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  if (request.method === "DELETE") {
+    const response = json({ ok: true });
+    response.headers.append("Set-Cookie", clearCloudAppSessionCookie());
+    return response;
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+  if (!appSessionConfigured(env)) {
+    return json({ error: "app sessions are not configured" }, 503);
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (identity.metadata.provider !== "oidc") {
+    return json({ error: "app sessions require OIDC sign-in" }, 403);
+  }
+
+  const cookie = await createCloudAppSessionCookie(env, identity);
+  const response = json({
+    ok: true,
+    expires_in: NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+  });
+  response.headers.append("Set-Cookie", cookie);
+  return response;
+}
+
 type CreateNotebookPayload = Record<string, unknown>;
 
 async function routeCreateNotebook(request: Request, env: Env): Promise<Response> {
@@ -595,41 +649,54 @@ async function routeListNotebooks(request: Request, env: Env): Promise<Response>
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
-  if (identity instanceof Response) {
-    return identity;
-  }
-  if (isAnonymousViewer(identity)) {
-    return json({ error: "sign in to list notebooks" }, 401);
-  }
-
   const limit = parseNotebookListLimit(request);
   if (limit instanceof Response) {
     return limit;
   }
 
-  const notebooks = await listNotebooksForPrincipal(env, identity.principal, limit);
+  let principal: string | null = null;
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!isAnonymousViewer(identity)) {
+    principal = identity.principal;
+  } else {
+    principal = (await readCloudAppSession(env, request))?.principal ?? null;
+  }
+  if (!principal) {
+    return json({ error: "sign in to list notebooks" }, 401);
+  }
+
+  const notebooks = await listNotebooksForPrincipal(env, principal, limit);
   return json({
     ok: true,
-    notebooks: notebooks.map((notebook) => {
-      const notebookPathId = encodeURIComponent(notebook.id);
-      const apiBasePath = `/api/n/${notebookPathId}`;
-      return {
-        notebook_id: notebook.id,
-        title: notebook.title,
-        owner_principal: notebook.owner_principal,
-        scope: notebook.scope,
-        created_at: notebook.created_at,
-        updated_at: notebook.updated_at,
-        latest_revision_id: notebook.latest_revision_id,
-        viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
-        endpoints: {
-          catalog: apiBasePath,
-          acl: `${apiBasePath}/acl`,
-          access_requests: `${apiBasePath}/access-requests`,
-        },
-      };
-    }),
+    notebooks: notebookListResponseRows(request, notebooks),
+  });
+}
+
+function notebookListResponseRows(
+  request: Request,
+  notebooks: ListedNotebookRow[],
+): Array<Record<string, unknown>> {
+  return notebooks.map((notebook) => {
+    const notebookPathId = encodeURIComponent(notebook.id);
+    const apiBasePath = `/api/n/${notebookPathId}`;
+    return {
+      notebook_id: notebook.id,
+      title: notebook.title,
+      owner_principal: notebook.owner_principal,
+      scope: notebook.scope,
+      created_at: notebook.created_at,
+      updated_at: notebook.updated_at,
+      latest_revision_id: notebook.latest_revision_id,
+      viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+      endpoints: {
+        catalog: apiBasePath,
+        acl: `${apiBasePath}/acl`,
+        access_requests: `${apiBasePath}/access-requests`,
+      },
+    };
   });
 }
 
@@ -2530,7 +2597,8 @@ function homeViewer(request: Request, env: Env): Response {
   );
 }
 
-function notebookListViewer(request: Request, env: Env): Response {
+async function notebookListViewer(request: Request, env: Env): Promise<Response> {
+  const bootstrap = await notebookListBootstrap(request, env);
   return viewerShell(
     {
       title: "nteract cloud notebooks",
@@ -2539,6 +2607,7 @@ function notebookListViewer(request: Request, env: Env): Response {
     env,
     authConfigForRequest(request, env),
     null,
+    bootstrap,
   );
 }
 
@@ -2602,6 +2671,7 @@ function viewerShell(
   env: Env,
   authConfig: unknown,
   config: ViewerShellConfig | null,
+  bootstrap: unknown | null = null,
 ): Response {
   const title = escapeHtml(metadata.title);
   const description = escapeHtml(metadata.description);
@@ -2625,6 +2695,13 @@ function viewerShell(
   <div id="root"></div>
   <script id="nteract-cloud-auth-config" type="application/json">${scriptJsonForHtml(authConfig)}</script>
   ${
+    bootstrap
+      ? `<script id="nteract-cloud-bootstrap" type="application/json">${scriptJsonForHtml(
+          bootstrap,
+        )}</script>`
+      : ""
+  }
+  ${
     config
       ? `<script id="nteract-cloud-viewer-config" type="application/json">${scriptJsonForHtml(
           config,
@@ -2646,6 +2723,29 @@ function viewerShell(
       viewerContentSecurityPolicy(env),
     ),
   );
+}
+
+async function notebookListBootstrap(
+  request: Request,
+  env: Env,
+): Promise<Record<string, unknown> | null> {
+  if (!env.DB) {
+    return null;
+  }
+  const session = await readCloudAppSession(env, request);
+  if (!session) {
+    return null;
+  }
+  const notebooks = await listNotebooksForPrincipal(
+    env,
+    session.principal,
+    DEFAULT_NOTEBOOK_LIST_LIMIT,
+  );
+  return {
+    kind: "notebook-list",
+    notebooks: notebookListResponseRows(request, notebooks),
+    saved_at: new Date().toISOString(),
+  };
 }
 
 function viewerResourceHints(config: ViewerShellConfig | null): string {
