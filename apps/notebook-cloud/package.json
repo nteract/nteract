@@ -20,6 +20,7 @@
     "smoke": "node --import tsx scripts/smoke.mjs",
     "smoke:hosted": "node scripts/hosted-render-smoke.mjs",
     "smoke:hosted:live": "node scripts/hosted-live-smoke.mjs",
+    "smoke:hosted:live-room": "node scripts/hosted-live-room-smoke.mjs",
     "smoke:hosted:runtime-peer": "node scripts/hosted-runtime-peer-smoke.mjs",
     "smoke:hosted:browser-execute": "node scripts/hosted-browser-execute-smoke.mjs",
     "smoke:hosted:collab": "node --import tsx scripts/hosted-collab-smoke.mjs",

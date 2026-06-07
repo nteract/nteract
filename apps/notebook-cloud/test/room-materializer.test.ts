@@ -1085,6 +1085,76 @@ describe("RoomMaterializer", () => {
     );
   });
 
+  it("recovers from a checkpoint host that fails initial peer sync", async () => {
+    const state = fakeState();
+    const checkpointSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "checkpoint-cell",
+      "Unreachable checkpoint edit\n",
+    );
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Recovered published snapshot\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(checkpointSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(checkpointSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: checkpointSnapshot.notebookHeads,
+        runtime_state_heads: checkpointSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-28T00:00:00.000Z",
+        published_revision_id: "revision-current",
+        published_notebook_heads: publishedSnapshot.notebookHeads,
+        published_runtime_state_heads: publishedSnapshot.runtimeStateHeads,
+      }),
+    ]);
+
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const checkpointHost = await (
+      reloaded as unknown as {
+        loadHost(): Promise<{ sync_peer: (peerId: string, connectionScope: string) => unknown }>;
+      }
+    ).loadHost();
+    checkpointHost.sync_peer = () => {
+      throw new Error("recursive use of an object detected which would lead to unsafe aliasing");
+    };
+
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["published-cell", "Recovered published snapshot\n"]],
+    );
+    assert.deepEqual([...(await state.storage.list({ prefix: "room-host:" })).keys()], []);
+  });
+
   it("rejects runtime peer execution creation over runtime-state sync", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);

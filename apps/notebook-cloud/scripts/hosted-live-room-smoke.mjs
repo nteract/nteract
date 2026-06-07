@@ -1,0 +1,368 @@
+import { readFile } from "node:fs/promises";
+import os from "node:os";
+
+import { chromium } from "@playwright/test";
+
+const DEFAULT_URL = "https://preview.runt.run/n/topic-viz/topic-viz";
+const viewerUrl =
+  process.argv[2] ??
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_VIEWER_URL ??
+  process.env.NOTEBOOK_CLOUD_HOSTED_URL ??
+  DEFAULT_URL;
+const tokenPath =
+  process.env.NTERACT_PREVIEW_OIDC_TOKEN_PATH ??
+  process.env.NOTEBOOK_CLOUD_OIDC_TOKEN_PATH ??
+  `${os.homedir()}/token.preview.json`;
+const requestedScope = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE ?? "editor";
+const timeoutMs = parsePositiveInteger(
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_TIMEOUT_MS,
+  "NOTEBOOK_CLOUD_LIVE_ROOM_TIMEOUT_MS",
+  60_000,
+);
+const settleMs = parsePositiveInteger(
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SETTLE_MS,
+  "NOTEBOOK_CLOUD_LIVE_ROOM_SETTLE_MS",
+  2_000,
+);
+const minCells = parseNonNegativeInteger(
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_MIN_CELLS,
+  "NOTEBOOK_CLOUD_LIVE_ROOM_MIN_CELLS",
+  1,
+);
+const expectedText =
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_EXPECTED_TEXT ?? "import plotly.graph_objects as go";
+const requireResolved = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_RESOLVED !== "0";
+const requireOpenSocket = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_OPEN_SOCKET !== "0";
+const requireBlobFetch = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_BLOB_FETCH === "1";
+const screenshotPath = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCREENSHOT;
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});
+
+async function main() {
+  assertScope(requestedScope);
+  const url = new URL(viewerUrl);
+  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
+  const token = JSON.parse(tokenStorageJson);
+  const tokenSecondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(tokenSecondsRemaining) || tokenSecondsRemaining <= 60) {
+    throw new Error(`${tokenPath} is expired or near expiry; refresh it before running the smoke`);
+  }
+
+  const browser = await chromium.launch({
+    headless: process.env.NOTEBOOK_CLOUD_HEADED !== "1",
+    timeout: timeoutMs,
+  });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+  await context.addInitScript(
+    ({ origin, scope, tokenJson }) => {
+      try {
+        if (globalThis.location?.origin !== origin) return;
+        globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
+        globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", scope);
+      } catch {
+        // Sandboxed output frames must deny localStorage. Only the first-party
+        // notebook shell needs the seeded browser token.
+      }
+    },
+    { origin: url.origin, scope: requestedScope, tokenJson: tokenStorageJson },
+  );
+
+  const page = await context.newPage();
+  const events = {
+    pageErrors: [],
+    benignPageErrors: [],
+    badConsole: [],
+    failedRequests: [],
+    blobResponses: [],
+    websockets: [],
+  };
+
+  page.on("pageerror", (error) => {
+    const text = String(error.message ?? error);
+    if (isBenignPageError(text)) {
+      events.benignPageErrors.push(text);
+      return;
+    }
+    events.pageErrors.push(text);
+  });
+  page.on("console", (message) => {
+    const text = message.text();
+    if (isFatalConsoleMessage(text)) {
+      events.badConsole.push(`${message.type()}: ${text}`);
+    }
+  });
+  page.on("requestfailed", (request) => {
+    if (!isRelevantRequestUrl(request.url())) {
+      return;
+    }
+    events.failedRequests.push({
+      url: safeDiagnosticUrl(request.url()),
+      failure: request.failure()?.errorText ?? null,
+    });
+  });
+  page.on("response", (response) => {
+    const responseUrl = response.url();
+    if (/\/api\/n\/[^/]+\/blobs\//.test(responseUrl)) {
+      events.blobResponses.push({
+        url: safeDiagnosticUrl(responseUrl),
+        status: response.status(),
+        contentType: response.headers()["content-type"] ?? null,
+      });
+    }
+  });
+  page.on("websocket", (ws) => {
+    if (!isRoomSyncWebSocket(ws.url())) {
+      return;
+    }
+    const entry = {
+      url: safeDiagnosticUrl(ws.url()),
+      sent: 0,
+      received: 0,
+      closed: false,
+      errors: [],
+    };
+    events.websockets.push(entry);
+    ws.on("framesent", () => {
+      entry.sent += 1;
+    });
+    ws.on("framereceived", () => {
+      entry.received += 1;
+    });
+    ws.on("socketerror", (error) => {
+      entry.errors.push(String(error));
+    });
+    ws.on("close", () => {
+      entry.closed = true;
+    });
+  });
+
+  await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+  if (expectedText) {
+    await page.waitForFunction(
+      (text) => (document.body.textContent ?? "").includes(text),
+      expectedText,
+      { timeout: timeoutMs },
+    );
+  }
+  if (minCells > 0) {
+    await page.waitForFunction(
+      (expected) => document.querySelectorAll("[data-cell-id]").length >= expected,
+      minCells,
+      { timeout: timeoutMs },
+    );
+  }
+  if (requireResolved) {
+    await page.waitForFunction(
+      () => !/Loading notebook|resolving output payloads/i.test(document.body.textContent ?? ""),
+      undefined,
+      { timeout: timeoutMs },
+    );
+  }
+  await page.waitForTimeout(settleMs);
+
+  const diagnostics = await pageDiagnostics(page);
+  if (screenshotPath) {
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+  }
+  await browser.close();
+
+  const failures = [];
+  const failedBlobResponses = events.blobResponses.filter((response) => response.status >= 400);
+  const activeSockets = events.websockets.filter((socket) => !socket.closed);
+  const erroredSockets = events.websockets.filter((socket) => socket.errors.length > 0);
+  if (events.pageErrors.length > 0) {
+    failures.push({ kind: "page-errors", errors: events.pageErrors });
+  }
+  if (events.badConsole.length > 0) {
+    failures.push({ kind: "console-errors", errors: events.badConsole });
+  }
+  if (events.failedRequests.length > 0) {
+    failures.push({ kind: "request-failures", requests: events.failedRequests });
+  }
+  if (failedBlobResponses.length > 0) {
+    failures.push({ kind: "blob-failures", responses: failedBlobResponses });
+  }
+  if (erroredSockets.length > 0) {
+    failures.push({ kind: "websocket-errors", websockets: erroredSockets });
+  }
+  if (events.websockets.length === 0) {
+    failures.push({ kind: "websocket-missing", text: "no room sync WebSocket was observed" });
+  }
+  if (requireOpenSocket && activeSockets.length === 0) {
+    failures.push({
+      kind: "websocket-closed",
+      text: "no room sync WebSocket remained open after notebook materialization",
+      websockets: events.websockets,
+    });
+  }
+  if (requireBlobFetch && events.blobResponses.length === 0) {
+    failures.push({ kind: "blob-missing", text: "no notebook blob responses were observed" });
+  }
+  if (diagnostics.cellCount < minCells) {
+    failures.push({
+      kind: "cell-count",
+      expected: minCells,
+      actual: diagnostics.cellCount,
+    });
+  }
+  if (requireResolved && diagnostics.loading) {
+    failures.push({
+      kind: "loading-state",
+      text: "notebook was still loading or resolving output payloads after the timeout",
+    });
+  }
+
+  const result = {
+    ok: failures.length === 0,
+    viewerUrl: url.href,
+    token: {
+      path: tokenPath,
+      secondsRemaining: tokenSecondsRemaining,
+      subject: token.claims?.email ?? token.claims?.sub ?? null,
+    },
+    checks: {
+      requestedScope,
+      expectedText: expectedText || null,
+      minCells,
+      requireResolved,
+      requireOpenSocket,
+      requireBlobFetch,
+      screenshotPath: screenshotPath ?? null,
+    },
+    diagnostics,
+    events,
+    failures,
+  };
+
+  if (failures.length > 0) {
+    throw new Error(`hosted live room smoke failed:\n${JSON.stringify(result, null, 2)}`);
+  }
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function readOidcTokenStorageJson(path) {
+  const raw = await readFile(path, "utf8");
+  const token = JSON.parse(raw);
+  if (typeof token.accessToken !== "string" || token.accessToken.length === 0) {
+    throw new Error(`${path} is missing accessToken`);
+  }
+  if (!token.claims || typeof token.claims.sub !== "string" || token.claims.sub.length === 0) {
+    throw new Error(`${path} is missing claims.sub`);
+  }
+  return JSON.stringify(token);
+}
+
+async function pageDiagnostics(page) {
+  return page.evaluate(() => {
+    const compactUrl = (value) => {
+      if (!value) return value;
+      if (value.startsWith("data:")) {
+        const mediaType = value.slice(0, value.indexOf(","));
+        return `${mediaType},<${value.length} chars>`;
+      }
+      return value.length > 240 ? `${value.slice(0, 240)}...` : value;
+    };
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    const cellCount = document.querySelectorAll("[data-cell-id]").length;
+    const iframes = Array.from(document.querySelectorAll("iframe[sandbox]"))
+      .map((iframe) => ({
+        src: compactUrl(iframe.getAttribute("src")),
+        width: iframe.clientWidth,
+        height: iframe.clientHeight,
+      }))
+      .slice(0, 30);
+    const images = Array.from(document.querySelectorAll("img"))
+      .map((image) => ({
+        src: compactUrl(image.currentSrc || image.src),
+        complete: image.complete,
+        naturalWidth: image.naturalWidth,
+        naturalHeight: image.naturalHeight,
+      }))
+      .slice(0, 30);
+    return {
+      cellCount,
+      iframeCount: iframes.length,
+      imageCount: images.length,
+      loading: /Loading notebook|resolving output payloads/i.test(text),
+      textSample: text.slice(0, 2_000),
+      iframes,
+      images,
+    };
+  });
+}
+
+function isRoomSyncWebSocket(value) {
+  try {
+    const url = new URL(value);
+    return url.pathname.endsWith("/sync");
+  } catch {
+    return false;
+  }
+}
+
+function isRelevantRequestUrl(value) {
+  try {
+    const url = new URL(value);
+    return (
+      url.pathname.includes("/api/n/") ||
+      url.pathname.includes("/assets/") ||
+      url.pathname.includes("/renderer-assets/") ||
+      url.hostname.includes("runtusercontent")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isFatalConsoleMessage(text) {
+  return /OutputResolutionError|Unable to resolve output|Failed to fetch blob|flush_comms_doc_sync|cloud sync socket|room\.peer_sync|sync to relay failed|runtime state sync to relay failed|comms doc sync to relay failed/i.test(
+    text,
+  );
+}
+
+function isBenignPageError(text) {
+  // Output iframes are intentionally sandboxed away from browser credentials.
+  return /Failed to read the 'localStorage' property from 'Window': The document is sandboxed/i.test(
+    text,
+  );
+}
+
+function safeDiagnosticUrl(value) {
+  try {
+    const url = new URL(value);
+    url.searchParams.delete("viewer_session");
+    if (/\/api\/n\/[^/]+\/blobs\//.test(url.pathname)) {
+      return `${url.origin}/api/n/<id>/blobs/<hash>`;
+    }
+    return url.href;
+  } catch {
+    return value.replace(/viewer_session=[^&\s]+/g, "viewer_session=<redacted>");
+  }
+}
+
+function assertScope(scope) {
+  if (!["viewer", "editor", "owner"].includes(scope)) {
+    throw new Error("NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE must be viewer, editor, or owner");
+  }
+}
+
+function parsePositiveInteger(value, name, fallback) {
+  if (value === undefined || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function parseNonNegativeInteger(value, name, fallback) {
+  if (value === undefined || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return parsed;
+}
