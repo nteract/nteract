@@ -539,7 +539,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           },
           body: JSON.stringify({ title }),
         },
-        authState,
+        cloudAuthWithScope(authState, "owner"),
       );
       if (!response.ok) {
         throw await cloudResponseError(response, "Unable to create notebook");
@@ -592,7 +592,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           },
           body: JSON.stringify({ title: nextTitle || null }),
         },
-        authState,
+        cloudAuthWithScope(authState, "editor"),
       );
       if (!response.ok) {
         throw await cloudResponseError(response, "Unable to rename notebook");
@@ -1002,6 +1002,18 @@ function cloudNotebookCollectionEndpoint(): string {
 
 function cloudNotebookCatalogEndpoint(notebookId: string): string {
   return new URL(`api/n/${encodeURIComponent(notebookId)}`, `${window.location.origin}/`).href;
+}
+
+function cloudAuthWithScope(
+  authState: CloudPrototypeAuthState,
+  requestedScope: NonNullable<CloudPrototypeAuthState["requestedScope"]>,
+): CloudPrototypeAuthState {
+  return authState.requestedScope === requestedScope
+    ? authState
+    : {
+        ...authState,
+        requestedScope,
+      };
 }
 
 function defaultCloudNotebookTitle(now = new Date()): string {
