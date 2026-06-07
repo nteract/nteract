@@ -87,6 +87,27 @@ export function cloudNotebookShortId(notebookId: string): string {
   return `${trimmed.slice(0, 8)}...${trimmed.slice(-4)}`;
 }
 
+export function isCloudNotebookListItem(value: unknown): value is CloudNotebookListItem {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudNotebookListItem>;
+  return (
+    typeof candidate.notebook_id === "string" &&
+    (candidate.title === null || typeof candidate.title === "string") &&
+    typeof candidate.owner_principal === "string" &&
+    isNotebookScope(candidate.scope) &&
+    typeof candidate.created_at === "string" &&
+    typeof candidate.updated_at === "string" &&
+    (candidate.latest_revision_id === null || typeof candidate.latest_revision_id === "string") &&
+    typeof candidate.viewer_url === "string" &&
+    Boolean(candidate.endpoints) &&
+    typeof candidate.endpoints?.catalog === "string" &&
+    typeof candidate.endpoints?.acl === "string" &&
+    typeof candidate.endpoints?.access_requests === "string"
+  );
+}
+
 function notebookScopeRank(scope: CloudNotebookListItem["scope"]): number {
   switch (scope) {
     case "owner":
@@ -98,4 +119,8 @@ function notebookScopeRank(scope: CloudNotebookListItem["scope"]): number {
     case "viewer":
       return 1;
   }
+}
+
+function isNotebookScope(value: unknown): value is CloudNotebookListItem["scope"] {
+  return value === "viewer" || value === "editor" || value === "runtime_peer" || value === "owner";
 }

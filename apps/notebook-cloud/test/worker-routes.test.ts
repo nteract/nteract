@@ -2,6 +2,7 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.ts";
+import { NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME } from "../src/app-session.ts";
 import {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -41,6 +42,7 @@ import { oidcTokenFixture } from "./oidc-jwt-fixture.ts";
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
 );
+const APP_SESSION_SECRET = "0123456789abcdef0123456789abcdef";
 
 before(async () => {
   await initializeRuntimedWasm(wasmBytes);
@@ -135,6 +137,25 @@ describe("Worker artifact routes", () => {
       audience: "none",
       principal_namespace: "default",
     });
+  });
+
+  it("reports app session readiness without exposing the signing secret", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: { app_session: { status: string } };
+    };
+    assert.deepEqual(body.auth.app_session, { status: "configured" });
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(APP_SESSION_SECRET));
   });
 
   it("serves viewer bundle assets through the Worker assets binding", async () => {
@@ -235,6 +256,227 @@ describe("Worker artifact routes", () => {
     assert.match(html, /<title>nteract cloud notebooks<\/title>/);
     assert.match(html, /notebook-cloud-viewer\.js/);
     assert.doesNotMatch(html, /nteract-cloud-viewer-config/);
+    assert.doesNotMatch(html, /nteract-cloud-bootstrap/);
+  });
+
+  it("exchanges OIDC bearer auth for a secure app session cookie", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "session-user",
+      email: "session@example.test",
+      extraPayload: { email_verified: true },
+      name: "Session User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Origin: "https://cloud.test",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const cookie = response.headers.get("Set-Cookie") ?? "";
+    assert.match(cookie, new RegExp(`^${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=`));
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /Secure/);
+    assert.match(cookie, /SameSite=Lax/);
+    assert.doesNotMatch(cookie, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(cookie, /session@example\.test/);
+    assert.deepEqual(await response.json(), { ok: true, expires_in: 21_600 });
+  });
+
+  it("rejects cross-origin app session exchange attempts", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "session-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Origin: "https://outside.example",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.equal(response.headers.get("Set-Cookie"), null);
+  });
+
+  it("bootstraps the notebook home from a valid app session cookie", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "bootstrap-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "bootstrap-visible");
+    const notebook = env.DB.notebooks.get("bootstrap-visible");
+    assert.ok(notebook);
+    notebook.title = "Bootstrap Visible";
+    seedAcl(env, {
+      notebookId: "bootstrap-visible",
+      subject: "user:anaconda:bootstrap-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    const bootstrap = notebookHomeBootstrap(html);
+    assert.equal(bootstrap.kind, "notebook-list");
+    assert.equal(bootstrap.notebooks.length, 1);
+    assert.equal(bootstrap.notebooks[0]?.notebook_id, "bootstrap-visible");
+    assert.equal(bootstrap.notebooks[0]?.title, "Bootstrap Visible");
+    assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("keeps private notebook bootstrap out of anonymous notebook home HTML", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "anonymous-hidden");
+    const notebook = env.DB.notebooks.get("anonymous-hidden");
+    assert.ok(notebook);
+    notebook.title = "Hidden Private Title";
+    seedAcl(env, {
+      notebookId: "anonymous-hidden",
+      subject: "user:anaconda:hidden-user",
+      scope: "owner",
+    });
+
+    const response = await worker.fetch(new Request("https://cloud.test/n"), env, fakeContext());
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.doesNotMatch(html, /nteract-cloud-bootstrap|Hidden Private Title/);
+  });
+
+  it("uses app session cookies only for read-only catalog listing", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-list-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "cookie-list-visible");
+    seedAcl(env, {
+      notebookId: "cookie-list-visible",
+      subject: "user:anaconda:cookie-list-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const listResponse = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(listResponse.status, 200);
+    const listBody = (await listResponse.json()) as { notebooks: Array<{ notebook_id: string }> };
+    assert.deepEqual(
+      listBody.notebooks.map((notebook) => notebook.notebook_id),
+      ["cookie-list-visible"],
+    );
+
+    const patchResponse = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-list-visible", {
+        method: "PATCH",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ title: "Should Not Change" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(patchResponse.status, 403);
+    assert.equal(env.DB.notebooks.get("cookie-list-visible")?.title, null);
+  });
+
+  it("does not use app session cookies as room WebSocket credentials", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-ws-user" });
+    let roomFetches = 0;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "cookie-ws-private");
+    seedAcl(env, {
+      notebookId: "cookie-ws-private",
+      subject: "user:anaconda:cookie-ws-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-ws-private/sync?scope=owner", {
+        headers: {
+          Cookie: cookie,
+          Origin: "https://cloud.test",
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(roomFetches, 0);
+  });
+
+  it("clears app session cookies on logout", async () => {
+    const env = fakeEnv({ NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        method: "DELETE",
+        headers: { Origin: "https://cloud.test" },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const cookie = response.headers.get("Set-Cookie") ?? "";
+    assert.match(cookie, new RegExp(`^${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=`));
+    assert.match(cookie, /Max-Age=0/);
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /Secure/);
+    assert.match(cookie, /SameSite=Lax/);
   });
 
   it("serves the viewer runtimed WASM asset through the Worker assets binding", async () => {
@@ -3342,6 +3584,44 @@ function jsonResponse(value: unknown): Response {
       "Content-Type": "application/json",
     },
   });
+}
+
+async function oidcAppSessionCookie(env: Env, token: string): Promise<string> {
+  const response = await worker.fetch(
+    new Request("https://cloud.test/api/auth/session", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Origin: "https://cloud.test",
+      },
+    }),
+    env,
+    fakeContext(),
+  );
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get("Set-Cookie");
+  assert.ok(cookie);
+  return cookie;
+}
+
+function notebookHomeBootstrap(html: string): {
+  kind: string;
+  notebooks: Array<{
+    notebook_id: string;
+    title: string | null;
+  }>;
+} {
+  const match = html.match(
+    /<script id="nteract-cloud-bootstrap" type="application\/json">([^<]+)<\/script>/,
+  );
+  assert.ok(match?.[1], "expected notebook home bootstrap script");
+  return JSON.parse(match[1]) as {
+    kind: string;
+    notebooks: Array<{
+      notebook_id: string;
+      title: string | null;
+    }>;
+  };
 }
 
 function base64Url(value: string): string {
