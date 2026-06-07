@@ -38,6 +38,7 @@ import {
   resetNotebookOutputs,
   setOutput,
 } from "@/components/notebook/state/output-store";
+import { markExecutionPerformance } from "./execution-performance";
 
 export interface ApplyOutputChangesetOptions {
   /**
@@ -67,6 +68,11 @@ export function applyExecutionViewChangeset(
 
   for (const [execution_id, snapshot] of changeset.execution_upserts ?? []) {
     setExecution(execution_id, snapshot);
+    markExecutionPerformance(`runtime.execution.snapshot.${snapshot.status}`, {
+      executionId: execution_id,
+      outputCount: snapshot.output_ids.length,
+      executionCount: snapshot.execution_count,
+    });
   }
 
   const removedExecutionIds = changeset.removed_execution_ids ?? [];
@@ -174,6 +180,7 @@ export async function applyOutputChangeset(
     const sync = tryResolveSync(raw, blobResolver);
     if (sync) {
       setOutput(output_id, sync);
+      markExecutionPerformance("runtime.output.applied", { outputId: output_id });
       continue;
     }
     if (blobResolver === null) {
@@ -186,6 +193,7 @@ export async function applyOutputChangeset(
     try {
       const resolved = await resolveManifest(raw, blobResolver);
       setOutput(output_id, resolved);
+      markExecutionPerformance("runtime.output.applied", { outputId: output_id });
     } catch (err) {
       logger.warn(
         `[outputs-store] Failed to resolve output ${output_id}:`,

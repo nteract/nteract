@@ -246,9 +246,11 @@ export interface SyncEngineOptions {
   /**
    * Maximum time to wait for outbound sync frame delivery.
    *
-   * Cell execution calls flushAndWait() before sending ExecuteCell. Keeping
-   * this bounded prevents a stuck host transport from permanently consuming
-   * an execute click without ever sending the request.
+   * Save paths call flushAndWait(); execute paths normally fire a flush and
+   * attach the current notebook heads as `required_heads` so the daemon can
+   * wait until the document has caught up before it queues execution. Keeping
+   * this bounded prevents a stuck host transport from permanently blocking a
+   * caller that does need a delivery acknowledgement.
    */
   flushDeliveryTimeoutMs?: number;
 }

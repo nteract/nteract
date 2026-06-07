@@ -78,6 +78,12 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
+import {
+  attachExecutionPerformanceId,
+  installExecutionPerformanceApi,
+  markExecutionPerformance,
+  startExecutionPerformanceTrace,
+} from "./lib/execution-performance";
 import { getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
 import { useNotebookQueueProjection } from "@/components/notebook/state/execution-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
@@ -545,8 +551,18 @@ function AppContent() {
     () =>
       new NotebookClient({
         transport: host.transport,
-        getRequiredHeads: () => getHandle()?.get_heads_hex() ?? [],
-        flushBeforeRequiredHeadsRequest: () => getEngine()?.flush(),
+        getRequiredHeads: () => {
+          const heads = getHandle()?.get_heads_hex() ?? [];
+          markExecutionPerformance("sync.required_heads.captured", {
+            headCount: heads.length,
+          });
+          return heads;
+        },
+        flushBeforeRequiredHeadsRequest: () => {
+          markExecutionPerformance("sync.flush.dispatched.start");
+          getEngine()?.flush();
+          markExecutionPerformance("sync.flush.dispatched.end");
+        },
       }),
     [host, getHandle, getEngine],
   );
@@ -578,6 +594,10 @@ function AppContent() {
 
   // Derive values from daemon kernel
   const envSource = kernelInfo.envSource ?? null;
+
+  useEffect(() => {
+    installExecutionPerformanceApi();
+  }, []);
 
   useEffect(() => {
     if (lifecycle.lifecycle !== "AwaitingEnvBuild") {
@@ -983,10 +1003,54 @@ function AppContent() {
     return undefined;
   }, [runtimeState.project_context]);
 
+  const executeCellWithPerf = useCallback(
+    async (cellId: string) => {
+      markExecutionPerformance("client.execute.request.start", { cellId });
+      const response = await executeCell(cellId);
+      if (response.result === "cell_queued") {
+        attachExecutionPerformanceId(cellId, response.execution_id);
+        markExecutionPerformance("client.execute.response", {
+          cellId,
+          executionId: response.execution_id,
+          result: response.result,
+        });
+      } else {
+        markExecutionPerformance("client.execute.response", {
+          cellId,
+          result: response.result,
+        });
+      }
+      return response;
+    },
+    [executeCell],
+  );
+
+  const executeCellGuardedWithPerf = useCallback(
+    async (cellId: string, provenance: Parameters<typeof executeCellGuarded>[1]) => {
+      markExecutionPerformance("client.execute_guarded.request.start", { cellId });
+      const response = await executeCellGuarded(cellId, provenance);
+      if (response.result === "cell_queued") {
+        attachExecutionPerformanceId(cellId, response.execution_id);
+        markExecutionPerformance("client.execute_guarded.response", {
+          cellId,
+          executionId: response.execution_id,
+          result: response.result,
+        });
+      } else {
+        markExecutionPerformance("client.execute_guarded.response", {
+          cellId,
+          result: response.result,
+        });
+      }
+      return response;
+    },
+    [executeCellGuarded],
+  );
+
   const {
     envBuildCreating,
     handleEnvBuildCreate,
-    handleExecuteCell,
+    handleExecuteCell: handleExecuteCellAction,
     handleRestartAndRunAll,
     handleRestartKernel,
     handleRunAllCells,
@@ -1020,8 +1084,8 @@ function AppContent() {
     checkTrust,
     approveTrust,
     launchKernel,
-    executeCell,
-    executeCellGuarded,
+    executeCell: executeCellWithPerf,
+    executeCellGuarded: executeCellGuardedWithPerf,
     shutdownKernel,
     syncEnvironment,
     approveProjectEnvironment,
@@ -1031,6 +1095,16 @@ function AppContent() {
     resetDismissedEnvBuildDetails,
     showEnvBuildDialog,
   });
+
+  const handleExecuteCell = useCallback(
+    (cellId: string) => {
+      startExecutionPerformanceTrace(cellId, { source: "NotebookView" });
+      void Promise.resolve(handleExecuteCellAction(cellId)).finally(() => {
+        markExecutionPerformance("app.execute.handler.settled", { cellId });
+      });
+    },
+    [handleExecuteCellAction],
+  );
 
   const handleEnvBuildDialogOpenChange = useCallback(
     (open: boolean) => {

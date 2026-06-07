@@ -36,6 +36,7 @@ import {
   resetRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
+import { markExecutionPerformance } from "../lib/execution-performance";
 
 // ── Hook types ──────────────────────────────────────────────────────
 
@@ -168,6 +169,21 @@ export function useDaemonKernel({
       }
     }
     if (executingChanged || queuedChanged) {
+      const prevQueuedIds = new Set(prev.queued.map((entry) => entry.execution_id));
+      for (const entry of queueState.queued) {
+        if (!prevQueuedIds.has(entry.execution_id)) {
+          markExecutionPerformance("runtime.queue.queued", {
+            executionId: entry.execution_id,
+            cellId: getCellIdForExecutionId(entry.execution_id) ?? undefined,
+          });
+        }
+      }
+      if (executingChanged && queueState.executing) {
+        markExecutionPerformance("runtime.queue.executing", {
+          executionId: queueState.executing.execution_id,
+          cellId: getCellIdForExecutionId(queueState.executing.execution_id) ?? undefined,
+        });
+      }
       callbacksRef.current.onQueueChange?.(queueState);
     }
   }, [queueState]);
@@ -188,6 +204,11 @@ export function useDaemonKernel({
       const cellId = getCellIdForExecutionId(t.execution_id);
       if (!cellId) continue;
       if (t.kind === "started") {
+        markExecutionPerformance("runtime.execution.started", {
+          cellId,
+          executionId: t.execution_id,
+          executionCount: t.execution_count,
+        });
         // Only forward when the kernel has actually reported the count
         // (arrives via execute_input, after the queued→running transition).
         // Materialization reads execution_count from RuntimeState directly,
@@ -196,6 +217,11 @@ export function useDaemonKernel({
           callbacksRef.current.onExecutionCount(cellId, t.execution_count);
         }
       } else {
+        markExecutionPerformance(`runtime.execution.${t.kind}`, {
+          cellId,
+          executionId: t.execution_id,
+          executionCount: t.execution_count,
+        });
         callbacksRef.current.onExecutionDone(cellId);
       }
     }
