@@ -8,7 +8,7 @@ lifecycle shape; parts of the current daemon still use the older boolean
 
 - `docs/adr/kernel-env-trust.md` - dependency trust decides whether the daemon may install or launch declared packages. This ADR starts after that gate: how a captured environment is identified, reused, repaired, and manually reset.
 - `docs/adr/execution-pipeline.md` - launch retry must preserve the lifecycle ordering guarantees around kernel startup and terminal error publication.
-- `docs/adr/three-document-split.md` - NotebookDoc carries dependency declarations; RuntimeStateDoc carries launch/progress/error state.
+- `docs/adr/document-split.md` - NotebookDoc carries dependency declarations; RuntimeStateDoc carries launch/progress/error state.
 - `docs/adr/cleanup-punchlist.md` - follow-up lifecycle/API work.
 
 ## Context

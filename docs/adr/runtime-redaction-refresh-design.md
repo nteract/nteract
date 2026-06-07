@@ -1,5 +1,7 @@
 # Runtime Redaction Candidate Refresh Design
 
+**Status:** Design memo.
+
 ## Context
 
 The `[redact-opt]` daemon matcher optimizes the existing launch-time model:

@@ -30,7 +30,7 @@ These entries define the center of gravity for the system:
 |------|-------|--------|
 | Identity, actors, scopes | [Identity and Trust](identity-and-trust.md) | Accepted |
 | Wire format | [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md) | Draft |
-| Document boundaries | [The Three-Document Split](three-document-split.md) | Draft |
+| Document boundaries | [The Document Split](document-split.md) | Draft |
 | Schema evolution | [Notebook Schema Evolution and the Frozen Genesis](schema-evolution-and-genesis.md) | Draft |
 | Runtime-state identity | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft |
 | Environment lifecycle | [Captured Environment Lifecycle](captured-environment-lifecycle.md) | Draft |
@@ -50,11 +50,13 @@ These entries define the center of gravity for the system:
 | Entry | Status | Notes |
 |-------|--------|-------|
 | [Typed-frame v4 wire protocol](typed-frame-v4-wire-protocol.md) | Draft | Frame bytes, channels, caps, and compatibility. |
-| [The Three-Document Split](three-document-split.md) | Draft | NotebookDoc, RuntimeStateDoc, and PoolDoc responsibility boundaries. |
-| [ADR 0001: Notebook seeding invariant](0001-notebook-seeding-invariant.md) | Proposed | Causal `is_pristine` seeding gate replacing the cell-count/metadata proxy. |
+| [The Document Split](document-split.md) | Draft | Count-neutral document-boundary baseline for notebook-room docs and daemon-scoped PoolDoc; extended by CommsDoc and CommentsDoc follow-ons. |
+| [Peer Egress Lane Split Investigation](peer-egress-lanes.md) | Draft | Reliable/ephemeral peer-writer lane split investigation; implementation has partially landed. |
+| [ADR 0001: Notebook seeding invariant](0001-notebook-seeding-invariant.md) | Accepted | Causal `is_pristine` seeding gate replacing the cell-count/metadata proxy. |
 | [Notebook Pristine-Seeding Implementation Plan](notebook-pristine-seeding-implementation-plan.md) | Implementation plan | Task breakdown for ADR 0001; shipped in #3342. |
-| [ADR 0002: CommsDoc split](0002-comms-document-split.md) | Proposed | Extract widget comm state into a fourth document so RuntimeStateDoc becomes cleanly daemon-only. |
+| [ADR 0002: CommsDoc split](0002-comms-document-split.md) | Accepted | Extract widget comm state into a fourth document so RuntimeStateDoc becomes cleanly daemon-only. |
 | [CommsDoc Split Implementation Plan](commsdoc-split-implementation-plan.md) | Implementation plan | Phase-1 (foundation) TDD task breakdown for ADR 0002. |
+| [Notebook Comments Document](notebook-comments-document.md) | Draft | Separate per-notebook CommentsDoc for human and agent comments across local and hosted rooms. |
 | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft | NotebookDoc-owned pointer to the RuntimeStateDoc identity and checkpoint-head split. |
 | [Notebook Schema Evolution and the Frozen Genesis](schema-evolution-and-genesis.md) | Draft | Frozen genesis seed, freeze-and-layer evolution, forward-tolerant reader, and cross-version sync hazards. |
 | [Notebook Host Shell Convergence](notebook-host-shell-convergence.md) | Draft | Shared notebook shell, capability vocabulary, and host adapter boundary across desktop, cloud, and elements. |
@@ -98,6 +100,7 @@ These entries define the center of gravity for the system:
 | [Deployment Topology](deployment-topology.md) | Draft | Hosted room topology, compute attachment, and durable state split. |
 | [Hosted Room Authorization and Cloud Room Host](hosted-room-authorization.md) | Draft | D1 ACLs, scope derivation, and DO room host. |
 | [Runtime Principal Promotion](runtime-principal-promotion.md) | Draft | Local runtime principals, hosted promotion, and execution authority split. |
+| [Remote Workstation Doc Agents](remote-workstation-doc-agents.md) | Draft | Provider-neutral workstation/doc-agent registration and runtime-peer attachment model. |
 | [Hosted Credential Transport and OIDC Binding](hosted-credential-transport.md) | Draft | Browser, native, agent, and runtime credential transport. |
 | [Hosted Notebook Artifacts](hosted-notebook-artifacts.md) | Draft | Published snapshots, R2 layout, and cloud viewer materialization. |
 | [Hosted Output Origin Isolation](hosted-output-origin-isolation.md) | Draft | App, output, and renderer origin separation. |

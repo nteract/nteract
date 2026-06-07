@@ -1,5 +1,7 @@
 # Arrow Manifest Durable Storage Design
 
+**Status:** Design memo.
+
 ## Objective
 
 PR #2658 made Arrow stream manifests renderable and added complete multi-chunk

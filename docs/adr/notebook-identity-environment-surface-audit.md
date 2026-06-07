@@ -214,7 +214,7 @@ This pass also tightened nearby docs that affect identity/environment work:
   and `PUT_BLOB` frame `0x08`.
 - `crates/notebook-doc/AGENTS.md` now treats `RuntimeStateDoc` as the durable
   execution/output record instead of teaching broadcast-driven output state.
-- `three-document-split.md` now names schema v5 and current runtime-doc policy
+- `document-split.md` now names schema v5 and current runtime-doc policy
   enforcement.
 
 Remaining follow-up: `hosted-room-authorization.md` should keep current

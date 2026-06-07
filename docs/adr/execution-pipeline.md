@@ -16,7 +16,7 @@ This ADR captures the load-bearing decisions that make those facts work. Most of
 
 Neighbors:
 
-- `docs/adr/three-document-split.md` — why execution state lives in `RuntimeStateDoc` and not `NotebookDoc`, and why there are two writer paths into it.
+- `docs/adr/document-split.md` — why execution state lives in `RuntimeStateDoc` and not `NotebookDoc`, and why there are two writer paths into it.
 - `docs/adr/typed-frame-v4-wire-protocol.md` — the framing the pipeline rides on; `Request`/`Response` correlation, `SessionControl` readiness phases.
 - `docs/adr/blob-storage-and-content-addressing.md` — where stream and display outputs actually land once a manifest is committed.
 - `docs/adr/identity-and-trust.md` — who can `ExecuteCell`, who can read outputs.

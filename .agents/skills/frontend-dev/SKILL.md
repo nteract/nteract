@@ -95,6 +95,12 @@ should not fork cell, output, rail, toolbar, or execution UI.
   should use explicit published/revision-safe facts.
 - Workstation state belongs to host/app chrome until it becomes the active
   notebook runtime. Runtime controls stay in the shared notebook toolbar.
+- Hosted compute is owner-only until an explicit execute capability exists.
+  Do not let `editor`, edit mode, or a live `runtime_peer` alone surface run,
+  restart, or interrupt controls.
+- R2 snapshot bundles and D1 catalog/ACL/revision rows are the durable hosted
+  truth. Treat Durable Object storage as live-room recovery/cache unless a new
+  ADR changes that boundary.
 
 ### App-Shell Latency
 
@@ -114,6 +120,9 @@ should not fork cell, output, rail, toolbar, or execution UI.
 - Derive dashboard/list/sidebar summaries in pure projection helpers outside
   component render bodies. React should consume stable arrays/objects rather
   than recreating ad hoc projections in JSX.
+- For live notebook content, consume `CellChangeset` and shared narrow
+  projection helpers when possible. Full live-cell rematerialization is a
+  bootstrap or fallback path, not the steady-state Cloud projection model.
 - When adding new API facts for UI, keep them structured and host-owned. Avoid
   parsing principal strings, display labels, or notebook IDs in React except as
   compatibility fallback.

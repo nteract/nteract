@@ -124,4 +124,4 @@ None of A touches the frozen NotebookDoc root or moves populated data. A is low-
 
 ## Next step
 
-Decouple this into tracked work along Phase A / Gate 1 / Phase B / Gate 2 / Phase C, then turn each phase into its own ADR + plan. Candidate ADRs: `four-document-split` (CommsDoc, superseding `three-document-split.md` partially), `notebook-doc-structural-split` (MetadataDoc/CellsDoc, the gated data-move), and `sync-divergence-recovery` (the ResyncRequired/Sever frame). Phase A's recovery-wire fix and CommsDoc are the two things worth starting on.
+Decouple this into tracked work along Phase A / Gate 1 / Phase B / Gate 2 / Phase C, then turn each phase into its own ADR + plan. Candidate ADRs: `four-document-split` (CommsDoc, superseding `document-split.md` partially), `notebook-doc-structural-split` (MetadataDoc/CellsDoc, the gated data-move), and `sync-divergence-recovery` (the ResyncRequired/Sever frame). Phase A's recovery-wire fix and CommsDoc are the two things worth starting on.

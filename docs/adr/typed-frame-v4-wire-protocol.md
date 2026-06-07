@@ -11,7 +11,7 @@ The wire crate (`crates/notebook-wire/src/lib.rs`) is intentionally tiny: magic 
 This ADR pins down what every peer must agree on so the format does not silently drift between Rust, the `packages/runtimed` TypeScript surface, the Python client, and any future browser transport. The semantic neighbors:
 
 - `docs/adr/identity-and-trust.md` — who is allowed to send which frame.
-- `docs/adr/three-document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `PoolStateSync` actually carry.
+- `docs/adr/document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
 - `docs/adr/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
 - `docs/adr/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
 - `docs/adr/cleanup-punchlist.md` — open gaps surfaced while writing this.
@@ -63,7 +63,7 @@ Both surfaces share the same 100 MiB outer ceiling (`MAX_FRAME_SIZE`) and the sa
 
 The fact that the same protocol-version preamble gates two different framing rules is intentional: pool/settings predate the typed-frame layer and were not worth migrating. New channels should adopt typed framing.
 
-## Decision 3: Nine frame types, fixed numbering
+## Decision 3: Ten frame types, fixed numbering
 
 `NotebookFrameType` is a `#[repr(u8)]` enum. Adding a new type requires a new byte, a new variant, and a CI-enforced contract test (`cargo test -p notebook-protocol`). The current set:
 
@@ -78,6 +78,7 @@ The fact that the same protocol-version preamble gates two different framing rul
 | `0x06` | `PoolStateSync` | Binary, raw `automerge::sync::Message` bytes (`PoolDoc`) | bidirectional |
 | `0x07` | `SessionControl` | JSON, `SessionControlMessage` | daemon → client |
 | `0x08` | `PutBlob` | Framed binary (see Decision 6) | client → daemon |
+| `0x09` | `CommsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommsDoc`) | bidirectional |
 
 ### Direction is policy, not encoding
 
@@ -103,6 +104,7 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `Broadcast` | 16 MiB | 4 MiB | `Comm` custom widget broadcasts with inline buffers |
 | `Presence` | 4 KiB | 1 KiB | Cursor/selection/focus updates (typically <100 bytes CBOR); matches semantic cap in `notebook-doc::presence` |
 | `RuntimeStateSync` | 64 MiB | 16 MiB | Snapshots of `RuntimeStateDoc` with output manifests |
+| `CommsDocSync` | 64 MiB | 16 MiB | Mutable widget comm state snapshots and sync deltas |
 | `PoolStateSync` | 1 MiB | 256 KiB | Daemon pool state is small (counts, errors, env paths) |
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
@@ -227,7 +229,7 @@ Both `Request` (0x01) and `Response` (0x02) carry a JSON envelope with a correla
 { "id": "req-7", "result": "cell_queued" }
 ```
 
-The client tracks pending requests by id and routes incoming `Response` frames by id, because `AutomergeSync`, `RuntimeStateSync`, `Broadcast`, `Presence`, and `SessionControl` frames all interleave freely between request send and response receipt. Frame order across types is **not** an invariant the client can rely on.
+The client tracks pending requests by id and routes incoming `Response` frames by id, because `AutomergeSync`, `RuntimeStateSync`, `CommsDocSync`, `Broadcast`, `Presence`, and `SessionControl` frames all interleave freely between request send and response receipt. Frame order across types is **not** an invariant the client can rely on.
 
 The same envelope shape covers the runtime-agent subprotocol (`RuntimeAgentRequestEnvelope` / `RuntimeAgentResponseEnvelope`); the difference is purely in the inner JSON action/result discriminant. The type bytes are identical.
 
@@ -281,7 +283,7 @@ The Python client (`crates/runtimed-py`) uses the Rust framing directly through 
 6. Peer writer serializes the response envelope, prefixes type byte `0x02`, length-prefixes, writes.
 7. Relay pipes the frame outbound to the frontend; the frame bus dispatches by type; the transport response tap resolves the pending promise.
 
-Between steps 3 and 6, the daemon may interleave `AutomergeSync` frames (for cells modified during execution), `RuntimeStateSync` frames (kernel busy → outputs → kernel idle), `Broadcast` frames (custom comm messages), and `SessionControl` frames (if a phase advances). The frontend routes them by type byte and correlates the `Response` by id.
+Between steps 3 and 6, the daemon may interleave `AutomergeSync` frames (for cells modified during execution), `RuntimeStateSync` frames (kernel busy -> outputs -> kernel idle), `CommsDocSync` frames (widget state), `Broadcast` frames (custom comm messages), and `SessionControl` frames (if a phase advances). The frontend routes them by type byte and correlates the `Response` by id.
 
 ### Daemon → frontend: kernel emits stdout
 

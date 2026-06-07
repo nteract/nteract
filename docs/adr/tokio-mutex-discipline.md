@@ -11,7 +11,7 @@ This ADR collects the rules that keep that runtime responsive. The headline rule
 Neighbors:
 
 - `docs/adr/typed-frame-v4-wire-protocol.md` - the framing that bounds inbound work. `FramedReader`'s actor pattern is one of the cancel-safety primitives this ADR depends on.
-- `docs/adr/three-document-split.md` - why `NotebookDoc` and `RuntimeStateDoc` live behind `std::sync::Mutex` in `DocHandle`, not async locks.
+- `docs/adr/document-split.md` - why `NotebookDoc` and `RuntimeStateDoc` live behind `std::sync::Mutex` in `DocHandle`, not async locks.
 - `docs/adr/execution-pipeline.md` - Decision 2 (control-plane vs output-plane separation) is the same problem family at the IOPub boundary. Same goal, different boundary.
 - `docs/adr/blob-storage-and-content-addressing.md` - the blob store keeps large writes out of the document apply path; concurrency discipline keeps them out of the lifecycle path.
 - `docs/adr/identity-and-trust.md` - connection-time authentication keeps the validator's hot path mutex-free.

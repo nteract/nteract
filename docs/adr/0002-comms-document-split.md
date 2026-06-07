@@ -4,7 +4,7 @@
 - Date: 2026-06-02
 - Deciders: nteract maintainers
 - Relates to: #3316 (editor write surface), #3317 (runtime-availability capability), ADR 0001 (causal seeding invariant)
-- Partially supersedes: `docs/adr/three-document-split.md`
+- Partially supersedes: `docs/adr/document-split.md`
 
 ## Context
 
@@ -14,13 +14,15 @@ A deep investigation of where that principle leads is recorded in `docs/handoffs
 
 This ADR is the first decoupled piece. It is also the original "thread 1" of the host-convergence handoff.
 
-Today there are three documents (`three-document-split.md`):
+The historical document split (`document-split.md`) separated notebook content,
+runtime state, and daemon pool state. Since then, the notebook-room set has
+grown beyond that original count:
 
 | Doc | Writers | Rule |
 |---|---|---|
 | NotebookDoc | editors+owners (cells), owner (identity/metadata) | structural authoring |
 | RuntimeStateDoc | daemon/runtime only **except widget comm state** | runtime authority |
-| PoolDoc | daemon only | pool template |
+| PoolDoc | daemon only | daemon-scoped pool template, fanned out to room peers |
 
 RuntimeStateDoc is not cleanly read-only to clients for exactly one reason: **widget comm state is bidirectional.** Editors must be able to write `comms/{comm_id}/state/{key}` so a slider or a text box pushes its value back to the kernel. That is the lone carve-out in the hosted-room authorization model (Decision 7), and it is enforced not by a document boundary but by a field-subtree policy diff.
 
@@ -133,6 +135,13 @@ One concurrency hazard to call out: `put_comm` creates the state object via the 
 - **Anyone can now mint unbounded orphan comm_ids.** Because orphan state lands durably (forward-suppression, not write-rejection), CommsDoc needs an orphan floor / size consideration: the reclamation pass must bound how much un-topologied state can accumulate, and the doc-size budget has to account for abusive minting.
 - **A new frozen CommsDoc genesis seed** is added and registered in `GENESIS_SEEDS_IN_WASM` (`crates/xtask/src/main.rs:1509`), with a shape-asserting `verify-genesis` check, or an old wasm ships the wrong seed and re-triggers the #3086 zeroing footgun. CommsDoc is multi-principal, so it needs its own `is_canonical_*_seed_change` hash-pin mirroring NotebookDoc's seed authorization.
 - **A `comms_doc_id` identity pointer** is added, owner-only, alongside `runtime_state_doc_id`. **Make it deterministically derivable** (`comms:{notebook_id}`), mirroring `default_runtime_state_doc_id` (`crates/notebook-doc/src/lib.rs:118-120`); a random pointer whose `put` fails to reach disk gets re-minted divergently on reload, a silent fork.
+- **Implementation divergence, 2026-06-07:** production CommsDoc sync, storage,
+  and projection now exist, but the required `NotebookDoc.comms_doc_id`
+  attachment pointer has not landed. The current room-attached pairing is an
+  intentional interim only. It is not the accepted final state because clone,
+  save-as, publish, and portable snapshot flows need a durable document identity
+  pointer that travels with the notebook. Tracked in
+  [cleanup-punchlist.md](cleanup-punchlist.md) as `3D-9`.
 - **Sequencing constraint on ADR 0001's implementation (not its current state).** ADR 0001 merged docs-only and is still Proposed; `is_pristine` does not exist in the tree yet. The live seeding decision is `is_uninitialized_notebook_doc` (`crates/runtimed/src/notebook_sync_server/load.rs:1063`, `cell_count()==0 && metadata.is_none()`), which has no ROOT allowlist and would *not* misfire on a `comms_doc_id` put. So adding `comms_doc_id` today breaks nothing. The hazard materializes **only once 0001's predicate ships**: `new_inner` writes exactly `notebook_id` (`lib.rs:1007`) and `runtime_state_doc_id` (`lib.rs:1008-1012`) to ROOT, and `is_pristine`'s allowlist is `notebook_id || runtime_state_doc_id` failing closed on any unlisted ROOT op. So **when `is_pristine` lands, `comms_doc_id` must be added to its allowlist in the same change set that stamps it**. Concretely: stamp `comms_doc_id` through `new_inner` (so 0001's enumerated constructor guards cover it, not a side path), via an `ensure_`-based idempotent path that fails closed on absent-for-existing (mirroring `ensure_runtime_state_doc_id`, `lib.rs:1435-1443`), deterministically derived as `comms:{notebook_id}` (mirroring `default_runtime_state_doc_id`, `crates/notebook-doc/src/lib.rs:118-120`). Add a constructor-guard test: a freshly created notebook that stamps `comms_doc_id` is still `is_pristine == true` and still gets exactly one starter cell.
 - **Migration is stop-writing, not reshape.** RuntimeStateDoc genesis is frozen v2, so the daemon simply stops writing `comms/*/state` there while old peers read an absent map, and the forward path reads state from CommsDoc. Verify no reader of `state.comms` breaks when state leaves RuntimeStateDoc while topology stays - the readers extend past the obvious ones: `daemon.rs:4603-4612`, `output_commit_measure.rs:287-297`, plus the daemon-local comm-keyed caches (`capture_cache`, `output_widget_replay_cache`, cleared on `remove_comm` at `jupyter_kernel.rs:2232-2233`). Confirm the policy-sense topology fields (`capture_msg_id`, `outputs`, `seq`) stay in RuntimeStateDoc, not CommsDoc.
 - **A fourth frontend sync stream** is added to the bridge (`apps/notebook/src/lib/notebook-sync-store-bridge.ts`, `runtime-state.ts`), with its own bootstrap and reset path. Per-document reset matters here: resetting CommsDoc must not blow away RuntimeStateDoc or CellsDoc projections (a constraint the divergence-recovery ADR builds on).

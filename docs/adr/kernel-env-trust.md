@@ -5,7 +5,7 @@
 ## Related ADRs
 
 - `docs/adr/typed-frame-v4-wire-protocol.md` - wire shape for sync and request frames that carry trust signals.
-- `docs/adr/three-document-split.md` - NotebookDoc carries the dependency declaration; RuntimeStateDoc carries the resolved trust state.
+- `docs/adr/document-split.md` - NotebookDoc carries the dependency declaration; RuntimeStateDoc carries the resolved trust state.
 - `docs/adr/execution-pipeline.md` - kernel launch is the gate this ADR guards.
 - `docs/adr/blob-storage-and-content-addressing.md` - parallel content-addressed scheme for environments lives alongside the blob CAS.
 - `docs/adr/captured-environment-lifecycle.md` - captured env identity, cache repair, launch retry, and manual reset. This ADR decides whether dependency installation is allowed; the lifecycle ADR decides how an allowed captured env is materialized and repaired.

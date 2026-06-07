@@ -35,9 +35,9 @@ The daemon (`runtimed`) is a singleton coordinating notebook windows over a Unix
 
 **Components:** Unix socket (IPC), lock file (singleton guarantee), UV/Conda pools (prewarmed envs), blob store (content-addressed outputs), notebook-docs (persisted Automerge documents).
 
-**Protocol:** Length-prefixed typed frames over Unix socket. Preamble → JSON handshake → Automerge sync → steady state. Frame types: AutomergeSync (0x00), Request (0x01), Response (0x02), Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05), PoolStateSync (0x06), SessionControl (0x07).
+**Protocol:** Length-prefixed typed frames over Unix socket. Preamble → JSON handshake → Automerge sync → steady state. Frame types: AutomergeSync (0x00), Request (0x01), Response (0x02), Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05), PoolStateSync (0x06), SessionControl (0x07), PutBlob (0x08), CommsDocSync (0x09).
 
-**CRDT ownership:** Frontend WASM writes cell source, position, type, metadata. Daemon writes RuntimeStateDoc (outputs, execution counts, comms, trust, env progress, project context). Write to CRDT only from the owning side.
+**CRDT ownership:** Frontend WASM writes cell source, position, type, metadata. Daemon writes RuntimeStateDoc for outputs, execution counts, comm topology, trust, env progress, and project context. Mutable widget state lives in CommsDoc and is gated by RuntimeStateDoc topology. Write to a CRDT document only from an authority allowed for that document.
 
 ## Build System
 
@@ -156,13 +156,18 @@ Legacy dependency and cell-metadata tool names still dispatch for compatibility,
 
 Daemon-authoritative Automerge document synced via frame 0x05. Frontend reads only (`useRuntimeState()`); Python reads via `notebook.runtime`.
 
-**Schema:** `kernel/{status, starting_phase, name, language, env_source}`, `queue/{executing, queued}`, `executions/{id → cell_id, status, execution_count, success}`, `env/{in_sync, added, removed}`, `trust/{status, needs_approval}`, `last_saved`.
+**Schema:** `kernel/{status, starting_phase, name, language, env_source}`, `queue/{executing, queued}`, `executions/{id → cell_id, status, execution_count, success}`, `env/{in_sync, added, removed}`, `trust/{status, needs_approval}`, `last_saved`, plus comm topology/routing. Mutable widget values live in CommsDoc, not RuntimeStateDoc.
 
 **Execution lifecycle:** Client sends `ExecuteCell` → daemon generates `execution_id` → writes to queue → status progresses through running/done/error → Python `Execution` handle polls for updates.
 
-## Fork+Merge for Async CRDT Mutations
+## Async CRDT Mutations
 
-Any daemon code that reads doc state, does async work, then writes back MUST use `fork()` + `merge()`. Direct mutation after an async gap overwrites concurrent edits.
+Any daemon code that reads doc state, does async work, then writes back must
+reconcile against the captured baseline heads. Prefer document-owned
+`transact_at_heads_recovering(...)` for ordinary async writes. Use
+`fork_with_actor(...)` + `merge_recovering(...)` only when the async worker
+genuinely needs an editable fork across the await. Direct mutation after an
+async gap overwrites concurrent edits.
 
 ```rust
 let baseline_heads = {

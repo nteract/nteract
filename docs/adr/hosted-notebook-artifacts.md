@@ -18,7 +18,8 @@ The shared runtime work now gives us a cleaner path:
 - `NotebookDoc` persists cells, metadata, ordering, and execution pointers.
 - `RuntimeStateDoc` persists executions and output manifests by execution id.
 - `runtimed-wasm` can load a persisted `NotebookDoc` + `RuntimeStateDoc` pair
-  with `NotebookHandle.load_snapshot()`.
+  with `NotebookHandle.load_snapshot()` and then load saved `CommsDoc` bytes
+  with `load_comms_doc()`.
 - JS hosts have a shared `BlobResolver` surface, so blob references can stay as
   `{ "blob": "<sha256>" }` until the host maps them to a URL.
 - The Worker can use shared typed-frame size limits and shared CBOR presence
@@ -31,14 +32,15 @@ The shared runtime work now gives us a cleaner path:
   first-class document identified from `NotebookDoc`, rather than only an
   object nested under a notebook artifact path.
 
-## Decision 1: Durable publish artifacts are snapshot pairs
+## Decision 1: Durable publish artifacts are snapshot bundles
 
 A published revision is durable when these artifacts exist:
 
 - Notebook snapshot: saved `NotebookDoc` bytes.
 - Runtime snapshot: saved `RuntimeStateDoc` bytes.
+- Comms snapshot: optional saved `CommsDoc` bytes for mutable widget state.
 - Blob objects: every content-addressed byte object reachable from the
-  snapshot pair. This includes `RuntimeStateDoc` execution output manifests,
+  snapshot bundle. This includes `RuntimeStateDoc` execution output manifests,
   widget comm state and comm outputs, `NotebookDoc.resolved_assets`,
   `NotebookDoc.attachments`, and child refs named by inline manifests such as
   Arrow/Sift chunks.
@@ -51,13 +53,15 @@ The revision row records:
 - `runtime_heads_hash`
 - `snapshot_key`
 - `runtime_snapshot_key`
+- `comms_heads_hash`
+- `comms_snapshot_key`
 - `actor_label`
 
 Derived render JSON is not a durable artifact. The publish API validates the
-snapshot pair before recording the catalog row: if the `NotebookDoc` /
-`RuntimeStateDoc` pair cannot load, or if any projected cell, widget comm, or
-manifest child points at a missing blob object, the host rejects the publish and
-leaves no revision row.
+snapshot bundle before recording the catalog row: if the `NotebookDoc` /
+`RuntimeStateDoc` pair cannot load, if a recorded `CommsDoc` snapshot cannot
+load, or if any projected cell, widget comm, or manifest child points at a
+missing blob object, the host rejects the publish and leaves no revision row.
 
 ## Decision 2: R2 layout is deterministic
 
@@ -73,7 +77,8 @@ Notebook snapshots retain the `n/{id}` compatibility namespace for now.
 Runtime-state snapshots already use the first-class document namespace from
 `runtime-state-document-identity.md`; publish and runtime-snapshot routes
 require `runtime_state_doc_id`, and the revision row records the exact
-`runtime_snapshot_key`.
+`runtime_snapshot_key`. `CommsDoc` snapshots are recorded separately through
+`comms_heads_hash` and `comms_snapshot_key` when present.
 
 Longer-term storage work should move all document snapshots toward the
 first-class document namespace:
@@ -87,20 +92,21 @@ blobs/{sha256}
 Snapshot paths and blob paths are the durable publish artifact set; incremental
 paths are an optional future optimization that should follow Automerge Repo's
 logical storage shape rather than introduce a new file-extension convention. The
-host can load the snapshot pair at publish time to prove the snapshot pair and
-blob set are complete. Legacy nested runtime snapshot keys remain readable when
+host can load the snapshot bundle at publish time to prove the document
+snapshots and blob set are complete. Legacy nested runtime snapshot keys remain readable when
 they are recorded on older revision rows.
 
 For connected notebook pages, the live room is the primary read model. Viewers
-and editors render the same live `NotebookDoc` + `RuntimeStateDoc`; permission
-differences only change which frames the client may author.
+and editors render the same live `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc`;
+permission differences only change which frames the client may author.
 
 ## Decision 3: Materialization uses runtimed-wasm
 
 Hosted viewers and room hosts materialize published revisions by calling:
 
 ```ts
-NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes)
+const handle = NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+if (commsBytes) handle.load_comms_doc(commsBytes);
 ```
 
 Then they read cells through the same WASM handle APIs that the desktop viewer
@@ -130,7 +136,7 @@ the host.
 Runtime output manifests keep blob references as structured refs such as:
 
 ```json
-{ "blob": "sha256-...", "size": 1234 }
+{ "blob": "<sha256-hex>", "size": 1234 }
 ```
 
 WASM does not rewrite these into daemon-local HTTP URLs. The host provides a
@@ -149,14 +155,14 @@ names chunk objects by content hash:
 
 ```json
 {
-  "chunks": [{ "hash": "sha256:...", "size": 9352 }],
+  "chunks": [{ "hash": "<sha256-hex>", "size": 9352 }],
   "complete": true
 }
 ```
 
 The cloud materializer may include a `blob_urls` inventory for these chunk
 hashes so tests and debugging tools can see which hosted blob URLs are required,
-but the durable state remains the snapshot pair plus blob objects. The browser
+but the durable state remains the snapshot bundle plus blob objects. The browser
 viewer still resolves chunk hashes through the shared `BlobResolver` when the
 isolated Sift renderer consumes the output.
 
@@ -196,7 +202,7 @@ API or blob origin.
 
 The cloud renderer boundary is intentionally narrow:
 
-- Worker: authenticate reads, validate snapshot pairs, serve snapshot/blob
+- Worker: authenticate reads, validate snapshot bundles, serve snapshot/blob
   artifacts, and map content-addressed blobs to host URLs.
 - Cloud viewer: own the browser shell, live-room bridge, theme selection,
   presence chrome, and normalization from live or pinned Automerge documents to

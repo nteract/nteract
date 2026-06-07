@@ -147,7 +147,8 @@ Resolution depends on MIME type:
 - **Binary MIME** (`image/png`, `audio/*`, etc.):
   Always blob store. Frontend gets `http://` URL. Python gets raw bytes.
 - **Widget output** (`application/vnd.jupyter.widget-view+json`):
-  References comm state in RuntimeStateDoc
+  References comm topology/output routing in RuntimeStateDoc; mutable widget
+  values live in the paired CommsDoc
 
 MCP execution paths use **preview mode** — output is truncated for
 LLM consumption. Agents that need full output call
@@ -228,19 +229,21 @@ run. This happens when:
 Fix: Always use `execution_id` from the `CellQueued` response to
 read outputs for a specific execution.
 
-## Two Document Architecture
+## Execution Document Architecture
 
-Execution spans both Automerge documents in a notebook room:
+Execution primarily spans NotebookDoc and RuntimeStateDoc in a notebook room:
 
 | Document | What it holds for execution |
 |----------|---------------------------|
 | **NotebookDoc** | Cell source code (what to execute) |
 | **RuntimeStateDoc** | Execution lifecycle, outputs, kernel status |
+| **CommsDoc** | Mutable widget values referenced by widget outputs, gated by RuntimeStateDoc topology |
 
 The `required_heads` gate ensures NotebookDoc is synced before
 execution starts. RuntimeStateDoc polling ensures outputs are
-available before the client reads them. Both sync streams run
-concurrently on the same socket connection.
+available before the client reads them. CommsDoc sync matters when those
+outputs include live widgets. All document sync streams run concurrently on
+the same socket connection.
 
 ## Key Source Files
 

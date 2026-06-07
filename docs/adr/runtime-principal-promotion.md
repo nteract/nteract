@@ -85,7 +85,9 @@ For hosted execution:
 
 This preserves the existing split:
 
-- owner/editor authority controls notebook edits and execution requests;
+- owner/editor document authority controls notebook edits;
+- hosted execution request authority is owner-only until an explicit execute
+  capability exists;
 - `runtime_peer` authority controls runtime-state authorship for accepted work;
 - neither authority silently implies the other.
 
@@ -98,8 +100,8 @@ Shared UI should show execution controls when the current user can request
 execution and the host projects an executable runtime attachment. In a hosted
 room, that means:
 
-- the current connection has a request-authorized scope, initially owner and
-  later editor where the product allows it;
+- the current connection has a request-authorized scope, initially owner only
+  and later a separate execute capability if the product allows it;
 - a compatible runtime peer or workstation is attached or selectable; and
 - the host exposes a transport that sends execution requests to the room host,
   not directly to the runtime peer.
