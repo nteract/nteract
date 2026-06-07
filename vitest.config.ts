@@ -1,6 +1,9 @@
 import { defineConfig, type Plugin } from "vite-plus";
+import { configDefaults } from "vitest/config";
 import path from "path";
 import { rawLibPlugin } from "./apps/notebook/vite-plugin-raw-lib";
+
+const ignoredDiagnosticWorkspaces = [".context/**", "**/.context/**"];
 
 /** Stub virtual:renderer-plugin/* modules for tests (real builds use the Vite plugin). */
 function rendererPluginStub(): Plugin {
@@ -50,8 +53,12 @@ export default defineConfig({
       "packages/**/tests/**/*.test.{ts,tsx}",
       "plugins/nteract/pi/**/*.test.{ts,tsx}",
     ],
+    exclude: [...configDefaults.exclude, ...ignoredDiagnosticWorkspaces],
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
+  },
+  benchmark: {
+    exclude: [...configDefaults.exclude, ...ignoredDiagnosticWorkspaces],
   },
   resolve: {
     alias: {

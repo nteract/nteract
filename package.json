@@ -9,6 +9,7 @@
     "notebook:dev": "pnpm --dir apps/notebook dev",
     "test": "vp test",
     "test:run": "vp test run",
+    "test:bench": "vp test bench --run --dir apps/notebook/src/lib/__tests__",
     "test:e2e:browser": "pnpm --filter notebook-ui test:e2e:browser",
     "test:e2e:browser:portless": "pnpm --filter notebook-ui test:e2e:browser:portless",
     "test:e2e": "wdio run e2e/wdio.conf.js",
