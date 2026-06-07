@@ -149,7 +149,7 @@ describe("NotebookRail", () => {
     expect(screen.getByText("Attached")).toBeVisible();
     expect(screen.getByTestId("host-workstations-content")).toHaveTextContent("runtime target");
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(16rem,22vw,19rem)]",
+      "w-[clamp(16rem,20vw,18rem)]",
       "min-w-64",
     );
   });
@@ -269,14 +269,14 @@ describe("NotebookRail", () => {
       screen.getByTestId("notebook-rail").querySelector('[data-slot="notebook-rail-panel"]'),
     ).toBeInTheDocument();
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(15rem,20vw,18rem)]",
-      "min-w-60",
+      "w-[clamp(16rem,20vw,18rem)]",
+      "min-w-64",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
   });
 
-  it("gives package details enough room until the rail owns the viewport", () => {
-    const { container } = render(
+  it("keeps package and workstation panel widths stable while switching panels", () => {
+    const { container, rerender } = render(
       <NotebookRail
         activePanelId="packages"
         collapsed={false}
@@ -287,10 +287,29 @@ describe("NotebookRail", () => {
       />,
     );
 
-    expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
-      "w-[clamp(15rem,20vw,17rem)]",
-      "min-w-60",
+    const packagesPanel = container.querySelector('[data-slot="notebook-rail-panel"]');
+    const panelWidthClass = "w-[clamp(16rem,20vw,18rem)]";
+    expect(packagesPanel).toHaveClass(
+      panelWidthClass,
+      "min-w-64",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
+    );
+
+    rerender(
+      <NotebookRail
+        activePanelId="workstations"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        workstationsPanel={<div>Runtime target</div>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
+      panelWidthClass,
+      "min-w-64",
     );
   });
 
