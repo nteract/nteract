@@ -468,7 +468,13 @@
       :is([data-slot="markdown-output"], [data-slot="html-output"]) .katex-display {
         margin: 1.25rem 0;
         overflow-x: auto;
+        scrollbar-width: none;
         text-align: center;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"])
+        .katex-display::-webkit-scrollbar {
+        display: none;
       }
 
       /* Links */

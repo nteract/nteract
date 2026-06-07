@@ -105,6 +105,8 @@ describe("MarkdownOutput heading anchors", () => {
     expect(container.querySelector('[data-slot="markdown-output"]')).toHaveClass(
       "[&_.katex-display]:my-5",
       "[&_.katex-display]:overflow-x-auto",
+      "[&_.katex-display]:[scrollbar-width:none]",
+      "[&_.katex-display::-webkit-scrollbar]:hidden",
       "[&_.katex-display]:text-center",
     );
     expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
