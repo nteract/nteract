@@ -564,15 +564,16 @@ environments it has, and allocate/start a runtime in env X for room Y, driving
     need is an internal/automation entry the control plane and the deferred live
     proof drive, matching how `runtime-agent` is shaped.
 
-41. **Deferred (workstation endpoint): the live attach re-proof.** Spawning
-    `runtimed cloud-runtime-agent` against a real preview room (with the
-    `runtime_peer` ACL row, decision 9) and confirming a cell runs on the
-    daemon-managed kernel and renders in the viewer needs staging creds + a deployed
-    worker this autonomous session does not have. Exact run steps are in
-    `16-workstation-endpoint.md` ("Deferred — needs us"). Not attempted headlessly.
-    The hosted-side pieces (workstation registry D1 + routes, doc-agent control
-    channel, room target-selection APIs) are Worker build items (ADR sequence
-    3–9), out of scope for this daemon-side headless slice.
+41. **The workstation endpoint live attach re-proof is complete; hosted
+    registration/selection remains open.** A preview runtime-browser execute
+    smoke connected a workstation runtime peer with the explicit `runtime_peer`
+    ACL row (decision 9), launched a daemon-managed `current_python` kernel
+    through launch-on-attach, accepted browser-submitted execution intent, and
+    rendered output in the viewer. That proves the daemon-side endpoint and
+    room-scoped runtime peer path end to end for the current Python policy. The
+    hosted-side pieces (workstation registry D1 + routes, doc-agent control
+    channel, room target-selection APIs) are still Worker build items (ADR
+    sequence 3–9), out of scope for this daemon-side headless slice.
 
 ### Workstation endpoint: Phase B (built, headless)
 

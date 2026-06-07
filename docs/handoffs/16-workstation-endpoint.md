@@ -1,11 +1,13 @@
 # Workstation endpoint on the daemon (16, second half)
 
-**Status:** Phase B built (headless), 2026-06-06. Phase A scope: PR #3427.
-Phase B stack: B1 CLI #3428, B2 `list_environments` #3429, B3 launch-on-attach
-#3430, B4 `allocate_runtime_for_room` #3431. All daemon-side code lives under
+**Status:** Phase B built (headless) and live attach re-proof completed,
+2026-06-07. Phase A scope: PR #3427. Phase B stack: B1 CLI #3428, B2
+`list_environments` #3429, B3 launch-on-attach #3430, B4
+`allocate_runtime_for_room` #3431. All daemon-side code lives under
 `crates/runtimed/src/workstation/`; each PR is additive/gated (UDS unchanged).
-Remaining: the live attach re-proof (Deferred — needs creds + a deployed worker)
-and prewarmed-pool allocation (needs a live daemon). See decisions 38–42.
+Remaining: prewarmed-pool allocation (needs a live daemon) plus the hosted
+workstation registry, doc-agent control channel, and room target-selection APIs.
+See decisions 38–42.
 
 This is the second half of 16. The first half — making `runtime_agent`
 transport-agnostic, with `run_cloud_runtime_agent` as the cloud-attach path — is
@@ -213,18 +215,17 @@ spawn reuses `run_cloud_runtime_agent`. Behind the transport gate.
 - `allocate_runtime_for_room`: env selection + spawn wiring. Unit-tested with a
   seeded daemon/pool; the *attach itself* is not exercised (no live room).
 
-**Deferred — needs us (live verification / infra we do not have):**
+**Verified live:**
 
-- **Live attach re-proof.** Spawn `runtimed cloud-runtime-agent` against a real
-  preview room with the explicit `runtime_peer` ACL row (decision 9), confirm a
-  cloud-submitted (or launch-on-attach) cell runs on the daemon-managed kernel and
-  renders in the viewer. Requires staging creds + a deployed worker. **Do not
-  attempt headlessly.** Exact steps to run: (1) deploy/choose a preview room;
-  (2) `POST /api/n/:id/acl {subject_kind:"principal", subject:<principal>,
-  scope:"runtime_peer"}`; (3) `RUNT_CLOUD_TOKEN=… runtimed cloud-runtime-agent
-  --cloud-url … --notebook-id … --scope runtime_peer --operator agent:runt`;
-  (4) run a cell, confirm output in the viewer; (5) exercise the 3b
-  token-refresher against an expiring token.
+- **Live attach re-proof.** A hosted runtime-browser execute smoke spawned a
+  workstation runtime peer against preview, granted the explicit `runtime_peer`
+  ACL row (decision 9), launched a daemon-managed `current_python` kernel through
+  launch-on-attach, submitted execution from the browser/editor path, and
+  observed output in the viewer. This proves the daemon-side endpoint and
+  room-scoped runtime peer path work end to end for the current Python policy.
+
+**Deferred — hosted control surface / infra still to build:**
+
 - **req 5 inbound request channel** (interrupt/restart/launch over cloud) —
   needs the 3d worker + live room. If launch-on-attach (A) lands, the *first*
   launch no longer needs req 5, but interrupt/restart still do.
