@@ -1,7 +1,5 @@
-import { Check, Copy } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode } from "react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
-import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import type { MarkdownHeadingAnchor } from "./markdown-heading-anchors";
 import type { Options as RehypeKatexOptions } from "rehype-katex";
 import rehypeKatex from "rehype-katex";
@@ -11,42 +9,39 @@ import remarkMath from "remark-math";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
+import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock";
+import { MarkdownFigure, MarkdownFigureCaption, MarkdownImage } from "../markdown/MarkdownFigure";
+import { MarkdownHeading } from "../markdown/MarkdownHeading";
 import {
-  markdownBlockquoteClassName,
-  markdownCodeBlockCopyButtonClassName,
-  markdownCodeBlockLabelClassName,
-  markdownCodeBlockPreStyle,
-  markdownCodeBlockShellClassName,
-  markdownCodeBlockToolbarClassName,
-  markdownDeleteClassName,
+  MarkdownTableBody,
+  MarkdownTableCell,
+  MarkdownTableElement,
+  MarkdownTableFrame,
+  MarkdownTableHead,
+  MarkdownTableHeaderCell,
+  MarkdownTableRow,
+} from "../markdown/MarkdownTable";
+import { MarkdownTaskCheckbox } from "../markdown/MarkdownTask";
+import {
+  MarkdownBlockquote,
+  MarkdownDelete,
+  MarkdownEmphasis,
+  MarkdownInlineCode,
+  MarkdownStrong,
+} from "../markdown/MarkdownText";
+import {
   markdownDetailsClassName,
   markdownDocumentClassName,
-  markdownEmphasisClassName,
-  markdownFigureCaptionClassName,
-  markdownFigureClassName,
   markdownFootnoteBackrefClassName,
   markdownFootnotesClassName,
   markdownFootnoteRefClassName,
-  markdownHeadingAnchorClassName,
-  markdownHeadingClassName,
-  markdownImageClassName,
-  markdownInlineCodeClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
   markdownParagraphClassName,
-  markdownStrongClassName,
   markdownSummaryClassName,
   markdownSummaryIndicatorClassName,
-  markdownTaskCheckboxClassName,
-  markdownTaskCheckboxGlyphClassName,
   markdownTaskListClassName,
   markdownTaskListItemClassName,
-  markdownTableCellClassName,
-  markdownTableClassName,
-  markdownTableHeadClassName,
-  markdownTableHeaderCellClassName,
-  markdownTableRowClassName,
-  markdownTableWrapperClassName,
   markdownThematicBreakClassName,
 } from "../markdown/markdown-typography";
 
@@ -88,70 +83,6 @@ function isInIframe(): boolean {
   }
 }
 
-interface CodeBlockProps {
-  children: string;
-  language?: string;
-  enableCopy?: boolean;
-  isDark?: boolean;
-}
-
-function CodeBlock({ children, language = "", enableCopy = true, isDark = false }: CodeBlockProps) {
-  const [copied, setCopied] = useState(false);
-  const rawTheme = useColorTheme();
-  const colorTheme = (rawTheme === "cream" ? "cream" : "classic") as "classic" | "cream";
-  const languageLabel = codeBlockLanguageLabel(language);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(children);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy code:", err);
-    }
-  };
-
-  return (
-    <div
-      data-slot="markdown-code-block"
-      className={markdownCodeBlockShellClassName}
-      data-code-language={languageLabel === "code" ? undefined : languageLabel}
-    >
-      <div className={markdownCodeBlockToolbarClassName}>
-        <span
-          className={markdownCodeBlockLabelClassName}
-          title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
-        >
-          {languageLabel}
-        </span>
-        {enableCopy && (
-          <button
-            onClick={handleCopy}
-            className={markdownCodeBlockCopyButtonClassName}
-            title={copied ? "Copied!" : "Copy code"}
-            type="button"
-          >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-          </button>
-        )}
-      </div>
-      <StaticCodeBlock
-        code={children}
-        language={language}
-        isDark={isDark}
-        colorTheme={colorTheme}
-        style={markdownCodeBlockPreStyle}
-      />
-    </div>
-  );
-}
-
-function codeBlockLanguageLabel(language: string | undefined): string {
-  const trimmed = language?.trim();
-  if (!trimmed) return "code";
-  return trimmed;
-}
-
 function textFromReactNode(node: ReactNode): string {
   if (node == null || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -186,6 +117,8 @@ export function MarkdownOutput({
   headingAnchors = [],
 }: MarkdownOutputProps) {
   const isDark = useDarkMode();
+  const rawTheme = useColorTheme();
+  const colorTheme = rawTheme === "cream" ? "cream" : "classic";
   let headingCursor = 0;
 
   const takeHeadingAnchor = (level: number, children: ReactNode): MarkdownHeadingAnchor | null => {
@@ -224,22 +157,17 @@ export function MarkdownOutput({
     };
   };
 
-  const renderHeadingAnchor = (
+  const headingAnchorProps = (
     attributes: ReturnType<typeof headingAttributes>,
     children: ReactNode,
   ) => {
     const id = (attributes as { id?: string }).id;
-    if (!id) return null;
+    if (!id) return {};
 
-    return (
-      <a
-        aria-label={`Link to ${normalizeHeadingText(textFromReactNode(children))}`}
-        className={markdownHeadingAnchorClassName}
-        href={`#${id}`}
-      >
-        #
-      </a>
-    );
+    return {
+      anchorHref: `#${id}`,
+      anchorLabel: `Link to ${normalizeHeadingText(textFromReactNode(children))}`,
+    };
   };
 
   if (!content) {
@@ -284,18 +212,19 @@ export function MarkdownOutput({
 
             if (isBlockCode) {
               return (
-                <CodeBlock language={language} enableCopy={enableCopyCode} isDark={isDark}>
-                  {codeContent}
-                </CodeBlock>
+                <MarkdownCodeBlock
+                  code={codeContent}
+                  language={language}
+                  enableCopy={enableCopyCode}
+                  isDark={isDark}
+                  colorTheme={colorTheme}
+                  copyErrorMessage="Failed to copy code:"
+                />
               );
             }
 
             // Inline code
-            return (
-              <code className={markdownInlineCodeClassName} {...props}>
-                {children}
-              </code>
-            );
+            return <MarkdownInlineCode {...props}>{children}</MarkdownInlineCode>;
           },
 
           // Links open in new tab
@@ -333,102 +262,108 @@ export function MarkdownOutput({
           // Tables
           table({ children, ...props }) {
             return (
-              <div className={markdownTableWrapperClassName}>
-                <table className={markdownTableClassName} {...props}>
-                  {children}
-                </table>
-              </div>
+              <MarkdownTableFrame>
+                <MarkdownTableElement {...props}>{children}</MarkdownTableElement>
+              </MarkdownTableFrame>
             );
           },
           thead({ children, ...props }) {
-            return (
-              <thead className={markdownTableHeadClassName} {...props}>
-                {children}
-              </thead>
-            );
+            return <MarkdownTableHead {...props}>{children}</MarkdownTableHead>;
           },
           tbody({ children, ...props }) {
             return (
-              <tbody className="divide-y divide-border" {...props}>
+              <MarkdownTableBody className="divide-y divide-border" {...props}>
                 {children}
-              </tbody>
+              </MarkdownTableBody>
             );
           },
           tr({ children, ...props }) {
-            return (
-              <tr className={markdownTableRowClassName} {...props}>
-                {children}
-              </tr>
-            );
+            return <MarkdownTableRow {...props}>{children}</MarkdownTableRow>;
           },
           th({ children, ...props }) {
-            return (
-              <th className={markdownTableHeaderCellClassName} {...props}>
-                {children}
-              </th>
-            );
+            return <MarkdownTableHeaderCell {...props}>{children}</MarkdownTableHeaderCell>;
           },
           td({ children, ...props }) {
-            return (
-              <td className={markdownTableCellClassName} {...props}>
-                {children}
-              </td>
-            );
+            return <MarkdownTableCell {...props}>{children}</MarkdownTableCell>;
           },
 
           // Headings
           h1({ children, ...props }) {
             const attributes = headingAttributes(1, children);
             return (
-              <h1 className={markdownHeadingClassName("h1")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h1"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h1>
+              </MarkdownHeading>
             );
           },
           h2({ children, ...props }) {
             const attributes = headingAttributes(2, children);
             return (
-              <h2 className={markdownHeadingClassName("h2")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h2"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h2>
+              </MarkdownHeading>
             );
           },
           h3({ children, ...props }) {
             const attributes = headingAttributes(3, children);
             return (
-              <h3 className={markdownHeadingClassName("h3")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h3"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h3>
+              </MarkdownHeading>
             );
           },
           h4({ children, ...props }) {
             const attributes = headingAttributes(4, children);
             return (
-              <h4 className={markdownHeadingClassName("h4")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h4"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h4>
+              </MarkdownHeading>
             );
           },
           h5({ children, ...props }) {
             const attributes = headingAttributes(5, children);
             return (
-              <h5 className={markdownHeadingClassName("h5")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h5"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h5>
+              </MarkdownHeading>
             );
           },
           h6({ children, ...props }) {
             const attributes = headingAttributes(6, children);
             return (
-              <h6 className={markdownHeadingClassName("h6")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h6"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h6>
+              </MarkdownHeading>
             );
           },
 
@@ -493,41 +428,17 @@ export function MarkdownOutput({
 
             const isChecked = Boolean(checked);
             return (
-              <span
-                className={markdownTaskCheckboxClassName}
-                data-slot="markdown-task-checkbox"
-                data-state={isChecked ? "checked" : "unchecked"}
-              >
-                <input
-                  {...props}
-                  type="checkbox"
-                  checked={isChecked}
-                  readOnly
-                  disabled
-                  className={cn("peer sr-only", className)}
-                />
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    markdownTaskCheckboxGlyphClassName,
-                    isChecked
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-background",
-                  )}
-                >
-                  {isChecked ? <Check className="size-2.5 stroke-[3]" /> : null}
-                </span>
-              </span>
+              <MarkdownTaskCheckbox
+                checked={isChecked}
+                inputClassName={className}
+                inputProps={props}
+              />
             );
           },
 
           // Blockquotes
           blockquote({ children, ...props }) {
-            return (
-              <blockquote className={markdownBlockquoteClassName} {...props}>
-                {children}
-              </blockquote>
-            );
+            return <MarkdownBlockquote {...props}>{children}</MarkdownBlockquote>;
           },
 
           // Horizontal rule
@@ -538,47 +449,27 @@ export function MarkdownOutput({
           // Images
           img({ src, alt, ...props }) {
             if (!src) return null;
-            return <img src={src} alt={alt || ""} className={markdownImageClassName} {...props} />;
+            return <MarkdownImage src={src} alt={alt || ""} {...props} />;
           },
 
           figure({ children, ...props }) {
-            return (
-              <figure className={markdownFigureClassName} {...props}>
-                {children}
-              </figure>
-            );
+            return <MarkdownFigure {...props}>{children}</MarkdownFigure>;
           },
 
           figcaption({ children, ...props }) {
-            return (
-              <figcaption className={markdownFigureCaptionClassName} {...props}>
-                {children}
-              </figcaption>
-            );
+            return <MarkdownFigureCaption {...props}>{children}</MarkdownFigureCaption>;
           },
 
           strong({ children, ...props }) {
-            return (
-              <strong className={markdownStrongClassName} {...props}>
-                {children}
-              </strong>
-            );
+            return <MarkdownStrong {...props}>{children}</MarkdownStrong>;
           },
 
           em({ children, ...props }) {
-            return (
-              <em className={markdownEmphasisClassName} {...props}>
-                {children}
-              </em>
-            );
+            return <MarkdownEmphasis {...props}>{children}</MarkdownEmphasis>;
           },
 
           del({ children, ...props }) {
-            return (
-              <del className={markdownDeleteClassName} {...props}>
-                {children}
-              </del>
-            );
+            return <MarkdownDelete {...props}>{children}</MarkdownDelete>;
           },
 
           details({ children, ...props }) {

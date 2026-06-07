@@ -1,7 +1,5 @@
-import { Check, Copy } from "lucide-react";
-import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
 import katex from "katex";
-import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import type {
   MarkdownProjectionBlock,
   MarkdownProjectionPlan,
@@ -12,39 +10,36 @@ import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
+import { MarkdownFigure, MarkdownFigureCaption, MarkdownImage } from "./MarkdownFigure";
+import { MarkdownHeading, markdownHeadingElement } from "./MarkdownHeading";
 import {
-  markdownBlockquoteClassName,
-  markdownCodeBlockCopyButtonClassName,
-  markdownCodeBlockLabelClassName,
-  markdownCodeBlockPreStyle,
-  markdownCodeBlockShellClassName,
-  markdownCodeBlockToolbarClassName,
-  markdownDeleteClassName,
+  MarkdownTableBody,
+  MarkdownTableCell,
+  MarkdownTableElement,
+  MarkdownTableFrame,
+  MarkdownTableHead,
+  MarkdownTableHeaderCell,
+  MarkdownTableHeaderRow,
+  MarkdownTableRow,
+} from "./MarkdownTable";
+import { MarkdownTaskCheckbox, MarkdownTaskContent } from "./MarkdownTask";
+import {
+  MarkdownBlockquote,
+  MarkdownDelete,
+  MarkdownEmphasis,
+  MarkdownInlineCode,
+  MarkdownStrong,
+} from "./MarkdownText";
+import {
   markdownDisplayMathClassName,
   markdownDocumentClassName,
-  markdownEmphasisClassName,
-  markdownFigureCaptionClassName,
-  markdownFigureClassName,
-  markdownHeadingAnchorClassName,
-  markdownHeadingClassName,
-  markdownImageClassName,
-  markdownInlineCodeClassName,
   markdownInlineMathClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
   markdownParagraphClassName,
-  markdownStrongClassName,
-  markdownTaskCheckboxClassName,
-  markdownTaskCheckboxGlyphClassName,
-  markdownTaskContentClassName,
   markdownTaskListClassName,
   markdownTaskListItemClassName,
-  markdownTableCellClassName,
-  markdownTableClassName,
-  markdownTableHeadClassName,
-  markdownTableHeaderCellClassName,
-  markdownTableRowClassName,
-  markdownTableWrapperClassName,
   markdownThematicBreakClassName,
 } from "./markdown-typography";
 
@@ -132,29 +127,21 @@ function ProjectedMarkdownBlock({
   onTaskCheckedChange,
 }: ProjectedMarkdownBlockProps) {
   if (block.kind === "heading") {
-    const Heading = headingTag(block.element);
     return (
-      <Heading
+      <MarkdownHeading
+        element={markdownHeadingElement(block.element)}
         id={headingAnchor?.headingAnchorId}
+        anchorHref={
+          headingAnchor?.headingAnchorId ? `#${headingAnchor.headingAnchorId}` : undefined
+        }
+        anchorLabel={headingAnchor?.headingAnchorId ? `Link to ${block.text}` : undefined}
         data-nteract-heading-anchor={headingAnchor?.headingAnchorId}
         data-nteract-outline-item-id={headingAnchor?.itemId}
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
-        className={cn(
-          markdownHeadingClassName(block.element),
-          activeBlockId === block.blockId && sourceActiveBlockClass,
-        )}
+        className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
       >
         {renderRuns(runs, onLinkClick, activeInlineId)}
-        {headingAnchor?.headingAnchorId ? (
-          <a
-            aria-label={`Link to ${block.text}`}
-            className={markdownHeadingAnchorClassName}
-            href={`#${headingAnchor.headingAnchorId}`}
-          >
-            #
-          </a>
-        ) : null}
-      </Heading>
+      </MarkdownHeading>
     );
   }
 
@@ -179,11 +166,14 @@ function ProjectedMarkdownBlock({
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
       >
-        <ProjectedCodeBlock
+        <MarkdownCodeBlock
           code={block.text}
           colorTheme={colorTheme}
           isDark={isDark}
           language={block.codeLanguage}
+          preClassName="max-w-full"
+          copyResetMs={1800}
+          copyErrorMessage="Failed to copy projected markdown code block:"
         />
       </div>
     );
@@ -202,15 +192,12 @@ function ProjectedMarkdownBlock({
 
   if (block.kind === "blockquote") {
     return (
-      <blockquote
+      <MarkdownBlockquote
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
-        className={cn(
-          markdownBlockquoteClassName,
-          activeBlockId === block.blockId && sourceActiveBlockClass,
-        )}
+        className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
       >
         {renderRuns(runs, onLinkClick, activeInlineId)}
-      </blockquote>
+      </MarkdownBlockquote>
     );
   }
 
@@ -282,15 +269,6 @@ function headingAnchorForBlock(
     if (block.anchorSlug && anchor.anchor === block.anchorSlug) return true;
     return anchor.title === block.text && `h${anchor.level}` === block.element;
   });
-}
-
-function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
-  if (element === "h1") return "h1";
-  if (element === "h2") return "h2";
-  if (element === "h3") return "h3";
-  if (element === "h4") return "h4";
-  if (element === "h5") return "h5";
-  return "h6";
 }
 
 interface ProjectedListItem {
@@ -514,44 +492,13 @@ function TaskCheckbox({
   label: string;
   onToggle?: () => void;
 }) {
-  const interactive = Boolean(onToggle);
-  const actionLabel = interactive
-    ? checked
-      ? "Mark task incomplete"
-      : "Mark task complete"
-    : checked
-      ? "Completed task"
-      : "Incomplete task";
-
   return (
-    <label
-      className={cn(markdownTaskCheckboxClassName, interactive && "cursor-pointer")}
-      data-slot="projected-markdown-task-checkbox"
-      data-state={checked ? "checked" : "unchecked"}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={!interactive}
-        readOnly={!interactive}
-        tabIndex={interactive ? 0 : -1}
-        aria-label={`${actionLabel}: ${label}`}
-        className="peer sr-only"
-        onChange={interactive ? onToggle : undefined}
-      />
-      <span
-        aria-hidden="true"
-        className={cn(
-          markdownTaskCheckboxGlyphClassName,
-          checked
-            ? "border-primary bg-primary text-primary-foreground"
-            : "border-border bg-background",
-          interactive && "group-hover/task:border-primary/70",
-        )}
-      >
-        {checked ? <Check className="size-2.5 stroke-[3]" /> : null}
-      </span>
-    </label>
+    <MarkdownTaskCheckbox
+      checked={checked}
+      label={label}
+      onToggle={onToggle}
+      slot="projected-markdown-task-checkbox"
+    />
   );
 }
 
@@ -562,11 +509,7 @@ function ProjectedTaskContent({
   checked: boolean | undefined;
   children: ReactNode;
 }) {
-  return (
-    <span className={cn(markdownTaskContentClassName, checked === true && "text-muted-foreground")}>
-      {children}
-    </span>
-  );
+  return <MarkdownTaskContent checked={checked}>{children}</MarkdownTaskContent>;
 }
 
 function ProjectedTable({
@@ -602,44 +545,42 @@ function ProjectedTable({
   const columnAlign = tableColumnAlignments(rows);
 
   return (
-    <div
+    <MarkdownTableFrame
       data-slot="projected-markdown-table"
       data-source-active={activeBlock ? "true" : undefined}
-      className={cn(markdownTableWrapperClassName, activeBlock && sourceActiveBlockClass)}
+      className={cn(activeBlock && sourceActiveBlockClass)}
     >
-      <table className={markdownTableClassName}>
+      <MarkdownTableElement>
         {hasHeader ? (
-          <thead className={markdownTableHeadClassName}>
-            <tr>
+          <MarkdownTableHead>
+            <MarkdownTableHeaderRow>
               {headerRow.cells.map((cell) => (
-                <th
+                <MarkdownTableHeaderCell
                   key={cell.key}
-                  className={markdownTableHeaderCellClassName}
                   style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
-                </th>
+                </MarkdownTableHeaderCell>
               ))}
-            </tr>
-          </thead>
+            </MarkdownTableHeaderRow>
+          </MarkdownTableHead>
         ) : null}
-        <tbody>
+        <MarkdownTableBody>
           {(hasHeader ? bodyRows : rows).map((row) => (
-            <tr key={row.key} className={markdownTableRowClassName}>
+            <MarkdownTableRow key={row.key}>
               {row.cells.map((cell) => (
-                <td
+                <MarkdownTableCell
                   key={cell.key}
-                  className={markdownTableCellClassName}
                   style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
-                </td>
+                </MarkdownTableCell>
               ))}
-            </tr>
+            </MarkdownTableRow>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </MarkdownTableBody>
+      </MarkdownTableElement>
+    </MarkdownTableFrame>
   );
 }
 
@@ -772,10 +713,10 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
     );
   }
 
-  if (run.semantic === "strong") return <strong className={markdownStrongClassName}>{text}</strong>;
-  if (run.semantic === "emphasis") return <em className={markdownEmphasisClassName}>{text}</em>;
-  if (run.semantic === "delete") return <del className={markdownDeleteClassName}>{text}</del>;
-  if (run.semantic === "inline-code") return <InlineCode>{text}</InlineCode>;
+  if (run.semantic === "strong") return <MarkdownStrong>{text}</MarkdownStrong>;
+  if (run.semantic === "emphasis") return <MarkdownEmphasis>{text}</MarkdownEmphasis>;
+  if (run.semantic === "delete") return <MarkdownDelete>{text}</MarkdownDelete>;
+  if (run.semantic === "inline-code") return <MarkdownInlineCode>{text}</MarkdownInlineCode>;
   if (run.semantic === "math-source") return <ProjectedMath latex={text} />;
   if (run.semantic === "code-block") return text;
   if (run.semantic === "link-label") return text;
@@ -802,9 +743,9 @@ function ProjectedFigure({
   const image = <ProjectedImage run={run} />;
   const title = run.imageTitle?.trim();
   return (
-    <figure
+    <MarkdownFigure
       data-source-active={active ? "true" : undefined}
-      className={cn(markdownFigureClassName, active && sourceActiveBlockClass)}
+      className={cn(active && sourceActiveBlockClass)}
     >
       {activeInlineId === run.inlineId ? (
         <span data-source-active-run="true" className={sourceActiveRunClass}>
@@ -813,8 +754,8 @@ function ProjectedFigure({
       ) : (
         image
       )}
-      {title ? <figcaption className={markdownFigureCaptionClassName}>{title}</figcaption> : null}
-    </figure>
+      {title ? <MarkdownFigureCaption>{title}</MarkdownFigureCaption> : null}
+    </MarkdownFigure>
   );
 }
 
@@ -825,15 +766,7 @@ function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
     return alt ? <span>{alt}</span> : null;
   }
 
-  return (
-    <img
-      src={src}
-      alt={alt}
-      title={run.imageTitle}
-      className={markdownImageClassName}
-      loading="lazy"
-    />
-  );
+  return <MarkdownImage src={src} alt={alt} title={run.imageTitle} loading="lazy" />;
 }
 
 function safeImageSrc(src: string | undefined): string | null {
@@ -866,84 +799,18 @@ function safeImageSrc(src: string | undefined): string | null {
   }
 }
 
-function ProjectedCodeBlock({
-  code,
-  colorTheme,
-  isDark,
-  language,
-}: {
-  code: string;
-  colorTheme: "classic" | "cream";
-  isDark: boolean;
-  language?: string;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  const copyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch (error) {
-      console.error("Failed to copy projected markdown code block:", error);
-    }
-  };
-
-  const languageLabel = codeBlockLanguageLabel(language);
-
-  return (
-    <div
-      data-slot="markdown-code-block"
-      className={markdownCodeBlockShellClassName}
-      data-code-language={languageLabel === "code" ? undefined : languageLabel}
-    >
-      <div className={markdownCodeBlockToolbarClassName}>
-        <span
-          className={markdownCodeBlockLabelClassName}
-          title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
-        >
-          {languageLabel}
-        </span>
-        <button
-          type="button"
-          aria-label={copied ? "Copied code" : "Copy code"}
-          className={markdownCodeBlockCopyButtonClassName}
-          title={copied ? "Copied" : "Copy code"}
-          onClick={copyCode}
-        >
-          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-        </button>
-      </div>
-      <StaticCodeBlock
-        code={code}
-        colorTheme={colorTheme}
-        isDark={isDark}
-        language={language}
-        className="max-w-full"
-        style={markdownCodeBlockPreStyle}
-      />
-    </div>
-  );
-}
-
-function codeBlockLanguageLabel(language: string | undefined): string {
-  const trimmed = language?.trim();
-  if (!trimmed) return "code";
-  return trimmed;
-}
-
 function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; latex: string }) {
   const html = renderLatex(latex, displayMode);
   if (!html) {
     if (displayMode) {
       return (
         <div className={markdownDisplayMathClassName}>
-          <InlineCode className="block px-3 py-2">{latex}</InlineCode>
+          <MarkdownInlineCode className="block px-3 py-2">{latex}</MarkdownInlineCode>
         </div>
       );
     }
 
-    return <InlineCode>{latex}</InlineCode>;
+    return <MarkdownInlineCode>{latex}</MarkdownInlineCode>;
   }
 
   if (displayMode) {
@@ -977,8 +844,4 @@ function renderLatex(latex: string, displayMode: boolean): string | null {
   } catch {
     return null;
   }
-}
-
-function InlineCode({ children, className }: { children: string; className?: string }) {
-  return <code className={cn(markdownInlineCodeClassName, className)}>{children}</code>;
 }
