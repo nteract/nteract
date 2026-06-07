@@ -80,17 +80,22 @@ describe("cloud notebook dashboard projection", () => {
     );
     assert.deepEqual(
       model.sections.map((section) => ({
+        action: section.action
+          ? [section.action.kind, section.action.label, section.action.notebook.notebook_id]
+          : null,
         id: section.id,
         title: section.title,
         notebooks: section.notebooks.map((item) => item.notebook_id),
       })),
       [
         {
+          action: null,
           id: "titled",
           title: "Named notebooks",
           notebooks: ["topic-viz"],
         },
         {
+          action: ["rename", "Title next", "01KTHB58DSJWERSEWHD3EJD74P"],
           id: "untitled",
           title: "Untitled notebooks",
           notebooks: ["01KTHB58DSJWERSEWHD3EJD74P", "01KSQKEPFJVHV4T4ZDYS9V7T80"],
@@ -110,6 +115,20 @@ describe("cloud notebook dashboard projection", () => {
 
     assert.equal(cloudNotebookDisplayTitle(untitled), "Untitled notebook");
     assert.equal(cloudNotebookShortId(untitled.notebook_id), "01KTHB58...D74P");
+  });
+
+  it("does not recommend renaming read-only untitled notebooks", () => {
+    const viewer = notebook({
+      id: "viewer-untitled",
+      title: null,
+      scope: "viewer",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const model = projectCloudNotebookDashboard([viewer]);
+
+    assert.equal(model.sections[0]?.action, null);
   });
 });
 

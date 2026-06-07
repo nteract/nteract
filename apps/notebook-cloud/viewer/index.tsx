@@ -958,6 +958,8 @@ function CloudNotebookDashboardSectionView({
   onRenameTitleChange: (title: string) => void;
   onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const action = canRename ? section.action : null;
+
   return (
     <section className="cloud-dashboard-notebook-section" data-section={section.id}>
       <div className="cloud-dashboard-section-heading">
@@ -965,6 +967,16 @@ function CloudNotebookDashboardSectionView({
           <h2>{section.title}</h2>
           <p>{section.detail}</p>
         </div>
+        {action?.kind === "rename" ? (
+          <button
+            type="button"
+            className="cloud-dashboard-section-action"
+            onClick={() => onOpenRename(action.notebook)}
+          >
+            <PencilLine aria-hidden="true" />
+            {action.label}
+          </button>
+        ) : null}
       </div>
       <ul className="cloud-notebook-list">
         {section.notebooks.map((notebook) => (

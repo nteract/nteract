@@ -669,6 +669,34 @@ body {
   line-height: 1.35;
 }
 
+.cloud-dashboard-section-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 2rem;
+  border: 0;
+  border-radius: 6px;
+  padding-inline: 0.625rem;
+  color: color-mix(in srgb, var(--foreground) 64%, transparent);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.cloud-dashboard-section-action:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+.cloud-dashboard-section-action svg {
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
 .cloud-dashboard-notebook-section[data-section="untitled"] .cloud-dashboard-section-heading h2 {
   color: color-mix(in srgb, var(--foreground) 76%, transparent);
 }

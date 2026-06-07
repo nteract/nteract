@@ -29,10 +29,17 @@ export interface CloudNotebookDashboardModel {
 }
 
 export interface CloudNotebookDashboardSection {
+  action: CloudNotebookDashboardSectionAction | null;
   detail: string;
   id: "titled" | "untitled";
   notebooks: readonly CloudNotebookListItem[];
   title: string;
+}
+
+export interface CloudNotebookDashboardSectionAction {
+  kind: "rename";
+  label: string;
+  notebook: CloudNotebookListItem;
 }
 
 export function projectCloudNotebookDashboard(
@@ -146,6 +153,7 @@ function cloudNotebookDashboardSections({
   const sections: CloudNotebookDashboardSection[] = [];
   if (titled.length > 0) {
     sections.push({
+      action: null,
       id: "titled",
       title: "Named notebooks",
       detail: `${titled.length} notebook${titled.length === 1 ? "" : "s"} with titles`,
@@ -153,7 +161,15 @@ function cloudNotebookDashboardSections({
     });
   }
   if (untitled.length > 0) {
+    const nextRenameable = untitled.find(cloudNotebookCanRename);
     sections.push({
+      action: nextRenameable
+        ? {
+            kind: "rename",
+            label: "Title next",
+            notebook: nextRenameable,
+          }
+        : null,
       id: "untitled",
       title: titled.length > 0 ? "Untitled notebooks" : "Notebooks",
       detail:
@@ -164,6 +180,10 @@ function cloudNotebookDashboardSections({
     });
   }
   return sections;
+}
+
+function cloudNotebookCanRename(notebook: CloudNotebookListItem): boolean {
+  return notebook.scope === "owner" || notebook.scope === "editor";
 }
 
 function isNotebookScope(value: unknown): value is CloudNotebookListItem["scope"] {
