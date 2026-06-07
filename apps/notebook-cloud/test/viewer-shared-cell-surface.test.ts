@@ -58,6 +58,13 @@ test("cloud projects live cells into the NotebookView stores", () => {
     sessionSourceText,
     /useLayoutEffect\(\(\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(cells\);/,
   );
+  assert.match(
+    sessionSourceText,
+    /const applyResolvedCells = useCallback\(\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
+  );
+  assert.match(sessionSourceText, /applyResolvedCells\(syncCells\);/);
+  assert.match(sessionSourceText, /applyResolvedCells\(progressiveCells\);/);
+  assert.match(sessionSourceText, /applyResolvedCells\(resolvedCells\);/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*canWriteSource=\{canWriteCellSource\}/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*onSyncNeeded=\{handleSourceSyncNeeded\}/);

@@ -149,6 +149,11 @@ export function useCloudViewerSession({
     projectCloudCellsIntoNotebookViewStores(cells);
   }, [cells]);
 
+  const applyResolvedCells = useCallback((resolvedCells: ResolvedCell[]) => {
+    projectCloudCellsIntoNotebookViewStores(resolvedCells);
+    setCells(resolvedCells);
+  }, []);
+
   useEffect(() => resetCloudViewStoreProjection, []);
 
   useEffect(() => {
@@ -276,7 +281,7 @@ export function useCloudViewerSession({
               if (syncCells.length === 0) return;
               markCloudViewerLoadMilestone("snapshot-initial-cells");
               preloadSiftWasm(syncCells);
-              setCells(syncCells);
+              applyResolvedCells(syncCells);
               setStatus({
                 kind: "loading",
                 message: `Rendering ${syncCells.length} cells while resolving output payloads...`,
@@ -285,7 +290,7 @@ export function useCloudViewerSession({
             onCellResolved(resolvedCell, _index, progressiveCells) {
               if (progressiveCells.length === 0) return;
               preloadSiftWasm([resolvedCell]);
-              setCells(progressiveCells);
+              applyResolvedCells(progressiveCells);
             },
           },
         });
@@ -306,7 +311,7 @@ export function useCloudViewerSession({
         if (cancelled || liveMaterializedRef.current) return;
         const resolvedCells = materialized.cells;
         preloadSiftWasm(resolvedCells);
-        setCells(resolvedCells);
+        applyResolvedCells(resolvedCells);
         if (resolvedCells.length === 0) {
           setStatus({ kind: "empty", message: "This published notebook has no cells." });
           return;
@@ -407,7 +412,7 @@ export function useCloudViewerSession({
             liveMaterializedRef.current = true;
             markCloudViewerLoadMilestone("live-initial-cells");
             preloadSiftWasm(syncCells);
-            setCells(syncCells);
+            applyResolvedCells(syncCells);
             setStatus({
               kind: "loading",
               message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
@@ -417,7 +422,7 @@ export function useCloudViewerSession({
             if (progressiveCells.length === 0) return;
             liveMaterializedRef.current = true;
             preloadSiftWasm([resolvedCell]);
-            setCells(progressiveCells);
+            applyResolvedCells(progressiveCells);
           },
         },
       });
@@ -444,7 +449,7 @@ export function useCloudViewerSession({
       liveMaterializedRef.current = true;
       const resolvedCells = materialized.cells;
       preloadSiftWasm(resolvedCells);
-      setCells(resolvedCells);
+      applyResolvedCells(resolvedCells);
       setStatus(
         resolvedCells.length === 0
           ? { kind: "empty", message: "This notebook room has no cells yet." }
@@ -631,6 +636,7 @@ export function useCloudViewerSession({
     connectAttempt,
     loadingPolicy.shouldConnectLiveRoom,
     presenceStore,
+    applyResolvedCells,
     preloadSiftWasm,
     widgetStore,
   ]);
