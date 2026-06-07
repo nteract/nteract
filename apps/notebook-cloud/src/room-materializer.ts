@@ -1,4 +1,5 @@
 import type { DurableObjectState, Env } from "./cloudflare-types.ts";
+import type { WorkstationAttachmentState } from "runtimed";
 import { FrameType, encodeTypedFrame, type FrameTypeValue, type TypedFrame } from "./protocol.ts";
 import { createEmptyRoomHost, loadRoomHostSnapshot, type RoomHostHandle } from "./runtimed-wasm.ts";
 import { getNotebookCatalog } from "./storage.ts";
@@ -80,6 +81,17 @@ export class RoomMaterializer {
   /// the surviving peers. See `RoomHostHandle::reconcile_runtime_peer_gone`.
   async reconcileRuntimePeerGone(reason: string): Promise<RoomHostFrameResult> {
     return this.withHost((host) => normalizeResult(host.reconcile_runtime_peer_gone(reason)));
+  }
+
+  /// Publish the room-host-owned active workstation attachment into the
+  /// RuntimeStateDoc. Runtime peers do not mutate this map directly; the room
+  /// host owns the notebook-visible selected-compute projection.
+  async setWorkstationAttachment(
+    attachment: WorkstationAttachmentState | null,
+  ): Promise<RoomHostFrameResult> {
+    return this.withHost((host) =>
+      normalizeResult(host.set_workstation_attachment_json(JSON.stringify(attachment))),
+    );
   }
 
   async receiveFrame(peer: RoomPeer, frame: TypedFrame): Promise<RoomHostFrameResult> {

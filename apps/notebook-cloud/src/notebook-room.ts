@@ -1,4 +1,5 @@
 import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
+import type { WorkstationAttachmentState } from "runtimed";
 import { identityDisplayLabel } from "./display-label.ts";
 import {
   allowsBlobUpload,
@@ -119,6 +120,7 @@ export class NotebookRoom {
     // kernel host is back, so its in-flight state must not be terminalized.
     if (identity.scope === "runtime_peer") {
       this.refreshRuntimePeerWatch(notebookId);
+      this.state.waitUntil(this.publishRuntimePeerAttachment(notebookId, peer));
     }
     cloudLog("info", "room.connection.accepted", {
       notebook_id: notebookId,
@@ -502,6 +504,40 @@ export class NotebookRoom {
     }
   }
 
+  private async publishRuntimePeerAttachment(notebookId: string, peer: Peer): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      const materializer = this.materializerFor(notebookId);
+      const result = await materializer.setWorkstationAttachment(
+        runtimePeerWorkstationAttachment(peer),
+      );
+      if (result.changed) {
+        this.deliverRoomHostFrames(notebookId, result);
+        await materializer.checkpoint();
+      }
+      cloudLog("debug", "room.workstation_attachment.published", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        scope: peer.identity.scope,
+        changed: result.changed,
+        duration_ms: durationMs(startedAt),
+        outbound_frame_count: result.outbound.length,
+        counter: "workstation_attachments_published",
+        counter_delta: result.changed ? 1 : 0,
+      });
+    } catch (error) {
+      cloudLog("warn", "room.workstation_attachment.publish_failed", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        scope: peer.identity.scope,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(error),
+        counter: "workstation_attachment_publish_failed",
+        counter_delta: 1,
+      });
+    }
+  }
+
   private materializerFor(notebookId: string): RoomMaterializer {
     let materializer = this.materializers.get(notebookId);
     if (!materializer) {
@@ -860,6 +896,22 @@ export function presencePeerLabel(identity: AuthenticatedConnection): string {
     email: identity.metadata.email,
     principal: identity.principal,
   });
+}
+
+function runtimePeerWorkstationAttachment(peer: Peer): WorkstationAttachmentState {
+  return {
+    workstation_id: "runtime-peer",
+    display_name: "Attached workstation",
+    provider: "runtime_peer",
+    default_environment_label: "Current Python",
+    environment_policy: "runtime_peer",
+    status: "ready",
+    status_message: null,
+    cpu_count: null,
+    memory_bytes: null,
+    working_directory: null,
+    updated_at: peer.connectedAt,
+  };
 }
 
 function notebookIdFromPath(pathname: string): string | undefined {

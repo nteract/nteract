@@ -1174,6 +1174,52 @@ describe("RoomMaterializer", () => {
     );
   });
 
+  it("publishes host-owned workstation attachment over runtime-state sync", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const viewerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+    );
+    const viewerPeer = { id: "peer-viewer", identity: viewerIdentity };
+    const viewer = NotebookHandle.create_bootstrap(viewerIdentity.actorLabel);
+    await syncMaterializerRuntimeStateWithClient(materializer, viewerPeer, viewer);
+
+    const attachment = {
+      workstation_id: "runtime-peer",
+      display_name: "Attached workstation",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "runtime_peer",
+      status: "ready",
+      status_message: null,
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: null,
+      updated_at: "2026-06-07T00:00:00.000Z",
+    };
+    const result = await materializer.setWorkstationAttachment(attachment);
+
+    assert.equal(result.changed, true);
+    assert.equal(result.runtime_state_changed, true);
+    assert.ok(
+      result.outbound.some(
+        (frame) =>
+          frame.peer_id === viewerPeer.id && frame.frame_type === FrameType.RUNTIME_STATE_SYNC,
+      ),
+      "attachment changes are broadcast through RuntimeStateDoc sync",
+    );
+    applyRuntimeOutboundToClient(result.outbound, viewerPeer.id, viewer);
+    const runtimeState = viewer.get_runtime_state() as {
+      workstation?: { workstation_id?: string; status?: string } | null;
+    };
+    assert.equal(runtimeState.workstation?.workstation_id, "runtime-peer");
+    assert.equal(runtimeState.workstation?.status, "ready");
+
+    const again = await materializer.setWorkstationAttachment(attachment);
+    assert.equal(again.changed, false, "same attachment is idempotent");
+    assert.deepEqual(again.outbound, []);
+  });
+
   it("allows owner-scoped CommsDoc changes to existing runtime comm topology", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);
