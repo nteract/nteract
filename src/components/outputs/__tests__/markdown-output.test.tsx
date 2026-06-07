@@ -82,11 +82,8 @@ describe("MarkdownOutput heading anchors", () => {
   it("uses the shared evidence table treatment", () => {
     render(<MarkdownOutput content={"| metric | value |\n| --- | ---: |\n| rows | 128 |"} />);
 
-    expect(screen.getByRole("table").parentElement).toHaveClass(
-      "rounded-sm",
-      "border",
-      "shadow-sm",
-    );
+    expect(screen.getByRole("table").parentElement).toHaveClass("border-y", "border-border/80");
+    expect(screen.getByRole("table").parentElement).not.toHaveClass("rounded-sm", "shadow-sm");
     expect(screen.getByRole("columnheader", { name: "metric" })).toHaveClass(
       "border-border/80",
       "py-2.5",

@@ -74,7 +74,7 @@ export const markdownTaskContentClassName = "min-w-0 leading-relaxed";
 export const markdownThematicBreakClassName = "my-7 border-0 border-t border-border/70";
 
 export const markdownTableWrapperClassName =
-  "my-5 overflow-x-auto rounded-sm border border-border/80 bg-background shadow-sm";
+  "my-5 overflow-x-auto border-y border-border/80 bg-background";
 
 export const markdownTableClassName =
   "min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal";

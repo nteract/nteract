@@ -897,11 +897,8 @@ describe("ProjectedMarkdownView", () => {
       textAlign: "right",
     });
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
-    expect(screen.getByRole("table").parentElement).toHaveClass(
-      "rounded-sm",
-      "border",
-      "shadow-sm",
-    );
+    expect(screen.getByRole("table").parentElement).toHaveClass("border-y", "border-border/80");
+    expect(screen.getByRole("table").parentElement).not.toHaveClass("rounded-sm", "shadow-sm");
     expect(screen.getByRole("row", { name: "rows 128" })).toHaveClass("odd:bg-muted/[0.05]");
     expect(screen.getByRole("table").parentElement).toHaveAttribute(
       "data-slot",
