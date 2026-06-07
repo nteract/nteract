@@ -1,5 +1,28 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+export interface ExecutionPerformanceMark {
+  name: string;
+  t: number;
+  traceId: string | null;
+  cellId?: string;
+  executionId?: string;
+  outputId?: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface ExecutionPerformanceTrace {
+  traceId: string;
+  cellId: string;
+  startedAt: number;
+  marks: ExecutionPerformanceMark[];
+}
+
+export interface ExecutionPerformanceSnapshot {
+  enabled: boolean;
+  marks: ExecutionPerformanceMark[];
+  traces: ExecutionPerformanceTrace[];
+}
+
 export async function waitForNotebookReady(page: Page, path = "/") {
   await page.goto(path);
   await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
@@ -125,6 +148,66 @@ export async function waitForCodeCellContaining(page: Page, text: string, timeou
 
 export async function executeCell(cell: Locator) {
   await cell.getByTestId("execute-button").click();
+}
+
+export async function enableExecutionPerformanceTracing(page: Page) {
+  await page.addInitScript(() => {
+    (
+      window as unknown as { __NTERACT_EXECUTION_PERF_ENABLED?: boolean }
+    ).__NTERACT_EXECUTION_PERF_ENABLED = true;
+  });
+}
+
+export async function resetExecutionPerformanceTracing(page: Page) {
+  await page.evaluate(() => {
+    const api = (
+      window as unknown as {
+        __nteractExecutionPerf?: {
+          enable: () => void;
+          reset: () => void;
+        };
+      }
+    ).__nteractExecutionPerf;
+    api?.enable();
+    api?.reset();
+  });
+}
+
+export async function markExecutionPerformance(
+  page: Page,
+  name: string,
+  detail?: Record<string, unknown>,
+) {
+  await page.evaluate(
+    ({ markName, markDetail }) => {
+      (
+        window as unknown as {
+          __nteractExecutionPerf?: {
+            mark: (name: string, detail?: Record<string, unknown>) => void;
+          };
+        }
+      ).__nteractExecutionPerf?.mark(markName, markDetail);
+    },
+    { markName: name, markDetail: detail },
+  );
+}
+
+export async function getExecutionPerformanceSnapshot(
+  page: Page,
+): Promise<ExecutionPerformanceSnapshot> {
+  return await page.evaluate(() => {
+    const api = (
+      window as unknown as {
+        __nteractExecutionPerf?: {
+          snapshot: () => ExecutionPerformanceSnapshot;
+        };
+      }
+    ).__nteractExecutionPerf;
+    if (!api) {
+      return { enabled: false, marks: [], traces: [] };
+    }
+    return api.snapshot();
+  });
 }
 
 export async function waitForOutputContaining(cell: Locator, text: string, timeout = 60_000) {
