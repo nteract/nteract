@@ -115,13 +115,18 @@ V1 is original; V2 allows compressed document encoding. Backward-compatible via 
 
 ## nteract Sync Architecture
 
-### Three Streams Over One Socket
+### Document Streams Over One Socket
 
 | Stream | Frame | Document | Ownership |
 |--------|-------|----------|-----------|
 | Notebook | `0x00` AutomergeSync | `SharedDocState.doc` | Bidirectional |
 | RuntimeState | `0x05` RuntimeStateSync | `SharedDocState.state_doc` | Daemon-authoritative |
+| CommsDoc | `0x09` CommsDocSync | `SharedDocState.comms_doc` | Widget state, gated by RuntimeStateDoc topology |
 | PoolState | `0x06` PoolStateSync | PoolDoc | Frontend owns sync state; daemon carries `pool_peer_state` separately |
+
+`CommentsDoc` is an accepted ADR direction, not an implemented stream yet. If
+you add it, allocate a new frame type, keep optimistic comment rendering inside
+Automerge, and authority-finalize policy fields in the same document.
 
 ### Sync Task Loop (biased select!)
 
@@ -144,7 +149,9 @@ let bytes = state.generate_sync_message_recovering("notebook-sync-outbound");
 3. Preserve actor ID
 4. `peer_state = sync::State::new()`
 
-**Rebuild procedure (RuntimeStateDoc):** Round-trip via `rebuild_from_save()`, then `state_peer_state = sync::State::new()`.
+**Rebuild procedure (RuntimeStateDoc / CommsDoc):** Round-trip via
+`rebuild_from_save()`, then reset the matching peer state with
+`sync::State::new()`.
 
 Principle: **reset transport state, preserve document truth.**
 

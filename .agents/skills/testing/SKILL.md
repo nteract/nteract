@@ -54,7 +54,7 @@ For kernel-env changes: `up rebuild=true` → `create_notebook` → execute `imp
 - **MEDIUM**: Narrow tests passed, MCP verification skipped
 - **LOW**: Only compilation checked
 
-Always run `cargo xtask lint` before committing.
+Always run `cargo xtask lint --fix` before committing.
 
 ## Frontend Unit Tests (Vitest)
 

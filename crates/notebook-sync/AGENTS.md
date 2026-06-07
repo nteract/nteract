@@ -1,19 +1,20 @@
 # notebook-sync
 
 This crate is the client-side sync handle and socket task boundary for
-NotebookDoc, RuntimeStateDoc, PoolDoc, requests, presence, blobs, and session
-status.
+NotebookDoc, RuntimeStateDoc, CommsDoc, PoolDoc, requests, presence, blobs, and
+session status.
 
 ## Main pieces
 
 - `DocHandle` is the caller-facing API. Synchronous document mutations go
   through `with_doc` or typed helpers, then notify the sync task.
-- `SharedDocState` stores the local NotebookDoc, RuntimeStateDoc, PoolDoc,
-  snapshots, request waiters, blob waiters, and readiness phases shared with the
-  socket task.
+- `SharedDocState` stores the local NotebookDoc, RuntimeStateDoc, CommsDoc,
+  PoolDoc, snapshots, request waiters, blob waiters, and readiness phases
+  shared with the socket task.
 - `sync_task` owns typed-frame I/O. It sends and receives Automerge sync for
-  `0x00` NotebookDoc, `0x05` RuntimeStateDoc, and `0x06` PoolDoc, plus request,
-  response, presence, session-control, and `PUT_BLOB` frames.
+  `0x00` NotebookDoc, `0x05` RuntimeStateDoc, `0x06` PoolDoc, and `0x09`
+  CommsDoc, plus request, response, presence, session-control, and `PUT_BLOB`
+  frames.
 - `execution_wait` / `execution_watch` observe RuntimeStateDoc terminal state;
   RuntimeStateDoc is the durable execution/output record, not broadcast replay.
 - `relay` / `relay_task` are byte-pipe helpers for app relay paths; they do not
@@ -28,6 +29,9 @@ status.
   authority denies their changes and mutating requests.
 - Runtime peers author RuntimeStateDoc lifecycle/output state through policy
   gates. They do not gain NotebookDoc edit access.
+- CommsDoc carries mutable widget state. RuntimeStateDoc carries comm topology;
+  runtime/widget forwarding must gate CommsDoc state by RuntimeStateDoc
+  membership.
 - Presence is UX state. Current wire messages carry peer id, optional peer
   label, and optional actor label; structured actor projection is host/UI
   synthesis until the wire grows it.
@@ -36,4 +40,3 @@ status.
 - Local desktop, runtimed-wasm, Python/MCP clients, and hosted RoomHost need the
   same typed-frame semantics. If a frame or request contract changes, update the
   Rust protocol and `packages/runtimed` TypeScript surface together.
-

@@ -47,7 +47,7 @@ The frontend talks to the Tauri relay through `invoke()` calls, a generation-sco
 
    `protocol_version`, `daemon_version`, and `error` are `Option` with `skip_serializing_if` — they appear only when populated.
 3. **Initial Automerge sync.** Both sides exchange sync messages until documents converge. The frontend starts empty; all state comes from the daemon. Protocol v4 clients also receive `SessionControl::SyncStatus` frames as the daemon advances notebook-doc, runtime-state, and initial-load readiness.
-4. **Steady state.** All frame classes interleave: Automerge sync for edits, request/response for explicit actions, `RuntimeStateDoc` / `PoolDoc` sync, presence, broadcasts, session-control. Confirmation waits register target-head waiters; request waits register id-keyed pending entries; command handlers return to the main frame loop after writing any immediate outbound frame. A blocking `recv()` inside a command path backpressures the socket and gets the peer dropped.
+4. **Steady state.** All frame classes interleave: Automerge sync for edits, request/response for explicit actions, `RuntimeStateDoc` / `CommsDoc` / `PoolDoc` sync, presence, broadcasts, session-control. Confirmation waits register target-head waiters; request waits register id-keyed pending entries; command handlers return to the main frame loop after writing any immediate outbound frame. A blocking `recv()` inside a command path backpressures the socket and gets the peer dropped.
 5. **Disconnection.** When the broadcast stream ends, the relay emits `daemon:disconnected`. A generation counter stops stale callbacks from an earlier connection from processing events after reconnection.
 
 ### Socket authority
@@ -104,7 +104,7 @@ After the handshake, frames carry a leading type byte:
 |--------|-------------|
 | Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09` |
 | Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09` |
-| Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05` |
+| Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09` |
 
 `NotebookRequest` / `NotebookResponse` payloads travel in flattened `NotebookRequestEnvelope` / `NotebookResponseEnvelope`. Concurrent requests carry an `id`; clients route responses by id because broadcasts, state sync, and out-of-order responses interleave freely.
 

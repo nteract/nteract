@@ -6,7 +6,7 @@ This is a map. Subsystem details live in nested `AGENTS.md` files next to code, 
 
 ## Project positioning
 
-nteract is a local-first, agent-ready notebook environment where humans, kernels, and AI agents work against the same live document. Describe that in concrete system terms: Automerge-backed notebook state, explicit runtime state, daemon-owned kernels, outputs, and execution, and programmatic control through the same runtime model. Avoid broad AI slogans; prefer the mechanics users and developers can verify.
+nteract is a local-first, agent-ready notebook environment where humans, kernels, and AI agents work against the same live notebook document set. Describe that in concrete system terms: Automerge-backed notebook state, explicit runtime state, daemon-owned kernels, outputs, and execution, and programmatic control through the same runtime model. Avoid broad AI slogans; prefer the mechanics users and developers can verify.
 
 ## Skills
 
@@ -26,6 +26,7 @@ Use `.agents/skills/` when the task matches:
 |------|-----|
 | Architecture + daemon | `crates/runtimed/AGENTS.md` |
 | Frontend architecture | `apps/notebook/src/AGENTS.md` |
+| Hosted cloud rooms | `apps/notebook-cloud/AGENTS.md` |
 | UI components (Shadcn + nteract) | `src/components/ui/AGENTS.md` |
 | Wire protocol & sync | `crates/notebook-wire/AGENTS.md` |
 | Widgets | `src/components/widgets/AGENTS.md` |
