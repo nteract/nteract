@@ -1150,6 +1150,8 @@ pub async fn show_notebook(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// When package_manager is explicitly provided, it takes precedence
     /// over whatever the daemon detected.
     #[test]
@@ -1200,6 +1202,46 @@ mod tests {
         assert!(
             uuid::Uuid::parse_str(&notebook_id).is_ok(),
             "notebook_id in save response must be a valid UUID"
+        );
+    }
+
+    #[test]
+    fn notebook_session_response_returns_text_json_and_cells_resource_link() {
+        let result = notebook_session_response(serde_json::json!({"notebook_id": "nb 1"}), "nb 1");
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content.len(), 2);
+
+        let text = result.content[0]
+            .as_text()
+            .expect("response JSON text")
+            .text
+            .as_str();
+        let response: serde_json::Value =
+            serde_json::from_str(text).expect("session response should be JSON");
+        assert_eq!(
+            response["resources"]["cells"],
+            "nteract://notebooks/nb%201/cells"
+        );
+        assert_eq!(
+            response["resources"]["cell_template"],
+            "nteract://notebooks/nb%201/cells/{cell_id}"
+        );
+
+        let link = result.content[1]
+            .as_resource_link()
+            .expect("cells resource link");
+        assert_eq!(link.uri, "nteract://notebooks/nb%201/cells");
+        assert_eq!(link.mime_type.as_deref(), Some("application/json"));
+
+        let value = serde_json::to_value(&result).expect("serialize session response");
+        assert_eq!(
+            value["content"][1]["type"],
+            serde_json::json!("resource_link")
+        );
+        assert_eq!(
+            value["content"][1]["mimeType"],
+            serde_json::json!("application/json")
         );
     }
 

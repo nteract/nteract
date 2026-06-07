@@ -400,6 +400,24 @@ mod tests {
     use super::*;
     use rmcp::model::{CallToolResult, Content};
 
+    #[test]
+    fn server_info_advertises_tools_resources_and_cell_resource_instructions() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        let info = server.get_info();
+
+        assert!(info.capabilities.tools.is_some());
+        assert!(info.capabilities.resources.is_some());
+        assert!(info
+            .capabilities
+            .extensions
+            .as_ref()
+            .is_some_and(|extensions| extensions.contains_key("io.modelcontextprotocol/ui")));
+
+        let instructions = info.instructions.as_deref().expect("instructions");
+        assert!(instructions.contains("nteract://notebooks/{notebook_id}/cells"));
+        assert!(instructions.contains("nteract://notebooks/{notebook_id}/cells/{cell_id}"));
+    }
+
     // ── safe_truncate unit tests ─────────────────────────────────────
 
     #[test]

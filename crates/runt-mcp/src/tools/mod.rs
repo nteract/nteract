@@ -52,6 +52,13 @@ fn always_load_meta() -> Meta {
     Meta(meta)
 }
 
+fn cell_resource_content(notebook_id: &str, cell_id: &str) -> Content {
+    Content::resource_link(crate::resources::notebook_cell_resource_link(
+        notebook_id,
+        cell_id,
+    ))
+}
+
 mod cell_crud;
 mod cell_meta;
 pub(crate) mod cell_read;
@@ -519,10 +526,7 @@ pub async fn build_execution_result(
 
     let mut items = vec![
         Content::text(header),
-        Content::resource_link(crate::resources::notebook_cell_resource_link(
-            handle.notebook_id(),
-            &result.cell_id,
-        )),
+        cell_resource_content(handle.notebook_id(), &result.cell_id),
     ];
     let output_summaries = crate::formatting::format_outputs_summary_lines(&result.outputs, 120);
     if output_summaries.is_empty() {
@@ -591,11 +595,21 @@ pub async fn build_execution_result(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn make_request(args: serde_json::Value) -> CallToolRequestParams {
         serde_json::from_value(serde_json::json!({
             "name": "test",
+            "arguments": args,
+        }))
+        .unwrap()
+    }
+
+    fn make_named_request(name: &str, args: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
             "arguments": args,
         }))
         .unwrap()
@@ -750,6 +764,55 @@ mod tests {
 
         assert!(tools.iter().all(|tool| tool.name != "get_cell"));
         assert!(tools.iter().all(|tool| tool.name != "get_all_cells"));
+    }
+
+    #[tokio::test]
+    async fn hidden_cell_read_tools_remain_callable_for_cached_clients() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+
+        for (tool_name, args) in [
+            ("get_cell", serde_json::json!({"cell_id": "cell-1"})),
+            ("get_all_cells", serde_json::json!({})),
+        ] {
+            let result = dispatch(&server, &make_named_request(tool_name, args))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                result.is_error,
+                Some(true),
+                "{tool_name} should be a tool error"
+            );
+            let text = result.content[0]
+                .as_text()
+                .expect("text content")
+                .text
+                .as_str();
+            assert!(
+                text.contains("No active notebook session"),
+                "{tool_name} should dispatch to the legacy handler, got {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn execution_cell_resource_content_serializes_as_mcp_resource_link() {
+        let expected_uri = "nteract://notebooks/nb%201/cells/cell%2F1";
+        let content = cell_resource_content("nb 1", "cell/1");
+        let value = serde_json::to_value(&content).expect("serialize content");
+
+        assert_eq!(value.get("type"), Some(&serde_json::json!("resource_link")));
+        assert_eq!(value.get("uri"), Some(&serde_json::json!(expected_uri)));
+        assert_eq!(
+            value.get("mimeType"),
+            Some(&serde_json::json!("application/json"))
+        );
+        assert!(value.get("mime_type").is_none());
+
+        let decoded: Content = serde_json::from_value(value).expect("deserialize content");
+        let link = decoded.as_resource_link().expect("resource link");
+        assert_eq!(link.uri, expected_uri);
+        assert_eq!(link.mime_type.as_deref(), Some("application/json"));
     }
 
     #[test]

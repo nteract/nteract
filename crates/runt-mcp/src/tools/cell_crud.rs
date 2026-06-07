@@ -435,3 +435,66 @@ fn explicit_after_cell_id_arg(
         None,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_resource_success_returns_mcp_resource_link() {
+        let result = cell_resource_success("Created cell: cell/1".into(), "nb 1", "cell/1")
+            .expect("cell resource success");
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            result.content[0].as_text().expect("message").text,
+            "Created cell: cell/1"
+        );
+
+        let link = result.content[1]
+            .as_resource_link()
+            .expect("cell resource link");
+        assert_eq!(link.uri, "nteract://notebooks/nb%201/cells/cell%2F1");
+        assert_eq!(link.mime_type.as_deref(), Some("application/json"));
+
+        let value = serde_json::to_value(&result).expect("serialize result");
+        assert_eq!(
+            value["content"][1]["type"],
+            serde_json::json!("resource_link")
+        );
+        assert_eq!(
+            value["content"][1]["mimeType"],
+            serde_json::json!("application/json")
+        );
+    }
+
+    #[test]
+    fn cells_resource_json_success_returns_collection_resource_link() {
+        let result = cells_resource_json_success(
+            serde_json::json!({
+                "cell_id": "cell/1",
+                "deleted": true,
+                "resources": crate::resources::notebook_resources_json("nb 1"),
+            }),
+            "nb 1",
+        )
+        .expect("cells resource success");
+
+        let text = result.content[0]
+            .as_text()
+            .expect("JSON text")
+            .text
+            .as_str();
+        let response: serde_json::Value = serde_json::from_str(text).expect("JSON response");
+        assert_eq!(
+            response["resources"]["cells"],
+            "nteract://notebooks/nb%201/cells"
+        );
+
+        let link = result.content[1]
+            .as_resource_link()
+            .expect("cells resource link");
+        assert_eq!(link.uri, "nteract://notebooks/nb%201/cells");
+        assert_eq!(link.mime_type.as_deref(), Some("application/json"));
+    }
+}
