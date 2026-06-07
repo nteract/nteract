@@ -869,6 +869,7 @@ function NotebookViewer({
         baseUrl: location.href,
         blobBasePath: config.blobBasePath,
         fetchImpl: (input, init) => fetchWithCloudPrototypeAuth(input, init, authState),
+        authenticatedBinaryObjectUrls: true,
       }),
     [authState, config.blobBasePath],
   );

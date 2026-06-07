@@ -489,6 +489,31 @@ describe("resolveContentRef", () => {
     expect(result).toBe(`https://assets.example.test/blobs/${encodeURIComponent(blob)}`);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("uses an async display URL hook for protected binary refs", async () => {
+    const displayUrl = vi.fn().mockResolvedValue("blob:https://cloud.test/image");
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("should not fetch", { status: 200 }));
+    const resolver = createBlobResolver({
+      url: (ref) => `https://cloud.test/blobs/${encodeURIComponent(ref.blob)}`,
+      fetchImpl,
+      displayUrl,
+      resolvesBinaryUrlsSynchronously: false,
+    });
+
+    const result = await resolveContentRef(
+      { blob: "sha256:image", size: 68, media_type: "image/png" },
+      resolver,
+      "image/png",
+    );
+
+    expect(result).toBe("blob:https://cloud.test/image");
+    expect(displayUrl).toHaveBeenCalledWith({
+      blob: "sha256:image",
+      size: 68,
+      media_type: "image/png",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -698,6 +723,38 @@ describe("resolveManifest", () => {
         display_id: undefined,
       });
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("uses async object URLs for protected binary blob refs", async () => {
+      const displayUrl = vi.fn().mockResolvedValue("blob:https://cloud.test/image");
+      const resolver = createBlobResolver({
+        url: (ref) => `https://cloud.test/blobs/${encodeURIComponent(ref.blob)}`,
+        displayUrl,
+        resolvesBinaryUrlsSynchronously: false,
+      });
+      const manifest: OutputManifest = {
+        output_id: "async-display-protected-image",
+        output_type: "display_data",
+        data: {
+          "image/png": { blob: "sha256:image", size: 68, media_type: "image/png" },
+          "text/plain": { inline: "PNG image" },
+        },
+      };
+
+      const sync = resolveManifestSync(manifest, resolver);
+      const output = await resolveManifest(manifest, resolver);
+
+      expect(sync).toBeNull();
+      expect(output).toEqual({
+        output_id: "async-display-protected-image",
+        output_type: "display_data",
+        data: {
+          "image/png": "blob:https://cloud.test/image",
+          "text/plain": "PNG image",
+        },
+        metadata: {},
+        display_id: undefined,
+      });
     });
   });
 

@@ -15,6 +15,19 @@ export interface BlobResolver {
   /** Return a browser-consumable URL for renderers that stream/fetch directly. */
   url(ref: BlobRef): string;
 
+  /**
+   * Return a browser-consumable display URL after any host-owned auth/proxy
+   * work. Cloud hosts use this to turn protected binary blobs into same-page
+   * object URLs without putting bearer credentials into `<img src>` URLs.
+   */
+  displayUrl?(ref: BlobRef): Promise<string>;
+
+  /**
+   * Whether binary MIME refs can be resolved through `url()` without awaiting
+   * `displayUrl()`. Local daemon HTTP URLs can; protected cloud URLs cannot.
+   */
+  readonly resolvesBinaryUrlsSynchronously?: boolean;
+
   /** Fetch blob bytes/text through the host, including any auth/proxy policy. */
   fetch(ref: BlobRef): Promise<Response>;
 }
@@ -23,6 +36,8 @@ export type BlobResolverInput = BlobResolver | number;
 
 export interface BlobResolverOptions {
   url(ref: BlobRef): string;
+  displayUrl?: (ref: BlobRef) => Promise<string>;
+  resolvesBinaryUrlsSynchronously?: boolean;
   fetchImpl?: typeof fetch;
   requestInit?: RequestInit | ((ref: BlobRef) => RequestInit);
 }
@@ -47,6 +62,8 @@ export function createBlobResolver(options: BlobResolverOptions): BlobResolver {
     fetch(ref) {
       return fetchImpl(options.url(ref), requestInitFor(options.requestInit, ref));
     },
+    ...(options.displayUrl ? { displayUrl: options.displayUrl } : {}),
+    resolvesBinaryUrlsSynchronously: options.resolvesBinaryUrlsSynchronously ?? true,
   };
 }
 
@@ -62,6 +79,7 @@ export function createHttpBlobResolver(
     fetch(ref) {
       return fetchImpl(url(ref));
     },
+    resolvesBinaryUrlsSynchronously: true,
   };
 }
 
