@@ -88,7 +88,11 @@ Cherry-picking buys subduction support sooner, costs us maintenance until upstre
 
 ### 3. (Resolved for v1) Path-aware filter hook on `receive_sync_message`
 
-This no longer blocks v1 authorization. The current room-host path enforces the editor/owner `RuntimeStateDoc` surface with before/after `RuntimeStatePolicySnapshot` validation: clone-preview the incoming sync, compare the accepted semantic state, and reject anything outside existing widget comm-state values before mutating the real room document.
+This no longer blocks v1 authorization. The current room-host path enforces
+document write authority with clone-preview validation before mutating the real
+room document. Editor/owner mutable widget state moved to `CommsDoc`;
+`RuntimeStateDoc` remains runtime-owned and is still guarded by the shared
+runtime-doc policy.
 
 An upstream path-aware hook could still be useful as a lower-cost optimization or for richer diagnostics, but it is no longer the authorization boundary.
 

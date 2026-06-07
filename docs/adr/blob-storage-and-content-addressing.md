@@ -37,7 +37,7 @@ Neighbors:
   attachments).
 - `docs/adr/execution-pipeline.md` — when the daemon decides to
   blob an output vs. inline it.
-- `docs/adr/hosted-notebook-artifacts.md` — how snapshot pairs and
+- `docs/adr/hosted-notebook-artifacts.md` — how snapshot bundles and
   R2 blob storage reuse the same hash addressing.
 - `docs/adr/identity-and-trust.md` — the room-level auth gate that
   blob HTTP currently leans on; how a connected peer earns the right to
@@ -387,20 +387,21 @@ blob reachable.
    `{ "blob": "<sha>" }` shape and ships a different `BlobResolver` that
    maps to `/api/n/:id/blobs/:hash` or a future signed origin. The desktop
    resolver maps to `http://127.0.0.1:<port>/blob/<hash>`.
-3. **Snapshot pairing.** `NotebookHandle.load_snapshot(notebookBytes,
-   runtimeStateBytes)` materializes a snapshot pair into a single handle.
-   Outputs decode to `ContentRef`s; the host plugs in a `BlobResolver` against
-   whichever origin owns the bytes (local daemon for a desktop viewer, cloud
-   origin for a hosted viewer). The snapshot pair plus the resolver is the
-   durable source of truth. Hosts may still build derived JSON render caches at
-   publish/request time, but those caches are regenerable validation artifacts,
-   not a second notebook format.
+3. **Snapshot bundle.** `NotebookHandle.load_snapshot(notebookBytes,
+   runtimeStateBytes)` materializes the notebook/runtime pair, and hosts may
+   then load a saved `CommsDoc` snapshot for widget state. Outputs decode to
+   `ContentRef`s; the host plugs in a `BlobResolver` against whichever origin
+   owns the bytes (local daemon for a desktop viewer, cloud origin for a hosted
+   viewer). The snapshot bundle plus the resolver is the durable source of
+   truth. Hosts may still build derived JSON render caches at publish/request
+   time, but those caches are regenerable validation artifacts, not a second
+   notebook format.
 
-The snapshot pair invariant: a saved `RuntimeStateDoc` is only renderable if
-every `ContentRef::Blob` it carries is reachable through the resolver. Publish
-flows (cloud or local export) must upload the referenced blobs alongside the
-snapshot pair, or pre-resolve them into inline form before saving. The desktop
-daemon does not enforce this on save today; it is the publisher's
+The snapshot bundle invariant: a saved `RuntimeStateDoc` or `CommsDoc` is only
+renderable if every `ContentRef::Blob` it carries is reachable through the
+resolver. Publish flows (cloud or local export) must upload the referenced blobs
+alongside the snapshot bundle, or pre-resolve them into inline form before
+saving. The desktop daemon does not enforce this on save today; it is the publisher's
 responsibility (covered explicitly by the R2 layout in
 `hosted-notebook-artifacts.md` Decision 2).
 
@@ -436,9 +437,11 @@ responsibility (covered explicitly by the R2 layout in
 ### Cloud viewer renders a published snapshot
 
 1. Publish (out of scope here; see `hosted-notebook-artifacts.md`) writes
-   `notebookBytes`, `runtimeStateBytes`, and the referenced blobs to R2.
-2. The viewer fetches the snapshot pair and calls
-   `NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes)`.
+   `notebookBytes`, `runtimeStateBytes`, optional `commsBytes`, and the
+   referenced blobs to R2.
+2. The viewer fetches the snapshot bundle, calls
+   `NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes)`, and loads
+   `commsBytes` when present.
 3. WASM `set_blob_port` stays unset, so binary refs are not auto-resolved to
    URLs. Refs are returned as `ResolvedContentRef::Blob` and the host's
    `BlobResolver` (a cloud one in this case) is asked to produce a URL or

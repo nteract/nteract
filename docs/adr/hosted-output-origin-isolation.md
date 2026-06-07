@@ -157,7 +157,7 @@ route structure.
 content references such as:
 
 ```json
-{ "blob": "sha256-...", "size": 1234, "media_type": "image/png" }
+{ "blob": "<sha256-hex>", "size": 1234, "media_type": "image/png" }
 ```
 
 WASM and renderer plugins should not rewrite these into daemon-local or

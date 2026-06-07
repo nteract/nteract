@@ -16,7 +16,7 @@ layers:
   Durable Object the live document host.
 - `hosted-credential-transport.md` defines how direct OIDC, JupyterHub,
   browser WebSockets, and native clients present credentials.
-- `hosted-notebook-artifacts.md` defines the durable snapshot pair and blob
+- `hosted-notebook-artifacts.md` defines the durable snapshot bundle and blob
   layout.
 - `hosted-output-origin-isolation.md` defines why authenticated app origins,
   renderer asset origins, and untrusted output-document origins stay separate.

@@ -10,16 +10,18 @@ documents:
 - `NotebookDoc` carries cells, source text, durable metadata, attachments, and
   the current per-cell `execution_id` pointer.
 - `RuntimeStateDoc` carries kernel lifecycle, queue state, executions, outputs,
-  widget comm state, environment state, trust state, and project context.
+  widget comm topology, environment state, trust state, and project context.
+  Mutable widget comm state lives in `CommsDoc`.
 
 That split is still the right boundary. The missing piece is identity.
 
 Desktop currently creates a `RuntimeStateDoc` because a `NotebookRoom` exists.
 The room owns `doc: NotebookDoc` and `state: RuntimeStateDoc` as sibling fields.
-Cloud similarly records a published snapshot pair by notebook id, notebook heads,
-runtime-state heads, and object keys. In both cases, the runtime-state document is
-paired operationally, but the notebook document itself does not identify the
-runtime-state document that belongs with it.
+Cloud similarly records a published snapshot bundle by notebook id, notebook
+heads, runtime-state heads, optional CommsDoc heads, and object keys. In both
+cases, the runtime-state document is paired operationally, but the notebook
+document itself does not identify the runtime-state document that belongs with
+it.
 
 That becomes brittle once hosted notebooks load Automerge directly:
 

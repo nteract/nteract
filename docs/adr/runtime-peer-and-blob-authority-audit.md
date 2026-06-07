@@ -102,7 +102,7 @@ that tries to make the blob reachable from room state.
 | Scope | Upload authority | Reference authority | Read authority |
 |-------|------------------|---------------------|----------------|
 | `viewer` | None | None | May resolve blobs already referenced by room state if the room host authorizes viewer access to that room |
-| `editor` | Blobs needed for allowed `NotebookDoc` edits and the allowed widget comm-state subtree | May reference uploads from allowed notebook fields, attachments, resolved assets, and permitted `doc.comms/*/state/*` writes | Same as viewer, plus any private editor-visible room blobs |
+| `editor` | Blobs needed for allowed `NotebookDoc` edits and allowed mutable widget state in `CommsDoc` | May reference uploads from allowed notebook fields, attachments, resolved assets, and permitted `CommsDoc` writes | Same as viewer, plus any private editor-visible room blobs |
 | `runtime_peer` | Runtime output, execution-progress, lifecycle, and comm-output blobs | May reference uploads from allowed `RuntimeStateDoc` output/lifecycle paths for accepted executions | Same as viewer for the attached room |
 | `owner` | Editor upload surface; runtime-peer upload surface only through an explicit runtime-peer connection | Editor reference surfaces, plus publish/export flows | Same as editor, plus owner-only artifact management |
 
@@ -139,8 +139,8 @@ document path that later references the content hash.
    reference can appear.
 3. **Hosted rooms need reference-path validation.** `runtime_peer` can point at
    uploaded blobs only from runtime/output state. `editor` can point at blobs
-   only from notebook fields and the widget comm-state subtree. Owner inherits
-   both write surfaces.
+   only from notebook fields and mutable widget state in `CommsDoc`. Owner
+   inherits both write surfaces.
 4. **Content metadata mutation is multi-user sensitive.** The desktop blob
    store intentionally lets a duplicate put update `media_type`. In hosted or
    remote-peer deployments, the host should prevent a lower-scope peer from

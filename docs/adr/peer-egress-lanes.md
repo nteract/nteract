@@ -2,11 +2,18 @@
 
 **Status:** Draft, 2026-05-28.
 
+**Update, 2026-06-07:** The first implementation step has landed:
+`PeerWriter` now classifies frames into `Reliable` and `Ephemeral` lanes, with
+presence and broadcasts isolated from reliable sync/response traffic. This
+document remains the investigation record for the remaining work: metrics,
+reserved control capacity, explicit barriers, and runtime-state catch-up.
+
 ## Context
 
 The three-document split gives `NotebookDoc`, `RuntimeStateDoc`, and `PoolDoc`
 separate sync states, frame types, ingress validators, and broadcast sources.
-The split still collapses at the final per-peer egress point:
+The original investigation found that the split still collapsed at the final
+per-peer egress point:
 
 - `PeerWriter::send_frame` sends every steady-state outbound frame through one
   bounded `mpsc` (`PEER_OUTBOUND_QUEUE_CAPACITY = 1024`) with `try_send`
@@ -17,10 +24,13 @@ The split still collapses at the final per-peer egress point:
   the shared queue applies after `run_sync_loop_v2` creates `PeerWriter`
   (`peer_loop.rs:100-128`).
 
-This keeps the socket write half single-owner and prevents concurrent byte
-interleaving. It also means a slow peer or high-volume runtime-state sync can
-consume the same bounded queue needed by request responses, readiness/status
-frames, notebook-doc sync, pool updates, presence, and broadcasts.
+This kept the socket write half single-owner and prevented concurrent byte
+interleaving, but it also meant a slow peer or high-volume runtime-state sync
+could consume the same bounded queue needed by request responses,
+readiness/status frames, notebook-doc sync, pool updates, presence, and
+broadcasts. The current implementation fixes the broadest version of that
+problem by splitting reliable and ephemeral lanes; it has not yet added reserved
+control capacity or runtime-state resync recovery.
 
 ## Current Producers
 

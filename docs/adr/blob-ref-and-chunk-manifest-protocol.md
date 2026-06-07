@@ -213,7 +213,8 @@ The upstreamable part is not the nteract name. It is the split:
 1. Whether an upstream Jupyter form should use a vendor-neutral MIME, a
    top-level `attachments`-like message field, or metadata alongside existing
    MIME entries.
-2. Whether hashes should be represented as bare SHA-256 hex, `sha256:<hex>`,
-   or an algorithm-tagged JSON object before standardization.
+2. Hash representation is resolved for nteract blob refs: use bare lowercase
+   SHA-256 hex. Algorithm-tagged source hashes may still appear in
+   MIME-specific metadata when they are not blob addresses.
 3. How much of `summary` and `query` belongs in the generic blob-ref protocol
    versus MIME-specific metadata.

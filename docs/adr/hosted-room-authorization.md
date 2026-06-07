@@ -6,8 +6,9 @@
 
 `apps/notebook-cloud` now proves three important hosted pieces:
 
-- published notebook viewers load a persisted `NotebookDoc` + `RuntimeStateDoc`
-  snapshot pair from R2 and materialize it with `runtimed-wasm`;
+- published notebook viewers load a persisted snapshot bundle (`NotebookDoc`,
+  `RuntimeStateDoc`, and optional `CommsDoc`) from R2 and materialize it with
+  `runtimed-wasm`;
 - renderer sidecars can live on a separate asset origin while notebook blobs
   remain behind the notebook host's blob resolver;
 - the Durable Object can accept typed-frame v4 WebSockets, rewrite CBOR
@@ -26,7 +27,7 @@ Neighbors:
   connection scopes, provider validation, and actor-principal enforcement.
 - `docs/adr/hosted-credential-transport.md` - direct OIDC, JupyterHub,
   browser WebSocket credential transports, and origin policy.
-- `docs/adr/hosted-notebook-artifacts.md` - R2 snapshot pair and
+- `docs/adr/hosted-notebook-artifacts.md` - R2 snapshot bundle and
   render-cache layout.
 - `docs/adr/blob-storage-and-content-addressing.md` - BlobResolver
   and renderer asset origin separation.
@@ -59,7 +60,7 @@ This keeps the hosted authority split explicit:
 
 - The room URL addresses a room host; it does not grant access.
 - The Durable Object is document authority; it materializes and validates live
-  `NotebookDoc` and `RuntimeStateDoc` state for the room.
+  `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` state for the room.
 - The ACL is access authority; it decides whether a validated principal may
   connect as `viewer`, `editor`, `runtime_peer`, or `owner`.
 - JupyterHub and other compute providers authorize their own compute resources,
@@ -128,7 +129,7 @@ grant different write surfaces. Treat them as capability sets:
 | Scope | Capabilities |
 |-------|--------------|
 | `viewer` | read room state, receive sync, send empty sync negotiation, send presence; anonymous viewer presence may be connection-local |
-| `editor` | viewer + write allowed `NotebookDoc` fields + server-validated existing widget comm-state writes |
+| `editor` | viewer + write allowed `NotebookDoc` fields + mutable widget comm state in `CommsDoc` |
 | `runtime_peer` | viewer + write kernel lifecycle, comm topology, output routing, and progress/output state for accepted executions + upload output blobs; cannot create execution intent or rewrite trust/environment/path/project metadata |
 | `owner` | editor + publish revisions + mutate ACLs; may hold separate `runtime_peer` capability through an explicit ACL row when it needs runtime progress authorship |
 
@@ -210,9 +211,9 @@ downgrade described above. Local Wrangler demo routes may seed a public-read
 ACL for the demo notebook, but deployed behavior must be explicit.
 
 Anonymous viewers are always read-only. They may receive room state and send
-presence. They may not send non-empty `NotebookDoc` or `RuntimeStateDoc` sync,
-request side effects, blob uploads, pool-state writes, publish requests, or ACL
-mutations.
+presence. They may not send non-empty `NotebookDoc`, `RuntimeStateDoc`, or
+`CommsDoc` sync, request side effects, blob uploads, pool-state writes, publish
+requests, or ACL mutations.
 
 Public viewer presence is a product policy layered on top of this ACL. The
 minimum hosted-room behavior keeps anonymous public presence connection-local,
@@ -249,14 +250,15 @@ The Durable Object should evolve from a bounded frame relay into the hosted
 room host:
 
 1. On first connection, load the latest revision from D1 and R2.
-2. Call `NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes)`.
+2. Call the room materializer to load notebook, runtime-state, and optional
+   comms bytes.
 3. Keep the handle resident while the room has active peers.
 4. Route inbound typed-frame v4 bytes through the WASM handle.
 5. Enforce scope and actor-principal validation before mutating the live
    room state.
 6. Emit sync replies and broadcasts to connected peers.
-7. Debounce persistence of `NotebookDoc` and `RuntimeStateDoc` snapshots back
-   to R2 and record a revision/checkpoint row in D1.
+7. Debounce persistence of `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`
+   snapshots back to R2 and record a revision/checkpoint row in D1.
 
 The DO does not host kernels in this phase. Kernel execution enters later as a
 `runtime_peer` connection that reports lifecycle, comm topology, output routing,
@@ -266,7 +268,7 @@ the request path that creates execution intent.
 
 Durable Object storage is not the source of truth for notebook content. It may
 hold hibernation metadata and a small amount of transient room state. R2
-snapshot pairs and D1 catalog/ACL rows are durable.
+snapshot bundles and D1 catalog/ACL rows are durable.
 
 For a connected browser page, the materialized live room is the active source
 of truth. A render cache or `/api/n/:id/render` response may warm-start first
@@ -318,8 +320,9 @@ provider is later attached, execution authority is granted through
 document surface.
 
 The editor `RuntimeStateDoc` write surface is closed by the shared runtime-doc
-policy used by the hosted room host and daemon. Editor and owner scopes may
-mutate only existing widget comm-state values (`doc.comms/*/state/*`). In a
+policy used by the hosted room host and daemon. Editor and owner scopes write
+mutable widget state through `CommsDoc`; `RuntimeStateDoc` remains runtime-owned
+for lifecycle, execution status, comm topology, and output routing. In a
 multi-user room, an editor sending arbitrary `RuntimeStateDoc` sync changes
 would be privilege escalation into runtime lifecycle, execution status, or
 fabricated outputs, so frames that touch those fields are rejected before the
@@ -382,14 +385,14 @@ enforce equivalent access.
    owner ACL row atomically before recording the first revision. Existing
    notebook creation helpers should be renamed or split so call sites choose
    between creation, touch/update, and authorization.
-6. **DO snapshot materialization.** Load latest snapshot pair into
+6. **DO snapshot materialization.** Load latest snapshot bundle into
    `runtimed-wasm` inside the DO and use it as the room state, initially still
    without kernels.
 7. **Editor RuntimeStateDoc path enforcement.** Done in the shared
-   runtime-doc policy: editor/owner `RuntimeStateDoc` sync may mutate only
-   existing widget comm-state values, while queue, execution, kernel,
-   environment, output routing, comm topology, and schema/root writes remain
-   runtime-owned.
+   runtime-doc policy: editor/owner `RuntimeStateDoc` sync is rejected for
+   widget state and other runtime-owned fields. Mutable widget state lives in
+   `CommsDoc`; queue, execution, kernel, environment, output routing, comm
+   topology, and schema/root writes remain runtime-owned.
 8. **Editor cell-editing slice.** Server-side semantic gate
    (`validate_editor_notebook_changes`) accepts full cell editing (any cell
    type, source, and structure) from authenticated `editor`/`owner`
@@ -408,7 +411,7 @@ enforce equivalent access.
 - Implicit anonymous viewer access to every notebook id.
 - WebSocket connect creating a notebook row as a side effect.
 - Durable Object relay behavior that stores frame metadata but does not own a
-  materialized `NotebookDoc` / `RuntimeStateDoc`.
+  materialized notebook/runtime/comms document bundle.
 - Public snapshot/blob reads that bypass the room ACL for private notebooks.
 
 ## Open Questions
