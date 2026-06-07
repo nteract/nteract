@@ -1006,12 +1006,13 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByText("datasets")).toBeInTheDocument();
-    expect(screen.getByText("code")).toHaveAttribute("title", "python code block");
-    expect(screen.getByText("code").closest("[data-code-language]")).toHaveAttribute(
+    expect(screen.getByText("python")).toHaveAttribute("title", "python code block");
+    expect(screen.getByText("python")).toHaveClass("text-muted-foreground/80");
+    expect(screen.getByText("python")).not.toHaveClass("uppercase", "tracking-[0.08em]");
+    expect(screen.getByText("python").closest("[data-code-language]")).toHaveAttribute(
       "data-code-language",
       "python",
     );
-    expect(screen.queryByText("python")).toBeNull();
     expect(document.querySelector("pre code span")).not.toBeNull();
   });
 

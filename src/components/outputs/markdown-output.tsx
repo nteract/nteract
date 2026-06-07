@@ -120,7 +120,7 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
           className={markdownCodeBlockLabelClassName}
           title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
         >
-          code
+          {languageLabel}
         </span>
         {enableCopy && (
           <button

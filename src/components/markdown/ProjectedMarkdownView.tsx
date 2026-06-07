@@ -859,7 +859,7 @@ function ProjectedCodeBlock({
           className={markdownCodeBlockLabelClassName}
           title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
         >
-          code
+          {languageLabel}
         </span>
         <button
           type="button"
