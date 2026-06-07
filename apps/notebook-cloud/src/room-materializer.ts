@@ -57,7 +57,15 @@ export class RoomMaterializer {
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
-    return this.withHost((host) => normalizeResult(host.sync_peer(peer.id, peer.identity.scope)));
+    try {
+      return await this.syncPeerWithCurrentHost(peer);
+    } catch (error) {
+      const recovered = await this.recoverHostFromLatestPublishedSnapshot("sync_peer", error);
+      if (!recovered) {
+        throw error;
+      }
+      return this.syncPeerWithCurrentHost(peer);
+    }
   }
 
   async removePeer(peerId: string): Promise<void> {
@@ -138,6 +146,10 @@ export class RoomMaterializer {
       () => undefined,
     );
     return run;
+  }
+
+  private async syncPeerWithCurrentHost(peer: RoomPeer): Promise<RoomHostFrameResult> {
+    return this.withHost((host) => normalizeResult(host.sync_peer(peer.id, peer.identity.scope)));
   }
 
   private async loadHost(): Promise<RoomHostHandle> {
@@ -269,6 +281,83 @@ export class RoomMaterializer {
       });
       throw error;
     }
+  }
+
+  private async recoverHostFromLatestPublishedSnapshot(
+    operation: string,
+    cause: unknown,
+  ): Promise<boolean> {
+    const run = this.operationQueue.then(async () =>
+      this.recoverHostFromLatestPublishedSnapshotNow(operation, cause),
+    );
+    this.operationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async recoverHostFromLatestPublishedSnapshotNow(
+    operation: string,
+    cause: unknown,
+  ): Promise<boolean> {
+    const startedAt = Date.now();
+    const published = await this.loadLatestPublishedSnapshotPairForCheckpoint();
+    if (!published) {
+      cloudLog("warn", "room.materializer.recovery_skipped", {
+        notebook_id: this.notebookId,
+        operation,
+        reason: "latest_published_snapshot_unavailable",
+        error: errorMessage(cause),
+        counter: "materializer_recovery_skipped",
+        counter_delta: 1,
+      });
+      return false;
+    }
+
+    try {
+      const host = await loadRoomHostSnapshot(
+        published.notebookBytes,
+        published.runtimeStateBytes,
+        published.commsDocBytes,
+      );
+      this.markLoadedPublishedSnapshot(published.revisionId, host);
+      await this.clearCheckpoint();
+      this.hostReady = Promise.resolve(host);
+      cloudLog("warn", "room.materializer.recovered_from_published_snapshot", {
+        notebook_id: this.notebookId,
+        operation,
+        published_revision_id: published.revisionId,
+        duration_ms: durationMs(startedAt),
+        notebook_byte_length: published.notebookBytes.byteLength,
+        runtime_state_byte_length: published.runtimeStateBytes.byteLength,
+        error: errorMessage(cause),
+        counter: "materializer_recovered_from_published_snapshot",
+        counter_delta: 1,
+      });
+      return true;
+    } catch (recoveryError) {
+      cloudLog("warn", "room.materializer.recovery_failed", {
+        notebook_id: this.notebookId,
+        operation,
+        published_revision_id: published.revisionId,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(recoveryError),
+        original_error: errorMessage(cause),
+        counter: "materializer_recovery_failed",
+        counter_delta: 1,
+      });
+      return false;
+    }
+  }
+
+  private async clearCheckpoint(): Promise<void> {
+    await Promise.all([
+      this.state.storage.delete(CHECKPOINT_NOTEBOOK_KEY),
+      this.state.storage.delete(CHECKPOINT_RUNTIME_STATE_KEY),
+      this.state.storage.delete(CHECKPOINT_COMMS_DOC_KEY),
+      this.state.storage.delete(CHECKPOINT_META_KEY),
+    ]);
   }
 
   private async loadCheckpoint(): Promise<{
