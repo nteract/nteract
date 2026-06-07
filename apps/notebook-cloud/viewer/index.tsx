@@ -868,9 +868,6 @@ function CloudNotebookDashboard({
           <div className="cloud-dashboard-continue-main">
             <p>Continue</p>
             <h2 id="cloud-dashboard-continue">{cloudNotebookDisplayTitle(continued)}</h2>
-            <span className="cloud-dashboard-continue-id">
-              {cloudNotebookShortId(continued.notebook_id)}
-            </span>
             <div className="cloud-dashboard-continue-facts">
               <span>
                 <Clock aria-hidden="true" />
@@ -1071,11 +1068,17 @@ function CloudNotebookDashboardRow({
     );
   }
 
+  const hasTitle = Boolean(notebook.title?.trim());
+
   return (
     <div className="cloud-notebook-list-row">
       <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
-        <span className="cloud-notebook-list-id">{cloudNotebookShortId(notebook.notebook_id)}</span>
+        {hasTitle ? null : (
+          <span className="cloud-notebook-list-detail">
+            Created {formatNotebookUpdatedAt(notebook.created_at)}
+          </span>
+        )}
         <span className="cloud-notebook-list-row-facts">
           <span>
             <UserRound aria-hidden="true" />
