@@ -15,11 +15,14 @@ storing comments in `NotebookDoc` cells or in `RuntimeStateDoc`.
 `CommentsDoc` is durable collaboration state with different write frequency,
 authority, fan-out, persistence, and UI projection from cells, outputs, widgets,
 or runtime lifecycle. It should sync over its own typed frame, likely
-`COMMENTS_DOC_SYNC = 0x0a`, while user-facing mutations should go through
-request-stamped operations such as `create_comment`, `reply_comment`, and
-`resolve_comment`. The room host or daemon stamps author identity from the
-authenticated connection, mutates `CommentsDoc`, and then broadcasts the resulting
-Automerge sync frames.
+`COMMENTS_DOC_SYNC = 0x0a`. User-facing comment writes should still use
+Automerge for immediate local-first rendering: the client writes a tentative
+comment mutation into its local `CommentsDoc` replica, and the daemon or Cloud
+comments authority finalizes policy-bearing fields such as author identity,
+scope, resolve state, and rejection status in the same document.
+Rendering must not wait for a request round trip. Pending comments are projected
+from local Automerge heads; daemon or Cloud writes are subsequent authoritative
+changes to the same objects.
 
 ## Source Constraints
 
@@ -116,9 +119,10 @@ Local desktop:
 - Attachment starts from either a canonical file path or an untitled room UUID.
   File-backed comments need a path sidecar until the notebook carries a durable
   `comments_doc_id`.
-- Same-UID trust makes local convergence forgiving, but request-stamped daemon
-  mutations should still be the only user-facing write path. That keeps local
-  behavior aligned with Cloud and keeps durable author fields honest.
+- Same-UID trust makes local convergence forgiving. The UI should still write
+  tentative comment mutations into the local `CommentsDoc` so Automerge owns the
+  optimistic state, while the daemon finalizes author/scope fields in the same
+  doc.
 - Local agents use MCP tools that resolve `notebook_id | path`, submit comment
   requests to the daemon, and read projected comments from the local doc.
 
@@ -126,13 +130,17 @@ Cloud hosted rooms:
 
 - Authority is the Cloud room host, currently the Durable Object plus
   `RoomHostHandle` materializer path.
+- That authority may later be a separate comments Durable Object keyed by
+  `comments_doc_id`. The protocol should expose a comments document attached to a
+  notebook room, not the Cloud storage topology.
 - Attachment starts from the hosted notebook id or room locator, not from a
   filesystem path.
 - Persistence belongs in room checkpoints and published snapshots alongside
   notebook/runtime/comms bytes and heads.
-- Cloud editors and agents create, reply, edit, delete, and resolve through host
-  request APIs. The host stamps author fields from the authenticated connection.
-  Raw non-empty `CommentsDocSync` is not a supported user-facing mutation path.
+- Cloud editors and agents create, reply, edit, delete, and resolve as
+  tentative `CommentsDoc` changes that render immediately. The Cloud comments
+  authority stamps author fields from the authenticated connection and accepts or
+  rejects the tentative mutation in the same doc.
 - Publication policy must be explicit. Comments should not automatically become
   part of a public notebook publish because review notes and agent comments can
   be more sensitive than notebook contents or outputs.
@@ -173,9 +181,11 @@ ROOT/
         ...anchor fields...
       position: Str                  # fractional order in the projection scope
       status: Str                    # "open" | "resolved"
+      mutation_state: Str            # "pending" | "accepted" | "rejected"
+      rejection_reason: Str?
       created_at: Str
-      created_by_actor_label: Str    # host/daemon stamped
-      created_by_authority: Str      # "host_stamped" | "local_uid" | "imported"
+      created_by_actor_label: Str    # host/daemon stamped when accepted
+      created_by_authority: Str      # "pending" | "host_stamped" | "local_uid" | "imported"
       created_by_display_name: Str?  # advisory, host projected when available
       resolved_at: Str?
       resolved_by_actor_label: Str?
@@ -186,6 +196,8 @@ ROOT/
           id: Str
           position: Str              # fractional reply order
           body: Text
+          mutation_state: Str        # "pending" | "accepted" | "rejected"
+          rejection_reason: Str?
           created_at: Str
           created_by_actor_label: Str
           created_by_authority: Str
@@ -211,9 +223,17 @@ the durable attribution field:
 - `host_stamped`: Cloud room host stamped the field from an authenticated Cloud
   request.
 - `local_uid`: local daemon stamped the field from same-UID desktop provenance.
+- `pending`: client-authored optimistic state that has not yet been finalized by
+  the local daemon or Cloud comments authority.
 - `imported`: attribution was carried across a boundary such as local-to-Cloud
   promotion, clone-with-comments, or external import and should be displayed as
   imported/unverified.
+
+`mutation_state` is what keeps optimistic UI inside Automerge instead of in a
+parallel React store. The UI can render pending threads and replies immediately
+from the local `CommentsDoc`. The authority then writes the same object to
+`accepted` with stamped author fields, or `rejected` with a reason the projection
+can display or collapse.
 
 ### Anchors
 
@@ -338,10 +358,11 @@ Core seams:
   - dispatch inbound `CommentsDocSync` frames
 - `crates/runtimed/src/notebook_sync_server/peer_comments_sync.rs`
   - mirror `peer_comms_sync.rs` for sync mechanics
-  - use request-stamped mutations as the supported write path
+  - allow tentative local-first comment mutations to sync
+  - canonicalize authority-owned fields from the daemon or Cloud comments host
   - keep runtime_peer out of comment mutation authority
-  - allow empty sync negotiation frames; non-empty client changes are an internal
-    escape hatch, not the app/API surface
+  - validate or overwrite policy-bearing fields instead of asking the UI to keep
+    a separate optimistic state
 - `apps/notebook-cloud/src/protocol.ts`
   - add `COMMENTS_DOC_SYNC` and route it as materialized sync
 - `apps/notebook-cloud/src/room-materializer.ts`
@@ -350,16 +371,34 @@ Core seams:
 - `crates/runtimed-wasm/src/lib.rs`
   - add `RoomHostHandle` methods for comments sync, save/load, and heads
 
-### Request-stamped mutation path
+### Local-first mutation and authority finalization
 
-Do not let client payloads choose durable author fields. The daemon or hosted
-room host already knows the connection principal, actor label, and scope. It
-should stamp those into comment mutations.
+Do not build a separate optimistic comment store outside Automerge. The
+optimistic record should be the local `CommentsDoc` mutation itself.
 
-User-facing comment writes should use this request path on both local desktop
-and Cloud. Local-first operation means "the local daemon remains available when
-the Cloud is not," not that UI clients or MCP agents directly author raw
-CommentsDoc changes.
+The write flow:
+
+1. UI or agent creates a tentative thread/message/edit/resolve mutation in its
+   local `CommentsDoc` replica with `mutation_state = "pending"` and
+   `created_by_authority = "pending"` when applicable.
+2. The normal Automerge projection renders that pending state immediately. No
+   separate React-side optimistic list is required.
+3. The sync stream carries the tentative mutation to the local daemon or Cloud
+   comments authority.
+4. The authority validates scope, anchor, and causal evidence; stamps
+   `created_by_*`, `edited_by_*`, `resolved_by_*`, and authority fields from the
+   authenticated connection; then writes `mutation_state = "accepted"` in the
+   same `CommentsDoc`.
+5. If validation fails, the authority writes `mutation_state = "rejected"` plus
+   `rejection_reason`. The UI can display or collapse the rejected pending item,
+   again from `CommentsDoc`.
+
+Requests such as `CreateComment` and MCP tools are command surfaces over the
+same state transition. Human UI actions should perform the local tentative
+mutation before any authority round trip. Agent, daemon, or hosted-tool surfaces
+may ask the daemon/host to create the tentative Automerge mutation on their
+behalf. None of these surfaces should maintain a second optimistic
+representation.
 
 Add protocol requests:
 
@@ -432,21 +471,26 @@ Authorization policy for the first implementation:
   `resolved_at = null`, `resolved_by_* = null`, and the reply author recorded on
   the new message.
 
-### Direct raw sync policy
+### Sync policy
 
-`CommentsDocSync` is still needed for Automerge negotiation and replication, but
-raw non-empty client changes are not the supported product mutation path.
+`CommentsDocSync` is the replication path for both pending client-authored
+comment state and authority finalization. The policy line is not "no non-empty
+client sync"; it is "client-authored policy fields are tentative until the
+authority finalizes them."
 
 Prototype policy:
 
-- Local desktop and Cloud both expose mutations through request APIs.
+- Local desktop and Cloud both render pending comments from `CommentsDoc`.
 - Empty sync frames remain normal. They carry heads/have/need and no document
   changes.
-- Non-empty client sync frames may be stripped/rejected initially. If a later
-  implementation needs permissive convergence for advanced local clients, durable
-  author fields still must be host/daemon-stamped or marked `imported`.
-- Agents use the same request API as humans. MCP tools call requests, not mutate
-  the CRDT directly.
+- Non-empty client sync frames may create or update pending comment state.
+- The daemon/Cloud comments authority owns transition from pending to accepted or
+  rejected, and owns durable author/scope fields.
+- If a client writes policy fields directly, the projection treats them as
+  unverified until an authority-authored change confirms them.
+- Agents use the same local-first/state-finalization model as humans. MCP tools
+  should operate through the daemon so agent comments land in `CommentsDoc` and
+  receive the same authority finalization.
 
 This mirrors the identity ADR: authorization uses authenticated principal and
 scope; operator labels and display names are attribution, not authority.
@@ -485,14 +529,12 @@ The projection can tag `last_writer_actor_label` while applying
 returns object-path to last-writer actor for the comments head range. The result
 is memoized by `CommentsDoc` heads alongside `commentsByCellId`.
 
-This matters for permissive Cloud convergence. Until this projection exists,
-Cloud should keep request-stamped writes as the only user-facing mutation path
-and may strip/reject raw non-empty client frames. If a later Cloud implementation
-allows permissive raw convergence, the UI must prefer the validated
-`last_writer_actor_label` for "edited by" display and use durable author fields
-as host-stamped fast-path data, not as the only source of truth. Principal-level
-change actors are verified; operator-level human-vs-agent labels remain advisory
-unless they were host/daemon-stamped on the request path.
+This matters for permissive Cloud convergence. Pending client-authored
+Automerge changes can render immediately, but the UI should prefer the validated
+`last_writer_actor_label` for "edited by" display and treat durable author fields
+as fast-path data that becomes trusted only when authority-finalized. Principal
+level change actors are verified; operator-level human-vs-agent labels remain
+advisory unless they were host/daemon-stamped during finalization.
 
 ## MCP Surface
 
@@ -505,8 +547,9 @@ resolve_comment(notebook_id | path, thread_id) -> ok
 reopen_comment(notebook_id | path, thread_id) -> ok
 ```
 
-Mutating tools go through the request-stamped path so agent comments have the
-same durable authorship and ACL behavior as human comments.
+Mutating tools use the same pending-then-finalized model as human UI actions so
+agent comments have the same durable authorship and ACL behavior as human
+comments.
 
 Reads should follow the repo's newer MCP resource direction rather than landing
 as a tool that immediately needs migration:
@@ -646,7 +689,8 @@ Phase 2: local sync and MCP
 - Add `COMMENTS_DOC_SYNC`.
 - Wire `SharedDocState`, daemon room state, initial sync, peer broadcasts, and
   sidecar persistence.
-- Add request variants and daemon handlers that stamp actor labels.
+- Add request variants and daemon handlers that can create tentative comment
+  mutations and finalize actor labels.
 - Add MCP mutation tools and comment read resources using notebook ID or path
   resolution.
 - Ensure save-as follows the existing `comments_doc_id` instead of recomputing a
@@ -665,7 +709,8 @@ Phase 4: hosted room host
 
 - Extend `RoomHostHandle`, `RoomMaterializer`, checkpoint metadata, and snapshot
   storage.
-- Route Cloud mutations through request handlers that stamp author authority.
+- Route Cloud mutations through the comments authority so pending comments are
+  finalized with stamped author authority.
 - Add published snapshot policy for comments, defaulting to excluded.
 
 Phase 5: portable identity
@@ -679,8 +724,8 @@ Phase 5: portable identity
 
 - Path identity is weak under rename/move until the notebook carries an explicit
   `comments_doc_id`.
-- Raw CRDT writes can spoof durable author fields unless request-stamped
-  mutations are the supported write path.
+- Client-authored CRDT writes can spoof durable author fields unless the
+  projection treats them as pending/unverified until authority-finalized.
 - Public publish behavior needs a product decision. Comments are not obviously
   safe to publish with notebook outputs, and attribution may need redaction.
 - Source-range anchoring needs a real editor integration if line/column plus
@@ -703,8 +748,9 @@ A useful first spike is:
 3. `create_comment`, `reply_comment`, and `resolve_comment` MCP tools plus
    comment read resources.
 4. Notebook UI markers for cell-level comments only.
-5. No raw user-facing comments writes, no source-range inline highlights, no
-   public publish.
+5. Pending client-authored comments live in `CommentsDoc`; authority finalization
+   is required before treating author/scope fields as durable truth. No
+   source-range inline highlights, no public publish.
 
 That spike proves the storage identity, CRDT shape, author stamping, agent API,
 and stable-DOM-safe UI without committing to the hardest anchoring problem.
