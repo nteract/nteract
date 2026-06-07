@@ -12,6 +12,15 @@ import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock";
 import {
+  MarkdownTableBody,
+  MarkdownTableCell,
+  MarkdownTableElement,
+  MarkdownTableFrame,
+  MarkdownTableHead,
+  MarkdownTableHeaderCell,
+  MarkdownTableRow,
+} from "../markdown/MarkdownTable";
+import {
   markdownBlockquoteClassName,
   markdownDeleteClassName,
   markdownDetailsClassName,
@@ -36,12 +45,6 @@ import {
   markdownTaskCheckboxGlyphClassName,
   markdownTaskListClassName,
   markdownTaskListItemClassName,
-  markdownTableCellClassName,
-  markdownTableClassName,
-  markdownTableHeadClassName,
-  markdownTableHeaderCellClassName,
-  markdownTableRowClassName,
-  markdownTableWrapperClassName,
   markdownThematicBreakClassName,
 } from "../markdown/markdown-typography";
 
@@ -271,47 +274,29 @@ export function MarkdownOutput({
           // Tables
           table({ children, ...props }) {
             return (
-              <div className={markdownTableWrapperClassName}>
-                <table className={markdownTableClassName} {...props}>
-                  {children}
-                </table>
-              </div>
+              <MarkdownTableFrame>
+                <MarkdownTableElement {...props}>{children}</MarkdownTableElement>
+              </MarkdownTableFrame>
             );
           },
           thead({ children, ...props }) {
-            return (
-              <thead className={markdownTableHeadClassName} {...props}>
-                {children}
-              </thead>
-            );
+            return <MarkdownTableHead {...props}>{children}</MarkdownTableHead>;
           },
           tbody({ children, ...props }) {
             return (
-              <tbody className="divide-y divide-border" {...props}>
+              <MarkdownTableBody className="divide-y divide-border" {...props}>
                 {children}
-              </tbody>
+              </MarkdownTableBody>
             );
           },
           tr({ children, ...props }) {
-            return (
-              <tr className={markdownTableRowClassName} {...props}>
-                {children}
-              </tr>
-            );
+            return <MarkdownTableRow {...props}>{children}</MarkdownTableRow>;
           },
           th({ children, ...props }) {
-            return (
-              <th className={markdownTableHeaderCellClassName} {...props}>
-                {children}
-              </th>
-            );
+            return <MarkdownTableHeaderCell {...props}>{children}</MarkdownTableHeaderCell>;
           },
           td({ children, ...props }) {
-            return (
-              <td className={markdownTableCellClassName} {...props}>
-                {children}
-              </td>
-            );
+            return <MarkdownTableCell {...props}>{children}</MarkdownTableCell>;
           },
 
           // Headings

@@ -13,6 +13,16 @@ import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import {
+  MarkdownTableBody,
+  MarkdownTableCell,
+  MarkdownTableElement,
+  MarkdownTableFrame,
+  MarkdownTableHead,
+  MarkdownTableHeaderCell,
+  MarkdownTableHeaderRow,
+  MarkdownTableRow,
+} from "./MarkdownTable";
+import {
   markdownBlockquoteClassName,
   markdownDeleteClassName,
   markdownDisplayMathClassName,
@@ -34,12 +44,6 @@ import {
   markdownTaskContentClassName,
   markdownTaskListClassName,
   markdownTaskListItemClassName,
-  markdownTableCellClassName,
-  markdownTableClassName,
-  markdownTableHeadClassName,
-  markdownTableHeaderCellClassName,
-  markdownTableRowClassName,
-  markdownTableWrapperClassName,
   markdownThematicBreakClassName,
 } from "./markdown-typography";
 
@@ -600,44 +604,42 @@ function ProjectedTable({
   const columnAlign = tableColumnAlignments(rows);
 
   return (
-    <div
+    <MarkdownTableFrame
       data-slot="projected-markdown-table"
       data-source-active={activeBlock ? "true" : undefined}
-      className={cn(markdownTableWrapperClassName, activeBlock && sourceActiveBlockClass)}
+      className={cn(activeBlock && sourceActiveBlockClass)}
     >
-      <table className={markdownTableClassName}>
+      <MarkdownTableElement>
         {hasHeader ? (
-          <thead className={markdownTableHeadClassName}>
-            <tr>
+          <MarkdownTableHead>
+            <MarkdownTableHeaderRow>
               {headerRow.cells.map((cell) => (
-                <th
+                <MarkdownTableHeaderCell
                   key={cell.key}
-                  className={markdownTableHeaderCellClassName}
                   style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
-                </th>
+                </MarkdownTableHeaderCell>
               ))}
-            </tr>
-          </thead>
+            </MarkdownTableHeaderRow>
+          </MarkdownTableHead>
         ) : null}
-        <tbody>
+        <MarkdownTableBody>
           {(hasHeader ? bodyRows : rows).map((row) => (
-            <tr key={row.key} className={markdownTableRowClassName}>
+            <MarkdownTableRow key={row.key}>
               {row.cells.map((cell) => (
-                <td
+                <MarkdownTableCell
                   key={cell.key}
-                  className={markdownTableCellClassName}
                   style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
-                </td>
+                </MarkdownTableCell>
               ))}
-            </tr>
+            </MarkdownTableRow>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </MarkdownTableBody>
+      </MarkdownTableElement>
+    </MarkdownTableFrame>
   );
 }
 
