@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   entryLabel,
@@ -38,10 +38,23 @@ const tokenPath =
 const screenshotDir = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_SCREENSHOT_DIR;
 const reportPath = smokeJsonReportPath("hosted-live-room-matrix-smoke");
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (isMainModule()) {
+  main().catch(async (error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    if (!smokeReportAlreadyWritten(error)) {
+      await writeSmokeJsonReport(buildMatrixFailureReport(error), reportPath).catch(
+        (writeError) => {
+          console.error(
+            `[notebook-cloud-smoke] failed to write JSON failure report: ${
+              writeError instanceof Error ? writeError.message : String(writeError)
+            }`,
+          );
+        },
+      );
+    }
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const entries =
@@ -73,7 +86,11 @@ async function main() {
 
   await writeSmokeJsonReport(summary, reportPath);
   if (failures.length > 0) {
-    throw new Error(`hosted live room matrix smoke failed:\n${JSON.stringify(summary, null, 2)}`);
+    const error = new Error(
+      `hosted live room matrix smoke failed:\n${JSON.stringify(summary, null, 2)}`,
+    );
+    error.smokeReportAlreadyWritten = true;
+    throw error;
   }
   console.log(JSON.stringify(summary, null, 2));
 }
@@ -231,4 +248,30 @@ function parsePositiveInteger(value, name, fallback) {
 
 function trimLongText(value) {
   return value.length > 6_000 ? `${value.slice(0, 6_000)}...` : value;
+}
+
+export function buildMatrixFailureReport(error) {
+  return {
+    ok: false,
+    baseUrl,
+    source: explicitMatrix === undefined ? "catalog" : "env",
+    limit,
+    concurrency,
+    checked: 0,
+    failed: 1,
+    results: [],
+    error: {
+      name: error instanceof Error ? error.name : "Error",
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : null,
+    },
+  };
+}
+
+function smokeReportAlreadyWritten(error) {
+  return Boolean(error && typeof error === "object" && error.smokeReportAlreadyWritten === true);
+}
+
+function isMainModule() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
 }

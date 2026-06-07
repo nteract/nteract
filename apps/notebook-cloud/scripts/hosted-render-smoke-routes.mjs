@@ -39,3 +39,7 @@ export function pinnedNotebookViewerUrl(viewerUrl) {
   const [, notebookId, headsHash] = match;
   return { origin: parsed.origin, notebookId, headsHash };
 }
+
+export function defaultPresenceTitleForViewerUrl(viewerUrl) {
+  return pinnedNotebookViewerUrl(viewerUrl) === null ? "participant" : "";
+}
