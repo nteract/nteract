@@ -166,6 +166,8 @@ describe("CodeCellCurrentLine", () => {
       let signal = container.querySelector('[data-slot="code-cell-current-line-signal"]');
 
       expect(footer).toHaveAttribute("data-execution-visual-state", "running");
+      expect(footer).toHaveClass("min-h-4");
+      expect(footer).not.toHaveClass("min-h-5");
       expect(status).toHaveTextContent("Python/running");
       expect(rule).toHaveAttribute("data-execution-signal", "active");
       expect(signal).toHaveClass("animate-exec-signal-build");
@@ -189,6 +191,8 @@ describe("CodeCellCurrentLine", () => {
       signal = container.querySelector('[data-slot="code-cell-current-line-signal"]');
 
       expect(rule).toHaveAttribute("data-execution-signal", "settling");
+      expect(footer).toHaveClass("min-h-4");
+      expect(footer).not.toHaveClass("min-h-5");
       expect(signal).toHaveClass("animate-exec-signal-settle");
       expect(
         rule?.querySelector('[data-slot="code-cell-current-line-resting-rule"]'),
@@ -199,6 +203,8 @@ describe("CodeCellCurrentLine", () => {
       });
 
       rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+      expect(footer).toHaveClass("min-h-4");
+      expect(footer).not.toHaveClass("min-h-5");
       expect(rule).not.toHaveAttribute("data-execution-signal");
       expect(rule?.querySelector("svg")).toBeNull();
     } finally {
