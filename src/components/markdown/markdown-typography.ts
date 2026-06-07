@@ -28,7 +28,7 @@ export const markdownInlineMathClassName =
 
 export const markdownStrongClassName = "font-semibold text-foreground";
 
-export const markdownEmphasisClassName = "italic text-muted-foreground";
+export const markdownEmphasisClassName = "italic text-foreground";
 
 export const markdownDeleteClassName =
   "text-muted-foreground decoration-destructive/55 decoration-2";

@@ -151,6 +151,9 @@ describe("generateFrameHtml", () => {
       expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) h3');
       expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) table');
       expect(html).not.toContain("h2::after");
+      expect(html).toMatch(
+        /:is\(\[data-slot="markdown-output"\], \[data-slot="html-output"\]\) em\s*\{\s*color: var\(--text-primary\);/,
+      );
       expect(html).toContain(
         ':is([data-slot="markdown-output"], [data-slot="html-output"]) details',
       );

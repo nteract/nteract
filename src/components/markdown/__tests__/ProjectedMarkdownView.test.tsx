@@ -469,7 +469,8 @@ describe("ProjectedMarkdownView", () => {
       document.querySelector('[data-slot="projected-markdown-task-checkbox"] span'),
     ).toHaveClass("bg-primary");
     expect(screen.getByText("important").tagName).toBe("EM");
-    expect(screen.getByText("important")).toHaveClass("text-muted-foreground");
+    expect(screen.getByText("important")).toHaveClass("text-foreground");
+    expect(screen.getByText("important")).not.toHaveClass("text-muted-foreground");
     expect(screen.getByText("removed").tagName).toBe("DEL");
     expect(screen.getByText("removed")).toHaveClass("decoration-destructive/55");
   });

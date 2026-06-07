@@ -97,6 +97,14 @@ describe("MarkdownOutput heading anchors", () => {
     );
   });
 
+  it("keeps emphasis italic without lowering text contrast", () => {
+    render(<MarkdownOutput content={"The note should feel like a *paper margin*."} />);
+
+    expect(screen.getByText("paper margin").tagName).toBe("EM");
+    expect(screen.getByText("paper margin")).toHaveClass("italic", "text-foreground");
+    expect(screen.getByText("paper margin")).not.toHaveClass("text-muted-foreground");
+  });
+
   it("renders display math plainly in the document flow", () => {
     const { container } = render(<MarkdownOutput content={"$$\n\\\\int_0^1 x dx\n$$"} />);
 
