@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { chromium } from "@playwright/test";
 
@@ -30,8 +31,8 @@ import {
 import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
 import {
   catalogApiUrlForViewer,
+  defaultPresenceTitleForViewerUrl,
   isRenderCacheApiUrl,
-  pinnedNotebookViewerUrl,
 } from "./hosted-render-smoke-routes.mjs";
 import { firstPositionalArg } from "./cli-args.mjs";
 import { smokeJsonReportPath, smokeOutputPath, writeSmokeJsonReport } from "./smoke-paths.mjs";
@@ -45,7 +46,6 @@ const DEFAULT_LATEST_REVISION_ACTOR_LABEL =
   "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0/agent:runt-publish";
 
 const targetUrl = firstPositionalArg() ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
-const isPinnedSnapshotUrl = pinnedNotebookViewerUrl(targetUrl) !== null;
 const expectedRendererAssetOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN ?? DEFAULT_RENDERER_ASSET_ORIGIN;
 const expectedOutputDocumentOrigin =
@@ -55,7 +55,7 @@ const expectedSourceText =
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
 const expectedPresenceTitle =
-  process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE ?? (isPinnedSnapshotUrl ? "" : "participant");
+  process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TITLE ?? defaultPresenceTitleForViewerUrl(targetUrl);
 const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", [
   "MathNet topic visualization",
   "Loading the slice",
@@ -163,10 +163,12 @@ const siftLoadMilestoneMatches = {};
 const smokeStartedAt = performance.now();
 const timingsMs = {};
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (isMainModule()) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const browser = await chromium.launch({
@@ -625,7 +627,7 @@ async function main() {
   }
 }
 
-function buildFailureReport(error) {
+export function buildFailureReport(error) {
   const reportFailures =
     error instanceof SmokeFailure
       ? error.failures
@@ -1192,10 +1194,14 @@ async function saveScreenshot(page) {
   screenshotSaved = true;
 }
 
-class SmokeFailure extends Error {
+export class SmokeFailure extends Error {
   constructor(failures) {
     super(`Hosted render smoke failed:\n${JSON.stringify(failures, null, 2)}`);
     this.name = "SmokeFailure";
     this.failures = failures;
   }
+}
+
+function isMainModule() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
 }

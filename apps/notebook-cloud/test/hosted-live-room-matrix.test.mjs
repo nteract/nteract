@@ -7,6 +7,7 @@ import {
   safeScreenshotName,
   smokeEnvForMatrixEntry,
 } from "../scripts/hosted-live-room-matrix.mjs";
+import { buildMatrixFailureReport } from "../scripts/hosted-live-room-matrix-smoke.mjs";
 
 describe("hosted live room matrix smoke helpers", () => {
   it("parses pipe and newline separated URL lists", () => {
@@ -100,5 +101,18 @@ describe("hosted live room matrix smoke helpers", () => {
 
     assert.equal(entryLabel(entry, 0), "01ABC");
     assert.equal(safeScreenshotName("Topic Viz / Old Output", 2), "03-topic-viz-old-output.png");
+  });
+
+  it("builds ok:false reports for pre-summary failures", () => {
+    const report = buildMatrixFailureReport(new Error("token expired"));
+
+    assert.equal(report.ok, false);
+    assert.equal(report.baseUrl, "https://preview.runt.run");
+    assert.equal(report.source, "catalog");
+    assert.equal(report.checked, 0);
+    assert.equal(report.failed, 1);
+    assert.deepEqual(report.results, []);
+    assert.equal(report.error.name, "Error");
+    assert.equal(report.error.message, "token expired");
   });
 });

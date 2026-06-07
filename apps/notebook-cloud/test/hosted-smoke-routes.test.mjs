@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   catalogApiUrlForViewer,
+  defaultPresenceTitleForViewerUrl,
   isRenderCacheApiUrl,
   notebookViewerUrl,
   pinnedNotebookViewerUrl,
@@ -43,6 +44,14 @@ describe("hosted render smoke routes", () => {
       notebookId: "foo",
       headsHash: "heads",
     });
+  });
+
+  it("expects live-room presence only for live viewer URLs by default", () => {
+    assert.equal(
+      defaultPresenceTitleForViewerUrl("https://example.com/n/foo/notebook"),
+      "participant",
+    );
+    assert.equal(defaultPresenceTitleForViewerUrl("https://example.com/n/foo/r/heads"), "");
   });
 
   it("returns null for non-viewer URLs", () => {
