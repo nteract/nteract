@@ -350,6 +350,31 @@ export async function getNotebookRow(env: Env, notebookId: string): Promise<Note
     .first<NotebookRow>();
 }
 
+export async function updateNotebookTitle(
+  env: Env,
+  notebookId: string,
+  title: string | null,
+): Promise<NotebookRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const updatedAt = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE notebooks
+        SET title = ?,
+            updated_at = ?
+      WHERE id = ?`,
+  )
+    .bind(title, updatedAt, notebookId)
+    .run();
+  if (d1Changes(result) === 0) {
+    return null;
+  }
+  return await getNotebookRow(env, notebookId);
+}
+
 export async function getNotebookAclRowsForPrincipal(
   env: Env,
   notebookId: string,

@@ -36,6 +36,7 @@ import {
   revokeNotebookAclRow,
   runtimeStateSnapshotKey,
   snapshotKey,
+  updateNotebookTitle,
   type NotebookAclRow,
   type NotebookAccessRequestRow,
   type NotebookAccessRequestStatus,
@@ -178,6 +179,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
     methods: ["GET"],
     handler: ({ params }, request, env) => routeCatalog(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
+    methods: ["PATCH"],
+    handler: ({ params }, request, env) =>
+      routeUpdateNotebookMetadata(request, env, params.notebookId),
   },
   {
     match: routePath("/api/n/:notebookId/acl", { trailingSlash: "optional" }),
@@ -1710,6 +1717,61 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   }
 
   return json(catalog);
+}
+
+async function routeUpdateNotebookMetadata(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "editor");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  const payload = await readCreateNotebookPayload(request);
+  if (payload instanceof Response) {
+    return payload;
+  }
+  if (!Object.hasOwn(payload, "title")) {
+    return json({ error: "title is required" }, 400);
+  }
+  const title = optionalPayloadString(payload, ["title"], {
+    field: "title",
+    maxLength: 160,
+  });
+  if (title instanceof Response) {
+    return title;
+  }
+
+  const notebook = await updateNotebookTitle(env, notebookId, title);
+  if (!notebook) {
+    return json({ error: "notebook not found" }, 404);
+  }
+  cloudLog("info", "notebook.metadata.updated", {
+    notebook_id: notebookId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    title_present: title !== null,
+    counter: "notebook_metadata_updates",
+    counter_delta: 1,
+  });
+
+  return json({
+    ok: true,
+    notebook_id: notebook.id,
+    title: notebook.title,
+    updated_at: notebook.updated_at,
+    viewer_url: viewerUrlForRequest(request, notebook.id, notebook.title),
+  });
 }
 
 async function validateSnapshotPair(options: {

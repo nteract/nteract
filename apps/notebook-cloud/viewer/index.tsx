@@ -21,6 +21,7 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  PencilLine,
   Radio,
   RotateCcw,
   Share2,
@@ -168,11 +169,24 @@ interface CloudNotebookCreateResponse {
   viewer_url?: string;
 }
 
+interface CloudNotebookUpdateResponse {
+  ok: boolean;
+  notebook_id?: string;
+  title?: string | null;
+  updated_at?: string;
+  viewer_url?: string;
+}
+
 type CloudNotebookListState =
   | { kind: "loading" }
   | { kind: "ready"; notebooks: CloudNotebookListItem[] }
   | { kind: "signed_out" }
   | { kind: "error"; message: string };
+
+interface CloudNotebookRenameState {
+  notebookId: string;
+  title: string;
+}
 
 type ViewerRuntimeState =
   | { kind: "ready"; runtime: ViewerRuntime }
@@ -434,6 +448,9 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const [createError, setCreateError] = useState<string | null>(null);
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [createTitle, setCreateTitle] = useState(() => defaultCloudNotebookTitle());
+  const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
+  const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const signedIn = authState.mode === "dev" || authState.mode === "oidc";
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
@@ -538,6 +555,78 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     }
   };
 
+  const openRenameForm = useCallback((notebook: CloudNotebookListItem) => {
+    setRenameError(null);
+    setRenameState({
+      notebookId: notebook.notebook_id,
+      title: notebook.title?.trim() ?? "",
+    });
+  }, []);
+
+  const closeRenameForm = useCallback(() => {
+    if (renameSavingId) {
+      return;
+    }
+    setRenameError(null);
+    setRenameState(null);
+  }, [renameSavingId]);
+
+  const saveNotebookTitle = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!signedIn || !renameState || renameSavingId) {
+      return;
+    }
+
+    const notebookId = renameState.notebookId;
+    const nextTitle = renameState.title.trim();
+    try {
+      setRenameError(null);
+      setRenameSavingId(notebookId);
+      const response = await fetchWithCloudPrototypeAuth(
+        cloudNotebookCatalogEndpoint(notebookId),
+        {
+          method: "PATCH",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ title: nextTitle || null }),
+        },
+        authState,
+      );
+      if (!response.ok) {
+        throw await cloudResponseError(response, "Unable to rename notebook");
+      }
+      const body = (await response.json()) as CloudNotebookUpdateResponse;
+      if (body.ok !== true || body.notebook_id !== notebookId) {
+        throw new Error("Unable to rename notebook: response shape was invalid");
+      }
+      setListState((current) => {
+        if (current.kind !== "ready") {
+          return current;
+        }
+        return {
+          kind: "ready",
+          notebooks: current.notebooks.map((notebook) =>
+            notebook.notebook_id === notebookId
+              ? {
+                  ...notebook,
+                  title: body.title ?? null,
+                  updated_at: body.updated_at ?? notebook.updated_at,
+                  viewer_url: body.viewer_url ?? notebook.viewer_url,
+                }
+              : notebook,
+          ),
+        };
+      });
+      setRenameState(null);
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRenameSavingId(null);
+    }
+  };
+
   const signOut = () => {
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
@@ -607,6 +696,11 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           {createError}
         </div>
       ) : null}
+      {renameError ? (
+        <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
+          {renameError}
+        </div>
+      ) : null}
       {createFormOpen ? (
         <form className="cloud-new-notebook-form" onSubmit={createNotebook}>
           <label htmlFor="cloud-new-notebook-title">Notebook title</label>
@@ -654,7 +748,17 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
             <span>No notebooks yet.</span>
           </div>
         ) : dashboardModel ? (
-          <CloudNotebookDashboard model={dashboardModel} />
+          <CloudNotebookDashboard
+            model={dashboardModel}
+            renameState={renameState}
+            renameSavingId={renameSavingId}
+            onOpenRename={openRenameForm}
+            onCancelRename={closeRenameForm}
+            onRenameTitleChange={(title) =>
+              setRenameState((current) => (current ? { ...current, title } : current))
+            }
+            onSaveRename={saveNotebookTitle}
+          />
         ) : (
           <div className="cloud-notebook-list-state" data-kind="error" role="alert">
             <AlertCircle aria-hidden="true" />
@@ -666,7 +770,23 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   );
 }
 
-function CloudNotebookDashboard({ model }: { model: CloudNotebookDashboardModel }) {
+function CloudNotebookDashboard({
+  model,
+  renameState,
+  renameSavingId,
+  onOpenRename,
+  onCancelRename,
+  onRenameTitleChange,
+  onSaveRename,
+}: {
+  model: CloudNotebookDashboardModel;
+  renameState: CloudNotebookRenameState | null;
+  renameSavingId: string | null;
+  onOpenRename: (notebook: CloudNotebookListItem) => void;
+  onCancelRename: () => void;
+  onRenameTitleChange: (title: string) => void;
+  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
+}) {
   const continued = model.continueNotebook;
 
   return (
@@ -719,7 +839,17 @@ function CloudNotebookDashboard({ model }: { model: CloudNotebookDashboardModel 
           <ul className="cloud-notebook-list">
             {model.notebooks.map((notebook) => (
               <li key={notebook.notebook_id}>
-                <CloudNotebookDashboardRow notebook={notebook} />
+                <CloudNotebookDashboardRow
+                  notebook={notebook}
+                  renameTitle={
+                    renameState?.notebookId === notebook.notebook_id ? renameState.title : null
+                  }
+                  renameSaving={renameSavingId === notebook.notebook_id}
+                  onOpenRename={onOpenRename}
+                  onCancelRename={onCancelRename}
+                  onRenameTitleChange={onRenameTitleChange}
+                  onSaveRename={onSaveRename}
+                />
               </li>
             ))}
           </ul>
@@ -764,10 +894,58 @@ const cloudNotebookDashboardMetricIcons = {
   published: Zap,
 } satisfies Record<CloudNotebookDashboardMetric["icon"], typeof BookOpen>;
 
-function CloudNotebookDashboardRow({ notebook }: { notebook: CloudNotebookListItem }) {
+function CloudNotebookDashboardRow({
+  notebook,
+  renameTitle,
+  renameSaving,
+  onOpenRename,
+  onCancelRename,
+  onRenameTitleChange,
+  onSaveRename,
+}: {
+  notebook: CloudNotebookListItem;
+  renameTitle: string | null;
+  renameSaving: boolean;
+  onOpenRename: (notebook: CloudNotebookListItem) => void;
+  onCancelRename: () => void;
+  onRenameTitleChange: (title: string) => void;
+  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  if (renameTitle !== null) {
+    return (
+      <form className="cloud-notebook-list-rename-form" onSubmit={onSaveRename}>
+        <input
+          aria-label={`Notebook title for ${cloudNotebookShortId(notebook.notebook_id)}`}
+          type="text"
+          value={renameTitle}
+          maxLength={160}
+          placeholder="Untitled notebook"
+          disabled={renameSaving}
+          onChange={(event) => onRenameTitleChange(event.currentTarget.value)}
+        />
+        <button type="submit" disabled={renameSaving} title="Save title" aria-label="Save title">
+          {renameSaving ? (
+            <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+          ) : (
+            <Check aria-hidden="true" />
+          )}
+        </button>
+        <button
+          type="button"
+          disabled={renameSaving}
+          title="Cancel rename"
+          aria-label="Cancel rename"
+          onClick={onCancelRename}
+        >
+          <X aria-hidden="true" />
+        </button>
+      </form>
+    );
+  }
+
   return (
-    <a className="cloud-notebook-list-row" href={notebook.viewer_url}>
-      <span className="cloud-notebook-list-main">
+    <div className="cloud-notebook-list-row">
+      <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
         <span className="cloud-notebook-list-id">{cloudNotebookShortId(notebook.notebook_id)}</span>
         <span className="cloud-notebook-list-row-facts">
@@ -784,13 +962,33 @@ function CloudNotebookDashboardRow({ notebook }: { notebook: CloudNotebookListIt
             {notebook.latest_revision_id ? "published revision" : "not published"}
           </span>
         </span>
-      </span>
+      </a>
       <span className="cloud-notebook-list-updated">
         <Clock aria-hidden="true" />
         {formatNotebookUpdatedAt(notebook.updated_at)}
       </span>
-      <ExternalLink className="cloud-notebook-list-open" aria-hidden="true" />
-    </a>
+      <span className="cloud-notebook-list-row-actions">
+        {canRenameCloudNotebook(notebook) ? (
+          <button
+            type="button"
+            className="cloud-notebook-list-icon-button"
+            title="Rename notebook"
+            aria-label={`Rename ${cloudNotebookDisplayTitle(notebook)}`}
+            onClick={() => onOpenRename(notebook)}
+          >
+            <PencilLine aria-hidden="true" />
+          </button>
+        ) : null}
+        <a
+          className="cloud-notebook-list-icon-button"
+          href={notebook.viewer_url}
+          title="Open notebook"
+          aria-label={`Open ${cloudNotebookDisplayTitle(notebook)}`}
+        >
+          <ExternalLink aria-hidden="true" />
+        </a>
+      </span>
+    </div>
   );
 }
 
@@ -800,6 +998,10 @@ function cloudNotebookListEndpoint(): string {
 
 function cloudNotebookCollectionEndpoint(): string {
   return new URL("api/n", `${window.location.origin}/`).href;
+}
+
+function cloudNotebookCatalogEndpoint(notebookId: string): string {
+  return new URL(`api/n/${encodeURIComponent(notebookId)}`, `${window.location.origin}/`).href;
 }
 
 function defaultCloudNotebookTitle(now = new Date()): string {
@@ -821,6 +1023,10 @@ function isCloudNotebookListResponse(value: unknown): value is CloudNotebookList
   }
   const candidate = value as Record<string, unknown>;
   return candidate.ok === true && Array.isArray(candidate.notebooks);
+}
+
+function canRenameCloudNotebook(notebook: CloudNotebookListItem): boolean {
+  return notebook.scope === "owner" || notebook.scope === "editor";
 }
 
 function formatNotebookScope(scope: CloudNotebookListItem["scope"]): string {
