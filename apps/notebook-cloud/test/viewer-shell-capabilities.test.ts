@@ -45,7 +45,7 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
-test("cloud shell capabilities grant editors full cell and structure editing without execute or package management", () => {
+test("cloud shell capabilities grant editors full cell and structure editing without an attached runtime", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
@@ -131,9 +131,8 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(viewerWithRuntime.runtime.target?.label, "Room workstation");
   assert.equal(viewerWithRuntime.canExecute, false);
 
-  // Runtime presence is visible to editors too, but the room host grants
-  // execution-intent authority to owner scope until an explicit execute scope
-  // is defined.
+  // Runtime presence is visible to editors too, and non-viewer room peers may
+  // submit execution-intent request frames while compute is attached.
   const editorWithRuntime = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
@@ -145,7 +144,7 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.runtime.connected, true);
   assert.equal(editorWithRuntime.runtime.target?.id, "room-workstation");
   assert.equal(editorWithRuntime.runtime.target?.label, "Room workstation");
-  assert.equal(editorWithRuntime.canExecute, false);
+  assert.equal(editorWithRuntime.canExecute, true);
 });
 
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {

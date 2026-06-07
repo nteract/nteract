@@ -37,8 +37,10 @@ export interface CloudNotebookShellCapabilityInput {
   runtimeAvailable?: boolean;
   /**
    * Whether this browser connection may create execution intent in the hosted
-   * room. Today the room host grants that to owners only; future execute-scope
-   * policy can replace this without changing the shared shell projection.
+   * room. This is a capability, not an interaction mode: owners and editors can
+   * submit execution requests when compute is attached, while future
+   * execute-scope policy can replace this without changing the shared shell
+   * projection.
    */
   canSubmitExecutionRequests?: boolean;
   /**
@@ -59,7 +61,7 @@ export function cloudNotebookShellCapabilities({
   canAcceptCellMutations = true,
   editAccessRequestPending = false,
   runtimeAvailable = false,
-  canSubmitExecutionRequests = connectionScope === "owner",
+  canSubmitExecutionRequests = connectionScope === "owner" || connectionScope === "editor",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const interaction = projectCloudNotebookEditAccess({
