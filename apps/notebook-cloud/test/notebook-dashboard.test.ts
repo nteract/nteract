@@ -11,18 +11,21 @@ describe("cloud notebook dashboard projection", () => {
   it("sorts by recency and derives dashboard summary counts", () => {
     const oldViewer = notebook({
       id: "viewer-old",
+      title: "Viewer Old",
       scope: "viewer",
       updatedAt: "2026-05-20T00:00:00.000Z",
       latestRevisionId: "published-old",
     });
     const newOwner = notebook({
       id: "owner-new",
+      title: "Owner New",
       scope: "owner",
       updatedAt: "2026-06-07T15:00:00.000Z",
       latestRevisionId: null,
     });
     const editor = notebook({
       id: "editor-mid",
+      title: "Editor Mid",
       scope: "editor",
       updatedAt: "2026-06-01T12:00:00.000Z",
       latestRevisionId: "published-mid",
@@ -38,9 +41,60 @@ describe("cloud notebook dashboard projection", () => {
     assert.deepEqual(
       model.metrics.map((metric) => [metric.label, metric.value, metric.detail]),
       [
-        ["Visible notebooks", "3", "2 editable"],
+        ["Visible notebooks", "3", "3 titled, 2 editable"],
         ["Owned", "1", "can manage access"],
         ["Published", "2", "revision metadata"],
+      ],
+    );
+  });
+
+  it("keeps titled notebooks prominent while grouping untitled rooms", () => {
+    const recentUntitled = notebook({
+      id: "01KTHB58DSJWERSEWHD3EJD74P",
+      title: null,
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const titled = notebook({
+      id: "topic-viz",
+      title: "Topic Visualization",
+      scope: "owner",
+      updatedAt: "2026-06-01T12:00:00.000Z",
+      latestRevisionId: "published-topic",
+    });
+    const olderUntitled = notebook({
+      id: "01KSQKEPFJVHV4T4ZDYS9V7T80",
+      title: "   ",
+      scope: "editor",
+      updatedAt: "2026-05-20T00:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const model = projectCloudNotebookDashboard([recentUntitled, titled, olderUntitled]);
+
+    assert.equal(model.continueNotebook?.notebook_id, "topic-viz");
+    assert.deepEqual(
+      model.notebooks.map((item) => item.notebook_id),
+      ["01KTHB58DSJWERSEWHD3EJD74P", "topic-viz", "01KSQKEPFJVHV4T4ZDYS9V7T80"],
+    );
+    assert.deepEqual(
+      model.sections.map((section) => ({
+        id: section.id,
+        title: section.title,
+        notebooks: section.notebooks.map((item) => item.notebook_id),
+      })),
+      [
+        {
+          id: "titled",
+          title: "Named notebooks",
+          notebooks: ["topic-viz"],
+        },
+        {
+          id: "untitled",
+          title: "Untitled notebooks",
+          notebooks: ["01KTHB58DSJWERSEWHD3EJD74P", "01KSQKEPFJVHV4T4ZDYS9V7T80"],
+        },
       ],
     );
   });

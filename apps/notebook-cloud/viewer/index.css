@@ -627,6 +627,20 @@ body {
   align-items: start;
 }
 
+.cloud-dashboard-notebooks {
+  display: grid;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.cloud-dashboard-notebook-section {
+  min-width: 0;
+}
+
+.cloud-dashboard-notebook-section[data-section="untitled"] {
+  color: color-mix(in srgb, var(--foreground) 86%, transparent);
+}
+
 .cloud-dashboard-section-heading {
   display: flex;
   align-items: center;
@@ -636,6 +650,7 @@ body {
 }
 
 .cloud-dashboard-section-heading h2,
+.cloud-dashboard-section-heading p,
 .cloud-dashboard-aside h2,
 .cloud-dashboard-aside p {
   margin: 0;
@@ -645,6 +660,17 @@ body {
   font-size: 1rem;
   font-weight: 700;
   line-height: 1.2;
+}
+
+.cloud-dashboard-section-heading p {
+  margin-top: 0.25rem;
+  color: color-mix(in srgb, var(--foreground) 56%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.cloud-dashboard-notebook-section[data-section="untitled"] .cloud-dashboard-section-heading h2 {
+  color: color-mix(in srgb, var(--foreground) 76%, transparent);
 }
 
 .cloud-dashboard-aside {

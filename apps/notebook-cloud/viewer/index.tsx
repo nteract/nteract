@@ -116,6 +116,7 @@ import {
   projectCloudNotebookDashboard,
   type CloudNotebookDashboardMetric,
   type CloudNotebookDashboardModel,
+  type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
 import {
@@ -902,28 +903,20 @@ function CloudNotebookDashboard({
       </section>
 
       <section className="cloud-dashboard-grid">
-        <section aria-label="Notebook rooms">
-          <div className="cloud-dashboard-section-heading">
-            <h2>Notebooks</h2>
-          </div>
-          <ul className="cloud-notebook-list">
-            {model.notebooks.map((notebook) => (
-              <li key={notebook.notebook_id}>
-                <CloudNotebookDashboardRow
-                  notebook={notebook}
-                  canRename={canRename}
-                  renameTitle={
-                    renameState?.notebookId === notebook.notebook_id ? renameState.title : null
-                  }
-                  renameSaving={renameSavingId === notebook.notebook_id}
-                  onOpenRename={onOpenRename}
-                  onCancelRename={onCancelRename}
-                  onRenameTitleChange={onRenameTitleChange}
-                  onSaveRename={onSaveRename}
-                />
-              </li>
-            ))}
-          </ul>
+        <section className="cloud-dashboard-notebooks" aria-label="Notebook rooms">
+          {model.sections.map((section) => (
+            <CloudNotebookDashboardSectionView
+              key={section.id}
+              section={section}
+              canRename={canRename}
+              renameState={renameState}
+              renameSavingId={renameSavingId}
+              onOpenRename={onOpenRename}
+              onCancelRename={onCancelRename}
+              onRenameTitleChange={onRenameTitleChange}
+              onSaveRename={onSaveRename}
+            />
+          ))}
         </section>
         <aside className="cloud-dashboard-aside" aria-label="Notebook workspace">
           <section>
@@ -942,6 +935,55 @@ function CloudNotebookDashboard({
         </aside>
       </section>
     </div>
+  );
+}
+
+function CloudNotebookDashboardSectionView({
+  section,
+  canRename,
+  renameState,
+  renameSavingId,
+  onOpenRename,
+  onCancelRename,
+  onRenameTitleChange,
+  onSaveRename,
+}: {
+  section: CloudNotebookDashboardSection;
+  canRename: boolean;
+  renameState: CloudNotebookRenameState | null;
+  renameSavingId: string | null;
+  onOpenRename: (notebook: CloudNotebookListItem) => void;
+  onCancelRename: () => void;
+  onRenameTitleChange: (title: string) => void;
+  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <section className="cloud-dashboard-notebook-section" data-section={section.id}>
+      <div className="cloud-dashboard-section-heading">
+        <div>
+          <h2>{section.title}</h2>
+          <p>{section.detail}</p>
+        </div>
+      </div>
+      <ul className="cloud-notebook-list">
+        {section.notebooks.map((notebook) => (
+          <li key={notebook.notebook_id}>
+            <CloudNotebookDashboardRow
+              notebook={notebook}
+              canRename={canRename}
+              renameTitle={
+                renameState?.notebookId === notebook.notebook_id ? renameState.title : null
+              }
+              renameSaving={renameSavingId === notebook.notebook_id}
+              onOpenRename={onOpenRename}
+              onCancelRename={onCancelRename}
+              onRenameTitleChange={onRenameTitleChange}
+              onSaveRename={onSaveRename}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
