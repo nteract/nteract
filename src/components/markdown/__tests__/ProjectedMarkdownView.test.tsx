@@ -94,14 +94,65 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(container.querySelector('[data-slot="projected-markdown-output"]')).toHaveClass(
-      "leading-[1.65]",
+      "leading-[1.68]",
       "[&>*:first-child]:mt-0",
       "[&>*:last-child]:mb-0",
     );
-    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-[1.875rem]", "font-bold");
-    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-bold");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-[2rem]", "font-semibold");
+    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-semibold");
+    expect(screen.getByRole("heading", { level: 2 })).not.toHaveClass("after:bg-primary/50");
     expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-xl", "font-semibold");
     expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-lg", "font-semibold");
+  });
+
+  it("renders heading anchors when outline metadata is available", () => {
+    render(
+      <ProjectedMarkdownView
+        headingAnchors={[
+          {
+            itemId: "cell-a:heading:0",
+            title: "Claim",
+            level: 2,
+            anchor: "claim",
+            headingAnchorId: "notebook-cell-cell-a-heading-claim",
+          },
+        ]}
+        plan={plan({
+          blocks: [
+            {
+              anchorSlug: "claim",
+              blockId: "claim",
+              blockIndex: 0,
+              element: "h2",
+              kind: "heading",
+              measurement: { estimatedHeight: 40, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 8],
+              sourceSpanUtf16: [0, 8],
+              syntaxSpans: [],
+              text: "Claim",
+            },
+          ],
+          runs: [
+            {
+              blockId: "claim",
+              inlineId: "claim-text",
+              listItemIndex: null,
+              renderedText: "Claim",
+              renderedTextUtf16: [0, 5],
+              semantic: "text",
+              sourceSpanByte: [0, 5],
+              sourceSpanUtf16: [0, 5],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const heading = screen.getByRole("heading", { level: 2 });
+    const anchor = screen.getByRole("link", { name: "Link to Claim" });
+    expect(heading).toHaveAttribute("id", "notebook-cell-cell-a-heading-claim");
+    expect(anchor).toHaveAttribute("href", "#notebook-cell-cell-a-heading-claim");
+    expect(anchor).toHaveClass("text-muted-foreground/40", "hover:text-primary");
   });
 
   it("renders projected inline and display math with KaTeX", () => {
@@ -162,12 +213,17 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(2);
     expect(document.querySelector(".katex-display")).not.toBeNull();
     expect(document.querySelector(".katex-display")?.parentElement).toHaveClass(
+      "my-5",
       "text-center",
-      "overflow-x-auto",
-      "px-1",
+      "overflow-x-clip",
     );
     expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
-      "bg-muted/[0.18]",
+      "overflow-x-auto",
+      "overflow-x-hidden",
+    );
+    expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
+      "border-y",
+      "bg-muted/[0.16]",
     );
     expect(document.querySelector(".katex-display")?.parentElement).toHaveAttribute(
       "data-display-mode",
@@ -254,11 +310,11 @@ describe("ProjectedMarkdownView", () => {
     expect(screen.getByText("First paragraph")).toHaveClass("my-3", "leading-relaxed");
     expect(screen.getByRole("list")).toHaveClass("my-3", "ml-6", "list-disc");
     expect(screen.getByText("quoted").closest("blockquote")).toHaveClass(
-      "border-l-[3px]",
-      "border-primary/30",
-      "text-muted-foreground",
+      "border-l-2",
+      "border-foreground/35",
+      "text-foreground/80",
     );
-    expect(screen.getByText("quoted").closest("blockquote")).not.toHaveClass("bg-muted/[0.22]");
+    expect(screen.getByText("quoted").closest("blockquote")).not.toHaveClass("bg-muted/[0.20]");
   });
 
   it("renders links with visible affordance before hover", () => {
@@ -414,7 +470,10 @@ describe("ProjectedMarkdownView", () => {
       document.querySelector('[data-slot="projected-markdown-task-checkbox"] span'),
     ).toHaveClass("bg-primary");
     expect(screen.getByText("important").tagName).toBe("EM");
+    expect(screen.getByText("important")).toHaveClass("text-foreground");
+    expect(screen.getByText("important")).not.toHaveClass("text-muted-foreground");
     expect(screen.getByText("removed").tagName).toBe("DEL");
+    expect(screen.getByText("removed")).toHaveClass("decoration-destructive/55");
   });
 
   it("lets editable projections toggle task markers without changing output semantics", () => {
@@ -507,6 +566,62 @@ describe("ProjectedMarkdownView", () => {
     fireEvent.click(visualGlyph!);
 
     expect(onTaskCheckedChange).toHaveBeenCalledWith(taskRun, true);
+  });
+
+  it("frames all-task projected lists as lab protocols", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "list",
+              blockIndex: 0,
+              element: "ul",
+              kind: "list",
+              measurement: { estimatedHeight: 48, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 24],
+              sourceSpanUtf16: [0, 24],
+              syntaxSpans: [],
+              text: "done waiting",
+            },
+          ],
+          runs: [
+            {
+              blockId: "list",
+              inlineId: "done",
+              listItemChecked: true,
+              listItemIndex: 0,
+              renderedText: "done",
+              renderedTextUtf16: [0, 4],
+              semantic: "list-item",
+              sourceSpanByte: [0, 10],
+              sourceSpanUtf16: [0, 10],
+            },
+            {
+              blockId: "list",
+              inlineId: "waiting",
+              listItemChecked: false,
+              listItemIndex: 1,
+              renderedText: "waiting",
+              renderedTextUtf16: [0, 7],
+              semantic: "list-item",
+              sourceSpanByte: [11, 24],
+              sourceSpanUtf16: [11, 24],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("list")).toHaveClass("rounded-md", "border", "p-2");
+    expect(screen.getByRole("list")).not.toHaveClass("list-disc");
+    expect(screen.getByText("waiting").closest("li")).toHaveClass(
+      "grid",
+      "grid-cols-[auto_minmax(0,1fr)]",
+    );
+    expect(
+      document.querySelector('[data-slot="projected-markdown-task-checkbox"] span'),
+    ).toHaveClass("size-4");
   });
 
   it("keeps list markers available for mixed task and regular lists", () => {
@@ -740,7 +855,6 @@ describe("ProjectedMarkdownView", () => {
               semantic: "table-cell",
               sourceSpanByte: [11, 16],
               sourceSpanUtf16: [11, 16],
-              tableCellAlign: "right",
               tableCellHeader: true,
               tableCellIndex: 1,
               tableRowIndex: 0,
@@ -779,11 +893,16 @@ describe("ProjectedMarkdownView", () => {
 
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "metric" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "value" })).toHaveStyle({
+      textAlign: "right",
+    });
     expect(screen.getByRole("cell", { name: "128" })).toHaveStyle({ textAlign: "right" });
-    expect(screen.getByRole("table").parentElement).toHaveClass("border-y");
-    expect(screen.getByRole("table").parentElement).not.toHaveClass("rounded-md");
-    expect(screen.getByRole("table").parentElement).not.toHaveClass("bg-background/80");
-    expect(screen.getByRole("row", { name: "rows 128" })).toHaveClass("odd:bg-muted/[0.04]");
+    expect(screen.getByRole("table").parentElement).toHaveClass(
+      "rounded-sm",
+      "border",
+      "shadow-sm",
+    );
+    expect(screen.getByRole("row", { name: "rows 128" })).toHaveClass("odd:bg-muted/[0.05]");
     expect(screen.getByRole("table").parentElement).toHaveAttribute(
       "data-slot",
       "projected-markdown-table",
@@ -835,10 +954,10 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByText("value").tagName).toBe("CODE");
-    expect(screen.getByText("value")).toHaveClass("bg-muted/75", "font-mono");
+    expect(screen.getByText("value")).toHaveClass("border", "bg-muted/70", "font-mono");
   });
 
-  it("keeps projected code block copy controls reachable without hover", () => {
+  it("renders projected code blocks with visible lab bench controls", () => {
     render(
       <ProjectedMarkdownView
         plan={plan({
@@ -859,8 +978,20 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
+    expect(screen.getByText("code")).toHaveClass("text-muted-foreground/80");
+    expect(screen.getByText("code")).not.toHaveClass("uppercase", "tracking-[0.08em]");
     expect(screen.getByRole("button", { name: "Copy code" })).toHaveClass(
-      "focus-visible:opacity-100",
+      "inline-flex",
+      "border-transparent",
+      "bg-transparent",
+    );
+    expect(screen.getByText("code").closest('[data-slot="markdown-code-block"]')).toHaveClass(
+      "border-l-2",
+      "bg-muted/[0.14]",
+    );
+    expect(screen.getByText("code").closest('[data-slot="markdown-code-block"]')).not.toHaveClass(
+      "rounded-md",
+      "shadow-sm",
     );
   });
 
@@ -888,6 +1019,13 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByText("datasets")).toBeInTheDocument();
+    expect(screen.getByText("python")).toHaveAttribute("title", "python code block");
+    expect(screen.getByText("python")).toHaveClass("text-muted-foreground/80");
+    expect(screen.getByText("python")).not.toHaveClass("uppercase", "tracking-[0.08em]");
+    expect(screen.getByText("python").closest("[data-code-language]")).toHaveAttribute(
+      "data-code-language",
+      "python",
+    );
     expect(document.querySelector("pre code span")).not.toBeNull();
   });
 
@@ -1101,6 +1239,48 @@ describe("ProjectedMarkdownView", () => {
     const image = screen.getByRole("img", { name: "Plot alt" });
     expect(image).toHaveAttribute("src", "attachment:plot.png");
     expect(image).toHaveAttribute("title", "Daily plot");
+    expect(image).toHaveClass("border", "shadow-sm");
+    expect(image.closest("figure")).toHaveClass("my-5");
+    expect(screen.getByText("Daily plot")).toHaveClass("text-xs", "text-muted-foreground");
+  });
+
+  it("does not promote image alt text into a figure caption", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "image",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 120, confidence: "low", width: 720 },
+              sourceSpanByte: [0, 42],
+              sourceSpanUtf16: [0, 42],
+              syntaxSpans: [],
+              text: "Plot alt",
+            },
+          ],
+          runs: [
+            {
+              blockId: "image",
+              imageAlt: "Plot alt",
+              imageSrc: "attachment:plot.png",
+              inlineId: "img0",
+              listItemIndex: null,
+              renderedText: "Plot alt",
+              renderedTextUtf16: [0, 8],
+              semantic: "image",
+              sourceSpanByte: [0, 42],
+              sourceSpanUtf16: [0, 42],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Plot alt" })).toBeInTheDocument();
+    expect(document.querySelector("figcaption")).toBeNull();
   });
 
   it("does not render projected images with unsafe sources", () => {
@@ -1191,5 +1371,6 @@ describe("ProjectedMarkdownView", () => {
       "Before focus",
     );
     expect(container.querySelector('[data-source-active-run="true"]')).toHaveTextContent("focus");
+    expect(screen.getByText("focus")).toHaveClass("font-semibold");
   });
 });

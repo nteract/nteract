@@ -1,8 +1,17 @@
 "use client";
 
-import { BookOpenText, Link2, Pilcrow, Table2 } from "lucide-react";
+import { BookOpenText, Image, Link2, Pilcrow, Table2 } from "lucide-react";
 import { useCallback } from "react";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
+import {
+  markdownDetailsBodyClassName,
+  markdownDetailsClassName,
+  markdownInlineCodeClassName,
+  markdownLinkClassName,
+  markdownParagraphClassName,
+  markdownSummaryClassName,
+  markdownSummaryIndicatorClassName,
+} from "@/components/markdown/markdown-typography";
 import type {
   MarkdownProjectionBlock,
   MarkdownProjectionPlan,
@@ -90,11 +99,15 @@ const markdownPlan: MarkdownProjectionPlan = {
     ),
     block(4, "evidence", "heading", "h2", "Evidence table"),
     block(5, "table", "table", "table", "metric baseline candidate delta"),
-    block(6, "checklist-heading", "heading", "h2", "Experiment checklist"),
-    block(7, "checklist", "list", "ul", "tasks"),
-    block(8, "math", "math", "div", "\\mathbb{E}[L_t] \\leq \\epsilon + \\lambda\\|A_t-A_0\\|_2"),
+    block(6, "ledger", "heading", "h3", "Observation ledger"),
+    block(7, "nested-list", "list", "ol", "notes", { ordered: true }),
+    block(8, "figure", "paragraph", "p", "Residual topology sketch"),
+    block(9, "checklist-heading", "heading", "h2", "Experiment checklist"),
+    block(10, "checklist", "list", "ul", "tasks"),
+    block(11, "math", "math", "div", "\\mathbb{E}[L_t] \\leq \\epsilon + \\lambda\\|A_t-A_0\\|_2"),
+    block(12, "bound", "paragraph", "p", "where beta controls the experimental tolerance."),
     block(
-      9,
+      13,
       "code",
       "code",
       "pre",
@@ -103,8 +116,9 @@ const markdownPlan: MarkdownProjectionPlan = {
         codeLanguage: "python",
       },
     ),
+    block(14, "rule", "thematic-break", "hr", ""),
     block(
-      10,
+      15,
       "closing",
       "paragraph",
       "p",
@@ -163,6 +177,38 @@ const markdownPlan: MarkdownProjectionPlan = {
       tableCellIndex: 2,
       tableRowIndex: 2,
     }),
+    run("ledger", "ledger-text", "Observation ledger"),
+    run("nested-list", "nested-0", "Treat the schedule as a bounded operator", {
+      listItemIndex: 0,
+      listItemOrdered: true,
+      listItemPath: "0",
+      semantic: "list-item",
+    }),
+    run("nested-list", "nested-0-0", "Measure local topic neighborhoods after every prior update", {
+      listItemIndex: 0,
+      listItemOrdered: false,
+      listItemPath: "0.0",
+      semantic: "list-item",
+    }),
+    run("nested-list", "nested-1a", "Escalate drift into a ", {
+      listItemIndex: 1,
+      listItemOrdered: true,
+      listItemPath: "1",
+      semantic: "list-item",
+    }),
+    run("nested-list", "nested-1b", "follow-up cell", {
+      href: "https://example.com/follow-up",
+      listItemIndex: 1,
+      listItemOrdered: true,
+      listItemPath: "1",
+      semantic: "list-item",
+    }),
+    run("figure", "figure-image", "Residual topology sketch", {
+      imageAlt: "Residual topology sketch",
+      imageSrc: "/fixtures/widget-buffer-url-image.svg",
+      imageTitle: "Residual topology sketch",
+      semantic: "image",
+    }),
     run("checklist-heading", "checklist-heading-text", "Experiment checklist"),
     run("checklist", "task-0", "Reproduce the baseline paper", {
       listItemChecked: true,
@@ -183,6 +229,7 @@ const markdownPlan: MarkdownProjectionPlan = {
       semantic: "list-item",
     }),
     run("checklist", "task-2", "Promote surprising failures into follow-up cells", {
+      listItemChecked: false,
       listItemIndex: 2,
       listItemPath: "2",
       semantic: "list-item",
@@ -190,11 +237,52 @@ const markdownPlan: MarkdownProjectionPlan = {
     run("math", "math-source", "\\mathbb{E}[L_t] \\leq \\epsilon + \\lambda\\|A_t-A_0\\|_2", {
       semantic: "math-source",
     }),
+    run("bound", "bound-0", "where "),
+    run("bound", "bound-beta", "\\beta", { semantic: "math-source" }),
+    run("bound", "bound-1", " controls the experimental tolerance."),
     run("closing", "closing-text", "The rendered markdown should feel like a "),
     run("closing", "closing-em", "paper margin", { semantic: "emphasis" }),
     run("closing", "closing-tail", " and a runnable lab bench at the same time."),
   ],
 };
+
+const headingAnchors = [
+  {
+    anchor: "discrete-diffusion-notebook",
+    headingAnchorId: "elements-markdown-heading-discrete-diffusion-notebook",
+    itemId: "elements-markdown:title",
+    level: 1,
+    title: "Discrete diffusion notebook",
+  },
+  {
+    anchor: "claim",
+    headingAnchorId: "elements-markdown-heading-claim",
+    itemId: "elements-markdown:claim",
+    level: 2,
+    title: "Claim",
+  },
+  {
+    anchor: "evidence-table",
+    headingAnchorId: "elements-markdown-heading-evidence-table",
+    itemId: "elements-markdown:evidence",
+    level: 2,
+    title: "Evidence table",
+  },
+  {
+    anchor: "observation-ledger",
+    headingAnchorId: "elements-markdown-heading-observation-ledger",
+    itemId: "elements-markdown:ledger",
+    level: 3,
+    title: "Observation ledger",
+  },
+  {
+    anchor: "experiment-checklist",
+    headingAnchorId: "elements-markdown-heading-experiment-checklist",
+    itemId: "elements-markdown:checklist",
+    level: 2,
+    title: "Experiment checklist",
+  },
+] as const;
 
 const auditRows = [
   {
@@ -204,8 +292,8 @@ const auditRows = [
   },
   {
     icon: Pilcrow,
-    label: "Document rhythm",
-    detail: "Section spacing, subdued list markers, and legible paragraph measure.",
+    label: "Anchorable sections",
+    detail: "Headings expose quiet permalink anchors from the notebook outline metadata.",
   },
   {
     icon: Table2,
@@ -213,9 +301,19 @@ const auditRows = [
     detail: "Tables use notebook tokens without becoming heavy spreadsheet chrome.",
   },
   {
+    icon: Image,
+    label: "Figure rhythm",
+    detail: "Images sit in the document flow with a quiet boundary and reusable output tokens.",
+  },
+  {
     icon: BookOpenText,
     label: "Research voice",
     detail: "Cream switches markdown to the serif document font used by output frames.",
+  },
+  {
+    icon: BookOpenText,
+    label: "Appendix motion",
+    detail: "Native disclosure blocks read as compact experimental appendices.",
   },
 ];
 
@@ -236,25 +334,65 @@ export function MarkdownTypographyExample() {
         <NotebookPaletteToggle />
       </div>
 
-      <section className="grid gap-4 min-[1500px]:grid-cols-[minmax(0,1fr)_320px]">
-        <article className="min-w-0 border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
-          <ProjectedMarkdownView plan={markdownPlan} onLinkClick={handleLinkClick} />
+      <section className="space-y-4">
+        <article className="mx-auto min-w-0 max-w-[980px] border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
+          <ProjectedMarkdownView
+            headingAnchors={headingAnchors}
+            plan={markdownPlan}
+            onLinkClick={handleLinkClick}
+          />
         </article>
 
-        <aside className="grid content-start gap-3 border border-border bg-muted/20 p-4 text-foreground">
-          {auditRows.map((row) => {
-            const Icon = row.icon;
-            return (
-              <div key={row.label} className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
-                <Icon className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold">{row.label}</div>
-                  <div className="mt-1 text-xs leading-5 text-muted-foreground">{row.detail}</div>
+        <details className={markdownDetailsClassName}>
+          <summary className={markdownSummaryClassName}>
+            <span aria-hidden="true" className={markdownSummaryIndicatorClassName}>
+              ›
+            </span>
+            <span className="min-w-0">Typography audit notes</span>
+          </summary>
+          <aside className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {auditRows.map((row) => {
+              const Icon = row.icon;
+              return (
+                <div key={row.label} className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
+                  <Icon className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{row.label}</div>
+                    <div className="mt-1 text-xs leading-5 text-muted-foreground">{row.detail}</div>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </aside>
+              );
+            })}
+          </aside>
+        </details>
+      </section>
+
+      <section className="border border-border bg-background px-7 py-6 text-foreground shadow-sm max-sm:pr-5 max-sm:pl-14">
+        <div className="mb-4 font-mono text-[11px] text-muted-foreground">
+          shared native markdown affordance
+        </div>
+        <details className={markdownDetailsClassName} open>
+          <summary className={markdownSummaryClassName}>
+            <span aria-hidden="true" className={markdownSummaryIndicatorClassName}>
+              ›
+            </span>
+            <span className="min-w-0">Appendix: surprising failure modes</span>
+          </summary>
+          <div className={markdownDetailsBodyClassName}>
+            <p className={markdownParagraphClassName}>
+              Keep compact digressions close to the claim: failed priors, odd notebook states, and{" "}
+              <code className={markdownInlineCodeClassName}>seed=13</code> observations can hide in
+              a native disclosure block without losing their place in the paper-like flow.
+            </p>
+            <p className={markdownParagraphClassName}>
+              The appendix can still carry a{" "}
+              <a href="https://example.com/appendix" className={markdownLinkClassName}>
+                visible citation
+              </a>{" "}
+              and should feel tactile before the reader opens it.
+            </p>
+          </div>
+        </details>
       </section>
 
       <section className="grid gap-4 min-[1500px]:grid-cols-2">
@@ -265,6 +403,7 @@ export function MarkdownTypographyExample() {
           <div className="mb-3 font-mono text-[11px] text-muted-foreground">classic tokens</div>
           <ProjectedMarkdownView
             colorTheme="classic"
+            headingAnchors={headingAnchors}
             plan={markdownPlan}
             onLinkClick={handleLinkClick}
           />
@@ -276,6 +415,7 @@ export function MarkdownTypographyExample() {
           <div className="mb-3 font-mono text-[11px] text-muted-foreground">cream tokens</div>
           <ProjectedMarkdownView
             colorTheme="cream"
+            headingAnchors={headingAnchors}
             plan={markdownPlan}
             onLinkClick={handleLinkClick}
           />

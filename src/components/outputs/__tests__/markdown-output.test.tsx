@@ -55,13 +55,17 @@ describe("MarkdownOutput heading anchors", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Load data" })).toHaveAttribute(
+    expect(screen.getByRole("heading", { name: /Load data/ })).toHaveAttribute(
       "id",
       "notebook-cell-cell-a-heading-load-data",
     );
-    expect(screen.getByRole("heading", { name: "Clean columns" })).toHaveAttribute(
+    expect(screen.getByRole("heading", { name: /Clean columns/ })).toHaveAttribute(
       "data-nteract-outline-item-id",
       "cell-a:heading:1",
+    );
+    expect(screen.getByRole("link", { name: "Link to Load data" })).toHaveAttribute(
+      "href",
+      "#notebook-cell-cell-a-heading-load-data",
     );
   });
 
@@ -73,5 +77,144 @@ describe("MarkdownOutput heading anchors", () => {
       "decoration-primary/45",
       "underline-offset-4",
     );
+  });
+
+  it("uses the shared evidence table treatment", () => {
+    render(<MarkdownOutput content={"| metric | value |\n| --- | ---: |\n| rows | 128 |"} />);
+
+    expect(screen.getByRole("table").parentElement).toHaveClass(
+      "rounded-sm",
+      "border",
+      "shadow-sm",
+    );
+    expect(screen.getByRole("columnheader", { name: "metric" })).toHaveClass(
+      "border-border/80",
+      "py-2.5",
+    );
+    expect(screen.getByRole("columnheader", { name: "value" })).toHaveStyle({
+      textAlign: "right",
+    });
+    expect(screen.getByRole("cell", { name: "128" })).toHaveClass(
+      "border-border/70",
+      "text-muted-foreground",
+    );
+  });
+
+  it("keeps emphasis italic without lowering text contrast", () => {
+    render(<MarkdownOutput content={"The note should feel like a *paper margin*."} />);
+
+    expect(screen.getByText("paper margin").tagName).toBe("EM");
+    expect(screen.getByText("paper margin")).toHaveClass("italic", "text-foreground");
+    expect(screen.getByText("paper margin")).not.toHaveClass("text-muted-foreground");
+  });
+
+  it("renders display math plainly in the document flow", () => {
+    const { container } = render(<MarkdownOutput content={"$$\n\\\\int_0^1 x dx\n$$"} />);
+
+    const displayMath = document.querySelector(".katex-display");
+    expect(displayMath).not.toBeNull();
+    expect(container.querySelector('[data-slot="markdown-output"]')).toHaveClass(
+      "[&_.katex-display]:my-5",
+      "[&_.katex-display]:overflow-x-clip",
+      "[&_.katex-display]:text-center",
+    );
+    expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
+      "[&_.katex-display]:overflow-x-auto",
+      "[&_.katex-display]:overflow-x-hidden",
+    );
+    expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
+      "[&_.katex-display]:border-y",
+      "[&_.katex-display]:bg-muted/[0.16]",
+    );
+  });
+
+  it("renders fenced code with a visible language and copy rail", () => {
+    render(<MarkdownOutput content={"```python\nprint('hi')\n```"} />);
+
+    expect(screen.getByText("python")).toHaveAttribute("title", "python code block");
+    expect(screen.getByText("python")).toHaveClass("text-muted-foreground/80");
+    expect(screen.getByText("python")).not.toHaveClass("uppercase", "tracking-[0.08em]");
+    expect(screen.getByTitle("Copy code")).toHaveClass("inline-flex", "bg-transparent");
+    expect(screen.getByText("python").closest('[data-slot="markdown-code-block"]')).toHaveClass(
+      "border-l-2",
+      "bg-muted/[0.14]",
+    );
+    expect(screen.getByText("python").closest('[data-slot="markdown-code-block"]')).not.toHaveClass(
+      "rounded-md",
+      "shadow-sm",
+    );
+    expect(screen.getByText("print")).toBeInTheDocument();
+  });
+
+  it("frames GFM task lists as compact protocol blocks", () => {
+    render(<MarkdownOutput content={"- [x] Reproduce baseline\n- [ ] Compare candidate"} />);
+
+    expect(document.querySelector("ul.contains-task-list")).toHaveClass(
+      "rounded-md",
+      "border",
+      "p-2",
+    );
+    expect(screen.getByText("Compare candidate").closest("li")).toHaveClass(
+      "grid",
+      "grid-cols-[auto_minmax(0,1fr)]",
+      "task-list-item",
+    );
+    expect(document.querySelector('[data-slot="markdown-task-checkbox"] span')).toHaveClass(
+      "size-4",
+    );
+  });
+
+  it("styles GFM footnotes as a compact document apparatus", () => {
+    render(<MarkdownOutput content={"Claim with a note.[^1]\n\n[^1]: Detailed citation."} />);
+
+    const footnotes = document.querySelector("section[data-footnotes]");
+    expect(footnotes).toHaveClass("border-t", "font-[var(--output-ui-font)]", "text-sm");
+    expect(screen.getByRole("link", { name: "1" })).toHaveClass(
+      "rounded-full",
+      "bg-primary/6",
+      "no-underline",
+    );
+    expect(screen.getByText("↩")).toHaveClass("text-xs", "no-underline");
+  });
+
+  it("styles raw figure captions with the shared document treatment", () => {
+    render(
+      <MarkdownOutput
+        content={
+          '<figure><img src="https://example.com/plot.png" alt="Plot"><figcaption>Figure 1. Residual topology.</figcaption></figure>'
+        }
+      />,
+    );
+
+    expect(screen.getByRole("figure")).toHaveClass("my-5");
+    expect(screen.getByRole("img", { name: "Plot" })).toHaveClass("border", "shadow-sm");
+    expect(screen.getByText("Figure 1. Residual topology.")).toHaveClass(
+      "font-[var(--output-ui-font)]",
+      "text-xs",
+    );
+  });
+
+  it("styles native disclosure blocks as compact appendices", () => {
+    render(
+      <MarkdownOutput
+        content={
+          "<details open><summary>Failure appendix</summary><p>Keep failed priors near the claim.</p></details>"
+        }
+      />,
+    );
+
+    expect(screen.getByText("Failure appendix").closest("details")).toHaveClass(
+      "group/details",
+      "rounded-md",
+      "shadow-sm",
+      "[&>:not(summary)]:mx-4",
+    );
+    expect(screen.getByText("Failure appendix").closest("summary")).toHaveClass(
+      "cursor-pointer",
+      "font-[var(--output-ui-font)]",
+      "group-open/details:border-border/65",
+    );
+    expect(screen.getByText("›")).toHaveClass("group-open/details:rotate-90");
+    expect(screen.getByText("Keep failed priors near the claim.")).toHaveClass("my-3");
   });
 });

@@ -13,11 +13,41 @@ import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import {
   markdownBlockquoteClassName,
+  markdownCodeBlockCopyButtonClassName,
+  markdownCodeBlockLabelClassName,
+  markdownCodeBlockPreStyle,
+  markdownCodeBlockShellClassName,
+  markdownCodeBlockToolbarClassName,
+  markdownDeleteClassName,
+  markdownDetailsClassName,
   markdownDocumentClassName,
+  markdownEmphasisClassName,
+  markdownFigureCaptionClassName,
+  markdownFigureClassName,
+  markdownFootnoteBackrefClassName,
+  markdownFootnotesClassName,
+  markdownFootnoteRefClassName,
+  markdownHeadingAnchorClassName,
   markdownHeadingClassName,
+  markdownImageClassName,
   markdownInlineCodeClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
+  markdownParagraphClassName,
+  markdownStrongClassName,
+  markdownSummaryClassName,
+  markdownSummaryIndicatorClassName,
+  markdownTaskCheckboxClassName,
+  markdownTaskCheckboxGlyphClassName,
+  markdownTaskListClassName,
+  markdownTaskListItemClassName,
+  markdownTableCellClassName,
+  markdownTableClassName,
+  markdownTableHeadClassName,
+  markdownTableHeaderCellClassName,
+  markdownTableRowClassName,
+  markdownTableWrapperClassName,
+  markdownThematicBreakClassName,
 } from "../markdown/markdown-typography";
 
 import "katex/dist/katex.min.css";
@@ -69,6 +99,7 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
   const [copied, setCopied] = useState(false);
   const rawTheme = useColorTheme();
   const colorTheme = (rawTheme === "cream" ? "cream" : "classic") as "classic" | "cream";
+  const languageLabel = codeBlockLanguageLabel(language);
 
   const handleCopy = async () => {
     try {
@@ -81,25 +112,44 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
   };
 
   return (
-    <div className="group/codeblock relative">
+    <div
+      data-slot="markdown-code-block"
+      className={markdownCodeBlockShellClassName}
+      data-code-language={languageLabel === "code" ? undefined : languageLabel}
+    >
+      <div className={markdownCodeBlockToolbarClassName}>
+        <span
+          className={markdownCodeBlockLabelClassName}
+          title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
+        >
+          {languageLabel}
+        </span>
+        {enableCopy && (
+          <button
+            onClick={handleCopy}
+            className={markdownCodeBlockCopyButtonClassName}
+            title={copied ? "Copied!" : "Copy code"}
+            type="button"
+          >
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          </button>
+        )}
+      </div>
       <StaticCodeBlock
         code={children}
         language={language}
         isDark={isDark}
         colorTheme={colorTheme}
+        style={markdownCodeBlockPreStyle}
       />
-      {enableCopy && (
-        <button
-          onClick={handleCopy}
-          className="absolute top-2 right-2 z-10 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-1.5 text-gray-600 dark:text-gray-400 opacity-0 shadow-sm transition-opacity group-hover/codeblock:opacity-100 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200"
-          title={copied ? "Copied!" : "Copy code"}
-          type="button"
-        >
-          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-        </button>
-      )}
     </div>
   );
+}
+
+function codeBlockLanguageLabel(language: string | undefined): string {
+  const trimmed = language?.trim();
+  if (!trimmed) return "code";
+  return trimmed;
 }
 
 function textFromReactNode(node: ReactNode): string {
@@ -174,6 +224,24 @@ export function MarkdownOutput({
     };
   };
 
+  const renderHeadingAnchor = (
+    attributes: ReturnType<typeof headingAttributes>,
+    children: ReactNode,
+  ) => {
+    const id = (attributes as { id?: string }).id;
+    if (!id) return null;
+
+    return (
+      <a
+        aria-label={`Link to ${normalizeHeadingText(textFromReactNode(children))}`}
+        className={markdownHeadingAnchorClassName}
+        href={`#${id}`}
+      >
+        #
+      </a>
+    );
+  };
+
   if (!content) {
     return null;
   }
@@ -231,14 +299,31 @@ export function MarkdownOutput({
           },
 
           // Links open in new tab
-          a({ href, children, ...props }) {
+          a({ href, children, className, ...props }) {
+            const linkProps = props as typeof props & {
+              "data-footnote-backref"?: string | boolean;
+              "data-footnote-ref"?: string | boolean;
+            };
+            const classNames = className?.split(/\s+/) ?? [];
+            const isFootnoteBackref =
+              linkProps["data-footnote-backref"] !== undefined ||
+              classNames.includes("data-footnote-backref");
+            const isFootnoteRef =
+              linkProps["data-footnote-ref"] !== undefined ||
+              classNames.includes("data-footnote-ref");
+            const isDocumentAnchor = href?.startsWith("#") ?? false;
             return (
               <a
-                href={href}
-                className={markdownLinkClassName}
-                rel="noopener noreferrer"
-                target="_blank"
                 {...props}
+                href={href}
+                className={cn(
+                  markdownLinkClassName,
+                  isFootnoteRef && markdownFootnoteRefClassName,
+                  isFootnoteBackref && markdownFootnoteBackrefClassName,
+                  className,
+                )}
+                rel={isDocumentAnchor ? undefined : "noopener noreferrer"}
+                target={isDocumentAnchor ? undefined : "_blank"}
               >
                 {children}
               </a>
@@ -248,11 +333,8 @@ export function MarkdownOutput({
           // Tables
           table({ children, ...props }) {
             return (
-              <div className="my-4 overflow-x-auto border-y border-border">
-                <table
-                  className="min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal"
-                  {...props}
-                >
+              <div className={markdownTableWrapperClassName}>
+                <table className={markdownTableClassName} {...props}>
                   {children}
                 </table>
               </div>
@@ -260,7 +342,7 @@ export function MarkdownOutput({
           },
           thead({ children, ...props }) {
             return (
-              <thead className="bg-muted/55" {...props}>
+              <thead className={markdownTableHeadClassName} {...props}>
                 {children}
               </thead>
             );
@@ -274,27 +356,21 @@ export function MarkdownOutput({
           },
           tr({ children, ...props }) {
             return (
-              <tr className="odd:bg-muted/[0.04]" {...props}>
+              <tr className={markdownTableRowClassName} {...props}>
                 {children}
               </tr>
             );
           },
           th({ children, ...props }) {
             return (
-              <th
-                className="border-r border-border px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
-                {...props}
-              >
+              <th className={markdownTableHeaderCellClassName} {...props}>
                 {children}
               </th>
             );
           },
           td({ children, ...props }) {
             return (
-              <td
-                className="border-r border-t border-border px-3 py-2 align-top text-muted-foreground first:text-foreground last:border-r-0"
-                {...props}
-              >
+              <td className={markdownTableCellClassName} {...props}>
                 {children}
               </td>
             );
@@ -302,68 +378,56 @@ export function MarkdownOutput({
 
           // Headings
           h1({ children, ...props }) {
+            const attributes = headingAttributes(1, children);
             return (
-              <h1
-                className={markdownHeadingClassName("h1")}
-                {...props}
-                {...headingAttributes(1, children)}
-              >
+              <h1 className={markdownHeadingClassName("h1")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h1>
             );
           },
           h2({ children, ...props }) {
+            const attributes = headingAttributes(2, children);
             return (
-              <h2
-                className={markdownHeadingClassName("h2")}
-                {...props}
-                {...headingAttributes(2, children)}
-              >
+              <h2 className={markdownHeadingClassName("h2")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h2>
             );
           },
           h3({ children, ...props }) {
+            const attributes = headingAttributes(3, children);
             return (
-              <h3
-                className={markdownHeadingClassName("h3")}
-                {...props}
-                {...headingAttributes(3, children)}
-              >
+              <h3 className={markdownHeadingClassName("h3")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h3>
             );
           },
           h4({ children, ...props }) {
+            const attributes = headingAttributes(4, children);
             return (
-              <h4
-                className={markdownHeadingClassName("h4")}
-                {...props}
-                {...headingAttributes(4, children)}
-              >
+              <h4 className={markdownHeadingClassName("h4")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h4>
             );
           },
           h5({ children, ...props }) {
+            const attributes = headingAttributes(5, children);
             return (
-              <h5
-                className={markdownHeadingClassName("h5")}
-                {...props}
-                {...headingAttributes(5, children)}
-              >
+              <h5 className={markdownHeadingClassName("h5")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h5>
             );
           },
           h6({ children, ...props }) {
+            const attributes = headingAttributes(6, children);
             return (
-              <h6
-                className={markdownHeadingClassName("h6")}
-                {...props}
-                {...headingAttributes(6, children)}
-              >
+              <h6 className={markdownHeadingClassName("h6")} {...props} {...attributes}>
                 {children}
+                {renderHeadingAnchor(attributes, children)}
               </h6>
             );
           },
@@ -371,29 +435,38 @@ export function MarkdownOutput({
           // Paragraphs
           p({ children, ...props }) {
             return (
-              <p className="my-2 leading-relaxed" {...props}>
+              <p className={markdownParagraphClassName} {...props}>
                 {children}
               </p>
             );
           },
 
           // Lists
-          ul({ children, ...props }) {
+          ul({ children, className, ...props }) {
+            const classNames = className?.split(/\s+/) ?? [];
+            const isTaskList = classNames.includes("contains-task-list");
             return (
               <ul
-                className={cn("my-3 ml-6 list-disc leading-relaxed", markdownListMarkerClassName)}
+                className={cn(
+                  isTaskList ? markdownTaskListClassName : "my-3 ml-6 list-disc leading-relaxed",
+                  !isTaskList && markdownListMarkerClassName,
+                  className,
+                )}
                 {...props}
               >
                 {children}
               </ul>
             );
           },
-          ol({ children, ...props }) {
+          ol({ children, className, ...props }) {
+            const classNames = className?.split(/\s+/) ?? [];
+            const isTaskList = classNames.includes("contains-task-list");
             return (
               <ol
                 className={cn(
-                  "my-3 ml-6 list-decimal leading-relaxed",
-                  markdownListMarkerClassName,
+                  isTaskList ? markdownTaskListClassName : "my-3 ml-6 list-decimal leading-relaxed",
+                  !isTaskList && markdownListMarkerClassName,
+                  className,
                 )}
                 {...props}
               >
@@ -401,11 +474,50 @@ export function MarkdownOutput({
               </ol>
             );
           },
-          li({ children, ...props }) {
+          li({ children, className, ...props }) {
+            const classNames = className?.split(/\s+/) ?? [];
+            const isTaskItem = classNames.includes("task-list-item");
             return (
-              <li className="my-1" {...props}>
+              <li
+                className={cn(isTaskItem ? markdownTaskListItemClassName : "my-1", className)}
+                {...props}
+              >
                 {children}
               </li>
+            );
+          },
+          input({ type, checked, className, ...props }) {
+            if (type !== "checkbox") {
+              return <input type={type} className={className} {...props} />;
+            }
+
+            const isChecked = Boolean(checked);
+            return (
+              <span
+                className={markdownTaskCheckboxClassName}
+                data-slot="markdown-task-checkbox"
+                data-state={isChecked ? "checked" : "unchecked"}
+              >
+                <input
+                  {...props}
+                  type="checkbox"
+                  checked={isChecked}
+                  readOnly
+                  disabled
+                  className={cn("peer sr-only", className)}
+                />
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    markdownTaskCheckboxGlyphClassName,
+                    isChecked
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-background",
+                  )}
+                >
+                  {isChecked ? <Check className="size-2.5 stroke-[3]" /> : null}
+                </span>
+              </span>
             );
           },
 
@@ -420,13 +532,87 @@ export function MarkdownOutput({
 
           // Horizontal rule
           hr({ ...props }) {
-            return <hr className="my-6 border-t border-gray-300 dark:border-gray-600" {...props} />;
+            return <hr className={markdownThematicBreakClassName} {...props} />;
           },
 
           // Images
           img({ src, alt, ...props }) {
             if (!src) return null;
-            return <img src={src} alt={alt || ""} className="my-4 max-w-full h-auto" {...props} />;
+            return <img src={src} alt={alt || ""} className={markdownImageClassName} {...props} />;
+          },
+
+          figure({ children, ...props }) {
+            return (
+              <figure className={markdownFigureClassName} {...props}>
+                {children}
+              </figure>
+            );
+          },
+
+          figcaption({ children, ...props }) {
+            return (
+              <figcaption className={markdownFigureCaptionClassName} {...props}>
+                {children}
+              </figcaption>
+            );
+          },
+
+          strong({ children, ...props }) {
+            return (
+              <strong className={markdownStrongClassName} {...props}>
+                {children}
+              </strong>
+            );
+          },
+
+          em({ children, ...props }) {
+            return (
+              <em className={markdownEmphasisClassName} {...props}>
+                {children}
+              </em>
+            );
+          },
+
+          del({ children, ...props }) {
+            return (
+              <del className={markdownDeleteClassName} {...props}>
+                {children}
+              </del>
+            );
+          },
+
+          details({ children, ...props }) {
+            return (
+              <details className={markdownDetailsClassName} {...props}>
+                {children}
+              </details>
+            );
+          },
+
+          summary({ children, ...props }) {
+            return (
+              <summary className={markdownSummaryClassName} {...props}>
+                <span aria-hidden="true" className={markdownSummaryIndicatorClassName}>
+                  ›
+                </span>
+                <span className="min-w-0">{children}</span>
+              </summary>
+            );
+          },
+
+          section({ children, className, ...props }) {
+            const sectionProps = props as typeof props & {
+              "data-footnotes"?: string | boolean;
+            };
+            const isFootnotes = sectionProps["data-footnotes"] !== undefined;
+            return (
+              <section
+                className={cn(isFootnotes && markdownFootnotesClassName, className)}
+                {...props}
+              >
+                {children}
+              </section>
+            );
           },
         }}
       >

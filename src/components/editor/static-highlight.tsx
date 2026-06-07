@@ -186,6 +186,7 @@ interface StaticCodeBlockProps {
   isDark?: boolean;
   colorTheme?: ColorTheme;
   className?: string;
+  style?: CSSProperties;
 }
 
 /**
@@ -202,6 +203,7 @@ export function StaticCodeBlock({
   isDark = false,
   colorTheme = "classic",
   className,
+  style,
 }: StaticCodeBlockProps) {
   const colors = getBlockColors(isDark, colorTheme);
   const nodes = highlight(code, language, isDark, colorTheme);
@@ -221,6 +223,7 @@ export function StaticCodeBlock({
         margin: 0,
         overflow: "auto",
         whiteSpace: "pre",
+        ...style,
       }}
     >
       <code>{nodes}</code>

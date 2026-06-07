@@ -14,11 +14,38 @@ import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import {
   markdownBlockquoteClassName,
+  markdownCodeBlockCopyButtonClassName,
+  markdownCodeBlockLabelClassName,
+  markdownCodeBlockPreStyle,
+  markdownCodeBlockShellClassName,
+  markdownCodeBlockToolbarClassName,
+  markdownDeleteClassName,
+  markdownDisplayMathClassName,
   markdownDocumentClassName,
+  markdownEmphasisClassName,
+  markdownFigureCaptionClassName,
+  markdownFigureClassName,
+  markdownHeadingAnchorClassName,
   markdownHeadingClassName,
+  markdownImageClassName,
   markdownInlineCodeClassName,
+  markdownInlineMathClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
+  markdownParagraphClassName,
+  markdownStrongClassName,
+  markdownTaskCheckboxClassName,
+  markdownTaskCheckboxGlyphClassName,
+  markdownTaskContentClassName,
+  markdownTaskListClassName,
+  markdownTaskListItemClassName,
+  markdownTableCellClassName,
+  markdownTableClassName,
+  markdownTableHeadClassName,
+  markdownTableHeaderCellClassName,
+  markdownTableRowClassName,
+  markdownTableWrapperClassName,
+  markdownThematicBreakClassName,
 } from "./markdown-typography";
 
 import "katex/dist/katex.min.css";
@@ -118,6 +145,15 @@ function ProjectedMarkdownBlock({
         )}
       >
         {renderRuns(runs, onLinkClick, activeInlineId)}
+        {headingAnchor?.headingAnchorId ? (
+          <a
+            aria-label={`Link to ${block.text}`}
+            className={markdownHeadingAnchorClassName}
+            href={`#${headingAnchor.headingAnchorId}`}
+          >
+            #
+          </a>
+        ) : null}
       </Heading>
     );
   }
@@ -179,7 +215,7 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "thematic-break") {
-    return <hr className="my-6 border-border" />;
+    return <hr className={markdownThematicBreakClassName} />;
   }
 
   if (block.kind === "table") {
@@ -199,11 +235,22 @@ function ProjectedMarkdownBlock({
   }
 
   if (block.kind === "paragraph") {
+    const figureRun = imageOnlyRun(runs);
+    if (figureRun) {
+      return (
+        <ProjectedFigure
+          active={activeBlockId === block.blockId}
+          activeInlineId={activeInlineId}
+          run={figureRun}
+        />
+      );
+    }
+
     return (
       <p
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
         className={cn(
-          "my-3 leading-relaxed",
+          markdownParagraphClassName,
           activeBlockId === block.blockId && sourceActiveBlockClass,
         )}
       >
@@ -277,10 +324,13 @@ function ProjectedList({
     <List
       data-source-active={activeBlock ? "true" : undefined}
       className={cn(
-        "my-3 ml-6 leading-relaxed",
-        ordered ? "list-decimal" : "list-disc",
-        markdownListMarkerClassName,
-        allItemsAreTasks && "ml-0 list-none",
+        allItemsAreTasks
+          ? markdownTaskListClassName
+          : cn(
+              "my-3 ml-6 leading-relaxed",
+              ordered ? "list-decimal" : "list-disc",
+              markdownListMarkerClassName,
+            ),
         activeBlock && sourceActiveBlockClass,
       )}
     >
@@ -289,6 +339,7 @@ function ProjectedList({
           key={item.key}
           item={item}
           activeInlineId={activeInlineId}
+          taskProtocol={allItemsAreTasks}
           onLinkClick={onLinkClick}
           onTaskCheckedChange={onTaskCheckedChange}
         />
@@ -300,11 +351,13 @@ function ProjectedList({
 function ProjectedListItem({
   item,
   activeInlineId,
+  taskProtocol,
   onLinkClick,
   onTaskCheckedChange,
 }: {
   item: ProjectedListItem;
   activeInlineId?: string;
+  taskProtocol: boolean;
   onLinkClick?: (url: string) => void;
   onTaskCheckedChange?: (run: MarkdownProjectionRun, checked: boolean) => void;
 }) {
@@ -339,12 +392,20 @@ function ProjectedListItem({
         "group/task my-1",
         item.checked !== undefined && "list-none",
         item.checked !== undefined && item.children.length === 0
-          ? "flex min-w-0 items-start gap-2"
+          ? taskProtocol
+            ? markdownTaskListItemClassName
+            : "flex min-w-0 items-start gap-2"
           : null,
       )}
     >
       {item.checked !== undefined && item.children.length > 0 ? (
-        <div className="flex min-w-0 items-start gap-2">{content}</div>
+        <div
+          className={cn(
+            taskProtocol ? markdownTaskListItemClassName : "flex min-w-0 items-start gap-2",
+          )}
+        >
+          {content}
+        </div>
       ) : (
         content
       )}
@@ -464,10 +525,7 @@ function TaskCheckbox({
 
   return (
     <label
-      className={cn(
-        "relative mt-[0.34em] inline-grid size-4 shrink-0 place-items-center",
-        interactive && "cursor-pointer",
-      )}
+      className={cn(markdownTaskCheckboxClassName, interactive && "cursor-pointer")}
       data-slot="projected-markdown-task-checkbox"
       data-state={checked ? "checked" : "unchecked"}
     >
@@ -484,7 +542,7 @@ function TaskCheckbox({
       <span
         aria-hidden="true"
         className={cn(
-          "pointer-events-none grid size-3.5 place-items-center rounded-sm border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-ring/40 peer-focus-visible:ring-offset-1 peer-disabled:opacity-100",
+          markdownTaskCheckboxGlyphClassName,
           checked
             ? "border-primary bg-primary text-primary-foreground"
             : "border-border bg-background",
@@ -505,7 +563,7 @@ function ProjectedTaskContent({
   children: ReactNode;
 }) {
   return (
-    <span className={cn("min-w-0 leading-relaxed", checked === true && "text-muted-foreground")}>
+    <span className={cn(markdownTaskContentClassName, checked === true && "text-muted-foreground")}>
       {children}
     </span>
   );
@@ -541,25 +599,23 @@ function ProjectedTable({
 
   const [headerRow, ...bodyRows] = rows;
   const hasHeader = headerRow?.cells.some((cell) => cell.header);
+  const columnAlign = tableColumnAlignments(rows);
 
   return (
     <div
       data-slot="projected-markdown-table"
       data-source-active={activeBlock ? "true" : undefined}
-      className={cn(
-        "my-4 overflow-x-auto border-y border-border",
-        activeBlock && sourceActiveBlockClass,
-      )}
+      className={cn(markdownTableWrapperClassName, activeBlock && sourceActiveBlockClass)}
     >
-      <table className="min-w-full border-collapse font-[var(--output-ui-font)] text-sm leading-normal">
+      <table className={markdownTableClassName}>
         {hasHeader ? (
-          <thead>
+          <thead className={markdownTableHeadClassName}>
             <tr>
               {headerRow.cells.map((cell) => (
                 <th
                   key={cell.key}
-                  className="border-b border-r border-border bg-muted/55 px-3 py-2 text-left font-semibold text-foreground last:border-r-0"
-                  style={tableCellStyle(cell.align)}
+                  className={markdownTableHeaderCellClassName}
+                  style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
                 </th>
@@ -569,12 +625,12 @@ function ProjectedTable({
         ) : null}
         <tbody>
           {(hasHeader ? bodyRows : rows).map((row) => (
-            <tr key={row.key} className="odd:bg-muted/[0.04]">
+            <tr key={row.key} className={markdownTableRowClassName}>
               {row.cells.map((cell) => (
                 <td
                   key={cell.key}
-                  className="border-r border-t border-border px-3 py-2 align-top text-muted-foreground first:text-foreground last:border-r-0"
-                  style={tableCellStyle(cell.align)}
+                  className={markdownTableCellClassName}
+                  style={tableCellStyle(columnAlign.get(cell.cellIndex))}
                 >
                   {renderRuns(cell.runs, onLinkClick, activeInlineId)}
                 </td>
@@ -609,11 +665,51 @@ function groupTableRuns(runs: MarkdownProjectionRun[]) {
     key: rowIndex,
     cells: Array.from(cells, ([cellIndex, runs]) => ({
       align: runs.find((run) => run.tableCellAlign)?.tableCellAlign,
+      cellIndex,
       header: runs.some((run) => run.tableCellHeader),
       key: `${rowIndex}:${cellIndex}`,
       runs,
     })),
   }));
+}
+
+function tableColumnAlignments(rows: ReturnType<typeof groupTableRuns>) {
+  const alignments = new Map<number, MarkdownProjectionRun["tableCellAlign"]>();
+
+  for (const row of rows) {
+    for (const cell of row.cells) {
+      if (cell.align) {
+        alignments.set(cell.cellIndex, cell.align);
+      }
+    }
+  }
+
+  for (const row of rows.slice(1)) {
+    for (const cell of row.cells) {
+      if (alignments.has(cell.cellIndex)) continue;
+      const columnCells = rows
+        .slice(1)
+        .flatMap((bodyRow) =>
+          bodyRow.cells.filter((bodyCell) => bodyCell.cellIndex === cell.cellIndex),
+        );
+      if (
+        columnCells.length > 0 &&
+        columnCells.every((bodyCell) => isNumericTableCell(bodyCell.runs))
+      ) {
+        alignments.set(cell.cellIndex, "right");
+      }
+    }
+  }
+
+  return alignments;
+}
+
+function isNumericTableCell(runs: MarkdownProjectionRun[]) {
+  const text = runs
+    .map((run) => run.renderedText)
+    .join("")
+    .trim();
+  return /^[-+]?(?:[$]\s*)?\d[\d,]*(?:\.\d+)?(?:\s?(?:%|[a-zA-Z]+))?$/.test(text);
 }
 
 function tableCellStyle(align: MarkdownProjectionRun["tableCellAlign"]): CSSProperties | undefined {
@@ -676,15 +772,50 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
     );
   }
 
-  if (run.semantic === "strong") return <strong>{text}</strong>;
-  if (run.semantic === "emphasis") return <em>{text}</em>;
-  if (run.semantic === "delete") return <del>{text}</del>;
+  if (run.semantic === "strong") return <strong className={markdownStrongClassName}>{text}</strong>;
+  if (run.semantic === "emphasis") return <em className={markdownEmphasisClassName}>{text}</em>;
+  if (run.semantic === "delete") return <del className={markdownDeleteClassName}>{text}</del>;
   if (run.semantic === "inline-code") return <InlineCode>{text}</InlineCode>;
   if (run.semantic === "math-source") return <ProjectedMath latex={text} />;
   if (run.semantic === "code-block") return text;
   if (run.semantic === "link-label") return text;
 
   return text;
+}
+
+function imageOnlyRun(runs: MarkdownProjectionRun[]): MarkdownProjectionRun | null {
+  const visibleRuns = runs.filter((run) => run.semantic !== "isolated-placeholder");
+  if (visibleRuns.length !== 1) return null;
+  const [run] = visibleRuns;
+  return run.semantic === "image" && run.imageSrc ? run : null;
+}
+
+function ProjectedFigure({
+  active,
+  activeInlineId,
+  run,
+}: {
+  active: boolean;
+  activeInlineId?: string;
+  run: MarkdownProjectionRun;
+}) {
+  const image = <ProjectedImage run={run} />;
+  const title = run.imageTitle?.trim();
+  return (
+    <figure
+      data-source-active={active ? "true" : undefined}
+      className={cn(markdownFigureClassName, active && sourceActiveBlockClass)}
+    >
+      {activeInlineId === run.inlineId ? (
+        <span data-source-active-run="true" className={sourceActiveRunClass}>
+          {image}
+        </span>
+      ) : (
+        image
+      )}
+      {title ? <figcaption className={markdownFigureCaptionClassName}>{title}</figcaption> : null}
+    </figure>
+  );
 }
 
 function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
@@ -699,7 +830,7 @@ function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
       src={src}
       alt={alt}
       title={run.imageTitle}
-      className="my-4 max-w-full h-auto rounded-sm"
+      className={markdownImageClassName}
       loading="lazy"
     />
   );
@@ -758,26 +889,47 @@ function ProjectedCodeBlock({
     }
   };
 
+  const languageLabel = codeBlockLanguageLabel(language);
+
   return (
-    <div className="group/codeblock relative my-3">
+    <div
+      data-slot="markdown-code-block"
+      className={markdownCodeBlockShellClassName}
+      data-code-language={languageLabel === "code" ? undefined : languageLabel}
+    >
+      <div className={markdownCodeBlockToolbarClassName}>
+        <span
+          className={markdownCodeBlockLabelClassName}
+          title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
+        >
+          {languageLabel}
+        </span>
+        <button
+          type="button"
+          aria-label={copied ? "Copied code" : "Copy code"}
+          className={markdownCodeBlockCopyButtonClassName}
+          title={copied ? "Copied" : "Copy code"}
+          onClick={copyCode}
+        >
+          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+        </button>
+      </div>
       <StaticCodeBlock
         code={code}
         colorTheme={colorTheme}
         isDark={isDark}
         language={language}
         className="max-w-full"
+        style={markdownCodeBlockPreStyle}
       />
-      <button
-        type="button"
-        aria-label={copied ? "Copied code" : "Copy code"}
-        className="absolute top-2 right-2 z-10 rounded border border-border bg-background p-1.5 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover/codeblock:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-        title={copied ? "Copied" : "Copy code"}
-        onClick={copyCode}
-      >
-        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-      </button>
     </div>
   );
+}
+
+function codeBlockLanguageLabel(language: string | undefined): string {
+  const trimmed = language?.trim();
+  if (!trimmed) return "code";
+  return trimmed;
 }
 
 function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; latex: string }) {
@@ -785,7 +937,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
   if (!html) {
     if (displayMode) {
       return (
-        <div className="my-4 overflow-x-auto">
+        <div className={markdownDisplayMathClassName}>
           <InlineCode className="block px-3 py-2">{latex}</InlineCode>
         </div>
       );
@@ -799,7 +951,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
       <div
         data-slot="projected-markdown-math"
         data-display-mode="true"
-        className="my-4 overflow-x-auto px-1 py-1 text-center [&_.katex-display]:my-0"
+        className={markdownDisplayMathClassName}
         dangerouslySetInnerHTML={{ __html: html }}
       />
     );
@@ -809,7 +961,7 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
     <span
       data-slot="projected-markdown-math"
       data-display-mode="false"
-      className="inline align-baseline [&_.katex]:text-[1.03em]"
+      className={markdownInlineMathClassName}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

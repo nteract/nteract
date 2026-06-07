@@ -108,7 +108,7 @@
       :is([data-slot="markdown-output"], [data-slot="html-output"]) {
         font-family: var(--output-document-font);
         font-size: 1rem;
-        line-height: 1.65;
+        line-height: 1.68;
         font-kerning: normal;
         text-rendering: optimizeLegibility;
       }
@@ -121,22 +121,48 @@
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 {
         color: var(--text-primary);
         font-family: var(--output-document-font);
-        font-weight: 700;
+        font-weight: 600;
         line-height: 1.2;
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 {
-        margin: 1.5rem 0 1rem;
-        font-size: 1.875rem;
+        margin: 1.75rem 0 1rem;
+        font-size: 2rem;
+        line-height: 1.08;
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 {
-        margin: 1.35rem 0 0.75rem;
+        margin: 1.75rem 0 0.75rem;
         font-size: 1.5rem;
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h4 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h5 > a[href^="#"],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 > a[href^="#"] {
+        display: inline-flex;
+        margin-left: 0.5rem;
+        transform: translateY(-0.08em);
+        color: color-mix(in oklch, var(--text-secondary) 42%, transparent);
+        font-family: var(--output-ui-font);
+        font-size: 0.58em;
+        font-weight: 500;
+        text-decoration: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h4 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h5 > a[href^="#"]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 > a[href^="#"]:hover {
+        color: var(--accent-color);
+      }
+
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 {
-        margin: 1.2rem 0 0.625rem;
+        margin: 1.5rem 0 0.625rem;
         font-size: 1.25rem;
       }
 
@@ -171,11 +197,44 @@
         margin: 0.25rem 0;
       }
 
-      :is([data-slot="markdown-output"], [data-slot="html-output"]) blockquote {
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) ul.contains-task-list,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) ol.contains-task-list {
         margin: 1rem 0;
-        padding-left: 1rem;
-        border-left: 4px solid var(--border-color);
-        color: var(--text-secondary);
+        padding: 0.5rem;
+        border: 1px solid color-mix(in oklch, var(--border-color) 76%, transparent);
+        border-radius: 0.375rem;
+        background: color-mix(in oklch, var(--bg-secondary) 30%, transparent);
+        list-style: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) li.task-list-item {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 0.5rem;
+        align-items: start;
+        margin: 0.25rem 0;
+        padding: 0.375rem 0.5rem;
+        border-radius: 0.125rem;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) li.task-list-item:hover {
+        background: color-mix(in oklch, var(--bg-secondary) 62%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"])
+        li.task-list-item
+        > input[type="checkbox"] {
+        width: 1rem;
+        height: 1rem;
+        margin: 0.18em 0 0;
+        accent-color: var(--accent-color);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) blockquote {
+        margin: 1.25rem 0;
+        padding: 0.375rem 0.5rem 0.375rem 1.25rem;
+        border-left: 2px solid color-mix(in oklch, var(--text-primary) 36%, transparent);
+        color: color-mix(in oklch, var(--text-primary) 80%, var(--text-secondary));
         font-style: italic;
       }
 
@@ -188,6 +247,103 @@
       :is([data-slot="markdown-output"], [data-slot="html-output"]) pre,
       :is([data-slot="markdown-output"], [data-slot="html-output"]) code {
         font-family: var(--output-mono-font);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) :not(pre) > code {
+        padding: 0.125rem 0.375rem;
+        border: 1px solid var(--border-color);
+        border-radius: 0.125rem;
+        background: color-mix(in oklch, var(--bg-secondary) 72%, transparent);
+        color: var(--text-primary);
+        font-size: 0.88em;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) strong {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) em {
+        color: var(--text-primary);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) del {
+        color: var(--text-secondary);
+        text-decoration-thickness: 2px;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) details {
+        margin: 1.25rem 0;
+        overflow: hidden;
+        border: 1px solid color-mix(in oklch, var(--border-color) 85%, transparent);
+        border-radius: 0.375rem;
+        background: color-mix(in oklch, var(--bg-secondary) 32%, transparent);
+        box-shadow: 0 1px 2px color-mix(in oklch, var(--text-primary) 10%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) details[open] {
+        background: color-mix(in oklch, var(--bg-secondary) 40%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) summary {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid transparent;
+        color: var(--text-primary);
+        cursor: pointer;
+        font-family: var(--output-ui-font);
+        font-size: 0.875rem;
+        font-weight: 600;
+        line-height: 1.25rem;
+        list-style: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) details[open] > summary {
+        border-bottom-color: color-mix(in oklch, var(--border-color) 70%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"])
+        summary::-webkit-details-marker {
+        display: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) summary::before {
+        display: inline-flex;
+        width: 1.25rem;
+        height: 1.25rem;
+        flex: none;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid color-mix(in oklch, var(--accent-color) 28%, transparent);
+        border-radius: 999px;
+        background: color-mix(in oklch, var(--accent-color) 8%, transparent);
+        color: var(--accent-color);
+        content: "›";
+        font-family: var(--output-ui-font);
+        font-size: 0.75rem;
+        line-height: 1;
+        transition: transform 120ms ease;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"])
+        details[open]
+        > summary::before {
+        transform: rotate(90deg);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) details > :not(summary) {
+        margin-right: 1rem;
+        margin-left: 1rem;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) details > summary + * {
+        margin-top: 0.75rem;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) details > :last-child {
+        margin-bottom: 1rem;
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) table,
@@ -218,11 +374,25 @@
         font-size: 0.875rem;
       }
 
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) table {
+        margin: 1.25rem 0;
+        border: 1px solid var(--border-color);
+        border-radius: 0.125rem;
+        background: var(--bg-primary);
+        box-shadow: 0 1px 2px color-mix(in oklch, var(--text-primary) 10%, transparent);
+        overflow: hidden;
+      }
+
       th,
       td {
         border: 1px solid var(--border-color);
         padding: 4px 8px;
         text-align: left;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) th,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) td {
+        padding: 0.625rem 0.75rem;
       }
 
       th {
@@ -234,6 +404,70 @@
       img {
         max-width: 100%;
         height: auto;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) img {
+        margin: 1.25rem 0;
+        border: 1px solid var(--border-color);
+        border-radius: 0.125rem;
+        background: color-mix(in oklch, var(--bg-secondary) 38%, transparent);
+        box-shadow: 0 1px 2px color-mix(in oklch, var(--text-primary) 10%, transparent);
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) figure {
+        margin: 1.25rem 0;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) figure > img {
+        margin-bottom: 0;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) figcaption {
+        margin-top: 0.5rem;
+        color: var(--text-secondary);
+        font-family: var(--output-ui-font);
+        font-size: 0.75rem;
+        line-height: 1.25rem;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) section[data-footnotes] {
+        margin-top: 2rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        font-family: var(--output-ui-font);
+        font-size: 0.875rem;
+        line-height: 1.5rem;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a[data-footnote-ref],
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a.data-footnote-ref {
+        display: inline-flex;
+        min-width: 1rem;
+        justify-content: center;
+        margin: 0 0.125rem;
+        padding: 0 0.25rem;
+        transform: translateY(-0.22em);
+        border: 1px solid color-mix(in oklch, var(--accent-color) 24%, transparent);
+        border-radius: 999px;
+        background: color-mix(in oklch, var(--accent-color) 8%, transparent);
+        color: var(--accent-color);
+        font-family: var(--output-ui-font);
+        font-size: 0.68em;
+        line-height: 1rem;
+        text-decoration: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a[data-footnote-ref]:hover,
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) a.data-footnote-ref:hover {
+        background: color-mix(in oklch, var(--accent-color) 12%, transparent);
+        text-decoration: none;
+      }
+
+      :is([data-slot="markdown-output"], [data-slot="html-output"]) .katex-display {
+        margin: 1.25rem 0;
+        overflow-x: clip;
+        text-align: center;
       }
 
       /* Links */
