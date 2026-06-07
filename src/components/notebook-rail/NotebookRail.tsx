@@ -20,9 +20,7 @@ export type NotebookRailPanelId = "outline" | "packages" | "workstations";
 export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = RAIL_TAKEOVER_MEDIA_QUERY;
 export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = RAIL_TAKEOVER_STAGE_CLASS_NAME;
 export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES = RAIL_TAKEOVER_PANEL_CLASS_NAMES;
-const NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,18rem)] min-w-60";
-const NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME = "w-[clamp(15rem,20vw,17rem)] min-w-60";
-const NOTEBOOK_RAIL_WORKSTATIONS_PANEL_CLASS_NAME = "w-[clamp(16rem,22vw,19rem)] min-w-64";
+const NOTEBOOK_RAIL_PANEL_CLASS_NAME = "w-[clamp(16rem,20vw,18rem)] min-w-64";
 
 export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
@@ -83,13 +81,6 @@ export function NotebookRail({
       : activePanelId === "workstations"
         ? workstationsSummary
         : null;
-  const panelClassName =
-    activePanelId === "packages"
-      ? NOTEBOOK_RAIL_PACKAGES_PANEL_CLASS_NAME
-      : activePanelId === "workstations"
-        ? NOTEBOOK_RAIL_WORKSTATIONS_PANEL_CLASS_NAME
-        : NOTEBOOK_RAIL_OUTLINE_PANEL_CLASS_NAME;
-
   return (
     <Rail
       activePanelId={activePanelId}
@@ -98,7 +89,7 @@ export function NotebookRail({
       panelEyebrow="Notebook"
       panelTitle={title}
       panelSummary={summary}
-      panelClassName={panelClassName}
+      panelClassName={NOTEBOOK_RAIL_PANEL_CLASS_NAME}
       className={className}
       dataTestId="notebook-rail"
       collapseButtonSlot="notebook-rail-collapse-button"
