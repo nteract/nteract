@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::ErrorData as McpError;
 use runtimed_outputs::output_resolver;
 use schemars::JsonSchema;
@@ -12,7 +12,14 @@ use crate::execution;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::{arg_bool, arg_str, assert_cell_exists, tool_error, tool_success};
+use super::{arg_bool, arg_str, assert_cell_exists, tool_error};
+
+fn cells_resource_result(message: String, notebook_id: &str) -> CallToolResult {
+    CallToolResult::success(vec![
+        Content::text(message),
+        Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+    ])
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -125,7 +132,10 @@ pub async fn run_all_cells(
         for (cell_id, exec_id) in &result.cell_execution_ids {
             lines.push(format!("  {cell_id} → {exec_id}"));
         }
-        return tool_success(&lines.join("\n"));
+        return Ok(cells_resource_result(
+            lines.join("\n"),
+            handle.notebook_id(),
+        ));
     }
 
     // Wait mode: run all cells and collect outputs.
@@ -206,7 +216,12 @@ pub async fn run_all_cells(
 
     // Build per-cell output content.
     let comms = runtime_state.as_ref().map(|rs| &rs.comms);
-    let mut content_items = vec![rmcp::model::Content::text(header.clone())];
+    let mut content_items = vec![
+        rmcp::model::Content::text(header.clone()),
+        rmcp::model::Content::resource_link(crate::resources::notebook_cells_resource_link(
+            handle.notebook_id(),
+        )),
+    ];
     let mut structured_cells: Vec<serde_json::Value> = Vec::new();
 
     for cell in &cells {
@@ -287,8 +302,15 @@ pub async fn run_all_cells(
                     },
                 );
                 if let Some(mut cell_data) = wrapped.get("cell").cloned() {
-                    if let Some(eid) = eid {
-                        if let Some(obj) = cell_data.as_object_mut() {
+                    if let Some(obj) = cell_data.as_object_mut() {
+                        obj.insert(
+                            "uri".to_string(),
+                            serde_json::Value::String(crate::resources::notebook_cell_uri(
+                                handle.notebook_id(),
+                                &cell.id,
+                            )),
+                        );
+                        if let Some(eid) = eid {
                             obj.insert(
                                 "execution_id".to_string(),
                                 serde_json::Value::String(eid.to_string()),
@@ -608,5 +630,32 @@ mod tests {
         let content = serde_json::to_string(&result.content).unwrap();
         assert!(content.contains("Execution not found"));
         assert!(!content.contains("get_cell("));
+    }
+
+    #[test]
+    fn run_all_queued_response_returns_cells_resource_link() {
+        let result = cells_resource_result("Queued 2 cells for execution".into(), "nb 1");
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            result.content[0].as_text().expect("queue message").text,
+            "Queued 2 cells for execution"
+        );
+
+        let link = result.content[1]
+            .as_resource_link()
+            .expect("cells resource link");
+        assert_eq!(link.uri, "nteract://notebooks/nb%201/cells");
+        assert_eq!(link.mime_type.as_deref(), Some("application/json"));
+
+        let value = serde_json::to_value(&result).expect("serialize run_all response");
+        assert_eq!(
+            value["content"][1]["type"],
+            serde_json::json!("resource_link")
+        );
+        assert_eq!(
+            value["content"][1]["mimeType"],
+            serde_json::json!("application/json")
+        );
     }
 }

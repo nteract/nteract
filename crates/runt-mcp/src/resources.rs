@@ -445,19 +445,48 @@ fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String>
     }
 }
 
-fn notebook_cells_uri(notebook_id: &str) -> String {
+pub(crate) fn notebook_cells_uri(notebook_id: &str) -> String {
     format!(
         "{NOTEBOOKS_RESOURCE_URI}/{}/cells",
         encode_segment(notebook_id)
     )
 }
 
-fn notebook_cell_uri(notebook_id: &str, cell_id: &str) -> String {
+pub(crate) fn notebook_cell_uri(notebook_id: &str, cell_id: &str) -> String {
     format!(
         "{}/{}",
         notebook_cells_uri(notebook_id),
         encode_segment(cell_id)
     )
+}
+
+pub(crate) fn notebook_resources_json(notebook_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "cells": notebook_cells_uri(notebook_id),
+        "cell_template": format!("{}/{{cell_id}}", notebook_cells_uri(notebook_id)),
+    })
+}
+
+pub(crate) fn notebook_cells_resource_link(notebook_id: &str) -> RawResource {
+    let mut resource = RawResource::new(
+        notebook_cells_uri(notebook_id),
+        format!("nteract cells {notebook_id}"),
+    );
+    resource.description = Some("Ordered cell list for the notebook session".into());
+    resource.mime_type = Some(CELLS_MIME_TYPE.into());
+    resource.icons = Some(icons::icons(IconKind::ListActiveNotebooks));
+    resource
+}
+
+pub(crate) fn notebook_cell_resource_link(notebook_id: &str, cell_id: &str) -> RawResource {
+    let mut resource = RawResource::new(
+        notebook_cell_uri(notebook_id, cell_id),
+        format!("nteract cell {cell_id}"),
+    );
+    resource.description = Some("Notebook cell snapshot".into());
+    resource.mime_type = Some(CELLS_MIME_TYPE.into());
+    resource.icons = Some(icons::icons(IconKind::ReadCell));
+    resource
 }
 
 fn encode_segment(value: &str) -> String {
@@ -505,7 +534,9 @@ fn decode_segment(value: &str) -> Result<String, String> {
 mod tests {
     use std::path::PathBuf;
 
-    use rmcp::model::{Annotations, Meta, ReadResourceRequestParams, Role};
+    use rmcp::model::{
+        Annotations, CallToolResult, Content, Meta, ReadResourceRequestParams, Role,
+    };
 
     use super::*;
     use crate::NteractMcp;
@@ -637,6 +668,45 @@ mod tests {
     }
 
     #[test]
+    fn list_resource_templates_serialize_with_mcp_field_names() {
+        let value = serde_json::to_value(list_resource_templates()).expect("serialize templates");
+        let templates = value
+            .get("resourceTemplates")
+            .and_then(serde_json::Value::as_array)
+            .expect("MCP resourceTemplates field");
+
+        assert!(value.get("resource_templates").is_none());
+
+        let cells_template = templates
+            .iter()
+            .find(|template| {
+                template.get("uriTemplate")
+                    == Some(&serde_json::json!(
+                        "nteract://notebooks/{notebook_id}/cells"
+                    ))
+            })
+            .expect("cells resource template");
+
+        assert!(cells_template.get("uri_template").is_none());
+        assert_eq!(
+            cells_template.get("mimeType"),
+            Some(&serde_json::json!(CELLS_MIME_TYPE))
+        );
+        assert_eq!(
+            cells_template
+                .get("annotations")
+                .and_then(|annotations| annotations.get("audience")),
+            Some(&serde_json::json!(["assistant"]))
+        );
+        assert_eq!(
+            cells_template
+                .get("annotations")
+                .and_then(|annotations| annotations.get("priority")),
+            Some(&serde_json::json!(NOTEBOOK_CONTEXT_PRIORITY))
+        );
+    }
+
+    #[test]
     fn notebook_resource_uri_round_trips_percent_encoded_segments() {
         let uri = notebook_cell_uri("nb 1", "cell/with/slash");
 
@@ -647,6 +717,67 @@ mod tests {
                 cell_id: "cell/with/slash".to_string()
             }
         );
+    }
+
+    #[test]
+    fn notebook_resources_json_points_to_encoded_cell_resources() {
+        let resources = notebook_resources_json("nb 1");
+
+        assert_eq!(
+            resources.get("cells"),
+            Some(&serde_json::json!("nteract://notebooks/nb%201/cells"))
+        );
+        assert_eq!(
+            resources.get("cell_template"),
+            Some(&serde_json::json!(
+                "nteract://notebooks/nb%201/cells/{cell_id}"
+            ))
+        );
+    }
+
+    #[test]
+    fn notebook_cell_resource_link_uses_encoded_uri() {
+        let resource = notebook_cell_resource_link("nb 1", "cell/with/slash");
+
+        assert_eq!(
+            resource.uri,
+            "nteract://notebooks/nb%201/cells/cell%2Fwith%2Fslash"
+        );
+        assert_eq!(resource.mime_type.as_deref(), Some(CELLS_MIME_TYPE));
+        assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
+    }
+
+    #[test]
+    fn notebook_resource_link_content_round_trips_mcp_wire_format() {
+        let expected_uri = "nteract://notebooks/nb%201/cells/cell%2Fwith%2Fslash";
+        let result = CallToolResult::success(vec![Content::resource_link(
+            notebook_cell_resource_link("nb 1", "cell/with/slash"),
+        )]);
+        let value = serde_json::to_value(&result).expect("serialize resource link");
+        let content = value
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|items| items.first())
+            .expect("first content item");
+
+        assert_eq!(
+            content.get("type"),
+            Some(&serde_json::json!("resource_link"))
+        );
+        assert_eq!(content.get("uri"), Some(&serde_json::json!(expected_uri)));
+        assert_eq!(
+            content.get("mimeType"),
+            Some(&serde_json::json!(CELLS_MIME_TYPE))
+        );
+        assert!(content.get("mime_type").is_none());
+
+        let decoded: CallToolResult =
+            serde_json::from_value(value).expect("deserialize resource link");
+        let link = decoded.content[0]
+            .as_resource_link()
+            .expect("resource link content");
+        assert_eq!(link.uri, expected_uri);
+        assert_eq!(link.mime_type.as_deref(), Some(CELLS_MIME_TYPE));
     }
 
     #[test]

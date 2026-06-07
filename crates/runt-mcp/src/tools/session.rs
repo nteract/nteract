@@ -414,6 +414,50 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
         .join("\n\n")
 }
 
+fn notebook_session_response(mut response: serde_json::Value, notebook_id: &str) -> CallToolResult {
+    response["resources"] = crate::resources::notebook_resources_json(notebook_id);
+    CallToolResult::success(vec![
+        Content::text(serde_json::to_string_pretty(&response).unwrap_or_default()),
+        Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+    ])
+}
+
+fn notebook_json_response(response: serde_json::Value) -> CallToolResult {
+    CallToolResult::success(vec![Content::text(
+        serde_json::to_string_pretty(&response).unwrap_or_default(),
+    )])
+}
+
+async fn session_resource_is_readable(server: &NteractMcp, notebook_id: &str) -> bool {
+    if server
+        .session
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|session| session.notebook_id == notebook_id)
+    {
+        return true;
+    }
+
+    server
+        .parked_sessions
+        .read()
+        .await
+        .contains_key(notebook_id)
+}
+
+async fn readable_notebook_session_response(
+    server: &NteractMcp,
+    response: serde_json::Value,
+    notebook_id: &str,
+) -> CallToolResult {
+    if session_resource_is_readable(server, notebook_id).await {
+        notebook_session_response(response, notebook_id)
+    } else {
+        notebook_json_response(response)
+    }
+}
+
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenNotebookParams {
@@ -677,9 +721,7 @@ pub async fn open_notebook(
                     }
 
                     *server.session.write().await = Some(parked);
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        serde_json::to_string_pretty(&response).unwrap_or_default(),
-                    )]));
+                    return Ok(notebook_session_response(response, &notebook_id));
                 }
 
                 if let Err(e) = handle
@@ -712,6 +754,7 @@ pub async fn open_notebook(
                 let peer_label = server.get_peer_label().await;
                 crate::presence::announce(handle, &peer_label).await;
 
+                let call_result = notebook_session_response(response, &notebook_id);
                 let session = NotebookSession {
                     handle: result.handle,
                     broadcast_rx: result.broadcast_rx,
@@ -720,9 +763,7 @@ pub async fn open_notebook(
                 };
                 *server.session.write().await = Some(session);
 
-                Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&response).unwrap_or_default(),
-                )]))
+                Ok(call_result)
             }
             Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", path, e)),
         }
@@ -772,9 +813,7 @@ pub async fn open_notebook(
             }
 
             *server.session.write().await = Some(parked);
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&response).unwrap_or_default(),
-            )]));
+            return Ok(notebook_session_response(response, &notebook_id));
         }
 
         match notebook_sync::connect::connect(
@@ -819,6 +858,7 @@ pub async fn open_notebook(
                 let peer_label = server.get_peer_label().await;
                 crate::presence::announce(handle, &peer_label).await;
 
+                let call_result = notebook_session_response(response, &notebook_id);
                 let session = NotebookSession {
                     handle: result.handle,
                     broadcast_rx: result.broadcast_rx,
@@ -827,9 +867,7 @@ pub async fn open_notebook(
                 };
                 *server.session.write().await = Some(session);
 
-                Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&response).unwrap_or_default(),
-                )]))
+                Ok(call_result)
             }
             Err(e) => tool_error(&format!("Failed to join notebook: {}", e)),
         }
@@ -976,9 +1014,7 @@ pub async fn create_notebook(
                 info["info"] = serde_json::json!("Used 'kernel' parameter (alias for 'runtime')");
             }
 
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&info).unwrap_or_default(),
-            )]))
+            Ok(notebook_session_response(info, &notebook_id))
         }
         Err(e) => tool_error(&format!("Failed to create notebook: {}", e)),
     }
@@ -1034,9 +1070,7 @@ pub async fn save_notebook(
                 "notebook_id": notebook_id,
             });
 
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
-            )]))
+            Ok(notebook_session_response(result, &notebook_id))
         }
         Ok(NotebookResponse::SaveError { error }) => match error {
             SaveErrorKind::PathAlreadyOpen {
@@ -1122,7 +1156,7 @@ pub async fn show_notebook(
                 "This notebook is ephemeral. Use save_notebook(path) to persist."
             );
         }
-        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
+        return Ok(readable_notebook_session_response(server, result, &target).await);
     }
 
     if let Some(path) = resolved_path {
@@ -1147,11 +1181,13 @@ pub async fn show_notebook(
         result["warning"] =
             serde_json::json!("This notebook is ephemeral. Save it from the app to keep it.");
     }
-    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+    Ok(readable_notebook_session_response(server, result, &target).await)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// When package_manager is explicitly provided, it takes precedence
     /// over whatever the daemon detected.
     #[test]
@@ -1203,6 +1239,71 @@ mod tests {
             uuid::Uuid::parse_str(&notebook_id).is_ok(),
             "notebook_id in save response must be a valid UUID"
         );
+    }
+
+    #[test]
+    fn notebook_session_response_returns_text_json_and_cells_resource_link() {
+        let result = notebook_session_response(serde_json::json!({"notebook_id": "nb 1"}), "nb 1");
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content.len(), 2);
+
+        let text = result.content[0]
+            .as_text()
+            .expect("response JSON text")
+            .text
+            .as_str();
+        let response: serde_json::Value =
+            serde_json::from_str(text).expect("session response should be JSON");
+        assert_eq!(
+            response["resources"]["cells"],
+            "nteract://notebooks/nb%201/cells"
+        );
+        assert_eq!(
+            response["resources"]["cell_template"],
+            "nteract://notebooks/nb%201/cells/{cell_id}"
+        );
+
+        let link = result.content[1]
+            .as_resource_link()
+            .expect("cells resource link");
+        assert_eq!(link.uri, "nteract://notebooks/nb%201/cells");
+        assert_eq!(link.mime_type.as_deref(), Some("application/json"));
+
+        let value = serde_json::to_value(&result).expect("serialize session response");
+        assert_eq!(
+            value["content"][1]["type"],
+            serde_json::json!("resource_link")
+        );
+        assert_eq!(
+            value["content"][1]["mimeType"],
+            serde_json::json!("application/json")
+        );
+    }
+
+    #[tokio::test]
+    async fn readable_notebook_session_response_omits_dead_resource_link_without_session() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        let result = readable_notebook_session_response(
+            &server,
+            serde_json::json!({"notebook_id": "daemon-only"}),
+            "daemon-only",
+        )
+        .await;
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content.len(), 1);
+        assert!(result.content[0].as_resource_link().is_none());
+
+        let text = result.content[0]
+            .as_text()
+            .expect("response JSON text")
+            .text
+            .as_str();
+        let response: serde_json::Value =
+            serde_json::from_str(text).expect("session response should be JSON");
+        assert_eq!(response["notebook_id"], "daemon-only");
+        assert!(response.get("resources").is_none());
     }
 
     /// Lifecycle states that carry error_reason/error_details must be
