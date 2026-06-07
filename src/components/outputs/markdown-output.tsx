@@ -11,6 +11,7 @@ import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock";
 import { MarkdownFigure, MarkdownFigureCaption, MarkdownImage } from "../markdown/MarkdownFigure";
+import { MarkdownHeading } from "../markdown/MarkdownHeading";
 import {
   MarkdownTableBody,
   MarkdownTableCell,
@@ -34,8 +35,6 @@ import {
   markdownFootnoteBackrefClassName,
   markdownFootnotesClassName,
   markdownFootnoteRefClassName,
-  markdownHeadingAnchorClassName,
-  markdownHeadingClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
   markdownParagraphClassName,
@@ -158,22 +157,17 @@ export function MarkdownOutput({
     };
   };
 
-  const renderHeadingAnchor = (
+  const headingAnchorProps = (
     attributes: ReturnType<typeof headingAttributes>,
     children: ReactNode,
   ) => {
     const id = (attributes as { id?: string }).id;
-    if (!id) return null;
+    if (!id) return {};
 
-    return (
-      <a
-        aria-label={`Link to ${normalizeHeadingText(textFromReactNode(children))}`}
-        className={markdownHeadingAnchorClassName}
-        href={`#${id}`}
-      >
-        #
-      </a>
-    );
+    return {
+      anchorHref: `#${id}`,
+      anchorLabel: `Link to ${normalizeHeadingText(textFromReactNode(children))}`,
+    };
   };
 
   if (!content) {
@@ -297,55 +291,79 @@ export function MarkdownOutput({
           h1({ children, ...props }) {
             const attributes = headingAttributes(1, children);
             return (
-              <h1 className={markdownHeadingClassName("h1")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h1"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h1>
+              </MarkdownHeading>
             );
           },
           h2({ children, ...props }) {
             const attributes = headingAttributes(2, children);
             return (
-              <h2 className={markdownHeadingClassName("h2")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h2"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h2>
+              </MarkdownHeading>
             );
           },
           h3({ children, ...props }) {
             const attributes = headingAttributes(3, children);
             return (
-              <h3 className={markdownHeadingClassName("h3")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h3"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h3>
+              </MarkdownHeading>
             );
           },
           h4({ children, ...props }) {
             const attributes = headingAttributes(4, children);
             return (
-              <h4 className={markdownHeadingClassName("h4")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h4"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h4>
+              </MarkdownHeading>
             );
           },
           h5({ children, ...props }) {
             const attributes = headingAttributes(5, children);
             return (
-              <h5 className={markdownHeadingClassName("h5")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h5"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h5>
+              </MarkdownHeading>
             );
           },
           h6({ children, ...props }) {
             const attributes = headingAttributes(6, children);
             return (
-              <h6 className={markdownHeadingClassName("h6")} {...props} {...attributes}>
+              <MarkdownHeading
+                element="h6"
+                {...props}
+                {...attributes}
+                {...headingAnchorProps(attributes, children)}
+              >
                 {children}
-                {renderHeadingAnchor(attributes, children)}
-              </h6>
+              </MarkdownHeading>
             );
           },
 

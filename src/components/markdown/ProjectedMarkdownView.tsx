@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownFigure, MarkdownFigureCaption, MarkdownImage } from "./MarkdownFigure";
+import { MarkdownHeading, markdownHeadingElement } from "./MarkdownHeading";
 import {
   MarkdownTableBody,
   MarkdownTableCell,
@@ -33,8 +34,6 @@ import {
 import {
   markdownDisplayMathClassName,
   markdownDocumentClassName,
-  markdownHeadingAnchorClassName,
-  markdownHeadingClassName,
   markdownInlineMathClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
@@ -128,29 +127,21 @@ function ProjectedMarkdownBlock({
   onTaskCheckedChange,
 }: ProjectedMarkdownBlockProps) {
   if (block.kind === "heading") {
-    const Heading = headingTag(block.element);
     return (
-      <Heading
+      <MarkdownHeading
+        element={markdownHeadingElement(block.element)}
         id={headingAnchor?.headingAnchorId}
+        anchorHref={
+          headingAnchor?.headingAnchorId ? `#${headingAnchor.headingAnchorId}` : undefined
+        }
+        anchorLabel={headingAnchor?.headingAnchorId ? `Link to ${block.text}` : undefined}
         data-nteract-heading-anchor={headingAnchor?.headingAnchorId}
         data-nteract-outline-item-id={headingAnchor?.itemId}
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
-        className={cn(
-          markdownHeadingClassName(block.element),
-          activeBlockId === block.blockId && sourceActiveBlockClass,
-        )}
+        className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
       >
         {renderRuns(runs, onLinkClick, activeInlineId)}
-        {headingAnchor?.headingAnchorId ? (
-          <a
-            aria-label={`Link to ${block.text}`}
-            className={markdownHeadingAnchorClassName}
-            href={`#${headingAnchor.headingAnchorId}`}
-          >
-            #
-          </a>
-        ) : null}
-      </Heading>
+      </MarkdownHeading>
     );
   }
 
@@ -278,15 +269,6 @@ function headingAnchorForBlock(
     if (block.anchorSlug && anchor.anchor === block.anchorSlug) return true;
     return anchor.title === block.text && `h${anchor.level}` === block.element;
   });
-}
-
-function headingTag(element: string): "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
-  if (element === "h1") return "h1";
-  if (element === "h2") return "h2";
-  if (element === "h3") return "h3";
-  if (element === "h4") return "h4";
-  if (element === "h5") return "h5";
-  return "h6";
 }
 
 interface ProjectedListItem {
