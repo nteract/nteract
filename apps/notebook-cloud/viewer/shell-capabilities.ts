@@ -2,10 +2,14 @@ import {
   notebookActorProjectionFromAccess,
   notebookActorProjectionFromRuntime,
   notebookActorProjectionWithPrincipalImage,
+  projectNotebookRuntimeTargetFromWorkstationAttachment,
   projectNotebookShellCapabilities,
+  workstationAttachmentCanExecute,
+  workstationAttachmentIsConnected,
   type NotebookEditMode,
   type NotebookShellCapabilities,
   type NotebookShellRuntimeTargetProjection,
+  type WorkstationAttachmentState,
 } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { projectCloudNotebookEditAccess } from "./edit-access";
@@ -41,6 +45,13 @@ export interface CloudNotebookShellCapabilityInput {
    */
   runtimePeerCount?: number;
   /**
+   * Room-host-owned RuntimeStateDoc workstation attachment snapshot. When
+   * present this is the durable notebook-visible source for the selected
+   * compute target; live presence remains the fallback while older rooms have
+   * not published it yet.
+   */
+  workstationAttachment?: WorkstationAttachmentState | null;
+  /**
    * Whether this browser connection may create execution intent in the hosted
    * room. This is a capability, not an interaction mode: owners and editors can
    * submit execution requests when compute is attached, while future
@@ -67,6 +78,7 @@ export function cloudNotebookShellCapabilities({
   editAccessRequestPending = false,
   runtimeAvailable = false,
   runtimePeerCount = runtimeAvailable ? 1 : 0,
+  workstationAttachment = null,
   canSubmitExecutionRequests = connectionScope === "owner" || connectionScope === "editor",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
@@ -83,6 +95,9 @@ export function cloudNotebookShellCapabilities({
   const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
   const identityLabel = cloudIdentityDisplayLabel(authState);
   const identityImageUrl = cloudIdentityImageUrl(authState);
+  const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
+  const attachmentExecutionAvailable = workstationAttachmentCanExecute(workstationAttachment);
+  const effectiveRuntimeAvailable = runtimeAvailable || attachmentExecutionAvailable;
   const auth = {
     canSignIn: authState.mode !== "oidc",
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
@@ -97,12 +112,17 @@ export function cloudNotebookShellCapabilities({
   };
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
-    connected: isRuntimePeer || runtimeAvailable,
-    executionAvailable: runtimeAvailable,
+    connected: isRuntimePeer || runtimeAvailable || attachmentConnected,
+    executionAvailable: effectiveRuntimeAvailable,
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
     identityLabel: isRuntimePeer ? identityLabel : null,
-    target: cloudRuntimeTarget({ isRuntimePeer, runtimeAvailable, runtimePeerCount }),
+    target: cloudRuntimeTarget({
+      isRuntimePeer,
+      runtimeAvailable: effectiveRuntimeAvailable,
+      runtimePeerCount,
+      workstationAttachment,
+    }),
   };
   const accessActor = notebookActorProjectionWithPrincipalImage(
     notebookActorProjectionFromAccess(access, auth),
@@ -128,7 +148,7 @@ export function cloudNotebookShellCapabilities({
       canToggleCode: hasCodeCells,
     },
     execution: {
-      available: runtimeAvailable,
+      available: effectiveRuntimeAvailable,
       canSubmit: canSubmitExecutionRequests,
       requiresDocumentEditPermission: true,
     },
@@ -147,10 +167,12 @@ function cloudRuntimeTarget({
   isRuntimePeer,
   runtimeAvailable,
   runtimePeerCount,
+  workstationAttachment,
 }: {
   isRuntimePeer: boolean;
   runtimeAvailable: boolean;
   runtimePeerCount: number;
+  workstationAttachment: WorkstationAttachmentState | null;
 }): NotebookShellRuntimeTargetProjection {
   const visibleRuntimePeerCount = Math.max(0, Math.floor(runtimePeerCount));
   if (isRuntimePeer) {
@@ -166,6 +188,13 @@ function cloudRuntimeTarget({
       environmentLabel: "Runtime peer",
       runtimePeerCount: visibleRuntimePeerCount || 1,
     };
+  }
+  const attachmentTarget = projectNotebookRuntimeTargetFromWorkstationAttachment(
+    workstationAttachment,
+    { runtimePeerCount: visibleRuntimePeerCount },
+  );
+  if (attachmentTarget) {
+    return attachmentTarget;
   }
   if (runtimeAvailable) {
     return {

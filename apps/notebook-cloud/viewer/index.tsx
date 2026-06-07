@@ -1569,6 +1569,7 @@ function NotebookViewer({
     retryLiveConnection,
     snapshotResolvedRef,
     status,
+    workstationAttachment,
   } = useCloudViewerSession({
     authRenewalKind: authRenewal.kind,
     authState,
@@ -1687,6 +1688,7 @@ function NotebookViewer({
         editAccessRequestPending,
         runtimeAvailable: runtimePeerAvailable,
         runtimePeerCount,
+        workstationAttachment,
         hostCapabilities: config.hostCapabilities,
       }),
     [
@@ -1700,6 +1702,7 @@ function NotebookViewer({
       runtimePeerCount,
       runtimePeerAvailable,
       selectedInteractionMode,
+      workstationAttachment,
     ],
   );
   useEffect(() => {

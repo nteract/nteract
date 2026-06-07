@@ -272,6 +272,25 @@ export type ProjectContext =
       observed_at: string;
     };
 
+/**
+ * Room-host-owned snapshot of the workstation selected for this notebook
+ * room. The daemon/room host writes this into RuntimeStateDoc so late joiners
+ * can see compute attachment state without polling a separate registry.
+ */
+export interface WorkstationAttachmentState {
+  workstation_id: string;
+  display_name: string;
+  provider: string;
+  default_environment_label: string;
+  environment_policy: string;
+  status: string;
+  status_message?: string | null;
+  cpu_count?: number | null;
+  memory_bytes?: number | null;
+  working_directory?: string | null;
+  updated_at?: string | null;
+}
+
 export interface RuntimeState {
   /**
    * RuntimeStateDoc identity. Mirrors the NotebookDoc's runtime_state_doc_id
@@ -295,6 +314,10 @@ export interface RuntimeState {
    * walking the filesystem themselves.
    */
   project_context: ProjectContext;
+  /**
+   * Room-host-owned active workstation attachment projection.
+   */
+  workstation: WorkstationAttachmentState | null;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -337,6 +360,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   executions: {},
   comms: {},
   project_context: { state: "Pending" },
+  workstation: null,
 };
 
 // ── Utilities ────────────────────────────────────────────────────────

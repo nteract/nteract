@@ -153,6 +153,73 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.canExecute, true);
 });
 
+test("cloud shell capabilities prefer RuntimeStateDoc workstation attachment over presence fallback", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: false,
+    runtimePeerCount: 1,
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 32 * 1024 ** 3,
+      working_directory: "/home/ubuntu/notebooks",
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(capabilities.runtime.connected, true);
+  assert.equal(capabilities.runtime.executionAvailable, true);
+  assert.equal(capabilities.runtime.target?.id, "ws-lab2");
+  assert.equal(capabilities.runtime.target?.label, "Lab 2");
+  assert.equal(capabilities.runtime.target?.status, "ready");
+  assert.equal(capabilities.runtime.target?.providerLabel, "Local daemon");
+  assert.equal(capabilities.runtime.target?.defaultEnvironmentLabel, "Current Python");
+  assert.equal(capabilities.runtime.target?.cpuCount, 8);
+  assert.equal(capabilities.runtime.target?.memoryBytes, 32 * 1024 ** 3);
+  assert.equal(capabilities.runtime.target?.runtimePeerCount, 1);
+  assert.equal(capabilities.runtime.target?.workingDirectoryLabel, "/home/ubuntu/notebooks");
+  assert.equal(capabilities.canExecute, true);
+});
+
+test("cloud shell capabilities show connecting workstation attachment without enabling execution", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "connecting",
+      status_message: "Waiting for runtime peer heartbeat",
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: null,
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(capabilities.runtime.connected, true);
+  assert.equal(capabilities.runtime.executionAvailable, false);
+  assert.equal(capabilities.runtime.target?.id, "ws-lab2");
+  assert.equal(capabilities.runtime.target?.status, "connecting");
+  assert.equal(capabilities.runtime.target?.statusLabel, "Connecting");
+  assert.equal(capabilities.runtime.target?.detail, "Waiting for runtime peer heartbeat");
+  assert.equal(capabilities.canExecute, false);
+});
+
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
