@@ -24,19 +24,21 @@ import {
 } from "./MarkdownTable";
 import { MarkdownTaskCheckbox, MarkdownTaskContent } from "./MarkdownTask";
 import {
-  markdownBlockquoteClassName,
-  markdownDeleteClassName,
+  MarkdownBlockquote,
+  MarkdownDelete,
+  MarkdownEmphasis,
+  MarkdownInlineCode,
+  MarkdownStrong,
+} from "./MarkdownText";
+import {
   markdownDisplayMathClassName,
   markdownDocumentClassName,
-  markdownEmphasisClassName,
   markdownHeadingAnchorClassName,
   markdownHeadingClassName,
-  markdownInlineCodeClassName,
   markdownInlineMathClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
   markdownParagraphClassName,
-  markdownStrongClassName,
   markdownTaskListClassName,
   markdownTaskListItemClassName,
   markdownThematicBreakClassName,
@@ -199,15 +201,12 @@ function ProjectedMarkdownBlock({
 
   if (block.kind === "blockquote") {
     return (
-      <blockquote
+      <MarkdownBlockquote
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
-        className={cn(
-          markdownBlockquoteClassName,
-          activeBlockId === block.blockId && sourceActiveBlockClass,
-        )}
+        className={cn(activeBlockId === block.blockId && sourceActiveBlockClass)}
       >
         {renderRuns(runs, onLinkClick, activeInlineId)}
-      </blockquote>
+      </MarkdownBlockquote>
     );
   }
 
@@ -732,10 +731,10 @@ function renderRun(run: MarkdownProjectionRun, onLinkClick?: (url: string) => vo
     );
   }
 
-  if (run.semantic === "strong") return <strong className={markdownStrongClassName}>{text}</strong>;
-  if (run.semantic === "emphasis") return <em className={markdownEmphasisClassName}>{text}</em>;
-  if (run.semantic === "delete") return <del className={markdownDeleteClassName}>{text}</del>;
-  if (run.semantic === "inline-code") return <InlineCode>{text}</InlineCode>;
+  if (run.semantic === "strong") return <MarkdownStrong>{text}</MarkdownStrong>;
+  if (run.semantic === "emphasis") return <MarkdownEmphasis>{text}</MarkdownEmphasis>;
+  if (run.semantic === "delete") return <MarkdownDelete>{text}</MarkdownDelete>;
+  if (run.semantic === "inline-code") return <MarkdownInlineCode>{text}</MarkdownInlineCode>;
   if (run.semantic === "math-source") return <ProjectedMath latex={text} />;
   if (run.semantic === "code-block") return text;
   if (run.semantic === "link-label") return text;
@@ -824,12 +823,12 @@ function ProjectedMath({ displayMode = false, latex }: { displayMode?: boolean; 
     if (displayMode) {
       return (
         <div className={markdownDisplayMathClassName}>
-          <InlineCode className="block px-3 py-2">{latex}</InlineCode>
+          <MarkdownInlineCode className="block px-3 py-2">{latex}</MarkdownInlineCode>
         </div>
       );
     }
 
-    return <InlineCode>{latex}</InlineCode>;
+    return <MarkdownInlineCode>{latex}</MarkdownInlineCode>;
   }
 
   if (displayMode) {
@@ -863,8 +862,4 @@ function renderLatex(latex: string, displayMode: boolean): string | null {
   } catch {
     return null;
   }
-}
-
-function InlineCode({ children, className }: { children: string; className?: string }) {
-  return <code className={cn(markdownInlineCodeClassName, className)}>{children}</code>;
 }

@@ -22,21 +22,23 @@ import {
 } from "../markdown/MarkdownTable";
 import { MarkdownTaskCheckbox } from "../markdown/MarkdownTask";
 import {
-  markdownBlockquoteClassName,
-  markdownDeleteClassName,
+  MarkdownBlockquote,
+  MarkdownDelete,
+  MarkdownEmphasis,
+  MarkdownInlineCode,
+  MarkdownStrong,
+} from "../markdown/MarkdownText";
+import {
   markdownDetailsClassName,
   markdownDocumentClassName,
-  markdownEmphasisClassName,
   markdownFootnoteBackrefClassName,
   markdownFootnotesClassName,
   markdownFootnoteRefClassName,
   markdownHeadingAnchorClassName,
   markdownHeadingClassName,
-  markdownInlineCodeClassName,
   markdownLinkClassName,
   markdownListMarkerClassName,
   markdownParagraphClassName,
-  markdownStrongClassName,
   markdownSummaryClassName,
   markdownSummaryIndicatorClassName,
   markdownTaskListClassName,
@@ -228,11 +230,7 @@ export function MarkdownOutput({
             }
 
             // Inline code
-            return (
-              <code className={markdownInlineCodeClassName} {...props}>
-                {children}
-              </code>
-            );
+            return <MarkdownInlineCode {...props}>{children}</MarkdownInlineCode>;
           },
 
           // Links open in new tab
@@ -422,11 +420,7 @@ export function MarkdownOutput({
 
           // Blockquotes
           blockquote({ children, ...props }) {
-            return (
-              <blockquote className={markdownBlockquoteClassName} {...props}>
-                {children}
-              </blockquote>
-            );
+            return <MarkdownBlockquote {...props}>{children}</MarkdownBlockquote>;
           },
 
           // Horizontal rule
@@ -449,27 +443,15 @@ export function MarkdownOutput({
           },
 
           strong({ children, ...props }) {
-            return (
-              <strong className={markdownStrongClassName} {...props}>
-                {children}
-              </strong>
-            );
+            return <MarkdownStrong {...props}>{children}</MarkdownStrong>;
           },
 
           em({ children, ...props }) {
-            return (
-              <em className={markdownEmphasisClassName} {...props}>
-                {children}
-              </em>
-            );
+            return <MarkdownEmphasis {...props}>{children}</MarkdownEmphasis>;
           },
 
           del({ children, ...props }) {
-            return (
-              <del className={markdownDeleteClassName} {...props}>
-                {children}
-              </del>
-            );
+            return <MarkdownDelete {...props}>{children}</MarkdownDelete>;
           },
 
           details({ children, ...props }) {
