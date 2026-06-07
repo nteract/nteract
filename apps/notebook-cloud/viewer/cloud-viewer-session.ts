@@ -9,9 +9,16 @@ import {
 import type { BlobResolver } from "runtimed";
 import type { WidgetStore } from "@/components/widgets/widget-store";
 import {
+  applyExecutionViewChangeset,
+  applyOutputChangeset,
   emitBroadcast,
   emitPresence,
+  resetPoolState,
+  resetRuntimeState,
+  resetRuntimeStoresProjection,
   startCursorDispatch,
+  setPoolState,
+  setRuntimeState,
 } from "../../notebook/src/notebook-surface";
 import {
   cloudSyncAuthFromPrototypeAuthState,
@@ -32,13 +39,6 @@ import { createOutputResolutionCache, type ResolvedCell } from "./render-resolut
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
-import {
-  applyExecutionViewChangeset,
-  applyOutputChangeset,
-  resetRuntimeStoresProjection,
-} from "../../notebook/src/lib/project-runtime-stores";
-import { resetPoolState, setPoolState } from "../../notebook/src/lib/pool-state";
-import { resetRuntimeState, setRuntimeState } from "../../notebook/src/lib/runtime-state";
 
 export interface CloudViewerConfig {
   notebookId: string;

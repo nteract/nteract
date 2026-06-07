@@ -84,7 +84,8 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
   assert.match(homeSource, /className="cloud-home-copy"/);
   assert.match(homeSource, /<h1>nteract<\/h1>/);
   assert.match(homeSource, /realtime notebooks/);
-  assert.match(homeSource, /Open topic viz/);
+  assert.match(homeSource, /View notebooks/);
+  assert.match(homeSource, /href="\/n"/);
   assert.doesNotMatch(homeSource, /showPrototypeDevControls/);
   assert.doesNotMatch(homeSource, /className="cloud-home-scope"/);
   assert.doesNotMatch(homeSource, /<select/);

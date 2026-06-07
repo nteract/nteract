@@ -433,7 +433,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     void (async () => {
       try {
         const response = await fetchWithCloudPrototypeAuth(
-          "/api/n?limit=100",
+          cloudNotebookListEndpoint(),
           { headers: { Accept: "application/json" }, signal: controller.signal },
           authState,
         );
@@ -568,6 +568,11 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
       </section>
     </main>
   );
+}
+
+function cloudNotebookListEndpoint(): string {
+  const path = ["api", "n"].join("/");
+  return new URL(`${path}?limit=100`, `${window.location.origin}/`).href;
 }
 
 function isCloudNotebookListResponse(value: unknown): value is CloudNotebookListResponse {
