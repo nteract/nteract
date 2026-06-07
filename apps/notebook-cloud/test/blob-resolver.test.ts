@@ -22,15 +22,33 @@ describe("notebook cloud blob resolver", () => {
     );
   });
 
-  it("can resolve protected binary blobs through authenticated object URLs", async () => {
-    const originalCreateObjectUrl = URL.createObjectURL;
-    URL.createObjectURL = (() =>
-      "blob:https://viewer.example.test/object-url") as typeof URL.createObjectURL;
+  it("can resolve protected binary blobs through authenticated display URLs", async () => {
+    const originalFileReader = globalThis.FileReader;
+    class TestFileReader {
+      result: string | ArrayBuffer | null = null;
+      error: Error | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      readAsDataURL(blob: Blob) {
+        blob
+          .arrayBuffer()
+          .then((buffer) => {
+            this.result = `data:${blob.type};base64,${Buffer.from(buffer).toString("base64")}`;
+            this.onload?.();
+          })
+          .catch((error) => {
+            this.error = error instanceof Error ? error : new Error(String(error));
+            this.onerror?.();
+          });
+      }
+    }
+    globalThis.FileReader = TestFileReader as typeof FileReader;
     const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
     const resolver = createNotebookCloudBlobResolver({
       baseUrl: "https://viewer.example.test/n/notebook-1",
       blobBasePath: "/api/n/notebook-1/blobs/",
-      authenticatedBinaryObjectUrls: true,
+      authenticatedBinaryDisplayUrls: true,
       fetchImpl: async (input, init) => {
         fetchCalls.push({ input, init });
         return new Response(new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }));
@@ -45,7 +63,7 @@ describe("notebook cloud blob resolver", () => {
           media_type: "image/png",
           size: 4,
         }),
-        "blob:https://viewer.example.test/object-url",
+        "data:image/png;base64,iVBORw==",
       );
       assert.equal(
         await resolver.displayUrl?.({
@@ -53,10 +71,10 @@ describe("notebook cloud blob resolver", () => {
           media_type: "image/png",
           size: 4,
         }),
-        "blob:https://viewer.example.test/object-url",
+        "data:image/png;base64,iVBORw==",
       );
     } finally {
-      URL.createObjectURL = originalCreateObjectUrl;
+      globalThis.FileReader = originalFileReader;
     }
 
     assert.deepEqual(fetchCalls, [

@@ -17,10 +17,10 @@ export interface BlobResolver {
 
   /**
    * Return a browser-consumable display URL after any host-owned auth/proxy
-   * work. Cloud hosts use this to turn protected binary blobs into same-page
-   * object URLs without putting bearer credentials into `<img src>` URLs.
+   * work. Cloud hosts use this to turn protected binary blobs into display
+   * URLs without putting bearer credentials into `<img src>` URLs.
    */
-  displayUrl?(ref: BlobRef): Promise<string>;
+  displayUrl?(ref: BlobRef, mediaType?: string): Promise<string>;
 
   /**
    * Whether binary MIME refs can be resolved through `url()` without awaiting
@@ -36,7 +36,7 @@ export type BlobResolverInput = BlobResolver | number;
 
 export interface BlobResolverOptions {
   url(ref: BlobRef): string;
-  displayUrl?: (ref: BlobRef) => Promise<string>;
+  displayUrl?: (ref: BlobRef, mediaType?: string) => Promise<string>;
   resolvesBinaryUrlsSynchronously?: boolean;
   fetchImpl?: typeof fetch;
   requestInit?: RequestInit | ((ref: BlobRef) => RequestInit);

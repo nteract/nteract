@@ -507,11 +507,14 @@ describe("resolveContentRef", () => {
     );
 
     expect(result).toBe("blob:https://cloud.test/image");
-    expect(displayUrl).toHaveBeenCalledWith({
-      blob: "sha256:image",
-      size: 68,
-      media_type: "image/png",
-    });
+    expect(displayUrl).toHaveBeenCalledWith(
+      {
+        blob: "sha256:image",
+        size: 68,
+        media_type: "image/png",
+      },
+      "image/png",
+    );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
@@ -725,8 +728,8 @@ describe("resolveManifest", () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it("uses async object URLs for protected binary blob refs", async () => {
-      const displayUrl = vi.fn().mockResolvedValue("blob:https://cloud.test/image");
+    it("uses async display URLs for protected binary blob refs", async () => {
+      const displayUrl = vi.fn().mockResolvedValue("data:image/png;base64,iVBORw==");
       const resolver = createBlobResolver({
         url: (ref) => `https://cloud.test/blobs/${encodeURIComponent(ref.blob)}`,
         displayUrl,
@@ -749,7 +752,7 @@ describe("resolveManifest", () => {
         output_id: "async-display-protected-image",
         output_type: "display_data",
         data: {
-          "image/png": "blob:https://cloud.test/image",
+          "image/png": "data:image/png;base64,iVBORw==",
           "text/plain": "PNG image",
         },
         metadata: {},

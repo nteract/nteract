@@ -131,7 +131,9 @@ export async function resolveContentRef(
   if ("inline" in ref) return ref.inline;
   if ("url" in ref) return ref.url;
   if (mimeType && looksLikeBinaryMime(mimeType)) {
-    return blobResolver.displayUrl ? await blobResolver.displayUrl(ref) : blobResolver.url(ref);
+    return blobResolver.displayUrl
+      ? await blobResolver.displayUrl(ref, mimeType)
+      : blobResolver.url(ref);
   }
 
   const response = await blobResolver.fetch(ref);

@@ -105,6 +105,7 @@ async function main() {
       events.blobResponses.push({
         url: safeDiagnosticUrl(responseUrl),
         status: response.status(),
+        contentType: response.headers().get("content-type"),
       });
     }
   });
@@ -152,7 +153,10 @@ async function main() {
 
   const failedBlobResponses = events.blobResponses.filter((response) => response.status >= 400);
   const failedBlobImages = after.images.filter(
-    (image) => isNotebookBlobUrl(image.src) && (!image.complete || image.naturalWidth <= 0),
+    (image) => isBlobBackedImageSource(image.src) && !isLoadedImage(image),
+  );
+  const loadedBlobBackedImages = after.images.filter(
+    (image) => isBlobBackedImageSource(image.src) && isLoadedImage(image),
   );
   if (events.pageErrors.length > 0) {
     throw new Error(`browser page errors:\n${events.pageErrors.join("\n")}`);
@@ -166,7 +170,10 @@ async function main() {
   if (failedBlobResponses.length > 0) {
     throw new Error(`blob fetch failures:\n${JSON.stringify(failedBlobResponses, null, 2)}`);
   }
-  if (requireBlobImage && !after.images.some((image) => isNotebookBlobUrl(image.src))) {
+  if (requireBlobImage && events.blobResponses.length === 0) {
+    throw new Error("expected at least one authenticated blob fetch");
+  }
+  if (requireBlobImage && loadedBlobBackedImages.length === 0) {
     throw new Error("expected at least one rendered notebook blob image");
   }
   if (failedBlobImages.length > 0) {
@@ -193,9 +200,7 @@ async function main() {
           "execute_button_rendered",
           "execute_button_clicked",
           ...(expectedText ? ["expected_text_observed_after_click"] : []),
-          ...(after.images.some((image) => isNotebookBlobUrl(image.src))
-            ? ["blob_image_loaded_from_img_src"]
-            : []),
+          ...(loadedBlobBackedImages.length > 0 ? ["blob_backed_image_loaded_from_img_src"] : []),
           ...(events.blobResponses.length > 0 ? ["blob_fetches_returned_ok"] : []),
         ],
         before,
@@ -282,6 +287,14 @@ function safeDiagnosticUrl(value) {
 
 function isNotebookBlobUrl(value) {
   return /\/api\/n\/[^/]+\/blobs\//.test(value);
+}
+
+function isBlobBackedImageSource(value) {
+  return isNotebookBlobUrl(value) || /^blob:|^data:image\//i.test(value);
+}
+
+function isLoadedImage(image) {
+  return image.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
 }
 
 function assertScope(scope) {
