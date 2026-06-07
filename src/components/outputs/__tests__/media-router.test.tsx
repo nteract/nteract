@@ -548,6 +548,20 @@ describe("MediaRouter component", () => {
       });
     });
 
+    it("renders blob URL images without treating them as base64", async () => {
+      const blobUrl = "blob:https://preview.runt.run/protected-image";
+
+      render(
+        <MediaProvider>
+          <MediaRouter data={{ "image/png": blobUrl }} />
+        </MediaProvider>,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("img")).toHaveAttribute("src", blobUrl);
+      });
+    });
+
     it("renders JSON after lazy load", async () => {
       render(
         <MediaProvider>

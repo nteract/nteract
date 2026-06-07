@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { mediaDataToSource } from "./media-url";
 
 interface AudioOutputProps {
   /**
@@ -22,13 +23,7 @@ interface AudioOutputProps {
 export function AudioOutput({ data, mediaType = "audio/wav", className = "" }: AudioOutputProps) {
   if (!data) return null;
 
-  const src =
-    data.startsWith("data:") ||
-    data.startsWith("http://") ||
-    data.startsWith("https://") ||
-    data.startsWith("/")
-      ? data
-      : `data:${mediaType};base64,${data}`;
+  const src = mediaDataToSource(data, mediaType);
 
   return (
     <div data-slot="audio-output" className={cn("py-2", className)}>
