@@ -13,6 +13,7 @@ import {
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
 import { loadRuntimedNode } from "./runtimed-node-loader.mjs";
+import { summarizeCatalog } from "./hosted-render-smoke-catalog.mjs";
 
 const rt = loadRuntimedNode();
 
@@ -85,13 +86,14 @@ try {
   );
 
   const catalog = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}`);
+  const catalogSummary = summarizeCatalog(catalog);
+  const latestRevision = catalog.revisions?.find(
+    (revision) => revision.id === catalogSummary.latestRevisionId,
+  );
   assert(
-    catalog.revisions?.some(
-      (revision) =>
-        revision.notebook_heads_hash === headsHash &&
-        revision.runtime_heads_hash === runtimeHeadsHash &&
-        revision.comms_heads_hash === commsHeadsHash,
-    ),
+    latestRevision?.notebook_heads_hash === headsHash &&
+      latestRevision?.runtime_heads_hash === runtimeHeadsHash &&
+      latestRevision?.comms_heads_hash === commsHeadsHash,
     "published catalog did not include the snapshot triplet",
   );
 
@@ -110,6 +112,8 @@ try {
         headsHash,
         runtimeHeadsHash,
         commsHeadsHash,
+        ownerPrincipal: catalogSummary.ownerPrincipal,
+        latestRevisionActorLabel: catalogSummary.latestRevisionActorLabel,
         cells: Array.isArray(cells) ? cells.length : null,
         blobs: Object.keys(blobRefs).length,
         checks: [
