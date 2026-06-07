@@ -14,13 +14,18 @@ import {
   Check,
   Clock,
   ExternalLink,
+  FilePlus2,
+  Globe2,
   KeyRound,
   Loader2,
   LogIn,
   LogOut,
+  Radio,
   RotateCcw,
+  Share2,
   UserRound,
   X,
+  Zap,
 } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
@@ -102,6 +107,14 @@ import type { ResolvedCell } from "./render-resolution";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
+import {
+  cloudNotebookDisplayTitle,
+  cloudNotebookShortId,
+  projectCloudNotebookDashboard,
+  type CloudNotebookDashboardMetric,
+  type CloudNotebookDashboardModel,
+  type CloudNotebookListItem,
+} from "./notebook-dashboard";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
 import { CloudSharingControls } from "./sharing-controls";
 import { cloudResponseError } from "./cloud-response";
@@ -143,25 +156,14 @@ interface ViewerRuntime {
   config: CloudViewerConfig;
 }
 
-interface CloudNotebookListItem {
-  notebook_id: string;
-  title: string | null;
-  owner_principal: string;
-  scope: "viewer" | "editor" | "runtime_peer" | "owner";
-  created_at: string;
-  updated_at: string;
-  latest_revision_id: string | null;
-  viewer_url: string;
-  endpoints: {
-    catalog: string;
-    acl: string;
-    access_requests: string;
-  };
-}
-
 interface CloudNotebookListResponse {
   ok: boolean;
   notebooks: CloudNotebookListItem[];
+}
+
+interface CloudNotebookCreateResponse {
+  ok: boolean;
+  viewer_url?: string;
 }
 
 type CloudNotebookListState =
@@ -426,7 +428,13 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
   const [listState, setListState] = useState<CloudNotebookListState>({ kind: "loading" });
   const [refreshIndex, setRefreshIndex] = useState(0);
+  const [createState, setCreateState] = useState<"idle" | "starting">("idle");
+  const [createError, setCreateError] = useState<string | null>(null);
   const signedIn = authState.mode === "dev" || authState.mode === "oidc";
+  const dashboardModel = useMemo(
+    () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
+    [listState],
+  );
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
@@ -474,6 +482,39 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     setRefreshIndex((value) => value + 1);
   };
 
+  const createNotebook = async () => {
+    if (!signedIn || createState === "starting") {
+      return;
+    }
+    try {
+      setCreateError(null);
+      setCreateState("starting");
+      const response = await fetchWithCloudPrototypeAuth(
+        cloudNotebookCollectionEndpoint(),
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({}),
+        },
+        authState,
+      );
+      if (!response.ok) {
+        throw await cloudResponseError(response, "Unable to create notebook");
+      }
+      const body = (await response.json()) as CloudNotebookCreateResponse;
+      if (body.ok !== true || typeof body.viewer_url !== "string") {
+        throw new Error("Unable to create notebook: response shape was invalid");
+      }
+      window.location.assign(body.viewer_url);
+    } catch (error) {
+      setCreateState("idle");
+      setCreateError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const signOut = () => {
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
@@ -493,7 +534,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           <a className="cloud-notebook-list-brand" href="/">
             nteract
           </a>
-          <h1>Notebooks</h1>
+          <h1>Notebook home</h1>
           <p>{headerDetail}</p>
         </div>
         <div className="cloud-notebook-list-actions">
@@ -504,6 +545,18 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           >
             <RotateCcw aria-hidden="true" />
             Refresh
+          </button>
+          <button
+            type="button"
+            disabled={!signedIn || createState === "starting"}
+            onClick={createNotebook}
+          >
+            {createState === "starting" ? (
+              <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+            ) : (
+              <FilePlus2 aria-hidden="true" />
+            )}
+            {createState === "starting" ? "Creating" : "New notebook"}
           </button>
           {signedIn ? null : (
             <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
@@ -524,6 +577,11 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           role={authRenewal.kind === "failed" ? "alert" : "status"}
         >
           {authRenewal.message}
+        </div>
+      ) : null}
+      {createError ? (
+        <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
+          {createError}
         </div>
       ) : null}
 
@@ -548,41 +606,155 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
             <BookOpen aria-hidden="true" />
             <span>No notebooks yet.</span>
           </div>
+        ) : dashboardModel ? (
+          <CloudNotebookDashboard model={dashboardModel} />
         ) : (
-          <ul className="cloud-notebook-list" aria-label="Notebook rooms">
-            {listState.notebooks.map((notebook) => (
-              <li key={notebook.notebook_id}>
-                <a className="cloud-notebook-list-row" href={notebook.viewer_url}>
-                  <span className="cloud-notebook-list-icon" aria-hidden="true">
-                    <BookOpen />
-                  </span>
-                  <span className="cloud-notebook-list-main">
-                    <span className="cloud-notebook-list-title">
-                      {notebook.title?.trim() || notebook.notebook_id}
-                    </span>
-                    <span className="cloud-notebook-list-id">{notebook.notebook_id}</span>
-                  </span>
-                  <span className="cloud-notebook-list-scope" data-scope={notebook.scope}>
-                    {formatNotebookScope(notebook.scope)}
-                  </span>
-                  <span className="cloud-notebook-list-updated">
-                    <Clock aria-hidden="true" />
-                    {formatNotebookUpdatedAt(notebook.updated_at)}
-                  </span>
-                  <ExternalLink className="cloud-notebook-list-open" aria-hidden="true" />
-                </a>
-              </li>
-            ))}
-          </ul>
+          <div className="cloud-notebook-list-state" data-kind="error" role="alert">
+            <AlertCircle aria-hidden="true" />
+            <span>Unable to project notebook dashboard.</span>
+          </div>
         )}
       </section>
     </main>
   );
 }
 
+function CloudNotebookDashboard({ model }: { model: CloudNotebookDashboardModel }) {
+  const continued = model.continueNotebook;
+
+  return (
+    <div className="cloud-dashboard">
+      {continued ? (
+        <section className="cloud-dashboard-continue" aria-labelledby="cloud-dashboard-continue">
+          <div className="cloud-dashboard-continue-main">
+            <p>Continue</p>
+            <h2 id="cloud-dashboard-continue">{cloudNotebookDisplayTitle(continued)}</h2>
+            <span className="cloud-dashboard-continue-id">
+              {cloudNotebookShortId(continued.notebook_id)}
+            </span>
+            <div className="cloud-dashboard-continue-facts">
+              <span>
+                <Clock aria-hidden="true" />
+                {formatNotebookUpdatedAt(continued.updated_at)}
+              </span>
+              <span>
+                <UserRound aria-hidden="true" />
+                {formatNotebookScope(continued.scope)}
+              </span>
+              <span>
+                {continued.latest_revision_id ? (
+                  <Globe2 aria-hidden="true" />
+                ) : (
+                  <Radio aria-hidden="true" />
+                )}
+                {continued.latest_revision_id ? "published revision" : "live room"}
+              </span>
+            </div>
+          </div>
+          <a className="cloud-dashboard-primary-link" href={continued.viewer_url}>
+            Open
+            <ExternalLink aria-hidden="true" />
+          </a>
+        </section>
+      ) : null}
+
+      <section className="cloud-dashboard-summary" aria-label="Notebook summary">
+        {model.metrics.map((metric) => (
+          <CloudNotebookDashboardMetric key={metric.label} metric={metric} />
+        ))}
+      </section>
+
+      <section className="cloud-dashboard-grid">
+        <section aria-label="Notebook rooms">
+          <div className="cloud-dashboard-section-heading">
+            <h2>Notebooks</h2>
+          </div>
+          <ul className="cloud-notebook-list">
+            {model.notebooks.map((notebook) => (
+              <li key={notebook.notebook_id}>
+                <CloudNotebookDashboardRow notebook={notebook} />
+              </li>
+            ))}
+          </ul>
+        </section>
+        <aside className="cloud-dashboard-aside" aria-label="Notebook workspace">
+          <section>
+            <p className="cloud-dashboard-aside-kicker">Compute</p>
+            <h2>Workstations</h2>
+            <p>
+              Workstation status appears inside each notebook room once a compute target is
+              selected.
+            </p>
+          </section>
+          <section>
+            <p className="cloud-dashboard-aside-kicker">Sharing</p>
+            <h2>Public previews</h2>
+            <p>Published notebooks can expose safe metadata and revision-aware preview images.</p>
+          </section>
+        </aside>
+      </section>
+    </div>
+  );
+}
+
+function CloudNotebookDashboardMetric({ metric }: { metric: CloudNotebookDashboardMetric }) {
+  const Icon = cloudNotebookDashboardMetricIcons[metric.icon];
+  return (
+    <div className="cloud-dashboard-summary-item">
+      <span>
+        <Icon aria-hidden="true" />
+        {metric.label}
+      </span>
+      <strong>{metric.value}</strong>
+      <p>{metric.detail}</p>
+    </div>
+  );
+}
+
+const cloudNotebookDashboardMetricIcons = {
+  notebooks: BookOpen,
+  owned: UserRound,
+  published: Zap,
+} satisfies Record<CloudNotebookDashboardMetric["icon"], typeof BookOpen>;
+
+function CloudNotebookDashboardRow({ notebook }: { notebook: CloudNotebookListItem }) {
+  return (
+    <a className="cloud-notebook-list-row" href={notebook.viewer_url}>
+      <span className="cloud-notebook-list-icon" aria-hidden="true">
+        <BookOpen />
+      </span>
+      <span className="cloud-notebook-list-main">
+        <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
+        <span className="cloud-notebook-list-id">{cloudNotebookShortId(notebook.notebook_id)}</span>
+        <span className="cloud-notebook-list-row-facts">
+          <span className="cloud-notebook-list-scope" data-scope={notebook.scope}>
+            {formatNotebookScope(notebook.scope)}
+          </span>
+          <span>
+            {notebook.latest_revision_id ? (
+              <Share2 aria-hidden="true" />
+            ) : (
+              <Radio aria-hidden="true" />
+            )}
+            {notebook.latest_revision_id ? "published revision" : "live room"}
+          </span>
+        </span>
+      </span>
+      <span className="cloud-notebook-list-updated">
+        <Clock aria-hidden="true" />
+        {formatNotebookUpdatedAt(notebook.updated_at)}
+      </span>
+      <ExternalLink className="cloud-notebook-list-open" aria-hidden="true" />
+    </a>
+  );
+}
+
 function cloudNotebookListEndpoint(): string {
-  const path = ["api", "n"].join("/");
-  return new URL(`${path}?limit=100`, `${window.location.origin}/`).href;
+  return new URL("api/n?limit=100", `${window.location.origin}/`).href;
+}
+
+function cloudNotebookCollectionEndpoint(): string {
+  return new URL("api/n", `${window.location.origin}/`).href;
 }
 
 function isCloudNotebookListResponse(value: unknown): value is CloudNotebookListResponse {

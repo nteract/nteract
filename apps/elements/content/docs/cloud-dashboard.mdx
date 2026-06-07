@@ -1,0 +1,29 @@
+---
+title: Cloud dashboard
+description: Hosted notebook home, continuation, workstation context, and share-preview states.
+---
+
+import { CloudDashboardExample } from "@/components/cloud-dashboard-example";
+
+The hosted dashboard is app-level product chrome. It should help a signed-in
+user continue recent notebook work, inspect visible notebooks, and understand
+whether compute is ready without becoming another notebook shell.
+
+This fixture uses the current list endpoint shape plus deterministic workstation
+and sharing facts. It keeps the extra facts illustrative until the production
+API has stable projections for them.
+
+<CloudDashboardExample />
+
+## Current read
+
+- `/n` should become a notebook home, not only a file list.
+- The first action should be continuing recent work; the full notebook list
+  stays close behind it.
+- Workstation readiness is room/app context. It can summarize the selected
+  default target without owning notebook execution controls.
+- Share previews should be revision-aware and safe by default. Private
+  notebooks should not leak content through metadata; public notebooks can use
+  explicit published data.
+- The dashboard can use host-owned app chrome while notebook pages continue to
+  use the shared document shell, rail, toolbar, and cell/output surfaces.
