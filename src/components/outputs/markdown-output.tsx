@@ -111,9 +111,17 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
   };
 
   return (
-    <div className={markdownCodeBlockShellClassName}>
+    <div
+      className={markdownCodeBlockShellClassName}
+      data-code-language={languageLabel === "code" ? undefined : languageLabel}
+    >
       <div className={markdownCodeBlockToolbarClassName}>
-        <span className={markdownCodeBlockLabelClassName}>{languageLabel}</span>
+        <span
+          className={markdownCodeBlockLabelClassName}
+          title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
+        >
+          code
+        </span>
         {enableCopy && (
           <button
             onClick={handleCopy}

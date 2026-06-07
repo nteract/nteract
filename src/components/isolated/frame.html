@@ -132,21 +132,8 @@
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 {
-        position: relative;
         margin: 1.75rem 0 0.75rem;
-        padding-bottom: 0.5rem;
-        border-bottom: 1px solid var(--border-color);
         font-size: 1.5rem;
-      }
-
-      :is([data-slot="markdown-output"], [data-slot="html-output"]) h2::after {
-        position: absolute;
-        bottom: -1px;
-        left: 0;
-        width: 4rem;
-        height: 1px;
-        background: color-mix(in oklch, var(--accent-color) 55%, transparent);
-        content: "";
       }
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 > a[href^="#"],
@@ -480,12 +467,7 @@
 
       :is([data-slot="markdown-output"], [data-slot="html-output"]) .katex-display {
         margin: 1.25rem 0;
-        padding: 1rem;
         overflow-x: auto;
-        border-top: 1px solid var(--border-color);
-        border-bottom: 1px solid var(--border-color);
-        border-radius: 0.125rem;
-        background: color-mix(in oklch, var(--bg-secondary) 46%, transparent);
         text-align: center;
       }
 

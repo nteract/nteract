@@ -150,6 +150,7 @@ describe("generateFrameHtml", () => {
       expect(html).toContain('[data-slot="markdown-output"], [data-slot="html-output"]');
       expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) h3');
       expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) table');
+      expect(html).not.toContain("h2::after");
       expect(html).toContain(
         ':is([data-slot="markdown-output"], [data-slot="html-output"]) details',
       );
@@ -160,6 +161,9 @@ describe("generateFrameHtml", () => {
       expect(html).toContain("li.task-list-item");
       expect(html).toContain(
         ':is([data-slot="markdown-output"], [data-slot="html-output"]) button',
+      );
+      expect(html).not.toMatch(
+        /\.katex-display\s*\{[^}]*border-top: 1px solid var\(--border-color\)/,
       );
       expect(html).toContain("font-family: var(--output-mono-font)");
       expect(html).toContain("--output-document-font: var(--output-ui-font)");

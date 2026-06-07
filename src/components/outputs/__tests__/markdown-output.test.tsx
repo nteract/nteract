@@ -97,13 +97,17 @@ describe("MarkdownOutput heading anchors", () => {
     );
   });
 
-  it("frames display math as a document equation object", () => {
+  it("renders display math plainly in the document flow", () => {
     const { container } = render(<MarkdownOutput content={"$$\n\\\\int_0^1 x dx\n$$"} />);
 
     const displayMath = document.querySelector(".katex-display");
     expect(displayMath).not.toBeNull();
     expect(container.querySelector('[data-slot="markdown-output"]')).toHaveClass(
       "[&_.katex-display]:my-5",
+      "[&_.katex-display]:overflow-x-auto",
+      "[&_.katex-display]:text-center",
+    );
+    expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
       "[&_.katex-display]:border-y",
       "[&_.katex-display]:bg-muted/[0.16]",
     );
@@ -112,7 +116,9 @@ describe("MarkdownOutput heading anchors", () => {
   it("renders fenced code with a visible language and copy rail", () => {
     render(<MarkdownOutput content={"```python\nprint('hi')\n```"} />);
 
-    expect(screen.getByText("python")).toHaveClass("uppercase", "tracking-[0.08em]");
+    expect(screen.getByText("code")).toHaveAttribute("title", "python code block");
+    expect(screen.getByText("code")).toHaveClass("text-muted-foreground/80");
+    expect(screen.queryByText("python")).toBeNull();
     expect(screen.getByTitle("Copy code")).toHaveClass("inline-flex", "bg-background/80");
     expect(screen.getByText("print")).toBeInTheDocument();
   });

@@ -850,9 +850,17 @@ function ProjectedCodeBlock({
   const languageLabel = codeBlockLanguageLabel(language);
 
   return (
-    <div className={markdownCodeBlockShellClassName}>
+    <div
+      className={markdownCodeBlockShellClassName}
+      data-code-language={languageLabel === "code" ? undefined : languageLabel}
+    >
       <div className={markdownCodeBlockToolbarClassName}>
-        <span className={markdownCodeBlockLabelClassName}>{languageLabel}</span>
+        <span
+          className={markdownCodeBlockLabelClassName}
+          title={languageLabel === "code" ? "Code block" : `${languageLabel} code block`}
+        >
+          code
+        </span>
         <button
           type="button"
           aria-label={copied ? "Copied code" : "Copy code"}

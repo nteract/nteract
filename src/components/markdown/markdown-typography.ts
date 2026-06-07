@@ -1,5 +1,5 @@
 export const markdownDocumentClassName =
-  "not-prose select-text py-2 text-base leading-[1.68] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:font-[var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_.katex-display]:my-5 [&_.katex-display]:overflow-x-auto [&_.katex-display]:rounded-sm [&_.katex-display]:border-y [&_.katex-display]:border-border/70 [&_.katex-display]:bg-muted/[0.16] [&_.katex-display]:px-4 [&_.katex-display]:py-4 [&_.katex-display]:text-center [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:font-[var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
+  "not-prose select-text py-2 text-base leading-[1.68] text-foreground font-[var(--output-document-font)] [font-kerning:normal] [hyphens:auto] [text-rendering:optimizeLegibility] selection:bg-primary/15 selection:text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_abbr]:cursor-help [&_abbr]:decoration-dotted [&_abbr]:underline-offset-4 [&_figcaption]:mt-2 [&_figcaption]:font-[var(--output-ui-font)] [&_figcaption]:text-xs [&_figcaption]:leading-5 [&_figcaption]:text-muted-foreground [&_kbd]:rounded-sm [&_kbd]:border [&_kbd]:border-border [&_kbd]:bg-muted/60 [&_kbd]:px-1.5 [&_kbd]:py-0.5 [&_kbd]:font-[var(--output-ui-font)] [&_kbd]:text-[0.82em] [&_.katex-display]:my-5 [&_.katex-display]:overflow-x-auto [&_.katex-display]:text-center [&_mark]:rounded-sm [&_mark]:bg-amber-200/70 [&_mark]:px-1 dark:[&_mark]:bg-amber-500/25 [&_small]:font-[var(--output-ui-font)] [&_small]:text-[0.82em] [&_small]:leading-normal [&_sub]:text-[0.75em] [&_sup]:text-[0.75em]";
 
 export const markdownLinkClassName =
   "rounded-[2px] font-medium text-primary underline decoration-primary/45 decoration-1 underline-offset-4 transition-[background-color,color,text-decoration-color] hover:bg-primary/5 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
@@ -13,8 +13,7 @@ export const markdownCodeBlockShellClassName =
 export const markdownCodeBlockToolbarClassName =
   "flex min-h-8 items-center justify-between gap-3 border-b border-border/70 px-3 py-1.5 font-[var(--output-ui-font)] text-[11px] leading-none text-muted-foreground";
 
-export const markdownCodeBlockLabelClassName =
-  "truncate font-medium uppercase tracking-[0.08em] text-muted-foreground";
+export const markdownCodeBlockLabelClassName = "truncate font-medium text-muted-foreground/80";
 
 export const markdownCodeBlockCopyButtonClassName =
   "inline-flex size-6 shrink-0 items-center justify-center rounded border border-border bg-background/80 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
@@ -22,7 +21,7 @@ export const markdownCodeBlockCopyButtonClassName =
 export const markdownParagraphClassName = "my-3 leading-relaxed [text-wrap:pretty]";
 
 export const markdownDisplayMathClassName =
-  "my-5 overflow-x-auto rounded-sm border-y border-border/70 bg-muted/[0.16] px-4 py-4 text-center [&_.katex-display]:my-0";
+  "my-5 overflow-x-auto text-center [&_.katex-display]:my-0";
 
 export const markdownInlineMathClassName =
   "inline align-baseline text-foreground [&_.katex]:text-[1.03em]";
@@ -108,7 +107,7 @@ export function markdownHeadingClassName(element: string) {
     return "group/markdown-heading scroll-mt-16 mt-7 mb-4 text-[2rem] leading-[1.08] font-semibold [text-wrap:balance]";
   }
   if (element === "h2") {
-    return "group/markdown-heading relative scroll-mt-16 mt-7 mb-3 border-b border-border/70 pb-2 text-2xl leading-tight font-semibold [text-wrap:balance] after:absolute after:bottom-[-1px] after:left-0 after:h-px after:w-16 after:bg-primary/50 after:content-['']";
+    return "group/markdown-heading scroll-mt-16 mt-7 mb-3 text-2xl leading-tight font-semibold [text-wrap:balance]";
   }
   if (element === "h3") {
     return "group/markdown-heading scroll-mt-16 mt-6 mb-2.5 text-xl leading-tight font-semibold [text-wrap:balance]";

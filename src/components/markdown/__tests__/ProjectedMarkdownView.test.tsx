@@ -99,11 +99,8 @@ describe("ProjectedMarkdownView", () => {
       "[&>*:last-child]:mb-0",
     );
     expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-[2rem]", "font-semibold");
-    expect(screen.getByRole("heading", { level: 2 })).toHaveClass(
-      "text-2xl",
-      "font-semibold",
-      "after:bg-primary/50",
-    );
+    expect(screen.getByRole("heading", { level: 2 })).toHaveClass("text-2xl", "font-semibold");
+    expect(screen.getByRole("heading", { level: 2 })).not.toHaveClass("after:bg-primary/50");
     expect(screen.getByRole("heading", { level: 3 })).toHaveClass("text-xl", "font-semibold");
     expect(screen.getByRole("heading", { level: 4 })).toHaveClass("text-lg", "font-semibold");
   });
@@ -219,6 +216,8 @@ describe("ProjectedMarkdownView", () => {
       "my-5",
       "text-center",
       "overflow-x-auto",
+    );
+    expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
       "border-y",
       "bg-muted/[0.16]",
     );
@@ -972,7 +971,8 @@ describe("ProjectedMarkdownView", () => {
       />,
     );
 
-    expect(screen.getByText("code")).toHaveClass("uppercase", "tracking-[0.08em]");
+    expect(screen.getByText("code")).toHaveClass("text-muted-foreground/80");
+    expect(screen.getByText("code")).not.toHaveClass("uppercase", "tracking-[0.08em]");
     expect(screen.getByRole("button", { name: "Copy code" })).toHaveClass(
       "inline-flex",
       "border",
@@ -1004,7 +1004,12 @@ describe("ProjectedMarkdownView", () => {
     );
 
     expect(screen.getByText("datasets")).toBeInTheDocument();
-    expect(screen.getByText("python")).toHaveClass("uppercase", "tracking-[0.08em]");
+    expect(screen.getByText("code")).toHaveAttribute("title", "python code block");
+    expect(screen.getByText("code").closest("[data-code-language]")).toHaveAttribute(
+      "data-code-language",
+      "python",
+    );
+    expect(screen.queryByText("python")).toBeNull();
     expect(document.querySelector("pre code span")).not.toBeNull();
   });
 
@@ -1221,6 +1226,45 @@ describe("ProjectedMarkdownView", () => {
     expect(image).toHaveClass("border", "shadow-sm");
     expect(image.closest("figure")).toHaveClass("my-5");
     expect(screen.getByText("Daily plot")).toHaveClass("text-xs", "text-muted-foreground");
+  });
+
+  it("does not promote image alt text into a figure caption", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "image",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 120, confidence: "low", width: 720 },
+              sourceSpanByte: [0, 42],
+              sourceSpanUtf16: [0, 42],
+              syntaxSpans: [],
+              text: "Plot alt",
+            },
+          ],
+          runs: [
+            {
+              blockId: "image",
+              imageAlt: "Plot alt",
+              imageSrc: "attachment:plot.png",
+              inlineId: "img0",
+              listItemIndex: null,
+              renderedText: "Plot alt",
+              renderedTextUtf16: [0, 8],
+              semantic: "image",
+              sourceSpanByte: [0, 42],
+              sourceSpanUtf16: [0, 42],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Plot alt" })).toBeInTheDocument();
+    expect(document.querySelector("figcaption")).toBeNull();
   });
 
   it("does not render projected images with unsafe sources", () => {
