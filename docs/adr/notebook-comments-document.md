@@ -184,8 +184,8 @@ ROOT/
       mutation_state: Str            # "pending" | "accepted" | "rejected"
       rejection_reason: Str?
       created_at: Str
-      created_by_actor_label: Str    # host/daemon stamped when accepted
-      created_by_authority: Str      # "pending" | "host_stamped" | "local_uid" | "imported"
+      created_by_actor_label: Str?   # host/daemon stamped when accepted
+      created_by_authority: Str?     # "host_stamped" | "local_uid" | "imported"
       created_by_display_name: Str?  # advisory, host projected when available
       resolved_at: Str?
       resolved_by_actor_label: Str?
@@ -199,8 +199,8 @@ ROOT/
           mutation_state: Str        # "pending" | "accepted" | "rejected"
           rejection_reason: Str?
           created_at: Str
-          created_by_actor_label: Str
-          created_by_authority: Str
+          created_by_actor_label: Str?
+          created_by_authority: Str?
           edited_at: Str?
           edited_by_actor_label: Str?
           edited_by_authority: Str?
@@ -218,22 +218,48 @@ body at once. It keeps the schema ready for collaborative comment editing and
 avoids whole-string conflict behavior.
 
 `created_by_authority` and related authority fields record the trust context of
-the durable attribution field:
+the durable attribution field once an authority or import has established that
+field:
 
 - `host_stamped`: Cloud room host stamped the field from an authenticated Cloud
   request.
 - `local_uid`: local daemon stamped the field from same-UID desktop provenance.
-- `pending`: client-authored optimistic state that has not yet been finalized by
-  the local daemon or Cloud comments authority.
 - `imported`: attribution was carried across a boundary such as local-to-Cloud
   promotion, clone-with-comments, or external import and should be displayed as
   imported/unverified.
+
+Pending state is carried by `mutation_state`, not by overloading the authority
+enum. While a thread or message is pending, authority fields are absent or
+treated as untrusted; provisional display can come from the validated change actor
+or local actor projection.
 
 `mutation_state` is what keeps optimistic UI inside Automerge instead of in a
 parallel React store. The UI can render pending threads and replies immediately
 from the local `CommentsDoc`. The authority then writes the same object to
 `accepted` with stamped author fields, or `rejected` with a reason the projection
 can display or collapse.
+
+#### Finalization is verified by change author, not by field value
+
+`mutation_state = "accepted"` is meaningful only because of *who wrote it*, not
+because the field says so. In raw CRDT convergence any editor-scope peer can write
+any field, so a malicious client could set `mutation_state = "accepted"`,
+`created_by_authority = "host_stamped"`, and `created_by_actor_label` to a victim
+in a single client change and self-finalize a spoofed comment.
+
+The trust invariant the projection must enforce:
+
+- Policy-bearing fields (`mutation_state`, `created_by_*`, `edited_by_*`,
+  `resolved_by_*`, and the authority fields) are trusted only when the latest
+  change writing them was authored by an actor whose principal is the comments
+  authority (local daemon or Cloud comments host).
+- Body text is trusted when authored by the claimed author's validated principal.
+- A client-authored `accepted` is ignored and rendered as pending. The field is a
+  cache of "an authority change finalized this," verifiable by the attribution
+  projection below, never a self-asserted boolean.
+
+This makes the attribution projection load-bearing for the core trust model, not
+only for "edited by" display.
 
 ### Anchors
 
@@ -378,9 +404,9 @@ optimistic record should be the local `CommentsDoc` mutation itself.
 
 The write flow:
 
-1. UI or agent creates a tentative thread/message/edit/resolve mutation in its
-   local `CommentsDoc` replica with `mutation_state = "pending"` and
-   `created_by_authority = "pending"` when applicable.
+1. UI or agent creates a tentative thread/message creation mutation in its local
+   `CommentsDoc` replica with `mutation_state = "pending"` and no trusted
+   authority fields yet.
 2. The normal Automerge projection renders that pending state immediately. No
    separate React-side optimistic list is required.
 3. The sync stream carries the tentative mutation to the local daemon or Cloud
@@ -392,6 +418,18 @@ The write flow:
 5. If validation fails, the authority writes `mutation_state = "rejected"` plus
    `rejection_reason`. The UI can display or collapse the rejected pending item,
    again from `CommentsDoc`.
+
+For v0, `mutation_state` models creation finalization for threads and messages.
+Edits, resolves, reopens, and deletes against already-accepted objects apply
+optimistically as normal Automerge changes. The authority can accept them by doing
+nothing, correct policy fields with a follow-up authority-authored change, or
+revert/tombstone invalid changes. If that proves too coarse for the product, add
+per-action pending operations later; do not overload the object-level creation
+state.
+
+Acceptance finalizes policy and attribution fields for the creation mutation. It
+does not freeze body `Text`; later body edits are new content changes attributed
+through the validated change actor and subject to edit/delete policy.
 
 Requests such as `CreateComment` and MCP tools are command surfaces over the
 same state transition. Human UI actions should perform the local tentative
@@ -491,6 +529,9 @@ Prototype policy:
 - Agents use the same local-first/state-finalization model as humans. MCP tools
   should operate through the daemon so agent comments land in `CommentsDoc` and
   receive the same authority finalization.
+- Rejected or abandoned pending creations are not archival comment history. The
+  authority owns cleanup policy and may tombstone or hard-delete them after the
+  originating client observes the rejection or after a bounded timeout.
 
 This mirrors the identity ADR: authorization uses authenticated principal and
 scope; operator labels and display names are attribution, not authority.
