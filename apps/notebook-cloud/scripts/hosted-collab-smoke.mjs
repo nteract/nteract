@@ -14,11 +14,12 @@ import {
 import { summarizeCollabPerformanceTimings } from "./hosted-collab-smoke-performance.mjs";
 import { performanceBudgetFailures } from "./hosted-render-smoke-performance.mjs";
 import { isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
+import { firstPositionalArg } from "./cli-args.mjs";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requestedBaseUrl = notebookCloudBaseUrl();
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
-const providedViewerUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_COLLAB_VIEWER_URL;
+const providedViewerUrl = firstPositionalArg() ?? process.env.NOTEBOOK_CLOUD_COLLAB_VIEWER_URL;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const convergenceRounds = Number(process.env.NOTEBOOK_CLOUD_COLLAB_ROUNDS ?? 4);
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;

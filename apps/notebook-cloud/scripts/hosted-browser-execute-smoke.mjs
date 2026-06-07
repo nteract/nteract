@@ -2,9 +2,10 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 
 import { chromium } from "@playwright/test";
+import { firstPositionalArg } from "./cli-args.mjs";
 
 const viewerUrl =
-  process.argv[2] ??
+  firstPositionalArg() ??
   process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_VIEWER_URL ??
   process.env.NOTEBOOK_CLOUD_HOSTED_URL;
 const tokenPath =
