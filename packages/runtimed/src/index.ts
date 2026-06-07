@@ -224,6 +224,16 @@ export {
   type ProjectNotebookShellCapabilitiesOptions,
 } from "./notebook-shell-capabilities";
 
+// Notebook workstation panel projection
+export {
+  clearNotebookWorkstationPanelProjectionCacheForTests,
+  projectNotebookWorkstationPanel,
+  type NotebookWorkstationFactKind,
+  type NotebookWorkstationFactProjection,
+  type NotebookWorkstationPanelProjection,
+  type NotebookWorkstationPanelTone,
+} from "./notebook-workstation-panel";
+
 // Projection cache helpers
 export { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 

@@ -1,0 +1,153 @@
+import { beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  clearNotebookWorkstationPanelProjectionCacheForTests,
+  projectNotebookRoomEditAccess,
+  projectNotebookShellCapabilities,
+  projectNotebookWorkstationPanel,
+  type NotebookShellAccessCapabilities,
+  type NotebookShellRuntimeCapabilities,
+} from "../src";
+import { clearNotebookShellCapabilitiesCachesForTests } from "../src/notebook-shell-capabilities";
+
+beforeEach(() => {
+  clearNotebookShellCapabilitiesCachesForTests();
+  clearNotebookWorkstationPanelProjectionCacheForTests();
+});
+
+function access(
+  overrides: Partial<NotebookShellAccessCapabilities> = {},
+): NotebookShellAccessCapabilities {
+  return {
+    level: "owner",
+    source: "local",
+    isPublic: false,
+    actorLabel: "local:kyle/desktop:main",
+    identityLabel: "Kyle",
+    ...overrides,
+  };
+}
+
+function runtime(
+  overrides: Partial<NotebookShellRuntimeCapabilities> = {},
+): NotebookShellRuntimeCapabilities {
+  return {
+    canWriteRuntimeState: true,
+    connected: true,
+    executionAvailable: true,
+    source: "local",
+    actorLabel: "local:kyle/runtime:local",
+    identityLabel: "Kyle",
+    target: {
+      id: "local-daemon",
+      kind: "local_daemon",
+      status: "ready",
+      label: "This machine",
+      statusLabel: "Ready",
+      providerLabel: "Local daemon",
+      defaultEnvironmentLabel: "Notebook runtime",
+      cpuCount: 8,
+      memoryBytes: 16 * 1024 ** 3,
+      workingDirectoryLabel: "~/notebooks",
+    },
+    ...overrides,
+  };
+}
+
+function capabilities({
+  accessOverrides,
+  runtimeOverrides,
+}: {
+  accessOverrides?: Partial<NotebookShellAccessCapabilities>;
+  runtimeOverrides?: Partial<NotebookShellRuntimeCapabilities>;
+} = {}) {
+  return projectNotebookShellCapabilities({
+    interaction: projectNotebookRoomEditAccess({
+      accessLevel: accessOverrides?.level ?? "owner",
+      requestedScope: accessOverrides?.level ?? "owner",
+      selectedMode: "edit",
+      canAcceptDocumentMutations: true,
+      canRequestEdit: false,
+    }),
+    access: access(accessOverrides),
+    runtime: runtime(runtimeOverrides),
+    execution: {
+      available: runtimeOverrides?.executionAvailable ?? true,
+      requiresDocumentEditPermission: true,
+      requiresDocumentMutationSupport: true,
+    },
+    packages: { canView: true, canManage: true },
+  });
+}
+
+describe("projectNotebookWorkstationPanel", () => {
+  it("projects local workstation resources into a stable panel view model", () => {
+    const first = projectNotebookWorkstationPanel(capabilities());
+    const second = projectNotebookWorkstationPanel(capabilities());
+
+    expect(first).toBe(second);
+    expect(first.facts).toBe(second.facts);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.facts)).toBe(true);
+    expect(first).toMatchObject({
+      targetId: "local-daemon",
+      targetKind: "local_daemon",
+      title: "This machine",
+      statusLabel: "Ready",
+      tone: "ready",
+      providerLabel: "Local daemon",
+      defaultEnvironmentLabel: "Notebook runtime",
+      summary: "This machine",
+    });
+    expect(first.facts.map((fact) => [fact.kind, fact.label, fact.value])).toEqual([
+      ["provider", "Provider", "Local daemon"],
+      ["default_environment", "Default env", "Notebook runtime"],
+      ["cpu", "CPUs", "8"],
+      ["memory", "RAM", "16 GiB"],
+      ["working_directory", "Working dir", "~/notebooks"],
+      ["execution_state", "State", "Can run"],
+      ["remote_hint", "Remote", "Coming soon"],
+    ]);
+  });
+
+  it("projects missing cloud workstations as offline without identity facts", () => {
+    const projection = projectNotebookWorkstationPanel(
+      capabilities({
+        accessOverrides: { level: "viewer", source: "cloud", identityLabel: "Kyle" },
+        runtimeOverrides: {
+          canWriteRuntimeState: false,
+          connected: false,
+          executionAvailable: false,
+          source: "cloud",
+          actorLabel: null,
+          identityLabel: null,
+          target: {
+            id: "workstation:none",
+            kind: "cloud_workstation",
+            status: "offline",
+            label: "No workstation attached",
+            statusLabel: "Offline",
+            detail: "Attach a user-owned workstation to run cells in this room.",
+            providerLabel: "Cloud room",
+            defaultEnvironmentLabel: "Not attached",
+          },
+        },
+      }),
+    );
+
+    expect(projection).toMatchObject({
+      targetId: "workstation:none",
+      title: "No workstation attached",
+      statusLabel: "Offline",
+      tone: "offline",
+      detail: "Attach a user-owned workstation to run cells in this room.",
+      providerLabel: "Cloud room",
+      defaultEnvironmentLabel: "Not attached",
+    });
+    expect(projection.facts.map((fact) => fact.value)).toEqual([
+      "Cloud room",
+      "Not attached",
+      "Not runnable",
+    ]);
+    expect(projection.facts.map((fact) => fact.value)).not.toContain("Kyle");
+  });
+});

@@ -9,10 +9,11 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
-  notebookShellRuntimeTargetSummary,
-  resolveNotebookShellRuntimeTarget,
+  projectNotebookWorkstationPanel,
   type NotebookShellCapabilities,
-  type NotebookShellRuntimeTargetProjection,
+  type NotebookShellAccessSource,
+  type NotebookWorkstationFactProjection,
+  type NotebookWorkstationPanelTone,
 } from "./capabilities";
 import { cn } from "@/lib/utils";
 
@@ -25,16 +26,8 @@ export function NotebookWorkstationsPanel({
   capabilities,
   className,
 }: NotebookWorkstationsPanelProps) {
-  const target = resolveNotebookShellRuntimeTarget(capabilities.runtime);
-  const status = workstationStatus(capabilities, target);
-  const source = workstationSource(capabilities.runtime.source);
-  const defaultEnvironmentLabel =
-    target.defaultEnvironmentLabel ??
-    target.environmentLabel ??
-    runtimeResourceLabel(capabilities, target);
-  const capabilityLabel = runtimeCapabilityLabel(capabilities);
-  const hasCpuCount = typeof target.cpuCount === "number" && target.cpuCount > 0;
-  const memoryLabel = formatMemoryBytes(target.memoryBytes);
+  const projection = projectNotebookWorkstationPanel(capabilities);
+  const status = workstationStatusTone(projection.tone);
 
   return (
     <div className={cn("space-y-3 text-sm", className)} data-testid="notebook-workstations-panel">
@@ -48,23 +41,23 @@ export function NotebookWorkstationsPanel({
             aria-hidden="true"
           />
           <div className="min-w-0 flex-1">
-            {target.id ? (
+            {projection.targetId ? (
               <div className="mb-0.5 truncate text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
-                {target.id}
+                {projection.targetId}
               </div>
             ) : null}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <h3 className="truncate text-sm font-semibold">{status.title}</h3>
+              <h3 className="truncate text-sm font-semibold">{projection.title}</h3>
               <span className={cn("shrink-0 text-xs font-medium", status.textClassName)}>
-                {status.badge}
+                {projection.statusLabel}
               </span>
             </div>
             <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span className="truncate">{target.providerLabel ?? source.label}</span>
-              <span className="truncate">{defaultEnvironmentLabel}</span>
+              <span className="truncate">{projection.providerLabel}</span>
+              <span className="truncate">{projection.defaultEnvironmentLabel}</span>
             </div>
-            {status.detail ? (
-              <p className="mt-2 text-xs leading-5 text-muted-foreground">{status.detail}</p>
+            {projection.detail ? (
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">{projection.detail}</p>
             ) : null}
           </div>
         </div>
@@ -74,102 +67,54 @@ export function NotebookWorkstationsPanel({
         className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5 text-xs"
         aria-label="Workstation resources"
       >
-        <WorkstationFact
-          icon={source.icon}
-          label="Provider"
-          value={target.providerLabel ?? source.label}
-        />
-        <WorkstationFact icon={Cpu} label="Default env" value={defaultEnvironmentLabel} />
-        {hasCpuCount ? (
-          <WorkstationFact icon={Cpu} label="CPUs" value={`${target.cpuCount}`} />
-        ) : null}
-        {memoryLabel ? (
-          <WorkstationFact icon={MemoryStick} label="RAM" value={memoryLabel} />
-        ) : null}
-        {!hasCpuCount && !memoryLabel && target.resourceLabel ? (
-          <WorkstationFact icon={Cpu} label="Resources" value={target.resourceLabel} />
-        ) : null}
-        {target.workingDirectoryLabel ? (
+        {projection.facts.map((fact) => (
           <WorkstationFact
-            icon={FolderOpen}
-            label="Working dir"
-            value={target.workingDirectoryLabel}
+            key={fact.kind}
+            fact={fact}
+            icon={workstationFactIcon(fact, projection.source)}
           />
-        ) : null}
-        <WorkstationFact
-          icon={capabilities.runtime.canWriteRuntimeState ? CircleCheck : CircleAlert}
-          label="State"
-          value={capabilityLabel}
-        />
-        {target.kind === "local_daemon" ? (
-          <WorkstationFact icon={Cloud} label="Remote" value="Coming soon" subtle />
-        ) : null}
+        ))}
       </section>
     </div>
   );
 }
 
-export const notebookWorkstationsSummary = notebookShellRuntimeTargetSummary;
+export function notebookWorkstationsSummary(capabilities: NotebookShellCapabilities): string {
+  return projectNotebookWorkstationPanel(capabilities).summary;
+}
 
 function WorkstationFact({
+  fact,
   icon: Icon,
-  label,
-  subtle = false,
-  value,
 }: {
+  fact: NotebookWorkstationFactProjection;
   icon: LucideIcon;
-  label: string;
-  subtle?: boolean;
-  value: string;
 }) {
   return (
-    <span className={cn("inline-flex min-w-0 items-center gap-1.5", subtle && "opacity-80")}>
+    <span className={cn("inline-flex min-w-0 items-center gap-1.5", fact.subtle && "opacity-80")}>
       <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span className="min-w-0 truncate font-medium text-foreground">{value}</span>
+      <span className="shrink-0 text-muted-foreground">{fact.label}</span>
+      <span className="min-w-0 truncate font-medium text-foreground">{fact.value}</span>
     </span>
   );
 }
 
-function workstationStatus(
-  capabilities: NotebookShellCapabilities,
-  target: NotebookShellRuntimeTargetProjection,
-): {
-  title: string;
-  detail: string | null;
-  badge: string;
+function workstationStatusTone(tone: NotebookWorkstationPanelTone): {
   icon: LucideIcon;
   iconClassName: string;
   panelClassName: string;
   textClassName: string;
 } {
-  if (capabilities.runtime.executionAvailable && capabilities.canExecute) {
+  if (tone === "ready") {
     return {
-      title: target.label,
-      detail: null,
-      badge: target.statusLabel ?? "Ready",
       icon: CircleCheck,
       iconClassName: "text-emerald-700 dark:text-emerald-300",
       panelClassName: "border-emerald-500/70 bg-emerald-500/[0.04]",
       textClassName: "text-emerald-700 dark:text-emerald-300",
     };
   }
-  if (capabilities.runtime.executionAvailable) {
+  if (tone === "available") {
     return {
-      title: target.label,
-      detail: null,
-      badge: target.statusLabel ?? "Limited",
-      icon: Cpu,
-      iconClassName: "text-sky-700 dark:text-sky-300",
-      panelClassName: "border-sky-500/70 bg-sky-500/[0.04]",
-      textClassName: "text-sky-700 dark:text-sky-300",
-    };
-  }
-  if (capabilities.runtime.connected) {
-    return {
-      title: target.label,
-      detail: null,
-      badge: target.statusLabel ?? "Attached",
       icon: Cpu,
       iconClassName: "text-sky-700 dark:text-sky-300",
       panelClassName: "border-sky-500/70 bg-sky-500/[0.04]",
@@ -178,13 +123,6 @@ function workstationStatus(
   }
 
   return {
-    title: capabilities.runtime.source === "local" ? `${target.label} unavailable` : target.label,
-    detail:
-      target.detail ??
-      (capabilities.runtime.source === "local"
-        ? "The local daemon is not exposing an executable runtime."
-        : "No runtime peer is attached to this room."),
-    badge: target.statusLabel ?? "Offline",
     icon: CircleAlert,
     iconClassName: "text-muted-foreground",
     panelClassName: "border-border bg-muted/[0.03]",
@@ -192,81 +130,35 @@ function workstationStatus(
   };
 }
 
-function runtimeResourceLabel(
-  capabilities: NotebookShellCapabilities,
-  target: NotebookShellRuntimeTargetProjection,
-): string {
-  if (target.kind === "local_daemon") {
-    return capabilities.runtime.executionAvailable ? "Notebook runtime" : "Unavailable";
-  }
-  if (target.kind === "runtime_peer") {
-    return "Runtime peer";
-  }
-  if (capabilities.runtime.executionAvailable) {
-    return "Current Python";
-  }
-  return "Not attached";
-}
-
-function runtimeCapabilityLabel(capabilities: NotebookShellCapabilities): string {
-  if (capabilities.runtime.executionAvailable && capabilities.canExecute) {
-    return "Can run";
-  }
-  if (capabilities.runtime.executionAvailable) {
-    return "View only";
-  }
-  if (capabilities.runtime.canWriteRuntimeState) {
-    return "Runtime state";
-  }
-  return "Not runnable";
-}
-
-function formatMemoryBytes(value: number | null | undefined): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  const gib = value / 1024 ** 3;
-  if (gib >= 1) {
-    return `${formatNumber(gib)} GiB`;
-  }
-  const mib = value / 1024 ** 2;
-  if (mib >= 1) {
-    return `${formatNumber(mib)} MiB`;
-  }
-  return `${Math.round(value / 1024)} KiB`;
-}
-
-function formatNumber(value: number): string {
-  if (Number.isInteger(value)) {
-    return `${value}`;
-  }
-  return value >= 10 ? value.toFixed(1) : value.toFixed(2);
-}
-
-function workstationSource(source: NotebookShellCapabilities["runtime"]["source"]): {
-  label: string;
-  icon: LucideIcon;
-} {
+function workstationSourceIcon(source: NotebookShellAccessSource): LucideIcon {
   switch (source) {
     case "local":
-      return {
-        label: "Local",
-        icon: Monitor,
-      };
+      return Monitor;
     case "cloud":
-      return {
-        label: "Cloud",
-        icon: Cloud,
-      };
+      return Cloud;
     case "fixture":
-      return {
-        label: "Fixture",
-        icon: Cpu,
-      };
+      return Cpu;
     default:
-      return {
-        label: "Unknown",
-        icon: Cpu,
-      };
+      return Cpu;
+  }
+}
+
+function workstationFactIcon(
+  fact: NotebookWorkstationFactProjection,
+  source: NotebookShellAccessSource,
+): LucideIcon {
+  switch (fact.kind) {
+    case "provider":
+      return workstationSourceIcon(source);
+    case "memory":
+      return MemoryStick;
+    case "working_directory":
+      return FolderOpen;
+    case "execution_state":
+      return fact.value === "Can run" || fact.value === "Runtime state" ? CircleCheck : CircleAlert;
+    case "remote_hint":
+      return Cloud;
+    default:
+      return Cpu;
   }
 }

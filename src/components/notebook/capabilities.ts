@@ -24,4 +24,9 @@ export {
   type NotebookShellRuntimeTargetStatus,
   type NotebookShellSharingPolicy,
   type ProjectNotebookShellCapabilitiesOptions,
+  projectNotebookWorkstationPanel,
+  type NotebookWorkstationFactKind,
+  type NotebookWorkstationFactProjection,
+  type NotebookWorkstationPanelProjection,
+  type NotebookWorkstationPanelTone,
 } from "runtimed";
