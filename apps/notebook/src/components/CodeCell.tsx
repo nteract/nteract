@@ -30,6 +30,7 @@ import {
 } from "@/components/notebook/state/cell-ui-state";
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
+import { markExecutionPerformance } from "../lib/execution-performance";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
 import {
   getCellIdForExecutionId,
@@ -365,6 +366,7 @@ export const CodeCell = memo(function CodeCell({
   const outputs = useCellOutputs(cell.id);
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
+  const previousOutputCountRef = useRef(outputs.length);
   const executionCount = execution?.execution_count ?? null;
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
   const isExecutionErrored = execution?.success === false || execution?.status === "error";
@@ -406,6 +408,20 @@ export const CodeCell = memo(function CodeCell({
       }
     }
   }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length, showOutputChrome]);
+
+  useEffect(() => {
+    const previousOutputCount = previousOutputCountRef.current;
+    previousOutputCountRef.current = outputs.length;
+    if (outputs.length <= previousOutputCount) return;
+
+    const latestOutput = outputs[outputs.length - 1];
+    markExecutionPerformance("react.outputs.committed", {
+      cellId: cell.id,
+      executionId: executionId ?? undefined,
+      outputCount: outputs.length,
+      outputId: latestOutput?.output_id,
+    });
+  }, [cell.id, executionId, outputs]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async

@@ -80,12 +80,14 @@ function presenceEvent(payload: unknown): FrameEvent {
 function runtimeStateSyncEvent(
   state: RuntimeState,
   executionViewChangeset?: FrameEvent["execution_view_changeset"],
+  outputChangeset?: FrameEvent["output_changeset"],
 ): FrameEvent {
   return {
     type: "runtime_state_sync_applied",
     changed: true,
     state,
     execution_view_changeset: executionViewChangeset,
+    output_changeset: outputChangeset,
   };
 }
 
@@ -916,6 +918,61 @@ describe("SyncEngine", () => {
           },
         },
       ]);
+      engine.stop();
+    });
+
+    it("emits output payload changes before runtime execution view changes", () => {
+      const state = makeRuntimeState({
+        "exec-1": { status: "running", execution_count: 1, success: null },
+      });
+      const executionChanges: NonNullable<FrameEvent["execution_view_changeset"]> = {
+        execution_upserts: [
+          [
+            "exec-1",
+            {
+              execution_count: 1,
+              status: "running",
+              success: null,
+              output_ids: ["out-1"],
+            },
+          ],
+        ],
+        cell_pointer_changes: [["cell-1", "exec-1"]],
+      };
+      const outputChanges: NonNullable<FrameEvent["output_changeset"]> = {
+        changed: [["out-1", { output_type: "stream", name: "stdout", text: "ready" }]],
+        removed: [],
+      };
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(state, executionChanges, outputChanges),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const order: string[] = [];
+      const receivedOutputs: Array<{ changed: Array<[string, unknown]>; removed_ids: string[] }> =
+        [];
+      const receivedExecutions: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.outputIdChanges$.subscribe((changeset) => {
+        order.push("outputs");
+        receivedOutputs.push(changeset);
+      });
+      engine.executionViewChanges$.subscribe((changeset) => {
+        order.push("execution");
+        receivedExecutions.push(changeset);
+      });
+
+      transport.deliver(Array.from([0x05, 1]));
+
+      expect(order).toEqual(["outputs", "execution"]);
+      expect(receivedOutputs).toEqual([
+        {
+          changed: outputChanges.changed,
+          removed_ids: [],
+        },
+      ]);
+      expect(receivedExecutions).toEqual([executionChanges]);
       engine.stop();
     });
 

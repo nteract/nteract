@@ -103,6 +103,37 @@ describe("NotebookClient", () => {
     );
   });
 
+  it("passes caller-provided execution ids on daemon-managed execute requests", async () => {
+    const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
+    const executionId = "11111111-1111-4111-8111-111111111111";
+
+    await client.executeCell("cell-1", { executionId });
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(sendRequest).toHaveBeenCalledWith(
+      { type: "execute_cell", cell_id: "cell-1", execution_id: executionId },
+      { required_heads: ["head-a"] },
+    );
+  });
+
+  it("passes caller-provided execution ids on guarded execute requests", async () => {
+    const { client, sendRequest } = stubClient();
+    const executionId = "22222222-2222-4222-8222-222222222222";
+
+    await client.executeCellGuarded(
+      "cell-1",
+      { observed_heads: ["head-a", "head-b"] },
+      { executionId },
+    );
+
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "execute_cell_guarded",
+      cell_id: "cell-1",
+      execution_id: executionId,
+      observed_heads: ["head-a", "head-b"],
+    });
+  });
+
   it("attaches required heads to daemon-managed run-all requests", async () => {
     const { client, flush, sendRequest } = stubClientWithHeads(["head-a", "head-b"]);
 

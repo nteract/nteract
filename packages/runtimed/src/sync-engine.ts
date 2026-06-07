@@ -687,23 +687,13 @@ export class SyncEngine {
               );
 
               this._runtimeState$.next(state);
+              // Publish output payloads before execution view pointers so a
+              // cell render that follows a new output_id can read the payload
+              // from the output store on its first pass.
+              this.emitOutputIdChanges(e.output_changeset);
               this.emitExecutionViewChanges(e.execution_view_changeset);
               if (transitions.length > 0) {
                 this._executionTransitions$.next(transitions);
-              }
-
-              // Per-output-id projection. Feeds the outputs store so single
-              // output appends only notify their own `<Output>` subscriber.
-              // Manifests arrive already narrowed from WASM — the store
-              // writes them in directly.
-              const changeset = e.output_changeset;
-              const changedPairs = changeset?.changed ?? [];
-              const removedOutputIds = changeset?.removed ?? [];
-              if (changedPairs.length > 0 || removedOutputIds.length > 0) {
-                this._outputIdChanges$.next({
-                  changed: changedPairs,
-                  removed_ids: removedOutputIds,
-                });
               }
 
               // ── Comm state projection ──────────────────────────────
@@ -1034,6 +1024,13 @@ export class SyncEngine {
     const removals = changeset.removed_execution_ids?.length ?? 0;
     if (cellChanges === 0 && upserts === 0 && removals === 0 && !changeset.queue) return;
     this._executionViewChanges$.next(changeset);
+  }
+
+  private emitOutputIdChanges(changeset: FrameEvent["output_changeset"] | undefined): void {
+    const changed = changeset?.changed ?? [];
+    const removed_ids = changeset?.removed ?? [];
+    if (changed.length === 0 && removed_ids.length === 0) return;
+    this._outputIdChanges$.next({ changed, removed_ids });
   }
 
   // ── Outbound sync ────────────────────────────────────────────────
