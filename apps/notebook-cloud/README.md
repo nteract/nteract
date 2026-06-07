@@ -662,7 +662,8 @@ The smoke reads the token JSON from
 `${NTERACT_PREVIEW_OIDC_TOKEN_PATH:-$HOME/token.preview.json}` and writes no
 token material to stdout. It injects the cache only into the first-party
 notebook origin, requests `owner` scope by default, clicks the selected
-`data-testid="execute-button"`, waits for the optional expected text, and
+`data-testid="execute-button"`, waits for that button's execution ordinal to
+advance, waits for the optional expected text, and
 asserts that notebook blob fetches return 2xx. When
 `NOTEBOOK_CLOUD_BROWSER_EXECUTE_REQUIRE_BLOB_IMAGE=1`, at least one notebook
 blob must also render as a normal `<img src="/api/n/.../blobs/:hash">` image.
