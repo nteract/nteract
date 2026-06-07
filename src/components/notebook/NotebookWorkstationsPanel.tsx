@@ -42,7 +42,7 @@ export function NotebookWorkstationsPanel({
           />
           <div className="min-w-0 flex-1">
             {projection.targetId ? (
-              <div className="mb-0.5 truncate text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
+              <div className="mb-0.5 truncate font-mono text-[10.5px] tracking-normal text-muted-foreground">
                 {projection.targetId}
               </div>
             ) : null}
