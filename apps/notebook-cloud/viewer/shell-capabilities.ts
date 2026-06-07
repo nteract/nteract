@@ -5,6 +5,7 @@ import {
   projectNotebookShellCapabilities,
   type NotebookEditMode,
   type NotebookShellCapabilities,
+  type NotebookShellRuntimeTargetProjection,
 } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { projectCloudNotebookEditAccess } from "./edit-access";
@@ -36,8 +37,10 @@ export interface CloudNotebookShellCapabilityInput {
   runtimeAvailable?: boolean;
   /**
    * Whether this browser connection may create execution intent in the hosted
-   * room. Today the room host grants that to owners only; future execute-scope
-   * policy can replace this without changing the shared shell projection.
+   * room. This is a capability, not an interaction mode: owners and editors can
+   * submit execution requests when compute is attached, while future
+   * execute-scope policy can replace this without changing the shared shell
+   * projection.
    */
   canSubmitExecutionRequests?: boolean;
   /**
@@ -58,7 +61,7 @@ export function cloudNotebookShellCapabilities({
   canAcceptCellMutations = true,
   editAccessRequestPending = false,
   runtimeAvailable = false,
-  canSubmitExecutionRequests = connectionScope === "owner",
+  canSubmitExecutionRequests = connectionScope === "owner" || connectionScope === "editor",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const interaction = projectCloudNotebookEditAccess({
@@ -93,6 +96,7 @@ export function cloudNotebookShellCapabilities({
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,
     identityLabel: isRuntimePeer ? identityLabel : null,
+    target: cloudRuntimeTarget({ isRuntimePeer, runtimeAvailable }),
   };
   const accessActor = notebookActorProjectionWithPrincipalImage(
     notebookActorProjectionFromAccess(access, auth),
@@ -131,6 +135,49 @@ export function cloudNotebookShellCapabilities({
       requiresAuthenticatedIdentity: true,
     },
   });
+}
+
+function cloudRuntimeTarget({
+  isRuntimePeer,
+  runtimeAvailable,
+}: {
+  isRuntimePeer: boolean;
+  runtimeAvailable: boolean;
+}): NotebookShellRuntimeTargetProjection {
+  if (isRuntimePeer) {
+    return {
+      id: "runtime-peer",
+      kind: "runtime_peer",
+      status: "attached",
+      label: "Runtime peer",
+      statusLabel: "Attached",
+      detail: "This connection can author runtime state for the room.",
+      providerLabel: "Cloud room",
+      environmentLabel: "Runtime peer",
+    };
+  }
+  if (runtimeAvailable) {
+    return {
+      id: "room-workstation",
+      kind: "cloud_workstation",
+      status: "ready",
+      label: "Room workstation",
+      statusLabel: "Ready",
+      detail: "A runtime peer is attached to this room.",
+      providerLabel: "Cloud room",
+      environmentLabel: "Current Python",
+    };
+  }
+  return {
+    id: "workstation:none",
+    kind: "cloud_workstation",
+    status: "offline",
+    label: "No workstation attached",
+    statusLabel: "Offline",
+    detail: "Attach a user-owned workstation to run cells in this room.",
+    providerLabel: "Cloud room",
+    environmentLabel: "Not attached",
+  };
 }
 
 function cloudIdentityDisplayLabel(authState: CloudPrototypeAuthState): string | null {

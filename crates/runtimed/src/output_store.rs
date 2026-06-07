@@ -110,6 +110,13 @@ pub enum ContentRef {
     Blob { blob: String, size: u64 },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputBlobRef {
+    pub(crate) hash: String,
+    pub(crate) size: u64,
+    pub(crate) media_type: String,
+}
+
 impl ContentRef {
     /// Create a ContentRef from data, applying the inlining threshold.
     ///
@@ -518,6 +525,40 @@ impl OutputManifest {
         if id.is_empty() {
             *id = uuid::Uuid::new_v4().to_string();
         }
+    }
+
+    pub(crate) fn blob_refs(&self) -> Vec<OutputBlobRef> {
+        let mut refs = Vec::new();
+        match self {
+            OutputManifest::DisplayData { data, .. }
+            | OutputManifest::ExecuteResult { data, .. } => {
+                for (media_type, content_ref) in data {
+                    push_blob_ref(&mut refs, content_ref, media_type);
+                }
+            }
+            OutputManifest::Stream { text, .. } => {
+                push_blob_ref(&mut refs, text, "text/plain");
+            }
+            OutputManifest::Error {
+                traceback, rich, ..
+            } => {
+                push_blob_ref(&mut refs, traceback, "application/json");
+                if let Some(rich) = rich {
+                    push_blob_ref(&mut refs, rich, "application/json");
+                }
+            }
+        }
+        refs
+    }
+}
+
+fn push_blob_ref(refs: &mut Vec<OutputBlobRef>, content_ref: &ContentRef, media_type: &str) {
+    if let ContentRef::Blob { blob, size } = content_ref {
+        refs.push(OutputBlobRef {
+            hash: blob.clone(),
+            size: *size,
+            media_type: media_type.to_string(),
+        });
     }
 }
 
@@ -1658,6 +1699,87 @@ mod tests {
         let p = ErrorPreview::from_traceback_value(&tb);
         assert_eq!(p.last_frame, "");
         assert_eq!(p.frames, 0);
+    }
+
+    #[test]
+    fn output_manifest_blob_refs_collect_direct_content_refs() {
+        let mut display_data = HashMap::new();
+        display_data.insert(
+            "image/png".to_string(),
+            ContentRef::Blob {
+                blob: "image-hash".to_string(),
+                size: 123,
+            },
+        );
+        display_data.insert(
+            "text/plain".to_string(),
+            ContentRef::Inline {
+                inline: "inline fallback".to_string(),
+            },
+        );
+        let display = OutputManifest::DisplayData {
+            output_id: "out-display".to_string(),
+            data: display_data,
+            metadata: HashMap::new(),
+            transient: TransientData::default(),
+        };
+
+        let stream = OutputManifest::Stream {
+            output_id: "out-stream".to_string(),
+            name: "stdout".to_string(),
+            text: ContentRef::Blob {
+                blob: "stream-hash".to_string(),
+                size: 456,
+            },
+            llm_preview: None,
+        };
+
+        let error = OutputManifest::Error {
+            output_id: "out-error".to_string(),
+            ename: "ValueError".to_string(),
+            evalue: "bad".to_string(),
+            traceback: ContentRef::Blob {
+                blob: "traceback-hash".to_string(),
+                size: 789,
+            },
+            llm_preview: None,
+            rich: Some(ContentRef::Blob {
+                blob: "rich-hash".to_string(),
+                size: 321,
+            }),
+        };
+
+        let mut refs = Vec::new();
+        refs.extend(display.blob_refs());
+        refs.extend(stream.blob_refs());
+        refs.extend(error.blob_refs());
+        refs.sort_by(|left, right| left.hash.cmp(&right.hash));
+
+        assert_eq!(
+            refs,
+            vec![
+                OutputBlobRef {
+                    hash: "image-hash".to_string(),
+                    size: 123,
+                    media_type: "image/png".to_string(),
+                },
+                OutputBlobRef {
+                    hash: "rich-hash".to_string(),
+                    size: 321,
+                    media_type: "application/json".to_string(),
+                },
+                OutputBlobRef {
+                    hash: "stream-hash".to_string(),
+                    size: 456,
+                    media_type: "text/plain".to_string(),
+                },
+                OutputBlobRef {
+                    hash: "traceback-hash".to_string(),
+                    size: 789,
+                    media_type: "application/json".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

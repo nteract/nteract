@@ -588,6 +588,29 @@ old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
 private; anonymous hosted render smokes may return a catalog 404 unless the
 browser context has a credential for the owning principal.
 
+To exercise the actual hosted browser execution path against a private room,
+seed Chromium with the same OIDC token cache the viewer stores in
+`localStorage` and click a rendered cell run button:
+
+```bash
+NOTEBOOK_CLOUD_BROWSER_EXECUTE_BUTTON_INDEX=1 \
+NOTEBOOK_CLOUD_BROWSER_EXECUTE_EXPECTED_TEXT=blob-line-1499 \
+NOTEBOOK_CLOUD_BROWSER_EXECUTE_REQUIRE_BLOB_IMAGE=1 \
+pnpm --dir apps/notebook-cloud smoke:hosted:browser-execute \
+  https://preview.runt.run/n/<id>/<vanity-name>
+```
+
+The smoke reads the token JSON from
+`${NTERACT_PREVIEW_OIDC_TOKEN_PATH:-$HOME/token.preview.json}` and writes no
+token material to stdout. It injects the cache only into the first-party
+notebook origin, requests `owner` scope by default, clicks the selected
+`data-testid="execute-button"`, waits for the optional expected text, and
+asserts that notebook blob fetches return 2xx. When
+`NOTEBOOK_CLOUD_BROWSER_EXECUTE_REQUIRE_BLOB_IMAGE=1`, at least one notebook
+blob must also render as a normal `<img src="/api/n/.../blobs/:hash">` image.
+Use `NOTEBOOK_CLOUD_BROWSER_EXECUTE_SCOPE=editor` when verifying editor execute
+permissions.
+
 Snapshot and blob stubs:
 
 ```bash

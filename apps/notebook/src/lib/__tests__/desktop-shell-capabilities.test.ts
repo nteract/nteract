@@ -67,6 +67,14 @@ describe("desktopNotebookShellCapabilities", () => {
       connected: true,
       source: "local",
       actorLabel: "local:kyle/runtime:local",
+      target: {
+        id: "local-daemon",
+        kind: "local_daemon",
+        status: "ready",
+        label: "This machine",
+        statusLabel: "Ready",
+        providerLabel: "Local daemon",
+      },
     });
     expect(capabilities.access.actor).toMatchObject({
       principal: {
@@ -175,6 +183,12 @@ describe("desktopNotebookShellCapabilities", () => {
       connected: true,
       source: "local",
       actorLabel: null,
+      target: {
+        id: "local-daemon",
+        kind: "local_daemon",
+        status: "ready",
+        label: "This machine",
+      },
     });
     expect(capabilities.interaction).toMatchObject({
       selectedMode: "view",
@@ -239,6 +253,13 @@ describe("desktopNotebookShellCapabilities", () => {
       connected: true,
       source: "cloud",
       actorLabel: "user:anaconda:alice/runtime:jupyterhub",
+      target: {
+        id: "runtime-peer",
+        kind: "runtime_peer",
+        status: "attached",
+        label: "Runtime peer",
+        providerLabel: "Cloud room",
+      },
     });
     expect(capabilities.runtime.actor).toMatchObject({
       principal: { label: "Alice" },

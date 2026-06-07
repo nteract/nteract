@@ -208,7 +208,7 @@ describe("projectNotebookShellCapabilities", () => {
       canExecute: false,
       canManagePackages: false,
       access: { level: "viewer", source: "unknown" },
-      runtime: { connected: false, executionAvailable: false },
+      runtime: { connected: false, executionAvailable: false, target: null },
     });
     expect(Object.isFrozen(readOnlyNotebookShellCapabilities)).toBe(true);
     expect(Object.isFrozen(readOnlyNotebookShellCapabilities.access)).toBe(true);
@@ -228,7 +228,22 @@ describe("projectNotebookShellCapabilities", () => {
       interaction,
       access: access({ level: "editor", actorLabel: "user:anaconda:alice/browser:viewer" }),
       auth: auth({ canUseAuthenticatedIdentity: true }),
-      runtime: runtime({ connected: true, executionAvailable: true }),
+      runtime: runtime({
+        connected: true,
+        executionAvailable: true,
+        target: {
+          id: "room-workstation",
+          kind: "cloud_workstation",
+          status: "ready",
+          label: "Room workstation",
+          statusLabel: "Ready",
+          detail: "A runtime peer is attached to this room.",
+          providerLabel: "Cloud room",
+          environmentLabel: "Current Python",
+          resourceLabel: "4 CPU / 16 GB RAM",
+          workingDirectoryLabel: "/home/kyle/notebooks",
+        },
+      }),
       execution: { available: true, requiresDocumentEditPermission: true },
       packages: { canView: true, canManage: true, manageRequiresDocumentMutationSupport: true },
       sharing: {
@@ -242,7 +257,22 @@ describe("projectNotebookShellCapabilities", () => {
       interaction,
       access: access({ level: "editor", actorLabel: "user:anaconda:alice/browser:viewer" }),
       auth: auth({ canUseAuthenticatedIdentity: true }),
-      runtime: runtime({ connected: true, executionAvailable: true }),
+      runtime: runtime({
+        connected: true,
+        executionAvailable: true,
+        target: {
+          id: "room-workstation",
+          kind: "cloud_workstation",
+          status: "ready",
+          label: "Room workstation",
+          statusLabel: "Ready",
+          detail: "A runtime peer is attached to this room.",
+          providerLabel: "Cloud room",
+          environmentLabel: "Current Python",
+          resourceLabel: "4 CPU / 16 GB RAM",
+          workingDirectoryLabel: "/home/kyle/notebooks",
+        },
+      }),
       execution: { available: true, requiresDocumentEditPermission: true },
       packages: { canView: true, canManage: true, manageRequiresDocumentMutationSupport: true },
       sharing: {
@@ -257,9 +287,16 @@ describe("projectNotebookShellCapabilities", () => {
     expect(first.access).toBe(second.access);
     expect(first.auth).toBe(second.auth);
     expect(first.runtime).toBe(second.runtime);
+    expect(first.runtime.target).toBe(second.runtime.target);
+    expect(first.runtime.target).toMatchObject({
+      id: "room-workstation",
+      resourceLabel: "4 CPU / 16 GB RAM",
+      workingDirectoryLabel: "/home/kyle/notebooks",
+    });
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.access)).toBe(true);
     expect(Object.isFrozen(first.auth)).toBe(true);
     expect(Object.isFrozen(first.runtime)).toBe(true);
+    expect(Object.isFrozen(first.runtime.target)).toBe(true);
   });
 });

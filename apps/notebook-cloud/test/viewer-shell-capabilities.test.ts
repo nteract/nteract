@@ -45,7 +45,7 @@ test("cloud shell capabilities keep viewer scope read-only", () => {
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
-test("cloud shell capabilities grant editors full cell and structure editing without execute or package management", () => {
+test("cloud shell capabilities grant editors full cell and structure editing without an attached runtime", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
@@ -99,6 +99,9 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(withoutRuntime.runtime.executionAvailable, false);
   assert.equal(withoutRuntime.runtime.connected, false);
+  assert.equal(withoutRuntime.runtime.target?.id, "workstation:none");
+  assert.equal(withoutRuntime.runtime.target?.label, "No workstation attached");
+  assert.equal(withoutRuntime.runtime.target?.status, "offline");
   assert.equal(withoutRuntime.canExecute, false);
 
   const withRuntime = cloudNotebookShellCapabilities({
@@ -110,6 +113,9 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(withRuntime.runtime.executionAvailable, true);
   assert.equal(withRuntime.runtime.connected, true);
+  assert.equal(withRuntime.runtime.target?.id, "room-workstation");
+  assert.equal(withRuntime.runtime.target?.label, "Room workstation");
+  assert.equal(withRuntime.runtime.target?.status, "ready");
   assert.equal(withRuntime.canExecute, true);
 
   // A live runtime is visible to viewers, but viewing is not execution authority.
@@ -121,11 +127,12 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(viewerWithRuntime.runtime.executionAvailable, true);
   assert.equal(viewerWithRuntime.runtime.connected, true);
+  assert.equal(viewerWithRuntime.runtime.target?.id, "room-workstation");
+  assert.equal(viewerWithRuntime.runtime.target?.label, "Room workstation");
   assert.equal(viewerWithRuntime.canExecute, false);
 
-  // Runtime presence is visible to editors too, but the room host grants
-  // execution-intent authority to owner scope until an explicit execute scope
-  // is defined.
+  // Runtime presence is visible to editors too, and non-viewer room peers may
+  // submit execution-intent request frames while compute is attached.
   const editorWithRuntime = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
@@ -135,7 +142,9 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   });
   assert.equal(editorWithRuntime.runtime.executionAvailable, true);
   assert.equal(editorWithRuntime.runtime.connected, true);
-  assert.equal(editorWithRuntime.canExecute, false);
+  assert.equal(editorWithRuntime.runtime.target?.id, "room-workstation");
+  assert.equal(editorWithRuntime.runtime.target?.label, "Room workstation");
+  assert.equal(editorWithRuntime.canExecute, true);
 });
 
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {
@@ -391,9 +400,11 @@ test("cloud shell capabilities return stable frozen objects for equivalent input
   assert.equal(first.access, second.access);
   assert.equal(first.auth, second.auth);
   assert.equal(first.runtime, second.runtime);
+  assert.equal(first.runtime.target, second.runtime.target);
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(first.access), true);
   assert.equal(Object.isFrozen(first.runtime), true);
+  assert.equal(Object.isFrozen(first.runtime.target), true);
 });
 
 test("cloud shell capabilities keep runtime peer authority separate from document access", () => {
@@ -415,6 +426,10 @@ test("cloud shell capabilities keep runtime peer authority separate from documen
   assert.equal(capabilities.runtime.actorLabel, "user:anaconda:alice/runtime:jupyterhub");
   assert.equal(capabilities.runtime.identityLabel, "user");
   assert.equal(capabilities.runtime.actor?.scope, "runtime_peer");
+  assert.equal(capabilities.runtime.target?.id, "runtime-peer");
+  assert.equal(capabilities.runtime.target?.kind, "runtime_peer");
+  assert.equal(capabilities.runtime.target?.status, "attached");
+  assert.equal(capabilities.runtime.target?.label, "Runtime peer");
   assert.equal(capabilities.runtime.actor?.principal.label, "user");
   assert.equal(capabilities.runtime.actor?.operator.kind, "runtime");
   assert.equal(capabilities.runtime.actor?.operator.label, "JupyterHub");

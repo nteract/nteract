@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { mediaDataToSource } from "./media-url";
 
 interface PdfOutputProps {
   /**
@@ -18,13 +19,7 @@ interface PdfOutputProps {
 export function PdfOutput({ data, className = "" }: PdfOutputProps) {
   if (!data) return null;
 
-  const src =
-    data.startsWith("data:") ||
-    data.startsWith("http://") ||
-    data.startsWith("https://") ||
-    data.startsWith("/")
-      ? data
-      : `data:application/pdf;base64,${data}`;
+  const src = mediaDataToSource(data, "application/pdf");
 
   return (
     <div data-slot="pdf-output" className={cn("py-2", className)}>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { mediaDataToSource } from "./media-url";
 
 interface ImageOutputProps {
   /**
@@ -53,13 +54,7 @@ export function ImageOutput({
   // Determine the image source:
   // - If already a data URL or regular URL, use as-is
   // - Otherwise, assume base64 and construct data URL
-  const targetSrc =
-    data.startsWith("data:") ||
-    data.startsWith("http://") ||
-    data.startsWith("https://") ||
-    data.startsWith("/")
-      ? data
-      : `data:${mediaType};base64,${data}`;
+  const targetSrc = mediaDataToSource(data, mediaType);
 
   return (
     <div data-slot="image-output" className={cn("not-prose py-2", className)}>

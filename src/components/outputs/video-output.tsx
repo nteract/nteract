@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { mediaDataToSource } from "./media-url";
 
 interface VideoOutputProps {
   /**
@@ -36,13 +37,7 @@ export function VideoOutput({
 }: VideoOutputProps) {
   if (!data) return null;
 
-  const src =
-    data.startsWith("data:") ||
-    data.startsWith("http://") ||
-    data.startsWith("https://") ||
-    data.startsWith("/")
-      ? data
-      : `data:${mediaType};base64,${data}`;
+  const src = mediaDataToSource(data, mediaType);
 
   const sizeProps: { width?: number; height?: number } = {};
   if (width) sizeProps.width = width;

@@ -32,6 +32,16 @@ const localReadyCapabilities: NotebookShellCapabilities = {
     source: "local",
     actorLabel: "local:kyle/runtime:python",
     identityLabel: "Kyle",
+    target: {
+      id: "local-daemon",
+      kind: "local_daemon",
+      status: "ready",
+      label: "This machine",
+      statusLabel: "Ready",
+      detail: "The local daemon is available for this notebook.",
+      providerLabel: "Local daemon",
+      environmentLabel: "Notebook runtime",
+    },
     actor: {
       actorLabel: "local:kyle/runtime:python",
       principal: {
@@ -47,16 +57,22 @@ const localReadyCapabilities: NotebookShellCapabilities = {
 };
 
 describe("NotebookWorkstationsPanel", () => {
-  it("renders a local executable runtime with runtime attribution", () => {
+  it("renders a local executable runtime as a workstation target", () => {
     render(<NotebookWorkstationsPanel capabilities={localReadyCapabilities} />);
 
-    expect(screen.getByRole("heading", { name: "Local runtime ready" })).toBeVisible();
+    expect(screen.getByText("local-daemon")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "This machine" })).toBeVisible();
     expect(screen.getByText("Ready")).toBeVisible();
-    expect(screen.getByText("Execution requests are enabled for this notebook.")).toBeVisible();
-    expect(screen.getByText("Local")).toBeVisible();
-    expect(screen.getByText("Kyle")).toBeVisible();
-    expect(screen.getByText("Python runtime")).toBeVisible();
-    expect(screen.getByText("Writable")).toBeVisible();
+    expect(screen.queryByText("The local daemon is available for this notebook.")).toBeNull();
+    expect(screen.getAllByText("Local daemon")).toHaveLength(2);
+    expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
+    expect(screen.queryByText("Kyle")).not.toBeInTheDocument();
+    expect(screen.queryByText("Python runtime")).not.toBeInTheDocument();
+    expect(screen.queryByText("Principal")).not.toBeInTheDocument();
+    expect(screen.queryByText("Operator")).not.toBeInTheDocument();
+    expect(screen.getByText("Can run")).toBeVisible();
+    expect(screen.getByText("Remote")).toBeVisible();
+    expect(screen.getByText("Coming soon")).toBeVisible();
   });
 
   it("renders cloud rooms without runtime peers as offline workstations", () => {
@@ -70,17 +86,33 @@ describe("NotebookWorkstationsPanel", () => {
       runtime: {
         ...readOnlyNotebookShellCapabilities.runtime,
         source: "cloud",
+        target: {
+          id: "workstation:none",
+          kind: "cloud_workstation",
+          status: "offline",
+          label: "No workstation attached",
+          statusLabel: "Offline",
+          detail: "Attach a user-owned workstation to run cells in this room.",
+          providerLabel: "Cloud room",
+          environmentLabel: "Not attached",
+        },
       },
     };
 
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
 
-    expect(screen.getByRole("heading", { name: "No workstation" })).toBeVisible();
+    expect(screen.getByText("workstation:none")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No workstation attached" })).toBeVisible();
     expect(screen.getByText("Offline")).toBeVisible();
-    expect(screen.getByText("No runtime peer is attached to this room.")).toBeVisible();
-    expect(screen.getByText("Cloud")).toBeVisible();
-    expect(screen.getByText("Kyle")).toBeVisible();
-    expect(screen.getByText("Not attached")).toBeVisible();
-    expect(screen.getByText("Read-only")).toBeVisible();
+    expect(
+      screen.getByText("Attach a user-owned workstation to run cells in this room."),
+    ).toBeVisible();
+    expect(screen.getAllByText("Cloud room")).toHaveLength(2);
+    expect(screen.queryByText("Kyle")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Not attached")).toHaveLength(2);
+    expect(screen.queryByText("Principal")).not.toBeInTheDocument();
+    expect(screen.queryByText("Operator")).not.toBeInTheDocument();
+    expect(screen.getByText("Not runnable")).toBeVisible();
+    expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
   });
 });

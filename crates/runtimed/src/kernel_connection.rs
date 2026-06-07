@@ -19,6 +19,7 @@ use runtime_doc::{CommsDocHandle, RuntimeStateHandle};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::blob_store::BlobStore;
+use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::QueueCommandReceivers;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::PooledEnv;
@@ -63,6 +64,8 @@ pub struct KernelSharedRefs {
     pub comms: CommsDocHandle,
     /// Content-addressed blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
+    /// Optional remote publisher for blobs referenced by output manifests.
+    pub(crate) output_blob_publisher: OutputBlobPublisher,
     /// Broadcast channel for notebook events to connected peers.
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     /// Transient peer state (cursors, selections, kernel status).

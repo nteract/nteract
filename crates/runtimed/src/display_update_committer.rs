@@ -9,16 +9,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use runtime_doc::RuntimeStateHandle;
 use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::{debug, error, warn};
 
-use crate::blob_store::BlobStore;
+use crate::output_commit_context::OutputCommitContext;
 use crate::output_prep::LifecycleSignal;
 use crate::output_prep::{
     apply_display_manifest_updates, build_display_manifest_updates, collect_display_update_targets,
 };
-use crate::output_redaction::OutputRedactor;
 use crate::task_supervisor::spawn_supervised;
 
 const MAX_PENDING_DISPLAY_IDS: usize = 128;
@@ -117,20 +115,21 @@ fn take_pending(pending: &SharedPending) -> HashMap<String, PendingDisplayUpdate
     std::mem::take(&mut *updates)
 }
 
-async fn commit_pending_updates(
-    pending: &SharedPending,
-    state: &RuntimeStateHandle,
-    blob_store: &BlobStore,
-    kernel_actor_id: &str,
-    output_redactor: &OutputRedactor,
-) {
+async fn commit_pending_updates(pending: &SharedPending, context: &OutputCommitContext) {
     let updates = take_pending(pending);
     for (display_id, update) in updates {
         let preflight_wrapper = serde_json::json!({ "data": update.data });
-        crate::output_store::preflight_ref_buffers(&preflight_wrapper, &update.buffers, blob_store)
-            .await;
+        crate::output_store::preflight_ref_buffers(
+            &preflight_wrapper,
+            &update.buffers,
+            &context.blob_store,
+        )
+        .await;
 
-        let targets = match state.read(|sd| collect_display_update_targets(sd, &display_id)) {
+        let targets = match context
+            .state
+            .read(|sd| collect_display_update_targets(sd, &display_id))
+        {
             Ok(targets) => targets,
             Err(e) => {
                 warn!("[runtime-state] {}", e);
@@ -143,15 +142,16 @@ async fn commit_pending_updates(
             &display_id,
             &preflight_wrapper["data"],
             &update.metadata,
-            blob_store,
-            output_redactor,
+            &context.blob_store,
+            &context.blob_publisher,
+            &context.redactor,
         )
         .await;
 
         match updates {
             Ok(updates) => {
-                let updated = state.transact_at_current_heads(
-                    Some(kernel_actor_id),
+                let updated = context.state.transact_at_current_heads(
+                    Some(&context.kernel_actor_id),
                     "runtime-state-iopub-display-update-transaction",
                     |sd| apply_display_manifest_updates(sd, &updates),
                 );
@@ -186,10 +186,7 @@ async fn commit_pending_updates(
 async fn run_display_update_committer(
     pending: Arc<SharedPending>,
     mut priority_rx: mpsc::UnboundedReceiver<PriorityDisplayRequest>,
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
-    kernel_actor_id: String,
-    output_redactor: Arc<OutputRedactor>,
+    context: OutputCommitContext,
 ) {
     loop {
         tokio::select! {
@@ -203,10 +200,7 @@ async fn run_display_update_committer(
                     Some(request) => {
                         commit_pending_updates(
                             &pending,
-                            &state,
-                            &blob_store,
-                            &kernel_actor_id,
-                            &output_redactor,
+                            &context,
                         )
                         .await;
                         let _ = request.ack.send(());
@@ -214,10 +208,7 @@ async fn run_display_update_committer(
                     None => {
                         commit_pending_updates(
                             &pending,
-                            &state,
-                            &blob_store,
-                            &kernel_actor_id,
-                            &output_redactor,
+                            &context,
                         )
                         .await;
                         break;
@@ -230,10 +221,7 @@ async fn run_display_update_committer(
             _ = pending.notify.notified() => {
                 commit_pending_updates(
                     &pending,
-                    &state,
-                    &blob_store,
-                    &kernel_actor_id,
-                    &output_redactor,
+                    &context,
                 )
                 .await;
             }
@@ -244,11 +232,7 @@ async fn run_display_update_committer(
 }
 
 pub(crate) fn start_display_update_committer(
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
-    output_redactor: Arc<OutputRedactor>,
+    context: OutputCommitContext,
 ) -> DisplayUpdateCommitterHandle {
     let pending = Arc::new(SharedPending {
         updates: StdMutex::new(HashMap::new()),
@@ -256,20 +240,14 @@ pub(crate) fn start_display_update_committer(
     });
     let (priority_tx, priority_rx) = mpsc::unbounded_channel();
     let worker_pending = pending.clone();
+    let lifecycle_tx = context.lifecycle_tx.clone();
     // Panic in the display-update committer also produces a `KernelDied`
     // signal — same rationale as the stream committer: pending updates are
     // lost, the queue must release. The runtime agent treats this identically
     // to an IOPub-disconnect KernelDied. Punchlist EP-12.
     spawn_supervised(
         "display-update-committer",
-        run_display_update_committer(
-            worker_pending,
-            priority_rx,
-            state,
-            blob_store,
-            kernel_actor_id,
-            output_redactor,
-        ),
+        run_display_update_committer(worker_pending, priority_rx, context),
         move |_| {
             let _ = lifecycle_tx.send(LifecycleSignal::KernelDied);
         },
@@ -283,6 +261,11 @@ pub(crate) fn start_display_update_committer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_doc::RuntimeStateHandle;
+
+    use crate::blob_store::BlobStore;
+    use crate::output_blob_publisher::OutputBlobPublisher;
+    use crate::output_redaction::OutputRedactor;
     use crate::output_store::DEFAULT_INLINE_THRESHOLD;
 
     fn runtime_state() -> RuntimeStateHandle {
@@ -317,6 +300,21 @@ mod tests {
             .expect("insert output");
     }
 
+    fn commit_context(
+        state: RuntimeStateHandle,
+        blob_store: Arc<BlobStore>,
+        lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
+    ) -> OutputCommitContext {
+        OutputCommitContext::new(
+            state,
+            blob_store,
+            OutputBlobPublisher::none(),
+            "rt:kernel:test".to_string(),
+            lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
+        )
+    }
+
     #[tokio::test]
     async fn display_updates_coalesce_to_latest_value() {
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -325,13 +323,8 @@ mod tests {
         insert_display_output(&state, &blob_store, "progress").await;
 
         let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
-        let handle = start_display_update_committer(
-            state.clone(),
-            blob_store,
-            "rt:kernel:test".to_string(),
-            lifecycle_tx,
-            Arc::new(OutputRedactor::disabled()),
-        );
+        let handle =
+            start_display_update_committer(commit_context(state.clone(), blob_store, lifecycle_tx));
 
         handle.request_update(
             "progress".to_string(),

@@ -48,6 +48,7 @@ use crate::blob_store::BlobStore;
 use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_state::KernelState;
+use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::{LifecycleSignal, QueueCommandReceivers, WorkCommand};
 use crate::protocol::QueueEntry;
 
@@ -92,6 +93,7 @@ struct RuntimeAgentContext {
     state: RuntimeStateHandle,
     comms: CommsDocHandle,
     blob_store: Arc<BlobStore>,
+    output_blob_publisher: OutputBlobPublisher,
     broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
     presence: Arc<RwLock<PresenceState>>,
     presence_tx: broadcast::Sender<(String, Vec<u8>)>,
@@ -127,6 +129,7 @@ pub async fn run_runtime_agent(
         notebook_id,
         blob_root,
         move |_| Ok(runtime_agent_id),
+        OutputBlobPublisher::none(),
         // The daemon/UDS path never launches on attach: the daemon drives launch
         // via an inbound `LaunchKernel` RPC. Always `None` here.
         None,
@@ -179,6 +182,7 @@ pub async fn run_cloud_runtime_agent(
         initial_launch.is_some(),
     );
 
+    let output_blob_publisher = OutputBlobPublisher::cloud(&config);
     let transport = notebook_cloud_transport::CloudWsFrameTransport::new(config);
 
     run_runtime_agent_on_transport(
@@ -193,6 +197,7 @@ pub async fn run_cloud_runtime_agent(
             })?;
             Ok(cloud_actor_label(principal, &operator))
         },
+        output_blob_publisher,
         initial_launch,
     )
     .await
@@ -268,6 +273,7 @@ async fn run_runtime_agent_on_transport<T, F>(
     notebook_id: String,
     blob_root: PathBuf,
     resolve_actor: F,
+    output_blob_publisher: OutputBlobPublisher,
     initial_launch: Option<RuntimeAgentRequest>,
 ) -> anyhow::Result<()>
 where
@@ -327,6 +333,7 @@ where
         state: state.clone(),
         comms: comms.clone(),
         blob_store,
+        output_blob_publisher,
         broadcast_tx: broadcast_tx.clone(),
         presence,
         presence_tx,
@@ -1406,6 +1413,7 @@ async fn handle_runtime_agent_request(
                 state: ctx.state.clone(),
                 comms: ctx.comms.clone(),
                 blob_store: ctx.blob_store.clone(),
+                output_blob_publisher: ctx.output_blob_publisher.clone(),
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
@@ -1526,6 +1534,7 @@ async fn handle_runtime_agent_request(
                 state: ctx.state.clone(),
                 comms: ctx.comms.clone(),
                 blob_store: ctx.blob_store.clone(),
+                output_blob_publisher: ctx.output_blob_publisher.clone(),
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
@@ -2790,6 +2799,7 @@ mod tests {
             state: handle.clone(),
             comms,
             blob_store,
+            output_blob_publisher: OutputBlobPublisher::none(),
             broadcast_tx: broadcast_tx.clone(),
             presence,
             presence_tx,

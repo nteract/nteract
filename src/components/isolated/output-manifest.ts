@@ -130,7 +130,11 @@ export async function resolveContentRef(
   const blobResolver = normalizeBlobResolver(blobResolverInput);
   if ("inline" in ref) return ref.inline;
   if ("url" in ref) return ref.url;
-  if (mimeType && looksLikeBinaryMime(mimeType)) return blobResolver.url(ref);
+  if (mimeType && looksLikeBinaryMime(mimeType)) {
+    return blobResolver.displayUrl
+      ? await blobResolver.displayUrl(ref, mimeType)
+      : blobResolver.url(ref);
+  }
 
   const response = await blobResolver.fetch(ref);
   if (!response.ok) {
@@ -147,7 +151,10 @@ function resolveContentRefSync(
   const blobResolver = normalizeBlobResolver(blobResolverInput);
   if ("inline" in ref) return ref.inline;
   if ("url" in ref) return ref.url;
-  if (mimeType && looksLikeBinaryMime(mimeType)) return blobResolver.url(ref);
+  if (mimeType && looksLikeBinaryMime(mimeType)) {
+    if (blobResolver.resolvesBinaryUrlsSynchronously === false) return null;
+    return blobResolver.url(ref);
+  }
   return null;
 }
 
