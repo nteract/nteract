@@ -104,10 +104,11 @@ describe("MarkdownOutput heading anchors", () => {
     expect(displayMath).not.toBeNull();
     expect(container.querySelector('[data-slot="markdown-output"]')).toHaveClass(
       "[&_.katex-display]:my-5",
-      "[&_.katex-display]:overflow-x-auto",
-      "[&_.katex-display]:[scrollbar-width:none]",
-      "[&_.katex-display::-webkit-scrollbar]:hidden",
+      "[&_.katex-display]:overflow-x-hidden",
       "[&_.katex-display]:text-center",
+    );
+    expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
+      "[&_.katex-display]:overflow-x-auto",
     );
     expect(container.querySelector('[data-slot="markdown-output"]')).not.toHaveClass(
       "[&_.katex-display]:border-y",

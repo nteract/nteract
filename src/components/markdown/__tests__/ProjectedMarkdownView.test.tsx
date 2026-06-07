@@ -215,9 +215,10 @@ describe("ProjectedMarkdownView", () => {
     expect(document.querySelector(".katex-display")?.parentElement).toHaveClass(
       "my-5",
       "text-center",
+      "overflow-x-hidden",
+    );
+    expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
       "overflow-x-auto",
-      "[scrollbar-width:none]",
-      "[&::-webkit-scrollbar]:hidden",
     );
     expect(document.querySelector(".katex-display")?.parentElement).not.toHaveClass(
       "border-y",
