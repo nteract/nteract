@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
+  NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
@@ -52,6 +53,31 @@ describe("cloud app session cookies", () => {
       expiresAt: 2_000 + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
       displayName: "OIDC User",
     });
+  });
+
+  it("caps the display name signed into the cookie", async () => {
+    const displayName = "A".repeat(NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH + 50);
+    const cookie = await createCloudAppSessionCookie(
+      { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET },
+      oidcIdentity({ displayName }),
+      2_500,
+    );
+    const request = new Request("https://cloud.test/n", {
+      headers: { Cookie: cookie },
+    });
+
+    const session = await readCloudAppSession(
+      { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET },
+      request,
+      2_600,
+    );
+
+    assert.equal(
+      session?.displayName,
+      displayName.slice(0, NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH),
+    );
+    assert.notEqual(session?.displayName, displayName);
+    assert.equal(session?.displayName.length, NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH);
   });
 
   it("rejects expired and tampered sessions", async () => {
@@ -107,7 +133,7 @@ describe("cloud app session cookies", () => {
   });
 });
 
-function oidcIdentity(): AuthenticatedConnection {
+function oidcIdentity(overrides: { displayName?: string } = {}): AuthenticatedConnection {
   return {
     principal: "user:anaconda:subject-a",
     operator: "browser:tab",
@@ -117,7 +143,7 @@ function oidcIdentity(): AuthenticatedConnection {
       provider: "oidc",
       transport: "oidc-bearer",
       principalNamespace: "user:anaconda",
-      displayName: "OIDC User",
+      displayName: overrides.displayName ?? "OIDC User",
       email: "user@example.test",
       emailVerified: true,
     },
