@@ -81,6 +81,20 @@ test("cloud projects live cells into the NotebookView stores", () => {
   assert.doesNotMatch(sourceText, /onSourceChanged=/);
 });
 
+test("cloud live changesets gate stale post-await status writes", () => {
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
+
+  assert.match(
+    sessionSourceText,
+    /const materializeLiveCells = async[\s\S]*\+\+materializeSequence/,
+  );
+  assert.match(
+    sessionSourceText,
+    /const materializeLiveChangeset = async[\s\S]*const sequence = materializeSequence;[\s\S]*await materializeChangeset[\s\S]*if \(disposed \|\| sequence !== materializeSequence\) return;[\s\S]*applyExecutionViewChangeset/,
+  );
+});
+
 test("cloud notebook mutations route through the shared notebook controller", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

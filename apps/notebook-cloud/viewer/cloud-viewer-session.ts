@@ -456,13 +456,14 @@ export function useCloudViewerSession({
       changeset: CellChangeset | null,
       liveRuntime: CloudSyncRuntime,
     ) => {
+      const sequence = materializeSequence;
       await materializeChangeset(changeset, {
         getHandle: () => liveRuntime.handle,
         materializeCells: async () => materializeLiveCells(liveRuntime),
         outputCache: incrementalOutputCacheRef.current,
         blobResolver,
       });
-      if (disposed) return;
+      if (disposed || sequence !== materializeSequence) return;
 
       applyExecutionViewChangeset(liveRuntime.handle.project_execution_view_changeset?.());
 
