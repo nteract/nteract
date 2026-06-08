@@ -55,6 +55,19 @@ const KERNEL_ENV_SECRET_BLOCKLIST: &[&str] = &[
     "NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN",
 ];
 
+fn is_tolerated_kernel_info_reply_parse_error(error: &jupyter_zmq_client::RuntimeError) -> bool {
+    match error {
+        jupyter_zmq_client::RuntimeError::ParseError { msg_type, source } => {
+            // Deno kernels can report a CodeMirror mode shape that the current
+            // upstream jupyter_protocol enum does not model. `shell.read()` has
+            // already consumed that kernel_info_reply frame before returning the
+            // parse error, so this narrow case is enough to prove liveness.
+            msg_type == "kernel_info_reply" && source.to_string().contains("CodeMirrorMode")
+        }
+        _ => false,
+    }
+}
+
 #[cfg(unix)]
 fn ipc_path_prefix(kernel_id: &str) -> PathBuf {
     crate::ipc_socket_dir().join(format!("kernel-{}-ipc", kernel_id))
@@ -2433,8 +2446,21 @@ impl KernelConnection for JupyterKernel {
         let reply = tokio::select! {
             result = await_result_with_timeout(shell.read(), std::time::Duration::from_secs(30)) => {
                 match result {
-                    TimedResult::Completed(msg) => Ok(msg),
-                    TimedResult::Failed(e) => Err(anyhow::anyhow!("Kernel did not respond: {}", e)),
+                    TimedResult::Completed(msg) => Ok(Some(msg.header.msg_type)),
+                    TimedResult::Failed(e) => {
+                        if is_tolerated_kernel_info_reply_parse_error(&e) {
+                            warn!(
+                                "[jupyter-kernel] Kernel info reply used tolerated parse fallback: kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={} error={}",
+                                kernel_id,
+                                kernel_info_started.elapsed().as_millis(),
+                                launch_started.elapsed().as_millis(),
+                                e
+                            );
+                            Ok(None)
+                        } else {
+                            Err(anyhow::anyhow!("Kernel did not respond: {}", e))
+                        }
+                    },
                     TimedResult::TimedOut => Err(anyhow::anyhow!("Kernel did not respond within 30s")),
                 }
             }
@@ -2445,10 +2471,18 @@ impl KernelConnection for JupyterKernel {
         };
 
         match reply {
-            Ok(msg) => {
+            Ok(Some(msg_type)) => {
                 info!(
                     "[jupyter-kernel] Kernel alive: got {} reply (kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={})",
-                    msg.header.msg_type,
+                    msg_type,
+                    kernel_id,
+                    kernel_info_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis()
+                );
+            }
+            Ok(None) => {
+                info!(
+                    "[jupyter-kernel] Kernel alive: accepted kernel_info_reply with tolerated parse fallback (kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={})",
                     kernel_id,
                     kernel_info_started.elapsed().as_millis(),
                     launch_started.elapsed().as_millis()
@@ -3391,6 +3425,49 @@ mod tests {
             .iter()
             .any(|(name, value)| *name == OsStr::new("VISIBLE_KERNEL_ENV")
                 && value == &Some(OsStr::new("ok"))));
+    }
+
+    fn codemirror_mode_parse_error() -> serde_json::Error {
+        serde_json::from_value::<jupyter_protocol::CodeMirrorMode>(serde_json::json!({
+            "name": "typescript",
+            "version": "5.0"
+        }))
+        .expect_err("string version should not match the upstream CodeMirrorMode enum")
+    }
+
+    fn plain_parse_error() -> serde_json::Error {
+        serde_json::from_value::<usize>(serde_json::json!("not-a-number"))
+            .expect_err("string should not parse as usize")
+    }
+
+    #[test]
+    fn tolerates_kernel_info_codemirror_mode_parse_error() {
+        let error = jupyter_zmq_client::RuntimeError::ParseError {
+            msg_type: "kernel_info_reply".to_string(),
+            source: codemirror_mode_parse_error(),
+        };
+
+        assert!(is_tolerated_kernel_info_reply_parse_error(&error));
+    }
+
+    #[test]
+    fn does_not_tolerate_other_kernel_info_parse_errors() {
+        let error = jupyter_zmq_client::RuntimeError::ParseError {
+            msg_type: "kernel_info_reply".to_string(),
+            source: plain_parse_error(),
+        };
+
+        assert!(!is_tolerated_kernel_info_reply_parse_error(&error));
+    }
+
+    #[test]
+    fn does_not_tolerate_codemirror_errors_on_other_messages() {
+        let error = jupyter_zmq_client::RuntimeError::ParseError {
+            msg_type: "execute_reply".to_string(),
+            source: codemirror_mode_parse_error(),
+        };
+
+        assert!(!is_tolerated_kernel_info_reply_parse_error(&error));
     }
 
     #[test]
