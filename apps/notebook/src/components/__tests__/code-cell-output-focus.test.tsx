@@ -144,6 +144,7 @@ vi.mock("../../lib/editor-registry", () => ({
 
 vi.mock("../../lib/kernel-completion", () => ({
   kernelCompletionExtension: [],
+  useKernelCompletionExtension: () => [],
 }));
 
 vi.mock("@/components/notebook/state/execution-store", () => ({

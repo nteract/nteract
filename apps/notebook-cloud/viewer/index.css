@@ -1282,14 +1282,15 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-share-panel {
-  position: absolute;
-  top: calc(100% + 0.5rem);
-  right: 0;
+  position: fixed;
+  top: 4.75rem;
+  right: max(0.75rem, env(safe-area-inset-right));
+  left: auto;
   z-index: 30;
   display: grid;
   gap: 0;
   width: min(30rem, calc(100vw - 1.5rem));
-  max-height: min(42rem, calc(100vh - 5rem));
+  max-height: calc(100vh - 5.5rem);
   overflow: auto;
   border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
   border-radius: 8px;
@@ -1800,7 +1801,11 @@ main.flex > .cloud-report-toolbar {
 }
 
 @media (max-width: 640px) {
-  .cloud-share-panel,
+  .cloud-share-panel {
+    left: max(0.75rem, env(safe-area-inset-left));
+    width: auto;
+  }
+
   .cloud-auth-menu form {
     position: fixed;
     top: 4.75rem;

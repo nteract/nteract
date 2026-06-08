@@ -1,6 +1,7 @@
 import {
   SyncEngine,
   type FrameTypeValue,
+  type NotebookRequest,
   type NotebookRequestOptions,
   type NotebookResponse,
   type NotebookTransport,
@@ -62,6 +63,18 @@ interface PendingFrameAck {
   reject: (error: Error) => void;
   resolve: () => void;
   timeoutId: ReturnType<typeof setTimeout>;
+}
+
+function requestTimeoutMs(request: NotebookRequest): number {
+  switch (request.type) {
+    case "launch_kernel":
+    case "sync_environment":
+      return 300_000;
+    case "complete":
+      return 7_000;
+    default:
+      return CLOUD_REQUEST_TIMEOUT_MS;
+  }
 }
 
 export function cloudSyncAuthFromLocalStorage(): CloudSyncAuth {
@@ -313,25 +326,26 @@ export class CloudWebSocketTransport implements NotebookTransport {
       );
     }
 
-    const pending = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
+    const pendingAck = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
     try {
       await this.sendFrame(frameType, payload);
-      await pending.promise;
+      await pendingAck.promise;
       return { result: "ok" };
     } catch (error) {
-      pending.cancel();
+      pendingAck.cancel();
       throw error;
     }
   }
 
   async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
-    const envelope = notebookRequestEnvelope(request, options);
+    const req = request as NotebookRequest;
+    const envelope = notebookRequestEnvelope(req, options);
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
     return this.sendTypedRequest(
       FrameType.REQUEST,
       payload,
       envelope.id,
-      CLOUD_REQUEST_TIMEOUT_MS,
+      requestTimeoutMs(req),
       envelope.action,
     );
   }
@@ -374,7 +388,8 @@ export class CloudWebSocketTransport implements NotebookTransport {
       return;
     }
 
-    this.emitFrame(Array.from(bytes));
+    const frame = Array.from(bytes);
+    this.emitFrame(frame);
   }
 
   private emitFrame(frame: number[]): void {
@@ -499,7 +514,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
 }
 
 function notebookRequestEnvelope(
-  request: unknown,
+  request: NotebookRequest,
   options?: NotebookRequestOptions,
 ): { action: string; id: string; required_heads?: string[]; [key: string]: unknown } {
   if (!isRecord(request) || typeof request.type !== "string") {

@@ -57,6 +57,16 @@ export interface ProjectNotebookCommandRuntimeActionsOptions {
   runtimeStatus?: Pick<NotebookCommandRuntimeStatusProjection, "state"> | null;
 }
 
+export interface ProjectNotebookCommandRuntimeStatusFromRuntimeStateOptions {
+  /**
+   * Some hosted rooms can prove execution availability through the room/control
+   * plane before the runtime peer has projected an authoritative kernel
+   * lifecycle. In that case a scaffolded `NotStarted` RuntimeStateDoc snapshot
+   * is stale display data, not the runnable state.
+   */
+  executionAvailable?: boolean;
+}
+
 const COMMAND_RUNTIME_STATUS_CACHE = new Map<string, NotebookCommandRuntimeStatusProjection>();
 const COMMAND_RUNTIME_ACTIONS_CACHE = new Map<string, NotebookCommandRuntimeActionsProjection>();
 const COMMAND_RUNTIME_STATUS_CACHE_LIMIT = 128;
@@ -160,9 +170,15 @@ export function projectNotebookCommandRuntimeStatus({
 
 export function projectNotebookCommandRuntimeStatusFromRuntimeState(
   runtimeState: RuntimeState,
+  options: ProjectNotebookCommandRuntimeStatusFromRuntimeStateOptions = {},
 ): NotebookCommandRuntimeStatusProjection {
+  const statusKey = runtimeStatusKey(runtimeState.kernel.lifecycle);
+  const effectiveStatusKey =
+    options.executionAvailable && statusKey === RUNTIME_STATUS.NOT_STARTED
+      ? RUNTIME_STATUS.RUNNING_UNKNOWN
+      : statusKey;
   return projectNotebookCommandRuntimeStatus({
-    statusKey: runtimeStatusKey(runtimeState.kernel.lifecycle),
+    statusKey: effectiveStatusKey,
     errorReason: runtimeState.kernel.error_reason,
   });
 }

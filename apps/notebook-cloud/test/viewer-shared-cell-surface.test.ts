@@ -293,8 +293,11 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /reserveCommandToolbar=\{editAccessPending\}/);
   assert.match(sourceText, /addCellControlsDisabled: editAccessPending/);
   assert.match(sourceText, /runtimeStatus: cloudRuntimeStatus/);
+  assert.match(sourceText, /onStartRuntime: handleCloudStartRuntime/);
   assert.match(sourceText, /onInterruptRuntime: handleCloudInterruptRuntime/);
+  assert.match(sourceText, /onRestartRuntime: handleCloudRestartRuntime/);
   assert.match(sourceText, /onRunAllCells: handleCloudRunAllCells/);
+  assert.match(sourceText, /onRestartAndRunAll: handleCloudRestartAndRunAll/);
   assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
@@ -442,6 +445,49 @@ test("hosted smoke waits for shared NotebookView cell markers", () => {
 
   assert.match(sourceText, /\[data-slot='cell-container'\], \[data-cell-id\]/);
   assert.doesNotMatch(sourceText, /read-only-report-cell/);
+});
+
+test("hosted live room smoke can exercise the shared history shortcut", () => {
+  const sourcePath = new URL("../scripts/hosted-live-room-smoke.mjs", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_HISTORY/);
+  assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_COMPLETION/);
+  assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_AUTH/);
+  assert.match(sourceText, /authMode === "anonymous"/);
+  assert.match(sourceText, /assertAuthMode/);
+  assert.match(sourceText, /page\.keyboard\.press\("Control\+R"\)/);
+  assert.match(sourceText, /page\.keyboard\.press\("Control\+Space"\)/);
+  assert.match(sourceText, /Search history\.\.\./);
+  assert.match(sourceText, /notebookHostErrorVisible/);
+  assert.match(sourceText, /socketCloseWarnings/);
+  assert.match(sourceText, /isRecoverableSocketCloseConsoleMessage/);
+});
+
+test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /useCloudAppSessionBridge\(authState, appSessionStatus\.refreshAppSessionStatus\)/,
+  );
+  assert.match(
+    sourceText,
+    /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
+  );
+  assert.match(sourceText, /\[authState, bootstrap, hasAppSession, refreshIndex, signedIn\]/);
+});
+
+test("cloud app-session live tickets request owner and let the backend downgrade", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /cloudSyncAuthFromAppSessionTicket\(\{[\s\S]*requestedScope: "owner"/);
+  assert.doesNotMatch(
+    sourceText,
+    /cloudSyncAuthFromAppSessionTicket\(\{[\s\S]*requestedScope: authState\.requestedScope/,
+  );
 });
 
 test("cloud sync keeps routine frame logs out of the browser console", () => {

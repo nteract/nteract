@@ -5,6 +5,7 @@ import {
   type WorkstationAttachmentState,
 } from "runtimed";
 import type { WidgetStore } from "@/components/widgets/widget-store";
+import { diagnoseCloudConnectionAccess } from "./connection-diagnostics";
 import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
@@ -25,6 +26,7 @@ import {
   cloudSyncAuthFromPrototypeAuthState,
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
+  type CloudSyncAuth,
 } from "./collaborator-auth";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
@@ -44,6 +46,7 @@ import { createOutputResolutionCache, type ResolvedCell } from "./render-resolut
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { subscribeSerializedCloudCellChanges } from "./serialized-cell-changes";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
+import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
 export interface CloudViewerConfig {
@@ -63,7 +66,9 @@ export interface CloudViewerConfig {
     canManageSharing?: boolean;
     canSubmitExecutionRequests?: boolean;
   };
+  session?: CloudAppSession | null;
   syncEndpoint: string;
+  syncTicketEndpoint?: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
   outputDocumentBaseUrl: string | null;
@@ -93,8 +98,10 @@ interface UseCloudViewerSessionOptions {
   authState: CloudPrototypeAuthState;
   blobResolver: BlobResolver;
   config: CloudViewerConfig;
+  hasAppSession?: boolean;
   loadingPolicy: CloudViewerLoadingPolicy;
   preloadSiftWasm: (cells: readonly ResolvedCell[]) => void;
+  resolveSyncAuth?: (sessionId: string) => Promise<CloudSyncAuth>;
   widgetStore: WidgetStore;
 }
 
@@ -114,8 +121,10 @@ export function useCloudViewerSession({
   authState,
   blobResolver,
   config,
+  hasAppSession = false,
   loadingPolicy,
   preloadSiftWasm,
+  resolveSyncAuth,
   widgetStore,
 }: UseCloudViewerSessionOptions): CloudViewerSession {
   const [status, setStatus] = useState<ViewerStatus>({
@@ -504,42 +513,45 @@ export function useCloudViewerSession({
     setConnectionError(null);
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
-    void connectCloudSyncRuntime({
-      syncEndpoint: config.syncEndpoint,
-      runtimedWasmModulePath: config.runtimedWasmModulePath,
-      runtimedWasmPath: config.runtimedWasmPath,
-      sessionId,
-      auth: cloudSyncAuthFromPrototypeAuthState(authState),
-      onDisconnect: scheduleReconnect,
-      onControl: (message) => {
-        if (disposed) return;
-        if (
-          message.type === "cloud_room_ready" ||
-          message.type === "cloud_peer_joined" ||
-          message.type === "cloud_peer_left"
-        ) {
-          presenceStore.reduceMessage(message);
-        }
-        if (message.type === "cloud_room_ready") {
-          markCloudViewerLoadMilestone("live-room-ready");
-          setConnectionError(null);
-          setConnectionScope(message.connection_scope);
-          setConnectionActorLabel(message.actor_label);
-        }
-        if (message.type === "cloud_frame_rejected") {
-          if (isRecoverableCloudFrameRejection(message)) {
-            const reason = new Error(`Room rejected sync frame: ${message.reason}`);
-            setStatus({
-              kind: "loading",
-              message: "Resynchronizing live notebook room after a rejected sync frame...",
-            });
-            scheduleReconnect(reason);
-            return;
+    void (async () =>
+      connectCloudSyncRuntime({
+        syncEndpoint: config.syncEndpoint,
+        runtimedWasmModulePath: config.runtimedWasmModulePath,
+        runtimedWasmPath: config.runtimedWasmPath,
+        sessionId,
+        auth: resolveSyncAuth
+          ? await resolveSyncAuth(sessionId)
+          : cloudSyncAuthFromPrototypeAuthState(authState),
+        onDisconnect: scheduleReconnect,
+        onControl: (message) => {
+          if (disposed) return;
+          if (
+            message.type === "cloud_room_ready" ||
+            message.type === "cloud_peer_joined" ||
+            message.type === "cloud_peer_left"
+          ) {
+            presenceStore.reduceMessage(message);
           }
-          setStatus({ kind: "error", message: `Room rejected a frame: ${message.reason}` });
-        }
-      },
-    })
+          if (message.type === "cloud_room_ready") {
+            markCloudViewerLoadMilestone("live-room-ready");
+            setConnectionError(null);
+            setConnectionScope(message.connection_scope);
+            setConnectionActorLabel(message.actor_label);
+          }
+          if (message.type === "cloud_frame_rejected") {
+            if (isRecoverableCloudFrameRejection(message)) {
+              const reason = new Error(`Room rejected sync frame: ${message.reason}`);
+              setStatus({
+                kind: "loading",
+                message: "Resynchronizing live notebook room after a rejected sync frame...",
+              });
+              scheduleReconnect(reason);
+              return;
+            }
+            setStatus({ kind: "error", message: `Room rejected a frame: ${message.reason}` });
+          }
+        },
+      }))()
       .then((liveRuntime) => {
         if (disposed) {
           disposeCloudSyncRuntime(liveRuntime);
@@ -594,12 +606,11 @@ export function useCloudViewerSession({
       })
       .catch((error: unknown) => {
         if (disposed) return;
+        const message = error instanceof Error ? error.message : String(error);
         if (materializedCellCount() === 0) {
           setStatus({
             kind: "error",
-            message: `Unable to load live notebook room: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            message: `Unable to load live notebook room: ${message}`,
           });
         }
         presenceStore.reduceConnection("disconnected");
@@ -608,7 +619,23 @@ export function useCloudViewerSession({
         setConnectionPeerId(null);
         setWorkstationAttachment(null);
         workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
-        setConnectionError(error instanceof Error ? error.message : String(error));
+        setConnectionError(message);
+        void diagnoseCloudConnectionAccess({
+          accessRequestsEndpoint: config.accessRequestsEndpoint,
+          authState,
+          hasAppSession,
+        })
+          .then((diagnostic) => {
+            if (disposed || !diagnostic) return;
+            if (materializedCellCount() === 0) {
+              setStatus({
+                kind: "error",
+                message: `Unable to load live notebook room: ${diagnostic}`,
+              });
+            }
+            setConnectionError(diagnostic);
+          })
+          .catch(() => undefined);
         console.warn("[notebook-cloud] live room connection failed", error);
       });
 
@@ -636,15 +663,18 @@ export function useCloudViewerSession({
     authRenewalKind,
     authState,
     blobResolver,
+    config.accessRequestsEndpoint,
     config.blobBasePath,
     config.runtimedWasmModulePath,
     config.runtimedWasmPath,
     config.syncEndpoint,
     connectAttempt,
+    hasAppSession,
     loadingPolicy.shouldConnectLiveRoom,
     presenceStore,
     applyResolvedCells,
     preloadSiftWasm,
+    resolveSyncAuth,
     widgetStore,
   ]);
 

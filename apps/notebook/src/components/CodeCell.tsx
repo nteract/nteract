@@ -31,7 +31,7 @@ import {
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { markExecutionPerformance } from "../lib/execution-performance";
-import { kernelCompletionExtension } from "../lib/kernel-completion";
+import { useKernelCompletionExtension } from "../lib/kernel-completion";
 import {
   getCellIdForExecutionId,
   useCellExecutionId,
@@ -360,6 +360,7 @@ export const CodeCell = memo(function CodeCell({
   const [historyInitialQuery, setHistoryInitialQuery] = useState("");
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
+  const kernelCompletionExt = useKernelCompletionExtension();
   // Subscribe to outputs via the per-execution / per-output stores rather
   // than `cell.outputs`. Content changes no longer invalidate the cell
   // snapshot — CodeCell re-renders only when its chrome state changes.
@@ -591,7 +592,7 @@ export const CodeCell = memo(function CodeCell({
   const editorExtensions = useMemo(
     () => [
       crdtBridgeExt,
-      kernelCompletionExtension,
+      kernelCompletionExt,
       tabCompletionKeymap,
       ...searchHighlight(searchQuery || "", searchActiveOffset),
       ...remoteCursorsExt,
@@ -600,6 +601,7 @@ export const CodeCell = memo(function CodeCell({
     ],
     [
       crdtBridgeExt,
+      kernelCompletionExt,
       searchQuery,
       searchActiveOffset,
       remoteCursorsExt,

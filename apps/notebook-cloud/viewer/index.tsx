@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { NotebookHostProvider } from "@nteract/notebook-host";
 import {
   AlertCircle,
   BookOpen,
@@ -74,6 +75,8 @@ import {
   cloudNotebookSignInCopy,
   cloudPrototypeAuthFromWindow,
   fetchWithCloudPrototypeAuth,
+  cloudSyncAuthFromAppSessionTicket,
+  cloudSyncAuthFromPrototypeAuthState,
   isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
   storeCloudRequestedScope,
@@ -140,15 +143,21 @@ import {
 } from "./notebook-list-cache";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
 import { CloudSharingControls } from "./sharing-controls";
+import { createCloudNotebookHost } from "./cloud-notebook-host";
 import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { loadSupplementalViewerCss } from "./supplemental-css";
 import {
   clearCloudAppSession,
+  cloudAppSessionIsFresh,
   establishCloudAppSession,
   establishCloudAppSessionFromOidcToken,
+  isCloudAppSession,
+  readCloudAppSessionStatus,
+  type CloudAppSession,
 } from "./app-session";
+import { cloudOidcRenewalFailureMessage } from "./auth-renewal-copy";
 import {
   applyDocumentTheme,
   CLOUD_VIEWER_THEME_STORAGE_KEY,
@@ -193,6 +202,7 @@ interface CloudNotebookListBootstrap {
   kind: "notebook-list";
   notebooks: CloudNotebookListItem[];
   saved_at: string;
+  session?: CloudAppSession | null;
 }
 
 interface CloudNotebookCreateResponse {
@@ -272,10 +282,11 @@ function loadConfig(): CloudViewerConfig {
     workstationAttachEndpoint: parsed.workstationAttachEndpoint,
     hostCapabilities: {
       canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
-      canSubmitExecutionRequests:
-        parsed.hostCapabilities?.canSubmitExecutionRequests === true ? true : undefined,
+      canSubmitExecutionRequests: Boolean(parsed.hostCapabilities?.canSubmitExecutionRequests),
     },
+    session: isCloudAppSession(parsed.session) ? parsed.session : null,
     syncEndpoint: parsed.syncEndpoint,
+    syncTicketEndpoint: parsed.syncTicketEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
     outputDocumentBaseUrl: parsed.outputDocumentBaseUrl ?? null,
@@ -343,7 +354,22 @@ function isNotebookListPath(): boolean {
   return window.location.pathname.replace(/\/+$/, "") === "/n";
 }
 
-function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
+interface CloudPrototypeAuthOptions {
+  appSessionRefreshFallback?: boolean;
+  appSessionLoading?: boolean;
+  appSession?: CloudAppSession | null;
+}
+
+interface CloudAppSessionViewState {
+  status: "loading" | "ready" | "error";
+  session: CloudAppSession | null;
+  error: string | null;
+}
+
+function useCloudPrototypeAuth(
+  authConfig: CloudViewerAuthConfig,
+  options?: CloudPrototypeAuthOptions,
+): {
   authState: CloudPrototypeAuthState;
   authRenewal: CloudAuthRenewalState;
   refreshAuthState: () => void;
@@ -351,23 +377,44 @@ function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
   const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
     cloudPrototypeAuthFromWindow(),
   );
+  const appSession = options?.appSession ?? null;
+  const appSessionLoading = options?.appSessionLoading === true;
   const [authRenewal, setAuthRenewal] = useState<CloudAuthRenewalState>(() =>
-    shouldRefreshStoredOidcToken()
+    shouldRefreshStoredOidcToken() && !cloudAppSessionIsFresh(appSession) && !appSessionLoading
       ? { kind: "refreshing", message: "Refreshing sign-in..." }
       : { kind: "idle", message: null },
   );
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
+  const appSessionRefreshFallbackRef = useRef<number | null>(null);
+  const appSessionRefreshFallback = options?.appSessionRefreshFallback === true;
   const refreshAuthState = useCallback(() => {
     setAuthState(cloudPrototypeAuthFromWindow());
-    if (!shouldRefreshStoredOidcToken()) {
+    if (!shouldRefreshStoredOidcToken() || cloudAppSessionIsFresh(appSession)) {
+      appSessionRefreshFallbackRef.current = appSession?.expires_at ?? null;
       setAuthRenewal({ kind: "idle", message: null });
     }
-  }, []);
+  }, [appSession]);
 
   const refreshOidcIfNeeded = useCallback(async () => {
     const oidc = authConfig.oidc;
     if (!oidc || !shouldRefreshStoredOidcToken()) {
       return;
+    }
+    if (appSessionRefreshFallback) {
+      if (appSessionLoading && !appSession) {
+        setAuthRenewal({ kind: "idle", message: null });
+        return;
+      }
+      const appSessionExpiresAt = appSession?.expires_at ?? null;
+      if (appSessionExpiresAt && cloudAppSessionIsFresh(appSession)) {
+        appSessionRefreshFallbackRef.current = appSessionExpiresAt;
+        setAuthRenewal({ kind: "idle", message: null });
+        return;
+      }
+      const fallbackExpiresAt = appSessionRefreshFallbackRef.current;
+      if (fallbackExpiresAt && fallbackExpiresAt > currentEpochSeconds() + 60) {
+        return;
+      }
     }
     if (refreshPromiseRef.current) {
       return refreshPromiseRef.current;
@@ -377,20 +424,34 @@ function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
       setAuthRenewal({ kind: "refreshing", message: "Refreshing sign-in..." });
       try {
         await refreshStoredOidcToken(oidc, { storage: window.localStorage });
+        appSessionRefreshFallbackRef.current = null;
         refreshAuthState();
         setAuthRenewal({ kind: "idle", message: null });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        if (appSessionRefreshFallback) {
+          const appSession = await readCloudAppSessionStatus().catch(() => null);
+          const appSessionExpiresAt = appSession?.session?.expires_at ?? null;
+          if (cloudAppSessionIsFresh(appSession?.session)) {
+            appSessionRefreshFallbackRef.current = appSessionExpiresAt;
+            console.warn(
+              "[notebook-cloud] OIDC session refresh failed; continuing with app session cookie",
+              error,
+            );
+            refreshAuthState();
+            setAuthRenewal({ kind: "idle", message: null });
+            return;
+          }
+        }
         console.warn("[notebook-cloud] OIDC session refresh failed", error);
         refreshAuthState();
-        setAuthRenewal({ kind: "failed", message: `Unable to refresh sign-in: ${message}` });
+        setAuthRenewal({ kind: "failed", message: cloudOidcRenewalFailureMessage(error) });
       } finally {
         refreshPromiseRef.current = null;
       }
     })();
     refreshPromiseRef.current = refreshPromise;
     return refreshPromise;
-  }, [authConfig.oidc, refreshAuthState]);
+  }, [appSession, appSessionLoading, appSessionRefreshFallback, authConfig.oidc, refreshAuthState]);
 
   useEffect(() => {
     void refreshOidcIfNeeded();
@@ -413,6 +474,7 @@ function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
       if (!isCloudPrototypeAuthStorageKey(event.key)) {
         return;
       }
+      appSessionRefreshFallbackRef.current = null;
       refreshAuthState();
       void refreshOidcIfNeeded();
     };
@@ -431,6 +493,66 @@ function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
   return { authState, authRenewal, refreshAuthState };
 }
 
+function useCloudAppSessionStatus(
+  initialSession: CloudAppSession | null,
+): CloudAppSessionViewState & {
+  clearAppSessionStatus: () => void;
+  refreshAppSessionStatus: () => void;
+} {
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const [state, setState] = useState<CloudAppSessionViewState>(() => ({
+    status: initialSession ? "ready" : "loading",
+    session: initialSession,
+    error: null,
+  }));
+
+  useEffect(() => {
+    if (!initialSession) {
+      return;
+    }
+    setState({ status: "ready", session: initialSession, error: null });
+  }, [initialSession]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    if (!state.session) {
+      setState((current) =>
+        current.status === "loading" ? current : { ...current, status: "loading", error: null },
+      );
+    }
+    void readCloudAppSessionStatus({ signal: controller.signal })
+      .then((status) => {
+        if (controller.signal.aborted) return;
+        setState({ status: "ready", session: status.session, error: null });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setState((current) => ({
+          status: "error",
+          session: current.session,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [refreshIndex]);
+
+  const clearAppSessionStatus = useCallback(() => {
+    setState({ status: "ready", session: null, error: null });
+  }, []);
+  const refreshAppSessionStatus = useCallback(() => {
+    setRefreshIndex((value) => value + 1);
+  }, []);
+
+  return {
+    ...state,
+    clearAppSessionStatus,
+    refreshAppSessionStatus,
+  };
+}
+
 function shouldRefreshStoredOidcToken(): boolean {
   try {
     return Boolean(window.localStorage && storedOidcTokenNeedsRefresh(window.localStorage));
@@ -439,7 +561,14 @@ function shouldRefreshStoredOidcToken(): boolean {
   }
 }
 
-function useCloudAppSessionBridge(authState: CloudPrototypeAuthState): void {
+function currentEpochSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function useCloudAppSessionBridge(
+  authState: CloudPrototypeAuthState,
+  onEstablished?: () => void,
+): void {
   const establishedTokenRef = useRef<string | null>(null);
   useEffect(() => {
     if (authState.mode !== "oidc" || !authState.token) {
@@ -450,11 +579,15 @@ function useCloudAppSessionBridge(authState: CloudPrototypeAuthState): void {
       return;
     }
     establishedTokenRef.current = authState.token;
-    void establishCloudAppSession(authState).catch((error: unknown) => {
-      establishedTokenRef.current = null;
-      console.warn("[notebook-cloud] app session exchange failed", error);
-    });
-  }, [authState]);
+    void establishCloudAppSession(authState)
+      .then(() => {
+        onEstablished?.();
+      })
+      .catch((error: unknown) => {
+        establishedTokenRef.current = null;
+        console.warn("[notebook-cloud] app session exchange failed", error);
+      });
+  }, [authState, onEstablished]);
 }
 
 function App() {
@@ -515,11 +648,16 @@ function CloudNotebookProviders({
 
 function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
-  useCloudAppSessionBridge(authState);
   const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
   );
+  const appSessionStatus = useCloudAppSessionStatus(bootstrap?.session ?? null);
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
+    appSessionRefreshFallback: true,
+    appSessionLoading: appSessionStatus.status === "loading",
+    appSession: appSessionStatus.session,
+  });
+  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
   const [listState, setListState] = useState<CloudNotebookListState>(() =>
     initialCloudNotebookListState(authState, bootstrap),
   );
@@ -532,7 +670,8 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
   const hasExplicitAuth = authState.mode === "dev" || authState.mode === "oidc";
-  const signedIn = hasExplicitAuth || Boolean(bootstrap);
+  const hasAppSession = Boolean(appSessionStatus.session);
+  const signedIn = hasExplicitAuth || hasAppSession;
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],
@@ -580,7 +719,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     return () => {
       controller.abort();
     };
-  }, [authState, bootstrap, refreshIndex, signedIn]);
+  }, [authState, bootstrap, hasAppSession, refreshIndex, signedIn]);
 
   const refreshList = () => {
     setRefreshIndex((value) => value + 1);
@@ -605,7 +744,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const createNotebook = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!hasExplicitAuth || createState === "starting") {
+    if (!signedIn || createState === "starting") {
       return;
     }
     const title = createTitle.trim() || defaultCloudNotebookTitle();
@@ -656,7 +795,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const saveNotebookTitle = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!hasExplicitAuth || !renameState || renameSavingId) {
+    if (!signedIn || !renameState || renameSavingId) {
       return;
     }
 
@@ -714,10 +853,13 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const signOut = () => {
     setBootstrap(null);
+    appSessionStatus.clearAppSessionStatus();
     clearCachedCloudNotebookListFromWindow();
-    void clearCloudAppSession().catch((error: unknown) => {
-      console.warn("[notebook-cloud] app session clear failed", error);
-    });
+    void clearCloudAppSession()
+      .catch((error: unknown) => {
+        console.warn("[notebook-cloud] app session clear failed", error);
+      })
+      .finally(appSessionStatus.refreshAppSessionStatus);
     clearCloudPrototypeDevAuth(window.localStorage);
     refreshAuthState();
   };
@@ -725,9 +867,11 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const headerDetail =
     authState.mode === "oidc" || authState.mode === "dev"
       ? "Signed in"
-      : authState.mode === "oidc_expired"
-        ? "Session expired"
-        : "Signed out";
+      : hasAppSession
+        ? "Signed in"
+        : authState.mode === "oidc_expired"
+          ? "Session expired"
+          : "Signed out";
 
   return (
     <main className="cloud-notebook-list-page">
@@ -750,7 +894,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           </button>
           <button
             type="button"
-            disabled={!hasExplicitAuth || createState === "starting"}
+            disabled={!signedIn || createState === "starting"}
             onClick={openCreateForm}
           >
             {createState === "starting" ? (
@@ -760,7 +904,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
             )}
             {createState === "starting" ? "Creating" : "New notebook"}
           </button>
-          {signedIn ? null : (
+          {hasExplicitAuth || hasAppSession ? null : (
             <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
           )}
           {signedIn ? (
@@ -840,7 +984,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         ) : dashboardModel ? (
           <CloudNotebookDashboard
             model={dashboardModel}
-            canRename={hasExplicitAuth}
+            canRename={signedIn}
             renameState={renameState}
             renameSavingId={renameSavingId}
             onOpenRename={openRenameForm}
@@ -1258,7 +1402,10 @@ function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookLis
     candidate.kind === "notebook-list" &&
     typeof candidate.saved_at === "string" &&
     Array.isArray(candidate.notebooks) &&
-    candidate.notebooks.every(isCloudNotebookListItem)
+    candidate.notebooks.every(isCloudNotebookListItem) &&
+    (candidate.session === undefined ||
+      candidate.session === null ||
+      isCloudAppSession(candidate.session))
   );
 }
 
@@ -1292,8 +1439,13 @@ function formatNotebookUpdatedAt(value: string): string {
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
-  useCloudAppSessionBridge(authState);
+  const appSessionStatus = useCloudAppSessionStatus(null);
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
+    appSessionRefreshFallback: true,
+    appSessionLoading: appSessionStatus.status === "loading",
+    appSession: appSessionStatus.session,
+  });
+  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
   const oidcConfigured = Boolean(authConfig.oidc);
@@ -1322,18 +1474,30 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   };
 
   const resetAuth = () => {
-    void clearCloudAppSession().catch((error: unknown) => {
-      console.warn("[notebook-cloud] app session clear failed", error);
-    });
+    appSessionStatus.clearAppSessionStatus();
+    void clearCloudAppSession()
+      .catch((error: unknown) => {
+        console.warn("[notebook-cloud] app session clear failed", error);
+      })
+      .finally(appSessionStatus.refreshAppSessionStatus);
     clearCloudPrototypeDevAuth(window.localStorage);
     setFormError(null);
     refreshAuthState();
   };
 
-  const signedIn = authState.mode === "oidc";
-  const homeStatusTitle = signedIn ? (authState.user ?? "Signed in") : "Open a notebook";
+  const hasExplicitAuth = authState.mode === "oidc";
+  const hasAppSession = Boolean(appSessionStatus.session);
+  const signedIn = hasExplicitAuth || hasAppSession;
+  const homeStatusMode = signedIn ? "oidc" : authState.mode;
+  const homeStatusTitle = hasExplicitAuth
+    ? (authState.user ?? "Signed in")
+    : hasAppSession
+      ? "Signed in"
+      : "Open a notebook";
   const homeStatusDescription = signedIn
-    ? "Open a notebook or sign out of this browser session."
+    ? hasExplicitAuth
+      ? "Open a notebook or sign out of this browser session."
+      : "Open and manage notebooks with this browser session."
     : "Sign in to open private notebooks or request edit access.";
 
   return (
@@ -1346,10 +1510,10 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
 
         <section
           className="cloud-home-panel"
-          data-mode={authState.mode}
+          data-mode={homeStatusMode}
           aria-label="Notebook sign-in"
         >
-          <div className="cloud-home-status" data-mode={authState.mode}>
+          <div className="cloud-home-status" data-mode={homeStatusMode}>
             {signedIn ? <UserRound aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
             <div>
               <h2>{homeStatusTitle}</h2>
@@ -1378,9 +1542,12 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
               <button
                 type="button"
                 onClick={() => {
-                  void clearCloudAppSession().catch((error: unknown) => {
-                    console.warn("[notebook-cloud] app session clear failed", error);
-                  });
+                  appSessionStatus.clearAppSessionStatus();
+                  void clearCloudAppSession()
+                    .catch((error: unknown) => {
+                      console.warn("[notebook-cloud] app session clear failed", error);
+                    })
+                    .finally(appSessionStatus.refreshAppSessionStatus);
                   clearCloudPrototypeDevAuth(window.localStorage);
                   refreshAuthState();
                 }}
@@ -1388,7 +1555,8 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
                 <LogOut aria-hidden="true" />
                 Sign out
               </button>
-            ) : (
+            ) : null}
+            {hasExplicitAuth ? null : (
               <button
                 type="button"
                 disabled={authAction === "starting" || !oidcConfigured}
@@ -1397,9 +1565,11 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
                 <LogIn aria-hidden="true" />
                 {authAction === "starting"
                   ? "Starting sign-in"
-                  : oidcConfigured
-                    ? "Sign in with Anaconda"
-                    : "Sign-in unavailable"}
+                  : !oidcConfigured
+                    ? "Sign-in unavailable"
+                    : hasAppSession
+                      ? "Renew sign-in"
+                      : "Sign in with Anaconda"}
               </button>
             )}
             {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
@@ -1543,8 +1713,13 @@ function NotebookViewer({
   const loadingPolicy = cloudViewerLoadingPolicy(config);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
-  useCloudAppSessionBridge(authState);
+  const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
+    appSessionRefreshFallback: true,
+    appSessionLoading: appSessionStatus.status === "loading",
+    appSession: appSessionStatus.session,
+  });
+  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
@@ -1588,6 +1763,24 @@ function NotebookViewer({
     },
     [config.blobBasePath, config.rendererAssetsBasePath],
   );
+  const resolveSyncAuth = useCallback(
+    async (sessionId: string) => {
+      const appSession =
+        appSessionStatus.session ??
+        (appSessionStatus.status === "loading" && config.syncTicketEndpoint
+          ? ((await readCloudAppSessionStatus().catch(() => null))?.session ?? null)
+          : null);
+      if (appSession && config.syncTicketEndpoint) {
+        return cloudSyncAuthFromAppSessionTicket({
+          endpoint: config.syncTicketEndpoint,
+          requestedScope: "owner",
+          sessionId,
+        });
+      }
+      return cloudSyncAuthFromPrototypeAuthState(authState);
+    },
+    [appSessionStatus.session, appSessionStatus.status, authState, config.syncTicketEndpoint],
+  );
   const {
     connectionActorLabel,
     connectionError,
@@ -1608,10 +1801,20 @@ function NotebookViewer({
     authState,
     blobResolver,
     config,
+    hasAppSession: Boolean(appSessionStatus.session),
     loadingPolicy,
     preloadSiftWasm,
+    resolveSyncAuth,
     widgetStore,
   });
+  const cloudNotebookHost = useMemo(
+    () =>
+      createCloudNotebookHost({
+        blobResolver,
+        getRuntime: () => liveRuntimeRef.current,
+      }),
+    [blobResolver, liveRuntimeRef],
+  );
   const presenceSnapshot = useSyncExternalStore(
     presenceStore.subscribe,
     presenceStore.getSnapshot,
@@ -1690,7 +1893,9 @@ function NotebookViewer({
     setRailCollapsed(false);
     setActiveRailPanel("workstations");
   }, []);
-  const canLoadCloudWorkstations = authState.mode === "dev" || authState.mode === "oidc";
+  const hasBrowserAppIdentity =
+    Boolean(appSessionStatus.session) || authState.mode === "dev" || authState.mode === "oidc";
+  const canLoadCloudWorkstations = hasBrowserAppIdentity;
   const refreshCloudWorkstations = useCallback(
     async (signal?: AbortSignal) => {
       if (!canLoadCloudWorkstations || !config.workstationsEndpoint) {
@@ -1801,13 +2006,13 @@ function NotebookViewer({
   );
   const requestedEditAccess = roomEditAccess.requestedDocumentEditAccess;
   const editAccessPending = roomEditAccess.editAccessPending;
-  const canSubmitExecutionRequests = connectionScope === "owner";
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
         authState,
         connectionScope,
         connectionActorLabel,
+        hasAppSession: Boolean(appSessionStatus.session),
         hasCodeCells: codeCellCount > 0,
         selectedMode: selectedInteractionMode,
         canAcceptCellMutations,
@@ -1815,18 +2020,17 @@ function NotebookViewer({
         runtimeAvailable: runtimePeerAvailable,
         runtimePeerCount,
         workstationAttachment,
-        canSubmitExecutionRequests,
         hostCapabilities: config.hostCapabilities,
       }),
     [
       authState,
+      appSessionStatus.session,
       canAcceptCellMutations,
       codeCellCount,
       config.hostCapabilities,
       connectionActorLabel,
       connectionScope,
       editAccessRequestPending,
-      canSubmitExecutionRequests,
       runtimePeerCount,
       runtimePeerAvailable,
       selectedInteractionMode,
@@ -1837,7 +2041,9 @@ function NotebookViewer({
     if (!shellCapabilities.runtime.connected && !shellCapabilities.runtime.executionAvailable) {
       return null;
     }
-    return projectNotebookCommandRuntimeStatusFromRuntimeState(runtimeState);
+    return projectNotebookCommandRuntimeStatusFromRuntimeState(runtimeState, {
+      executionAvailable: shellCapabilities.runtime.executionAvailable,
+    });
   }, [
     runtimeState,
     shellCapabilities.runtime.connected,
@@ -2083,12 +2289,65 @@ function NotebookViewer({
       console.warn("[notebook-cloud] run all cells request failed", error);
     });
   }, [createCloudNotebookClient]);
+  const handleCloudStartRuntime = useCallback(() => {
+    const runtimeClient = createCloudNotebookClient("start kernel");
+    if (!runtimeClient) return;
+
+    void (async () => {
+      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
+      if (!delivered) {
+        console.warn("[notebook-cloud] start kernel request skipped; notebook sync failed");
+        return;
+      }
+
+      await runtimeClient.client.launchKernel("auto", "auto");
+    })().catch((error: unknown) => {
+      console.warn("[notebook-cloud] start kernel request failed", error);
+    });
+  }, [createCloudNotebookClient]);
   const handleCloudInterruptRuntime = useCallback(() => {
     const runtimeClient = createCloudNotebookClient("interrupt kernel");
     if (!runtimeClient) return;
 
     void runtimeClient.client.interruptKernel().catch((error: unknown) => {
       console.warn("[notebook-cloud] interrupt kernel request failed", error);
+    });
+  }, [createCloudNotebookClient]);
+  const handleCloudRestartRuntime = useCallback(() => {
+    const runtimeClient = createCloudNotebookClient("restart kernel");
+    if (!runtimeClient) return;
+
+    void (async () => {
+      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
+      if (!delivered) {
+        console.warn("[notebook-cloud] restart kernel request skipped; notebook sync failed");
+        return;
+      }
+
+      await runtimeClient.client.shutdownKernel();
+      await runtimeClient.client.launchKernel("auto", "auto");
+    })().catch((error: unknown) => {
+      console.warn("[notebook-cloud] restart kernel request failed", error);
+    });
+  }, [createCloudNotebookClient]);
+  const handleCloudRestartAndRunAll = useCallback(() => {
+    const runtimeClient = createCloudNotebookClient("restart kernel and run all cells");
+    if (!runtimeClient) return;
+
+    void (async () => {
+      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
+      if (!delivered) {
+        console.warn(
+          "[notebook-cloud] restart kernel and run all cells request skipped; notebook sync failed",
+        );
+        return;
+      }
+
+      await runtimeClient.client.shutdownKernel();
+      await runtimeClient.client.launchKernel("auto", "auto");
+      await runtimeClient.client.runAllCells();
+    })().catch((error: unknown) => {
+      console.warn("[notebook-cloud] restart kernel and run all cells request failed", error);
     });
   }, [createCloudNotebookClient]);
   const handleCloudSetCellSourceHidden = useCallback(
@@ -2168,7 +2427,7 @@ function NotebookViewer({
   );
   const loadOwnAccessRequest = useCallback(
     async (options?: { signal?: AbortSignal }) => {
-      if (connectionScope !== "viewer" || (authState.mode !== "dev" && authState.mode !== "oidc")) {
+      if (connectionScope !== "viewer" || !hasBrowserAppIdentity) {
         return;
       }
 
@@ -2195,22 +2454,28 @@ function NotebookViewer({
         return;
       }
     },
-    [applyLatestAccessRequest, authState, config.accessRequestsEndpoint, connectionScope],
+    [
+      applyLatestAccessRequest,
+      authState,
+      config.accessRequestsEndpoint,
+      connectionScope,
+      hasBrowserAppIdentity,
+    ],
   );
   useEffect(() => {
-    if (connectionScope !== "viewer" || (authState.mode !== "dev" && authState.mode !== "oidc")) {
+    if (connectionScope !== "viewer" || !hasBrowserAppIdentity) {
       setLatestAccessRequest(null);
       return;
     }
     const controller = new AbortController();
     void loadOwnAccessRequest({ signal: controller.signal });
     return () => controller.abort();
-  }, [authState.mode, connectionScope, loadOwnAccessRequest]);
+  }, [connectionScope, hasBrowserAppIdentity, loadOwnAccessRequest]);
   useEffect(() => {
     if (
       latestAccessRequest?.status !== "pending" ||
       connectionScope !== "viewer" ||
-      (authState.mode !== "dev" && authState.mode !== "oidc")
+      !hasBrowserAppIdentity
     ) {
       return;
     }
@@ -2223,7 +2488,7 @@ function NotebookViewer({
       controller.abort();
       window.clearInterval(intervalId);
     };
-  }, [authState.mode, connectionScope, latestAccessRequest?.status, loadOwnAccessRequest]);
+  }, [connectionScope, hasBrowserAppIdentity, latestAccessRequest?.status, loadOwnAccessRequest]);
   const requestCloudEditAccess = useCallback(() => {
     void (async () => {
       setAccessRequestError(null);
@@ -2350,6 +2615,7 @@ function NotebookViewer({
       editControls={
         <CloudNotebookEditModeButton
           authState={authState}
+          hasAppSession={Boolean(appSessionStatus.session)}
           interaction={shellCapabilities.interaction ?? null}
           accessLevel={shellCapabilities.access.level}
           accessPending={editAccessPending}
@@ -2367,8 +2633,11 @@ function NotebookViewer({
         addCellControlsDisabled: editAccessPending,
         addAfterCellId: toolbarAddAfterCellId,
         onAddCell: handleCloudAddCell,
+        onStartRuntime: handleCloudStartRuntime,
         onInterruptRuntime: handleCloudInterruptRuntime,
+        onRestartRuntime: handleCloudRestartRuntime,
         onRunAllCells: handleCloudRunAllCells,
+        onRestartAndRunAll: handleCloudRestartAndRunAll,
         onTogglePackages: handleTogglePackagesRail,
         workstationAction,
       }}
@@ -2411,55 +2680,57 @@ function NotebookViewer({
   ) : null;
 
   return (
-    <NotebookDocumentShell
-      rootElement="main"
-      className={
-        showCloudCommandToolbar
-          ? "cloud-notebook-shell cloud-notebook-shell--command-toolbar"
-          : "cloud-notebook-shell"
-      }
-      stageClassName="cloud-notebook-stage"
-      toolbar={toolbar}
-      toolbarLabel="Notebook view status and controls"
-      notices={notices}
-      noticesClassName="cloud-notebook-notices"
-      capabilities={shellCapabilities}
-      rail={rail}
-      stageLabel="Hosted notebook"
-    >
-      <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
+    <NotebookHostProvider host={cloudNotebookHost}>
+      <NotebookDocumentShell
+        rootElement="main"
+        className={
+          showCloudCommandToolbar
+            ? "cloud-notebook-shell cloud-notebook-shell--command-toolbar"
+            : "cloud-notebook-shell"
+        }
+        stageClassName="cloud-notebook-stage"
+        toolbar={toolbar}
+        toolbarLabel="Notebook view status and controls"
+        notices={notices}
+        noticesClassName="cloud-notebook-notices"
+        capabilities={shellCapabilities}
+        rail={rail}
+        stageLabel="Hosted notebook"
+      >
+        <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
-      <PresenceValueProvider value={cloudPresenceContext}>
-        <CrdtBridgeProvider
-          getHandle={getLiveNotebookHandle}
-          canWriteSource={canWriteCellSource}
-          onSyncNeeded={handleSourceSyncNeeded}
-          localActor={connectionActorLabel ?? ""}
-        >
-          <NotebookView
-            cellIds={notebookCellIds}
-            isLoading={notebookViewIsLoading}
-            capabilities={shellCapabilities}
-            canAcceptCellMutations={canAcceptCellMutations}
-            runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-            sessionRuntimeState={connectionError ? "error" : "ready"}
-            onFocusCell={setFocusedCellId}
-            onExecuteCell={handleCloudExecuteCell}
-            onInterruptKernel={() => {}}
-            onDeleteCell={handleCloudDeleteCell}
-            onAddCell={handleCloudAddCell}
-            onMoveCell={handleCloudMoveCell}
-            onSetCellSourceHidden={handleCloudSetCellSourceHidden}
-            onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
-            markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
-            outputHostContext={outputHostContext}
-            deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
-            deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
-            autoFocusFirstCell={false}
-          />
-        </CrdtBridgeProvider>
-      </PresenceValueProvider>
-    </NotebookDocumentShell>
+        <PresenceValueProvider value={cloudPresenceContext}>
+          <CrdtBridgeProvider
+            getHandle={getLiveNotebookHandle}
+            canWriteSource={canWriteCellSource}
+            onSyncNeeded={handleSourceSyncNeeded}
+            localActor={connectionActorLabel ?? ""}
+          >
+            <NotebookView
+              cellIds={notebookCellIds}
+              isLoading={notebookViewIsLoading}
+              capabilities={shellCapabilities}
+              canAcceptCellMutations={canAcceptCellMutations}
+              runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+              sessionRuntimeState={connectionError ? "error" : "ready"}
+              onFocusCell={setFocusedCellId}
+              onExecuteCell={handleCloudExecuteCell}
+              onInterruptKernel={() => {}}
+              onDeleteCell={handleCloudDeleteCell}
+              onAddCell={handleCloudAddCell}
+              onMoveCell={handleCloudMoveCell}
+              onSetCellSourceHidden={handleCloudSetCellSourceHidden}
+              onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
+              markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
+              outputHostContext={outputHostContext}
+              deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
+              deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
+              autoFocusFirstCell={false}
+            />
+          </CrdtBridgeProvider>
+        </PresenceValueProvider>
+      </NotebookDocumentShell>
+    </NotebookHostProvider>
   );
 }
 
@@ -2539,6 +2810,7 @@ function cloudAccessRequestNotice(
 
 function CloudNotebookEditModeButton({
   authState,
+  hasAppSession,
   accessLevel,
   accessPending,
   interaction,
@@ -2546,13 +2818,15 @@ function CloudNotebookEditModeButton({
   onRequestEditAccess,
 }: {
   authState: CloudPrototypeAuthState;
+  hasAppSession: boolean;
   accessLevel: NotebookShellCapabilities["access"]["level"];
   accessPending: boolean;
   interaction: NotebookInteractionModeProjection | null;
   onModeChange: (mode: NotebookInteractionMode) => void;
   onRequestEditAccess: () => void;
 }) {
-  const canUseEditModeControl = authState.mode === "dev" || authState.mode === "oidc";
+  const canUseEditModeControl =
+    hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
   if (
     !canUseEditModeControl ||
     (!interaction?.canRequestEdit && interaction?.activeMode !== "edit")

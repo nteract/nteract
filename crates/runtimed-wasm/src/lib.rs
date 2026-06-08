@@ -700,6 +700,7 @@ impl RoomHostHandle {
         let connection_scope = parse_connection_scope(connection_scope)?;
         let runtime_scope = runtime_state_write_scope(connection_scope);
         let can_write_notebook = connection_scope.allows_notebook_write();
+        let can_submit_execution_requests = allows_execution_request_submit(connection_scope);
         let can_write_comms = allows_comms_doc_write(connection_scope);
         let frame_type = frame_bytes[0];
         let payload = &frame_bytes[1..];
@@ -717,9 +718,12 @@ impl RoomHostHandle {
             frame_types::COMMS_DOC_SYNC => {
                 self.receive_comms_doc_sync(peer_id, principal, can_write_comms, payload)?
             }
-            frame_types::REQUEST => {
-                self.receive_request(peer_id, submitter_actor_label, can_write_notebook, payload)?
-            }
+            frame_types::REQUEST => self.receive_request(
+                peer_id,
+                submitter_actor_label,
+                can_submit_execution_requests,
+                payload,
+            )?,
             _ => RoomHostFrameResult::empty(),
         };
 
@@ -978,20 +982,21 @@ impl RoomHostHandle {
 
     /// Handle a NotebookRequest frame (`frame_types::REQUEST`).
     ///
-    /// The hosted room only acts on cell-execution requests: an editor/owner
-    /// asks to run a cell, and the room host (the one peer that can create
-    /// execution intent) writes the queued execution into RuntimeStateDoc for an
-    /// attached `runtime_peer` to pick up. Other request kinds (LaunchKernel,
-    /// RunAllCells, kernel lifecycle) are local-daemon concerns and are ignored
-    /// here so they leave the room unchanged rather than erroring the peer.
+    /// The hosted room only acts on cell-execution requests: an authorized
+    /// browser peer asks to run a cell, and the room host (the one peer that can
+    /// create execution intent) writes the queued execution into RuntimeStateDoc
+    /// for an attached `runtime_peer` to pick up. Other request kinds
+    /// (LaunchKernel, RunAllCells, kernel lifecycle) are local-daemon concerns
+    /// and are ignored here so they leave the room unchanged rather than
+    /// erroring the peer.
     fn receive_request(
         &mut self,
         peer_id: &str,
         submitter_actor_label: &str,
-        can_write_notebook: bool,
+        can_submit_execution_requests: bool,
         payload: &[u8],
     ) -> Result<RoomHostFrameResult, JsError> {
-        if !can_write_notebook {
+        if !can_submit_execution_requests {
             return Err(JsError::new(
                 "connection scope cannot submit execution requests",
             ));
@@ -1404,6 +1409,10 @@ fn runtime_state_write_scope(scope: ConnectionScope) -> RuntimeStateWriteScope {
 
 fn allows_runtime_state_doc_write(scope: ConnectionScope) -> bool {
     matches!(scope, ConnectionScope::RuntimePeer)
+}
+
+fn allows_execution_request_submit(scope: ConnectionScope) -> bool {
+    matches!(scope, ConnectionScope::Owner)
 }
 
 fn allows_comms_doc_write(scope: ConnectionScope) -> bool {

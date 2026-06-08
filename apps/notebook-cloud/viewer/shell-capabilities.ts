@@ -18,6 +18,7 @@ export interface CloudNotebookShellCapabilityInput {
   authState: CloudPrototypeAuthState;
   connectionScope: string | null;
   connectionActorLabel?: string | null;
+  hasAppSession?: boolean;
   hasCodeCells: boolean;
   selectedMode?: NotebookEditMode;
   /**
@@ -34,9 +35,9 @@ export interface CloudNotebookShellCapabilityInput {
   editAccessRequestPending?: boolean;
   /**
    * Whether an execution runtime is attached to the room. The hosted prototype
-   * uses this as runtime status only; execution controls also require
-   * canSubmitExecutionRequests so runtime presence is not confused with
-   * execution authority.
+   * uses this as runtime status only; execution controls still require hosted
+   * execution request authority so runtime presence is not confused with the
+   * right to create execution intent.
    */
   runtimeAvailable?: boolean;
   /**
@@ -52,19 +53,11 @@ export interface CloudNotebookShellCapabilityInput {
    */
   workstationAttachment?: WorkstationAttachmentState | null;
   /**
-   * Whether this browser connection may create execution intent in the hosted
-   * room. This is a capability, not an interaction mode: owners can submit
-   * execution requests by default, and hosts may opt editors in when the room
-   * can safely materialize editor-authored execution request frames.
-   */
-  canSubmitExecutionRequests?: boolean;
-  /**
    * Host-provided room capabilities. Sharing is a room/host concern, not a
    * notebook-local affordance, so owner access alone is not enough to show it.
    */
   hostCapabilities?: {
     canManageSharing?: boolean;
-    canSubmitExecutionRequests?: boolean;
   };
 }
 
@@ -72,6 +65,7 @@ export function cloudNotebookShellCapabilities({
   authState,
   connectionScope,
   connectionActorLabel = null,
+  hasAppSession = false,
   hasCodeCells,
   selectedMode = "view",
   canAcceptCellMutations = true,
@@ -79,20 +73,21 @@ export function cloudNotebookShellCapabilities({
   runtimeAvailable = false,
   runtimePeerCount = runtimeAvailable ? 1 : 0,
   workstationAttachment = null,
-  canSubmitExecutionRequests = connectionScope === "owner",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const interaction = projectCloudNotebookEditAccess({
     authState,
     connectionScope,
+    hasAppSession,
     selectedMode,
     canAcceptCellMutations,
     editAccessRequestPending,
   });
   const accessLevel = interaction.accessLevel;
   const isRuntimePeer = connectionScope === "runtime_peer";
-  const authenticated = authState.mode === "dev" || authState.mode === "oidc";
-  const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
+  const authenticated = hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
+  const authNeedsAttention =
+    !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
   const identityLabel = cloudIdentityDisplayLabel(authState);
   const identityImageUrl = cloudIdentityImageUrl(authState);
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
@@ -103,7 +98,7 @@ export function cloudNotebookShellCapabilities({
     ? attachmentExecutionAvailable
     : runtimeAvailable;
   const auth = {
-    canSignIn: authState.mode !== "oidc",
+    canSignIn: !hasAppSession && authState.mode !== "oidc",
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
     needsAttention: authNeedsAttention,
   };
@@ -153,7 +148,7 @@ export function cloudNotebookShellCapabilities({
     },
     execution: {
       available: effectiveRuntimeAvailable,
-      canSubmit: canSubmitExecutionRequests,
+      canSubmit: connectionScope === "owner",
       requiresDocumentEditPermission: true,
     },
     packages: {

@@ -30,12 +30,18 @@ export class AuthorizationError extends Error {
 
 export interface AuthorizeNotebookAccessOptions {
   /**
-   * Browser viewers can arrive with a stale or over-eager requested scope while
-   * still only being allowed to use the notebook's public read grant. Use this
-   * only on the live room connection path so mutation routes do not continue
-   * after a silent scope downgrade.
+   * Browser viewers can arrive with a stale or over-eager requested editor
+   * scope while still only being allowed to read the notebook. Use this only on
+   * the live room connection path so mutation routes do not continue after a
+   * silent scope downgrade.
    */
-  allowPublicViewerDowngrade?: boolean;
+  allowViewerDowngrade?: boolean;
+  /**
+   * Browser live-room tickets may optimistically request owner so the room
+   * opens with the user's best available control surface. Use this only for
+   * connection tickets; mutation routes must keep exact requested authority.
+   */
+  allowLiveScopeDowngrade?: boolean;
 }
 
 export async function authorizeNotebookAccess(
@@ -72,18 +78,50 @@ export async function authorizeNotebookAccess(
   if (aclRowsCoverScope(principalRows, requestedScope)) {
     return { ...identity, scope: requestedScope };
   }
+  if (options.allowLiveScopeDowngrade) {
+    const downgradedScope = bestDowngradedLiveScope(principalRows, requestedScope);
+    if (downgradedScope) {
+      return { ...identity, scope: downgradedScope };
+    }
+  }
+  if (
+    options.allowViewerDowngrade &&
+    requestedScope === "editor" &&
+    aclRowsCoverScope(principalRows, "viewer")
+  ) {
+    return { ...identity, scope: "viewer" };
+  }
 
   const publicRows = await getPublicNotebookAclRows(env, notebookId);
   if (aclRowsCoverScope(publicRows, "viewer")) {
     if (requestedScope === "viewer") {
       return { ...identity, scope: "viewer" };
     }
-    if (options.allowPublicViewerDowngrade && requestedScope === "editor") {
+    if (options.allowLiveScopeDowngrade && requestedScope !== "runtime_peer") {
+      return { ...identity, scope: "viewer" };
+    }
+    if (options.allowViewerDowngrade && requestedScope === "editor") {
       return { ...identity, scope: "viewer" };
     }
   }
 
   throw new AuthorizationError(`${identity.principal} cannot access ${notebookId}`, 403);
+}
+
+function bestDowngradedLiveScope(
+  rows: NotebookAclRow[],
+  requestedScope: ConnectionScope,
+): "editor" | "viewer" | null {
+  if (requestedScope === "owner" && aclRowsCoverScope(rows, "editor")) {
+    return "editor";
+  }
+  if (
+    (requestedScope === "owner" || requestedScope === "editor") &&
+    aclRowsCoverScope(rows, "viewer")
+  ) {
+    return "viewer";
+  }
+  return null;
 }
 
 export function aclRowsCoverScope(

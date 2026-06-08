@@ -4,9 +4,13 @@ import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+  NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS,
+  cloudSyncTicketFromWebSocketProtocol,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
+  createCloudSyncTicket,
   readCloudAppSession,
+  readCloudSyncTicket,
 } from "../src/app-session";
 import type { AuthenticatedConnection } from "../src/identity";
 
@@ -103,6 +107,61 @@ describe("cloud app session cookies", () => {
       headers: { Cookie: tampered },
     });
     assert.equal(await readCloudAppSession(env, tamperedRequest, 3_100), null);
+  });
+
+  it("mints short-lived sync tickets from app sessions", async () => {
+    const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+    const cookie = await createCloudAppSessionCookie(env, oidcIdentity(), 4_000);
+    const session = await readCloudAppSession(
+      env,
+      new Request("https://cloud.test/n", {
+        headers: { Cookie: cookie },
+      }),
+      4_010,
+    );
+    assert.ok(session);
+
+    const ticket = await createCloudSyncTicket(
+      env,
+      session,
+      {
+        notebookId: "notebook-a",
+        operator: "browser:tab-a",
+        scope: "editor",
+      },
+      4_020,
+    );
+
+    const parsed = await readCloudSyncTicket(env, ticket, 4_030);
+    assert.deepEqual(parsed, {
+      principal: "user:anaconda:subject-a",
+      principalNamespace: "user:anaconda",
+      operator: "browser:tab-a",
+      notebookId: "notebook-a",
+      scope: "editor",
+      issuedAt: 4_020,
+      expiresAt: 4_020 + NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS,
+      displayName: "OIDC User",
+    });
+    assert.equal(
+      await readCloudSyncTicket(
+        env,
+        ticket,
+        4_020 + NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS + 1,
+      ),
+      null,
+    );
+  });
+
+  it("extracts app-session sync tickets from WebSocket subprotocols", async () => {
+    const credential = cloudSyncTicketFromWebSocketProtocol(
+      "nteract-app-session.dGlja2V0LXZhbHVl, nteract.v4",
+    );
+
+    assert.deepEqual(credential, {
+      ticket: "ticket-value",
+      webSocketProtocol: "nteract.v4",
+    });
   });
 
   it("requires a configured signing secret and OIDC identity", async () => {

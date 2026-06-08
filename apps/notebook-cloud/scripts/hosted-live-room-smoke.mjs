@@ -15,7 +15,11 @@ const tokenPath =
   process.env.NTERACT_PREVIEW_OIDC_TOKEN_PATH ??
   process.env.NOTEBOOK_CLOUD_OIDC_TOKEN_PATH ??
   `${os.homedir()}/token.preview.json`;
-const requestedScope = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE ?? "editor";
+const authMode =
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_AUTH ??
+  (process.env.NOTEBOOK_CLOUD_LIVE_ROOM_ANONYMOUS === "1" ? "anonymous" : "oidc");
+const requestedScope =
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE ?? (authMode === "anonymous" ? "viewer" : "editor");
 const timeoutMs = parsePositiveInteger(
   process.env.NOTEBOOK_CLOUD_LIVE_ROOM_TIMEOUT_MS,
   "NOTEBOOK_CLOUD_LIVE_ROOM_TIMEOUT_MS",
@@ -52,6 +56,8 @@ const requireResolved = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_RESOLVED !=
 const requireOpenSocket = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_OPEN_SOCKET !== "0";
 const requireBlobFetch = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_BLOB_FETCH === "1";
 const requireImagesLoaded = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_IMAGES_LOADED === "1";
+const checkHistoryShortcut = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_HISTORY === "1";
+const checkCompletionShortcut = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_COMPLETION === "1";
 const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCREENSHOT);
 
 main().catch((error) => {
@@ -60,14 +66,15 @@ main().catch((error) => {
 });
 
 async function main() {
+  assertAuthMode(authMode);
   assertScope(requestedScope);
-  const url = new URL(viewerUrl);
-  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
-  const token = JSON.parse(tokenStorageJson);
-  const tokenSecondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(tokenSecondsRemaining) || tokenSecondsRemaining <= 60) {
-    throw new Error(`${tokenPath} is expired or near expiry; refresh it before running the smoke`);
+  if (authMode === "anonymous" && requestedScope !== "viewer") {
+    throw new Error(
+      "NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE must be viewer when NOTEBOOK_CLOUD_LIVE_ROOM_AUTH=anonymous",
+    );
   }
+  const url = new URL(viewerUrl);
+  const tokenInfo = authMode === "oidc" ? await readOidcTokenInfo(tokenPath) : null;
 
   const browser = await chromium.launch({
     headless: process.env.NOTEBOOK_CLOUD_HEADED !== "1",
@@ -76,19 +83,21 @@ async function main() {
 
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
-    await context.addInitScript(
-      ({ origin, scope, tokenJson }) => {
-        try {
-          if (globalThis.location?.origin !== origin) return;
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", scope);
-        } catch {
-          // Sandboxed output frames must deny localStorage. Only the first-party
-          // notebook shell needs the seeded browser token.
-        }
-      },
-      { origin: url.origin, scope: requestedScope, tokenJson: tokenStorageJson },
-    );
+    if (tokenInfo) {
+      await context.addInitScript(
+        ({ origin, scope, tokenJson }) => {
+          try {
+            if (globalThis.location?.origin !== origin) return;
+            globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
+            globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", scope);
+          } catch {
+            // Sandboxed output frames must deny localStorage. Only the first-party
+            // notebook shell needs the seeded browser token.
+          }
+        },
+        { origin: url.origin, scope: requestedScope, tokenJson: tokenInfo.storageJson },
+      );
+    }
 
     const page = await context.newPage();
     const events = {
@@ -96,6 +105,7 @@ async function main() {
       benignPageErrors: [],
       badConsole: [],
       failedRequests: [],
+      socketCloseWarnings: [],
       blobResponses: [],
       websockets: [],
     };
@@ -110,6 +120,10 @@ async function main() {
     });
     page.on("console", (message) => {
       const text = message.text();
+      if (isRecoverableSocketCloseConsoleMessage(text)) {
+        events.socketCloseWarnings.push(`${message.type()}: ${text}`);
+        return;
+      }
       if (isFatalConsoleMessage(text)) {
         events.badConsole.push(`${message.type()}: ${text}`);
       }
@@ -180,6 +194,12 @@ async function main() {
     const frameTextMatches =
       expectedFrameTexts.length > 0 ? await waitForFrameTexts(page, expectedFrameTexts) : {};
     await page.waitForTimeout(settleMs);
+    const historyShortcut = checkHistoryShortcut
+      ? await exerciseHistoryShortcut(page, timeoutMs)
+      : null;
+    const completionShortcut = checkCompletionShortcut
+      ? await exerciseCompletionShortcut(page, timeoutMs)
+      : null;
 
     const diagnostics = await pageDiagnostics(page);
     if (screenshotPath) {
@@ -258,9 +278,13 @@ async function main() {
     const result = {
       ok: failures.length === 0,
       viewerUrl: url.href,
+      auth: {
+        mode: authMode,
+        requestedScope,
+      },
       token: {
-        path: tokenPath,
-        secondsRemaining: tokenSecondsRemaining,
+        path: tokenInfo?.path ?? null,
+        secondsRemaining: tokenInfo?.secondsRemaining ?? null,
       },
       checks: {
         requestedScope,
@@ -273,10 +297,14 @@ async function main() {
         requireOpenSocket,
         requireBlobFetch,
         requireImagesLoaded,
+        checkHistoryShortcut,
+        checkCompletionShortcut,
         screenshotPath: screenshotPath ?? null,
       },
       diagnostics,
       frameTextMatches,
+      historyShortcut,
+      completionShortcut,
       events,
       failures,
     };
@@ -290,7 +318,7 @@ async function main() {
   }
 }
 
-async function readOidcTokenStorageJson(path) {
+async function readOidcTokenInfo(path) {
   const raw = await readFile(path, "utf8");
   const token = JSON.parse(raw);
   if (typeof token.accessToken !== "string" || token.accessToken.length === 0) {
@@ -299,7 +327,15 @@ async function readOidcTokenStorageJson(path) {
   if (!token.claims || typeof token.claims.sub !== "string" || token.claims.sub.length === 0) {
     throw new Error(`${path} is missing claims.sub`);
   }
-  return JSON.stringify(token);
+  const secondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(secondsRemaining) || secondsRemaining <= 60) {
+    throw new Error(`${path} is expired or near expiry; refresh it before running the smoke`);
+  }
+  return {
+    path,
+    secondsRemaining,
+    storageJson: JSON.stringify(token),
+  };
 }
 
 async function pageDiagnostics(page) {
@@ -356,6 +392,94 @@ async function pageDiagnostics(page) {
   });
 }
 
+async function exerciseHistoryShortcut(page, timeout) {
+  const editor = page.locator(editableCodeCellSelector()).first();
+  await editor.waitFor({ state: "visible", timeout }).catch(async (error) => {
+    const diagnostics = await pageDiagnostics(page).catch(() => null);
+    throw new Error(
+      `Ctrl-R history smoke requires an editable code cell in the chosen notebook: ${
+        error instanceof Error ? error.message : String(error)
+      }\n${JSON.stringify(diagnostics, null, 2)}`,
+    );
+  });
+  await editor.click({ timeout });
+  await page.keyboard.press("Control+R");
+
+  const input = page.getByPlaceholder("Search history...");
+  await input.waitFor({ state: "visible", timeout });
+  await page.waitForFunction(
+    () => !/Searching history\.\.\./i.test(document.body.textContent ?? ""),
+    undefined,
+    { timeout },
+  );
+
+  const summary = await page.evaluate(() => {
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    const input = document.querySelector('input[placeholder="Search history..."]');
+    return {
+      cellErrorVisible: /This cell encountered an error/i.test(text),
+      dialogVisible: input !== null,
+      searchingVisible: /Searching history\.\.\./i.test(text),
+      notebookHostErrorVisible:
+        /useNotebookHost\(\) must be called inside <NotebookHostProvider>/i.test(text),
+      textSample: text.slice(0, 1_000),
+    };
+  });
+
+  if (!summary.dialogVisible) {
+    throw new Error("Ctrl-R did not open the hosted history dialog");
+  }
+  if (summary.cellErrorVisible || summary.notebookHostErrorVisible) {
+    throw new Error(
+      `Ctrl-R opened a hosted cell error instead of the history dialog: ${JSON.stringify(summary)}`,
+    );
+  }
+  if (summary.searchingVisible) {
+    throw new Error(`Ctrl-R history dialog stayed in loading state: ${JSON.stringify(summary)}`);
+  }
+
+  await page.keyboard.press("Escape");
+  await input.waitFor({ state: "hidden", timeout }).catch(() => {});
+  return summary;
+}
+
+async function exerciseCompletionShortcut(page, timeout) {
+  const editor = page.locator(editableCodeCellSelector()).first();
+  await editor.waitFor({ state: "visible", timeout }).catch(async (error) => {
+    const diagnostics = await pageDiagnostics(page).catch(() => null);
+    throw new Error(
+      `Completion smoke requires an editable code cell in the chosen notebook: ${
+        error instanceof Error ? error.message : String(error)
+      }\n${JSON.stringify(diagnostics, null, 2)}`,
+    );
+  });
+  await editor.click({ timeout });
+  await page.keyboard.press("Control+Space");
+  await page.waitForTimeout(800);
+
+  const summary = await page.evaluate(() => {
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    return {
+      cellErrorVisible: /This cell encountered an error/i.test(text),
+      completionTooltipVisible: document.querySelector(".cm-tooltip-autocomplete") !== null,
+      notebookHostErrorVisible:
+        /useNotebookHost\(\) must be called inside <NotebookHostProvider>/i.test(text),
+      textSample: text.slice(0, 1_000),
+    };
+  });
+
+  if (summary.cellErrorVisible || summary.notebookHostErrorVisible) {
+    throw new Error(`Completion shortcut opened a hosted cell error: ${JSON.stringify(summary)}`);
+  }
+
+  await page.keyboard.press("Escape");
+  return summary;
+}
+
+function editableCodeCellSelector() {
+  return '[data-cell-type="code"] .cm-content[contenteditable="true"]';
+}
+
 function isRoomSyncWebSocket(value) {
   try {
     const url = new URL(value);
@@ -385,6 +509,12 @@ function isFatalConsoleMessage(text) {
   );
 }
 
+function isRecoverableSocketCloseConsoleMessage(text) {
+  return /\[notebook-cloud\] live room connection closed Error: cloud sync socket closed \((1005|1006)\)/i.test(
+    text,
+  );
+}
+
 function isBenignPageError(text) {
   // Output iframes are intentionally sandboxed away from browser credentials.
   return /Failed to read the 'localStorage' property from 'Window': The document is sandboxed/i.test(
@@ -408,6 +538,12 @@ function safeDiagnosticUrl(value) {
 function assertScope(scope) {
   if (!["viewer", "editor", "owner"].includes(scope)) {
     throw new Error("NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE must be viewer, editor, or owner");
+  }
+}
+
+function assertAuthMode(value) {
+  if (!["oidc", "anonymous"].includes(value)) {
+    throw new Error("NOTEBOOK_CLOUD_LIVE_ROOM_AUTH must be oidc or anonymous");
   }
 }
 

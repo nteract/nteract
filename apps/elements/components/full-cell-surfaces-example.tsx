@@ -1,5 +1,6 @@
 "use client";
 
+import { NotebookHostProvider } from "@nteract/notebook-host";
 import { FileCode2, FileText, Rows3, ShieldCheck } from "lucide-react";
 import { useLayoutEffect, useMemo, useState } from "react";
 import {
@@ -38,6 +39,7 @@ import {
   setExecution,
 } from "@/components/notebook/state/execution-store";
 import { resetNotebookOutputs, setOutput } from "@/components/notebook/state/output-store";
+import { createFixtureNotebookHost } from "./fixture-notebook-host";
 
 const fullCellScenario = getElementsNotebookScenario("desktop-local-owner");
 const primaryScenarioCodeCell = getElementsNotebookPrimaryCodeCell(fullCellScenario.cells);
@@ -390,6 +392,7 @@ function focusFixtureCell(cellId: string) {
 export function FullCellSurfacesExample() {
   const [fixturesSeeded, setFixturesSeeded] = useState(false);
   const [notebookViewCellIds, setNotebookViewCellIds] = useState(initialNotebookViewCellIds);
+  const notebookHost = useMemo(() => createFixtureNotebookHost(), []);
 
   useLayoutEffect(() => {
     seedFullCellFixtures();
@@ -424,250 +427,252 @@ export function FullCellSurfacesExample() {
   };
 
   return (
-    <div className="not-prose space-y-6">
-      <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-900 dark:text-emerald-100">
-        <div className="flex items-start gap-3">
-          <ShieldCheck className="mt-0.5 size-4 flex-none" aria-hidden="true" />
-          <div>
-            <h2 className="text-sm font-semibold">Full cell fixtures</h2>
-            <p className="mt-1 text-xs leading-5">
-              These examples import the notebook app cell components directly. Store-backed state is
-              seeded from fixture data, while the CRDT bridge exposes a null handle so edits never
-              leave the docs app.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <CrdtBridgeProvider {...adapterValue}>
-        <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-          <div className="border-b border-fd-border p-4">
-            <div className="flex items-center gap-2">
-              <FileCode2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <h2 className="text-sm font-semibold">CodeCell</h2>
+    <NotebookHostProvider host={notebookHost}>
+      <div className="not-prose space-y-6">
+        <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-900 dark:text-emerald-100">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="mt-0.5 size-4 flex-none" aria-hidden="true" />
+            <div>
+              <h2 className="text-sm font-semibold">Full cell fixtures</h2>
+              <p className="mt-1 text-xs leading-5">
+                These examples import the notebook app cell components directly. Store-backed state
+                is seeded from fixture data, while the CRDT bridge exposes a null handle so edits
+                never leave the docs app.
+              </p>
             </div>
-            <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              The code-cell current line and rendered text outputs come from the same stores the
-              notebook app consumes.
-            </p>
-          </div>
-          <div className="bg-background py-4 pl-4 pr-2">
-            <CodeCell
-              cell={codeCell}
-              language={codeCellLanguage}
-              onFocus={() => focusFixtureCell(codeCell.id)}
-              onExecute={noop}
-              onInterrupt={noop}
-              onDelete={noop}
-              onFocusPrevious={noop}
-              onFocusNext={() => focusFixtureCell(markdownCell.id)}
-              onInsertCellAfter={noop}
-              rightGutterContent={
-                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-                  seeded runtime
-                </span>
-              }
-            />
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-          <div className="border-b border-fd-border p-4">
-            <div className="flex items-center gap-2">
-              <FileCode2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <h2 className="text-sm font-semibold">CodeCell hidden states</h2>
+        <CrdtBridgeProvider {...adapterValue}>
+          <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+            <div className="border-b border-fd-border p-4">
+              <div className="flex items-center gap-2">
+                <FileCode2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+                <h2 className="text-sm font-semibold">CodeCell</h2>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                The code-cell current line and rendered text outputs come from the same stores the
+                notebook app consumes.
+              </p>
             </div>
-            <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              Input-hidden, output-hidden, and fully-hidden affordances are owned by the production
-              `CodeCell`. The catalog seeds metadata and output stores, then supplies inert toggle
-              callbacks so the rows can be evaluated as document boundary language.
-            </p>
-          </div>
-          <div className="divide-y divide-border bg-background">
-            {hiddenCodeCellRows.map((row) => (
-              <div key={row.id} className="grid gap-4 p-4 xl:grid-cols-[220px_minmax(0,1fr)]">
-                <div>
-                  <h3 className="text-sm font-semibold">{row.label}</h3>
-                  <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{row.detail}</p>
+            <div className="bg-background py-4 pl-4 pr-2">
+              <CodeCell
+                cell={codeCell}
+                language={codeCellLanguage}
+                onFocus={() => focusFixtureCell(codeCell.id)}
+                onExecute={noop}
+                onInterrupt={noop}
+                onDelete={noop}
+                onFocusPrevious={noop}
+                onFocusNext={() => focusFixtureCell(markdownCell.id)}
+                onInsertCellAfter={noop}
+                rightGutterContent={
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                    seeded runtime
+                  </span>
+                }
+              />
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+            <div className="border-b border-fd-border p-4">
+              <div className="flex items-center gap-2">
+                <FileCode2 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+                <h2 className="text-sm font-semibold">CodeCell hidden states</h2>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                Input-hidden, output-hidden, and fully-hidden affordances are owned by the
+                production `CodeCell`. The catalog seeds metadata and output stores, then supplies
+                inert toggle callbacks so the rows can be evaluated as document boundary language.
+              </p>
+            </div>
+            <div className="divide-y divide-border bg-background">
+              {hiddenCodeCellRows.map((row) => (
+                <div key={row.id} className="grid gap-4 p-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                  <div>
+                    <h3 className="text-sm font-semibold">{row.label}</h3>
+                    <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{row.detail}</p>
+                  </div>
+                  <div className="min-w-0 rounded-md border border-border bg-background py-3 pl-3 pr-2">
+                    <CodeCell
+                      cell={row.cell}
+                      language={codeCellLanguage}
+                      onFocus={() => focusFixtureCell(row.cell.id)}
+                      onExecute={noop}
+                      onInterrupt={noop}
+                      onDelete={noop}
+                      onFocusPrevious={noop}
+                      onFocusNext={noop}
+                      onInsertCellAfter={noop}
+                      onToggleSourceHidden={noop}
+                      onToggleOutputsHidden={noop}
+                      hiddenGroupCount={row.hiddenGroupCount}
+                      hiddenGroupItems={row.hiddenGroupItems}
+                      onExpandHiddenGroup={noop}
+                      onExpandHiddenGroupCell={noop}
+                    />
+                  </div>
                 </div>
-                <div className="min-w-0 rounded-md border border-border bg-background py-3 pl-3 pr-2">
-                  <CodeCell
-                    cell={row.cell}
-                    language={codeCellLanguage}
-                    onFocus={() => focusFixtureCell(row.cell.id)}
-                    onExecute={noop}
-                    onInterrupt={noop}
-                    onDelete={noop}
-                    onFocusPrevious={noop}
-                    onFocusNext={noop}
-                    onInsertCellAfter={noop}
-                    onToggleSourceHidden={noop}
-                    onToggleOutputsHidden={noop}
-                    hiddenGroupCount={row.hiddenGroupCount}
-                    hiddenGroupItems={row.hiddenGroupItems}
-                    onExpandHiddenGroup={noop}
-                    onExpandHiddenGroupCell={noop}
-                  />
+              ))}
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+            <div className="border-b border-fd-border p-4">
+              <div className="flex items-center gap-2">
+                <FileText className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+                <h2 className="text-sm font-semibold">MarkdownCell</h2>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                The production component is rendered in preview mode. Its markdown output is routed
+                through the docs IsolatedFrame adapter instead of a runtime iframe bundle.
+              </p>
+            </div>
+            <div className="grid gap-4 bg-background p-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="min-w-0 pl-6 pr-2">
+                <MarkdownCell
+                  cell={markdownCell}
+                  onFocus={() => focusFixtureCell(markdownCell.id)}
+                  onDelete={noop}
+                  onFocusPrevious={() => focusFixtureCell(codeCell.id)}
+                  onFocusNext={() => focusFixtureCell(rawCell.id)}
+                  onInsertCellAfter={noop}
+                  rightGutterContent={
+                    <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[11px] font-medium text-sky-700 dark:text-sky-300">
+                      preview adapter
+                    </span>
+                  }
+                />
+              </div>
+              <div className="rounded-lg border border-fd-border bg-fd-background p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs font-medium text-fd-muted-foreground">
+                  <Rows3 className="size-3.5" aria-hidden="true" />
+                  IsolatedFrame payload
                 </div>
+                <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fd-muted-foreground">
+                  {markdownFixtureSource}
+                </pre>
+              </div>
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+            <div className="border-b border-fd-border p-4">
+              <div className="flex items-center gap-2">
+                <Rows3 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+                <h2 className="text-sm font-semibold">RawCell</h2>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                Raw format detection and the shared editor chrome run from the current notebook app
+                component.
+              </p>
+            </div>
+            <div className="bg-background py-4 pl-4 pr-2">
+              <RawCell
+                cell={rawCell}
+                onFocus={() => focusFixtureCell(rawCell.id)}
+                onDelete={noop}
+                onFocusPrevious={() => focusFixtureCell(markdownCell.id)}
+                onFocusNext={noop}
+                onInsertCellAfter={noop}
+                rightGutterContent={
+                  <span className="rounded-full border border-fd-border bg-fd-background px-2 py-1 font-mono text-[11px] text-fd-muted-foreground">
+                    yaml
+                  </span>
+                }
+              />
+            </div>
+          </section>
+        </CrdtBridgeProvider>
+
+        <CrdtBridgeProvider {...adapterValue}>
+          <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
+            <div className="border-b border-fd-border p-4">
+              <div className="flex items-center gap-2">
+                <Rows3 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+                <h2 className="text-sm font-semibold">NotebookView workspace shell</h2>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                This fixture imports the production workspace renderer, seeds it from the shared
+                Elements notebook scenario, then hands `NotebookView` a local visual order. Stable
+                DOM ordering, adders, and cell navigation remain visible without opening a notebook
+                document or WASM handle.
+              </p>
+            </div>
+            <div className="bg-background p-3">
+              <div className="flex h-[560px] flex-col overflow-hidden rounded-lg border border-border bg-background">
+                <NotebookView
+                  cellIds={notebookViewCellIds}
+                  runtime="python"
+                  sessionRuntimeState="ready"
+                  onFocusCell={focusFixtureCell}
+                  onExecuteCell={noop}
+                  onInterruptKernel={noop}
+                  onDeleteCell={noop}
+                  onAddCell={() => null}
+                  onMoveCell={moveNotebookViewCell}
+                  onSetCellSourceHidden={noop}
+                  onSetCellOutputsHidden={noop}
+                />
+              </div>
+            </div>
+          </section>
+        </CrdtBridgeProvider>
+
+        <section className="rounded-lg border border-fd-border bg-fd-card p-4">
+          <h2 className="text-sm font-semibold">Full Cell Boundary Map</h2>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            These rows describe why the page can import the full notebook cell components while
+            still staying runtime-free. The catalog seeds the same stores and provider shapes the
+            cells read in production, then stops before notebook documents, kernel execution, iframe
+            bootstrap, or Automerge sync can run.
+          </p>
+          <div className="mt-4 grid gap-2">
+            {fullCellBoundaryRows.map((row) => (
+              <div
+                key={row.surface}
+                className="rounded-md border border-fd-border bg-fd-card p-3 text-xs"
+              >
+                <div className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)]">
+                  <div className="font-semibold">{row.surface}</div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                        Catalog path
+                      </div>
+                      <div className="mt-1 break-words font-mono text-[11px] leading-4 text-emerald-700 dark:text-emerald-300">
+                        {row.catalogPath}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                        Production boundary
+                      </div>
+                      <div className="mt-1 break-words font-mono text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                        {row.productionBoundary}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <p className="mt-3 leading-5 text-fd-muted-foreground">{row.detail}</p>
               </div>
             ))}
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-          <div className="border-b border-fd-border p-4">
-            <div className="flex items-center gap-2">
-              <FileText className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <h2 className="text-sm font-semibold">MarkdownCell</h2>
-            </div>
-            <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              The production component is rendered in preview mode. Its markdown output is routed
-              through the docs IsolatedFrame adapter instead of a runtime iframe bundle.
-            </p>
-          </div>
-          <div className="grid gap-4 bg-background p-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-            <div className="min-w-0 pl-6 pr-2">
-              <MarkdownCell
-                cell={markdownCell}
-                onFocus={() => focusFixtureCell(markdownCell.id)}
-                onDelete={noop}
-                onFocusPrevious={() => focusFixtureCell(codeCell.id)}
-                onFocusNext={() => focusFixtureCell(rawCell.id)}
-                onInsertCellAfter={noop}
-                rightGutterContent={
-                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[11px] font-medium text-sky-700 dark:text-sky-300">
-                    preview adapter
-                  </span>
-                }
-              />
-            </div>
-            <div className="rounded-lg border border-fd-border bg-fd-background p-3">
-              <div className="mb-2 flex items-center gap-2 text-xs font-medium text-fd-muted-foreground">
-                <Rows3 className="size-3.5" aria-hidden="true" />
-                IsolatedFrame payload
-              </div>
-              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fd-muted-foreground">
-                {markdownFixtureSource}
-              </pre>
-            </div>
-          </div>
-        </section>
-
-        <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-          <div className="border-b border-fd-border p-4">
-            <div className="flex items-center gap-2">
-              <Rows3 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <h2 className="text-sm font-semibold">RawCell</h2>
-            </div>
-            <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              Raw format detection and the shared editor chrome run from the current notebook app
-              component.
-            </p>
-          </div>
-          <div className="bg-background py-4 pl-4 pr-2">
-            <RawCell
-              cell={rawCell}
-              onFocus={() => focusFixtureCell(rawCell.id)}
-              onDelete={noop}
-              onFocusPrevious={() => focusFixtureCell(markdownCell.id)}
-              onFocusNext={noop}
-              onInsertCellAfter={noop}
-              rightGutterContent={
-                <span className="rounded-full border border-fd-border bg-fd-background px-2 py-1 font-mono text-[11px] text-fd-muted-foreground">
-                  yaml
-                </span>
-              }
-            />
-          </div>
-        </section>
-      </CrdtBridgeProvider>
-
-      <CrdtBridgeProvider {...adapterValue}>
-        <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-          <div className="border-b border-fd-border p-4">
-            <div className="flex items-center gap-2">
-              <Rows3 className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <h2 className="text-sm font-semibold">NotebookView workspace shell</h2>
-            </div>
-            <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              This fixture imports the production workspace renderer, seeds it from the shared
-              Elements notebook scenario, then hands `NotebookView` a local visual order. Stable DOM
-              ordering, adders, and cell navigation remain visible without opening a notebook
-              document or WASM handle.
-            </p>
-          </div>
-          <div className="bg-background p-3">
-            <div className="flex h-[560px] flex-col overflow-hidden rounded-lg border border-border bg-background">
-              <NotebookView
-                cellIds={notebookViewCellIds}
-                runtime="python"
-                sessionRuntimeState="ready"
-                onFocusCell={focusFixtureCell}
-                onExecuteCell={noop}
-                onInterruptKernel={noop}
-                onDeleteCell={noop}
-                onAddCell={() => null}
-                onMoveCell={moveNotebookViewCell}
-                onSetCellSourceHidden={noop}
-                onSetCellOutputsHidden={noop}
-              />
-            </div>
-          </div>
-        </section>
-      </CrdtBridgeProvider>
-
-      <section className="rounded-lg border border-fd-border bg-fd-card p-4">
-        <h2 className="text-sm font-semibold">Full Cell Boundary Map</h2>
-        <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-          These rows describe why the page can import the full notebook cell components while still
-          staying runtime-free. The catalog seeds the same stores and provider shapes the cells read
-          in production, then stops before notebook documents, kernel execution, iframe bootstrap,
-          or Automerge sync can run.
-        </p>
-        <div className="mt-4 grid gap-2">
-          {fullCellBoundaryRows.map((row) => (
-            <div
-              key={row.surface}
-              className="rounded-md border border-fd-border bg-fd-card p-3 text-xs"
-            >
-              <div className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)]">
-                <div className="font-semibold">{row.surface}</div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <div>
-                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
-                      Catalog path
-                    </div>
-                    <div className="mt-1 break-words font-mono text-[11px] leading-4 text-emerald-700 dark:text-emerald-300">
-                      {row.catalogPath}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
-                      Production boundary
-                    </div>
-                    <div className="mt-1 break-words font-mono text-[11px] leading-4 text-amber-700 dark:text-amber-300">
-                      {row.productionBoundary}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <p className="mt-3 leading-5 text-fd-muted-foreground">{row.detail}</p>
+        <section className="grid gap-3 md:grid-cols-3">
+          {fullCellRows.map((row) => (
+            <div key={row.label} className="rounded-lg border border-fd-border bg-fd-card p-4">
+              <h3 className="text-sm font-semibold">{row.label}</h3>
+              <p className="mt-2 font-mono text-[11px] leading-5 text-fd-muted-foreground">
+                {row.source}
+              </p>
+              <p className="mt-3 text-xs leading-5 text-fd-muted-foreground">{row.detail}</p>
             </div>
           ))}
-        </div>
-      </section>
-
-      <section className="grid gap-3 md:grid-cols-3">
-        {fullCellRows.map((row) => (
-          <div key={row.label} className="rounded-lg border border-fd-border bg-fd-card p-4">
-            <h3 className="text-sm font-semibold">{row.label}</h3>
-            <p className="mt-2 font-mono text-[11px] leading-5 text-fd-muted-foreground">
-              {row.source}
-            </p>
-            <p className="mt-3 text-xs leading-5 text-fd-muted-foreground">{row.detail}</p>
-          </div>
-        ))}
-      </section>
-    </div>
+        </section>
+      </div>
+    </NotebookHostProvider>
   );
 }

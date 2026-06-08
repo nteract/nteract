@@ -658,6 +658,99 @@ describe("NotebookRoom materialized sync persistence", () => {
     assert.equal(rejected.reason, "editor cannot write put_blob frames");
   });
 
+  it("accepts owner-scoped REQUEST frames on the WebSocket path", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    let materialized = 0;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+    });
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 1);
+    assert.equal(persisted, 0);
+    assert.equal(socket.sent.length, 1);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
+  it("rejects non-owner REQUEST frames on the WebSocket path", async () => {
+    for (const scope of ["editor", "viewer", "runtime_peer"] as const) {
+      const room = new NotebookRoom(fakeState(), {} as Env);
+      const identity = authenticateDevRequest(
+        new Request(
+          `https://cloud.test/n/demo/sync?user=${scope}&operator=desktop:a&scope=${scope}`,
+        ),
+      );
+      const socket = new FakeSocket();
+      const peer = {
+        id: scope,
+        socket: socket.asCloudflareWebSocket(),
+        identity,
+        connectedAt: "2026-05-22T00:00:00.000Z",
+      };
+      const harness = roomHarness(room);
+      let persisted = 0;
+      let materialized = 0;
+      harness.materializers.set("demo", {
+        receiveFrame: async () => {
+          materialized += 1;
+          return noopMaterializedResult();
+        },
+        checkpoint: async () => undefined,
+      });
+      harness.persistFrame = async () => {
+        persisted += 1;
+      };
+
+      await harness.handleMessage(
+        "demo",
+        peer,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+          ),
+        ),
+      );
+
+      assert.equal(materialized, 0, `${scope} request reached room host`);
+      assert.equal(persisted, 0, `${scope} request was persisted`);
+      assert.equal(socket.sent.length, 1);
+      const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+      assert.equal(rejected.type, "cloud_frame_rejected");
+      assert.equal(rejected.reason, `${scope} cannot write request frames`);
+    }
+  });
+
   it("accepts runtime peer PUT_BLOB frames on the WebSocket path", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(

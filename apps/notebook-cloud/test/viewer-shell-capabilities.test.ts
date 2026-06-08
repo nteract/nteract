@@ -152,15 +152,14 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(editorWithRuntime.canExecute, false);
 
-  const editorWithExecuteCapability = cloudNotebookShellCapabilities({
-    authState: authState("oidc", "editor"),
-    connectionScope: "editor",
+  const ownerWithRuntime = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
     hasCodeCells: true,
     selectedMode: "edit",
     runtimeAvailable: true,
-    canSubmitExecutionRequests: true,
   });
-  assert.equal(editorWithExecuteCapability.canExecute, true);
+  assert.equal(ownerWithRuntime.canExecute, true);
 });
 
 test("cloud shell capabilities prefer RuntimeStateDoc workstation attachment over presence fallback", () => {
@@ -393,6 +392,48 @@ test("cloud shell capabilities surface sharing for authenticated hosted rooms", 
     }).canManageSharing,
     false,
   );
+});
+
+test("cloud shell capabilities treat app-session cookies as browser authentication", () => {
+  const owner = cloudNotebookShellCapabilities({
+    authState: authState("anonymous"),
+    connectionScope: "owner",
+    hasAppSession: true,
+    hasCodeCells: true,
+    selectedMode: "edit",
+    hostCapabilities: { canManageSharing: true },
+  });
+
+  assert.equal(owner.auth.canUseAuthenticatedIdentity, true);
+  assert.equal(owner.auth.canSignIn, false);
+  assert.equal(owner.auth.needsAttention, false);
+  assert.equal(owner.access.isPublic, false);
+  assert.equal(owner.canManageSharing, true);
+  assert.equal(owner.canRequestEdit, true);
+  assert.equal(owner.canExecute, false);
+
+  const expiredLocalStorageWithFreshCookie = cloudNotebookShellCapabilities({
+    authState: authState("oidc_expired", "owner"),
+    connectionScope: "owner",
+    hasAppSession: true,
+    hasCodeCells: true,
+    hostCapabilities: { canManageSharing: true },
+  });
+
+  assert.equal(expiredLocalStorageWithFreshCookie.auth.canUseAuthenticatedIdentity, true);
+  assert.equal(expiredLocalStorageWithFreshCookie.auth.needsAttention, false);
+  assert.equal(expiredLocalStorageWithFreshCookie.canManageSharing, true);
+
+  const editorWithRuntime = cloudNotebookShellCapabilities({
+    authState: authState("anonymous"),
+    connectionScope: "editor",
+    hasAppSession: true,
+    hasCodeCells: true,
+    runtimeAvailable: true,
+  });
+
+  assert.equal(editorWithRuntime.auth.canUseAuthenticatedIdentity, true);
+  assert.equal(editorWithRuntime.canExecute, false);
 });
 
 test("cloud shell capabilities require the host room to advertise sharing", () => {

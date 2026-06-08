@@ -259,7 +259,7 @@ describe("cloud live sync", () => {
     }
   });
 
-  it("sends notebook requests as cloud request frames and resolves on room acceptance", async () => {
+  it("sends notebook requests as cloud request frames and resolves on room-host ack", async () => {
     const fake = installFakeWebSocket();
     try {
       const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
@@ -325,6 +325,38 @@ describe("cloud live sync", () => {
       });
 
       await assert.rejects(response, /viewer cannot write request frames/);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("resolves accepted notebook requests without waiting for a response frame", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      const response = transport.sendTypedRequest(
+        FrameType.REQUEST,
+        new TextEncoder().encode(JSON.stringify({ id: "req-1", action: "complete" })),
+        "req-1",
+        20,
+        "complete",
+      );
+      await nextMicrotask();
+      socket.control({
+        type: "cloud_frame_accepted",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        byte_length: socket.sent[0].byteLength - 1,
+        timestamp: "2026-06-06T00:00:00.000Z",
+      });
+
+      assert.deepEqual(await response, { result: "ok" });
     } finally {
       fake.restore();
     }

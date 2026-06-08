@@ -3,6 +3,7 @@ import type { BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
   AuthError,
+  APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   allowsBlobUpload,
   allowsPublish,
@@ -14,6 +15,7 @@ import {
   stampTrustedIdentity,
   type AuthenticatedConnection,
   type ConnectionScope,
+  validateOperator,
   validatePrincipal,
 } from "./identity.ts";
 import {
@@ -107,10 +109,15 @@ import {
 } from "./http-responses.ts";
 import {
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+  NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS,
   appSessionConfigured,
+  cloudSyncTicketFromWebSocketProtocol,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
+  createCloudSyncTicket,
   readCloudAppSession,
+  readCloudSyncTicket,
+  type CloudAppSession,
 } from "./app-session.ts";
 
 export { NotebookRoom };
@@ -156,22 +163,22 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   },
   {
     match: exactPath("/api/auth/session"),
-    methods: ["POST", "DELETE"],
+    methods: ["GET", "POST", "DELETE"],
     handler: (_match, request, env) => routeAppSession(request, env),
   },
   {
     match: exactPath("/", "/index.html"),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: (_match, request, env) => homeViewer(request, env),
   },
   {
     match: exactPath("/n", "/n/"),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: (_match, request, env) => notebookListViewer(request, env),
   },
   {
     match: exactPath("/oidc"),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: (_match, request, env) => oidcCallbackViewer(request, env),
   },
   {
@@ -180,17 +187,17 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   },
   {
     match: routePath("/n/:notebookId/debug", { trailingSlash: "optional" }),
-    methods: ["GET"],
-    handler: ({ params }) => debugViewer(params.notebookId),
+    methods: ["GET", "HEAD"],
+    handler: ({ params }, request) => debugViewer(params.notebookId, request),
   },
   {
     match: routePath("/n/:notebookId/r/:revision", { trailingSlash: "optional" }),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: ({ params }, request, env) => viewer(params.notebookId, request, env, params.revision),
   },
   {
     match: routePath("/n/:notebookId/:vanityName", { trailingSlash: "optional" }),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: ({ params }, request, env) => viewer(params.notebookId, request, env),
   },
   {
@@ -257,6 +264,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/n/:notebookId/access-requests", { trailingSlash: "optional" }),
     handler: ({ params }, request, env) =>
       routeNotebookAccessRequests(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/sync-ticket", { trailingSlash: "optional" }),
+    methods: ["POST"],
+    handler: ({ params }, request, env) => routeNotebookSyncTicket(request, env, params.notebookId),
   },
   {
     match: routePath("/api/n/:notebookId/workstation-attachments", { trailingSlash: "optional" }),
@@ -415,14 +427,15 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return originRejection;
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
-  if (identity instanceof Response) {
-    return identity;
-  }
   const url = new URL(request.url);
   const notebookId = decodeURIComponent(url.pathname.match(/^\/n\/([^/]+)\/sync\/?$/)?.[1] ?? "");
   if (!notebookId) {
     return json({ error: "notebook id is required" }, 400);
+  }
+  const ticketIdentity = await cloudSyncTicketIdentityFromRequest(request, env, notebookId);
+  const identity = ticketIdentity ?? (await authenticateRequestOrResponse(request, env));
+  if (identity instanceof Response) {
+    return identity;
   }
   const authorizedIdentity = await authorizeIdentityOrResponse(
     env,
@@ -430,7 +443,8 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     identity,
     identity.scope,
     {
-      allowPublicViewerDowngrade: true,
+      allowViewerDowngrade: true,
+      allowLiveScopeDowngrade: true,
     },
   );
   if (authorizedIdentity instanceof Response) {
@@ -440,6 +454,72 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
   const room = env.NOTEBOOK_ROOMS.get(id);
   return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
+}
+
+async function cloudSyncTicketIdentityFromRequest(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<AuthenticatedConnection | Response | null> {
+  let credential: ReturnType<typeof cloudSyncTicketFromWebSocketProtocol>;
+  try {
+    credential = cloudSyncTicketFromWebSocketProtocol(
+      request.headers.get("sec-websocket-protocol"),
+    );
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  if (!credential) {
+    return null;
+  }
+  if (hasNonTicketIdentityCredential(request)) {
+    return json({ error: "multiple identity credentials presented" }, 400);
+  }
+  if (!appSessionConfigured(env)) {
+    return json({ error: "app sessions are not configured" }, 503);
+  }
+  const ticket = await readCloudSyncTicket(env, credential.ticket);
+  if (!ticket) {
+    return json({ error: "app-session sync ticket is invalid or expired" }, 401);
+  }
+  if (ticket.notebookId !== notebookId) {
+    return json({ error: "app-session sync ticket does not match this notebook" }, 403);
+  }
+
+  try {
+    validatePrincipal(ticket.principal);
+    validateOperator(ticket.operator);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 401);
+  }
+
+  return {
+    principal: ticket.principal,
+    operator: ticket.operator,
+    actorLabel: `${ticket.principal}/${ticket.operator}`,
+    scope: ticket.scope,
+    metadata: {
+      provider: "app-session",
+      transport: "app-session-sync-ticket",
+      principalNamespace: ticket.principalNamespace,
+      ...(ticket.displayName ? { displayName: ticket.displayName } : {}),
+    },
+    ...(credential.webSocketProtocol ? { webSocketProtocol: credential.webSocketProtocol } : {}),
+  };
+}
+
+function hasNonTicketIdentityCredential(request: Request): boolean {
+  if (request.headers.has("authorization") || request.headers.has(DEV_AUTH_TOKEN_HEADER)) {
+    return true;
+  }
+  const protocols = request.headers.get("sec-websocket-protocol")?.split(",") ?? [];
+  return protocols.some((protocol) => {
+    const trimmed = protocol.trim();
+    return (
+      trimmed.startsWith(BEARER_AUTH_TOKEN_PROTOCOL_PREFIX) ||
+      trimmed.startsWith(DEV_AUTH_TOKEN_PROTOCOL_PREFIX)
+    );
+  });
 }
 
 function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | null {
@@ -520,9 +600,11 @@ function hasCredentialWebSocketSubprotocol(request: Request): boolean {
   return protocol
     .split(",")
     .some((part) =>
-      [BEARER_AUTH_TOKEN_PROTOCOL_PREFIX, DEV_AUTH_TOKEN_PROTOCOL_PREFIX].some((prefix) =>
-        part.trim().startsWith(prefix),
-      ),
+      [
+        APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
+        BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+        DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+      ].some((prefix) => part.trim().startsWith(prefix)),
     );
 }
 
@@ -547,6 +629,11 @@ function appSessionHealth(env: Env): { status: "configured" | "disabled" } {
 }
 
 async function routeAppSession(request: Request, env: Env): Promise<Response> {
+  if (request.method === "GET") {
+    const session = appSessionConfigured(env) ? await readCloudAppSession(env, request) : null;
+    return json({ ok: true, session: session ? appSessionResponse(session) : null });
+  }
+
   const originRejection = rejectUntrustedMutationOrigin(request, env);
   if (originRejection) {
     return originRejection;
@@ -582,6 +669,122 @@ async function routeAppSession(request: Request, env: Env): Promise<Response> {
   return response;
 }
 
+function appSessionResponse(session: CloudAppSession): Record<string, unknown> {
+  return {
+    provider: session.provider,
+    expires_at: session.expiresAt,
+  };
+}
+
+async function routeNotebookSyncTicket(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!appSessionConfigured(env)) {
+    return json({ error: "app sessions are not configured" }, 503);
+  }
+
+  const session = await readCloudAppSession(env, request);
+  if (!session) {
+    return json({ error: "app session is required" }, 401);
+  }
+
+  const payload = await readOptionalJsonObject(request, "sync ticket request");
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const requestedScope = parseBrowserSyncTicketScope(payload?.scope);
+  if (requestedScope instanceof Response) {
+    return requestedScope;
+  }
+  const operator =
+    optionalBoundedStringField(payload?.operator, "operator", 256) ??
+    `browser:${crypto.randomUUID()}`;
+  if (operator instanceof Response) {
+    return operator;
+  }
+  try {
+    validateOperator(operator);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+
+  const identity = appSessionConnectionIdentity(session, operator, requestedScope);
+  const authorizedIdentity = await authorizeIdentityOrResponse(
+    env,
+    notebookId,
+    identity,
+    requestedScope,
+    {
+      allowViewerDowngrade: true,
+      allowLiveScopeDowngrade: true,
+    },
+  );
+  if (authorizedIdentity instanceof Response) {
+    return authorizedIdentity;
+  }
+  if (authorizedIdentity.scope === "runtime_peer") {
+    return json({ error: "browser app sessions cannot request runtime_peer scope" }, 403);
+  }
+
+  const ticket = await createCloudSyncTicket(env, session, {
+    notebookId,
+    operator,
+    scope: authorizedIdentity.scope,
+  });
+  return json({
+    ok: true,
+    ticket,
+    expires_in: NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS,
+    scope: authorizedIdentity.scope,
+  });
+}
+
+function appSessionConnectionIdentity(
+  session: CloudAppSession,
+  operator: string,
+  scope: Exclude<ConnectionScope, "runtime_peer">,
+): AuthenticatedConnection {
+  return {
+    principal: session.principal,
+    operator,
+    actorLabel: `${session.principal}/${operator}`,
+    scope,
+    metadata: {
+      provider: "app-session",
+      transport: "app-session-cookie",
+      principalNamespace: session.principalNamespace,
+      ...(session.displayName ? { displayName: session.displayName } : {}),
+    },
+  };
+}
+
+function parseBrowserSyncTicketScope(
+  value: unknown,
+): Exclude<ConnectionScope, "runtime_peer"> | Response {
+  if (value === undefined || value === null || value === "") {
+    return "viewer";
+  }
+  if (typeof value !== "string") {
+    return json({ error: "scope must be a string" }, 400);
+  }
+  let scope: ConnectionScope;
+  try {
+    scope = parseScope(value);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  if (scope === "runtime_peer") {
+    return json({ error: "browser app sessions cannot request runtime_peer scope" }, 403);
+  }
+  return scope;
+}
+
 type CreateNotebookPayload = Record<string, unknown>;
 
 async function routeCreateNotebook(request: Request, env: Env): Promise<Response> {
@@ -597,7 +800,7 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
   if (identity instanceof Response) {
     return identity;
   }
@@ -774,7 +977,10 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
     }
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity =
+    request.method === "GET"
+      ? await authenticateRequestOrAppSessionOrResponse(request, env, "owner")
+      : await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -847,7 +1053,7 @@ async function routeDefaultWorkstation(request: Request, env: Env): Promise<Resp
     return originRejection;
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
   if (identity instanceof Response) {
     return identity;
   }
@@ -894,7 +1100,12 @@ async function routeNotebookWorkstationAttachment(
     return originRejection;
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -1474,7 +1685,12 @@ async function routeSnapshot(
   const key = snapshotKey(notebookId, headsHash);
 
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -1607,7 +1823,12 @@ async function routeCommsSnapshot(
   headsHash: string,
 ): Promise<Response> {
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -1696,7 +1917,12 @@ async function routeRuntimeSnapshot(
   headsHash: string,
 ): Promise<Response> {
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -1810,7 +2036,12 @@ async function routeNotebookInvites(
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -1882,7 +2113,12 @@ async function routeNotebookInvite(
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -1936,7 +2172,7 @@ async function routeNotebookAccessRequests(
     }
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "viewer");
   if (identity instanceof Response) {
     return identity;
   }
@@ -2044,7 +2280,12 @@ async function routeNotebookAccessRequest(
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2321,7 +2562,12 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2406,7 +2652,12 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "viewer",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2432,7 +2683,12 @@ async function routeUpdateNotebookMetadata(
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "editor");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "editor",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2642,7 +2898,12 @@ async function routeBlob(
   const key = blobKey(notebookId, hash);
 
   if (request.method === "HEAD") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -2662,7 +2923,12 @@ async function routeBlob(
   }
 
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -3072,13 +3338,29 @@ async function syncAuthenticatedProfile(
   }
 }
 
-async function authenticateAndAuthorizeOrResponse(
+async function authenticateRequestOrAppSessionOrResponse(
+  request: Request,
+  env: Env,
+  appSessionScope: Exclude<ConnectionScope, "runtime_peer">,
+): Promise<AuthenticatedConnection | Response> {
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response || !isAnonymousViewer(identity)) {
+    return identity;
+  }
+  const session = appSessionConfigured(env) ? await readCloudAppSession(env, request) : null;
+  if (!session) {
+    return identity;
+  }
+  return appSessionConnectionIdentity(session, "browser:http", appSessionScope);
+}
+
+async function authenticateAndAuthorizeOrAppSessionOrResponse(
   request: Request,
   env: Env,
   notebookId: string,
-  requestedScope: ConnectionScope,
+  requestedScope: Exclude<ConnectionScope, "runtime_peer">,
 ): Promise<AuthenticatedConnection | Response> {
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, requestedScope);
   if (identity instanceof Response) {
     return identity;
   }
@@ -3230,6 +3512,7 @@ async function viewer(
   const shellMetadata = await publicViewerShellMetadata(env, notebookId, headsHash);
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
+  const session = await readCloudAppSession(env, request).catch(() => null);
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
@@ -3246,14 +3529,19 @@ async function viewer(
     hostCapabilities: {
       canManageSharing: true,
     },
+    session: session ? appSessionResponse(session) : null,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
+    syncTicketEndpoint: `${notebookApiBasePath}/sync-ticket`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
     outputDocumentBaseUrl: outputDocumentBaseUrl(env),
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
   };
-  return viewerShell(shellMetadata, env, authConfigForRequest(request, env), config);
+  return responseForRequestMethod(
+    request,
+    viewerShell(shellMetadata, env, authConfigForRequest(request, env), config),
+  );
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {
@@ -3267,38 +3555,54 @@ interface ViewerShellConfig extends Record<string, unknown> {
 }
 
 function homeViewer(request: Request, env: Env): Response {
-  return viewerShell(
-    { title: "nteract", description: "A hosted nteract notebook workspace." },
-    env,
-    authConfigForRequest(request, env),
-    null,
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      { title: "nteract", description: "A hosted nteract notebook workspace." },
+      env,
+      authConfigForRequest(request, env),
+      null,
+    ),
   );
 }
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {
   const bootstrap = await notebookListBootstrap(request, env);
-  return viewerShell(
-    {
-      title: "nteract cloud notebooks",
-      description: "Open, create, and manage hosted nteract notebooks.",
-    },
-    env,
-    authConfigForRequest(request, env),
-    null,
-    bootstrap,
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      {
+        title: "nteract cloud notebooks",
+        description: "Open, create, and manage hosted nteract notebooks.",
+      },
+      env,
+      authConfigForRequest(request, env),
+      null,
+      bootstrap,
+    ),
   );
 }
 
 function oidcCallbackViewer(request: Request, env: Env): Response {
-  return viewerShell(
-    {
-      title: "nteract cloud notebook sign-in",
-      description: "Complete hosted notebook sign-in.",
-    },
-    env,
-    authConfigForRequest(request, env),
-    null,
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      {
+        title: "nteract cloud notebook sign-in",
+        description: "Complete hosted notebook sign-in.",
+      },
+      env,
+      authConfigForRequest(request, env),
+      null,
+    ),
   );
+}
+
+function responseForRequestMethod(request: Request, response: Response): Response {
+  if (request.method !== "HEAD") {
+    return response;
+  }
+  return new Response(null, response);
 }
 
 interface ViewerShellMetadata {
@@ -3421,6 +3725,7 @@ async function notebookListBootstrap(
   );
   return {
     kind: "notebook-list",
+    session: appSessionResponse(session),
     notebooks: notebookListResponseRows(request, notebooks),
     saved_at: new Date().toISOString(),
   };
@@ -3557,7 +3862,7 @@ function isRuntimeWasmBinaryName(value: unknown): value is string {
   return typeof value === "string" && /^runtimed_wasm_bg(?:\.[a-f0-9]{12,64})?\.wasm$/.test(value);
 }
 
-function debugViewer(notebookId: string): Response {
+function debugViewer(notebookId: string, request: Request): Response {
   const escaped = escapeHtml(notebookId);
   const html = `<!doctype html>
 <html lang="en">
@@ -3645,11 +3950,14 @@ function debugViewer(notebookId: string): Response {
 </body>
 </html>`;
 
-  return withCors(
-    withBrowserSecurityHeaders(
-      new Response(html, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      }),
+  return responseForRequestMethod(
+    request,
+    withCors(
+      withBrowserSecurityHeaders(
+        new Response(html, {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+      ),
     ),
   );
 }

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import worker from "../src/index.ts";
 import { NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME } from "../src/app-session.ts";
 import {
+  APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
@@ -259,6 +260,22 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /nteract-cloud-bootstrap/);
   });
 
+  it("supports HEAD requests for hosted app shell routes", async () => {
+    const env = fakeEnv();
+
+    for (const pathname of ["/", "/n", "/oidc", "/n/head-demo/debug"]) {
+      const response = await worker.fetch(
+        new Request(`http://localhost${pathname}`, { method: "HEAD" }),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 200, pathname);
+      assert.match(response.headers.get("Content-Type") ?? "", /text\/html/, pathname);
+      assert.equal(await response.text(), "", pathname);
+    }
+  });
+
   it("exchanges OIDC bearer auth for a secure app session cookie", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "session-user",
@@ -294,6 +311,41 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { ok: true, expires_in: 21_600 });
   });
 
+  it("reads app session cookie status without exposing identity credentials", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "session-status-user",
+      email: "session-status@example.test",
+      extraPayload: { email_verified: true },
+      name: "Session Status User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const bodyText = await response.text();
+    assert.doesNotMatch(bodyText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(bodyText, /session-status@example\.test/);
+    assert.doesNotMatch(bodyText, /session-status-user/);
+    const body = JSON.parse(bodyText) as {
+      ok: boolean;
+      session: { provider: string; expires_at: number } | null;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.session?.provider, "oidc");
+    assert.equal(typeof body.session?.expires_at, "number");
+  });
+
   it("rejects cross-origin app session exchange attempts", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "session-user" });
     const env = fakeEnv({
@@ -318,7 +370,12 @@ describe("Worker artifact routes", () => {
   });
 
   it("bootstraps the notebook home from a valid app session cookie", async () => {
-    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "bootstrap-user" });
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "bootstrap-user",
+      email: "bootstrap@example.test",
+      extraPayload: { email_verified: true },
+      name: "Bootstrap User",
+    });
     const env = fakeEnv({
       ...oidcEnv,
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
@@ -349,7 +406,41 @@ describe("Worker artifact routes", () => {
     assert.equal(bootstrap.notebooks.length, 1);
     assert.equal(bootstrap.notebooks[0]?.notebook_id, "bootstrap-visible");
     assert.equal(bootstrap.notebooks[0]?.title, "Bootstrap Visible");
+    assert.equal(bootstrap.session?.provider, "oidc");
+    assert.equal(typeof bootstrap.session?.expires_at, "number");
     assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
+  });
+
+  it("bootstraps notebook viewers with safe app session status", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "viewer-bootstrap-user",
+      email: "viewer-bootstrap@example.test",
+      extraPayload: { email_verified: true },
+      name: "Viewer Bootstrap User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/viewer-bootstrap-session/notebook", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    const config = notebookViewerConfig(html);
+    assert.equal(config.session?.provider, "oidc");
+    assert.equal(typeof config.session?.expires_at, "number");
+    assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(html, /viewer-bootstrap@example\.test|viewer-bootstrap-user/);
+    assert.doesNotMatch(html, /Viewer Bootstrap User/);
   });
 
   it("keeps private notebook bootstrap out of anonymous notebook home HTML", async () => {
@@ -373,16 +464,16 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /nteract-cloud-bootstrap|Hidden Private Title/);
   });
 
-  it("uses app session cookies only for read-only catalog listing", async () => {
-    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-list-user" });
+  it("uses app session cookies for first-party browser notebook APIs", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-browser-user" });
     const env = fakeEnv({
       ...oidcEnv,
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
     });
-    seedNotebook(env, "cookie-list-visible");
+    seedNotebook(env, "cookie-api-visible");
     seedAcl(env, {
-      notebookId: "cookie-list-visible",
-      subject: "user:anaconda:cookie-list-user",
+      notebookId: "cookie-api-visible",
+      subject: "user:anaconda:cookie-browser-user",
       scope: "owner",
     });
     const cookie = await oidcAppSessionCookie(env, token);
@@ -398,24 +489,61 @@ describe("Worker artifact routes", () => {
     const listBody = (await listResponse.json()) as { notebooks: Array<{ notebook_id: string }> };
     assert.deepEqual(
       listBody.notebooks.map((notebook) => notebook.notebook_id),
-      ["cookie-list-visible"],
+      ["cookie-api-visible"],
     );
 
     const patchResponse = await worker.fetch(
-      new Request("https://cloud.test/api/n/cookie-list-visible", {
+      new Request("https://cloud.test/api/n/cookie-api-visible", {
         method: "PATCH",
         headers: {
           Cookie: cookie,
           "Content-Type": "application/json",
           Origin: "https://cloud.test",
         },
-        body: JSON.stringify({ title: "Should Not Change" }),
+        body: JSON.stringify({ title: "Cookie Browser Notebook" }),
       }),
       env,
       fakeContext(),
     );
-    assert.equal(patchResponse.status, 403);
-    assert.equal(env.DB.notebooks.get("cookie-list-visible")?.title, null);
+    assert.equal(patchResponse.status, 200);
+    assert.equal(env.DB.notebooks.get("cookie-api-visible")?.title, "Cookie Browser Notebook");
+
+    const createResponse = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ title: "Cookie Created Notebook" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(createResponse.status, 201);
+    const created = (await createResponse.json()) as { notebook_id: string; title: string };
+    assert.equal(created.title, "Cookie Created Notebook");
+    assert.ok(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === created.notebook_id &&
+          row.subject === "user:anaconda:cookie-browser-user" &&
+          row.scope === "owner",
+      ),
+    );
+
+    const explicitBadBearer = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        headers: {
+          Authorization: "Bearer definitely-not-a-token",
+          Cookie: cookie,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(explicitBadBearer.status, 401);
   });
 
   it("does not use app session cookies as room WebSocket credentials", async () => {
@@ -456,6 +584,275 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 404);
     assert.equal(roomFetches, 0);
+  });
+
+  it("mints app-session sync tickets and forwards them as trusted room identity", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "cookie-ticket-user",
+      name: "Cookie Ticket User",
+    });
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "cookie-ticket-private");
+    seedAcl(env, {
+      notebookId: "cookie-ticket-private",
+      subject: "user:anaconda:cookie-ticket-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const mint = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-ticket-private/sync-ticket", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ operator: "browser:tab-cookie", scope: "owner" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(mint.status, 200);
+    const ticketBody = (await mint.json()) as {
+      expires_in: number;
+      scope: string;
+      ticket: string;
+    };
+    assert.equal(ticketBody.scope, "owner");
+    assert.equal(typeof ticketBody.ticket, "string");
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-ticket-private/sync?scope=owner", {
+        headers: {
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": `${APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX}${base64Url(
+            ticketBody.ticket,
+          )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(
+      forwardedRequest.headers.get("Sec-WebSocket-Protocol"),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+    assert.equal(
+      forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+    assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "owner");
+  });
+
+  it("rejects app-session sync tickets combined with other credentials", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-mixed-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "cookie-mixed-ticket");
+    seedAcl(env, {
+      notebookId: "cookie-mixed-ticket",
+      subject: "user:anaconda:cookie-mixed-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+    const mint = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-mixed-ticket/sync-ticket", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ operator: "browser:tab-cookie", scope: "owner" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(mint.status, 200);
+    const ticketBody = (await mint.json()) as { ticket: string };
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-mixed-ticket/sync?scope=owner", {
+        headers: {
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": `${APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX}${base64Url(
+            ticketBody.ticket,
+          )}, ${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "multiple identity credentials presented" });
+  });
+
+  it("rejects app-session sync ticket WebSockets without an origin", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-origin-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "cookie-origin-ticket");
+    seedAcl(env, {
+      notebookId: "cookie-origin-ticket",
+      subject: "user:anaconda:cookie-origin-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+    const mint = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-origin-ticket/sync-ticket", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ operator: "browser:tab-cookie", scope: "owner" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(mint.status, 200);
+    const ticketBody = (await mint.json()) as { ticket: string };
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-origin-ticket/sync?scope=owner", {
+        headers: {
+          "Sec-WebSocket-Protocol": `${APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX}${base64Url(
+            ticketBody.ticket,
+          )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "websocket origin is required" });
+  });
+
+  it("downgrades app-session sync tickets to granted viewer scope", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-viewer-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "cookie-ticket-viewer");
+    seedAcl(env, {
+      notebookId: "cookie-ticket-viewer",
+      subject: "user:anaconda:cookie-viewer-user",
+      scope: "viewer",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const mint = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-ticket-viewer/sync-ticket", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ operator: "browser:tab-cookie", scope: "editor" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(mint.status, 200);
+    const ticketBody = (await mint.json()) as { scope: string; ticket: string };
+    assert.equal(ticketBody.scope, "viewer");
+  });
+
+  it("downgrades optimistic owner app-session sync tickets to the best granted live scope", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-editor-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "cookie-ticket-editor");
+    seedAcl(env, {
+      notebookId: "cookie-ticket-editor",
+      subject: "user:anaconda:cookie-editor-user",
+      scope: "editor",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const mint = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-ticket-editor/sync-ticket", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ operator: "browser:tab-cookie", scope: "owner" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(mint.status, 200);
+    const ticketBody = (await mint.json()) as { scope: string; ticket: string };
+    assert.equal(ticketBody.scope, "editor");
+  });
+
+  it("does not mint runtime_peer tickets for app-session browsers", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-runtime-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "cookie-runtime-ticket");
+    seedAcl(env, {
+      notebookId: "cookie-runtime-ticket",
+      subject: "user:anaconda:cookie-runtime-user",
+      scope: "owner",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const mint = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-runtime-ticket/sync-ticket", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ operator: "browser:tab-cookie", scope: "runtime_peer" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(mint.status, 403);
+    assert.deepEqual(await mint.json(), {
+      error: "browser app sessions cannot request runtime_peer scope",
+    });
   });
 
   it("clears app session cookies on logout", async () => {
@@ -1229,6 +1626,56 @@ describe("Worker artifact routes", () => {
       default_workstation_id: "ws-lab2",
     });
     assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), "ws-lab2");
+  });
+
+  it("uses app session cookies for browser workstation selection", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "cookie-workstation-user",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:anaconda:cookie-workstation-user",
+      workstationId: "ws-cookie",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const list = await worker.fetch(
+      new Request("https://cloud.test/api/workstations", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const listBody = (await list.json()) as {
+      workstations: Array<{ workstation_id: string }>;
+    };
+    assert.deepEqual(
+      listBody.workstations.map((workstation) => workstation.workstation_id),
+      ["ws-cookie"],
+    );
+
+    const select = await worker.fetch(
+      new Request("https://cloud.test/api/workstations/default", {
+        method: "PATCH",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ workstation_id: "ws-cookie" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(select.status, 200);
+    assert.equal(
+      env.DB.workstationDefaults.get("user:anaconda:cookie-workstation-user"),
+      "ws-cookie",
+    );
   });
 
   it("does not let users select another principal's workstation as their default", async () => {
@@ -3014,6 +3461,56 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("downgrades OIDC editor WebSocket requests to granted viewer access", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      email: "viewer@example.com",
+      extraPayload: { email_verified: true },
+      name: "Viewer Example",
+    });
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "shared-view-demo");
+    seedAcl(env, {
+      notebookId: "shared-view-demo",
+      subject: "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/shared-view-demo/sync?operator=browser:tab&scope=editor", {
+        headers: {
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+            token,
+          )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "viewer");
+    assert.equal(
+      forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+  });
+
   it("stores OIDC profile labels even when there are no pending invites", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
@@ -4067,6 +4564,10 @@ function notebookHomeBootstrap(html: string): {
     notebook_id: string;
     title: string | null;
   }>;
+  session?: {
+    provider: string;
+    expires_at: number;
+  };
 } {
   const match = html.match(
     /<script id="nteract-cloud-bootstrap" type="application\/json">([^<]+)<\/script>/,
@@ -4078,6 +4579,28 @@ function notebookHomeBootstrap(html: string): {
       notebook_id: string;
       title: string | null;
     }>;
+    session?: {
+      provider: string;
+      expires_at: number;
+    };
+  };
+}
+
+function notebookViewerConfig(html: string): {
+  session?: {
+    provider: string;
+    expires_at: number;
+  } | null;
+} {
+  const match = html.match(
+    /<script id="nteract-cloud-viewer-config" type="application\/json">([^<]+)<\/script>/,
+  );
+  assert.ok(match?.[1], "expected notebook viewer config script");
+  return JSON.parse(match[1]) as {
+    session?: {
+      provider: string;
+      expires_at: number;
+    } | null;
   };
 }
 

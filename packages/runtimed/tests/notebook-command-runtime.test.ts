@@ -103,6 +103,24 @@ describe("notebook command runtime projection", () => {
     });
   });
 
+  it("treats scaffolded not-started state as running when host execution is already available", () => {
+    const projection = projectNotebookCommandRuntimeStatusFromRuntimeState(
+      {
+        kernel: {
+          lifecycle: { lifecycle: "NotStarted" },
+          error_reason: null,
+        },
+      } as RuntimeState,
+      { executionAvailable: true },
+    );
+
+    expect(projection).toMatchObject({
+      label: "running",
+      state: "idle",
+      statusKey: RUNTIME_STATUS.RUNNING_UNKNOWN,
+    });
+  });
+
   it("projects stable runtime command affordances from capabilities and host actions", () => {
     const runtimeStatus = projectNotebookCommandRuntimeStatus({
       statusKey: RUNTIME_STATUS.RUNNING_IDLE,

@@ -6,7 +6,7 @@ import {
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   allowsBlobUpload,
-  allowsRuntimeStateWrite,
+  allowsExecutionRequestSubmit,
   authenticateAnonymousViewer,
   authenticateDevRequest,
   authenticateRequest,
@@ -317,8 +317,11 @@ describe("dev identity", () => {
     assert.throws(() => parseScope("admin"), /unknown connection scope/);
   });
 
-  it("keeps runtime-state write scope distinct from blob upload scope", () => {
-    assert.equal(allowsRuntimeStateWrite("editor"), true);
+  it("keeps execution request scope distinct from edit and blob upload scope", () => {
+    assert.equal(allowsExecutionRequestSubmit("owner"), true);
+    assert.equal(allowsExecutionRequestSubmit("editor"), false);
+    assert.equal(allowsExecutionRequestSubmit("runtime_peer"), false);
+    assert.equal(allowsExecutionRequestSubmit("viewer"), false);
     assert.equal(allowsBlobUpload("editor"), false);
     assert.equal(allowsBlobUpload("runtime_peer"), true);
     assert.equal(allowsBlobUpload("owner"), true);

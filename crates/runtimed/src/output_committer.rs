@@ -21,6 +21,7 @@ use crate::task_supervisor::spawn_supervised;
 // tail messages can be lost before status=idle arrives.
 const OUTPUT_COMMITTER_QUEUE_CAPACITY: usize = 2048;
 const OUTPUT_COMMIT_BATCH_SIZE: usize = 128;
+const ERROR_INLINE_THRESHOLD: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum OrdinaryOutputKind {
@@ -266,10 +267,17 @@ async fn create_manifest_json(
         .await;
     }
 
+    let inline_threshold = match output.kind {
+        OrdinaryOutputKind::Error => ERROR_INLINE_THRESHOLD,
+        OrdinaryOutputKind::DisplayData | OrdinaryOutputKind::ExecuteResult => {
+            DEFAULT_INLINE_THRESHOLD
+        }
+    };
+
     match output_store::create_manifest_with_redactor(
         &output.nbformat_value,
         &context.blob_store,
-        DEFAULT_INLINE_THRESHOLD,
+        inline_threshold,
         &context.redactor,
     )
     .await
@@ -375,6 +383,27 @@ mod tests {
             "ename": "MeasuredError",
             "evalue": text,
             "traceback": [text],
+        })
+    }
+
+    fn rich_error_output(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                crate::user_error::TRACEBACK_MIME: {
+                    "ename": "MeasuredError",
+                    "evalue": text,
+                    "frames": [{
+                        "filename": "cell.py",
+                        "lineno": 1,
+                        "name": "<module>",
+                        "lines": [{ "lineno": 1, "source": text, "highlight": true }]
+                    }],
+                    "language": "python",
+                    "text": text,
+                }
+            },
+            "metadata": {},
         })
     }
 
@@ -491,6 +520,83 @@ mod tests {
             .expect("read outputs");
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["ename"], "MeasuredError");
+    }
+
+    #[tokio::test]
+    async fn modest_error_tracebacks_stay_inline_for_fast_cloud_rendering() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
+        let state = runtime_state();
+        create_execution(&state);
+        let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
+        let handle = start_output_committer_with_capacity(
+            commit_context(state.clone(), blob_store, lifecycle_tx),
+            8,
+        );
+        let traceback = format!(
+            "RuntimeError: {}\n",
+            "x".repeat(DEFAULT_INLINE_THRESHOLD + 256)
+        );
+
+        handle
+            .enqueue_output(OrdinaryOutputCommit {
+                execution_id: "exec-1".to_string(),
+                nbformat_value: error_output(&traceback),
+                buffers: Vec::new(),
+                kind: OrdinaryOutputKind::Error,
+            })
+            .await;
+        handle.flush_for_ordering().await;
+
+        let outputs = state
+            .read(|sd| sd.get_outputs("exec-1"))
+            .expect("read outputs");
+        assert_eq!(outputs.len(), 1);
+        assert!(
+            outputs[0]["traceback"]["inline"]
+                .as_str()
+                .is_some_and(|value| value.contains("RuntimeError")),
+            "modest traceback should be inlined instead of forcing a cloud blob upload"
+        );
+        assert!(outputs[0].get("llm_preview").is_none());
+    }
+
+    #[tokio::test]
+    async fn rich_error_tracebacks_use_error_inline_budget() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
+        let state = runtime_state();
+        create_execution(&state);
+        let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
+        let handle = start_output_committer_with_capacity(
+            commit_context(state.clone(), blob_store, lifecycle_tx),
+            8,
+        );
+        let traceback = format!(
+            "RuntimeError: {}\n",
+            "x".repeat(DEFAULT_INLINE_THRESHOLD + 256)
+        );
+
+        handle
+            .enqueue_output(OrdinaryOutputCommit {
+                execution_id: "exec-1".to_string(),
+                nbformat_value: rich_error_output(&traceback),
+                buffers: Vec::new(),
+                kind: OrdinaryOutputKind::Error,
+            })
+            .await;
+        handle.flush_for_ordering().await;
+
+        let outputs = state
+            .read(|sd| sd.get_outputs("exec-1"))
+            .expect("read outputs");
+        assert_eq!(outputs.len(), 1);
+        assert!(
+            outputs[0]["rich"]["inline"]
+                .as_str()
+                .is_some_and(|value| value.contains("RuntimeError")),
+            "launcher rich traceback should not force a cloud blob upload"
+        );
     }
 
     #[tokio::test]

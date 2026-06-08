@@ -10,7 +10,9 @@ import {
   cloudHttpHeadersFromPrototypeAuthState,
   cloudNotebookSignInCopy,
   clearCloudPrototypeDevAuth,
+  cloudSyncAuthFromAppSessionTicket,
   cloudSyncAuthFromPrototypeAuthState,
+  withCloudPrototypeAuthHeaders,
   isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
   prototypeAuthDiagnostics,
@@ -68,7 +70,7 @@ describe("cloud collaborator auth", () => {
     assert.deepEqual(auth.protocols, ["nteract-dev-token.c2VjcmV0", "nteract.v4"]);
   });
 
-  it("builds OIDC bearer auth for HTTP and WebSocket without putting tokens in the URL", () => {
+  it("keeps legacy OIDC bearer sync auth available without putting tokens in the URL", () => {
     const storage = new MemoryStorage();
     const accessToken = jwt({
       sub: "anaconda-user-123",
@@ -107,6 +109,90 @@ describe("cloud collaborator auth", () => {
     assert.deepEqual(cloudHttpHeadersFromPrototypeAuthState(state), {
       Authorization: `Bearer ${accessToken}`,
       "X-Scope": "editor",
+    });
+  });
+
+  it("uses app-session cookies rather than OIDC bearer headers for browser app APIs", () => {
+    const storage = new MemoryStorage();
+    const accessToken = jwt({
+      sub: "anaconda-cookie-user",
+      email: "cookie@example.test",
+      email_verified: true,
+      name: "Cookie User",
+    });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken,
+        refreshToken: null,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        claims: {
+          sub: "anaconda-cookie-user",
+          email: "cookie@example.test",
+          email_verified: true,
+          name: "Cookie User",
+        },
+      }),
+    );
+    storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, "owner");
+
+    const init = withCloudPrototypeAuthHeaders(
+      { headers: { Accept: "application/json" } },
+      readCloudPrototypeAuth(storage),
+    );
+    const headers = new Headers(init.headers);
+
+    assert.equal(init.credentials, "same-origin");
+    assert.equal(headers.get("Accept"), "application/json");
+    assert.equal(headers.has("Authorization"), false);
+    assert.equal(headers.has("X-Scope"), false);
+  });
+
+  it("keeps dev-token headers for prototype browser app APIs", () => {
+    const storage = new MemoryStorage();
+    storeCloudPrototypeDevAuth(storage, {
+      token: "dev-secret",
+      user: "alice",
+      scope: "editor",
+    });
+
+    const init = withCloudPrototypeAuthHeaders(undefined, readCloudPrototypeAuth(storage));
+    const headers = new Headers(init.headers);
+
+    assert.equal(init.credentials, "same-origin");
+    assert.equal(headers.get("x-notebook-cloud-dev-token"), "dev-secret");
+    assert.equal(headers.get("X-User"), "alice");
+    assert.equal(headers.get("X-Scope"), "editor");
+  });
+
+  it("mints WebSocket ticket auth from the app-session endpoint", async () => {
+    const auth = await cloudSyncAuthFromAppSessionTicket({
+      endpoint: "/api/n/notebook-a/sync-ticket",
+      requestedScope: "editor",
+      sessionId: "session/one",
+      fetchImpl: async (input, init) => {
+        assert.equal(input, "/api/n/notebook-a/sync-ticket");
+        assert.equal(init?.method, "POST");
+        assert.equal(init?.credentials, "same-origin");
+        assert.deepEqual(JSON.parse(String(init?.body)), {
+          operator: "browser:session%2Fone",
+          scope: "editor",
+        });
+        return Response.json({
+          ok: true,
+          ticket: "ticket-value",
+          expires_in: 90,
+          scope: "viewer",
+        });
+      },
+    });
+
+    assert.deepEqual(auth, {
+      headers: {},
+      protocols: ["nteract-app-session.dGlja2V0LXZhbHVl", "nteract.v4"],
+      user: null,
+      operator: "browser:session%2Fone",
+      requestedScope: "viewer",
     });
   });
 

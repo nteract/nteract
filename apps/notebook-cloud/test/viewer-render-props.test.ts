@@ -210,6 +210,12 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /accessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
   );
   assert.match(sharingSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
+  const sharePanelCss = cssText.match(/\.cloud-share-panel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body;
+  assert.ok(sharePanelCss);
+  assert.match(sharePanelCss, /position: fixed;/);
+  assert.match(sharePanelCss, /right: max\(0\.75rem, env\(safe-area-inset-right\)\);/);
+  assert.match(sharePanelCss, /width: min\(30rem, calc\(100vw - 1\.5rem\)\);/);
+  assert.doesNotMatch(sharePanelCss, /position: absolute;/);
   assert.match(
     sourceText,
     /function CloudPresenceStatus[\s\S]*const presence = useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\);[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);/,
@@ -264,6 +270,8 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(noticesText, /function isStatusDerivedFromConnectionError/);
   assert.match(noticesText, /function cloudConnectionNoticeDisplay/);
   assert.match(noticesText, /hasReadableSnapshot: boolean/);
+  assert.match(noticesText, /Sign in required\./);
+  assert.match(noticesText, /Notebook access needed\./);
   assert.match(noticesText, /Live room unavailable\./);
   assert.match(noticesText, /The notebook will load once the account or connection is refreshed\./);
   assert.match(noticesText, /tone=\{connectionNotice\.tone\}/);

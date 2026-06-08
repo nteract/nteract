@@ -12,6 +12,7 @@ import type { CloudPrototypeAuthState } from "./collaborator-auth";
 export interface CloudNotebookEditAccessInput {
   authState: CloudPrototypeAuthState;
   connectionScope: string | null;
+  hasAppSession?: boolean;
   selectedMode?: NotebookEditMode;
   canAcceptCellMutations?: boolean;
   editAccessRequestPending?: boolean;
@@ -20,6 +21,7 @@ export interface CloudNotebookEditAccessInput {
 export function projectCloudNotebookEditAccess({
   authState,
   connectionScope,
+  hasAppSession = false,
   selectedMode = "view",
   canAcceptCellMutations = true,
   editAccessRequestPending = false,
@@ -29,7 +31,7 @@ export function projectCloudNotebookEditAccess({
     requestedScope: cloudRequestedScope(authState.requestedScope),
     selectedMode,
     canAcceptDocumentMutations: canAcceptCellMutations,
-    canRequestEdit: cloudAuthCanRequestEdit(authState),
+    canRequestEdit: cloudAuthCanRequestEdit(authState, hasAppSession),
     editAccessRequestPending,
   });
 }
@@ -47,6 +49,9 @@ function cloudRequestedScope(requestedScope: string | null): NotebookRoomRequest
   return null;
 }
 
-function cloudAuthCanRequestEdit(authState: CloudPrototypeAuthState): boolean {
-  return authState.mode === "dev" || authState.mode === "oidc";
+function cloudAuthCanRequestEdit(
+  authState: CloudPrototypeAuthState,
+  hasAppSession: boolean,
+): boolean {
+  return hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
 }
