@@ -107,11 +107,20 @@ A consequence: the daemon's only signal surfaces are nono's stdout, stderr (verb
 
 Mitigation: the daemon records the spawn time and PID at launch and uses them to identify the correct directory after a small delay.
 
-### D-13: Verbose mode is required
+### D-13: Verbose mode is required, and `NO_COLOR=1` is required
 
-**Decision:** The daemon always launches nono with `-vv`.
+**Decision:** The daemon always launches nono with `-vv` **and** `NO_COLOR=1` in the child environment.
 
-Without `-vv`, the proxy emits no per-request signal and the audit log only emits `session_started`/`session_ended`. With `-vv`, ALLOW/DENY lines appear on stderr in near-real-time and network events flow into the audit log. This is the only way to enrich errors back to users.
+Without `-vv`, the proxy emits no per-request signal and the audit log only emits `session_started`/`session_ended`. With `-vv`, proxy decision lines appear on **stdout** in near-real-time and network events flow into the audit log.
+
+Without `NO_COLOR=1`, all tracing log lines are wrapped in ANSI escape codes, making them unparseable as plain text.  `NO_COLOR=1` is an environment variable respected by nono's `tracing` framework.
+
+**Empirical correction (OQ-15):** The proxy-decision lines described in earlier design docs as `ALLOW CONNECT …` / `DENY CONNECT … reason=…` are illustrative, not literal.  The real format is:
+```
+<RFC3339-timestamp>  INFO proxy request allowed mode=connect_intercept host="<host>" port=<port> method="<method>" decision="allow"
+<RFC3339-timestamp>  INFO proxy request denied  mode=connect_intercept host="<host>" port=<port> decision="deny" reason="<reason text>"
+```
+These lines go to **stdout** (not stderr).  stderr carries only the human-readable capabilities table and diagnostic footer.
 
 Performance impact at high request volumes is acknowledged as a deferred concern (OQ-16 in the design doc).
 
@@ -127,7 +136,8 @@ These came from direct testing of `nono run` on macOS. Implementations must matc
 | `--env-credential <missing-key>` | **Fatal**, exit 1, stderr: `"Secret not found in keystore"` (verify exact wording during stderr-parser tests). |
 | `--credential <known-service>` with key absent | **Non-fatal WARN.** Proxy starts, routes silently denied. |
 | `--credential <unknown-service>` | **Fatal**, exit 1, lists valid names. |
-| Session ID location | At `-vv`: appears on **stdout** (not stderr) as a DEBUG line. Audit dir name is `<timestamp>-<pid>`, never printed. |
+| Session ID location | At `-vv` with `NO_COLOR=1`: appears on **stdout** (not stderr) as a `tracing` DEBUG line: `<timestamp> DEBUG Session file created: /…/sessions/<hex>.json`. Audit dir name is `<timestamp>-<pid>`, never printed. |
+| Proxy decision format | **stdout** (not stderr), `tracing` structured format: `<ts> INFO proxy request allowed/denied mode=… host="…" port=… …`. Plain `ALLOW/DENY` prefix format from docs is illustrative only. Requires `NO_COLOR=1`. |
 | Process tree | nono does not new a process group. Kernel survives `SIGKILL` on nono. nono spawns a secondary `log stream` helper. |
 | Audit NDJSON line schema | `{sequence, prev_chain, leaf_hash, chain_hash, event_json, event}`. Default verbosity emits only `session_started`/`session_ended`; `-vv` emits per-request entries. |
 

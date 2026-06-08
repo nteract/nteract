@@ -268,18 +268,24 @@ nono uses **two distinct session identifiers**:
 ### Is session ID printed to stdout?
 
 ```bash
-nono run -- echo "test" 2>/dev/null | cat       # stdout only → just "test"
-nono run -vv -- echo "test" 2>/dev/null | grep session
+NO_COLOR=1 nono run -vv -- echo "test" 2>/dev/null | grep session
 ```
 
-**Output from -vv on stdout:**
+**Output from -vv on stdout (with NO_COLOR=1):**
 ```
-[DEBUG] Session file created: /Users/anil/.nono/sessions/839cf2dd6f133631.json
+2026-06-08T19:01:35.296623Z DEBUG Session file created: /Users/anil/.nono/sessions/8b01ab0bd7861ee9.json
 ```
+
+**IMPORTANT — ANSI codes:** Without `NO_COLOR=1`, the line contains ANSI escape codes
+that wrap the timestamp, level, and message separately.  The daemon **must** set
+`NO_COLOR=1` in nono's environment so log lines are plain text.  With `NO_COLOR=1` the
+format is the clean `tracing`-structured form shown above.
 
 **ANSWER (OQ-7):** The NDJSON audit schema is a Merkle-chained log. Each line has `{sequence, prev_chain, leaf_hash, chain_hash, event_json, event}`. The `event` field carries a `type` string plus type-specific keys. Observed event types: `session_started` (keys: `started`, `command`) and `session_ended` (keys: `ended`, `exit_code`). A cross-session `ledger.ndjson` chains session digests.
 
-**ANSWER (OQ-8):** Session ID is **not printed to stderr at normal verbosity**. At `-vv` it appears **on stdout** (not stderr) as a `DEBUG` log line: `Session file created: /Users/anil/.nono/sessions/<hex>.json`. The audit-dir session ID (`YYYYMMDD-HHMMSS-PID`) is never printed at any verbosity — it's inferred from the directory name. If the daemon needs to correlate with the audit trail, it must parse this path or use `nono ps --json` / `nono audit list --json`.
+**ANSWER (OQ-8):** Session ID is **not printed to stderr at normal verbosity**. At `-vv` it appears **on stdout** (not stderr) as a `tracing` DEBUG log line:
+`<timestamp> DEBUG Session file created: /Users/anil/.nono/sessions/<hex>.json`.
+The audit-dir session ID (`YYYYMMDD-HHMMSS-PID`) is never printed at any verbosity — it's inferred from the directory name.
 
 ---
 
@@ -489,12 +495,13 @@ grep -n "sandbox\|nono" crates/kernel-env/src/launcher.rs
 | **OQ-4** | SIGKILL on nono **leaks** the kernel child. It is reparented to init and survives. nono does NOT create a new process group — it inherits the caller's PGID. | **YES** — unexpected leak risk for daemon kernel management |
 | **OQ-6** | `--credential` fatal (exit 1, lists valid names). `--env-credential` fatal (exit 1, "Secret not found"). `--credential <known>` missing key = **non-fatal WARN**, process continues. Profiles are JSON only. | **YES** — missing known credential is soft-fail, not hard-fail |
 | **OQ-7** | NDJSON schema: `{sequence, prev_chain, leaf_hash, chain_hash, event_json, event}`. Only `session_started`/`session_ended` types seen in default mode. `session.json` summary has richer fields including `executable_identity`, `network_events`, `tracked_paths`. | Mostly as expected |
-| **OQ-8** | Session ID NOT in stderr banner. At `-vv`, hex ID appears on **stdout** (not stderr) as a DEBUG line. Audit-dir ID (timestamp-PID format) is never printed. | **YES** — ID goes to stdout, not stderr; only at -vv |
+| **OQ-8** | Session ID NOT in stderr banner. At `-vv`, hex ID appears on **stdout** (not stderr) as a `tracing` DEBUG line with timestamp: `<ts> DEBUG Session file created: /…/sessions/<hex>.json`. Audit-dir ID (timestamp-PID format) is never printed. **Requires `NO_COLOR=1`** to suppress ANSI codes. | **YES** — ID goes to stdout, not stderr; only at -vv |
 | **OQ-9** | `--session-id` flag **does not exist**. Closest is `--name <NAME>` (human label only). IDs are auto-generated. | **YES** — no caller-injectable session ID |
 | **OQ-10** | Raw `errSecInteractionNotAllowed` not surfaced. nono emits its own WARN message. Missing key is a non-fatal warning. | As expected |
 | **OQ-11** | `nono inspect` is for **runtime sessions only** (takes session ID prefix). No `--credential` option. No credential-inspection subcommand exists. | As expected |
 | **OQ-13** | `bootstrap_dx` is **on by default**, controlled by `disable_nteract_launcher` in settings doc (not notebook metadata). Legacy `bootstrap_dx: false` key is ignored. Deeply embedded in all kernel launch paths. | As expected |
 | **OQ-14** | **No `metadata.runt.sandbox` field exists.** The `RuntMetadata` struct has no sandbox/nono field. No daemon code reads sandbox config from notebook metadata. Unknown keys fall into a catch-all `extra` map. | Confirms sandbox integration is not yet implemented |
+| **OQ-15** | **All structured log output (proxy decisions, session ID) is on stdout, not stderr.** stderr carries only the human-readable capabilities table. Real proxy-decision format: `<ts> INFO proxy request allowed/denied mode=… host="…" port=… …`. `NO_COLOR=1` required. Proxy lines only appear when a credential/TLS-intercept route is active. | **YES** — stream split and line format were both wrong in the design docs |
 
 ### Key design implications
 
@@ -505,3 +512,86 @@ grep -n "sandbox\|nono" crates/kernel-env/src/launcher.rs
 3. **OQ-8/9 session correlation:** If the daemon needs to look up the nono audit trail for a running kernel session, it cannot get the session ID from the nono banner. It must either parse the `-vv` stdout DEBUG line, call `nono ps --json` immediately after launch, or derive the audit-dir name as `YYYYMMDD-HHMMSS-<child_pid>`.
 
 4. **OQ-14 no metadata path:** Sandbox configuration (nono profile, credential list) for a kernel must come from daemon-level configuration or the LaunchKernel request payload — not from `metadata.runt` in the notebook document.
+
+---
+
+## OQ-15: Actual stdout/stderr stream split and ALLOW/DENY line format
+
+**Goal:** Confirm which stream carries structured log output and what the real
+proxy-decision line format is (the design docs described `ALLOW CONNECT …` which
+turned out to be illustrative, not literal).
+
+**Date:** 2026-06-08
+
+### Test — stream split
+
+```bash
+NO_COLOR=1 nono run -vv --credential anthropic \
+  -- curl -s --max-time 3 https://api.anthropic.com/v1/messages \
+  > /tmp/stdout.txt 2> /tmp/stderr.txt
+```
+
+**stdout** (all structured `tracing` log lines):
+```
+2026-06-08T19:01:35.051368Z DEBUG theme: mocha
+2026-06-08T19:01:35.056867Z  INFO Proxy server listening on 127.0.0.1:64178
+2026-06-08T19:01:35.216556Z  WARN Credential 'env://ANTHROPIC_API_KEY' not found…
+2026-06-08T19:01:35.296623Z DEBUG Session file created: /…/sessions/8b01ab0bd7861ee9.json
+2026-06-08T19:01:35.427364Z  INFO proxy request allowed mode=connect_intercept host="api.anthropic.com" port=443 method="CONNECT" decision="allow"
+2026-06-08T19:01:35.427405Z  INFO proxy request denied mode=connect_intercept host="api.anthropic.com" port=443 decision="deny" reason="managed credential unavailable for route 'anthropic': intercepted request requires proxy-supplied auth"
+```
+
+**stderr** (human-readable capabilities table and diagnostic footer only):
+```
+  nono v0.62.0
+  Skipping CWD prompt (non-interactive)…
+  Capabilities:
+  ────────────────────────────────────────────────────
+    r   /bin (dir) [group:system_read_macos]
+    …
+  mode supervised (proxy, supervisor)
+  Applying sandbox…
+  Command exited with code 0.
+  …
+```
+
+### ALLOW/DENY line format — real vs. documented
+
+The `error-routing-design.md` and `nono-error-signals.md` documents quoted an
+**illustrative** format:
+```
+ALLOW CONNECT api.openai.com:443
+DENY  CONNECT 169.254.169.254:80 reason=denied_cidr
+ALLOW REVERSE openai POST /v1/chat/completions -> 200
+```
+
+The **real** format (nono 0.62.0, `tracing` framework output) is:
+```
+<RFC3339-ts>  INFO proxy request allowed mode=connect_intercept host="<host>" port=<port> method="<method>" decision="allow"
+<RFC3339-ts>  INFO proxy request denied  mode=connect_intercept host="<host>" port=<port> decision="deny" reason="<reason text>"
+```
+
+Key differences:
+- Lines go to **stdout**, not stderr
+- Prefixed with RFC3339 timestamp and `tracing` level (`INFO`)
+- `mode=` field: `connect`, `connect_intercept`, or `reverse`
+- No `ALLOW`/`DENY` prefix — action is in `decision="allow|deny"`
+- Reason is a human-readable string in `reason="…"`, not a short token
+- No HTTP method/path/status in the allowed line for CONNECT mode
+- Proxy decision lines only appear for intercepted routes (credential active);
+  plain outbound-allowed sessions with no credential emit no `proxy request` lines
+
+### `NO_COLOR=1` requirement
+
+Without `NO_COLOR=1`, every log line is wrapped in ANSI escape codes:
+```
+\e[2m2026-06-08T…Z\e[0m \e[34mDEBUG\e[0m Session file created: …
+```
+The daemon **must** set `NO_COLOR=1` in nono's launch environment.
+
+**ANSWER (OQ-15):**
+- **All structured output (proxy decisions, session ID, startup messages) is on stdout.**
+- **stderr carries only the human-readable capabilities table and diagnostic footer.**
+- The real proxy-decision format is `<ts> INFO proxy request allowed/denied mode=… host="…" port=… …`
+- `NO_COLOR=1` is required to suppress ANSI escape codes.
+- Proxy decision lines only appear when at least one credential/TLS-intercept route is active.

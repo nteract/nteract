@@ -1,0 +1,28 @@
+# nono 0.62.0 stdout fixture — captured 2026-06-08 on macOS (Apple Silicon)
+# Command: NO_COLOR=1 nono run -vv --credential anthropic -- curl -s --max-time 3 https://api.anthropic.com/v1/messages
+#
+# The daemon must launch nono with NO_COLOR=1 to suppress ANSI escape codes.
+# All structured tracing output goes to stdout. stderr carries only the
+# human-readable capabilities table (see stderr_diagnostics.txt).
+#
+# Lines beginning with '#' are comments and must be skipped by parsers.
+# The blank lines below preserve the original spacing.
+#
+# Key signal lines for the parser:
+#   Session ID: "DEBUG Session file created: /…/sessions/<hex>.json"
+#   Proxy allow: "INFO proxy request allowed mode=… host="…" port=… …"
+#   Proxy deny:  "INFO proxy request denied  mode=… host="…" port=… reason="…""
+2026-06-08T19:01:35.051368Z DEBUG theme: mocha
+2026-06-08T19:01:35.054733Z  INFO User declined CWD sharing. Continuing without automatic CWD access.
+2026-06-08T19:01:35.056867Z  INFO Proxy server listening on 127.0.0.1:64178
+2026-06-08T19:01:35.145461Z DEBUG Loading route 'anthropic' -> https://api.anthropic.com
+2026-06-08T19:01:35.216556Z  WARN Credential 'env://ANTHROPIC_API_KEY' not found for route 'anthropic' — managed-credential requests on this route will be denied until the credential is available. Looked for env var 'ANTHROPIC_API_KEY' (not set). To add to the macOS keychain: security add-generic-password -s "nono" -a "ANTHROPIC_API_KEY" -w  — and set credential_key to bare 'ANTHROPIC_API_KEY' (no env:// prefix).
+2026-06-08T19:01:35.288170Z DEBUG tls_intercept: wrote trust bundle (238787 bytes) to /Users/anil/.nono/sessions/intercept-65874-056510000/intercept-ca.pem
+2026-06-08T19:01:35.288807Z  INFO TLS interception active for 1 route(s); trust bundle at /Users/anil/.nono/sessions/intercept-65874-056510000/intercept-ca.pem
+2026-06-08T19:01:35.288831Z  INFO Network proxy started on localhost:64178
+2026-06-08T19:01:35.296623Z DEBUG Session file created: /Users/anil/.nono/sessions/8b01ab0bd7861ee9.json
+2026-06-08T19:01:35.296741Z  INFO Executing (supervised): curl ["-s", "--max-time", "3", "https://api.anthropic.com/v1/messages"]
+2026-06-08T19:01:35.427364Z  INFO proxy request allowed mode=connect_intercept host="api.anthropic.com" port=443 method="CONNECT" decision="allow"
+2026-06-08T19:01:35.427405Z  INFO proxy request denied mode=connect_intercept host="api.anthropic.com" port=443 decision="deny" reason="managed credential unavailable for route 'anthropic': intercepted request requires proxy-supplied auth"
+2026-06-08T19:01:35.981942Z DEBUG Supervisor socket closed by child, disabling direct IPC polling
+2026-06-08T19:01:36.183092Z DEBUG Supervised child exited with code 0

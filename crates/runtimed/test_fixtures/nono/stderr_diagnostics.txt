@@ -1,0 +1,35 @@
+# nono 0.62.0 stderr fixture — captured 2026-06-08 on macOS (Apple Silicon)
+# Command: NO_COLOR=1 nono run -vv --credential anthropic -- curl -s --max-time 3 https://api.anthropic.com/v1/messages
+#
+# stderr carries ONLY the human-readable capabilities table and post-run
+# diagnostic footer. There is NO structured proxy-decision data here.
+# All stderr lines should be emitted as NonoEvent::Unparsed by the drain.
+#
+# Lines beginning with '#' are comments.
+
+  nono v0.62.0
+  Skipping CWD prompt (non-interactive). Use --allow-cwd to include working directory.
+  Capabilities:
+  ────────────────────────────────────────────────────
+    r   /bin (dir) [group:system_read_macos]
+    r   /usr/bin (dir) [group:system_read_macos]
+    r   /usr/lib (dir) [group:system_read_macos]
+   r+w  /dev (dir) [group:system_read_macos]
+   r+w  /private/tmp (dir) [group:system_read_macos]
+   net  proxy localhost:0
+  ────────────────────────────────────────────────────
+
+  mode supervised (proxy, supervisor)
+
+  Applying sandbox...
+
+
+Command exited with code 0.
+
+Sandbox blocked system services:
+  user-preference-read (kcfpreferencesanyapplication) — Global preferences (CFPreferences any-application domain)
+
+To grant additional access, re-run with:
+  --allow <path>     read+write access to directory
+  --read <path>      read-only access to directory
+  --write <path>     write-only access to directory
