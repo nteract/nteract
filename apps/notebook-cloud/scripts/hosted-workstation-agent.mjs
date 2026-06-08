@@ -5,6 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  buildAttachJobSpawnPlan,
+  buildRuntimeAgentEnv,
+  buildWorkstationRegistrationPayload,
+  parsePositiveInteger,
+  stableWorkstationId,
+} from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -88,23 +95,14 @@ async function registerWorkstation(pythonPath) {
       ...apiKeyHeaders(),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      workstation_id: workstationId,
-      display_name: displayName,
-      provider: "runtime_peer",
-      default_environment_label: "Current Python",
-      environment_policy: "current_python",
-      working_directory: workingDirectory,
-      cpu_count: os.cpus().length,
-      memory_bytes: os.totalmem(),
-      capabilities: {
-        launch_current_python: true,
-      },
-      runtime: {
-        binary: "runtimed",
-        python_path: pythonPath,
-      },
-    }),
+    body: JSON.stringify(
+      buildWorkstationRegistrationPayload({
+        workstationId,
+        displayName,
+        workingDirectory,
+        pythonPath,
+      }),
+    ),
   });
   const body = await responseJson(response);
   assertResponse(response, body, "register workstation", [200, 201]);
@@ -126,48 +124,23 @@ async function pollAttachJobs(pythonPath) {
 }
 
 async function startAttachJob(job, pythonPath) {
-  assert(typeof job.job_id === "string" && job.job_id.length > 0, "attach job missing id");
-  assert(
-    typeof job.notebook_id === "string" && job.notebook_id.length > 0,
-    `attach job ${job.job_id} missing notebook_id`,
-  );
-
-  const runRoot = path.join(agentRoot, safePathPart(job.job_id));
-  const blobRoot = path.join(runRoot, "blobs");
-  const logPath = path.join(runRoot, "runtime-peer.log");
-  await mkdir(blobRoot, { recursive: true });
+  const plan = buildAttachJobSpawnPlan({
+    job,
+    pythonPath,
+    agentRoot,
+    baseUrl,
+    workingDirectory,
+    workstationId,
+    displayName,
+  });
+  await mkdir(plan.blobRoot, { recursive: true });
   await patchAttachJob(job.job_id, {
     status: "accepted",
   });
 
-  const args = [
-    "cloud-runtime-agent",
-    "--auth-kind",
-    "anaconda-key",
-    "--cloud-url",
-    baseUrl,
-    "--notebook-id",
-    job.notebook_id,
-    "--scope",
-    "runtime_peer",
-    "--python-path",
-    pythonPath,
-    "--blob-root",
-    blobRoot,
-    "--working-dir",
-    job.working_directory ?? workingDirectory,
-    "--workstation-id",
-    workstationId,
-    "--workstation-display-name",
-    displayName,
-  ];
-  if (typeof job.notebook_path === "string" && job.notebook_path.length > 0) {
-    args.push("--notebook-path", job.notebook_path);
-  }
-
-  const logFd = openSync(logPath, "a");
-  const child = spawn(runtimedBin, args, {
-    cwd: job.working_directory ?? workingDirectory,
+  const logFd = openSync(plan.logPath, "a");
+  const child = spawn(runtimedBin, plan.args, {
+    cwd: plan.cwd,
     env: runtimeAgentEnv(),
     stdio: ["ignore", logFd, logFd],
   });
@@ -181,7 +154,7 @@ async function startAttachJob(job, pythonPath) {
       jobId: job.job_id,
       notebookId: job.notebook_id,
       pid: child.pid,
-      logPath,
+      logPath: plan.logPath,
     }),
   );
 
@@ -293,23 +266,7 @@ function apiKeyHeaders() {
 }
 
 function runtimeAgentEnv() {
-  return compactEnv({
-    HOME: process.env.HOME,
-    PATH: process.env.PATH,
-    LANG: process.env.LANG,
-    LC_ALL: process.env.LC_ALL,
-    SSL_CERT_FILE: process.env.SSL_CERT_FILE,
-    SSL_CERT_DIR: process.env.SSL_CERT_DIR,
-    RUST_BACKTRACE: process.env.RUST_BACKTRACE,
-    RUST_LOG: process.env.RUST_LOG ?? "info",
-    RUNT_CLOUD_TOKEN: apiKey,
-  });
-}
-
-function compactEnv(entries) {
-  return Object.fromEntries(
-    Object.entries(entries).filter(([, value]) => typeof value === "string" && value.length > 0),
-  );
+  return buildRuntimeAgentEnv(process.env, apiKey);
 }
 
 async function resolvePythonPath() {
@@ -414,36 +371,10 @@ function normalizeJobs(body) {
   return [];
 }
 
-function stableWorkstationId(hostname) {
-  return `ws-${safePathPart(hostname).slice(0, 80) || "local"}`;
-}
-
-function safePathPart(value) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function parsePositiveInteger(value, name, fallback) {
-  if (value == null || value === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return parsed;
-}
-
 function quoteShell(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
 }
