@@ -1,5 +1,6 @@
 packages/runtimed/src/request-types.ts text eol=lf
 packages/runtimed/src/protocol-contract.ts text eol=lf
+packages/runtimed/src/wire-constants.ts text eol=lf
 
 # Stable third-party renderer-plugin bundles. LFS-tracked so fresh checkouts
 # don't pay the large vendor rebuild just to boot the daemon. Owned/generated
