@@ -566,7 +566,10 @@ function currentEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function useCloudAppSessionBridge(authState: CloudPrototypeAuthState): void {
+function useCloudAppSessionBridge(
+  authState: CloudPrototypeAuthState,
+  onEstablished?: () => void,
+): void {
   const establishedTokenRef = useRef<string | null>(null);
   useEffect(() => {
     if (authState.mode !== "oidc" || !authState.token) {
@@ -577,11 +580,15 @@ function useCloudAppSessionBridge(authState: CloudPrototypeAuthState): void {
       return;
     }
     establishedTokenRef.current = authState.token;
-    void establishCloudAppSession(authState).catch((error: unknown) => {
-      establishedTokenRef.current = null;
-      console.warn("[notebook-cloud] app session exchange failed", error);
-    });
-  }, [authState]);
+    void establishCloudAppSession(authState)
+      .then(() => {
+        onEstablished?.();
+      })
+      .catch((error: unknown) => {
+        establishedTokenRef.current = null;
+        console.warn("[notebook-cloud] app session exchange failed", error);
+      });
+  }, [authState, onEstablished]);
 }
 
 function App() {
@@ -651,7 +658,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
   });
-  useCloudAppSessionBridge(authState);
+  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
   const [listState, setListState] = useState<CloudNotebookListState>(() =>
     initialCloudNotebookListState(authState, bootstrap),
   );
@@ -713,7 +720,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     return () => {
       controller.abort();
     };
-  }, [authState, bootstrap, refreshIndex, signedIn]);
+  }, [authState, bootstrap, hasAppSession, refreshIndex, signedIn]);
 
   const refreshList = () => {
     setRefreshIndex((value) => value + 1);
@@ -1439,7 +1446,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
   });
-  useCloudAppSessionBridge(authState);
+  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
   const oidcConfigured = Boolean(authConfig.oidc);
@@ -1713,7 +1720,7 @@ function NotebookViewer({
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
   });
-  useCloudAppSessionBridge(authState);
+  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);

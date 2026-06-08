@@ -464,6 +464,21 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
   assert.match(sourceText, /isRecoverableSocketCloseConsoleMessage/);
 });
 
+test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /useCloudAppSessionBridge\(authState, appSessionStatus\.refreshAppSessionStatus\)/,
+  );
+  assert.match(
+    sourceText,
+    /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
+  );
+  assert.match(sourceText, /\[authState, bootstrap, hasAppSession, refreshIndex, signedIn\]/);
+});
+
 test("cloud sync keeps routine frame logs out of the browser console", () => {
   const sourcePath = new URL("../viewer/live-sync.ts", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
