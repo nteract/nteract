@@ -293,8 +293,11 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /reserveCommandToolbar=\{editAccessPending\}/);
   assert.match(sourceText, /addCellControlsDisabled: editAccessPending/);
   assert.match(sourceText, /runtimeStatus: cloudRuntimeStatus/);
+  assert.match(sourceText, /onStartRuntime: handleCloudStartRuntime/);
   assert.match(sourceText, /onInterruptRuntime: handleCloudInterruptRuntime/);
+  assert.match(sourceText, /onRestartRuntime: handleCloudRestartRuntime/);
   assert.match(sourceText, /onRunAllCells: handleCloudRunAllCells/);
+  assert.match(sourceText, /onRestartAndRunAll: handleCloudRestartAndRunAll/);
   assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
