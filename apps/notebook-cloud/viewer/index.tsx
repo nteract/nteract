@@ -507,11 +507,11 @@ function useCloudAppSessionStatus(
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
-        setState({
+        setState((current) => ({
           status: "error",
-          session: null,
+          session: current.session,
           error: error instanceof Error ? error.message : String(error),
-        });
+        }));
       });
 
     return () => {
