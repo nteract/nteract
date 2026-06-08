@@ -158,6 +158,7 @@ export function cloudNotebookShellCapabilities({
     sharing: {
       canManage: Boolean(hostCapabilities?.canManageSharing),
       requiresAuthenticatedIdentity: true,
+      requiredAccessLevels: ["owner"],
     },
   });
 }
