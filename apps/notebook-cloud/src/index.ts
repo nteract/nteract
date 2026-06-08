@@ -3245,6 +3245,7 @@ async function viewer(
     workstationAttachEndpoint: `${notebookApiBasePath}/workstation-attachments`,
     hostCapabilities: {
       canManageSharing: true,
+      canSubmitExecutionRequests: true,
     },
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),

@@ -54,8 +54,8 @@ export interface CloudNotebookShellCapabilityInput {
   /**
    * Whether this browser connection may create execution intent in the hosted
    * room. This is a capability, not an interaction mode: owners can submit
-   * execution requests when compute is attached today, while future execute
-   * scope policy can replace this without changing the shared shell projection.
+   * execution requests by default, and hosts may opt editors in when the room
+   * can safely materialize editor-authored execution request frames.
    */
   canSubmitExecutionRequests?: boolean;
   /**
@@ -64,6 +64,7 @@ export interface CloudNotebookShellCapabilityInput {
    */
   hostCapabilities?: {
     canManageSharing?: boolean;
+    canSubmitExecutionRequests?: boolean;
   };
 }
 

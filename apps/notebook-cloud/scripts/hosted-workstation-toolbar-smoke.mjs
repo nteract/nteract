@@ -180,19 +180,20 @@ async function runBrowserSmoke({
       await ownerContext.close().catch(() => {});
     }
 
-    const scopedControlChecks = [];
-    for (const scope of ["viewer", "editor"]) {
-      scopedControlChecks.push(
-        await assertScopeDoesNotExposeExecutionControls({
-          browser,
-          runMarker,
-          scope,
-          timeoutMs,
-          tokenStorageJson,
-          url,
-        }),
-      );
-    }
+    const viewerControlCheck = await assertViewerDoesNotExposeExecutionControls({
+      browser,
+      runMarker,
+      timeoutMs,
+      tokenStorageJson,
+      url,
+    });
+    const editorRun = await runEditorExecuteSmoke({
+      browser,
+      runMarker,
+      timeoutMs,
+      tokenStorageJson,
+      url,
+    });
 
     return {
       ...ownerRun,
@@ -206,9 +207,10 @@ async function runBrowserSmoke({
         "cell_output_observed_after_reload_execute",
         "viewer_scope_hides_execution_controls",
         "viewer_scope_hides_workstation_setup_action",
-        "editor_scope_hides_execution_controls_until_execute_capability_exists",
+        "editor_scope_can_execute_when_host_capability_exists",
       ],
-      scopedControlChecks,
+      editorRun,
+      scopedControlChecks: [viewerControlCheck],
     };
   } finally {
     await browser.close().catch(() => {});
@@ -270,17 +272,16 @@ async function runOwnerAttachAndExecuteSmoke({
   };
 }
 
-async function assertScopeDoesNotExposeExecutionControls({
+async function assertViewerDoesNotExposeExecutionControls({
   browser,
   runMarker,
-  scope,
   timeoutMs,
   tokenStorageJson,
   url,
 }) {
   const context = await authenticatedContext(browser, {
     origin: url.origin,
-    scope,
+    scope: "viewer",
     tokenStorageJson,
   });
   try {
@@ -291,15 +292,47 @@ async function assertScopeDoesNotExposeExecutionControls({
     await waitForText(page, runMarker, timeoutMs);
     const controls = await visibleControlSummary(page);
     if (controls.executeButtonCount > 0 || controls.runAllButtonCount > 0) {
-      throw new Error(`${scope} scope unexpectedly exposed execution controls`);
+      throw new Error("viewer scope unexpectedly exposed execution controls");
     }
-    if (scope === "viewer" && controls.workstationSetupButtonCount > 0) {
+    if (controls.workstationSetupButtonCount > 0) {
       throw new Error("viewer scope unexpectedly exposed workstation setup controls");
     }
     assertCleanBrowserDiagnostics(events);
     return {
       controls,
-      scope,
+      scope: "viewer",
+    };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function runEditorExecuteSmoke({ browser, runMarker, timeoutMs, tokenStorageJson, url }) {
+  const context = await authenticatedContext(browser, {
+    origin: url.origin,
+    scope: "editor",
+    tokenStorageJson,
+  });
+  const editorMarker = `${runMarker} editor`;
+  try {
+    const page = await context.newPage();
+    const events = collectBrowserDiagnostics(page);
+    await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await waitForNotebookSessionReady(page, timeoutMs);
+    await waitForText(page, runMarker, timeoutMs);
+    const cell = page.locator('[data-cell-type="code"]').first();
+    await cell.waitFor({ state: "visible", timeout: timeoutMs });
+    await setCellSource(cell, `print(${JSON.stringify(editorMarker)})`);
+    await executeAndWaitForMarker(page, cell, editorMarker, timeoutMs);
+    const controls = await visibleControlSummary(page);
+    if (controls.executeButtonCount === 0) {
+      throw new Error("editor scope did not expose execution controls despite host capability");
+    }
+    assertCleanBrowserDiagnostics(events);
+    return {
+      controls,
+      marker: editorMarker,
+      scope: "editor",
     };
   } finally {
     await context.close().catch(() => {});

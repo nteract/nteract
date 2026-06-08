@@ -61,6 +61,7 @@ export interface CloudViewerConfig {
   workstationAttachEndpoint?: string;
   hostCapabilities?: {
     canManageSharing?: boolean;
+    canSubmitExecutionRequests?: boolean;
   };
   syncEndpoint: string;
   blobBasePath: string;
