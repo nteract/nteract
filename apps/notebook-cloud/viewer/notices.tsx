@@ -18,6 +18,7 @@ export interface CloudNotebookNoticesProps {
   authState: CloudPrototypeAuthState;
   authRenewal: CloudAuthRenewalState;
   connectionError: string | null;
+  hasAppSession?: boolean;
   hasReadableSnapshot?: boolean;
   status: ViewerStatus;
   diagnostics?: ReactNode;
@@ -29,6 +30,7 @@ export function cloudNotebookHasNotices({
   authState,
   authRenewal,
   connectionError,
+  hasAppSession = false,
   hasReadableSnapshot = false,
   status,
   diagnostics,
@@ -41,10 +43,13 @@ export function cloudNotebookHasNotices({
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !isStatusDerivedFromConnectionError(status, connectionError);
 
+  const shouldShowAuthNotice =
+    !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
+  const shouldShowAuthRenewalNotice = !hasAppSession && authRenewal.kind !== "idle";
+
   return (
-    authState.mode === "invalid" ||
-    authState.mode === "oidc_expired" ||
-    authRenewal.kind !== "idle" ||
+    shouldShowAuthNotice ||
+    shouldShowAuthRenewalNotice ||
     Boolean(connectionNotice) ||
     Boolean(diagnostics) ||
     shouldShowStatusNotice
@@ -55,6 +60,7 @@ export function CloudNotebookNotices({
   authState,
   authRenewal,
   connectionError,
+  hasAppSession = false,
   hasReadableSnapshot = false,
   status,
   diagnostics,
@@ -66,6 +72,7 @@ export function CloudNotebookNotices({
       authState,
       authRenewal,
       connectionError,
+      hasAppSession,
       hasReadableSnapshot,
       status,
       diagnostics,
@@ -81,10 +88,13 @@ export function CloudNotebookNotices({
     status.kind !== "ready" &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !isStatusDerivedFromConnectionError(status, connectionError);
+  const shouldShowAuthNotice =
+    !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
+  const shouldShowAuthRenewalNotice = !hasAppSession && authRenewal.kind !== "idle";
 
   return (
     <NotebookNoticeStack>
-      {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
+      {shouldShowAuthNotice ? (
         <NotebookNotice
           tone="error"
           icon={<AlertCircle className="h-4 w-4" />}
@@ -95,7 +105,7 @@ export function CloudNotebookNotices({
         </NotebookNotice>
       ) : null}
 
-      {authRenewal.kind !== "idle" ? (
+      {shouldShowAuthRenewalNotice ? (
         <NotebookNotice
           tone={authRenewal.kind === "failed" ? "error" : "info"}
           icon={

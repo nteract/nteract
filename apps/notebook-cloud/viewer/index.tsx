@@ -151,6 +151,7 @@ import { loadSupplementalViewerCss } from "./supplemental-css";
 import {
   clearCloudAppSession,
   cloudAppSessionIsFresh,
+  cloudAppSessionNeedsRenewal,
   establishCloudAppSession,
   establishCloudAppSessionFromOidcToken,
   isCloudAppSession,
@@ -408,11 +409,6 @@ function useCloudPrototypeAuth(
       if (appSessionExpiresAt && cloudAppSessionIsFresh(appSession)) {
         appSessionRefreshFallbackRef.current = appSessionExpiresAt;
         setAuthRenewal({ kind: "idle", message: null });
-        return;
-      }
-      const fallbackExpiresAt = appSessionRefreshFallbackRef.current;
-      if (fallbackExpiresAt && fallbackExpiresAt > currentEpochSeconds() + 60) {
-        return;
       }
     }
     if (refreshPromiseRef.current) {
@@ -566,27 +562,66 @@ function currentEpochSeconds(): number {
 
 function useCloudAppSessionBridge(
   authState: CloudPrototypeAuthState,
+  appSession: CloudAppSession | null,
+  appSessionLoading: boolean,
   onEstablished?: () => void,
 ): void {
   const establishedTokenRef = useRef<string | null>(null);
-  useEffect(() => {
+  const lastAttemptAtRef = useRef(0);
+  const inFlightRef = useRef<Promise<void> | null>(null);
+  const renewIfNeeded = useCallback(() => {
     if (authState.mode !== "oidc" || !authState.token) {
       establishedTokenRef.current = null;
       return;
     }
-    if (establishedTokenRef.current === authState.token) {
+    if (appSessionLoading && !appSession) {
       return;
     }
-    establishedTokenRef.current = authState.token;
-    void establishCloudAppSession(authState)
+
+    const nowSeconds = currentEpochSeconds();
+    const tokenChanged = establishedTokenRef.current !== authState.token;
+    const sessionNeedsRenewal = cloudAppSessionNeedsRenewal(appSession, nowSeconds);
+    if (!tokenChanged && !sessionNeedsRenewal) {
+      return;
+    }
+    if (inFlightRef.current) {
+      return;
+    }
+    if (!tokenChanged && nowSeconds - lastAttemptAtRef.current < 5 * 60) {
+      return;
+    }
+
+    lastAttemptAtRef.current = nowSeconds;
+    inFlightRef.current = establishCloudAppSession(authState)
       .then(() => {
+        establishedTokenRef.current = authState.token;
         onEstablished?.();
       })
       .catch((error: unknown) => {
-        establishedTokenRef.current = null;
         console.warn("[notebook-cloud] app session exchange failed", error);
+      })
+      .finally(() => {
+        inFlightRef.current = null;
       });
-  }, [authState, onEstablished]);
+  }, [appSession, appSessionLoading, authState, onEstablished]);
+
+  useEffect(() => {
+    renewIfNeeded();
+    const interval = window.setInterval(renewIfNeeded, 60_000);
+    const renewOnFocus = () => renewIfNeeded();
+    const renewOnVisibility = () => {
+      if (document.visibilityState === "visible") {
+        renewIfNeeded();
+      }
+    };
+    window.addEventListener("focus", renewOnFocus);
+    document.addEventListener("visibilitychange", renewOnVisibility);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", renewOnFocus);
+      document.removeEventListener("visibilitychange", renewOnVisibility);
+    };
+  }, [renewIfNeeded]);
 }
 
 function App() {
@@ -656,7 +691,12 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
   });
-  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
+  useCloudAppSessionBridge(
+    authState,
+    appSessionStatus.session,
+    appSessionStatus.status === "loading",
+    appSessionStatus.refreshAppSessionStatus,
+  );
   const [listState, setListState] = useState<CloudNotebookListState>(() =>
     initialCloudNotebookListState(authState, bootstrap),
   );
@@ -915,7 +955,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         </div>
       </header>
 
-      {authRenewal.kind !== "idle" ? (
+      {authRenewal.kind !== "idle" && !hasAppSession ? (
         <div
           className="cloud-notebook-list-banner"
           data-kind={authRenewal.kind === "failed" ? "error" : "info"}
@@ -1444,7 +1484,12 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
   });
-  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
+  useCloudAppSessionBridge(
+    authState,
+    appSessionStatus.session,
+    appSessionStatus.status === "loading",
+    appSessionStatus.refreshAppSessionStatus,
+  );
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
   const oidcConfigured = Boolean(authConfig.oidc);
@@ -1525,7 +1570,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
               {formError}
             </div>
           ) : null}
-          {authRenewal.kind !== "idle" ? (
+          {authRenewal.kind !== "idle" && !hasAppSession ? (
             <div
               className="cloud-auth-form-error"
               data-kind={authRenewal.kind === "failed" ? "error" : "info"}
@@ -1718,7 +1763,12 @@ function NotebookViewer({
     appSessionLoading: appSessionStatus.status === "loading",
     appSession: appSessionStatus.session,
   });
-  useCloudAppSessionBridge(authState, appSessionStatus.refreshAppSessionStatus);
+  useCloudAppSessionBridge(
+    authState,
+    appSessionStatus.session,
+    appSessionStatus.status === "loading",
+    appSessionStatus.refreshAppSessionStatus,
+  );
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
@@ -2656,6 +2706,7 @@ function NotebookViewer({
     authRenewal,
     connectionError,
     diagnostics: accessRequestNotice,
+    hasAppSession: Boolean(appSessionStatus.session),
     hasReadableSnapshot: notebookHasReadableSnapshot,
     status: noticeStatus,
   });
@@ -2665,6 +2716,7 @@ function NotebookViewer({
       authRenewal={authRenewal}
       connectionError={connectionError}
       diagnostics={accessRequestNotice}
+      hasAppSession={Boolean(appSessionStatus.session)}
       hasReadableSnapshot={notebookHasReadableSnapshot}
       status={noticeStatus}
       onResetAuth={resetPrototypeAuth}

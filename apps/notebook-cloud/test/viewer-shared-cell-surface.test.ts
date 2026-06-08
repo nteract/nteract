@@ -472,7 +472,7 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
 
   assert.match(
     sourceText,
-    /useCloudAppSessionBridge\(authState, appSessionStatus\.refreshAppSessionStatus\)/,
+    /useCloudAppSessionBridge\(\s*authState,\s*appSessionStatus\.session,\s*appSessionStatus\.status === "loading",\s*appSessionStatus\.refreshAppSessionStatus,\s*\)/,
   );
   assert.match(
     sourceText,

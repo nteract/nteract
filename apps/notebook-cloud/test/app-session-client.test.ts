@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   CLOUD_APP_SESSION_ENDPOINT,
   cloudAppSessionIsFresh,
+  cloudAppSessionNeedsRenewal,
   isCloudAppSessionStatus,
   readCloudAppSessionStatus,
 } from "../viewer/app-session.ts";
@@ -39,6 +40,15 @@ describe("cloud app session client", () => {
     assert.equal(cloudAppSessionIsFresh({ provider: "oidc", expires_at: 1_300 }, 1_000), true);
     assert.equal(cloudAppSessionIsFresh({ provider: "oidc", expires_at: 1_060 }, 1_000), false);
     assert.equal(cloudAppSessionIsFresh(null, 1_000), false);
+  });
+
+  it("renews app sessions before the browser cookie expires", () => {
+    assert.equal(
+      cloudAppSessionNeedsRenewal({ provider: "oidc", expires_at: 3_000 }, 1_000),
+      false,
+    );
+    assert.equal(cloudAppSessionNeedsRenewal({ provider: "oidc", expires_at: 2_700 }, 1_000), true);
+    assert.equal(cloudAppSessionNeedsRenewal(null, 1_000), true);
   });
 
   it("rejects identity-bearing status payloads", () => {
