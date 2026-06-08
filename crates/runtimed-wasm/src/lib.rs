@@ -25,7 +25,7 @@ use nteract_identity::{ActorLabel, ConnectionScope, Operator, Principal};
 use runtime_doc::{
     diff_output_ids_in_place, output_ids_for_execution, runtime_state_policy_snapshot,
     validate_runtime_state_sync_scope, CommsDoc, CommsState, ExecutionState,
-    ExecutionViewChangeset, ExecutionViewProjector, RuntimeLifecycle, RuntimeState,
+    ExecutionViewChangeset, ExecutionViewProjector, KernelActivity, RuntimeLifecycle, RuntimeState,
     RuntimeStateDoc, RuntimeStateWriteScope, WorkstationAttachmentState,
 };
 use serde::{Deserialize, Serialize};
@@ -445,6 +445,30 @@ impl RuntimeStatePeerHandle {
 
     pub fn get_runtime_state(&self) -> JsValue {
         serialize_to_js(&self.state_doc.read_state()).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    pub fn set_kernel_running(
+        &mut self,
+        kernel_name: &str,
+        language: &str,
+        env_source: &str,
+        runtime_agent_id: &str,
+    ) -> Result<(), JsError> {
+        self.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .map_err(|e| JsError::new(&format!("set kernel lifecycle failed: {e}")))?;
+        self.state_doc
+            .set_kernel_info(kernel_name, language, env_source)
+            .map_err(|e| JsError::new(&format!("set kernel info failed: {e}")))?;
+        self.state_doc
+            .set_runtime_agent_id(runtime_agent_id)
+            .map_err(|e| JsError::new(&format!("set runtime agent id failed: {e}")))
+    }
+
+    pub fn set_kernel_error(&mut self, details: Option<String>) -> Result<(), JsError> {
+        self.state_doc
+            .set_lifecycle_with_error_details(&RuntimeLifecycle::Error, None, details.as_deref())
+            .map_err(|e| JsError::new(&format!("set kernel error failed: {e}")))
     }
 
     pub fn create_execution(&mut self, execution_id: &str) -> Result<(), JsError> {
@@ -1324,6 +1348,9 @@ impl RoomHostHandle {
         attachment: Option<&WorkstationAttachmentState>,
     ) -> Result<RoomHostFrameResult, JsError> {
         let heads_before = self.state_doc.get_heads();
+        if attachment.is_some_and(runtime_peer_attachment_is_ready) {
+            self.clear_stale_runtime_peer_gone_error()?;
+        }
         self.state_doc
             .set_workstation_attachment(attachment)
             .map_err(|e| JsError::new(&format!("set workstation attachment: {e}")))?;
@@ -1338,6 +1365,26 @@ impl RoomHostHandle {
             self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
         }
         Ok(result)
+    }
+
+    fn clear_stale_runtime_peer_gone_error(&mut self) -> Result<(), JsError> {
+        let state = self.state_doc.read_state();
+        let is_stale_runtime_peer_gone_error =
+            matches!(state.kernel.lifecycle, RuntimeLifecycle::Error)
+                && state
+                    .kernel
+                    .error_details
+                    .as_deref()
+                    .is_some_and(|details| details.starts_with("runtime peer disconnected:"));
+        if !is_stale_runtime_peer_gone_error {
+            return Ok(());
+        }
+        self.state_doc
+            .set_lifecycle_with_error_details(&RuntimeLifecycle::NotStarted, None, None)
+            .map_err(|e| JsError::new(&format!("clear runtime peer gone lifecycle: {e}")))?;
+        self.state_doc
+            .set_runtime_agent_id("")
+            .map_err(|e| JsError::new(&format!("clear runtime peer gone agent id: {e}")))
     }
 }
 
@@ -1361,6 +1408,10 @@ fn runtime_peer_gone_workstation_attachment(
     attachment.status = "error".to_string();
     attachment.status_message = Some(format!("runtime peer disconnected: {reason}"));
     attachment
+}
+
+fn runtime_peer_attachment_is_ready(attachment: &WorkstationAttachmentState) -> bool {
+    attachment.provider == "runtime_peer" && attachment.status == "ready"
 }
 
 /// Whether a kernel lifecycle still reads as "alive" — i.e. a viewer would see
@@ -4014,6 +4065,59 @@ mod tests {
         let state = host.state_doc.read_state();
         assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
         assert!(state.workstation.is_none());
+    }
+
+    #[test]
+    fn ready_runtime_peer_attachment_clears_stale_peer_gone_kernel_error() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle_with_error_details(
+                &RuntimeLifecycle::Error,
+                None,
+                Some("runtime peer disconnected: runtime peer left the room"),
+            )
+            .unwrap();
+        host.state_doc
+            .set_runtime_agent_id("user:dev:alice/agent:runt:old")
+            .unwrap();
+
+        let result = host
+            .set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("publish ready attachment");
+        assert!(result.changed);
+
+        let state = host.state_doc.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::NotStarted);
+        assert_eq!(state.kernel.error_details.as_deref(), Some(""));
+        assert_eq!(state.kernel.runtime_agent_id, "");
+        assert_eq!(
+            state.workstation.as_ref().map(|ws| ws.status.as_str()),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn ready_runtime_peer_attachment_preserves_non_watchdog_kernel_error() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .set_lifecycle_with_error_details(
+                &RuntimeLifecycle::Error,
+                None,
+                Some("kernel launch failed: missing module"),
+            )
+            .unwrap();
+
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("publish ready attachment");
+
+        let state = host.state_doc.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            state.kernel.error_details.as_deref(),
+            Some("kernel launch failed: missing module")
+        );
     }
 
     #[test]

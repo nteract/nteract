@@ -453,6 +453,113 @@ describe("RoomHostHandle", () => {
     });
   });
 
+  it("lets a runtime peer replace stale published kernel error with live running state", async () => {
+    const seedHost = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const seedRuntime = new RuntimeStatePeerHandle("system/schema:notebook-cloud-room");
+    seedRuntime.set_kernel_error("published runtime state is stale");
+    const host = await loadRoomHostSnapshot(seedHost.save_notebook(), seedRuntime.save());
+
+    const runtimePrincipal = "user:dev:runtime-service";
+    const runtime = new RuntimeStatePeerHandle(`${runtimePrincipal}/agent:runt:test`);
+    syncRuntimeHostWithRuntimePeer(
+      host,
+      "peer-runtime",
+      runtimePrincipal,
+      "runtime_peer",
+      false,
+      runtime,
+    );
+
+    runtime.set_kernel_running("python", "python", "uv:current_python", "runtime-agent-1");
+    const message = runtime.flush_runtime_state_sync();
+    assert.ok(message);
+    const result = host.receive_peer_frame(
+      "peer-runtime",
+      runtimePrincipal,
+      `${runtimePrincipal}/agent:runt:test`,
+      "runtime_peer",
+      false,
+      encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
+    ) as {
+      changed: boolean;
+      runtime_state_changed: boolean;
+      outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
+    };
+    assert.equal(result.changed, true);
+    assert.equal(result.runtime_state_changed, true);
+
+    const viewer = NotebookHandle.create_bootstrap("user:dev:carol/desktop:viewer");
+    syncRuntimeHostWithClient(host, "peer-viewer", "user:dev:carol", false, false, viewer);
+    const runtimeState = viewer.get_runtime_state() as {
+      kernel: {
+        lifecycle: { lifecycle: string; activity?: string };
+        name: string;
+        language: string;
+        env_source: string;
+        runtime_agent_id: string;
+      };
+    };
+    assert.deepEqual(runtimeState.kernel.lifecycle, {
+      lifecycle: "Running",
+      activity: "Idle",
+    });
+    assert.equal(runtimeState.kernel.name, "python");
+    assert.equal(runtimeState.kernel.language, "python");
+    assert.equal(runtimeState.kernel.env_source, "uv:current_python");
+    assert.equal(runtimeState.kernel.runtime_agent_id, "runtime-agent-1");
+  });
+
+  it("accepts launch state authored after the runtime peer receives the host snapshot", async () => {
+    const seedHost = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const seedRuntime = new RuntimeStatePeerHandle("system/schema:notebook-cloud-room");
+    seedRuntime.set_kernel_error("published runtime state is stale");
+    const host = await loadRoomHostSnapshot(seedHost.save_notebook(), seedRuntime.save());
+
+    const runtimePrincipal = "user:dev:runtime-service";
+    const runtimeActor = `${runtimePrincipal}/agent:runt:test`;
+    const runtime = new RuntimeStatePeerHandle(runtimeActor);
+    const peerId = "peer-runtime";
+
+    const initial = host.sync_peer(peerId, "runtime_peer") as {
+      outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
+    };
+    for (const frame of initial.outbound) {
+      if (frame.peer_id !== peerId || frame.frame_type !== FrameType.RUNTIME_STATE_SYNC) {
+        continue;
+      }
+      runtime.receive_frame(encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)));
+    }
+
+    runtime.set_kernel_running("python", "python", "uv:current_python", "runtime-agent-1");
+    const reply = runtime.generate_runtime_state_sync_reply();
+    assert.ok(reply);
+
+    const result = host.receive_peer_frame(
+      peerId,
+      runtimePrincipal,
+      runtimeActor,
+      "runtime_peer",
+      false,
+      encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, reply),
+    ) as {
+      changed: boolean;
+      runtime_state_changed: boolean;
+    };
+    assert.equal(result.changed, true);
+    assert.equal(result.runtime_state_changed, true);
+
+    const viewer = NotebookHandle.create_bootstrap("user:dev:carol/desktop:viewer");
+    syncRuntimeHostWithClient(host, "peer-viewer", "user:dev:carol", false, false, viewer);
+    const runtimeState = viewer.get_runtime_state() as {
+      kernel: { lifecycle: { lifecycle: string; activity?: string }; runtime_agent_id: string };
+    };
+    assert.deepEqual(runtimeState.kernel.lifecycle, {
+      lifecycle: "Running",
+      activity: "Idle",
+    });
+    assert.equal(runtimeState.kernel.runtime_agent_id, "runtime-agent-1");
+  });
+
   it("rejects runtime peer RuntimeStateDoc changes authored by a foreign principal", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const forged = new RuntimeStatePeerHandle("user:dev:mallory/runtime:py-3.12");
