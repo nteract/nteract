@@ -601,8 +601,8 @@ export function allowsNotebookWrite(scope: ConnectionScope): boolean {
   return scope === "editor" || scope === "owner";
 }
 
-export function allowsRuntimeStateWrite(scope: ConnectionScope): boolean {
-  return scope === "editor" || scope === "runtime_peer" || scope === "owner";
+export function allowsExecutionRequestSubmit(scope: ConnectionScope): boolean {
+  return scope === "owner";
 }
 
 export function allowsBlobUpload(scope: ConnectionScope): boolean {

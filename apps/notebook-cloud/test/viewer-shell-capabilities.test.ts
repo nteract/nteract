@@ -152,15 +152,14 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(editorWithRuntime.canExecute, false);
 
-  const editorWithExecuteCapability = cloudNotebookShellCapabilities({
-    authState: authState("oidc", "editor"),
-    connectionScope: "editor",
+  const ownerWithRuntime = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
     hasCodeCells: true,
     selectedMode: "edit",
     runtimeAvailable: true,
-    canSubmitExecutionRequests: true,
   });
-  assert.equal(editorWithExecuteCapability.canExecute, true);
+  assert.equal(ownerWithRuntime.canExecute, true);
 });
 
 test("cloud shell capabilities prefer RuntimeStateDoc workstation attachment over presence fallback", () => {

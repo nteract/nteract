@@ -90,6 +90,34 @@ describe("RoomHostHandle", () => {
     assert.equal(cells[0].source, "Edited collaboratively\n");
   });
 
+  it("rejects editor-scoped execution request frames", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:owner");
+
+    syncHostWithClient(host, "peer-owner", "user:dev:alice", true, true, owner);
+    owner.add_cell(0, "code-cell", "code");
+    owner.update_source("code-cell", "print('owner-only request authority')\n");
+    applyClientChangesToHost(host, "peer-owner", "user:dev:alice", true, true, owner);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-editor",
+          "user:dev:bob",
+          "user:dev:bob/desktop:editor",
+          "editor",
+          false,
+          encodeTypedFrame(
+            FrameType.REQUEST,
+            new TextEncoder().encode(
+              JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "code-cell" }),
+            ),
+          ),
+        ),
+      /connection scope cannot submit execution requests/,
+    );
+  });
+
   it("pushes later document changes to an already-connected viewer", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:owner");

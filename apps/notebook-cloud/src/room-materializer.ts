@@ -528,9 +528,8 @@ function stableRoomKey(value: string): string {
 }
 
 export function isMaterializedSyncFrame(type: FrameTypeValue): boolean {
-  // REQUEST routes through the room host too: an editor/owner ExecuteCell is
-  // turned into a queued execution by the host (the one peer that may create
-  // execution intent), whose outbound runtime-state frames then reach peers.
+  // REQUEST routes through the room host too: an authorized ExecuteCell request
+  // is turned into queued execution intent by the one peer that may create it.
   // Without this it would fall through to broadcast and never be dispatched.
   return (
     type === FrameType.AUTOMERGE_SYNC ||

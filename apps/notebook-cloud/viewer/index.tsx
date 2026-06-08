@@ -274,8 +274,6 @@ function loadConfig(): CloudViewerConfig {
     workstationAttachEndpoint: parsed.workstationAttachEndpoint,
     hostCapabilities: {
       canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
-      canSubmitExecutionRequests:
-        parsed.hostCapabilities?.canSubmitExecutionRequests === true ? true : undefined,
     },
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
@@ -1811,7 +1809,6 @@ function NotebookViewer({
   );
   const requestedEditAccess = roomEditAccess.requestedDocumentEditAccess;
   const editAccessPending = roomEditAccess.editAccessPending;
-  const canSubmitExecutionRequests = connectionScope === "owner";
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
@@ -1825,7 +1822,6 @@ function NotebookViewer({
         runtimeAvailable: runtimePeerAvailable,
         runtimePeerCount,
         workstationAttachment,
-        canSubmitExecutionRequests,
         hostCapabilities: config.hostCapabilities,
       }),
     [
@@ -1836,7 +1832,6 @@ function NotebookViewer({
       connectionActorLabel,
       connectionScope,
       editAccessRequestPending,
-      canSubmitExecutionRequests,
       runtimePeerCount,
       runtimePeerAvailable,
       selectedInteractionMode,

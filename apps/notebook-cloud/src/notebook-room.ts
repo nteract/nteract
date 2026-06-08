@@ -3,6 +3,7 @@ import type { WorkstationAttachmentState } from "runtimed";
 import { identityDisplayLabel } from "./display-label.ts";
 import {
   allowsBlobUpload,
+  allowsExecutionRequestSubmit,
   isAnonymousViewer,
   readTrustedIdentity,
   type AuthenticatedConnection,
@@ -479,7 +480,7 @@ export class NotebookRoom {
       case FrameType.POOL_STATE_SYNC:
         return identity.scope === "owner";
       case FrameType.REQUEST:
-        return identity.scope !== "viewer";
+        return allowsExecutionRequestSubmit(identity.scope);
       case FrameType.PRESENCE:
         return true;
       default:

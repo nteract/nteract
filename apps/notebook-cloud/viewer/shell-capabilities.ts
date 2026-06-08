@@ -34,9 +34,9 @@ export interface CloudNotebookShellCapabilityInput {
   editAccessRequestPending?: boolean;
   /**
    * Whether an execution runtime is attached to the room. The hosted prototype
-   * uses this as runtime status only; execution controls also require
-   * canSubmitExecutionRequests so runtime presence is not confused with
-   * execution authority.
+   * uses this as runtime status only; execution controls still require hosted
+   * execution request authority so runtime presence is not confused with the
+   * right to create execution intent.
    */
   runtimeAvailable?: boolean;
   /**
@@ -52,19 +52,11 @@ export interface CloudNotebookShellCapabilityInput {
    */
   workstationAttachment?: WorkstationAttachmentState | null;
   /**
-   * Whether this browser connection may create execution intent in the hosted
-   * room. This is a capability, not an interaction mode: owners can submit
-   * execution requests by default, and hosts may opt editors in when the room
-   * can safely materialize editor-authored execution request frames.
-   */
-  canSubmitExecutionRequests?: boolean;
-  /**
    * Host-provided room capabilities. Sharing is a room/host concern, not a
    * notebook-local affordance, so owner access alone is not enough to show it.
    */
   hostCapabilities?: {
     canManageSharing?: boolean;
-    canSubmitExecutionRequests?: boolean;
   };
 }
 
@@ -79,7 +71,6 @@ export function cloudNotebookShellCapabilities({
   runtimeAvailable = false,
   runtimePeerCount = runtimeAvailable ? 1 : 0,
   workstationAttachment = null,
-  canSubmitExecutionRequests = connectionScope === "owner",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const interaction = projectCloudNotebookEditAccess({
@@ -153,7 +144,7 @@ export function cloudNotebookShellCapabilities({
     },
     execution: {
       available: effectiveRuntimeAvailable,
-      canSubmit: canSubmitExecutionRequests,
+      canSubmit: connectionScope === "owner",
       requiresDocumentEditPermission: true,
     },
     packages: {
