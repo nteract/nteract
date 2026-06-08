@@ -2772,6 +2772,10 @@ fn cmd_dev_daemon(release: bool) {
         run_cmd("cargo", &["build", "-p", "runtimed"]);
     }
 
+    // Install the vendored nono binary alongside the runtimed binary so the
+    // daemon can find it via bundled_path() on startup.
+    ensure_nono_binary(release);
+
     let binary = dev_daemon_binary(release);
 
     if !binary.exists() {
@@ -2814,6 +2818,120 @@ fn cmd_dev_daemon(release: bool) {
 fn ensure_dev_daemon_binaries() {
     println!("Building runtimed + runt binaries for dev daemon...");
     build_runtimed_daemon(false);
+    ensure_nono_binary(false);
+}
+
+/// Install the vendored nono binary alongside the runtimed binary.
+///
+/// Strategy: **Option A** — `cargo install nono-cli` into a workspace-local
+/// staging directory, then copy the binary to the same directory as runtimed
+/// so `runtimed::nono::binary_path()` finds it via the bundled-path check.
+///
+/// The pinned version comes from `runtimed::nono::NONO_VERSION` (currently
+/// 0.62.0). This is macOS and Linux only — nono has no Windows support.
+///
+/// TODO (production path): For release builds, download prebuilt binaries from
+/// `github.com/always-further/nono/releases` for each target triple and bundle
+/// them in the Tauri app. Option A (cargo install) is used for development.
+#[cfg(not(target_os = "windows"))]
+fn ensure_nono_binary(release: bool) {
+    const NONO_VERSION: &str = "0.62.0";
+
+    let profile = if release { "release" } else { "debug" };
+    let target_dir = cargo_profile_dir(profile);
+    let nono_dest = target_dir.join("nono");
+
+    // Check if the installed binary already matches the pinned version.
+    if nono_dest.is_file() {
+        let version_ok = Command::new(&nono_dest)
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.contains(NONO_VERSION))
+            .unwrap_or(false);
+        if version_ok {
+            println!(
+                "nono {NONO_VERSION} already installed at {}",
+                nono_dest.display()
+            );
+            return;
+        }
+    }
+
+    // Install nono-cli into a staging area to avoid polluting the user's
+    // ~/.cargo/bin. Use the workspace target directory as root.
+    let workspace = workspace_root_or_exit();
+    let staging_root = workspace.join("target").join("nono-install");
+    let staging_bin = staging_root.join("bin").join("nono");
+
+    println!("Installing nono-cli {NONO_VERSION} (this may take a while on first run)...");
+    let status = Command::new("cargo")
+        .args([
+            "install",
+            "nono-cli",
+            "--version",
+            NONO_VERSION,
+            "--root",
+            &staging_root.to_string_lossy(),
+            "--locked",
+        ])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "Warning: cargo install nono-cli failed (exit {}). \
+                 Sandbox features will be unavailable.",
+                s.code().unwrap_or(-1)
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!(
+                "Warning: failed to run cargo install nono-cli: {e}. \
+                 Sandbox features will be unavailable."
+            );
+            return;
+        }
+    }
+
+    if !staging_bin.is_file() {
+        eprintln!(
+            "Warning: cargo install succeeded but nono binary not found at {}. \
+             Sandbox features will be unavailable.",
+            staging_bin.display()
+        );
+        return;
+    }
+
+    // Copy the binary next to runtimed so bundled_path() can find it.
+    if let Err(e) = fs::copy(&staging_bin, &nono_dest) {
+        eprintln!(
+            "Warning: failed to copy nono binary to {}: {e}. \
+             Sandbox features will be unavailable.",
+            nono_dest.display()
+        );
+        return;
+    }
+
+    // Make the copy executable (Unix only).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = fs::set_permissions(&nono_dest, fs::Permissions::from_mode(0o755)) {
+            eprintln!("Warning: failed to set nono binary permissions: {e}");
+        }
+    }
+
+    println!("nono {NONO_VERSION} installed at {}", nono_dest.display());
+}
+
+/// No-op on Windows: nono has no Windows support.
+#[cfg(target_os = "windows")]
+fn ensure_nono_binary(_release: bool) {
+    // nono.sh is macOS and Linux only. Skip silently on Windows.
 }
 
 fn spawn_dev_daemon_process(release: bool) -> Child {

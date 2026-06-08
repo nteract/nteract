@@ -241,4 +241,46 @@ Manage with `runt daemon start/stop/status/logs`. Cross-platform install/uninsta
 | `crates/runtimed/src/blob_server.rs` | HTTP blob server |
 | `crates/runtimed-outputs/src/output_resolver.rs` | Shared Rust manifest resolution |
 | `apps/notebook/src/lib/manifest-resolution.ts` | Frontend resolution (WASM resolves directly) |
+
+## nono bundling
+
+nono.sh is a network proxy and credential injector used for sandboxed kernel launches. The daemon ships a vendored copy so users do not need to install it separately.
+
+### Pinned version
+
+`runtimed::nono::NONO_VERSION` (currently `0.62.0`) records the exact version against which the empirical CLI tests were validated. Update this constant and re-validate the empirical tests in `docs/sandbox/nono-empirical-tests.md` when bumping.
+
+### Binary discovery order
+
+1. **`NONO_BIN` env var** — developer override. Set to any existing `nono` binary to bypass the bundled copy. Useful for testing a newer nono build or a custom patch.
+2. **Bundled alongside runtimed** — the binary named `nono` in the same directory as the running `runtimed` executable.
+3. **PATH fallback** — last resort for environments where nono was installed separately (e.g., `brew install nono`).
+
+### Development (Option A: `cargo install`)
+
+`cargo xtask dev-daemon` runs `cargo install nono-cli --version <NONO_VERSION>` into `target/nono-install/`, then copies the resulting binary to `target/debug/nono` (or `target/release/nono`) — the same directory as `runtimed`. The daemon's `bundled_path()` check finds it there automatically.
+
+```
+# after `cargo xtask dev-daemon`:
+target/debug/runtimed   ← daemon binary
+target/debug/nono       ← vendored nono binary (placed by xtask)
+```
+
+### Release packaging (TODO: Option B)
+
+For Tauri app bundles, download prebuilt binaries from `github.com/always-further/nono/releases` for each supported target triple (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`) and place the platform binary alongside the runtimed sidecar. nono has no Windows support; skip the binary on Windows.
+
+### Sandbox is opt-in
+
+Daemon startup logs a warning when nono is absent but does **not** fail — sandbox is per-notebook opt-in via `metadata.runt.sandbox` (D-3). Sandboxed kernel launches simply won't work until nono is available.
+
+### Overriding the binary
+
+```bash
+# Use a custom nono build:
+NONO_BIN=/path/to/custom/nono cargo xtask dev-daemon
+# Or set it before starting the system daemon:
+export NONO_BIN=/path/to/custom/nono
+runtimed run
+```
 | `apps/notebook/src/lib/notebook-cells.ts` | Split cell store, per-cell subscriptions |

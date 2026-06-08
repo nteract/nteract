@@ -1892,6 +1892,12 @@ impl Daemon {
             watcher_daemon.watch_settings_json().await;
         });
 
+        // One-shot nono binary smoke-check. Non-fatal: sandbox is opt-in (D-3).
+        // Logs the nono version at INFO when found; warns when absent or mismatched.
+        spawn_best_effort("nono-startup-check", async move {
+            crate::nono::startup_check().await;
+        });
+
         // Platform-specific accept loop
         #[cfg(unix)]
         {
