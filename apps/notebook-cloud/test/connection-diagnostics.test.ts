@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { diagnoseCloudConnectionAccess } from "../viewer/connection-diagnostics.ts";
+import {
+  CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
+  CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
+  diagnoseCloudConnectionAccess,
+} from "../viewer/connection-diagnostics.ts";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth.ts";
 
 describe("cloud connection diagnostics", () => {
@@ -59,15 +63,77 @@ describe("cloud connection diagnostics", () => {
 
     assert.equal(diagnostic, null);
   });
+
+  it("reports the viewer's pending edit request when editor scope was requested", async () => {
+    const diagnostic = await diagnoseCloudConnectionAccess({
+      accessRequestsEndpoint: "/api/n/shared/access-requests",
+      authState: authState("oidc", { requestedScope: "editor" }),
+      fetchImpl: async () =>
+        Response.json({
+          access_requests: [
+            {
+              scope: "editor",
+              status: "pending",
+            },
+          ],
+        }),
+    });
+
+    assert.equal(diagnostic, CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC);
+  });
+
+  it("reports the viewer's approved edit request when editor scope was requested", async () => {
+    const diagnostic = await diagnoseCloudConnectionAccess({
+      accessRequestsEndpoint: "/api/n/shared/access-requests",
+      authState: authState("anonymous", { requestedScope: "editor" }),
+      hasAppSession: true,
+      fetchImpl: async () =>
+        Response.json({
+          access_requests: [
+            {
+              scope: "editor",
+              status: "approved",
+            },
+          ],
+        }),
+    });
+
+    assert.equal(diagnostic, CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC);
+  });
+
+  it("does not treat owner access-request lists as the viewer's own request state", async () => {
+    const diagnostic = await diagnoseCloudConnectionAccess({
+      accessRequestsEndpoint: "/api/n/shared/access-requests",
+      authState: authState("oidc", { requestedScope: "editor" }),
+      fetchImpl: async () =>
+        Response.json({
+          access_requests: [
+            {
+              scope: "editor",
+              status: "pending",
+            },
+            {
+              scope: "editor",
+              status: "approved",
+            },
+          ],
+        }),
+    });
+
+    assert.equal(diagnostic, null);
+  });
 });
 
-function authState(mode: CloudPrototypeAuthState["mode"]): CloudPrototypeAuthState {
+function authState(
+  mode: CloudPrototypeAuthState["mode"],
+  options: { requestedScope?: CloudPrototypeAuthState["requestedScope"] } = {},
+): CloudPrototypeAuthState {
   return {
     mode,
     token: mode === "anonymous" ? null : "token",
     user: mode === "anonymous" ? null : "user@example.test",
     oidcClaims: null,
-    requestedScope: "viewer",
+    requestedScope: options.requestedScope ?? "viewer",
     problem: null,
   };
 }

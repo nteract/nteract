@@ -7,6 +7,8 @@ import {
 } from "@/components/notebook/NotebookNotice";
 import { prototypeAuthSummary, type CloudPrototypeAuthState } from "./collaborator-auth";
 import {
+  CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC,
+  CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
 } from "./connection-diagnostics";
@@ -190,6 +192,22 @@ function cloudConnectionNoticeDisplay(
       title: "Notebook access needed.",
       message:
         "This account does not have access to this notebook yet. Ask the owner to share it, or refresh sign-in if an invite was just accepted.",
+      tone: "warning",
+    };
+  }
+
+  if (error === CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC) {
+    return {
+      title: "Edit access pending.",
+      message: "The owner can approve the edit request from the sharing panel.",
+      tone: "warning",
+    };
+  }
+
+  if (error === CLOUD_CONNECTION_EDIT_ACCESS_APPROVED_DIAGNOSTIC) {
+    return {
+      title: "Edit access approved.",
+      message: "Refresh or reconnect to open the live notebook room with editor access.",
       tone: "warning",
     };
   }
