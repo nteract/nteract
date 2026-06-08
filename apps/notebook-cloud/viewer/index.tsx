@@ -1795,6 +1795,7 @@ function NotebookViewer({
     authState,
     blobResolver,
     config,
+    hasAppSession: Boolean(appSessionStatus.session),
     loadingPolicy,
     preloadSiftWasm,
     resolveSyncAuth,

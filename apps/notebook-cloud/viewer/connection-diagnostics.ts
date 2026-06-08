@@ -8,14 +8,16 @@ export interface DiagnoseCloudConnectionAccessOptions {
   accessRequestsEndpoint: string;
   authState: CloudPrototypeAuthState;
   fetchImpl?: typeof fetch;
+  hasAppSession?: boolean;
 }
 
 export async function diagnoseCloudConnectionAccess({
   accessRequestsEndpoint,
   authState,
   fetchImpl = fetch,
+  hasAppSession = false,
 }: DiagnoseCloudConnectionAccessOptions): Promise<string | null> {
-  if (authState.mode !== "dev" && authState.mode !== "oidc") {
+  if (!hasAppSession && authState.mode !== "dev" && authState.mode !== "oidc") {
     return null;
   }
 
@@ -25,6 +27,7 @@ export async function diagnoseCloudConnectionAccess({
       withCloudPrototypeAuthHeaders(
         {
           cache: "no-store",
+          credentials: "same-origin",
           headers: { Accept: "application/json" },
         },
         authState,

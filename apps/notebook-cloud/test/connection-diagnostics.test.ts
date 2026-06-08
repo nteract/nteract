@@ -33,6 +33,23 @@ describe("cloud connection diagnostics", () => {
     assert.match(diagnostic ?? "", /does not have access/);
   });
 
+  it("probes access with same-origin cookies for app-session browsers", async () => {
+    const diagnostic = await diagnoseCloudConnectionAccess({
+      accessRequestsEndpoint: "/api/n/private/access-requests",
+      authState: authState("anonymous"),
+      hasAppSession: true,
+      fetchImpl: async (input, init) => {
+        const headers = new Headers(init?.headers);
+        assert.equal(input, "/api/n/private/access-requests");
+        assert.equal(headers.get("Authorization"), null);
+        assert.equal(init?.credentials, "same-origin");
+        return Response.json({ error: "principal cannot access private" }, { status: 403 });
+      },
+    });
+
+    assert.match(diagnostic ?? "", /does not have access/);
+  });
+
   it("keeps successful authenticated access silent", async () => {
     const diagnostic = await diagnoseCloudConnectionAccess({
       accessRequestsEndpoint: "/api/n/shared/access-requests",

@@ -98,6 +98,7 @@ interface UseCloudViewerSessionOptions {
   authState: CloudPrototypeAuthState;
   blobResolver: BlobResolver;
   config: CloudViewerConfig;
+  hasAppSession?: boolean;
   loadingPolicy: CloudViewerLoadingPolicy;
   preloadSiftWasm: (cells: readonly ResolvedCell[]) => void;
   resolveSyncAuth?: (sessionId: string) => Promise<CloudSyncAuth>;
@@ -120,6 +121,7 @@ export function useCloudViewerSession({
   authState,
   blobResolver,
   config,
+  hasAppSession = false,
   loadingPolicy,
   preloadSiftWasm,
   resolveSyncAuth,
@@ -621,6 +623,7 @@ export function useCloudViewerSession({
         void diagnoseCloudConnectionAccess({
           accessRequestsEndpoint: config.accessRequestsEndpoint,
           authState,
+          hasAppSession,
         })
           .then((diagnostic) => {
             if (disposed || !diagnostic) return;
@@ -666,6 +669,7 @@ export function useCloudViewerSession({
     config.runtimedWasmPath,
     config.syncEndpoint,
     connectAttempt,
+    hasAppSession,
     loadingPolicy.shouldConnectLiveRoom,
     presenceStore,
     applyResolvedCells,
