@@ -2,10 +2,10 @@ import {
   ArrowDownToLine,
   ChevronsRight,
   Code,
-  Cpu,
   LetterText,
   Play,
   RotateCcw,
+  ServerCog,
   Square,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -264,7 +264,7 @@ export function NotebookCommandToolbar({
           aria-label={workstationAction.label}
           data-testid="workstation-setup-button"
         >
-          <Cpu className="h-3 w-3" />
+          <ServerCog className="h-3 w-3" />
           <span className="hidden @[40rem]:inline">{workstationAction.label}</span>
         </button>
       ) : null}

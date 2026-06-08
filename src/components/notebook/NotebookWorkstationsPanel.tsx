@@ -2,11 +2,12 @@ import {
   CircleAlert,
   CircleCheck,
   Cloud,
-  Cpu,
   FolderOpen,
+  Gauge,
   MemoryStick,
   Monitor,
   PlugZap,
+  Server,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -136,7 +137,7 @@ function workstationStatusTone(tone: NotebookWorkstationPanelTone): {
   }
   if (tone === "available") {
     return {
-      icon: Cpu,
+      icon: Server,
       iconClassName: "text-sky-700 dark:text-sky-300",
       panelClassName: "border-sky-500/70 bg-sky-500/[0.04]",
       textClassName: "text-sky-700 dark:text-sky-300",
@@ -158,9 +159,9 @@ function workstationSourceIcon(source: NotebookShellAccessSource): LucideIcon {
     case "cloud":
       return Cloud;
     case "fixture":
-      return Cpu;
+      return Server;
     default:
-      return Cpu;
+      return Server;
   }
 }
 
@@ -172,7 +173,7 @@ function workstationFactIcon(
     case "provider":
       return workstationSourceIcon(source);
     case "kernel":
-      return Cpu;
+      return Gauge;
     case "memory":
       return MemoryStick;
     case "working_directory":
@@ -184,6 +185,6 @@ function workstationFactIcon(
     case "remote_hint":
       return Cloud;
     default:
-      return Cpu;
+      return Server;
   }
 }
