@@ -8,7 +8,6 @@ import {
 } from "./auth-shared.ts";
 
 export {
-  APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -48,7 +47,6 @@ export interface AuthenticatedConnectionMetadata {
   transport:
     | "anonymous"
     | "app-session-cookie"
-    | "app-session-sync-ticket"
     | "loopback-dev"
     | "dev-token-header"
     | "dev-token-subprotocol"
@@ -761,7 +759,6 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
   return (
     value === "anonymous" ||
     value === "app-session-cookie" ||
-    value === "app-session-sync-ticket" ||
     value === "loopback-dev" ||
     value === "dev-token-header" ||
     value === "dev-token-subprotocol" ||

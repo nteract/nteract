@@ -1,6 +1,5 @@
 export type ConnectionScope = "viewer" | "editor" | "runtime_peer" | "owner";
 
-export const APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX = "nteract-app-session.";
 export const BEARER_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-bearer.";
 export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
 export const DEV_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-dev-token.";

@@ -278,6 +278,57 @@ test("cloud shell capabilities keep user-selected view mode read-only even with 
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
+test("cloud shell capabilities hide execution in view mode even for owners with compute", () => {
+  const viewMode = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "view",
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 32 * 1024 ** 3,
+      working_directory: "/home/ubuntu/notebooks",
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+  const editMode = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 32 * 1024 ** 3,
+      working_directory: "/home/ubuntu/notebooks",
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(viewMode.access.level, "owner");
+  assert.equal(viewMode.interaction?.activeMode, "view");
+  assert.equal(viewMode.runtime.executionAvailable, true);
+  assert.equal(viewMode.canExecute, false);
+
+  assert.equal(editMode.access.level, "owner");
+  assert.equal(editMode.interaction?.activeMode, "edit");
+  assert.equal(editMode.runtime.executionAvailable, true);
+  assert.equal(editMode.canExecute, true);
+});
+
 test("cloud shell capabilities keep selected mode separate from requested auth scope", () => {
   const viewerMode = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),

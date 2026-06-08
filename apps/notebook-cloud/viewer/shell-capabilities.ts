@@ -150,6 +150,7 @@ export function cloudNotebookShellCapabilities({
       available: effectiveRuntimeAvailable,
       canSubmit: connectionScope === "owner",
       requiresDocumentEditPermission: true,
+      requiresDocumentMutationSupport: true,
     },
     packages: {
       canView: true,
