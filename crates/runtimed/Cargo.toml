@@ -116,6 +116,9 @@ jiter = { workspace = true }
 toml = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Temp file management for sandbox profile translation (task 05)
+tempfile = "3"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 nix = { version = "0.31", features = ["signal", "process"] }
@@ -127,7 +130,6 @@ build-metadata = { path = "../build-metadata" }
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
-tempfile = "3"
 serial_test = "3"
 tokio = { version = "1.36.0", features = ["full", "test-util"] }
 notebook-sync = { path = "../notebook-sync" }
