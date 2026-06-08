@@ -119,6 +119,13 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     flush_runtime_state_sync(): Uint8Array | undefined;
     generate_comms_doc_sync_reply(): Uint8Array | undefined;
     generate_runtime_state_sync_reply(): Uint8Array | undefined;
+    set_kernel_error(details?: string): void;
+    set_kernel_running(
+      kernelName: string,
+      language: string,
+      envSource: string,
+      runtimeAgentId: string,
+    ): void;
     put_comm_json(
       commId: string,
       targetName: string,

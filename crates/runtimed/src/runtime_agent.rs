@@ -97,6 +97,7 @@ struct RuntimeAgentContext {
     broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
     presence: Arc<RwLock<PresenceState>>,
     presence_tx: broadcast::Sender<(String, Vec<u8>)>,
+    runtime_agent_id: String,
     kernel_actor_principal: Option<String>,
 }
 
@@ -156,12 +157,12 @@ pub async fn run_runtime_agent(
 ///   hazard the `runt-cloud-peer` spike documented.
 ///
 /// `initial_launch`, when `Some`, is a [`RuntimeAgentRequest::LaunchKernel`] the
-/// agent applies *once* right after bootstrap, so the workstation endpoint can
-/// *start* a runtime in env X without waiting for an inbound `LaunchKernel` RPC
-/// — that inbound channel is req #5, Deferred (decision 38). `None` keeps the
-/// historical attach-only behavior (the agent waits for an RPC that, over the
-/// cloud transport, does not yet arrive). Build it with
-/// [`crate::workstation::build_current_python_launch`].
+/// agent applies *once* after the initial RuntimeStateDoc sync, so the
+/// workstation endpoint can *start* a runtime in env X without waiting for an
+/// inbound `LaunchKernel` RPC. Waiting for the RuntimeStateDoc sync keeps the
+/// launch lifecycle write causally after the room checkpoint instead of racing
+/// stale published lifecycle state. `None` keeps the historical attach-only
+/// behavior. Build it with [`crate::workstation::build_current_python_launch`].
 ///
 /// CODE-ONLY (Phase 3c/3b): this builds and unit-tests the spawn path behind the
 /// transport gate; the live cross-machine re-proof (a preview room + the
@@ -251,6 +252,79 @@ fn direct_python_path_for(
     }
 }
 
+fn record_kernel_launched_state(
+    ctx: &RuntimeAgentContext,
+    kernel_type: &str,
+    env_source: &str,
+) -> Result<(), runtime_doc::RuntimeStateError> {
+    ctx.state.with_doc(|sd| {
+        sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+        sd.set_kernel_info(kernel_type, kernel_type, env_source)?;
+        sd.set_runtime_agent_id(&ctx.runtime_agent_id)?;
+        Ok(())
+    })
+}
+
+fn record_kernel_launching_state(
+    ctx: &RuntimeAgentContext,
+    kernel_type: &str,
+    env_source: &str,
+) -> Result<(), runtime_doc::RuntimeStateError> {
+    ctx.state.with_doc(|sd| {
+        sd.set_lifecycle(&RuntimeLifecycle::Launching)?;
+        sd.set_kernel_info(kernel_type, kernel_type, env_source)?;
+        sd.set_runtime_agent_id(&ctx.runtime_agent_id)?;
+        Ok(())
+    })
+}
+
+fn record_kernel_launch_failed_state(
+    ctx: &RuntimeAgentContext,
+    kernel_type: &str,
+    env_source: &str,
+    details: &str,
+) -> Result<(), runtime_doc::RuntimeStateError> {
+    ctx.state.with_doc(|sd| {
+        sd.set_lifecycle_with_error_details(&RuntimeLifecycle::Error, None, Some(details))?;
+        sd.set_kernel_info(kernel_type, kernel_type, env_source)?;
+        sd.set_runtime_agent_id(&ctx.runtime_agent_id)?;
+        Ok(())
+    })
+}
+
+fn is_stale_runtime_peer_disconnect_error(
+    lifecycle: &RuntimeLifecycle,
+    error_details: Option<&str>,
+) -> bool {
+    matches!(lifecycle, RuntimeLifecycle::Error)
+        && error_details.is_some_and(|details| details.starts_with("runtime peer disconnected:"))
+}
+
+fn reassert_live_kernel_projection_if_needed<K: KernelConnection>(
+    ctx: &RuntimeAgentContext,
+    kernel: Option<&K>,
+) -> Result<bool, runtime_doc::RuntimeStateError> {
+    let Some(kernel) = kernel else {
+        return Ok(false);
+    };
+
+    let current = ctx.state.read(|sd| sd.read_state().kernel)?;
+    let should_reassert = matches!(current.lifecycle, RuntimeLifecycle::NotStarted)
+        || is_stale_runtime_peer_disconnect_error(
+            &current.lifecycle,
+            current.error_details.as_deref(),
+        )
+        || (matches!(current.lifecycle, RuntimeLifecycle::Running(_))
+            && current.runtime_agent_id != ctx.runtime_agent_id);
+
+    if !should_reassert {
+        return Ok(false);
+    }
+
+    record_kernel_launched_state(ctx, kernel.kernel_type(), kernel.env_source())?;
+    Ok(true)
+}
+
 /// Run the runtime agent over an arbitrary [`FrameTransport`].
 ///
 /// The desktop/daemon path ([`run_runtime_agent`]) and the cloud path
@@ -337,6 +411,7 @@ where
         broadcast_tx: broadcast_tx.clone(),
         presence,
         presence_tx,
+        runtime_agent_id,
         kernel_actor_principal,
     };
 
@@ -378,43 +453,37 @@ where
     let mut runtime_state_doc_seen = false;
     let mut orphan_comm_candidates: HashSet<String> = HashSet::new();
 
-    // -- 3b. Launch-on-attach (cloud only) ----------------------------------
+    // -- 3b. Launch-on-attach gate (cloud only) -----------------------------
     //
     // The workstation endpoint can hand the agent an initial `LaunchKernel` to
-    // apply right after bootstrap, so it *starts* a runtime in env X without
-    // waiting for an inbound RPC (req #5, Deferred — decision 38). Gated on
-    // `clean_eof_is_recoverable()`, the recoverable/cloud-transport discriminant:
-    // the daemon/UDS path drives launch via its own RPC and must never launch on
-    // attach, so even a (never-passed) `Some` here is ignored on UDS. The launch
-    // runs through the *same* `handle_runtime_agent_request` path an inbound RPC
-    // would, so the kernel drive, queue release, and command-receiver install are
-    // identical — only the trigger differs.
-    if let Some(launch) = initial_launch {
-        if transport.clean_eof_is_recoverable() {
-            info!("[runtime-agent] Applying launch-on-attach LaunchKernel");
-            let (response, new_cmd_rx) = handle_runtime_agent_request(
-                launch,
-                &ctx,
-                &mut kernel,
-                &mut kernel_state,
-                &mut seen_execution_ids,
-            )
-            .await;
-            if let Some(rx) = new_cmd_rx {
-                lifecycle_rx = Some(rx.lifecycle_rx);
-                work_rx = Some(rx.work_rx);
-            }
-            interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
-            if let RuntimeAgentResponse::Error { error } = response {
-                warn!("[runtime-agent] Launch-on-attach failed: {}", error);
-            }
-        } else {
+    // apply after the first RuntimeStateDoc sync, so it *starts* a runtime in env
+    // X without waiting for an inbound RPC. The RuntimeStateDoc sync is
+    // load-bearing: the room may bootstrap from a published checkpoint whose
+    // lifecycle still says AwaitingTrust/Error. If the runtime peer writes
+    // Running before receiving that checkpoint, the writes are concurrent and
+    // Automerge can keep projecting the stale checkpoint value even though the
+    // kernel launched. Gated on `clean_eof_is_recoverable()`, the
+    // recoverable/cloud-transport discriminant: the daemon/UDS path drives launch
+    // via its own RPC and must never launch on attach, so even a (never-passed)
+    // `Some` here is ignored on UDS. The launch runs through the *same*
+    // `handle_runtime_agent_request` path an inbound RPC would, so the kernel
+    // drive, queue release, and command-receiver install are identical — only the
+    // trigger differs.
+    let mut pending_initial_launch = match initial_launch {
+        Some(launch) if transport.clean_eof_is_recoverable() => {
+            info!("[runtime-agent] Deferring launch-on-attach until initial RuntimeStateDoc sync");
+            let _ = state_kick_tx.send(());
+            Some(launch)
+        }
+        Some(_) => {
             warn!(
                 "[runtime-agent] Ignoring launch-on-attach on a non-recoverable transport \
                  (daemon-driven launch only)"
             );
+            None
         }
-    }
+        None => None,
+    };
 
     info!("[runtime-agent] Infrastructure ready, entering main loop");
 
@@ -642,6 +711,55 @@ where
                                         Err(e) => {
                                             warn!("[runtime-agent] Closing after RuntimeStateSync failure: {}", e);
                                             break;
+                                        }
+                                    }
+
+                                    if runtime_state_doc_seen {
+                                        if let Some(launch) = pending_initial_launch.take() {
+                                            info!(
+                                                "[runtime-agent] Applying launch-on-attach LaunchKernel after RuntimeStateDoc sync"
+                                            );
+                                            let (response, new_cmd_rx) =
+                                                handle_runtime_agent_request(
+                                                    launch,
+                                                    &ctx,
+                                                    &mut kernel,
+                                                    &mut kernel_state,
+                                                    &mut seen_execution_ids,
+                                                )
+                                                .await;
+                                            if let Some(rx) = new_cmd_rx {
+                                                lifecycle_rx = Some(rx.lifecycle_rx);
+                                                work_rx = Some(rx.work_rx);
+                                            }
+                                            interrupt_handle = kernel
+                                                .as_ref()
+                                                .and_then(|k| k.interrupt_handle());
+                                            if let RuntimeAgentResponse::Error { error } = response
+                                            {
+                                                warn!(
+                                                    "[runtime-agent] Launch-on-attach failed: {}",
+                                                    error
+                                                );
+                                            }
+                                        }
+
+                                        match reassert_live_kernel_projection_if_needed(
+                                            &ctx,
+                                            kernel.as_ref(),
+                                        ) {
+                                            Ok(true) => {
+                                                info!(
+                                                    "[runtime-agent] Reasserted live kernel projection after RuntimeStateDoc sync"
+                                                );
+                                            }
+                                            Ok(false) => {}
+                                            Err(e) => {
+                                                warn!(
+                                                    "[runtime-state] failed to reassert live kernel projection: {}",
+                                                    e
+                                                );
+                                            }
                                         }
                                     }
 
@@ -1433,6 +1551,12 @@ async fn handle_runtime_agent_request(
                 direct_python_path,
             };
 
+            if let Err(e) =
+                record_kernel_launching_state(ctx, &launch_kernel_type, &launch_env_source)
+            {
+                warn!("[runtime-state] {}", e);
+            }
+
             let launch_started = std::time::Instant::now();
             match JupyterKernel::launch(config, shared).await {
                 Ok((k, rx)) => {
@@ -1440,6 +1564,9 @@ async fn handle_runtime_agent_request(
                     *kernel = Some(k);
                     state.reset();
                     state.set_idle();
+                    if let Err(e) = record_kernel_launched_state(ctx, &launch_kernel_type, &es) {
+                        warn!("[runtime-state] {}", e);
+                    }
                     info!(
                         "[runtime-agent] LaunchKernel completed: type={} source={} elapsed_ms={}",
                         launch_kernel_type,
@@ -1467,12 +1594,16 @@ async fn handle_runtime_agent_request(
                         launch_started.elapsed().as_millis(),
                         e
                     );
-                    (
-                        RuntimeAgentResponse::Error {
-                            error: format!("Failed to launch kernel: {}", e),
-                        },
-                        None,
-                    )
+                    let error = format!("Failed to launch kernel: {e}");
+                    if let Err(write_error) = record_kernel_launch_failed_state(
+                        ctx,
+                        &launch_kernel_type,
+                        &launch_env_source,
+                        &error,
+                    ) {
+                        warn!("[runtime-state] {}", write_error);
+                    }
+                    (RuntimeAgentResponse::Error { error }, None)
                 }
             }
         }
@@ -1584,6 +1715,12 @@ async fn handle_runtime_agent_request(
                 warn!("[runtime-state] {}", e);
             }
 
+            if let Err(e) =
+                record_kernel_launching_state(ctx, &launch_kernel_type, &launch_env_source)
+            {
+                warn!("[runtime-state] {}", e);
+            }
+
             let launch_started = std::time::Instant::now();
             match JupyterKernel::launch(config, shared).await {
                 Ok((k, rx)) => {
@@ -1591,6 +1728,9 @@ async fn handle_runtime_agent_request(
                     *kernel = Some(k);
                     state.reset();
                     state.set_idle();
+                    if let Err(e) = record_kernel_launched_state(ctx, &launch_kernel_type, &es) {
+                        warn!("[runtime-state] {}", e);
+                    }
                     info!(
                         "[runtime-agent] RestartKernel completed: type={} source={} elapsed_ms={}",
                         launch_kernel_type,
@@ -1612,12 +1752,16 @@ async fn handle_runtime_agent_request(
                         launch_started.elapsed().as_millis(),
                         e
                     );
-                    (
-                        RuntimeAgentResponse::Error {
-                            error: format!("Failed to restart kernel: {}", e),
-                        },
-                        None,
-                    )
+                    let error = format!("Failed to restart kernel: {e}");
+                    if let Err(write_error) = record_kernel_launch_failed_state(
+                        ctx,
+                        &launch_kernel_type,
+                        &launch_env_source,
+                        &error,
+                    ) {
+                        warn!("[runtime-state] {}", write_error);
+                    }
+                    (RuntimeAgentResponse::Error { error }, None)
                 }
             }
         }
@@ -2804,10 +2948,175 @@ mod tests {
             broadcast_tx: broadcast_tx.clone(),
             presence,
             presence_tx,
+            runtime_agent_id: "test-runtime-agent".to_string(),
             kernel_actor_principal: None,
         };
         let state = KernelState::new(handle.clone());
         (ctx, state, handle)
+    }
+
+    #[test]
+    fn record_kernel_launched_state_publishes_running_kernel_projection() {
+        let (ctx, _state, handle) = test_fixtures();
+
+        record_kernel_launched_state(&ctx, "python", "uv:current_python")
+            .expect("record kernel launch");
+
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            runtime_state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        assert_eq!(runtime_state.kernel.name, "python");
+        assert_eq!(runtime_state.kernel.language, "python");
+        assert_eq!(runtime_state.kernel.env_source, "uv:current_python");
+        assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
+        assert!(runtime_state.env.prewarmed_packages.is_empty());
+    }
+
+    #[test]
+    fn record_kernel_launching_state_publishes_starting_kernel_projection() {
+        let (ctx, _state, handle) = test_fixtures();
+
+        record_kernel_launching_state(&ctx, "python", "uv:current_python")
+            .expect("record kernel launching");
+
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(runtime_state.kernel.lifecycle, RuntimeLifecycle::Launching);
+        assert_eq!(runtime_state.kernel.name, "python");
+        assert_eq!(runtime_state.kernel.language, "python");
+        assert_eq!(runtime_state.kernel.env_source, "uv:current_python");
+        assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
+    }
+
+    #[test]
+    fn record_kernel_launch_failed_state_terminates_starting_kernel_projection() {
+        let (ctx, _state, handle) = test_fixtures();
+
+        record_kernel_launching_state(&ctx, "python", "uv:current_python")
+            .expect("record kernel launching");
+        record_kernel_launch_failed_state(
+            &ctx,
+            "python",
+            "uv:current_python",
+            "Failed to launch kernel: missing ipykernel",
+        )
+        .expect("record kernel launch failure");
+
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(runtime_state.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            runtime_state.kernel.error_details.as_deref(),
+            Some("Failed to launch kernel: missing ipykernel")
+        );
+        assert_eq!(runtime_state.kernel.name, "python");
+        assert_eq!(runtime_state.kernel.env_source, "uv:current_python");
+        assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
+    }
+
+    #[test]
+    fn live_kernel_reasserts_after_stale_not_started_projection() {
+        let (ctx, _state, handle) = test_fixtures();
+        handle
+            .with_doc(|sd| {
+                sd.set_lifecycle_with_error_details(&RuntimeLifecycle::NotStarted, None, None)?;
+                sd.set_runtime_agent_id("")?;
+                Ok(())
+            })
+            .expect("seed stale not-started state");
+
+        let reasserted = reassert_live_kernel_projection_if_needed(&ctx, Some(&MockKernel))
+            .expect("reassert live kernel");
+
+        assert!(reasserted);
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            runtime_state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        assert_eq!(runtime_state.kernel.name, "python");
+        assert_eq!(runtime_state.kernel.env_source, "test");
+        assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
+    }
+
+    #[test]
+    fn live_kernel_reasserts_after_stale_peer_disconnect_error() {
+        let (ctx, _state, handle) = test_fixtures();
+        handle
+            .with_doc(|sd| {
+                sd.set_lifecycle_with_error_details(
+                    &RuntimeLifecycle::Error,
+                    None,
+                    Some("runtime peer disconnected: websocket closed"),
+                )?;
+                sd.set_runtime_agent_id("old-runtime-agent")?;
+                Ok(())
+            })
+            .expect("seed stale peer-disconnect state");
+
+        let reasserted = reassert_live_kernel_projection_if_needed(&ctx, Some(&MockKernel))
+            .expect("reassert live kernel");
+
+        assert!(reasserted);
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            runtime_state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
+    }
+
+    #[test]
+    fn live_kernel_reasserts_after_stale_running_agent_id() {
+        let (ctx, _state, handle) = test_fixtures();
+        handle
+            .with_doc(|sd| {
+                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+                sd.set_kernel_info("python", "python", "uv:current_python")?;
+                sd.set_runtime_agent_id("old-runtime-agent")?;
+                Ok(())
+            })
+            .expect("seed stale running owner");
+
+        let reasserted = reassert_live_kernel_projection_if_needed(&ctx, Some(&MockKernel))
+            .expect("reassert live kernel owner");
+
+        assert!(reasserted);
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            runtime_state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        assert_eq!(runtime_state.kernel.env_source, "test");
+        assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
+    }
+
+    #[test]
+    fn live_kernel_does_not_overwrite_non_watchdog_error() {
+        let (ctx, _state, handle) = test_fixtures();
+        handle
+            .with_doc(|sd| {
+                sd.set_lifecycle_with_error_details(
+                    &RuntimeLifecycle::Error,
+                    None,
+                    Some("kernel launch failed: missing ipykernel"),
+                )?;
+                sd.set_runtime_agent_id("test-runtime-agent")?;
+                Ok(())
+            })
+            .expect("seed real kernel error");
+
+        let reasserted = reassert_live_kernel_projection_if_needed(&ctx, Some(&MockKernel))
+            .expect("check live kernel repair");
+
+        assert!(!reasserted);
+        let runtime_state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(runtime_state.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            runtime_state.kernel.error_details.as_deref(),
+            Some("kernel launch failed: missing ipykernel")
+        );
+        assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
     }
 
     #[tokio::test]
