@@ -53,6 +53,7 @@ const requireOpenSocket = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_OPEN_SOCK
 const requireBlobFetch = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_BLOB_FETCH === "1";
 const requireImagesLoaded = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_IMAGES_LOADED === "1";
 const checkHistoryShortcut = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_HISTORY === "1";
+const checkCompletionShortcut = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_COMPLETION === "1";
 const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCREENSHOT);
 
 main().catch((error) => {
@@ -189,6 +190,9 @@ async function main() {
     const historyShortcut = checkHistoryShortcut
       ? await exerciseHistoryShortcut(page, timeoutMs)
       : null;
+    const completionShortcut = checkCompletionShortcut
+      ? await exerciseCompletionShortcut(page, timeoutMs)
+      : null;
 
     const diagnostics = await pageDiagnostics(page);
     if (screenshotPath) {
@@ -283,11 +287,13 @@ async function main() {
         requireBlobFetch,
         requireImagesLoaded,
         checkHistoryShortcut,
+        checkCompletionShortcut,
         screenshotPath: screenshotPath ?? null,
       },
       diagnostics,
       frameTextMatches,
       historyShortcut,
+      completionShortcut,
       events,
       failures,
     };
@@ -368,9 +374,7 @@ async function pageDiagnostics(page) {
 }
 
 async function exerciseHistoryShortcut(page, timeout) {
-  const editor = page
-    .locator('[data-cell-type="code"] .cm-content[contenteditable="true"]')
-    .first();
+  const editor = page.locator(editableCodeCellSelector()).first();
   await editor.waitFor({ state: "visible", timeout }).catch(async (error) => {
     const diagnostics = await pageDiagnostics(page).catch(() => null);
     throw new Error(
@@ -410,6 +414,43 @@ async function exerciseHistoryShortcut(page, timeout) {
   await page.keyboard.press("Escape");
   await input.waitFor({ state: "hidden", timeout }).catch(() => {});
   return summary;
+}
+
+async function exerciseCompletionShortcut(page, timeout) {
+  const editor = page.locator(editableCodeCellSelector()).first();
+  await editor.waitFor({ state: "visible", timeout }).catch(async (error) => {
+    const diagnostics = await pageDiagnostics(page).catch(() => null);
+    throw new Error(
+      `Completion smoke requires an editable code cell in the chosen notebook: ${
+        error instanceof Error ? error.message : String(error)
+      }\n${JSON.stringify(diagnostics, null, 2)}`,
+    );
+  });
+  await editor.click({ timeout });
+  await page.keyboard.press("Control+Space");
+  await page.waitForTimeout(800);
+
+  const summary = await page.evaluate(() => {
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    return {
+      cellErrorVisible: /This cell encountered an error/i.test(text),
+      completionTooltipVisible: document.querySelector(".cm-tooltip-autocomplete") !== null,
+      notebookHostErrorVisible:
+        /useNotebookHost\(\) must be called inside <NotebookHostProvider>/i.test(text),
+      textSample: text.slice(0, 1_000),
+    };
+  });
+
+  if (summary.cellErrorVisible || summary.notebookHostErrorVisible) {
+    throw new Error(`Completion shortcut opened a hosted cell error: ${JSON.stringify(summary)}`);
+  }
+
+  await page.keyboard.press("Escape");
+  return summary;
+}
+
+function editableCodeCellSelector() {
+  return '[data-cell-type="code"] .cm-content[contenteditable="true"]';
 }
 
 function isRoomSyncWebSocket(value) {

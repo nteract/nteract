@@ -452,7 +452,9 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_HISTORY/);
+  assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_COMPLETION/);
   assert.match(sourceText, /page\.keyboard\.press\("Control\+R"\)/);
+  assert.match(sourceText, /page\.keyboard\.press\("Control\+Space"\)/);
   assert.match(sourceText, /Search history\.\.\./);
   assert.match(sourceText, /notebookHostErrorVisible/);
   assert.match(sourceText, /socketCloseWarnings/);
