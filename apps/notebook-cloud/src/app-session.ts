@@ -1,4 +1,10 @@
 import type { AuthenticatedConnection } from "./identity.ts";
+import {
+  APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
+  NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+  isConnectionScope,
+  type ConnectionScope,
+} from "./auth-shared.ts";
 
 export interface AppSessionEnvironment {
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;
@@ -13,6 +19,23 @@ export interface CloudAppSession {
   provider: "oidc";
 }
 
+export interface CloudSyncTicket {
+  displayName?: string;
+  expiresAt: number;
+  issuedAt: number;
+  notebookId: string;
+  operator: string;
+  principal: string;
+  principalNamespace: string;
+  scope: Exclude<ConnectionScope, "runtime_peer">;
+}
+
+export interface CloudSyncTicketInput {
+  notebookId: string;
+  operator: string;
+  scope: Exclude<ConnectionScope, "runtime_peer">;
+}
+
 interface CloudAppSessionPayload {
   display_name?: string;
   exp: number;
@@ -23,10 +46,23 @@ interface CloudAppSessionPayload {
   v: 1;
 }
 
+interface CloudSyncTicketPayload {
+  display_name?: string;
+  exp: number;
+  iat: number;
+  notebook_id: string;
+  ns: string;
+  operator: string;
+  principal: string;
+  scope: Exclude<ConnectionScope, "runtime_peer">;
+  v: 1;
+}
+
 export const NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME = "__Host-nteract_cloud_app_session";
 export const NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH = 128;
 export const NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS = 6 * 60 * 60;
 export const NOTEBOOK_CLOUD_APP_SESSION_SECRET_MIN_LENGTH = 32;
+export const NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS = 90;
 
 const SESSION_SIGNING_ALGORITHM = { name: "HMAC", hash: "SHA-256" };
 
@@ -54,6 +90,76 @@ export async function createCloudAppSessionCookie(
   };
   const value = await signCloudAppSession(env, payload);
   return `${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=${value}; Path=/; Max-Age=${NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export async function createCloudSyncTicket(
+  env: AppSessionEnvironment,
+  session: CloudAppSession,
+  input: CloudSyncTicketInput,
+  nowSeconds = currentEpochSeconds(),
+): Promise<string> {
+  const payload: CloudSyncTicketPayload = {
+    v: 1,
+    principal: session.principal,
+    ns: session.principalNamespace,
+    operator: input.operator,
+    notebook_id: input.notebookId,
+    scope: input.scope,
+    iat: nowSeconds,
+    exp: nowSeconds + NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS,
+    ...(session.displayName ? { display_name: session.displayName } : {}),
+  };
+  const encodedPayload = base64UrlEncodeString(JSON.stringify(payload));
+  const signature = await hmacSha256(env, encodedPayload);
+  return `${encodedPayload}.${base64UrlEncodeBytes(signature)}`;
+}
+
+export async function readCloudSyncTicket(
+  env: AppSessionEnvironment,
+  value: string,
+  nowSeconds = currentEpochSeconds(),
+): Promise<CloudSyncTicket | null> {
+  const payload = await verifyCloudSyncTicket(env, value);
+  if (!payload || payload.exp <= nowSeconds || payload.iat > nowSeconds + 60) {
+    return null;
+  }
+
+  return {
+    principal: payload.principal,
+    principalNamespace: payload.ns,
+    operator: payload.operator,
+    notebookId: payload.notebook_id,
+    scope: payload.scope,
+    issuedAt: payload.iat,
+    expiresAt: payload.exp,
+    ...(payload.display_name ? { displayName: payload.display_name } : {}),
+  };
+}
+
+export function cloudSyncTicketFromWebSocketProtocol(
+  value: string | null,
+): { ticket: string; webSocketProtocol?: string } | null {
+  if (!value) return null;
+
+  const webSocketProtocol = value
+    .split(",")
+    .some((protocol) => protocol.trim() === NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL)
+    ? NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL
+    : undefined;
+  let credential: { ticket: string; webSocketProtocol?: string } | null = null;
+  for (const protocol of value.split(",")) {
+    const trimmed = protocol.trim();
+    if (!trimmed.startsWith(APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX)) continue;
+    const ticket = base64UrlDecodeString(
+      trimmed.slice(APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX.length),
+    );
+    if (!ticket) continue;
+    if (credential) {
+      throw new Error("multiple app-session sync tickets presented");
+    }
+    credential = webSocketProtocol ? { ticket, webSocketProtocol } : { ticket };
+  }
+  return credential;
 }
 
 export function clearCloudAppSessionCookie(): string {
@@ -121,6 +227,33 @@ async function verifyCloudAppSession(
   return parsed;
 }
 
+async function verifyCloudSyncTicket(
+  env: AppSessionEnvironment,
+  value: string,
+): Promise<CloudSyncTicketPayload | null> {
+  const [encodedPayload, encodedSignature, extra] = value.split(".");
+  if (!encodedPayload || !encodedSignature || extra !== undefined) {
+    return null;
+  }
+
+  const expected = await hmacSha256(env, encodedPayload).catch(() => null);
+  const actual = base64UrlDecodeBytes(encodedSignature);
+  if (!expected || !actual || !timingSafeBytesEqual(expected, actual)) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(base64UrlDecodeString(encodedPayload));
+  } catch {
+    return null;
+  }
+  if (!isCloudSyncTicketPayload(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
 async function hmacSha256(env: AppSessionEnvironment, value: string): Promise<Uint8Array> {
   const secret = appSessionSecret(env);
   if (!secret) {
@@ -176,6 +309,27 @@ function isCloudAppSessionPayload(value: unknown): value is CloudAppSessionPaylo
     payload.provider === "oidc" &&
     typeof payload.principal === "string" &&
     typeof payload.ns === "string" &&
+    Number.isFinite(payload.iat) &&
+    Number.isFinite(payload.exp) &&
+    (payload.display_name === undefined || typeof payload.display_name === "string")
+  );
+}
+
+function isCloudSyncTicketPayload(value: unknown): value is CloudSyncTicketPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const payload = value as Record<string, unknown>;
+  const scope = payload.scope;
+  return (
+    payload.v === 1 &&
+    typeof payload.principal === "string" &&
+    typeof payload.ns === "string" &&
+    typeof payload.operator === "string" &&
+    typeof payload.notebook_id === "string" &&
+    typeof scope === "string" &&
+    isConnectionScope(scope) &&
+    scope !== "runtime_peer" &&
     Number.isFinite(payload.iat) &&
     Number.isFinite(payload.exp) &&
     (payload.display_name === undefined || typeof payload.display_name === "string")

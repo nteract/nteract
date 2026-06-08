@@ -1,4 +1,5 @@
 import {
+  APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -56,6 +57,20 @@ export interface CloudPrototypeAuthInput {
   token: string;
   user: string;
   scope: ConnectionScope;
+}
+
+export interface CloudSyncTicketAuthOptions {
+  endpoint: string;
+  requestedScope: ConnectionScope | null;
+  sessionId: string;
+  fetchImpl?: typeof fetch;
+}
+
+interface CloudSyncTicketResponse {
+  ok: true;
+  ticket: string;
+  expires_in: number;
+  scope: Exclude<ConnectionScope, "runtime_peer">;
 }
 
 export interface CloudPrototypeConnectionDiagnostics {
@@ -190,6 +205,44 @@ export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthSta
     user: state.user ?? "browser-editor",
     operator: null,
     requestedScope: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+  };
+}
+
+export async function cloudSyncAuthFromAppSessionTicket({
+  endpoint,
+  requestedScope,
+  sessionId,
+  fetchImpl = fetch,
+}: CloudSyncTicketAuthOptions): Promise<CloudSyncAuth> {
+  const operator = `browser:${encodeURIComponent(sessionId)}`;
+  const scope = requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
+  const response = await fetchImpl(endpoint, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ operator, scope }),
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to mint live room ticket: ${response.status}`);
+  }
+
+  const body = (await response.json()) as unknown;
+  if (!isCloudSyncTicketResponse(body)) {
+    throw new Error("Unable to mint live room ticket: response shape was invalid");
+  }
+
+  return {
+    headers: {},
+    protocols: [
+      `${APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX}${base64UrlEncode(body.ticket)}`,
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    ],
+    user: null,
+    operator,
+    requestedScope: body.scope,
   };
 }
 
@@ -511,6 +564,22 @@ function anonymousAuthState(): CloudPrototypeAuthState {
 
 function parseStoredScope(value: string | null): ConnectionScope | null {
   return isConnectionScope(value) ? value : null;
+}
+
+function isCloudSyncTicketResponse(value: unknown): value is CloudSyncTicketResponse {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  const scope = candidate.scope;
+  return (
+    candidate.ok === true &&
+    typeof candidate.ticket === "string" &&
+    Number.isFinite(candidate.expires_in) &&
+    typeof scope === "string" &&
+    isConnectionScope(scope) &&
+    scope !== "runtime_peer"
+  );
 }
 
 function base64UrlEncode(value: string): string {

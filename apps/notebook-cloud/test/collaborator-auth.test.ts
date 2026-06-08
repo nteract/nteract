@@ -10,6 +10,7 @@ import {
   cloudHttpHeadersFromPrototypeAuthState,
   cloudNotebookSignInCopy,
   clearCloudPrototypeDevAuth,
+  cloudSyncAuthFromAppSessionTicket,
   cloudSyncAuthFromPrototypeAuthState,
   isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
@@ -107,6 +108,37 @@ describe("cloud collaborator auth", () => {
     assert.deepEqual(cloudHttpHeadersFromPrototypeAuthState(state), {
       Authorization: `Bearer ${accessToken}`,
       "X-Scope": "editor",
+    });
+  });
+
+  it("mints WebSocket ticket auth from the app-session endpoint", async () => {
+    const auth = await cloudSyncAuthFromAppSessionTicket({
+      endpoint: "/api/n/notebook-a/sync-ticket",
+      requestedScope: "editor",
+      sessionId: "session/one",
+      fetchImpl: async (input, init) => {
+        assert.equal(input, "/api/n/notebook-a/sync-ticket");
+        assert.equal(init?.method, "POST");
+        assert.equal(init?.credentials, "same-origin");
+        assert.deepEqual(JSON.parse(String(init?.body)), {
+          operator: "browser:session%2Fone",
+          scope: "editor",
+        });
+        return Response.json({
+          ok: true,
+          ticket: "ticket-value",
+          expires_in: 90,
+          scope: "viewer",
+        });
+      },
+    });
+
+    assert.deepEqual(auth, {
+      headers: {},
+      protocols: ["nteract-app-session.dGlja2V0LXZhbHVl", "nteract.v4"],
+      user: null,
+      operator: "browser:session%2Fone",
+      requestedScope: "viewer",
     });
   });
 

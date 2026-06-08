@@ -75,7 +75,10 @@ import {
   cloudNotebookSignInCopy,
   cloudPrototypeAuthFromWindow,
   fetchWithCloudPrototypeAuth,
+  cloudSyncAuthFromAppSessionTicket,
+  cloudSyncAuthFromPrototypeAuthState,
   isCloudPrototypeAuthStorageKey,
+  NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   prepareCloudOidcViewerLogin,
   storeCloudRequestedScope,
   type CloudPrototypeAuthState,
@@ -1682,8 +1685,11 @@ function NotebookViewer({
   const loadingPolicy = cloudViewerLoadingPolicy(config);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
+    appSessionRefreshFallback: true,
+  });
   useCloudAppSessionBridge(authState);
+  const appSessionStatus = useCloudAppSessionStatus(null);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
@@ -1727,6 +1733,19 @@ function NotebookViewer({
     },
     [config.blobBasePath, config.rendererAssetsBasePath],
   );
+  const resolveSyncAuth = useCallback(
+    async (sessionId: string) => {
+      if (appSessionStatus.session && config.syncTicketEndpoint) {
+        return cloudSyncAuthFromAppSessionTicket({
+          endpoint: config.syncTicketEndpoint,
+          requestedScope: authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+          sessionId,
+        });
+      }
+      return cloudSyncAuthFromPrototypeAuthState(authState);
+    },
+    [appSessionStatus.session, authState, config.syncTicketEndpoint],
+  );
   const {
     connectionActorLabel,
     connectionError,
@@ -1749,6 +1768,7 @@ function NotebookViewer({
     config,
     loadingPolicy,
     preloadSiftWasm,
+    resolveSyncAuth,
     widgetStore,
   });
   const cloudNotebookHost = useMemo(

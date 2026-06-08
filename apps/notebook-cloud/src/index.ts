@@ -3,6 +3,7 @@ import type { BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
   AuthError,
+  APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   allowsBlobUpload,
   allowsPublish,
@@ -14,6 +15,7 @@ import {
   stampTrustedIdentity,
   type AuthenticatedConnection,
   type ConnectionScope,
+  validateOperator,
   validatePrincipal,
 } from "./identity.ts";
 import {
@@ -107,10 +109,14 @@ import {
 } from "./http-responses.ts";
 import {
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
+  NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS,
   appSessionConfigured,
+  cloudSyncTicketFromWebSocketProtocol,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
+  createCloudSyncTicket,
   readCloudAppSession,
+  readCloudSyncTicket,
   type CloudAppSession,
 } from "./app-session.ts";
 
@@ -258,6 +264,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/n/:notebookId/access-requests", { trailingSlash: "optional" }),
     handler: ({ params }, request, env) =>
       routeNotebookAccessRequests(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/sync-ticket", { trailingSlash: "optional" }),
+    methods: ["POST"],
+    handler: ({ params }, request, env) => routeNotebookSyncTicket(request, env, params.notebookId),
   },
   {
     match: routePath("/api/n/:notebookId/workstation-attachments", { trailingSlash: "optional" }),
@@ -416,14 +427,15 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return originRejection;
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
-  if (identity instanceof Response) {
-    return identity;
-  }
   const url = new URL(request.url);
   const notebookId = decodeURIComponent(url.pathname.match(/^\/n\/([^/]+)\/sync\/?$/)?.[1] ?? "");
   if (!notebookId) {
     return json({ error: "notebook id is required" }, 400);
+  }
+  const ticketIdentity = await cloudSyncTicketIdentityFromRequest(request, env, notebookId);
+  const identity = ticketIdentity ?? (await authenticateRequestOrResponse(request, env));
+  if (identity instanceof Response) {
+    return identity;
   }
   const authorizedIdentity = await authorizeIdentityOrResponse(
     env,
@@ -441,6 +453,72 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
   const room = env.NOTEBOOK_ROOMS.get(id);
   return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
+}
+
+async function cloudSyncTicketIdentityFromRequest(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<AuthenticatedConnection | Response | null> {
+  let credential: ReturnType<typeof cloudSyncTicketFromWebSocketProtocol>;
+  try {
+    credential = cloudSyncTicketFromWebSocketProtocol(
+      request.headers.get("sec-websocket-protocol"),
+    );
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  if (!credential) {
+    return null;
+  }
+  if (hasNonTicketIdentityCredential(request)) {
+    return json({ error: "multiple identity credentials presented" }, 400);
+  }
+  if (!appSessionConfigured(env)) {
+    return json({ error: "app sessions are not configured" }, 503);
+  }
+  const ticket = await readCloudSyncTicket(env, credential.ticket);
+  if (!ticket) {
+    return json({ error: "app-session sync ticket is invalid or expired" }, 401);
+  }
+  if (ticket.notebookId !== notebookId) {
+    return json({ error: "app-session sync ticket does not match this notebook" }, 403);
+  }
+
+  try {
+    validatePrincipal(ticket.principal);
+    validateOperator(ticket.operator);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 401);
+  }
+
+  return {
+    principal: ticket.principal,
+    operator: ticket.operator,
+    actorLabel: `${ticket.principal}/${ticket.operator}`,
+    scope: ticket.scope,
+    metadata: {
+      provider: "app-session",
+      transport: "app-session-sync-ticket",
+      principalNamespace: ticket.principalNamespace,
+      ...(ticket.displayName ? { displayName: ticket.displayName } : {}),
+    },
+    ...(credential.webSocketProtocol ? { webSocketProtocol: credential.webSocketProtocol } : {}),
+  };
+}
+
+function hasNonTicketIdentityCredential(request: Request): boolean {
+  if (request.headers.has("authorization") || request.headers.has(DEV_AUTH_TOKEN_HEADER)) {
+    return true;
+  }
+  const protocols = request.headers.get("sec-websocket-protocol")?.split(",") ?? [];
+  return protocols.some((protocol) => {
+    const trimmed = protocol.trim();
+    return (
+      trimmed.startsWith(BEARER_AUTH_TOKEN_PROTOCOL_PREFIX) ||
+      trimmed.startsWith(DEV_AUTH_TOKEN_PROTOCOL_PREFIX)
+    );
+  });
 }
 
 function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | null {
@@ -521,9 +599,11 @@ function hasCredentialWebSocketSubprotocol(request: Request): boolean {
   return protocol
     .split(",")
     .some((part) =>
-      [BEARER_AUTH_TOKEN_PROTOCOL_PREFIX, DEV_AUTH_TOKEN_PROTOCOL_PREFIX].some((prefix) =>
-        part.trim().startsWith(prefix),
-      ),
+      [
+        APP_SESSION_SYNC_TICKET_PROTOCOL_PREFIX,
+        BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+        DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+      ].some((prefix) => part.trim().startsWith(prefix)),
     );
 }
 
@@ -593,6 +673,114 @@ function appSessionResponse(session: CloudAppSession): Record<string, unknown> {
     provider: session.provider,
     expires_at: session.expiresAt,
   };
+}
+
+async function routeNotebookSyncTicket(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+  if (!appSessionConfigured(env)) {
+    return json({ error: "app sessions are not configured" }, 503);
+  }
+
+  const session = await readCloudAppSession(env, request);
+  if (!session) {
+    return json({ error: "app session is required" }, 401);
+  }
+
+  const payload = await readOptionalJsonObject(request, "sync ticket request");
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const requestedScope = parseBrowserSyncTicketScope(payload?.scope);
+  if (requestedScope instanceof Response) {
+    return requestedScope;
+  }
+  const operator =
+    optionalBoundedStringField(payload?.operator, "operator", 256) ??
+    `browser:${crypto.randomUUID()}`;
+  if (operator instanceof Response) {
+    return operator;
+  }
+  try {
+    validateOperator(operator);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+
+  const identity = appSessionConnectionIdentity(session, operator, requestedScope);
+  const authorizedIdentity = await authorizeIdentityOrResponse(
+    env,
+    notebookId,
+    identity,
+    requestedScope,
+    {
+      allowViewerDowngrade: true,
+    },
+  );
+  if (authorizedIdentity instanceof Response) {
+    return authorizedIdentity;
+  }
+  if (authorizedIdentity.scope === "runtime_peer") {
+    return json({ error: "browser app sessions cannot request runtime_peer scope" }, 403);
+  }
+
+  const ticket = await createCloudSyncTicket(env, session, {
+    notebookId,
+    operator,
+    scope: authorizedIdentity.scope,
+  });
+  return json({
+    ok: true,
+    ticket,
+    expires_in: NOTEBOOK_CLOUD_SYNC_TICKET_MAX_AGE_SECONDS,
+    scope: authorizedIdentity.scope,
+  });
+}
+
+function appSessionConnectionIdentity(
+  session: CloudAppSession,
+  operator: string,
+  scope: Exclude<ConnectionScope, "runtime_peer">,
+): AuthenticatedConnection {
+  return {
+    principal: session.principal,
+    operator,
+    actorLabel: `${session.principal}/${operator}`,
+    scope,
+    metadata: {
+      provider: "app-session",
+      transport: "app-session-cookie",
+      principalNamespace: session.principalNamespace,
+      ...(session.displayName ? { displayName: session.displayName } : {}),
+    },
+  };
+}
+
+function parseBrowserSyncTicketScope(
+  value: unknown,
+): Exclude<ConnectionScope, "runtime_peer"> | Response {
+  if (value === undefined || value === null || value === "") {
+    return "viewer";
+  }
+  if (typeof value !== "string") {
+    return json({ error: "scope must be a string" }, 400);
+  }
+  let scope: ConnectionScope;
+  try {
+    scope = parseScope(value);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  if (scope === "runtime_peer") {
+    return json({ error: "browser app sessions cannot request runtime_peer scope" }, 403);
+  }
+  return scope;
 }
 
 type CreateNotebookPayload = Record<string, unknown>;
@@ -3260,6 +3448,7 @@ async function viewer(
       canManageSharing: true,
     },
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
+    syncTicketEndpoint: `${notebookApiBasePath}/sync-ticket`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
     outputDocumentBaseUrl: outputDocumentBaseUrl(env),
