@@ -455,6 +455,8 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
   assert.match(sourceText, /page\.keyboard\.press\("Control\+R"\)/);
   assert.match(sourceText, /Search history\.\.\./);
   assert.match(sourceText, /notebookHostErrorVisible/);
+  assert.match(sourceText, /socketCloseWarnings/);
+  assert.match(sourceText, /isRecoverableSocketCloseConsoleMessage/);
 });
 
 test("cloud sync keeps routine frame logs out of the browser console", () => {

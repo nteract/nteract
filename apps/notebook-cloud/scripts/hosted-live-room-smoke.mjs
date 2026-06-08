@@ -97,6 +97,7 @@ async function main() {
       benignPageErrors: [],
       badConsole: [],
       failedRequests: [],
+      socketCloseWarnings: [],
       blobResponses: [],
       websockets: [],
     };
@@ -111,6 +112,10 @@ async function main() {
     });
     page.on("console", (message) => {
       const text = message.text();
+      if (isRecoverableSocketCloseConsoleMessage(text)) {
+        events.socketCloseWarnings.push(`${message.type()}: ${text}`);
+        return;
+      }
       if (isFatalConsoleMessage(text)) {
         events.badConsole.push(`${message.type()}: ${text}`);
       }
@@ -432,6 +437,12 @@ function isRelevantRequestUrl(value) {
 
 function isFatalConsoleMessage(text) {
   return /OutputResolutionError|Unable to resolve output|Failed to fetch blob|flush_comms_doc_sync|cloud sync socket|room\.peer_sync|sync to relay failed|runtime state sync to relay failed|comms doc sync to relay failed/i.test(
+    text,
+  );
+}
+
+function isRecoverableSocketCloseConsoleMessage(text) {
+  return /\[notebook-cloud\] live room connection closed Error: cloud sync socket closed \((1005|1006)\)/i.test(
     text,
   );
 }
