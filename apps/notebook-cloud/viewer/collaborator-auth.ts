@@ -360,7 +360,7 @@ export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
     }`;
   }
   if (state.mode === "oidc_expired") {
-    return `${state.user ?? "OIDC session"} needs sign-in renewal.`;
+    return "Your browser sign-in needs renewal.";
   }
   if (state.mode === "invalid") {
     return state.problem ?? "Stored collaborator token is invalid.";

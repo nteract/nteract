@@ -172,6 +172,23 @@ uses the transitional OIDC cache to acquire its cookie. The room WebSocket does
 not use that cookie directly; the viewer asks the Worker for a short-lived sync
 ticket derived from the app session.
 
+Before running credentialed preview smokes from lab2, check local credential
+health:
+
+```bash
+pnpm --dir apps/notebook-cloud auth:preview:health
+```
+
+The command checks the `preview-oidc-refresh.timer`/service state, token cache
+freshness, `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}`, and a harmless
+API-key request to `/api/n?limit=1`. It writes a non-secret status summary to
+`${NTERACT_PREVIEW_AUTH_HEALTH_PATH:-$HOME/.cache/nteract/preview-auth-health.json}`.
+The summary records only statuses, expiry timing, and response codes/counts; it
+must not include token strings, API keys, emails, or OIDC subject values. Use
+`pnpm --silent --dir apps/notebook-cloud auth:preview:health --json` for
+machine-readable stdout and `--no-network` when only checking the token/timer
+state.
+
 For public/read-only notebooks, run the same live-room smoke without browser
 credentials:
 

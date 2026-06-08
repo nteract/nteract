@@ -80,14 +80,17 @@ test("cloud notebook notices render auth and connection policy through the share
       connectionError: "websocket failed",
       status: { kind: "ready", message: "Ready" },
       onResetAuth: () => {},
+      onSignInAgain: () => {},
     }),
   );
 
   assert.match(html, /data-slot="notebook-notice-stack"/);
   assert.match(html, /Auth needs attention/);
+  assert.match(html, /Your browser sign-in needs renewal/);
   assert.match(html, /Sign-in refresh failed/);
   assert.match(html, /Live room needs attention/);
-  assert.match(html, /Reset to anonymous/);
+  assert.match(html, /Sign in again/);
+  assert.doesNotMatch(html, /Reset to anonymous/);
 });
 
 test("cloud notebook notices distinguish sign-in and access diagnostics from socket failures", () => {
@@ -98,11 +101,14 @@ test("cloud notebook notices distinguish sign-in and access diagnostics from soc
       connectionError: CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
       status: { kind: "ready", message: "Ready" },
       onResetAuth: () => {},
+      onSignInAgain: () => {},
     }),
   );
 
   assert.match(signInHtml, /Sign in required/);
   assert.match(signInHtml, /Sign in again to open the live notebook room/);
+  assert.match(signInHtml, /Sign in again/);
+  assert.doesNotMatch(signInHtml, /Use anonymous/);
   assert.doesNotMatch(signInHtml, /Live room unavailable/);
 
   const noAccessHtml = renderToStaticMarkup(

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertCircle, CloudOff, Loader2, RotateCcw } from "lucide-react";
+import { AlertCircle, CloudOff, Loader2, LogIn, RotateCcw } from "lucide-react";
 import {
   NotebookNotice,
   NotebookNoticeAction,
@@ -22,6 +22,7 @@ export interface CloudNotebookNoticesProps {
   status: ViewerStatus;
   diagnostics?: ReactNode;
   onResetAuth: () => void;
+  onSignInAgain?: () => void | Promise<void>;
 }
 
 export function cloudNotebookHasNotices({
@@ -58,6 +59,7 @@ export function CloudNotebookNotices({
   status,
   diagnostics,
   onResetAuth,
+  onSignInAgain,
 }: CloudNotebookNoticesProps) {
   if (
     !cloudNotebookHasNotices({
@@ -87,7 +89,7 @@ export function CloudNotebookNotices({
           tone="error"
           icon={<AlertCircle className="h-4 w-4" />}
           title="Auth needs attention."
-          actions={<ResetAuthNoticeAction onResetAuth={onResetAuth} />}
+          actions={<AuthNoticeAction onResetAuth={onResetAuth} onSignInAgain={onSignInAgain} />}
         >
           {prototypeAuthSummary(authState)}
         </NotebookNotice>
@@ -106,7 +108,7 @@ export function CloudNotebookNotices({
           title={authRenewal.kind === "failed" ? "Sign-in refresh failed." : "Refreshing sign-in."}
           actions={
             authRenewal.kind === "failed" ? (
-              <ResetAuthNoticeAction onResetAuth={onResetAuth} />
+              <AuthNoticeAction onResetAuth={onResetAuth} onSignInAgain={onSignInAgain} />
             ) : null
           }
         >
@@ -119,7 +121,13 @@ export function CloudNotebookNotices({
           tone={connectionNotice.tone}
           icon={<CloudOff className="h-4 w-4" />}
           title={connectionNotice.title}
-          actions={<ResetAuthNoticeAction label="Use anonymous" onResetAuth={onResetAuth} />}
+          actions={
+            <ConnectionNoticeAction
+              connectionError={connectionError ?? ""}
+              onResetAuth={onResetAuth}
+              onSignInAgain={onSignInAgain}
+            />
+          }
         >
           {connectionNotice.message}
         </NotebookNotice>
@@ -146,16 +154,58 @@ export function CloudNotebookNotices({
   );
 }
 
-function ResetAuthNoticeAction({
-  label = "Reset to anonymous",
+function AuthNoticeAction({
   onResetAuth,
+  onSignInAgain,
 }: {
-  label?: string;
   onResetAuth: () => void;
+  onSignInAgain?: () => void | Promise<void>;
 }) {
+  if (onSignInAgain) {
+    return (
+      <NotebookNoticeAction
+        onClick={() => {
+          void onSignInAgain();
+        }}
+        icon={<LogIn className="h-3 w-3" />}
+      >
+        Sign in again
+      </NotebookNoticeAction>
+    );
+  }
+
   return (
     <NotebookNoticeAction onClick={onResetAuth} icon={<RotateCcw className="h-3 w-3" />}>
-      {label}
+      Clear stale sign-in
+    </NotebookNoticeAction>
+  );
+}
+
+function ConnectionNoticeAction({
+  connectionError,
+  onResetAuth,
+  onSignInAgain,
+}: {
+  connectionError: string;
+  onResetAuth: () => void;
+  onSignInAgain?: () => void | Promise<void>;
+}) {
+  if (connectionError === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC && onSignInAgain) {
+    return (
+      <NotebookNoticeAction
+        onClick={() => {
+          void onSignInAgain();
+        }}
+        icon={<LogIn className="h-3 w-3" />}
+      >
+        Sign in again
+      </NotebookNoticeAction>
+    );
+  }
+
+  return (
+    <NotebookNoticeAction onClick={onResetAuth} icon={<RotateCcw className="h-3 w-3" />}>
+      Use anonymous
     </NotebookNoticeAction>
   );
 }

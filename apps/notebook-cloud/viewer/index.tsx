@@ -2402,6 +2402,22 @@ function NotebookViewer({
     setSelectedInteractionMode("view");
     refreshAuthState();
   }, [refreshAuthState]);
+  const beginNotebookOidcAuth = useCallback(async () => {
+    if (!authConfig.oidc) {
+      resetPrototypeAuth();
+      return;
+    }
+    try {
+      prepareCloudOidcViewerLogin(window.localStorage);
+      const url = await beginOidcLogin(authConfig.oidc, {
+        currentUrl: window.location.href,
+        storage: window.localStorage,
+      });
+      window.location.assign(url.href);
+    } catch (error) {
+      console.warn("[notebook-cloud] OIDC sign-in start failed", error);
+    }
+  }, [authConfig.oidc, resetPrototypeAuth]);
   const applyLatestAccessRequest = useCallback(
     (request: CloudNotebookAccessRequest | null) => {
       setLatestAccessRequest(request);
@@ -2676,6 +2692,7 @@ function NotebookViewer({
       hasReadableSnapshot={notebookHasReadableSnapshot}
       status={noticeStatus}
       onResetAuth={resetPrototypeAuth}
+      onSignInAgain={authConfig.oidc ? beginNotebookOidcAuth : undefined}
     />
   ) : null;
 
