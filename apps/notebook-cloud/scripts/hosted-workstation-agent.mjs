@@ -146,7 +146,7 @@ async function startAttachJob(job, pythonPath) {
   });
   closeSync(logFd);
 
-  const active = { child, logPath, ready: false };
+  const active = { child, logPath: plan.logPath, ready: false };
   activeJobs.set(job.job_id, active);
   console.log(
     JSON.stringify({
