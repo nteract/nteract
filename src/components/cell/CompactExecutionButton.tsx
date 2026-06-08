@@ -20,6 +20,8 @@ interface CompactExecutionButtonProps {
   isCellFocused?: boolean;
   /** Whether execution controls are available in this shell */
   canExecute?: boolean;
+  /** Whether disabled historical execution state should still render as status */
+  showReadoutWhenDisabled?: boolean;
   /** Called when user clicks to execute */
   onExecute?: () => void;
   /** Called when user clicks to interrupt */
@@ -51,6 +53,7 @@ export function CompactExecutionButton({
   submittedByActorLabel = null,
   isCellFocused = false,
   canExecute = true,
+  showReadoutWhenDisabled = false,
   onExecute,
   onInterrupt,
   className,
@@ -119,8 +122,9 @@ export function CompactExecutionButton({
     !canExecute && "opacity-65 hover:bg-transparent hover:text-muted-foreground/45",
     className,
   );
+  const disabledHistoricalState = !canExecute && (state === "ran" || state === "error");
   const content =
-    !canExecute && displayCount !== null && (state === "ran" || state === "error") ? (
+    disabledHistoricalState && showReadoutWhenDisabled && displayCount !== null ? (
       <span className="text-[10px] font-medium tabular-nums" aria-hidden="true">
         {displayCount}
       </span>
@@ -136,6 +140,10 @@ export function CompactExecutionButton({
     );
 
   if (!canExecute) {
+    if (disabledHistoricalState && !showReadoutWhenDisabled) {
+      return null;
+    }
+
     return (
       <span
         className={classNameValue}

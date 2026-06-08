@@ -89,5 +89,6 @@ describe("NotebookView shell capabilities", () => {
     expect(sourceText).toMatch(/onExecute: canExecute \? handleExecute : undefined/);
     expect(sourceText).toMatch(/onExecuteAndInsert:\s+canExecute && onInsertCellAfter/);
     expect(sourceText).toMatch(/canExecute=\{canExecute\}/);
+    expect(sourceText).toMatch(/showReadoutWhenDisabled=\{!readOnly\}/);
   });
 });
