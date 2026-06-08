@@ -47,6 +47,13 @@ Then reload:
 source ~/.zshrc
 ```
 
+**Optional — silence direnv output:** direnv prints a line whenever it loads or exports variables on `cd`. If you find this noisy, or if you use Powerlevel10k with instant prompt and see a warning about console output during zsh initialization, add this to `~/.config/direnv/direnv.toml`:
+
+```toml
+[global]
+hide_env_diff = true
+```
+
 ## 3. Global one-time setup
 
 With PATH sorted, run these once per machine:
