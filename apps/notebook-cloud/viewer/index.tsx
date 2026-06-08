@@ -158,6 +158,7 @@ import {
   readCloudAppSessionStatus,
   type CloudAppSession,
 } from "./app-session";
+import { cloudOidcRenewalFailureMessage } from "./auth-renewal-copy";
 import {
   applyDocumentTheme,
   CLOUD_VIEWER_THEME_STORAGE_KEY,
@@ -428,7 +429,6 @@ function useCloudPrototypeAuth(
         refreshAuthState();
         setAuthRenewal({ kind: "idle", message: null });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
         if (appSessionRefreshFallback) {
           const appSession = await readCloudAppSessionStatus().catch(() => null);
           const appSessionExpiresAt = appSession?.session?.expires_at ?? null;
@@ -445,7 +445,7 @@ function useCloudPrototypeAuth(
         }
         console.warn("[notebook-cloud] OIDC session refresh failed", error);
         refreshAuthState();
-        setAuthRenewal({ kind: "failed", message: `Unable to refresh sign-in: ${message}` });
+        setAuthRenewal({ kind: "failed", message: cloudOidcRenewalFailureMessage(error) });
       } finally {
         refreshPromiseRef.current = null;
       }
