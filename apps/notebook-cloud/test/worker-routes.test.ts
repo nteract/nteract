@@ -788,6 +788,39 @@ describe("Worker artifact routes", () => {
     assert.equal(ticketBody.scope, "viewer");
   });
 
+  it("downgrades optimistic owner app-session sync tickets to the best granted live scope", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-editor-user" });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "cookie-ticket-editor");
+    seedAcl(env, {
+      notebookId: "cookie-ticket-editor",
+      subject: "user:anaconda:cookie-editor-user",
+      scope: "editor",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const mint = await worker.fetch(
+      new Request("https://cloud.test/api/n/cookie-ticket-editor/sync-ticket", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ operator: "browser:tab-cookie", scope: "owner" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(mint.status, 200);
+    const ticketBody = (await mint.json()) as { scope: string; ticket: string };
+    assert.equal(ticketBody.scope, "editor");
+  });
+
   it("does not mint runtime_peer tickets for app-session browsers", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-runtime-user" });
     const env = fakeEnv({

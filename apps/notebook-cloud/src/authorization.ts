@@ -36,6 +36,12 @@ export interface AuthorizeNotebookAccessOptions {
    * silent scope downgrade.
    */
   allowViewerDowngrade?: boolean;
+  /**
+   * Browser live-room tickets may optimistically request owner so the room
+   * opens with the user's best available control surface. Use this only for
+   * connection tickets; mutation routes must keep exact requested authority.
+   */
+  allowLiveScopeDowngrade?: boolean;
 }
 
 export async function authorizeNotebookAccess(
@@ -72,6 +78,12 @@ export async function authorizeNotebookAccess(
   if (aclRowsCoverScope(principalRows, requestedScope)) {
     return { ...identity, scope: requestedScope };
   }
+  if (options.allowLiveScopeDowngrade) {
+    const downgradedScope = bestDowngradedLiveScope(principalRows, requestedScope);
+    if (downgradedScope) {
+      return { ...identity, scope: downgradedScope };
+    }
+  }
   if (
     options.allowViewerDowngrade &&
     requestedScope === "editor" &&
@@ -85,12 +97,31 @@ export async function authorizeNotebookAccess(
     if (requestedScope === "viewer") {
       return { ...identity, scope: "viewer" };
     }
+    if (options.allowLiveScopeDowngrade && requestedScope !== "runtime_peer") {
+      return { ...identity, scope: "viewer" };
+    }
     if (options.allowViewerDowngrade && requestedScope === "editor") {
       return { ...identity, scope: "viewer" };
     }
   }
 
   throw new AuthorizationError(`${identity.principal} cannot access ${notebookId}`, 403);
+}
+
+function bestDowngradedLiveScope(
+  rows: NotebookAclRow[],
+  requestedScope: ConnectionScope,
+): "editor" | "viewer" | null {
+  if (requestedScope === "owner" && aclRowsCoverScope(rows, "editor")) {
+    return "editor";
+  }
+  if (
+    (requestedScope === "owner" || requestedScope === "editor") &&
+    aclRowsCoverScope(rows, "viewer")
+  ) {
+    return "viewer";
+  }
+  return null;
 }
 
 export function aclRowsCoverScope(

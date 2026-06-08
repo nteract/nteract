@@ -444,6 +444,7 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     identity.scope,
     {
       allowViewerDowngrade: true,
+      allowLiveScopeDowngrade: true,
     },
   );
   if (authorizedIdentity instanceof Response) {
@@ -721,6 +722,7 @@ async function routeNotebookSyncTicket(
     requestedScope,
     {
       allowViewerDowngrade: true,
+      allowLiveScopeDowngrade: true,
     },
   );
   if (authorizedIdentity instanceof Response) {

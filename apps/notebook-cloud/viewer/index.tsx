@@ -78,7 +78,6 @@ import {
   cloudSyncAuthFromAppSessionTicket,
   cloudSyncAuthFromPrototypeAuthState,
   isCloudPrototypeAuthStorageKey,
-  NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   prepareCloudOidcViewerLogin,
   storeCloudRequestedScope,
   type CloudPrototypeAuthState,
@@ -1774,7 +1773,7 @@ function NotebookViewer({
       if (appSession && config.syncTicketEndpoint) {
         return cloudSyncAuthFromAppSessionTicket({
           endpoint: config.syncTicketEndpoint,
-          requestedScope: authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+          requestedScope: "owner",
           sessionId,
         });
       }

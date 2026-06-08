@@ -479,6 +479,17 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
   assert.match(sourceText, /\[authState, bootstrap, hasAppSession, refreshIndex, signedIn\]/);
 });
 
+test("cloud app-session live tickets request owner and let the backend downgrade", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /cloudSyncAuthFromAppSessionTicket\(\{[\s\S]*requestedScope: "owner"/);
+  assert.doesNotMatch(
+    sourceText,
+    /cloudSyncAuthFromAppSessionTicket\(\{[\s\S]*requestedScope: authState\.requestedScope/,
+  );
+});
+
 test("cloud sync keeps routine frame logs out of the browser console", () => {
   const sourcePath = new URL("../viewer/live-sync.ts", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
