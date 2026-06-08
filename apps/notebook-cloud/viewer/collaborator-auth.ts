@@ -278,13 +278,25 @@ export function withCloudPrototypeAuthHeaders(
   state: CloudPrototypeAuthState,
 ): RequestInit {
   const headers = new Headers(init?.headers);
-  for (const [name, value] of Object.entries(cloudHttpHeadersFromPrototypeAuthState(state))) {
+  for (const [name, value] of Object.entries(
+    cloudBrowserHttpHeadersFromPrototypeAuthState(state),
+  )) {
     headers.set(name, value);
   }
   return {
     ...init,
+    credentials: init?.credentials ?? "same-origin",
     headers,
   };
+}
+
+function cloudBrowserHttpHeadersFromPrototypeAuthState(
+  state: CloudPrototypeAuthState,
+): Record<string, string> {
+  if (state.mode !== "dev") {
+    return {};
+  }
+  return cloudHttpHeadersFromPrototypeAuthState(state);
 }
 
 export function storeCloudPrototypeDevAuth(
