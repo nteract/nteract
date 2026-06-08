@@ -1,6 +1,6 @@
 # nteract notebook cloud prototype
 
-This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates dev credentials, direct OIDC browser sessions, Anaconda API-key publishing requests, or anonymous viewer connections, authorizes the principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
+This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates dev credentials, first-party browser app-session cookies minted from OIDC, Anaconda API-key publishing/runtime requests, or anonymous viewer connections, authorizes the principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
@@ -150,8 +150,9 @@ catalog check to a specific exported snapshot set. Set
 Sift output.
 
 To verify the live-room path for an already-published notebook, seed Chromium
-with the OIDC token cache and require that the authenticated sync socket stays
-open after cells and output payloads materialize:
+with the OIDC token cache so the first-party viewer shell can refresh/mint its
+app-session cookie, then require that the authenticated sync socket stays open
+after cells and output payloads materialize:
 
 ```bash
 NOTEBOOK_CLOUD_LIVE_ROOM_MIN_CELLS=20 \
@@ -167,7 +168,9 @@ renderer bundle checks: it fails on `cloud sync socket` churn, output resolution
 errors, failed notebook blob responses, missing cells, or a closed final room
 socket. Sandboxed output frames must not read localStorage; the smoke tracks
 that denial as a benign iframe error because only the first-party viewer shell
-needs the browser token cache.
+uses the transitional OIDC cache to acquire its cookie. The room WebSocket does
+not use that cookie directly; the viewer asks the Worker for a short-lived sync
+ticket derived from the app session.
 
 For public/read-only notebooks, run the same live-room smoke without browser
 credentials:
@@ -339,15 +342,26 @@ browser to anonymous viewer mode. If the stored token is still a placeholder
 such as `<NOTEBOOK_CLOUD_DEV_TOKEN>`, the viewer refuses to use it, connects as
 an anonymous viewer instead, and shows a visible diagnostic with a reset button.
 
-## Direct OIDC auth
+## Browser app-session cookies
 
-`preview.runt.run` uses direct OIDC against Anaconda stage. The Worker injects
-the issuer, client id, and redirect URI into the first-party viewer shell, and
-the browser completes an Authorization Code + PKCE flow through `/oidc`.
-Authenticated browser HTTP requests use `Authorization: Bearer`; browser
-WebSockets send the token through a non-echoed bearer subprotocol. The Worker
-validates the JWT issuer, audience/client id, signature, time claims, and
-principal namespace before consulting the D1 room ACL.
+`preview.runt.run` uses direct OIDC against Anaconda stage only to bootstrap a
+first-party app session. The Worker injects the issuer, client id, and redirect
+URI into the viewer shell, the browser completes an Authorization Code + PKCE
+flow through `/oidc`, and `/api/app-session` exchanges the validated OIDC bearer
+for an HttpOnly, Secure, SameSite=Lax app-session cookie. First-party browser
+HTTP APIs then use that cookie with same-origin credentials.
+
+Live-room WebSockets do not authenticate with the cookie directly and must not
+leak browser credentials into output frames. The viewer asks
+`/api/n/:id/sync-ticket` for a short-lived app-session sync ticket scoped to the
+requested browser operator/scope, then sends that ticket through the sync
+subprotocol. The Worker validates the ticket and forwards a trusted room
+identity to the Durable Object. Runtime peers and automation use API keys
+instead of app-session cookies.
+
+The Worker validates OIDC JWT issuer, audience/client id, signature, time
+claims, and principal namespace before minting an app session or consulting the
+D1 room ACL.
 
 Signed-in users can still read public notebooks when they do not have explicit
 collaborator rows. Viewer-scope HTTP reads authorize through the public
@@ -355,7 +369,8 @@ collaborator rows. Viewer-scope HTTP reads authorize through the public
 from a stale `editor` request to stamped `viewer` scope for public notebooks.
 Mutation routes do not use that downgrade.
 
-Non-browser publishing uses a publish bearer token:
+Non-browser publishing, workstation registration, and runtime-peer attach use
+an API key:
 
 ```text
 Authorization: Bearer <NTERACT_API_KEY>
