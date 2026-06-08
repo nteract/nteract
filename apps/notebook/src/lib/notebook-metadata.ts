@@ -1,5 +1,6 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { sendAutomergeSyncFrame, type NotebookTransport } from "runtimed";
+import type { SandboxProfile } from "@/sandbox/types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
 
@@ -254,6 +255,8 @@ export interface RuntMetadata {
   conda?: CondaInlineMetadata;
   pixi?: PixiInlineMetadata;
   deno?: DenoMetadata;
+  /** Sandbox profile — None (key absent) means no sandbox (opt-in, per D-3). */
+  sandbox?: SandboxProfile;
 }
 
 export interface NotebookMetadataSnapshot {
@@ -522,6 +525,44 @@ export async function setDenoFlexibleNpmImports(
         ...snapshot.runt.deno,
         flexible_npm_imports: enabled,
       };
+    }
+    return setMetadataSnapshot(snapshot);
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox profile write helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * React hook: read the sandbox profile from the Automerge doc.
+ * Returns undefined when the key is absent (no sandbox configured).
+ */
+export function useSandboxProfile(): SandboxProfile | undefined {
+  const snapshot = useNotebookMetadata();
+  return snapshot?.runt?.sandbox;
+}
+
+/**
+ * Write (or clear) the sandbox profile via the Automerge metadata path.
+ *
+ * Passing `null` removes the `sandbox` key, reverting to the opt-in-disabled
+ * default (per D-3). The daemon picks up the new profile on next kernel launch.
+ */
+export async function setSandboxProfile(
+  profile: SandboxProfile | null,
+): Promise<boolean> {
+  if (!_handle) return false;
+  const snapshot = readSnapshot();
+  if (!snapshot) return false;
+  try {
+    if (profile === null) {
+      const { sandbox: _removed, ...runtWithout } = snapshot.runt;
+      snapshot.runt = runtWithout;
+    } else {
+      snapshot.runt = { ...snapshot.runt, sandbox: profile };
     }
     return setMetadataSnapshot(snapshot);
   } catch {

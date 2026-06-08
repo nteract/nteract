@@ -563,6 +563,20 @@ export async function createBrowserHost(
         window.open("/settings/", "_blank", "noopener,noreferrer");
       },
     },
+    credentials: {
+      async list() {
+        return [];
+      },
+      async add() {
+        throw new Error("Credential management is not available in the browser dev host");
+      },
+      async updateValue() {
+        throw new Error("Credential management is not available in the browser dev host");
+      },
+      async delete() {
+        throw new Error("Credential management is not available in the browser dev host");
+      },
+    },
     commands,
     log: {
       debug(message) {

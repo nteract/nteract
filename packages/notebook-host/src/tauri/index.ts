@@ -30,6 +30,7 @@ import { wireTauriMenuBridge } from "./menu-bridge";
 import { TauriTransport } from "./transport";
 
 import type {
+  CredentialMeta,
   DaemonInfo,
   DaemonProgressPayload,
   DaemonReadyPayload,
@@ -37,6 +38,7 @@ import type {
   GitInfo,
   HostBlobResolver,
   HostBlobs,
+  HostCredentials,
   HostDaemon,
   HostDaemonEvents,
   HostDeps,
@@ -402,6 +404,21 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     },
   };
 
+  const credentials: HostCredentials = {
+    async list() {
+      return invoke<CredentialMeta[]>("list_credentials");
+    },
+    async add(name, description, value) {
+      await invoke<void>("add_credential", { name, description, value });
+    },
+    async updateValue(name, value) {
+      await invoke<void>("update_credential_value", { name, value });
+    },
+    async delete(name) {
+      await invoke<void>("delete_credential", { name });
+    },
+  };
+
   const commands = createCommandRegistry();
 
   // plugin-log always resolves; fire-and-forget so callers stay sync.
@@ -447,6 +464,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     externalLinks,
     updater,
     settings,
+    credentials,
     commands,
     log,
   };

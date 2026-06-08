@@ -1,4 +1,5 @@
 export type {
+  CredentialMeta,
   DaemonInfo,
   DaemonProgressPayload,
   DaemonReadyPayload,
@@ -7,6 +8,7 @@ export type {
   HostBlobRef,
   HostBlobResolver,
   HostBlobs,
+  HostCredentials,
   HostDaemon,
   HostDaemonEvents,
   HostDeps,

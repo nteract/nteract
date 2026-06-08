@@ -332,6 +332,30 @@ export interface HostSettings {
   openWindow(): Promise<void>;
 }
 
+/** Metadata for a stored credential — name + optional description. Never includes the secret value. */
+export interface CredentialMeta {
+  name: string;
+  description: string | null;
+}
+
+/**
+ * Machine-local credential store (macOS Keychain).
+ *
+ * Per D-9, agents cannot create credentials — only the human UI does. All
+ * CRUD goes through these methods; the daemon only reads credentials at
+ * kernel-launch time.
+ */
+export interface HostCredentials {
+  /** List all stored credentials (names + descriptions). Values are never returned. */
+  list(): Promise<CredentialMeta[]>;
+  /** Add a new credential. Rejects if the name already exists. */
+  add(name: string, description: string | null, value: string): Promise<void>;
+  /** Rotate the secret value for an existing credential. Name and description are unchanged. */
+  updateValue(name: string, value: string): Promise<void>;
+  /** Delete a credential from the keychain and the index. */
+  delete(name: string): Promise<void>;
+}
+
 // ── Host ──────────────────────────────────────────────────────────────────
 
 /**
@@ -357,6 +381,8 @@ export interface NotebookHost {
   readonly externalLinks: HostExternalLinks;
   readonly updater: HostUpdater;
   readonly settings: HostSettings;
+  /** Machine-local credential store (macOS Keychain). Human-only; agents cannot create credentials. */
+  readonly credentials: HostCredentials;
   /**
    * Typed action bus shared between host UI surfaces (menus, keyboard,
    * future palette) and the app. Host-side wiring calls `run(id, payload)`;

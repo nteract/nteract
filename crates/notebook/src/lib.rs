@@ -2,6 +2,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cli_install;
+pub mod credentials;
 pub mod diagnostics_upload;
 pub mod mcpb_install;
 pub mod menu;
@@ -4010,6 +4011,11 @@ pub fn run(
             diagnostics_upload::prepare_diagnostics_archive,
             diagnostics_upload::upload_prepared_diagnostics,
             diagnostics_upload::cleanup_prepared_diagnostics,
+            // Credential manager (macOS Keychain)
+            credentials::list_credentials,
+            credentials::add_credential,
+            credentials::update_credential_value,
+            credentials::delete_credential,
         ])
         .setup(move |app| {
             let setup_start = std::time::Instant::now();
