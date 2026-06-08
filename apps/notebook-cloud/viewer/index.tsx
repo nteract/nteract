@@ -191,10 +191,16 @@ interface CloudNotebookListResponse {
   notebooks: CloudNotebookListItem[];
 }
 
+interface CloudNotebookAppSession {
+  provider: "oidc";
+  expires_at: number;
+}
+
 interface CloudNotebookListBootstrap {
   kind: "notebook-list";
   notebooks: CloudNotebookListItem[];
   saved_at: string;
+  session?: CloudNotebookAppSession | null;
 }
 
 interface CloudNotebookCreateResponse {
@@ -532,7 +538,8 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
   const hasExplicitAuth = authState.mode === "dev" || authState.mode === "oidc";
-  const signedIn = hasExplicitAuth || Boolean(bootstrap);
+  const hasAppSession = Boolean(bootstrap?.session);
+  const signedIn = hasExplicitAuth || hasAppSession;
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],
@@ -725,9 +732,11 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const headerDetail =
     authState.mode === "oidc" || authState.mode === "dev"
       ? "Signed in"
-      : authState.mode === "oidc_expired"
-        ? "Session expired"
-        : "Signed out";
+      : hasAppSession
+        ? "Signed in"
+        : authState.mode === "oidc_expired"
+          ? "Session expired"
+          : "Signed out";
 
   return (
     <main className="cloud-notebook-list-page">
@@ -1258,8 +1267,19 @@ function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookLis
     candidate.kind === "notebook-list" &&
     typeof candidate.saved_at === "string" &&
     Array.isArray(candidate.notebooks) &&
-    candidate.notebooks.every(isCloudNotebookListItem)
+    candidate.notebooks.every(isCloudNotebookListItem) &&
+    (candidate.session === undefined ||
+      candidate.session === null ||
+      isCloudNotebookAppSession(candidate.session))
   );
+}
+
+function isCloudNotebookAppSession(value: unknown): value is CloudNotebookAppSession {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<CloudNotebookAppSession>;
+  return candidate.provider === "oidc" && Number.isFinite(candidate.expires_at);
 }
 
 function canRenameCloudNotebook(notebook: CloudNotebookListItem): boolean {

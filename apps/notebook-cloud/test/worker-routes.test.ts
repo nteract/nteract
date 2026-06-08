@@ -294,6 +294,41 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { ok: true, expires_in: 21_600 });
   });
 
+  it("reads app session cookie status without exposing identity credentials", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "session-status-user",
+      email: "session-status@example.test",
+      extraPayload: { email_verified: true },
+      name: "Session Status User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const bodyText = await response.text();
+    assert.doesNotMatch(bodyText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(bodyText, /session-status@example\.test/);
+    assert.doesNotMatch(bodyText, /session-status-user/);
+    const body = JSON.parse(bodyText) as {
+      ok: boolean;
+      session: { provider: string; expires_at: number } | null;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.session?.provider, "oidc");
+    assert.equal(typeof body.session?.expires_at, "number");
+  });
+
   it("rejects cross-origin app session exchange attempts", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "session-user" });
     const env = fakeEnv({
@@ -318,7 +353,12 @@ describe("Worker artifact routes", () => {
   });
 
   it("bootstraps the notebook home from a valid app session cookie", async () => {
-    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "bootstrap-user" });
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "bootstrap-user",
+      email: "bootstrap@example.test",
+      extraPayload: { email_verified: true },
+      name: "Bootstrap User",
+    });
     const env = fakeEnv({
       ...oidcEnv,
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
@@ -349,7 +389,10 @@ describe("Worker artifact routes", () => {
     assert.equal(bootstrap.notebooks.length, 1);
     assert.equal(bootstrap.notebooks[0]?.notebook_id, "bootstrap-visible");
     assert.equal(bootstrap.notebooks[0]?.title, "Bootstrap Visible");
+    assert.equal(bootstrap.session?.provider, "oidc");
+    assert.equal(typeof bootstrap.session?.expires_at, "number");
     assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
   });
 
   it("keeps private notebook bootstrap out of anonymous notebook home HTML", async () => {
@@ -4117,6 +4160,10 @@ function notebookHomeBootstrap(html: string): {
     notebook_id: string;
     title: string | null;
   }>;
+  session?: {
+    provider: string;
+    expires_at: number;
+  };
 } {
   const match = html.match(
     /<script id="nteract-cloud-bootstrap" type="application\/json">([^<]+)<\/script>/,
@@ -4128,6 +4175,10 @@ function notebookHomeBootstrap(html: string): {
       notebook_id: string;
       title: string | null;
     }>;
+    session?: {
+      provider: string;
+      expires_at: number;
+    };
   };
 }
 

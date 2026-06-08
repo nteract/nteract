@@ -111,6 +111,7 @@ import {
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
   readCloudAppSession,
+  type CloudAppSession,
 } from "./app-session.ts";
 
 export { NotebookRoom };
@@ -156,7 +157,7 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   },
   {
     match: exactPath("/api/auth/session"),
-    methods: ["POST", "DELETE"],
+    methods: ["GET", "POST", "DELETE"],
     handler: (_match, request, env) => routeAppSession(request, env),
   },
   {
@@ -547,6 +548,11 @@ function appSessionHealth(env: Env): { status: "configured" | "disabled" } {
 }
 
 async function routeAppSession(request: Request, env: Env): Promise<Response> {
+  if (request.method === "GET") {
+    const session = appSessionConfigured(env) ? await readCloudAppSession(env, request) : null;
+    return json({ ok: true, session: session ? appSessionResponse(session) : null });
+  }
+
   const originRejection = rejectUntrustedMutationOrigin(request, env);
   if (originRejection) {
     return originRejection;
@@ -580,6 +586,13 @@ async function routeAppSession(request: Request, env: Env): Promise<Response> {
   });
   response.headers.append("Set-Cookie", cookie);
   return response;
+}
+
+function appSessionResponse(session: CloudAppSession): Record<string, unknown> {
+  return {
+    provider: session.provider,
+    expires_at: session.expiresAt,
+  };
 }
 
 type CreateNotebookPayload = Record<string, unknown>;
@@ -3421,6 +3434,7 @@ async function notebookListBootstrap(
   );
   return {
     kind: "notebook-list",
+    session: appSessionResponse(session),
     notebooks: notebookListResponseRows(request, notebooks),
     saved_at: new Date().toISOString(),
   };
