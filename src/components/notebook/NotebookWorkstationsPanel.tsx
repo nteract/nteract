@@ -38,7 +38,7 @@ export function NotebookWorkstationsPanel({
   return (
     <div className={cn("space-y-3 text-sm", className)} data-testid="notebook-workstations-panel">
       <section
-        className={cn("border-l-2 py-1.5 pl-3 pr-1", status.panelClassName)}
+        className={cn("rounded-md px-3 py-2", status.panelClassName)}
         aria-label="Active workstation target"
       >
         <div className="flex min-w-0 items-start gap-3">
@@ -131,7 +131,7 @@ function workstationStatusTone(tone: NotebookWorkstationPanelTone): {
     return {
       icon: CircleCheck,
       iconClassName: "text-emerald-700 dark:text-emerald-300",
-      panelClassName: "border-emerald-500/70 bg-emerald-500/[0.04]",
+      panelClassName: "bg-emerald-500/[0.05]",
       textClassName: "text-emerald-700 dark:text-emerald-300",
     };
   }
@@ -139,7 +139,7 @@ function workstationStatusTone(tone: NotebookWorkstationPanelTone): {
     return {
       icon: Server,
       iconClassName: "text-sky-700 dark:text-sky-300",
-      panelClassName: "border-sky-500/70 bg-sky-500/[0.04]",
+      panelClassName: "bg-sky-500/[0.05]",
       textClassName: "text-sky-700 dark:text-sky-300",
     };
   }
@@ -147,7 +147,7 @@ function workstationStatusTone(tone: NotebookWorkstationPanelTone): {
   return {
     icon: CircleAlert,
     iconClassName: "text-muted-foreground",
-    panelClassName: "border-border bg-muted/[0.03]",
+    panelClassName: "bg-muted/[0.04]",
     textClassName: "text-muted-foreground",
   };
 }
