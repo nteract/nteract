@@ -148,6 +148,21 @@ describe("preview auth health helpers", () => {
     assert.equal(JSON.stringify(health).includes("secret-api-key"), false);
   });
 
+  it("redacts a bare API key if fetch echoes it in an error message", async () => {
+    const health = await readApiKeyHealth({
+      cloudUrl: "https://preview.runt.run",
+      env: { NTERACT_API_KEY: "secret-api-key" },
+      fetchImpl: async () => {
+        throw new Error("upstream echoed secret-api-key without a key name");
+      },
+    });
+
+    assert.equal(health.status, "fail");
+    assert.equal(health.reason, "api_key_smoke_error");
+    assert.equal(health.error, "upstream echoed [REDACTED] without a key name");
+    assert.equal(JSON.stringify(health).includes("secret-api-key"), false);
+  });
+
   it("collects a non-secret health summary", async () => {
     const health = await collectPreviewAuthHealth({
       env: {},

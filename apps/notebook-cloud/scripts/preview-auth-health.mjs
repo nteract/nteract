@@ -460,7 +460,7 @@ export async function readApiKeyHealth({
       reason: "api_key_smoke_error",
       cloud_url: safeCloudUrl(baseUrl),
       endpoint: "/api/n?limit=1",
-      error: safeErrorMessage(error),
+      error: safeErrorMessage(error, [apiKey]),
     };
   }
 }
@@ -535,14 +535,17 @@ function safeCloudUrl(value) {
   }
 }
 
-function safeErrorMessage(error) {
+function safeErrorMessage(error, sensitiveValues = []) {
   const message = error instanceof Error ? error.message : String(error);
-  return message
+  const redactedByShape = message
     .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/g, "Bearer [REDACTED]")
     .replace(
       /(accessToken|refreshToken|idToken|token|Authorization)([^A-Za-z0-9_-]*)([A-Za-z0-9._~+/-]{8,})/gi,
       "$1$2[REDACTED]",
     );
+  return sensitiveValues
+    .filter((value) => typeof value === "string" && value.length >= 8)
+    .reduce((redacted, value) => redacted.split(value).join("[REDACTED]"), redactedByShape);
 }
 
 function isMainModule(metaUrl, argvPath) {
