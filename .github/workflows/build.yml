@@ -208,10 +208,29 @@ jobs:
       - name: Lint GitHub Actions workflows
         # Install the binary directly rather than via raven-actions/actionlint@v2,
         # which falls back to `npm install` in the repo root on cache miss and
-        # chokes on the pnpm `catalog:` protocol in package.json.
+        # chokes on the pnpm `catalog:` protocol in package.json. Validate the
+        # downloaded archive before extraction because GitHub release downloads
+        # can transiently return small non-archive error bodies.
         run: |
-          bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color
+          set -euo pipefail
+          version=1.7.12
+          asset="actionlint_${version}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${version}/${asset}"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          if curl --fail --location --show-error --retry 10 --retry-delay 2 --retry-all-errors \
+            --output "$tmp/$asset" \
+            "$url" && tar -tzf "$tmp/$asset" >/dev/null 2>&1; then
+            tar -xzf "$tmp/$asset" -C "$tmp" actionlint
+            bin="$tmp/actionlint"
+          else
+            echo "::warning::actionlint release download failed; falling back to go install"
+            go install "github.com/rhysd/actionlint/cmd/actionlint@v${version}"
+            bin="$(go env GOPATH)/bin/actionlint"
+          fi
+
+          "$bin" -color
 
   # Pull requests always run the two branch-protection checks above:
   # Lint & Format and JS Tests & Benchmarks. The jobs below are advisory on PRs:
@@ -326,9 +345,30 @@ jobs:
         run: cargo xtask verify-plugins
 
       - name: Install Deno
-        uses: denoland/setup-deno@v2.0.4
-        with:
-          deno-version: "2.4"
+        run: |
+          set -euo pipefail
+          version=2.4.5
+          asset=deno-x86_64-unknown-linux-gnu.zip
+          url="https://github.com/denoland/deno/releases/download/v${version}/${asset}"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          if curl --fail --location --show-error --retry 10 --retry-delay 4 --retry-all-errors \
+            --output "$tmp/$asset" \
+            "$url" && unzip -tq "$tmp/$asset" >/dev/null; then
+            unzip -q "$tmp/$asset" -d "$tmp"
+            install_dir="$RUNNER_TEMP/deno/bin"
+            mkdir -p "$install_dir"
+            cp "$tmp/deno" "$install_dir/deno"
+            chmod +x "$install_dir/deno"
+          else
+            echo "::warning::Deno release download failed; falling back to npm deno package"
+            install_dir="$RUNNER_TEMP/deno-npm/bin"
+            npm_config_prefix="$RUNNER_TEMP/deno-npm" npm install -g deno@2.4.4
+          fi
+
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/deno" --version
 
       - name: Run runtimed-wasm Deno tests
         run: deno test --allow-read --allow-env --no-check crates/runtimed-wasm/tests/
