@@ -738,7 +738,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const createNotebook = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!hasExplicitAuth || createState === "starting") {
+    if (!signedIn || createState === "starting") {
       return;
     }
     const title = createTitle.trim() || defaultCloudNotebookTitle();
@@ -789,7 +789,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
 
   const saveNotebookTitle = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!hasExplicitAuth || !renameState || renameSavingId) {
+    if (!signedIn || !renameState || renameSavingId) {
       return;
     }
 
@@ -888,7 +888,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           </button>
           <button
             type="button"
-            disabled={!hasExplicitAuth || createState === "starting"}
+            disabled={!signedIn || createState === "starting"}
             onClick={openCreateForm}
           >
             {createState === "starting" ? (
@@ -898,7 +898,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
             )}
             {createState === "starting" ? "Creating" : "New notebook"}
           </button>
-          {hasExplicitAuth ? null : (
+          {hasExplicitAuth || hasAppSession ? null : (
             <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
           )}
           {signedIn ? (
@@ -978,7 +978,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
         ) : dashboardModel ? (
           <CloudNotebookDashboard
             model={dashboardModel}
-            canRename={hasExplicitAuth}
+            canRename={signedIn}
             renameState={renameState}
             renameSavingId={renameSavingId}
             onOpenRename={openRenameForm}
@@ -1491,7 +1491,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const homeStatusDescription = signedIn
     ? hasExplicitAuth
       ? "Open a notebook or sign out of this browser session."
-      : "Open notebooks with this browser session. Sign in again for create or edit actions."
+      : "Open and manage notebooks with this browser session."
     : "Sign in to open private notebooks or request edit access.";
 
   return (
@@ -1886,7 +1886,9 @@ function NotebookViewer({
     setRailCollapsed(false);
     setActiveRailPanel("workstations");
   }, []);
-  const canLoadCloudWorkstations = authState.mode === "dev" || authState.mode === "oidc";
+  const hasBrowserAppIdentity =
+    Boolean(appSessionStatus.session) || authState.mode === "dev" || authState.mode === "oidc";
+  const canLoadCloudWorkstations = hasBrowserAppIdentity;
   const refreshCloudWorkstations = useCallback(
     async (signal?: AbortSignal) => {
       if (!canLoadCloudWorkstations || !config.workstationsEndpoint) {
@@ -2003,6 +2005,7 @@ function NotebookViewer({
         authState,
         connectionScope,
         connectionActorLabel,
+        hasAppSession: Boolean(appSessionStatus.session),
         hasCodeCells: codeCellCount > 0,
         selectedMode: selectedInteractionMode,
         canAcceptCellMutations,
@@ -2014,6 +2017,7 @@ function NotebookViewer({
       }),
     [
       authState,
+      appSessionStatus.session,
       canAcceptCellMutations,
       codeCellCount,
       config.hostCapabilities,
@@ -2416,7 +2420,7 @@ function NotebookViewer({
   );
   const loadOwnAccessRequest = useCallback(
     async (options?: { signal?: AbortSignal }) => {
-      if (connectionScope !== "viewer" || (authState.mode !== "dev" && authState.mode !== "oidc")) {
+      if (connectionScope !== "viewer" || !hasBrowserAppIdentity) {
         return;
       }
 
@@ -2443,22 +2447,28 @@ function NotebookViewer({
         return;
       }
     },
-    [applyLatestAccessRequest, authState, config.accessRequestsEndpoint, connectionScope],
+    [
+      applyLatestAccessRequest,
+      authState,
+      config.accessRequestsEndpoint,
+      connectionScope,
+      hasBrowserAppIdentity,
+    ],
   );
   useEffect(() => {
-    if (connectionScope !== "viewer" || (authState.mode !== "dev" && authState.mode !== "oidc")) {
+    if (connectionScope !== "viewer" || !hasBrowserAppIdentity) {
       setLatestAccessRequest(null);
       return;
     }
     const controller = new AbortController();
     void loadOwnAccessRequest({ signal: controller.signal });
     return () => controller.abort();
-  }, [authState.mode, connectionScope, loadOwnAccessRequest]);
+  }, [connectionScope, hasBrowserAppIdentity, loadOwnAccessRequest]);
   useEffect(() => {
     if (
       latestAccessRequest?.status !== "pending" ||
       connectionScope !== "viewer" ||
-      (authState.mode !== "dev" && authState.mode !== "oidc")
+      !hasBrowserAppIdentity
     ) {
       return;
     }
@@ -2471,7 +2481,7 @@ function NotebookViewer({
       controller.abort();
       window.clearInterval(intervalId);
     };
-  }, [authState.mode, connectionScope, latestAccessRequest?.status, loadOwnAccessRequest]);
+  }, [connectionScope, hasBrowserAppIdentity, latestAccessRequest?.status, loadOwnAccessRequest]);
   const requestCloudEditAccess = useCallback(() => {
     void (async () => {
       setAccessRequestError(null);
@@ -2598,6 +2608,7 @@ function NotebookViewer({
       editControls={
         <CloudNotebookEditModeButton
           authState={authState}
+          hasAppSession={Boolean(appSessionStatus.session)}
           interaction={shellCapabilities.interaction ?? null}
           accessLevel={shellCapabilities.access.level}
           accessPending={editAccessPending}
@@ -2792,6 +2803,7 @@ function cloudAccessRequestNotice(
 
 function CloudNotebookEditModeButton({
   authState,
+  hasAppSession,
   accessLevel,
   accessPending,
   interaction,
@@ -2799,13 +2811,15 @@ function CloudNotebookEditModeButton({
   onRequestEditAccess,
 }: {
   authState: CloudPrototypeAuthState;
+  hasAppSession: boolean;
   accessLevel: NotebookShellCapabilities["access"]["level"];
   accessPending: boolean;
   interaction: NotebookInteractionModeProjection | null;
   onModeChange: (mode: NotebookInteractionMode) => void;
   onRequestEditAccess: () => void;
 }) {
-  const canUseEditModeControl = authState.mode === "dev" || authState.mode === "oidc";
+  const canUseEditModeControl =
+    hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
   if (
     !canUseEditModeControl ||
     (!interaction?.canRequestEdit && interaction?.activeMode !== "edit")

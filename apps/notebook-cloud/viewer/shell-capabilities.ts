@@ -18,6 +18,7 @@ export interface CloudNotebookShellCapabilityInput {
   authState: CloudPrototypeAuthState;
   connectionScope: string | null;
   connectionActorLabel?: string | null;
+  hasAppSession?: boolean;
   hasCodeCells: boolean;
   selectedMode?: NotebookEditMode;
   /**
@@ -64,6 +65,7 @@ export function cloudNotebookShellCapabilities({
   authState,
   connectionScope,
   connectionActorLabel = null,
+  hasAppSession = false,
   hasCodeCells,
   selectedMode = "view",
   canAcceptCellMutations = true,
@@ -76,14 +78,16 @@ export function cloudNotebookShellCapabilities({
   const interaction = projectCloudNotebookEditAccess({
     authState,
     connectionScope,
+    hasAppSession,
     selectedMode,
     canAcceptCellMutations,
     editAccessRequestPending,
   });
   const accessLevel = interaction.accessLevel;
   const isRuntimePeer = connectionScope === "runtime_peer";
-  const authenticated = authState.mode === "dev" || authState.mode === "oidc";
-  const authNeedsAttention = authState.mode === "invalid" || authState.mode === "oidc_expired";
+  const authenticated = hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
+  const authNeedsAttention =
+    !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
   const identityLabel = cloudIdentityDisplayLabel(authState);
   const identityImageUrl = cloudIdentityImageUrl(authState);
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
@@ -94,7 +98,7 @@ export function cloudNotebookShellCapabilities({
     ? attachmentExecutionAvailable
     : runtimeAvailable;
   const auth = {
-    canSignIn: authState.mode !== "oidc",
+    canSignIn: !hasAppSession && authState.mode !== "oidc",
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
     needsAttention: authNeedsAttention,
   };

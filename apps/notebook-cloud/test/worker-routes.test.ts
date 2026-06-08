@@ -464,16 +464,16 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /nteract-cloud-bootstrap|Hidden Private Title/);
   });
 
-  it("uses app session cookies only for read-only catalog listing", async () => {
-    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-list-user" });
+  it("uses app session cookies for first-party browser notebook APIs", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "cookie-browser-user" });
     const env = fakeEnv({
       ...oidcEnv,
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
     });
-    seedNotebook(env, "cookie-list-visible");
+    seedNotebook(env, "cookie-api-visible");
     seedAcl(env, {
-      notebookId: "cookie-list-visible",
-      subject: "user:anaconda:cookie-list-user",
+      notebookId: "cookie-api-visible",
+      subject: "user:anaconda:cookie-browser-user",
       scope: "owner",
     });
     const cookie = await oidcAppSessionCookie(env, token);
@@ -489,24 +489,61 @@ describe("Worker artifact routes", () => {
     const listBody = (await listResponse.json()) as { notebooks: Array<{ notebook_id: string }> };
     assert.deepEqual(
       listBody.notebooks.map((notebook) => notebook.notebook_id),
-      ["cookie-list-visible"],
+      ["cookie-api-visible"],
     );
 
     const patchResponse = await worker.fetch(
-      new Request("https://cloud.test/api/n/cookie-list-visible", {
+      new Request("https://cloud.test/api/n/cookie-api-visible", {
         method: "PATCH",
         headers: {
           Cookie: cookie,
           "Content-Type": "application/json",
           Origin: "https://cloud.test",
         },
-        body: JSON.stringify({ title: "Should Not Change" }),
+        body: JSON.stringify({ title: "Cookie Browser Notebook" }),
       }),
       env,
       fakeContext(),
     );
-    assert.equal(patchResponse.status, 403);
-    assert.equal(env.DB.notebooks.get("cookie-list-visible")?.title, null);
+    assert.equal(patchResponse.status, 200);
+    assert.equal(env.DB.notebooks.get("cookie-api-visible")?.title, "Cookie Browser Notebook");
+
+    const createResponse = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ title: "Cookie Created Notebook" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(createResponse.status, 201);
+    const created = (await createResponse.json()) as { notebook_id: string; title: string };
+    assert.equal(created.title, "Cookie Created Notebook");
+    assert.ok(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === created.notebook_id &&
+          row.subject === "user:anaconda:cookie-browser-user" &&
+          row.scope === "owner",
+      ),
+    );
+
+    const explicitBadBearer = await worker.fetch(
+      new Request("https://cloud.test/api/n", {
+        headers: {
+          Authorization: "Bearer definitely-not-a-token",
+          Cookie: cookie,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(explicitBadBearer.status, 401);
   });
 
   it("does not use app session cookies as room WebSocket credentials", async () => {
@@ -1556,6 +1593,56 @@ describe("Worker artifact routes", () => {
       default_workstation_id: "ws-lab2",
     });
     assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), "ws-lab2");
+  });
+
+  it("uses app session cookies for browser workstation selection", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "cookie-workstation-user",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:anaconda:cookie-workstation-user",
+      workstationId: "ws-cookie",
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const list = await worker.fetch(
+      new Request("https://cloud.test/api/workstations", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(list.status, 200);
+    const listBody = (await list.json()) as {
+      workstations: Array<{ workstation_id: string }>;
+    };
+    assert.deepEqual(
+      listBody.workstations.map((workstation) => workstation.workstation_id),
+      ["ws-cookie"],
+    );
+
+    const select = await worker.fetch(
+      new Request("https://cloud.test/api/workstations/default", {
+        method: "PATCH",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          Origin: "https://cloud.test",
+        },
+        body: JSON.stringify({ workstation_id: "ws-cookie" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(select.status, 200);
+    assert.equal(
+      env.DB.workstationDefaults.get("user:anaconda:cookie-workstation-user"),
+      "ws-cookie",
+    );
   });
 
   it("does not let users select another principal's workstation as their default", async () => {

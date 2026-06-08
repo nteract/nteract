@@ -798,7 +798,7 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
   if (identity instanceof Response) {
     return identity;
   }
@@ -975,7 +975,10 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
     }
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity =
+    request.method === "GET"
+      ? await authenticateRequestOrAppSessionOrResponse(request, env, "owner")
+      : await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -1048,7 +1051,7 @@ async function routeDefaultWorkstation(request: Request, env: Env): Promise<Resp
     return originRejection;
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "owner");
   if (identity instanceof Response) {
     return identity;
   }
@@ -1095,7 +1098,12 @@ async function routeNotebookWorkstationAttachment(
     return originRejection;
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -1675,7 +1683,12 @@ async function routeSnapshot(
   const key = snapshotKey(notebookId, headsHash);
 
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -1808,7 +1821,12 @@ async function routeCommsSnapshot(
   headsHash: string,
 ): Promise<Response> {
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -1897,7 +1915,12 @@ async function routeRuntimeSnapshot(
   headsHash: string,
 ): Promise<Response> {
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -2011,7 +2034,12 @@ async function routeNotebookInvites(
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2083,7 +2111,12 @@ async function routeNotebookInvite(
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2137,7 +2170,7 @@ async function routeNotebookAccessRequests(
     }
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "viewer");
   if (identity instanceof Response) {
     return identity;
   }
@@ -2245,7 +2278,12 @@ async function routeNotebookAccessRequest(
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2522,7 +2560,12 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
     }
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2607,7 +2650,12 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "viewer",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2633,7 +2681,12 @@ async function routeUpdateNotebookMetadata(
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
 
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "editor");
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "editor",
+  );
   if (identity instanceof Response) {
     return identity;
   }
@@ -2843,7 +2896,12 @@ async function routeBlob(
   const key = blobKey(notebookId, hash);
 
   if (request.method === "HEAD") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -2863,7 +2921,12 @@ async function routeBlob(
   }
 
   if (request.method === "GET") {
-    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+      request,
+      env,
+      notebookId,
+      "viewer",
+    );
     if (identity instanceof Response) {
       return identity;
     }
@@ -3273,13 +3336,29 @@ async function syncAuthenticatedProfile(
   }
 }
 
-async function authenticateAndAuthorizeOrResponse(
+async function authenticateRequestOrAppSessionOrResponse(
+  request: Request,
+  env: Env,
+  appSessionScope: Exclude<ConnectionScope, "runtime_peer">,
+): Promise<AuthenticatedConnection | Response> {
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response || !isAnonymousViewer(identity)) {
+    return identity;
+  }
+  const session = appSessionConfigured(env) ? await readCloudAppSession(env, request) : null;
+  if (!session) {
+    return identity;
+  }
+  return appSessionConnectionIdentity(session, "browser:http", appSessionScope);
+}
+
+async function authenticateAndAuthorizeOrAppSessionOrResponse(
   request: Request,
   env: Env,
   notebookId: string,
-  requestedScope: ConnectionScope,
+  requestedScope: Exclude<ConnectionScope, "runtime_peer">,
 ): Promise<AuthenticatedConnection | Response> {
-  const identity = await authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, requestedScope);
   if (identity instanceof Response) {
     return identity;
   }
