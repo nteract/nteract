@@ -32,6 +32,9 @@ use crate::async_outcome::{
     await_result_with_timeout, recv_oneshot_with_timeout, TimedOneShot, TimedResult,
 };
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
+use crate::nono::events::{EventCollector, EventStream};
+use crate::nono::profile::TranslatedProfile;
+use crate::nono::{Supervisor, SupervisorConfig, SupervisorHandle};
 use crate::output_committer::{OrdinaryOutputCommit, OrdinaryOutputKind};
 use crate::output_prep::{
     blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
@@ -41,6 +44,7 @@ use crate::output_prep::{
 use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
+use crate::sandbox_launch::SandboxState;
 use crate::stream_flush::StreamFlushBuffer;
 use crate::stream_terminal::StreamTerminals;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
@@ -384,6 +388,30 @@ pub struct JupyterKernel {
     history_cache: HistoryLruCache,
     /// Terminal emulators for stream outputs (stdout/stderr).
     stream_terminals: Arc<tokio::sync::Mutex<StreamTerminals>>,
+    // ── Sandbox session state ─────────────────────────────────────────────
+    //
+    // These fields are only populated when the kernel was launched under nono.
+    // They are `None`/`Disabled` for all non-sandboxed kernels (the common case).
+    //
+    /// nono process supervisor. Owned for the kernel session lifetime.
+    /// `None` for direct (non-sandboxed) kernels.
+    /// Must be dropped before `sandbox_profile` so nono exits before the
+    /// profile temp file is deleted.
+    sandbox_supervisor: Option<Supervisor>,
+    /// Translated sandbox profile (temp JSON file).
+    /// Dropping this deletes the temp file — hold until after nono exits.
+    /// `None` for direct (non-sandboxed) kernels.
+    sandbox_profile: Option<TranslatedProfile>,
+    /// Current sandbox state, shared with the process watcher for `Degraded` updates.
+    /// Wrapped in Arc<Mutex> so the watcher task can mutate it without holding
+    /// a mutable reference to `JupyterKernel`.
+    ///
+    /// Accessible via `sandbox_state()` method. Public for task 08/09/11 consumers.
+    pub sandbox_state: Arc<StdMutex<SandboxState>>,
+    /// The nono event stream for this sandbox session (task 06 → task 08).
+    /// Stored separately from `sandbox_state` because `EventStream` is not Clone.
+    /// Task 08 takes ownership via `Option::take()`.
+    pub sandbox_event_stream: Option<EventStream>,
 }
 
 impl KernelConnection for JupyterKernel {
@@ -920,6 +948,62 @@ impl KernelConnection for JupyterKernel {
 
         cmd.kill_on_drop(true);
 
+        // ── Sandbox pre-flight ─────────────────────────────────────────────
+        //
+        // Resolve sandbox prerequisites before entering the IPC/TCP spawn branches.
+        // If a sandbox profile is present and enabled, translate it and locate nono.
+        // Per D-3: if the user opted in and nono is unavailable, refuse to launch
+        // rather than silently falling back to direct execution.
+        //
+        // Actual `Supervisor::spawn()` happens inside the IPC/TCP branches below,
+        // after the connection file has been written (the kernel needs the file
+        // to exist before it starts, and the file path is already embedded in `cmd`'s argv).
+        struct SandboxPrereqs {
+            nono_binary: PathBuf,
+            translated: TranslatedProfile,
+        }
+        let sandbox_prereqs: Option<SandboxPrereqs> = match config.sandbox_profile.as_ref() {
+            Some(profile) if profile.enabled => {
+                // Translate the profile (writes a temp JSON file, validates).
+                let translated =
+                        crate::nono::profile::translate(profile).map_err(|e| {
+                            match &e {
+                                crate::nono::profile::ProfileTranslationError::Disabled => {
+                                    anyhow::anyhow!("sandbox profile is disabled (internal error: gate should have caught this)")
+                                }
+                                crate::nono::profile::ProfileTranslationError::Invalid(msg) => {
+                                    anyhow::anyhow!(
+                                        "sandbox profile is invalid; kernel launch refused: {}",
+                                        msg
+                                    )
+                                }
+                                other => anyhow::anyhow!("failed to translate sandbox profile: {}", other),
+                            }
+                        })?;
+
+                // Locate the nono binary (fails fast — no silent fallback per D-3).
+                let nono_binary = crate::nono::binary_path().map_err(|_| {
+                    anyhow::anyhow!(
+                        "sandbox is enabled for this notebook but the nono binary was not \
+                             found (tried NONO_BIN env, bundled path alongside runtimed, then \
+                             PATH). Install nono or set NONO_BIN=/path/to/nono."
+                    )
+                })?;
+
+                info!(
+                    "[jupyter-kernel] Sandbox pre-flight OK: kernel_id={} profile={:?}",
+                    kernel_id,
+                    translated.profile_json_path.to_path_buf().display()
+                );
+
+                Some(SandboxPrereqs {
+                    nono_binary,
+                    translated,
+                })
+            }
+            _ => None,
+        };
+
         // Capture kernel stderr for diagnostics. Per-line logs go at debug
         // (or warn when the line looks error-shaped), but we also ring-buffer
         // the last N lines so the early-exit path can surface them in the
@@ -927,11 +1011,30 @@ impl KernelConnection for JupyterKernel {
         // only "exit status: 1" with no clue why the kernel died.
         const STDERR_BUFFER_LINES: usize = 50;
 
-        type LaunchedKernel = (
-            tokio::process::Child,
-            Arc<StdMutex<VecDeque<String>>>,
-            ConnectionInfo,
-        );
+        // ── Helper: drain kernel stderr into a ring buffer ──────────────
+        //
+        // The stderr_buffer is used to capture lines for the early-exit diagnostic
+        // path. It's part of DirectSpawn but only accessed if the process exits early.
+        #[allow(dead_code)]
+        struct DirectSpawn {
+            process: tokio::process::Child,
+            /// Ring-buffer of last N stderr lines (for early-exit diagnostics).
+            stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+            connection_info: ConnectionInfo,
+        }
+
+        /// Outcome of a sandboxed kernel spawn via `Supervisor::spawn()`.
+        struct SandboxedSpawn {
+            supervisor: Supervisor,
+            handle: SupervisorHandle,
+            translated_profile: TranslatedProfile,
+            connection_info: ConnectionInfo,
+        }
+
+        enum SpawnOutcome {
+            Direct(DirectSpawn),
+            Sandboxed(SandboxedSpawn),
+        }
 
         #[cfg(unix)]
         let use_ipc = kernel_type != "deno";
@@ -947,7 +1050,104 @@ impl KernelConnection for JupyterKernel {
         #[cfg(not(unix))]
         let ipc_prefix: Option<PathBuf> = None;
 
-        let (mut process, _stderr_buffer, connection_info) = {
+        // ── Helper: extract kernel argv from cmd for sandbox ────────────
+        //
+        // Extracts program + args as OsStrings for use in SupervisorConfig.
+        // The argv already includes the connection file path (added during
+        // the kernel-type-specific `cmd` build above).
+        fn extract_kernel_argv(cmd: &tokio::process::Command) -> Vec<std::ffi::OsString> {
+            let mut argv = Vec::new();
+            argv.push(cmd.as_std().get_program().to_os_string());
+            for arg in cmd.as_std().get_args() {
+                argv.push(arg.to_os_string());
+            }
+            argv
+        }
+
+        // ── Helper: extract kernel env from cmd for sandbox ─────────────
+        //
+        // Extracts the explicitly-set env vars from `cmd`. For vars explicitly
+        // removed from the env (value = None), we skip them so nono won't see
+        // them either (scrub_secret_kernel_env removes secrets this way).
+        fn extract_kernel_env(
+            cmd: &tokio::process::Command,
+            kernel_env_overrides: &[(std::ffi::OsString, std::ffi::OsString)],
+        ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+            let mut env_map: std::collections::HashMap<std::ffi::OsString, std::ffi::OsString> =
+                std::collections::HashMap::new();
+            for (k, v) in cmd.as_std().get_envs() {
+                if let Some(v) = v {
+                    env_map.insert(k.to_os_string(), v.to_os_string());
+                } else {
+                    env_map.remove(k);
+                }
+            }
+            // Include the translated profile's kernel_env_overrides so nono can
+            // document what env vars it will inject (phantom tokens etc.).
+            for (k, v) in kernel_env_overrides {
+                env_map.insert(k.clone(), v.clone());
+            }
+            env_map.into_iter().collect()
+        }
+
+        // ── Helper: drain kernel stderr into a ring buffer ──────────────
+        fn start_kernel_stderr_drain(
+            process: &mut tokio::process::Child,
+            kernel_id: &str,
+            buffer_lines: usize,
+        ) -> (Arc<StdMutex<VecDeque<String>>>, Option<JoinHandle<()>>) {
+            let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
+                Arc::new(StdMutex::new(VecDeque::with_capacity(buffer_lines)));
+            let drain = if let Some(stderr) = process.stderr.take() {
+                let kid = kernel_id.to_string();
+                let buffer = stderr_buffer.clone();
+                Some(spawn_best_effort("kernel-stderr", async move {
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    let mut lines = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let lower = line.to_ascii_lowercase();
+                        if lower.contains("error") || lower.contains("traceback") {
+                            warn!("[kernel-stderr:{}] {}", kid, line);
+                        } else {
+                            debug!("[kernel-stderr:{}] {}", kid, line);
+                        }
+                        let mut queue = buffer.lock().unwrap();
+                        if queue.len() == buffer_lines {
+                            queue.pop_front();
+                        }
+                        queue.push_back(line);
+                    }
+                }))
+            } else {
+                None
+            };
+            (stderr_buffer, drain)
+        }
+
+        // ── Helper: check for early kernel exit ─────────────────────────
+        //
+        // Polls `process.try_wait()` for up to `STARTUP_CEILING` ms.
+        // Returns the exit status if the process exited early, or None if still alive.
+        async fn check_early_exit(
+            process: &mut tokio::process::Child,
+        ) -> Option<std::process::ExitStatus> {
+            const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
+            let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
+            loop {
+                match process.try_wait() {
+                    Ok(Some(status)) => return Some(status),
+                    Ok(None) => {
+                        if std::time::Instant::now() >= startup_deadline {
+                            return None;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    Err(_) => return None,
+                }
+            }
+        }
+
+        let spawn_outcome: SpawnOutcome = {
             if let Some(ref prefix) = ipc_prefix {
                 let connection_info = ConnectionInfo {
                     transport: jupyter_protocol::connection_info::Transport::IPC,
@@ -973,69 +1173,60 @@ impl KernelConnection for JupyterKernel {
                     launch_started.elapsed().as_millis()
                 );
 
-                let spawn_started = std::time::Instant::now();
-                let mut process = cmd.spawn()?;
-                let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
-                    Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
-                let stderr_drain: Option<JoinHandle<()>> =
-                    if let Some(stderr) = process.stderr.take() {
-                        let kid = kernel_id.clone();
-                        let buffer = stderr_buffer.clone();
-                        Some(spawn_best_effort("kernel-stderr", async move {
-                            use tokio::io::{AsyncBufReadExt, BufReader};
-                            let mut lines = BufReader::new(stderr).lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
-                                let lower = line.to_ascii_lowercase();
-                                if lower.contains("error") || lower.contains("traceback") {
-                                    warn!("[kernel-stderr:{}] {}", kid, line);
-                                } else {
-                                    debug!("[kernel-stderr:{}] {}", kid, line);
-                                }
-                                let mut queue = buffer.lock().unwrap();
-                                if queue.len() == STDERR_BUFFER_LINES {
-                                    queue.pop_front();
-                                }
-                                queue.push_back(line);
-                            }
-                        }))
-                    } else {
-                        None
+                if let Some(prereqs) = sandbox_prereqs {
+                    // ── Sandbox IPC spawn ────────────────────────────────
+                    let kernel_argv = extract_kernel_argv(&cmd);
+                    let kernel_env =
+                        extract_kernel_env(&cmd, &prereqs.translated.kernel_env_overrides);
+                    let supervisor_config = SupervisorConfig {
+                        kernel_argv,
+                        profile_path: prereqs.translated.profile_json_path.to_path_buf(),
+                        cwd: cwd.clone(),
+                        env: kernel_env,
+                        name: Some(format!("nteract-kernel-{}", kernel_id)),
                     };
-
-                info!(
-                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=ipc, prefix={}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
-                    process.id(),
-                    kernel_id,
-                    prefix.display(),
-                    spawn_started.elapsed().as_millis(),
-                    launch_started.elapsed().as_millis(),
-                );
-
-                const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
-                let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
-                let mut early_exit: Option<std::process::ExitStatus> = None;
-                let mut wait_err: Option<std::io::Error> = None;
-                loop {
-                    match process.try_wait() {
-                        Ok(Some(status)) => {
-                            early_exit = Some(status);
-                            break;
-                        }
-                        Ok(None) => {
-                            if std::time::Instant::now() >= startup_deadline {
-                                break;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    let spawn_started = std::time::Instant::now();
+                    match Supervisor::spawn(&prereqs.nono_binary, supervisor_config).await {
+                        Ok((supervisor, handle)) => {
+                            info!(
+                                "[jupyter-kernel] Sandbox IPC spawn OK: nono_pid={} kernel_id={} spawn_elapsed_ms={}",
+                                handle.nono_pid,
+                                kernel_id,
+                                spawn_started.elapsed().as_millis()
+                            );
+                            SpawnOutcome::Sandboxed(SandboxedSpawn {
+                                supervisor,
+                                handle,
+                                translated_profile: prereqs.translated,
+                                connection_info,
+                            })
                         }
                         Err(e) => {
-                            wait_err = Some(e);
-                            break;
+                            cleanup_ipc_sockets(prefix);
+                            error!(
+                                "[jupyter-kernel] Sandbox IPC spawn failed: kernel_id={} error={}",
+                                kernel_id, e
+                            );
+                            return Err(anyhow::anyhow!("sandbox failed to start: {}", e));
                         }
                     }
-                }
+                } else {
+                    // ── Direct IPC spawn ─────────────────────────────────
+                    let spawn_started = std::time::Instant::now();
+                    let mut process = cmd.spawn()?;
+                    let (stderr_buffer, stderr_drain) =
+                        start_kernel_stderr_drain(&mut process, &kernel_id, STDERR_BUFFER_LINES);
 
-                match (early_exit, wait_err) {
-                    (Some(exit_status), _) => {
+                    info!(
+                        "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=ipc, prefix={}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
+                        process.id(),
+                        kernel_id,
+                        prefix.display(),
+                        spawn_started.elapsed().as_millis(),
+                        launch_started.elapsed().as_millis(),
+                    );
+
+                    if let Some(exit_status) = check_early_exit(&mut process).await {
                         if let Some(handle) = stderr_drain {
                             let _ =
                                 tokio::time::timeout(std::time::Duration::from_millis(500), handle)
@@ -1061,14 +1252,12 @@ impl KernelConnection for JupyterKernel {
                             stderr_tail
                         ));
                     }
-                    (None, Some(e)) => {
-                        warn!(
-                            "[jupyter-kernel] Could not check kernel process status: {}",
-                            e
-                        );
-                        (process, stderr_buffer, connection_info) as LaunchedKernel
-                    }
-                    (None, None) => (process, stderr_buffer, connection_info) as LaunchedKernel,
+
+                    SpawnOutcome::Direct(DirectSpawn {
+                        process,
+                        stderr_buffer,
+                        connection_info,
+                    })
                 }
             } else {
                 let kernel_ports = config.kernel_ports;
@@ -1113,82 +1302,80 @@ impl KernelConnection for JupyterKernel {
                     bind_started.elapsed().as_millis(),
                     launch_started.elapsed().as_millis()
                 );
-                #[cfg(windows)]
-                {
+
+                if let Some(prereqs) = sandbox_prereqs {
+                    // ── Sandbox TCP spawn ────────────────────────────────
+                    // Drop the port reservations before spawning nono (same
+                    // as the Windows direct path: ports are reserved to prevent
+                    // a race, but must be released before the kernel binds).
+                    #[cfg(windows)]
                     drop(listeners);
-                    info!(
-                        "[jupyter-kernel] Released reserved TCP listeners before Windows kernel spawn: kernel_id={} ports={:?} launch_elapsed_ms={}",
-                        kernel_id,
-                        ports,
-                        launch_started.elapsed().as_millis()
-                    );
-                }
-                let spawn_started = std::time::Instant::now();
-                let mut process = cmd.spawn()?;
-                #[cfg(not(windows))]
-                drop(listeners);
-
-                let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
-                    Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
-                let stderr_drain: Option<JoinHandle<()>> =
-                    if let Some(stderr) = process.stderr.take() {
-                        let kid = kernel_id.clone();
-                        let buffer = stderr_buffer.clone();
-                        Some(spawn_best_effort("kernel-stderr", async move {
-                            use tokio::io::{AsyncBufReadExt, BufReader};
-                            let mut lines = BufReader::new(stderr).lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
-                                let lower = line.to_ascii_lowercase();
-                                if lower.contains("error") || lower.contains("traceback") {
-                                    warn!("[kernel-stderr:{}] {}", kid, line);
-                                } else {
-                                    debug!("[kernel-stderr:{}] {}", kid, line);
-                                }
-                                let mut queue = buffer.lock().unwrap();
-                                if queue.len() == STDERR_BUFFER_LINES {
-                                    queue.pop_front();
-                                }
-                                queue.push_back(line);
-                            }
-                        }))
-                    } else {
-                        None
+                    let spawn_started = std::time::Instant::now();
+                    let kernel_argv = extract_kernel_argv(&cmd);
+                    let kernel_env =
+                        extract_kernel_env(&cmd, &prereqs.translated.kernel_env_overrides);
+                    let supervisor_config = SupervisorConfig {
+                        kernel_argv,
+                        profile_path: prereqs.translated.profile_json_path.to_path_buf(),
+                        cwd: cwd.clone(),
+                        env: kernel_env,
+                        name: Some(format!("nteract-kernel-{}", kernel_id)),
                     };
-
-                info!(
-                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=tcp, ports={:?}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
-                    process.id(),
-                    kernel_id,
-                    ports,
-                    spawn_started.elapsed().as_millis(),
-                    launch_started.elapsed().as_millis()
-                );
-
-                const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
-                let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
-                let mut early_exit: Option<std::process::ExitStatus> = None;
-                let mut wait_err: Option<std::io::Error> = None;
-                loop {
-                    match process.try_wait() {
-                        Ok(Some(status)) => {
-                            early_exit = Some(status);
-                            break;
-                        }
-                        Ok(None) => {
-                            if std::time::Instant::now() >= startup_deadline {
-                                break;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    #[cfg(not(windows))]
+                    drop(listeners);
+                    match Supervisor::spawn(&prereqs.nono_binary, supervisor_config).await {
+                        Ok((supervisor, handle)) => {
+                            info!(
+                                "[jupyter-kernel] Sandbox TCP spawn OK: nono_pid={} kernel_id={} spawn_elapsed_ms={}",
+                                handle.nono_pid,
+                                kernel_id,
+                                spawn_started.elapsed().as_millis()
+                            );
+                            SpawnOutcome::Sandboxed(SandboxedSpawn {
+                                supervisor,
+                                handle,
+                                translated_profile: prereqs.translated,
+                                connection_info,
+                            })
                         }
                         Err(e) => {
-                            wait_err = Some(e);
-                            break;
+                            error!(
+                                "[jupyter-kernel] Sandbox TCP spawn failed: kernel_id={} error={}",
+                                kernel_id, e
+                            );
+                            return Err(anyhow::anyhow!("sandbox failed to start: {}", e));
                         }
                     }
-                }
+                } else {
+                    // ── Direct TCP spawn ─────────────────────────────────
+                    let spawn_started = std::time::Instant::now();
+                    #[cfg(windows)]
+                    {
+                        drop(listeners);
+                        info!(
+                            "[jupyter-kernel] Released reserved TCP listeners before Windows kernel spawn: kernel_id={} ports={:?} launch_elapsed_ms={}",
+                            kernel_id,
+                            ports,
+                            launch_started.elapsed().as_millis()
+                        );
+                    }
+                    let mut process = cmd.spawn()?;
+                    #[cfg(not(windows))]
+                    drop(listeners);
 
-                match (early_exit, wait_err) {
-                    (Some(exit_status), _) => {
+                    let (stderr_buffer, stderr_drain) =
+                        start_kernel_stderr_drain(&mut process, &kernel_id, STDERR_BUFFER_LINES);
+
+                    info!(
+                        "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=tcp, ports={:?}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
+                        process.id(),
+                        kernel_id,
+                        ports,
+                        spawn_started.elapsed().as_millis(),
+                        launch_started.elapsed().as_millis()
+                    );
+
+                    if let Some(exit_status) = check_early_exit(&mut process).await {
                         if let Some(handle) = stderr_drain {
                             let _ =
                                 tokio::time::timeout(std::time::Duration::from_millis(500), handle)
@@ -1213,20 +1400,149 @@ impl KernelConnection for JupyterKernel {
                             stderr_tail
                         ));
                     }
-                    (None, Some(e)) => {
-                        warn!(
-                            "[jupyter-kernel] Could not check kernel process status: {}",
-                            e
-                        );
-                        (process, stderr_buffer, connection_info) as LaunchedKernel
-                    }
-                    (None, None) => (process, stderr_buffer, connection_info) as LaunchedKernel,
+
+                    SpawnOutcome::Direct(DirectSpawn {
+                        process,
+                        stderr_buffer,
+                        connection_info,
+                    })
                 }
             }
         };
 
+        // ── Unpack the spawn outcome ──────────────────────────────────────
+        //
+        // Extract the unified fields needed by the rest of launch().
+        // For sandboxed kernels, the kernel PID is the grandchild (discovered
+        // by the supervisor), not nono's PID. For direct kernels, it is the
+        // direct child PID.
+        //
+        // We destructure all fields here to avoid ownership issues later.
+
+        let connection_info: ConnectionInfo;
+        let mut direct_process_opt: Option<tokio::process::Child> = None;
+        let mut sandbox_supervisor_opt: Option<Supervisor> = None;
+        let mut sandbox_profile_stored: Option<TranslatedProfile> = None;
+        let mut sandbox_handle_opt: Option<SupervisorHandle> = None;
+
+        match spawn_outcome {
+            SpawnOutcome::Direct(d) => {
+                connection_info = d.connection_info;
+                direct_process_opt = Some(d.process);
+                // d.stderr_buffer is dropped here — it was only needed for early-exit diagnostics.
+            }
+            SpawnOutcome::Sandboxed(s) => {
+                connection_info = s.connection_info;
+                sandbox_supervisor_opt = Some(s.supervisor);
+                sandbox_profile_stored = Some(s.translated_profile);
+                sandbox_handle_opt = Some(s.handle);
+            }
+        }
+
+        // ── kernel_pid (Unix only) ────────────────────────────────────────
+        //
+        // For direct kernels: the spawned process's PID.
+        // For sandboxed kernels: the kernel grandchild PID from the supervisor.
+        // May be None for sandbox if discovery hasn't completed yet.
         #[cfg(unix)]
-        let kernel_pid = process.id().map(|pid| pid as i32);
+        let kernel_pid: Option<i32> = {
+            if let Some(ref h) = sandbox_handle_opt {
+                let raw = h.kernel_pid.load(std::sync::atomic::Ordering::Relaxed);
+                if raw > 0 {
+                    Some(raw)
+                } else {
+                    None
+                }
+            } else {
+                direct_process_opt
+                    .as_ref()
+                    .and_then(|p| p.id())
+                    .map(|pid| pid as i32)
+            }
+        };
+
+        // ── Construct the EventStream for sandbox (task 06 → task 08) ────
+        //
+        // Take ownership of the stdout/stderr drain receivers from the supervisor
+        // handle and wire them into an EventCollector. The resulting EventStream
+        // is stored on the kernel struct as `sandbox_event_stream` for task 08 to consume.
+        let (initial_sandbox_state, sandbox_event_stream_opt): (SandboxState, Option<EventStream>) =
+            if let Some(ref mut handle) = sandbox_handle_opt {
+                let nono_pid = handle.nono_pid;
+                let kernel_pid_raw = handle.kernel_pid.load(std::sync::atomic::Ordering::Relaxed);
+                let kernel_pid_u32 = if kernel_pid_raw > 0 {
+                    kernel_pid_raw as u32
+                } else {
+                    0
+                };
+
+                // Build bridge channels: supervisor StdoutLine/StderrLine → events StdoutLine/StderrLine.
+                // The supervisor's types carry `raw: String` + `at: Instant`; the events types
+                // are newtypes of `String`. Adapt via a bridge task.
+                let (stdout_evt_tx, stdout_evt_rx) =
+                    tokio::sync::mpsc::channel::<crate::nono::events::StdoutLine>(2048);
+                let (stderr_evt_tx, stderr_evt_rx) =
+                    tokio::sync::mpsc::channel::<crate::nono::events::StderrLine>(2048);
+
+                // Swap out the supervisor receivers so we can forward them.
+                // (Using std::mem::replace rather than Option::take so the handle stays valid.)
+                let mut sup_stdout_rx = {
+                    let (_, dummy_rx) = tokio::sync::mpsc::channel::<crate::nono::StdoutLine>(1);
+                    std::mem::replace(&mut handle.stdout_lines, dummy_rx)
+                };
+                let mut sup_stderr_rx = {
+                    let (_, dummy_rx) = tokio::sync::mpsc::channel::<crate::nono::StderrLine>(1);
+                    std::mem::replace(&mut handle.stderr_lines, dummy_rx)
+                };
+
+                tokio::spawn(async move {
+                    while let Some(line) = sup_stdout_rx.recv().await {
+                        if stdout_evt_tx
+                            .send(crate::nono::events::StdoutLine(line.raw))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
+                tokio::spawn(async move {
+                    while let Some(line) = sup_stderr_rx.recv().await {
+                        if stderr_evt_tx
+                            .send(crate::nono::events::StderrLine(line.raw))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
+                let event_stream = EventCollector::start(
+                    nono_pid,
+                    std::time::SystemTime::now(),
+                    stdout_evt_rx,
+                    stderr_evt_rx,
+                );
+
+                (
+                    SandboxState::Active {
+                        nono_pid,
+                        kernel_pid: kernel_pid_u32,
+                        session_id: None,
+                    },
+                    Some(event_stream),
+                )
+            } else {
+                (SandboxState::Disabled, None)
+            };
+
+        // ── sandbox_state (Arc<Mutex>) for shared access ─────────────────
+        // We store the state as an `Arc<std::sync::Mutex<SandboxState>>` so the
+        // process watcher task can update it to `Degraded` if nono dies.
+        let sandbox_state_arc = Arc::new(StdMutex::new(initial_sandbox_state));
+        let sandbox_state_for_watcher = Arc::clone(&sandbox_state_arc);
 
         // Fresh session_id for ZMQ connections
         let session_id = Uuid::new_v4().to_string();
@@ -1332,31 +1648,143 @@ impl KernelConnection for JupyterKernel {
         let pending_completions: PendingCompletions = Arc::new(StdMutex::new(HashMap::new()));
         let stream_terminals = Arc::new(tokio::sync::Mutex::new(StreamTerminals::new()));
 
-        // Spawn process watcher — detects process exit and signals via oneshot
+        // Spawn process watcher — detects process exit and signals via oneshot.
+        //
+        // For direct kernels: watches the kernel process directly.
+        // For sandboxed kernels: watches the nono exit channel from SupervisorHandle.
+        //   - If nono exits unexpectedly while the kernel is alive → `SandboxState::Degraded`
+        //   - Either way, the kernel lifecycle signals are fired (KernelDied)
         let process_cmd_tx = lifecycle_cmd_tx.clone();
         let panic_cmd_tx = lifecycle_cmd_tx.clone();
         let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
-        let process_watcher_task = spawn_supervised(
-            "process-watcher",
-            async move {
-                let status = process.wait().await;
-                let msg = match status {
-                    Ok(exit_status) => {
-                        warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
-                        format!("Kernel process exited: {}", exit_status)
-                    }
-                    Err(e) => {
-                        error!("[jupyter-kernel] Error waiting for kernel process: {}", e);
-                        format!("Error waiting for kernel process: {}", e)
-                    }
-                };
-                let _ = died_tx.send(msg);
-                let _ = process_cmd_tx.send(LifecycleSignal::KernelDied);
-            },
-            move |_| {
-                let _ = panic_cmd_tx.send(LifecycleSignal::KernelDied);
-            },
-        );
+
+        let process_watcher_task = if let Some(mut direct_process) = direct_process_opt {
+            // Direct path: watch the kernel process.
+            spawn_supervised(
+                "process-watcher",
+                async move {
+                    let status = direct_process.wait().await;
+                    let msg = match status {
+                        Ok(exit_status) => {
+                            warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
+                            format!("Kernel process exited: {}", exit_status)
+                        }
+                        Err(e) => {
+                            error!("[jupyter-kernel] Error waiting for kernel process: {}", e);
+                            format!("Error waiting for kernel process: {}", e)
+                        }
+                    };
+                    let _ = died_tx.send(msg);
+                    let _ = process_cmd_tx.send(LifecycleSignal::KernelDied);
+                },
+                move |_| {
+                    let _ = panic_cmd_tx.send(LifecycleSignal::KernelDied);
+                },
+            )
+        } else if let Some(handle) = sandbox_handle_opt {
+            // Sandbox path: watch the nono exit channel from SupervisorHandle.
+            //
+            // The supervisor's process_watcher_task already monitors nono.
+            // When nono exits:
+            // - If it was clean (CleanExit or Shutdown): kernel finished normally.
+            // - If it died unexpectedly (ProxyDied): mark sandbox as Degraded.
+            // - If it was a StartupFailure: already handled at spawn time.
+            let nono_pid = handle.nono_pid;
+            let kernel_pid_arc = Arc::clone(&handle.kernel_pid);
+            let sandbox_state_for_watcher = Arc::clone(&sandbox_state_for_watcher);
+            spawn_supervised(
+                "process-watcher-sandbox",
+                async move {
+                    // Wait for nono to exit (resolves when the supervisor's process_watcher_task fires).
+                    let exit_result = handle.exit.await;
+                    let msg = match exit_result {
+                        Ok(crate::nono::SupervisorExit::CleanExit) => {
+                            info!(
+                                "[jupyter-kernel] nono proxy (PID={}) exited cleanly",
+                                nono_pid
+                            );
+                            "nono proxy exited cleanly".to_string()
+                        }
+                        Ok(crate::nono::SupervisorExit::Shutdown) => {
+                            info!(
+                                "[jupyter-kernel] nono proxy (PID={}) shutdown complete",
+                                nono_pid
+                            );
+                            "nono proxy shutdown".to_string()
+                        }
+                        Ok(crate::nono::SupervisorExit::ProxyDied {
+                            exit_code,
+                            ref stderr_capture,
+                        }) => {
+                            let reason = format!(
+                                "nono proxy (PID={}) died unexpectedly (exit code={:?})",
+                                nono_pid, exit_code
+                            );
+                            warn!("[jupyter-kernel] {}", reason);
+                            // Mark the sandbox as Degraded so downstream consumers know
+                            // the proxy is gone and network calls will fail.
+                            if let Ok(mut state) = sandbox_state_for_watcher.lock() {
+                                *state = SandboxState::Degraded {
+                                    reason: reason.clone(),
+                                };
+                            }
+                            // Kill the orphaned kernel if still alive.
+                            let kpid = kernel_pid_arc.load(std::sync::atomic::Ordering::Relaxed);
+                            if kpid > 0 {
+                                #[cfg(unix)]
+                                {
+                                    unsafe {
+                                        libc::kill(kpid as libc::pid_t, libc::SIGKILL);
+                                    }
+                                }
+                            }
+                            let _ = stderr_capture;
+                            reason
+                        }
+                        Ok(crate::nono::SupervisorExit::StartupFailure {
+                            exit_code,
+                            ref stderr_capture,
+                        }) => {
+                            // This should not happen in steady state (startup failures
+                            // are caught at spawn time), but handle it defensively.
+                            let reason = format!(
+                                "nono proxy startup failed (exit code={:?}): {}",
+                                exit_code,
+                                stderr_capture.join("; ")
+                            );
+                            warn!("[jupyter-kernel] {}", reason);
+                            let _ = stderr_capture;
+                            reason
+                        }
+                        Err(_) => {
+                            warn!(
+                                "[jupyter-kernel] nono supervisor exit channel closed unexpectedly"
+                            );
+                            "nono supervisor channel closed".to_string()
+                        }
+                    };
+                    let _ = died_tx.send(msg);
+                    let _ = process_cmd_tx.send(LifecycleSignal::KernelDied);
+                },
+                move |_| {
+                    let _ = panic_cmd_tx.send(LifecycleSignal::KernelDied);
+                },
+            )
+        } else {
+            // Should never happen — either direct_process_opt or sandbox_handle_opt is Some.
+            // Create a no-op watcher to avoid Option<JoinHandle<()>> throughout.
+            warn!("[jupyter-kernel] Neither direct process nor sandbox handle available for process watcher");
+            spawn_supervised(
+                "process-watcher-noop",
+                async move {
+                    let _ = died_tx.send("no process to watch".to_string());
+                    let _ = process_cmd_tx.send(LifecycleSignal::KernelDied);
+                },
+                move |_| {
+                    let _ = panic_cmd_tx.send(LifecycleSignal::KernelDied);
+                },
+            )
+        };
 
         // ── IOPub listener task ──────────────────────────────────────────
 
@@ -2912,6 +3340,10 @@ impl KernelConnection for JupyterKernel {
             pending_completions,
             history_cache: HistoryLruCache::new(HISTORY_CACHE_CAPACITY),
             stream_terminals,
+            sandbox_supervisor: sandbox_supervisor_opt,
+            sandbox_profile: sandbox_profile_stored,
+            sandbox_state: sandbox_state_arc,
+            sandbox_event_stream: sandbox_event_stream_opt,
         };
 
         info!("[jupyter-kernel] Kernel started: {}", kernel_id);
@@ -3027,44 +3459,67 @@ impl KernelConnection for JupyterKernel {
             let _ = shell.send(request).await;
         }
 
-        #[cfg(unix)]
-        if let Some(pid) = self.kernel_pid.take() {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid;
+        if let Some(supervisor) = self.sandbox_supervisor.take() {
+            // ── Sandbox shutdown: delegate to Supervisor ─────────────────
+            //
+            // The Supervisor owns the correct two-phase shutdown sequence:
+            // 1. SIGTERM kernel (clean shutdown)
+            // 2. Wait grace/2 for kernel exit
+            // 3. SIGKILL kernel if still alive
+            // 4. SIGTERM nono
+            // 5. Wait grace/2 for nono exit
+            // 6. SIGKILL nono + killpg
+            //
+            // Per D-4: the daemon must signal both the kernel and nono PIDs
+            // in the correct order. The Supervisor owns this logic.
+            info!("[jupyter-kernel] Delegating shutdown to nono Supervisor");
+            let _ = supervisor
+                .shutdown(std::time::Duration::from_secs(10))
+                .await;
+            // `sandbox_profile` is dropped here (after supervisor exits), which
+            // removes the temp profile JSON file from disk.
+            self.sandbox_profile.take();
+        } else {
+            // ── Direct shutdown: signal kernel PID ────────────────────────
+            #[cfg(unix)]
+            if let Some(pid) = self.kernel_pid.take() {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
 
-            // Wait up to 2s for the kernel to exit after shutdown_request
-            if !wait_for_pid_exit(pid, std::time::Duration::from_secs(2)).await {
-                info!(
-                    "[jupyter-kernel] Kernel didn't exit after shutdown_request, sending SIGTERM to pid {}",
-                    pid
-                );
-                let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
-
-                // Wait up to 3s for SIGTERM
-                if !wait_for_pid_exit(pid, std::time::Duration::from_secs(3)).await {
+                // Wait up to 2s for the kernel to exit after shutdown_request
+                if !wait_for_pid_exit(pid, std::time::Duration::from_secs(2)).await {
                     info!(
-                        "[jupyter-kernel] Kernel didn't respond to SIGTERM, sending SIGKILL to pid {}",
+                        "[jupyter-kernel] Kernel didn't exit after shutdown_request, sending SIGTERM to pid {}",
                         pid
                     );
-                    if let Err(e) = kill(Pid::from_raw(pid), Signal::SIGKILL) {
-                        match e {
-                            nix::errno::Errno::ESRCH => {}
-                            other => {
-                                debug!(
-                                    "[jupyter-kernel] Failed to SIGKILL kernel pid {}: {}",
-                                    pid, other
-                                );
+                    let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+
+                    // Wait up to 3s for SIGTERM
+                    if !wait_for_pid_exit(pid, std::time::Duration::from_secs(3)).await {
+                        info!(
+                            "[jupyter-kernel] Kernel didn't respond to SIGTERM, sending SIGKILL to pid {}",
+                            pid
+                        );
+                        if let Err(e) = kill(Pid::from_raw(pid), Signal::SIGKILL) {
+                            match e {
+                                nix::errno::Errno::ESRCH => {}
+                                other => {
+                                    debug!(
+                                        "[jupyter-kernel] Failed to SIGKILL kernel pid {}: {}",
+                                        pid, other
+                                    );
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        #[cfg(not(unix))]
-        {
-            // On non-Unix platforms, kill the child process directly
-            // (process groups aren't available)
+            #[cfg(not(unix))]
+            {
+                // On non-Unix platforms, kill the child process directly
+                // (process groups aren't available)
+            }
         }
 
         if let Some(ref path) = self.connection_file {
@@ -3333,7 +3788,42 @@ impl Drop for JupyterKernel {
             task.abort();
         }
 
-        // Kill kernel process on Unix
+        // For sandboxed kernels: drop the supervisor (triggers SIGKILL on nono's
+        // process group via its internal watcher), then drop the profile (deletes
+        // the temp JSON file). Drop order matters: supervisor before profile so
+        // nono exits before the profile file is deleted.
+        //
+        // Note: `Supervisor::drop()` does NOT send signals — signals are sent
+        // explicitly in `Supervisor::shutdown()`. On drop we just abandon
+        // monitoring. The process watcher task above has already been aborted,
+        // so the best we can do is kill both processes directly.
+        if let Some(sandbox_supervisor) = self.sandbox_supervisor.take() {
+            // Get the nono PID to send SIGKILL.
+            let nono_pid = sandbox_supervisor.nono_pid();
+            let kernel_pid_raw = sandbox_supervisor
+                .kernel_pid()
+                .load(std::sync::atomic::Ordering::Relaxed);
+            // Kill kernel first (so it doesn't keep running without a proxy).
+            #[cfg(unix)]
+            if kernel_pid_raw > 0 {
+                unsafe {
+                    libc::kill(kernel_pid_raw as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            // Then kill nono (and its process group).
+            #[cfg(unix)]
+            {
+                unsafe {
+                    libc::kill(nono_pid as libc::pid_t, libc::SIGKILL);
+                    libc::killpg(nono_pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            drop(sandbox_supervisor);
+        }
+        // Drop the profile AFTER the supervisor (deletes the temp JSON file).
+        self.sandbox_profile.take();
+
+        // Kill kernel process on Unix (for direct/non-sandbox kernels)
         #[cfg(unix)]
         if let Some(pid) = self.kernel_pid.take() {
             use nix::sys::signal::{kill, Signal};

@@ -1382,10 +1382,17 @@ async fn handle_runtime_agent_request(
             kernel_ports,
             env_vars,
             redact_env_values_in_outputs,
+            sandbox_profile,
         } => {
             info!(
-                "[runtime-agent] LaunchKernel: type={} source={}",
-                kernel_type, env_source
+                "[runtime-agent] LaunchKernel: type={} source={} sandbox={}",
+                kernel_type,
+                env_source,
+                sandbox_profile.as_ref().map_or("none", |p| if p.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                })
             );
 
             let pooled_env = launched_config.venv_path.as_ref().and_then(|venv| {
@@ -1431,6 +1438,7 @@ async fn handle_runtime_agent_request(
                 redact_env_values_in_outputs,
                 pooled_env,
                 direct_python_path,
+                sandbox_profile,
             };
 
             let launch_started = std::time::Instant::now();
@@ -1485,10 +1493,17 @@ async fn handle_runtime_agent_request(
             kernel_ports,
             env_vars,
             redact_env_values_in_outputs,
+            sandbox_profile,
         } => {
             info!(
-                "[runtime-agent] RestartKernel: type={} source={}",
-                kernel_type, env_source
+                "[runtime-agent] RestartKernel: type={} source={} sandbox={}",
+                kernel_type,
+                env_source,
+                sandbox_profile.as_ref().map_or("none", |p| if p.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                })
             );
 
             // Capture in-flight executions before shutdown so we can mark them
@@ -1552,6 +1567,7 @@ async fn handle_runtime_agent_request(
                 redact_env_values_in_outputs,
                 pooled_env,
                 direct_python_path,
+                sandbox_profile,
             };
 
             // Mark stale executions as failed in RuntimeStateDoc.

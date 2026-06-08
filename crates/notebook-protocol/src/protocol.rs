@@ -835,6 +835,13 @@ pub enum RuntimeAgentRequest {
         /// Redact eligible environment variable values from textual kernel outputs.
         #[serde(default = "default_redact_env_values_in_outputs")]
         redact_env_values_in_outputs: bool,
+        /// Sandbox profile for this kernel session.
+        ///
+        /// When `Some` and `profile.enabled == true`, the kernel is launched under
+        /// nono via the sandbox supervisor. When `None` or `profile.enabled == false`,
+        /// the existing direct-spawn path is used (D-3 opt-in semantics).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<notebook_doc::sandbox::SandboxProfile>,
     },
 
     /// Interrupt the currently executing cell.
@@ -858,6 +865,9 @@ pub enum RuntimeAgentRequest {
         env_vars: std::collections::HashMap<String, String>,
         #[serde(default = "default_redact_env_values_in_outputs")]
         redact_env_values_in_outputs: bool,
+        /// Sandbox profile for this kernel session (same semantics as `LaunchKernel`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<notebook_doc::sandbox::SandboxProfile>,
     },
 
     /// Send a comm message to the kernel (widget interactions).
@@ -1596,6 +1606,7 @@ mod tests {
             kernel_ports: ports,
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
+            sandbox_profile: None,
         };
         let json = serde_json::to_value(&launch).unwrap();
         assert_eq!(json["kernel_ports"]["stdin"], 9000);
@@ -1636,6 +1647,7 @@ mod tests {
             kernel_ports: ports,
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
+            sandbox_profile: None,
         };
         let json = serde_json::to_value(&restart).unwrap();
         let parsed: RuntimeAgentRequest = serde_json::from_value(json).unwrap();
@@ -1698,6 +1710,7 @@ mod tests {
             },
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
+            sandbox_profile: None,
         }
         .is_command());
         assert!(!RuntimeAgentRequest::RestartKernel {
@@ -1714,6 +1727,7 @@ mod tests {
             },
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
+            sandbox_profile: None,
         }
         .is_command());
         assert!(!RuntimeAgentRequest::SyncEnvironment(EnvKind::Uv {

@@ -176,6 +176,18 @@ pub enum SupervisorError {
 // ── Supervisor impl ───────────────────────────────────────────────────────
 
 impl Supervisor {
+    /// Returns the PID of the nono process.
+    pub fn nono_pid(&self) -> u32 {
+        self.nono_pid
+    }
+
+    /// Returns the shared kernel PID atomic.
+    ///
+    /// May be `NONE_PID` (-1) if kernel discovery is still in progress.
+    pub fn kernel_pid(&self) -> &Arc<AtomicI32> {
+        &self.kernel_pid
+    }
+
     /// Spawn nono and start all background monitoring tasks.
     ///
     /// Returns a `(Supervisor, SupervisorHandle)` pair.  The `Supervisor` owns

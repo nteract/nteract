@@ -50,6 +50,12 @@ pub struct KernelLaunchConfig {
     /// Direct interpreter path for a no-pool launch (e.g. current_python):
     /// set only when the launched env carries a python_path but no venv_path.
     pub direct_python_path: Option<PathBuf>,
+    /// Sandbox profile for this kernel session.
+    ///
+    /// When `Some` and `profile.enabled == true`, the kernel is launched under
+    /// nono via the `Supervisor` (task 07 opt-in branch). When `None` or
+    /// `profile.enabled == false`, the existing direct-spawn path is used.
+    pub sandbox_profile: Option<notebook_doc::sandbox::SandboxProfile>,
 }
 
 /// Shared references that the kernel needs but does not own.

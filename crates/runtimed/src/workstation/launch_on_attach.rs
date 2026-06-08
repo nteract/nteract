@@ -79,6 +79,9 @@ pub fn build_current_python_launch(
         env_vars: launch.env_vars.clone(),
         // current_python does not redact (no daemon-managed secret env overlay).
         redact_env_values_in_outputs: false,
+        // Workstation launch-on-attach does not apply a sandbox profile;
+        // sandbox is a per-notebook opt-in that requires the notebook doc.
+        sandbox_profile: None,
     }
 }
 
@@ -121,6 +124,7 @@ mod tests {
             kernel_ports,
             env_vars,
             redact_env_values_in_outputs,
+            ..
         } = req
         else {
             panic!("expected LaunchKernel");

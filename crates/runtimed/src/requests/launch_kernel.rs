@@ -1511,7 +1511,30 @@ pub(crate) async fn handle(
         captured_env_for_config.as_ref(),
     );
 
-    // Transition to "launching" phase before starting the kernel process
+    // ── Read sandbox profile from notebook metadata (D-3 opt-in) ─────────
+    //
+    // The sandbox profile lives at `metadata.runt.sandbox`. If present and
+    // `enabled = true`, the kernel will be launched under nono. A `None` here
+    // (or `enabled = false`) takes the direct path with no behavior change.
+    //
+    // We pass the profile through the `RuntimeAgentRequest` so the runtime
+    // agent can route to `spawn_with_sandbox()` or `spawn_direct()` without
+    // needing to read the Automerge doc itself.
+    let sandbox_profile: Option<notebook_doc::sandbox::SandboxProfile> = metadata_snapshot
+        .as_ref()
+        .and_then(|snap| snap.runt.sandbox.clone());
+    if let Some(ref profile) = sandbox_profile {
+        if profile.enabled {
+            info!(
+                "[launch-kernel] Sandbox profile present and enabled; will launch kernel under nono"
+            );
+        } else {
+            info!(
+                "[launch-kernel] Sandbox profile present but disabled; launching kernel directly"
+            );
+        }
+    }
+
     if let Err(e) = room
         .state
         .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
@@ -1551,6 +1574,7 @@ pub(crate) async fn handle(
                     kernel_ports,
                     env_vars: restart_env_vars.clone(),
                     redact_env_values_in_outputs,
+                    sandbox_profile: sandbox_profile.clone(),
                 }
             })
             .await
@@ -1709,6 +1733,7 @@ pub(crate) async fn handle(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
+                        sandbox_profile: sandbox_profile.clone(),
                     }
                 })
                 .await

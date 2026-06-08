@@ -4152,6 +4152,10 @@ pub(crate) async fn auto_launch_kernel(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
+                        // auto-launch path does not apply a sandbox profile;
+                        // sandbox is a per-notebook opt-in that requires the notebook doc
+                        // and is handled through the explicit LaunchKernel request path.
+                        sandbox_profile: None,
                     }
                 })
                 .await

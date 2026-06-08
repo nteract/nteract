@@ -58,6 +58,7 @@ pub(crate) mod requests;
 pub mod runtime_agent;
 pub mod runtime_agent_handle;
 pub(crate) mod runtime_agent_manifest;
+pub mod sandbox_launch;
 pub mod shell_env_overlay;
 pub mod singleton;
 pub(crate) mod stream_committer;
