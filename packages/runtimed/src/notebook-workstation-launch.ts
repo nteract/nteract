@@ -181,6 +181,18 @@ function launchProjectionForCandidate(
   candidate: NotebookRegisteredWorkstationProjection,
 ): NotebookWorkstationLaunchReadinessProjection {
   if (candidate.status === "online") {
+    if (!candidate.workingDirectoryLabel) {
+      return unavailableCandidateProjection(
+        candidate,
+        "This workstation does not have a working directory configured for notebook execution.",
+      );
+    }
+    if (!hasRunnableEnvironment(candidate)) {
+      return unavailableCandidateProjection(
+        candidate,
+        "This workstation does not have a runnable default environment configured.",
+      );
+    }
     return launchProjection({
       canRun: false,
       detail: "This workstation is available but not attached to the notebook yet.",
@@ -206,15 +218,30 @@ function launchProjectionForCandidate(
       workstationId: candidate.id,
     });
   }
+  return unavailableCandidateProjection(
+    candidate,
+    candidate.statusMessage ?? "This workstation is not available to run cells.",
+  );
+}
+
+function unavailableCandidateProjection(
+  candidate: NotebookRegisteredWorkstationProjection,
+  detail: string,
+): NotebookWorkstationLaunchReadinessProjection {
   return launchProjection({
     canRun: false,
-    detail: candidate.statusMessage ?? "This workstation is not available to run cells.",
+    detail,
     primaryAction: launchAction("open_workstations", "Review compute", "Open workstations panel"),
     state: "workstation_unavailable",
     statusLabel: candidate.statusLabel,
     targetLabel: candidate.displayName,
     workstationId: candidate.id,
   });
+}
+
+function hasRunnableEnvironment(candidate: NotebookRegisteredWorkstationProjection): boolean {
+  if (candidate.defaultEnvironmentLabel) return true;
+  return candidate.environments.some((environment) => environment.available);
 }
 
 function launchProjection(

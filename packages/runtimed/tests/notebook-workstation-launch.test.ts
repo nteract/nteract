@@ -156,6 +156,96 @@ describe("notebook workstation launch readiness projection", () => {
     });
   });
 
+  it("keeps online workstations without launch context unavailable", () => {
+    const missingWorkingDirectory = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [{ ...lab2Workstation, workingDirectory: null }],
+    });
+    const missingWorkingDirectoryProjection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: cloudUnavailableCapabilities,
+      selection: missingWorkingDirectory,
+    });
+
+    expect(missingWorkingDirectoryProjection).toMatchObject({
+      canRun: false,
+      detail:
+        "This workstation does not have a working directory configured for notebook execution.",
+      primaryAction: {
+        kind: "open_workstations",
+        label: "Review compute",
+      },
+      state: "workstation_unavailable",
+      targetLabel: "Lab2 workstation",
+      workstationId: "ws-lab2",
+    });
+
+    const missingEnvironment = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          defaultEnvironmentLabel: null,
+          environments: [
+            {
+              id: "project-env",
+              label: "Project environment",
+              available: false,
+            },
+          ],
+        },
+      ],
+    });
+    const missingEnvironmentProjection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: cloudUnavailableCapabilities,
+      selection: missingEnvironment,
+    });
+
+    expect(missingEnvironmentProjection).toMatchObject({
+      canRun: false,
+      detail: "This workstation does not have a runnable default environment configured.",
+      primaryAction: {
+        kind: "open_workstations",
+        label: "Review compute",
+      },
+      state: "workstation_unavailable",
+      targetLabel: "Lab2 workstation",
+      workstationId: "ws-lab2",
+    });
+  });
+
+  it("projects an offline default workstation as unavailable with its status message", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          status: "offline",
+          statusMessage: "No heartbeat from this workstation recently.",
+        },
+      ],
+    });
+    const projection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: cloudUnavailableCapabilities,
+      selection,
+    });
+
+    expect(projection).toMatchObject({
+      canRun: false,
+      detail: "No heartbeat from this workstation recently.",
+      primaryAction: {
+        kind: "open_workstations",
+        label: "Review compute",
+      },
+      state: "workstation_unavailable",
+      statusLabel: "Offline",
+      targetLabel: "Lab2 workstation",
+      workstationId: "ws-lab2",
+    });
+  });
+
   it("projects registered workstations without a selected/default target as selection needed", () => {
     const selection = projectNotebookWorkstationSelection({
       canSelectWorkstation: true,
