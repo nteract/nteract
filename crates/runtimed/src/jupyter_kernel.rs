@@ -1841,7 +1841,11 @@ impl KernelConnection for JupyterKernel {
                                                     execution_id: eid.clone(),
                                                     nbformat_value,
                                                     buffers: iopub_buffers,
-                                                    kind: output_kind,
+                                                    kind: if is_rich_error {
+                                                        OrdinaryOutputKind::Error
+                                                    } else {
+                                                        output_kind
+                                                    },
                                                 })
                                                 .await;
 
