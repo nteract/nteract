@@ -16,6 +16,7 @@ export {
 } from "./actor-projection";
 export {
   notebookShellRuntimeTargetSummary,
+  projectNotebookLaunchEnvironment,
   projectNotebookCommandRuntimeActions,
   projectNotebookCommandRuntimeStatus,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
@@ -29,6 +30,11 @@ export {
   type NotebookCommandRuntimeActionsProjection,
   type NotebookCommandRuntimeState,
   type NotebookCommandRuntimeStatusProjection,
+  type NotebookLaunchEnvironmentOptionKind,
+  type NotebookLaunchEnvironmentOptionProjection,
+  type NotebookLaunchEnvironmentProjection,
+  type NotebookLaunchEnvironmentSource,
+  type NotebookLaunchKernelSpecProjection,
   type NotebookRegisteredWorkstation,
   type NotebookRegisteredWorkstationEnvironment,
   type NotebookRegisteredWorkstationProjection,
@@ -68,6 +74,7 @@ export {
   type NotebookWorkstationSelectionState,
   type ProjectNotebookCommandRuntimeActionsOptions,
   type ProjectNotebookCommandRuntimeStatusOptions,
+  type ProjectNotebookLaunchEnvironmentOptions,
   type ProjectNotebookWorkstationLaunchReadinessOptions,
   type ProjectNotebookWorkstationSelectionOptions,
 } from "./capabilities";

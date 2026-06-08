@@ -102,11 +102,32 @@ describe("notebook workstation launch readiness projection", () => {
 
     expect(projection).toMatchObject({
       canRun: false,
+      detail: "Open the workstation panel to register compute before running this notebook.",
       state: "needs_registration",
       statusLabel: "Setup needed",
       primaryAction: {
         kind: "setup_workstation",
         label: "Set up compute",
+      },
+    });
+  });
+
+  it("does not direct viewers toward workstation setup when none are registered", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canRegisterWorkstation: false,
+      canSelectWorkstation: false,
+      registeredWorkstations: [],
+    });
+    const projection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: cloudUnavailableCapabilities,
+      selection,
+    });
+
+    expect(projection).toMatchObject({
+      canRun: false,
+      state: "unavailable",
+      primaryAction: {
+        kind: "none",
       },
     });
   });

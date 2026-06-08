@@ -266,6 +266,18 @@ export {
   type ProjectNotebookWorkstationLaunchReadinessOptions,
 } from "./notebook-workstation-launch";
 
+// Notebook launch environment projection
+export {
+  clearNotebookLaunchEnvironmentProjectionCacheForTests,
+  projectNotebookLaunchEnvironment,
+  type NotebookLaunchEnvironmentOptionKind,
+  type NotebookLaunchEnvironmentOptionProjection,
+  type NotebookLaunchEnvironmentProjection,
+  type NotebookLaunchEnvironmentSource,
+  type NotebookLaunchKernelSpecProjection,
+  type ProjectNotebookLaunchEnvironmentOptions,
+} from "./notebook-launch-environment";
+
 // Projection cache helpers
 export { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 

@@ -119,7 +119,7 @@ export function projectNotebookWorkstationLaunchReadiness({
   } else if (selection?.state === "needs_registration") {
     projection = launchProjection({
       canRun: false,
-      detail: "Register a workstation before starting compute for this notebook.",
+      detail: "Open the workstation panel to register compute before running this notebook.",
       primaryAction: launchAction("setup_workstation", "Set up compute", "Open workstations panel"),
       state: "needs_registration",
       statusLabel: "Setup needed",
