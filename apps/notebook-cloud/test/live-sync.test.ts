@@ -514,14 +514,6 @@ class FakeWebSocket extends EventTarget {
     this.dispatchEvent(messageEvent(frame.buffer));
   }
 
-  response(id: string, response: Record<string, unknown>): void {
-    const payload = new TextEncoder().encode(JSON.stringify({ id, ...response }));
-    const frame = new Uint8Array(payload.byteLength + 1);
-    frame[0] = FrameType.RESPONSE;
-    frame.set(payload, 1);
-    this.dispatchEvent(messageEvent(frame.buffer));
-  }
-
   message(data: unknown): void {
     this.dispatchEvent(messageEvent(data));
   }
