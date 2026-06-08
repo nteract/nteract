@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{output_ids_for_execution, ExecutionState, RuntimeState};
+use crate::{output_ids_for_execution, CellAnnotation, ExecutionState, RuntimeState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionTransition {
@@ -227,7 +227,8 @@ impl ExecutionViewProjector {
                 continue;
             };
             next_ids.insert(execution_id.clone());
-            let fingerprint = execution_fingerprint(entry);
+            let annotation = state.cell_annotations.get(execution_id);
+            let fingerprint = execution_fingerprint(entry, annotation);
             if self.prev_execution_fingerprint.get(execution_id) == Some(&fingerprint) {
                 continue;
             }
@@ -311,10 +312,13 @@ fn execution_snapshot(exec: &ExecutionState) -> ExecutionViewSnapshot {
     }
 }
 
-fn execution_fingerprint(exec: &ExecutionState) -> String {
+fn execution_fingerprint(exec: &ExecutionState, annotation: Option<&CellAnnotation>) -> String {
     let output_ids = output_ids_for_execution(exec);
+    let annotation_part = annotation
+        .map(|a| format!("{}:{}", a.kind, a.message))
+        .unwrap_or_default();
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         exec.execution_count
             .map(|count| count.to_string())
             .unwrap_or_default(),
@@ -323,7 +327,8 @@ fn execution_fingerprint(exec: &ExecutionState) -> String {
             .map(|success| success.to_string())
             .unwrap_or_default(),
         output_ids.join(","),
-        exec.submitted_by_actor_label.as_deref().unwrap_or_default()
+        exec.submitted_by_actor_label.as_deref().unwrap_or_default(),
+        annotation_part,
     )
 }
 

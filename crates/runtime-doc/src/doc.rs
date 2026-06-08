@@ -383,6 +383,33 @@ pub struct RuntimeState {
     /// Room-host-owned active workstation attachment projection.
     #[serde(default)]
     pub workstation: Option<WorkstationAttachmentState>,
+    /// Ephemeral per-execution sandbox annotations written by the daemon.
+    ///
+    /// Keyed by `execution_id`. Absent on old documents (pre-sandbox field)
+    /// and on any doc that has never had a sandbox annotation written — both
+    /// deserialize to `{}`. Never written to the notebook export.
+    #[serde(default)]
+    pub cell_annotations: HashMap<String, CellAnnotation>,
+}
+
+/// A single sandbox annotation for one execution.
+///
+/// Written by the daemon when a sandbox event (HTTP block, credential error,
+/// proxy degradation) is correlated with a running or completed execution.
+/// The frontend overlays this annotation when rendering the cell; the MCP
+/// execution-result tool surfaces it alongside outputs.
+///
+/// Stored in `RuntimeStateDoc.cell_annotations`, keyed by `execution_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CellAnnotation {
+    /// Short machine-readable tag, e.g. `"sandbox_http_block"`,
+    /// `"sandbox_credential_missing"`, `"sandbox_proxy_degraded"`.
+    pub kind: String,
+    /// Human-readable enrichment string shown in the UI overlay.
+    pub message: String,
+    /// Optional structured JSON payload carrying additional details.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 use crate::RuntimeStateError;
@@ -2256,6 +2283,7 @@ impl RuntimeStateDoc {
             self.remove_display_index_entries_for_execution(&exec_id);
             self.doc.delete(&executions, exec_id.as_str())?;
             self.output_order_cache.remove(&exec_id);
+            self.remove_cell_annotation(&exec_id)?;
             removed += 1;
         }
         Ok(removed)
@@ -3084,7 +3112,118 @@ impl RuntimeStateDoc {
             comms,
             project_context: self.project_context(),
             workstation,
+            cell_annotations: self.read_cell_annotations(),
         }
+    }
+
+    // ── Cell annotations ────────────────────────────────────────────
+
+    /// Read all cell annotations from the document.
+    ///
+    /// Returns an empty map when the `cell_annotations` root key is absent
+    /// (old documents, pre-sandbox). This is the correct backward-compatible
+    /// default per Pattern B (post-genesis fields).
+    fn read_cell_annotations(&self) -> HashMap<String, CellAnnotation> {
+        let Some(map) = self.get_map("cell_annotations") else {
+            return HashMap::new();
+        };
+        let mut result = HashMap::new();
+        for key in self.doc.keys(&map) {
+            let Some(entry_obj) =
+                self.doc
+                    .get(&map, &key)
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, id)| match value {
+                        automerge::Value::Object(automerge::ObjType::Map) => Some(id),
+                        _ => None,
+                    })
+            else {
+                continue;
+            };
+            let kind = self.read_str(&entry_obj, "kind");
+            let message = self.read_str(&entry_obj, "message");
+            let details = automunge::read_json_value(&self.doc, &entry_obj, "details").and_then(
+                |v| match v {
+                    serde_json::Value::Null => None,
+                    other => Some(other),
+                },
+            );
+            result.insert(
+                key,
+                CellAnnotation {
+                    kind,
+                    message,
+                    details,
+                },
+            );
+        }
+        result
+    }
+
+    /// Write or overwrite a sandbox annotation for the given execution ID.
+    ///
+    /// Uses `get_or_create_root_map("cell_annotations")` so the top-level
+    /// map is created lazily — no genesis change required (Pattern B).
+    pub fn set_cell_annotation(
+        &mut self,
+        execution_id: &str,
+        annotation: &CellAnnotation,
+    ) -> Result<(), RuntimeStateError> {
+        let annotations_map = self.get_or_create_root_map("cell_annotations")?;
+        // Get or create the per-execution sub-map.
+        let entry = self
+            .doc
+            .get(&annotations_map, execution_id)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(automerge::ObjType::Map) => Some(id),
+                _ => None,
+            });
+        let entry = match entry {
+            Some(id) => id,
+            None => self
+                .doc
+                .put_object(&annotations_map, execution_id, ObjType::Map)
+                .map_err(RuntimeStateError::from)?,
+        };
+        self.doc.put(&entry, "kind", annotation.kind.as_str())?;
+        self.doc
+            .put(&entry, "message", annotation.message.as_str())?;
+        match &annotation.details {
+            Some(details) => {
+                automunge::update_json_at_key(&mut self.doc, &entry, "details", details)?
+            }
+            None => {
+                // Clear any previous details value.
+                if self.doc.get(&entry, "details").ok().flatten().is_some() {
+                    self.doc.put(&entry, "details", ScalarValue::Null)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove the annotation for the given execution ID, if any.
+    ///
+    /// A no-op when the execution ID is not present or the `cell_annotations`
+    /// map doesn't exist yet. Used by `trim_executions_preserving` to clean
+    /// up orphan entries when executions are pruned.
+    pub fn remove_cell_annotation(&mut self, execution_id: &str) -> Result<(), RuntimeStateError> {
+        let Some(annotations_map) = self.get_map("cell_annotations") else {
+            return Ok(());
+        };
+        if self
+            .doc
+            .get(&annotations_map, execution_id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            self.doc.delete(&annotations_map, execution_id)?;
+        }
+        Ok(())
     }
 
     // ── Automerge sync protocol ─────────────────────────────────────
@@ -7644,5 +7783,133 @@ mod tests {
         doc.doc.put(&pc, "observed_at", "t0")?;
         assert_eq!(doc.project_context(), ProjectContext::Pending);
         Ok(())
+    }
+
+    // ── Cell annotation tests ────────────────────────────────────────
+
+    #[test]
+    fn cell_annotation_round_trip() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let annotation = CellAnnotation {
+            kind: "sandbox_http_block".to_string(),
+            message: "Domain example.com is not in the allowlist".to_string(),
+            details: Some(serde_json::json!({ "domain": "example.com" })),
+        };
+        doc.set_cell_annotation("exec-1", &annotation)?;
+        let state = doc.read_state();
+        assert_eq!(state.cell_annotations.get("exec-1"), Some(&annotation));
+        Ok(())
+    }
+
+    #[test]
+    fn cell_annotation_overwrite() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let first = CellAnnotation {
+            kind: "sandbox_http_block".to_string(),
+            message: "first message".to_string(),
+            details: None,
+        };
+        let second = CellAnnotation {
+            kind: "sandbox_credential_missing".to_string(),
+            message: "second message".to_string(),
+            details: Some(serde_json::json!({ "name": "my_key" })),
+        };
+        doc.set_cell_annotation("exec-1", &first)?;
+        doc.set_cell_annotation("exec-1", &second)?;
+        let state = doc.read_state();
+        assert_eq!(state.cell_annotations.get("exec-1"), Some(&second));
+        assert_eq!(state.cell_annotations.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn cell_annotations_absent_on_old_doc_returns_empty() {
+        // An empty doc (backward compat: no `cell_annotations` root key)
+        // must return `{}` from `read_state()`.
+        let doc = RuntimeStateDoc::new_empty();
+        assert_eq!(
+            doc.read_state().cell_annotations,
+            std::collections::HashMap::new()
+        );
+    }
+
+    #[test]
+    fn trim_executions_preserving_removes_annotations() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        // Create three executions and add annotations for each.
+        for id in ["exec-1", "exec-2", "exec-3"] {
+            doc.create_execution(id)?;
+            doc.set_execution_count(id, 1)?;
+            doc.set_execution_done(id, true)?;
+            doc.set_cell_annotation(
+                id,
+                &CellAnnotation {
+                    kind: "sandbox_http_block".to_string(),
+                    message: format!("blocked for {id}"),
+                    details: None,
+                },
+            )?;
+        }
+        assert_eq!(doc.read_state().cell_annotations.len(), 3);
+
+        // Trim to 1: should remove 2 executions and their annotations.
+        let removed = doc.trim_executions_preserving(1, &HashSet::new())?;
+        assert_eq!(removed, 2);
+        let state = doc.read_state();
+        assert_eq!(state.executions.len(), 1);
+        assert_eq!(
+            state.cell_annotations.len(),
+            1,
+            "trimmed annotations must be removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cell_annotation_fingerprint_change_triggers_upsert() {
+        use crate::projection::ExecutionViewProjector;
+
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1").unwrap();
+        doc.set_execution_count("exec-1", 1).unwrap();
+        doc.set_execution_done("exec-1", true).unwrap();
+
+        let state = doc.read_state();
+        let mut projector = ExecutionViewProjector::default();
+        let changeset = projector.project_runtime(&state);
+        assert_eq!(
+            changeset.execution_upserts.len(),
+            1,
+            "initial upsert expected"
+        );
+
+        // No change — fingerprint stable.
+        let changeset = projector.project_runtime(&state);
+        assert!(changeset.execution_upserts.is_empty(), "no change expected");
+
+        // Add an annotation — fingerprint must change.
+        doc.set_cell_annotation(
+            "exec-1",
+            &CellAnnotation {
+                kind: "sandbox_http_block".to_string(),
+                message: "blocked".to_string(),
+                details: None,
+            },
+        )
+        .unwrap();
+        let state = doc.read_state();
+        let changeset = projector.project_runtime(&state);
+        assert_eq!(
+            changeset.execution_upserts.len(),
+            1,
+            "annotation change must emit upsert"
+        );
+
+        // Same annotation again — no change.
+        let changeset = projector.project_runtime(&state);
+        assert!(
+            changeset.execution_upserts.is_empty(),
+            "stable annotation must not emit upsert"
+        );
     }
 }

@@ -193,6 +193,24 @@ export interface ExecutionState {
   outputs?: unknown[];
 }
 
+/**
+ * A single sandbox annotation for one execution.
+ *
+ * Written by the daemon when a sandbox event (HTTP block, credential error,
+ * proxy degradation) is correlated with a running or completed execution.
+ * The frontend overlays this when rendering the cell.
+ *
+ * Mirror of `runtime_doc::CellAnnotation`.
+ */
+export interface CellAnnotation {
+  /** Short machine-readable tag, e.g. `"sandbox_http_block"`. */
+  kind: string;
+  /** Human-readable enrichment string shown in the UI overlay. */
+  message: string;
+  /** Optional structured payload carrying additional details. */
+  details?: unknown;
+}
+
 /** Snapshot of a comm channel from RuntimeStateDoc. */
 export interface CommDocEntry {
   target_name: string;
@@ -318,6 +336,14 @@ export interface RuntimeState {
    * Room-host-owned active workstation attachment projection.
    */
   workstation: WorkstationAttachmentState | null;
+  /**
+   * Ephemeral per-execution sandbox annotations written by the daemon.
+   *
+   * Keyed by `execution_id`. Empty (`{}`) on old documents that predate the
+   * sandbox feature and on any doc that has never had an annotation written.
+   * Never written to the notebook export.
+   */
+  cell_annotations: Record<string, CellAnnotation>;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -361,6 +387,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   comms: {},
   project_context: { state: "Pending" },
   workstation: null,
+  cell_annotations: {},
 };
 
 // ── Utilities ────────────────────────────────────────────────────────
