@@ -430,7 +430,7 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     identity,
     identity.scope,
     {
-      allowPublicViewerDowngrade: true,
+      allowViewerDowngrade: true,
     },
   );
   if (authorizedIdentity instanceof Response) {

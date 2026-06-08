@@ -30,12 +30,12 @@ export class AuthorizationError extends Error {
 
 export interface AuthorizeNotebookAccessOptions {
   /**
-   * Browser viewers can arrive with a stale or over-eager requested scope while
-   * still only being allowed to use the notebook's public read grant. Use this
-   * only on the live room connection path so mutation routes do not continue
-   * after a silent scope downgrade.
+   * Browser viewers can arrive with a stale or over-eager requested editor
+   * scope while still only being allowed to read the notebook. Use this only on
+   * the live room connection path so mutation routes do not continue after a
+   * silent scope downgrade.
    */
-  allowPublicViewerDowngrade?: boolean;
+  allowViewerDowngrade?: boolean;
 }
 
 export async function authorizeNotebookAccess(
@@ -72,13 +72,20 @@ export async function authorizeNotebookAccess(
   if (aclRowsCoverScope(principalRows, requestedScope)) {
     return { ...identity, scope: requestedScope };
   }
+  if (
+    options.allowViewerDowngrade &&
+    requestedScope === "editor" &&
+    aclRowsCoverScope(principalRows, "viewer")
+  ) {
+    return { ...identity, scope: "viewer" };
+  }
 
   const publicRows = await getPublicNotebookAclRows(env, notebookId);
   if (aclRowsCoverScope(publicRows, "viewer")) {
     if (requestedScope === "viewer") {
       return { ...identity, scope: "viewer" };
     }
-    if (options.allowPublicViewerDowngrade && requestedScope === "editor") {
+    if (options.allowViewerDowngrade && requestedScope === "editor") {
       return { ...identity, scope: "viewer" };
     }
   }

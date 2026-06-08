@@ -5,6 +5,7 @@ import {
   type WorkstationAttachmentState,
 } from "runtimed";
 import type { WidgetStore } from "@/components/widgets/widget-store";
+import { diagnoseCloudConnectionAccess } from "./connection-diagnostics";
 import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
@@ -594,12 +595,11 @@ export function useCloudViewerSession({
       })
       .catch((error: unknown) => {
         if (disposed) return;
+        const message = error instanceof Error ? error.message : String(error);
         if (materializedCellCount() === 0) {
           setStatus({
             kind: "error",
-            message: `Unable to load live notebook room: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            message: `Unable to load live notebook room: ${message}`,
           });
         }
         presenceStore.reduceConnection("disconnected");
@@ -608,7 +608,22 @@ export function useCloudViewerSession({
         setConnectionPeerId(null);
         setWorkstationAttachment(null);
         workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
-        setConnectionError(error instanceof Error ? error.message : String(error));
+        setConnectionError(message);
+        void diagnoseCloudConnectionAccess({
+          accessRequestsEndpoint: config.accessRequestsEndpoint,
+          authState,
+        })
+          .then((diagnostic) => {
+            if (disposed || !diagnostic) return;
+            if (materializedCellCount() === 0) {
+              setStatus({
+                kind: "error",
+                message: `Unable to load live notebook room: ${diagnostic}`,
+              });
+            }
+            setConnectionError(diagnostic);
+          })
+          .catch(() => undefined);
         console.warn("[notebook-cloud] live room connection failed", error);
       });
 
@@ -636,6 +651,7 @@ export function useCloudViewerSession({
     authRenewalKind,
     authState,
     blobResolver,
+    config.accessRequestsEndpoint,
     config.blobBasePath,
     config.runtimedWasmModulePath,
     config.runtimedWasmPath,

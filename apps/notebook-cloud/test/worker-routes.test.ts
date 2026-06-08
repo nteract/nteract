@@ -3014,6 +3014,56 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("downgrades OIDC editor WebSocket requests to granted viewer access", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      email: "viewer@example.com",
+      extraPayload: { email_verified: true },
+      name: "Viewer Example",
+    });
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "shared-view-demo");
+    seedAcl(env, {
+      notebookId: "shared-view-demo",
+      subject: "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/shared-view-demo/sync?operator=browser:tab&scope=editor", {
+        headers: {
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+            token,
+          )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "viewer");
+    assert.equal(
+      forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+  });
+
   it("stores OIDC profile labels even when there are no pending invites", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
