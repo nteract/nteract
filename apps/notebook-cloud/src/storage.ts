@@ -904,7 +904,7 @@ export async function createWorkstationAttachJob(
 
   const now = new Date().toISOString();
   const jobId = crypto.randomUUID();
-  await env.DB.prepare(
+  const insert = env.DB.prepare(
     `INSERT INTO workstation_attach_jobs (
        id,
        notebook_id,
@@ -915,17 +915,24 @@ export async function createWorkstationAttachJob(
        requested_at,
        updated_at
      ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
-  )
-    .bind(
-      jobId,
-      input.notebookId,
-      input.ownerPrincipal,
-      input.workstationId,
-      input.actorLabel,
-      now,
-      now,
-    )
-    .run();
+  ).bind(
+    jobId,
+    input.notebookId,
+    input.ownerPrincipal,
+    input.workstationId,
+    input.actorLabel,
+    now,
+    now,
+  );
+  try {
+    await insert.run();
+  } catch (error) {
+    const racedExisting = await getActiveWorkstationAttachJob(env, input);
+    if (racedExisting) {
+      return racedExisting;
+    }
+    throw error;
+  }
   return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, jobId);
 }
 

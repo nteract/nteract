@@ -10,7 +10,7 @@ import {
 
 describe("hosted runtime/browser execute smoke helpers", () => {
   it("parses default and explicit browser scopes", () => {
-    assert.deepEqual(parseScopes(undefined), ["owner", "editor"]);
+    assert.deepEqual(parseScopes(undefined), ["owner"]);
     assert.deepEqual(parseScopes("owner,editor"), ["owner", "editor"]);
     assert.deepEqual(parseScopes("owner editor"), ["owner", "editor"]);
     assert.deepEqual(parseScopes(" owner "), ["owner"]);

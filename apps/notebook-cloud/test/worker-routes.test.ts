@@ -1289,6 +1289,40 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("reuses the active workstation attach job for repeated owner requests", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+
+    async function attach() {
+      return worker.fetch(
+        new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Operator": "browser:tab",
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+          body: JSON.stringify({ workstation_id: "ws-lab2" }),
+        }),
+        env,
+        fakeContext(),
+      );
+    }
+
+    const first = await attach();
+    const second = await attach();
+
+    assert.equal(first.status, 202);
+    assert.equal(second.status, 202);
+    const firstBody = (await first.json()) as { job: { job_id: string } };
+    const secondBody = (await second.json()) as { job: { job_id: string } };
+    assert.equal(secondBody.job.job_id, firstBody.job.job_id);
+    assert.equal(env.DB.workstationAttachJobs.size, 1);
+  });
+
   it("allows workstation owners to update attach job status", async () => {
     const env = fakeEnv();
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });

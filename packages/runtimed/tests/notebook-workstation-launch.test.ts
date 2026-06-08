@@ -150,7 +150,8 @@ describe("notebook workstation launch readiness projection", () => {
       targetLabel: "Lab2 workstation",
       workstationId: "ws-lab2",
       primaryAction: {
-        kind: "open_workstations",
+        kind: "attach_workstation",
+        label: "Attach compute",
       },
     });
   });

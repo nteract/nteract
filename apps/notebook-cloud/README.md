@@ -676,15 +676,16 @@ owner room to request attachment.
 Use the combined runtime/browser smoke when you want the full preview remote
 compute path in one command. It creates one API-key room per requested browser
 scope, keeps that room's runtime peer alive, clicks execution through Chromium
-for `owner` and `editor` scope by default, then stops each peer it started:
+for `owner` scope by default, then stops each peer it started:
 
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
 pnpm --dir apps/notebook-cloud smoke:hosted:runtime-browser-execute
 ```
 
-Set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES=owner` for a single-scope
-run, or set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_CODE` when you need a fixed
+Set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES=owner,editor` when
+intentionally exercising a deployment with explicit editor execution capability,
+or set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_CODE` when you need a fixed
 source/output marker for a trace.
 
 To exercise the actual hosted browser execution path against a private room,

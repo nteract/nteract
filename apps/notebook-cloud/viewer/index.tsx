@@ -1855,15 +1855,18 @@ function NotebookViewer({
     [shellCapabilities, workstationSelection],
   );
   const workstationAction = useMemo(() => {
-    const { primaryAction } = workstationLaunchReadiness;
+    const { primaryAction, workstationId } = workstationLaunchReadiness;
     return primaryAction.kind !== "none" && primaryAction.label && primaryAction.title
       ? {
           label: primaryAction.label,
           title: primaryAction.title,
-          onClick: handleOpenWorkstationsRail,
+          onClick:
+            primaryAction.kind === "attach_workstation" && workstationId
+              ? () => handleAttachWorkstation(workstationId)
+              : handleOpenWorkstationsRail,
         }
       : null;
-  }, [handleOpenWorkstationsRail, workstationLaunchReadiness]);
+  }, [handleAttachWorkstation, handleOpenWorkstationsRail, workstationLaunchReadiness]);
   useEffect(() => {
     if (workstationMutation.kind !== "attach" || !workstationAttachment?.workstation_id) {
       return;

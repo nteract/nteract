@@ -19,6 +19,7 @@ export type NotebookWorkstationLaunchActionKind =
   | "none"
   | "setup_workstation"
   | "select_workstation"
+  | "attach_workstation"
   | "open_workstations";
 
 export interface NotebookWorkstationLaunchActionProjection {
@@ -183,7 +184,11 @@ function launchProjectionForCandidate(
     return launchProjection({
       canRun: false,
       detail: "This workstation is available but not attached to the notebook yet.",
-      primaryAction: launchAction("open_workstations", "Review compute", "Open workstations panel"),
+      primaryAction: launchAction(
+        "attach_workstation",
+        "Attach compute",
+        `Attach ${candidate.displayName} to this notebook`,
+      ),
       state: "needs_attachment",
       statusLabel: "Attach needed",
       targetLabel: candidate.displayName,
