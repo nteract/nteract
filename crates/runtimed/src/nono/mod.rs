@@ -62,6 +62,15 @@
 //! profile is active. Daemon startup logs a warning when nono is absent but
 //! does NOT fail startup — sandbox is a per-notebook opt-in feature.
 
+pub mod events;
+pub mod profile;
+pub mod supervisor;
+
+pub use supervisor::{
+    StderrLine, StdoutLine, Supervisor, SupervisorConfig, SupervisorError, SupervisorExit,
+    SupervisorHandle, NONE_PID,
+};
+
 use std::path::PathBuf;
 use std::time::Duration;
 
