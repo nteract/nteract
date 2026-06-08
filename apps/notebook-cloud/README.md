@@ -364,17 +364,18 @@ an anonymous viewer instead, and shows a visible diagnostic with a reset button.
 `preview.runt.run` uses direct OIDC against Anaconda stage only to bootstrap a
 first-party app session. The Worker injects the issuer, client id, and redirect
 URI into the viewer shell, the browser completes an Authorization Code + PKCE
-flow through `/oidc`, and `/api/app-session` exchanges the validated OIDC bearer
+flow through `/oidc`, and `/api/auth/session` exchanges the validated OIDC bearer
 for an HttpOnly, Secure, SameSite=Lax app-session cookie. First-party browser
 HTTP APIs then use that cookie with same-origin credentials.
 
-Live-room WebSockets do not authenticate with the cookie directly and must not
-leak browser credentials into output frames. The viewer asks
-`/api/n/:id/sync-ticket` for a short-lived app-session sync ticket scoped to the
-requested browser operator/scope, then sends that ticket through the sync
-subprotocol. The Worker validates the ticket and forwards a trusted room
-identity to the Durable Object. Runtime peers and automation use API keys
-instead of app-session cookies.
+Live-room WebSockets also use the first-party app-session cookie for browser
+connections. The Worker requires a trusted `Origin` for cookie-backed
+WebSocket upgrades, rejects mixed app-session plus explicit bearer/dev
+credentials, derives the requested live scope from the URL, and forwards only
+trusted identity headers plus the non-sensitive `nteract.v4` application
+subprotocol to the Durable Object. Sandboxed outputs stay on the isolated
+output origin and do not receive app-session cookies or localStorage state.
+Runtime peers and automation use API keys instead of app-session cookies.
 
 The Worker validates OIDC JWT issuer, audience/client id, signature, time
 claims, and principal namespace before minting an app session or consulting the

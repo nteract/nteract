@@ -413,11 +413,12 @@ enforce equivalent access.
    connections while rejecting notebook-level metadata edits from non-owners.
 9. **Runtime peer ingress.** Allow runtime peers to attach and update
    `RuntimeStateDoc` plus blobs without notebook edits.
-10. **Direct OIDC.** Wire real provider validation after ACL lookup is in
-   place. Browser WebSockets follow `hosted-credential-transport.md` for
-   non-echoed bearer subprotocols, one-time tickets, optional perimeter
-   assertions/cookies, and origin checks; native/system clients may use
-   headers.
+10. **Direct OIDC and app sessions.** Wire real provider validation after ACL
+   lookup is in place. Browser app APIs and live-room WebSockets follow
+   `hosted-credential-transport.md`: OIDC bootstraps first-party app-session
+   cookies, cookie-backed WebSockets require trusted origins, explicit bearer
+   subprotocols remain available for compatible browser/native flows, and
+   native/system clients may use headers.
 
 ## Prototype-only behavior to remove
 

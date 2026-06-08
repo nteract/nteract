@@ -278,11 +278,13 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /editAccessRequestPending/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
-  assert.match(
-    sourceText,
-    /const requestedEditAccess = roomEditAccess\.requestedDocumentEditAccess/,
-  );
   assert.match(sourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
+  assert.doesNotMatch(sourceText, /appliedGrantedEditScopeRef/);
+  assert.doesNotMatch(sourceText, /requestedEditAccess/);
+  assert.doesNotMatch(
+    sourceText,
+    /setSelectedInteractionMode\("edit"\);[\s\S]*\[canAcceptCellMutations, connectionPeerId, connectionScope/,
+  );
   assert.match(sourceText, /accessPending=\{editAccessPending\}/);
   assert.match(sourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
   assert.match(sourceText, /disabled=\{accessPending\}/);
@@ -479,14 +481,14 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
   assert.match(sourceText, /\[authState, bootstrap, hasAppSession, refreshIndex, signedIn\]/);
 });
 
-test("cloud app-session live tickets request owner and let the backend downgrade", () => {
+test("cloud app-session live sync requests owner and lets the backend downgrade", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
-  assert.match(sourceText, /cloudSyncAuthFromAppSessionTicket\(\{[\s\S]*requestedScope: "owner"/);
+  assert.match(sourceText, /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: "owner"/);
   assert.doesNotMatch(
     sourceText,
-    /cloudSyncAuthFromAppSessionTicket\(\{[\s\S]*requestedScope: authState\.requestedScope/,
+    /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: authState\.requestedScope/,
   );
 });
 

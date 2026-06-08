@@ -188,14 +188,7 @@ async function runBrowserSmoke({
       await ownerContext.close().catch(() => {});
     }
 
-    const viewerControlCheck = await assertViewerDoesNotExposeExecutionControls({
-      browser,
-      runMarker,
-      timeoutMs,
-      tokenStorageJson,
-      url,
-    });
-    const editorRun = await assertEditorDoesNotExposeExecutionControls({
+    const viewModeControlCheck = await assertViewModeDoesNotExposeExecutionControls({
       browser,
       runMarker,
       timeoutMs,
@@ -217,13 +210,11 @@ async function runBrowserSmoke({
         "owner_offline_default_workstation_shows_review_action",
         "owner_missing_working_directory_explains_blocked_launch",
         "owner_missing_environment_explains_blocked_launch",
-        "viewer_scope_hides_execution_controls",
-        "viewer_scope_hides_workstation_setup_action",
-        "editor_scope_hides_execution_controls",
+        "view_mode_hides_execution_controls",
+        "view_mode_hides_workstation_setup_action",
       ],
       blockedRuns,
-      editorRun,
-      scopedControlChecks: [viewerControlCheck],
+      scopedControlChecks: [viewModeControlCheck],
     };
   } finally {
     await browser.close().catch(() => {});
@@ -242,6 +233,7 @@ async function runOwnerAttachAndExecuteSmoke({
   const page = await context.newPage();
   const events = collectBrowserDiagnostics(page);
   await openNotebookShell(page, url.href, timeoutMs);
+  await enterEditMode(page, timeoutMs);
   const cell = await ensureCodeCell(page, timeoutMs);
   await setCellSource(cell, source);
 
@@ -262,15 +254,20 @@ async function runOwnerAttachAndExecuteSmoke({
   await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
   await waitForNotebookReady(page, timeoutMs);
   await waitForText(page, runMarker, timeoutMs);
+  await enterEditMode(page, timeoutMs);
   const reloadedCell = page.locator('[data-cell-type="code"]').first();
   await reloadedCell.waitFor({ state: "visible", timeout: timeoutMs });
-  const beforeReloadRunAria = await reloadedCell
-    .getByTestId("execute-button")
-    .getAttribute("aria-label");
+  const beforeReloadRunAria = await readExecuteButtonAria(
+    reloadedCell,
+    "read reloaded execute button state",
+    timeoutMs,
+  );
   await executeAndWaitForMarker(page, reloadedCell, runMarker, timeoutMs);
-  const afterReloadRunAria = await reloadedCell
-    .getByTestId("execute-button")
-    .getAttribute("aria-label");
+  const afterReloadRunAria = await readExecuteButtonAria(
+    reloadedCell,
+    "read post-reload execute button state",
+    timeoutMs,
+  );
   const afterReloadKernelStatus = await readKernelStatus(page);
   assertKernelStatusNotInitializing(afterReloadKernelStatus, "after reload execution");
 
@@ -438,6 +435,7 @@ async function assertOwnerToolbarActionWithMockedWorkstations({
     const page = await context.newPage();
     const events = collectBrowserDiagnostics(page);
     await openNotebookShell(page, url.href, timeoutMs);
+    await enterEditMode(page, timeoutMs);
     await waitForToolbarAction(page, expectedLabel, timeoutMs);
     const action = await readToolbarWorkstationAction(page);
     assertToolbarWorkstationAction(action, {
@@ -467,7 +465,7 @@ async function assertOwnerToolbarActionWithMockedWorkstations({
   }
 }
 
-async function assertViewerDoesNotExposeExecutionControls({
+async function assertViewModeDoesNotExposeExecutionControls({
   browser,
   runMarker,
   timeoutMs,
@@ -476,7 +474,7 @@ async function assertViewerDoesNotExposeExecutionControls({
 }) {
   const context = await authenticatedContext(browser, {
     origin: url.origin,
-    scope: "viewer",
+    scope: "owner",
     tokenStorageJson,
   });
   try {
@@ -486,50 +484,14 @@ async function assertViewerDoesNotExposeExecutionControls({
     await waitForNotebookSessionReady(page, timeoutMs);
     await waitForText(page, runMarker, timeoutMs);
     const controls = await visibleControlSummary(page);
-    assertNoExecutionControls(controls, "viewer scope");
+    assertNoExecutionControls(controls, "view mode");
     if (controls.workstationSetupButtonCount > 0) {
-      throw new Error("viewer scope unexpectedly exposed workstation setup controls");
+      throw new Error("view mode unexpectedly exposed workstation setup controls");
     }
     assertCleanBrowserDiagnostics(events);
     return {
       controls,
-      scope: "viewer",
-    };
-  } finally {
-    await context.close().catch(() => {});
-  }
-}
-
-async function assertEditorDoesNotExposeExecutionControls({
-  browser,
-  runMarker,
-  timeoutMs,
-  tokenStorageJson,
-  url,
-}) {
-  const context = await authenticatedContext(browser, {
-    origin: url.origin,
-    scope: "editor",
-    tokenStorageJson,
-  });
-  const editorMarker = `${runMarker} editor`;
-  try {
-    const page = await context.newPage();
-    const events = collectBrowserDiagnostics(page);
-    await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    await waitForNotebookSessionReady(page, timeoutMs);
-    await waitForText(page, runMarker, timeoutMs);
-    const cell = page.locator('[data-cell-type="code"]').first();
-    await cell.waitFor({ state: "visible", timeout: timeoutMs });
-    await setCellSource(cell, `print(${JSON.stringify(editorMarker)})`);
-    await waitForText(page, editorMarker, timeoutMs);
-    const controls = await visibleControlSummary(page);
-    assertNoExecutionControls(controls, "editor scope");
-    assertCleanBrowserDiagnostics(events);
-    return {
-      controls,
-      marker: editorMarker,
-      scope: "editor",
+      mode: "view",
     };
   } finally {
     await context.close().catch(() => {});
@@ -551,6 +513,41 @@ async function authenticatedContext(browser, { origin, scope, tokenStorageJson }
     { expectedOrigin: origin, requestedScope: scope, tokenJson: tokenStorageJson },
   );
   return context;
+}
+
+async function enterEditMode(page, timeoutMs) {
+  await smokePhase("enter edit mode", async () => {
+    const modeGroup = page.getByRole("group", { name: "Notebook interaction mode" });
+    await modeGroup.waitFor({ state: "visible", timeout: timeoutMs });
+    const editButton = modeGroup.getByRole("button").nth(1);
+    await editButton.click({ timeout: timeoutMs });
+    await page.waitForFunction(
+      () => {
+        const group = document.querySelector('[data-slot="notebook-edit-mode-button"]');
+        const buttons = group?.querySelectorAll("button") ?? [];
+        return buttons[1]?.getAttribute("aria-pressed") === "true";
+      },
+      null,
+      { timeout: timeoutMs },
+    );
+  });
+}
+
+async function smokePhase(label, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label}: ${message}`);
+  }
+}
+
+async function waitForPagePredicate(page, label, predicate, argument, timeout) {
+  await smokePhase(label, async () => await page.waitForFunction(predicate, argument, { timeout }));
+}
+
+function textSample(text) {
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
 }
 
 async function visibleControlSummary(page) {
@@ -660,101 +657,133 @@ function assertCleanBrowserDiagnostics(events) {
 }
 
 async function openNotebookShell(page, href, timeout) {
-  await page.goto(href, { waitUntil: "domcontentloaded", timeout });
+  await smokePhase("open notebook shell", async () => {
+    await page.goto(href, { waitUntil: "domcontentloaded", timeout });
+  });
   await waitForNotebookReady(page, timeout);
 }
 
 async function waitForNotebookReady(page, timeout) {
-  await page.waitForSelector('[data-testid="notebook-toolbar"]', { timeout });
+  await smokePhase("wait for notebook toolbar", async () => {
+    await page.waitForSelector('[data-testid="notebook-toolbar"]', { timeout });
+  });
   await waitForNotebookSessionReady(page, timeout);
 }
 
 async function waitForNotebookSessionReady(page, timeout) {
-  await page.waitForFunction(
+  await waitForPagePredicate(
+    page,
+    "wait for notebook document sync",
     () =>
       document.querySelector("[data-notebook-synced]")?.getAttribute("data-notebook-synced") ===
       "true",
     null,
-    { timeout },
+    timeout,
   );
-  await page.waitForFunction(
+  await waitForPagePredicate(
+    page,
+    "wait for live session ready",
     () =>
       document.querySelector("[data-session-ready]")?.getAttribute("data-session-ready") === "true",
     null,
-    { timeout: Math.max(timeout, 120_000) },
+    Math.max(timeout, 120_000),
   );
 }
 
 async function ensureCodeCell(page, timeout) {
-  if ((await page.locator('[data-cell-type="code"]').count()) === 0) {
-    await page.getByTestId("add-code-cell-button").click({ timeout });
-  }
-  const cell = page.locator('[data-cell-type="code"]').first();
-  await cell.waitFor({ state: "visible", timeout });
-  return cell;
+  return smokePhase("ensure code cell", async () => {
+    if ((await page.locator('[data-cell-type="code"]').count()) === 0) {
+      await page.getByTestId("add-code-cell-button").click({ timeout });
+    }
+    const cell = page.locator('[data-cell-type="code"]').first();
+    await cell.waitFor({ state: "visible", timeout });
+    return cell;
+  });
 }
 
 async function setCellSource(cell, source) {
-  await cell.locator('.cm-content[contenteditable="true"]').evaluate((node, text) => {
-    const editor = node.cmTile?.view;
-    if (!editor) throw new Error("No CodeMirror view found");
-    editor.dispatch({
-      changes: {
-        from: 0,
-        insert: text,
-        to: editor.state.doc.length,
-      },
-      selection: { anchor: text.length },
-    });
-    editor.focus();
-  }, source);
+  await smokePhase("set cell source", async () => {
+    await cell.locator('.cm-content[contenteditable="true"]').evaluate((node, text) => {
+      const editor = node.cmTile?.view;
+      if (!editor) throw new Error("No CodeMirror view found");
+      editor.dispatch({
+        changes: {
+          from: 0,
+          insert: text,
+          to: editor.state.doc.length,
+        },
+        selection: { anchor: text.length },
+      });
+      editor.focus();
+    }, source);
+  });
 }
 
 async function waitForToolbarAction(page, label, timeout) {
-  await page.waitForFunction(
+  await waitForPagePredicate(
+    page,
+    `wait for workstation toolbar action ${label}`,
     (expected) =>
       document
         .querySelector('[data-testid="workstation-setup-button"]')
         ?.getAttribute("aria-label") === expected,
     label,
-    { timeout },
+    timeout,
   );
 }
 
 async function executeAndWaitForMarker(page, cell, marker, timeout) {
   await waitForCanExecute(page, timeout);
-  const executeButton = cell.getByTestId("execute-button");
-  await executeButton.waitFor({ state: "visible", timeout });
-  const beforeAria = await executeButton.getAttribute("aria-label");
+  const executeButton = await visibleExecuteButton(cell, timeout);
+  const beforeAria = await readExecuteButtonAria(cell, "read pre-execution button state", timeout);
   const beforeOrdinal = executionOrdinal(beforeAria);
-  await executeButton.click({ timeout });
+  await smokePhase("click cell execute button", async () => {
+    await executeButton.click({ timeout });
+  });
   await waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout);
   await waitForText(page, marker, timeout);
 }
 
+async function visibleExecuteButton(cell, timeout) {
+  const executeButton = cell.getByTestId("execute-button");
+  await smokePhase("wait for cell execute button", async () => {
+    await executeButton.waitFor({ state: "visible", timeout });
+  });
+  return executeButton;
+}
+
+async function readExecuteButtonAria(cell, label, timeout) {
+  const executeButton = await visibleExecuteButton(cell, timeout);
+  return smokePhase(label, async () => await executeButton.getAttribute("aria-label", { timeout }));
+}
+
 async function waitForCanExecute(page, timeout) {
-  await page.waitForFunction(
+  await waitForPagePredicate(
+    page,
+    "wait for shell can-execute",
     () =>
       document
         .querySelector('[data-slot="notebook-document-shell"]')
         ?.getAttribute("data-can-execute") === "true",
     null,
-    { timeout },
+    timeout,
   );
 }
 
 async function waitForText(page, text, timeout) {
-  await page.waitForFunction(
+  await waitForPagePredicate(
+    page,
+    `wait for text ${JSON.stringify(textSample(text))}`,
     (expected) => (document.body.textContent ?? "").includes(expected),
     text,
-    {
-      timeout,
-    },
+    timeout,
   );
 }
 
 async function waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout) {
-  await page.waitForFunction(
+  await waitForPagePredicate(
+    page,
+    "wait for execution count advance",
     (previous) => {
       const ordinals = [...document.querySelectorAll('[data-testid="execute-button"]')]
         .map((button) => {
@@ -767,7 +796,7 @@ async function waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout) {
       return Math.max(...ordinals) > previous;
     },
     beforeOrdinal,
-    { timeout },
+    timeout,
   );
 }
 

@@ -70,28 +70,36 @@ The room ACL still derives final connection scope. A provider claim or group may
 cap what the credential can do globally, but it does not grant per-notebook
 editor or owner access by itself.
 
-## Decision 2: Direct OIDC is the hosted browser path for preview
+## Decision 2: Direct OIDC bootstraps hosted app sessions for preview
 
-For the Anaconda-friendly hosted demo, the notebook application owns the OIDC
-browser flow directly:
+For the Anaconda-friendly hosted preview, the notebook application owns the
+OIDC browser flow directly, but OIDC bearer tokens are not the default
+credential for first-party browser app APIs or live-room WebSockets:
 
 1. Browser visits the notebook host.
 2. The viewer/editor shell starts an OIDC Authorization Code + PKCE flow against
    the configured issuer.
 3. The OIDC provider redirects back to the notebook host's `/oidc` callback.
-4. The browser stores the short-lived access token in origin-local storage and
-   refreshes it through the normal OIDC refresh path.
-5. Browser HTTP requests use `Authorization: Bearer <access-token>` when the
-   platform allows headers.
-6. Browser WebSockets use the non-echoed credential subprotocol
-   `nteract-bearer.<base64url-token>` plus the application protocol
-   `nteract.v4`.
-7. Native, CLI, agent, and runtime clients use `Authorization: Bearer
+4. The browser exchanges the validated OIDC bearer at `/api/auth/session` for
+   a first-party, HttpOnly, Secure, SameSite=Lax app-session cookie.
+5. Browser HTTP requests to first-party app APIs use the app-session cookie
+   with same-origin credentials.
+6. Browser live-room WebSockets also use the app-session cookie, but only when
+   the upgrade carries a trusted `Origin`. The Worker rejects missing or
+   untrusted origins for cookie-backed WebSockets, rejects mixed app-session
+   cookies plus explicit bearer/dev credentials, and forwards only trusted
+   identity headers plus the non-sensitive `nteract.v4` application protocol to
+   the room Durable Object.
+7. The browser may keep OIDC token state only for sign-in renewal and for
+   re-establishing the app-session cookie when needed. Sandboxed output frames
+   stay on the isolated output origin and must not receive app-session cookies,
+   OIDC material, or app-origin localStorage.
+8. Native, CLI, agent, and runtime clients use `Authorization: Bearer
    <access-token>` directly on HTTP and WebSocket requests.
-8. The Worker validates the OIDC JWT signature, issuer, audience/client id,
+9. The Worker validates the OIDC JWT signature, issuer, audience/client id,
    expiry, and not-before claims against the provider JWKS before calling the
    room ACL authorization path.
-9. The Durable Object receives only trusted headers stamped by the Worker. It
+10. The Durable Object receives only trusted headers stamped by the Worker. It
    never trusts browser-provided identity headers.
 
 Cloudflare still hosts the Worker, Durable Object, D1, R2, assets, and custom
@@ -130,7 +138,7 @@ principal key. If a later deployment validates another OIDC provider, it must
 use a provider-specific namespace and include an explicit subject mapping or
 ACL-row backfill plan before linking those users to Anaconda subjects.
 
-## Decision 3: Browser WebSocket bearer tokens use subprotocols
+## Decision 3: Browser WebSocket bearer tokens use subprotocols as an explicit fallback
 
 When a browser has a bearer token, prefer a WebSocket subprotocol credential
 over a URL query parameter:
@@ -156,7 +164,9 @@ browser history, referrer paths, or ordinary route metrics. It is still a
 bearer token visible to JavaScript and potentially to infrastructure that logs
 request headers, so it is not proof-of-possession security.
 
-Subprotocol bearer tokens are appropriate for:
+Subprotocol bearer tokens remain useful and supported, but they are no longer
+the default hosted browser path when an app-session cookie is available.
+They are appropriate for:
 
 - browser clients that have obtained an OIDC token through an application login
   flow;
@@ -171,12 +181,20 @@ dev-token smoke tests. A later cleanup may migrate that path behind the generic
 `nteract-bearer.*` prefix once the credential payload carries enough issuer
 metadata to dispatch safely.
 
-## Decision 4: One-time tickets are an optional bridge
+## Decision 4: One-time tickets are a future hardening bridge, not the preview default
 
 One-time tickets are useful when a browser cannot safely or conveniently present
 the real credential during the WebSocket upgrade.
 
-Flow:
+They are not the current preview path. A previous app-session sync-ticket
+prototype added a mint route and another short-lived object to every live-room
+open/reconnect, which made reconnect failures harder to reason about during
+normal notebook navigation. Before reintroducing tickets, the implementation
+needs explicit reconnect diagnostics, browser smoke coverage across reloads and
+flaky sockets, and proof that the extra credential hop improves the security
+posture without degrading demo usability.
+
+Future flow:
 
 1. Browser sends a normal HTTPS request to `/api/session-tickets` with the real
    credential using whichever mechanism the deployment supports.
@@ -204,15 +222,21 @@ short-lived opaque ticket exposure should use bearer-in-subprotocol auth with
 non-echoed credential subprotocols or a cookie/assertion perimeter whose origin
 policy is explicitly owned by the deployment.
 
-Tickets are not the default for the direct-OIDC demo because the browser can
-present the OIDC access token as a non-echoed WebSocket subprotocol. They
-remain the preferred fallback when a deployment would otherwise need to put a
-long-lived bearer token in a WebSocket URL.
+Tickets are not the default for preview because browser app sessions can ride
+same-origin cookie-backed WebSocket upgrades with strict origin checks, and
+explicit bearer clients can use non-echoed WebSocket subprotocols. Tickets
+remain a future option for deployments that cannot accept either of those
+shapes and can meet the verification bar above.
 
 ## Decision 5: Provider cookies are deployment-specific, not generic
 
 Cookies are acceptable only when the deployment owns the CSRF and origin policy
 for the provider.
+
+Notebook-cloud's app-session cookie is one such deployment-owned cookie. It is
+accepted on first-party browser app APIs and same-origin/trusted-origin
+live-room WebSocket upgrades only after the Worker applies its origin policy.
+It is not accepted from renderer asset origins or isolated output origins.
 
 For JupyterHub:
 
@@ -342,10 +366,12 @@ namespace, and optional perimeter configuration.
 
 ## Open Questions
 
-1. **Browser token storage and refresh.** The direct-OIDC viewer can reuse the
-   `runtimed/intheloop` PKCE/localStorage shape initially. Before private
-   notebooks become broad production surface, decide whether tokens should move
-   behind a same-site BFF/session-cookie layer.
+1. **Browser session renewal.** App-session cookies are now the first-party
+   browser credential for app APIs and live room WebSockets. Before private
+   notebooks become broad production surface, prove the refresh behavior across
+   reloads, reconnects, and multiple tabs so stale OIDC refresh state does not
+   show unnecessary "sign in again" prompts while the app session remains
+   usable.
 2. **Additional OIDC providers.** If a public `runtimed.com` viewer validates a
    different OIDC provider, define the principal namespace and future
    subject-linking story up front.

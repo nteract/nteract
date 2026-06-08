@@ -75,7 +75,7 @@ import {
   cloudNotebookSignInCopy,
   cloudPrototypeAuthFromWindow,
   fetchWithCloudPrototypeAuth,
-  cloudSyncAuthFromAppSessionTicket,
+  cloudSyncAuthFromAppSessionCookie,
   cloudSyncAuthFromPrototypeAuthState,
   isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
@@ -286,7 +286,6 @@ function loadConfig(): CloudViewerConfig {
     },
     session: isCloudAppSession(parsed.session) ? parsed.session : null,
     syncEndpoint: parsed.syncEndpoint,
-    syncTicketEndpoint: parsed.syncTicketEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
     outputDocumentBaseUrl: parsed.outputDocumentBaseUrl ?? null,
@@ -1742,7 +1741,6 @@ function NotebookViewer({
   const [selectedInteractionMode, setSelectedInteractionMode] =
     useState<NotebookInteractionMode>("view");
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
-  const appliedGrantedEditScopeRef = useRef<string | null>(null);
   const blobResolver = useMemo(
     () =>
       createNotebookCloudBlobResolver({
@@ -1767,19 +1765,18 @@ function NotebookViewer({
     async (sessionId: string) => {
       const appSession =
         appSessionStatus.session ??
-        (appSessionStatus.status === "loading" && config.syncTicketEndpoint
+        (appSessionStatus.status === "loading"
           ? ((await readCloudAppSessionStatus().catch(() => null))?.session ?? null)
           : null);
-      if (appSession && config.syncTicketEndpoint) {
-        return cloudSyncAuthFromAppSessionTicket({
-          endpoint: config.syncTicketEndpoint,
+      if (appSession) {
+        return cloudSyncAuthFromAppSessionCookie({
           requestedScope: "owner",
           sessionId,
         });
       }
       return cloudSyncAuthFromPrototypeAuthState(authState);
     },
-    [appSessionStatus.session, appSessionStatus.status, authState, config.syncTicketEndpoint],
+    [appSessionStatus.session, appSessionStatus.status, authState],
   );
   const {
     connectionActorLabel,
@@ -2004,7 +2001,6 @@ function NotebookViewer({
       selectedInteractionMode,
     ],
   );
-  const requestedEditAccess = roomEditAccess.requestedDocumentEditAccess;
   const editAccessPending = roomEditAccess.editAccessPending;
   const shellCapabilities = useMemo(
     () =>
@@ -2139,26 +2135,6 @@ function NotebookViewer({
       setWorkstationMutation({ kind: "idle", message: null, workstationId: null });
     }
   }, [workstationAttachment?.workstation_id, workstationMutation]);
-  useEffect(() => {
-    if (!requestedEditAccess) {
-      appliedGrantedEditScopeRef.current = null;
-      return;
-    }
-    if (
-      !canAcceptCellMutations ||
-      (connectionScope !== "editor" && connectionScope !== "owner") ||
-      !connectionPeerId
-    ) {
-      return;
-    }
-
-    const grantKey = `${connectionPeerId}:${connectionScope}`;
-    if (appliedGrantedEditScopeRef.current === grantKey) {
-      return;
-    }
-    appliedGrantedEditScopeRef.current = grantKey;
-    setSelectedInteractionMode("edit");
-  }, [canAcceptCellMutations, connectionPeerId, connectionScope, requestedEditAccess]);
   const canWriteCellSource = useCallback(
     (cellId: string) => {
       const cell = getCellById(cellId);

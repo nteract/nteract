@@ -68,7 +68,6 @@ export interface CloudViewerConfig {
   };
   session?: CloudAppSession | null;
   syncEndpoint: string;
-  syncTicketEndpoint?: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
   outputDocumentBaseUrl: string | null;
