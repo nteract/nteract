@@ -1231,6 +1231,30 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), "ws-lab2");
   });
 
+  it("does not let users select another principal's workstation as their default", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/default", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "workstation not found" });
+    assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), undefined);
+  });
+
   it("creates workstation attach jobs through notebook owner authority", async () => {
     const env = fakeEnv();
     seedNotebook(env, "attach-demo");
@@ -1289,6 +1313,41 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("does not attach another principal's workstation to an owned notebook", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 404);
+    assert.deepEqual(await attach.json(), { error: "workstation not found" });
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+  });
+
   it("reuses the active workstation attach job for repeated owner requests", async () => {
     const env = fakeEnv();
     seedNotebook(env, "attach-demo");
@@ -1321,6 +1380,43 @@ describe("Worker artifact routes", () => {
     const secondBody = (await second.json()) as { job: { job_id: string } };
     assert.equal(secondBody.job.job_id, firstBody.job.job_id);
     assert.equal(env.DB.workstationAttachJobs.size, 1);
+  });
+
+  it("only lists attach jobs for the authenticated workstation owner", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-alice",
+      notebookId: "nb-alice",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+    });
+    seedWorkstationAttachJob(env, {
+      id: "job-bob",
+      notebookId: "nb-bob",
+      ownerPrincipal: "user:dev:bob",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { jobs: Array<{ job_id: string }> };
+    assert.deepEqual(
+      body.jobs.map((job) => job.job_id),
+      ["job-alice"],
+    );
   });
 
   it("allows workstation owners to update attach job status", async () => {
@@ -1368,6 +1464,37 @@ describe("Worker artifact routes", () => {
     });
     assert.equal(env.DB.workstationAttachJobs.get("job-1")?.status, "running");
     assert.ok(env.DB.workstationAttachJobs.get("job-1")?.accepted_at);
+  });
+
+  it("does not let workstation owners update another principal's attach job", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-bob",
+      notebookId: "nb-bob",
+      ownerPrincipal: "user:dev:bob",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-bob", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "running" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "workstation attach job not found" });
+    assert.equal(env.DB.workstationAttachJobs.get("job-bob")?.status, "pending");
   });
 
   it("lists notebooks through canonical Anaconda account ACLs", async (t) => {
