@@ -4162,6 +4162,7 @@ pub(crate) async fn auto_launch_kernel(
                 {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
+                        sandbox_state,
                     }) => {
                         // env path already registered for GC protection above (before spawn)
 
@@ -4169,6 +4170,12 @@ pub(crate) async fn auto_launch_kernel(
                         {
                             let mut lc = room.runtime_agent_launched_config.write().await;
                             *lc = Some(launched_config.clone());
+                        }
+                        // Cache sandbox state for GetSandboxState queries.
+                        {
+                            let mut sc = room.sandbox_state_cache.write().await;
+                            *sc = sandbox_state
+                                .unwrap_or(notebook_protocol::protocol::SandboxStateInfo::Disabled);
                         }
 
                         let es_label = es.as_str().to_string();

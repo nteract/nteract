@@ -65,6 +65,7 @@ pub(crate) mod complete;
 pub(crate) mod execute_cell;
 pub(crate) mod get_doc_bytes;
 pub(crate) mod get_history;
+pub(crate) mod get_sandbox_state;
 pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
@@ -146,6 +147,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
+        NotebookRequest::GetSandboxState {} => "GetSandboxState",
         NotebookRequest::CreateBlobUpload { .. } => "CreateBlobUpload",
         NotebookRequest::CompleteBlobUpload { .. } => "CompleteBlobUpload",
         NotebookRequest::AbortBlobUpload { .. } => "AbortBlobUpload",
@@ -244,7 +246,9 @@ pub(crate) async fn handle_notebook_request(
             approve_project_environment::handle(room, project_file_path).await
         }
 
-        NotebookRequest::GetDocBytes {} => get_doc_bytes::handle(room).await,
+        NotebookRequest::GetDocBytes { .. } => get_doc_bytes::handle(room).await,
+
+        NotebookRequest::GetSandboxState {} => get_sandbox_state::handle(room).await,
 
         NotebookRequest::CreateBlobUpload { .. }
         | NotebookRequest::CompleteBlobUpload { .. }

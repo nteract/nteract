@@ -29,6 +29,11 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
         }) {
             tracing::warn!("[runtime-state] {}", e);
         }
+        // Reset sandbox state cache — the kernel is no longer running.
+        {
+            let mut sc = room.sandbox_state_cache.write().await;
+            *sc = notebook_protocol::protocol::SandboxStateInfo::Disabled;
+        }
         NotebookResponse::KernelShuttingDown {}
     } else {
         NotebookResponse::NoKernel {}

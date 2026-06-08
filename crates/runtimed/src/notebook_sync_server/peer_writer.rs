@@ -480,6 +480,7 @@ fn request_required_scope(
         NotebookRequest::SendComm { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
         | NotebookRequest::GetDocBytes {}
+        | NotebookRequest::GetSandboxState {}
         | NotebookRequest::CreateBlobUpload { .. }
         | NotebookRequest::CompleteBlobUpload { .. }
         | NotebookRequest::AbortBlobUpload { .. } => RequestRequiredScope::NotebookWrite,

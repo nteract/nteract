@@ -1581,11 +1581,18 @@ pub(crate) async fn handle(
             {
                 Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelRestarted {
                     env_source: es,
+                    sandbox_state,
                 }) => {
                     // Store launched config for env sync drift detection
                     {
                         let mut lc = room.runtime_agent_launched_config.write().await;
                         *lc = Some(launched_config.clone());
+                    }
+                    // Cache sandbox state for GetSandboxState queries.
+                    {
+                        let mut sc = room.sandbox_state_cache.write().await;
+                        *sc = sandbox_state
+                            .unwrap_or(notebook_protocol::protocol::SandboxStateInfo::Disabled);
                     }
 
                     let es_label = es.as_str().to_string();
@@ -1740,11 +1747,18 @@ pub(crate) async fn handle(
                 {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
+                        sandbox_state,
                     }) => {
                         // Store launched config for env sync drift detection
                         {
                             let mut lc = room.runtime_agent_launched_config.write().await;
                             *lc = Some(launched_config.clone());
+                        }
+                        // Cache sandbox state for GetSandboxState queries.
+                        {
+                            let mut sc = room.sandbox_state_cache.write().await;
+                            *sc = sandbox_state
+                                .unwrap_or(notebook_protocol::protocol::SandboxStateInfo::Disabled);
                         }
 
                         let es_label = es.as_str().to_string();

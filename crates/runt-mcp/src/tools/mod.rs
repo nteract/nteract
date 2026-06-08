@@ -66,6 +66,7 @@ mod deps;
 mod editing;
 mod execution;
 mod kernel;
+pub(crate) mod sandbox;
 mod session;
 
 /// Helper to generate a tool's input schema from a type.
@@ -238,6 +239,31 @@ pub fn all_tools() -> Vec<Tool> {
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
+        // -- Sandbox --
+        Tool::new(
+            "list_credentials",
+            "List credential names known to the daemon (never values). Combines profile-referenced names with macOS Keychain entries under the nono service.",
+            schema_for::<sandbox::ListCredentialsParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(true)),
+        Tool::new(
+            "get_notebook_sandbox_profile",
+            "Read the sandbox profile (network + credential config) for the active notebook.",
+            schema_for::<sandbox::GetNotebookSandboxProfileParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        Tool::new(
+            "set_notebook_sandbox_profile",
+            "Write (or remove) the sandbox profile for the active notebook. Validates before writing. Returns validation errors and names of missing Keychain credentials.",
+            schema_for::<sandbox::SetNotebookSandboxProfileParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false).idempotent(true).open_world(false)),
+        Tool::new(
+            "get_sandbox_status",
+            "Report the active sandbox state for the current notebook runtime (Disabled / Active / StartupFailed / Degraded).",
+            schema_for::<sandbox::GetSandboxStatusParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
     ];
 
     attach_icons(&mut tools);
@@ -337,6 +363,15 @@ pub async fn dispatch(
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,
+        // Sandbox
+        "list_credentials" => sandbox::list_credentials(server, request).await,
+        "get_notebook_sandbox_profile" => {
+            sandbox::get_notebook_sandbox_profile(server, request).await
+        }
+        "set_notebook_sandbox_profile" => {
+            sandbox::set_notebook_sandbox_profile(server, request).await
+        }
+        "get_sandbox_status" => sandbox::get_sandbox_status(server, request).await,
         _ => Err(McpError::invalid_params(
             format!("Unknown tool: {}", request.name),
             None,
@@ -603,6 +638,17 @@ pub async fn build_execution_result(
         None
     };
 
+    // Surface sandbox_event in the text content for LLM clients that
+    // don't process structured_content.
+    if let Some(ref eid) = result.execution_id {
+        if let Some(annotation) = sandbox::lookup_sandbox_event(handle, eid) {
+            items.push(Content::text(format!(
+                "Sandbox event: [{}] {}",
+                annotation.kind, annotation.message
+            )));
+        }
+    }
+
     let mut call_result = CallToolResult::success(items);
     if let Some(ref mut sc) = structured_content {
         if let Some(cell_obj) = sc.get_mut("cell").and_then(|c| c.as_object_mut()) {
@@ -620,6 +666,14 @@ pub async fn build_execution_result(
                     "execution_id".to_string(),
                     serde_json::Value::String(eid.clone()),
                 );
+            }
+            // Inject sandbox_event annotation if one exists for this execution.
+            if let Some(ref eid) = result.execution_id {
+                if let Some(annotation) = sandbox::lookup_sandbox_event(handle, eid) {
+                    if let Ok(v) = serde_json::to_value(&annotation) {
+                        cell_obj.insert("sandbox_event".to_string(), v);
+                    }
+                }
             }
         }
     }

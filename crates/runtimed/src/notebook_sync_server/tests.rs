@@ -1224,6 +1224,9 @@ fn test_room_with_path_and_store(
         runtime_agent_generation: Arc::new(AtomicU64::new(0)),
         next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         current_runtime_agent_id: Arc::new(RwLock::new(None)),
+        sandbox_state_cache: Arc::new(RwLock::new(
+            notebook_protocol::protocol::SandboxStateInfo::Disabled,
+        )),
     };
 
     (room, notebook_path)

@@ -54,6 +54,10 @@ pub(crate) fn tool_icon(name: &str) -> Option<IconKind> {
         "restart_kernel" => IconKind::RestartKernel,
         "manage_dependencies" => IconKind::ManageDependencies,
         "replace_match" | "replace_regex" => IconKind::ReplaceCell,
+        "list_credentials" | "get_sandbox_status" | "get_notebook_sandbox_profile" => {
+            IconKind::ReadCell
+        }
+        "set_notebook_sandbox_profile" => IconKind::EditCell,
         _ => return None,
     })
 }

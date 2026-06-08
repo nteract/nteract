@@ -1448,6 +1448,36 @@ async fn handle_runtime_agent_request(
                     let es = k.env_source().to_string();
 
                     // ── Sandbox enrichment pipeline (task 08) ────────────────
+                    // Build the sandbox state info DTO before moving k into kernel.
+                    let sandbox_state_for_response: Option<
+                        notebook_protocol::protocol::SandboxStateInfo,
+                    > = k.sandbox_state.lock().ok().and_then(|g| match &*g {
+                        crate::sandbox_launch::SandboxState::Disabled => None,
+                        crate::sandbox_launch::SandboxState::Active {
+                            nono_pid,
+                            kernel_pid,
+                            session_id,
+                        } => Some(notebook_protocol::protocol::SandboxStateInfo::Active {
+                            nono_pid: *nono_pid,
+                            kernel_pid: *kernel_pid,
+                            session_id: session_id.clone(),
+                        }),
+                        crate::sandbox_launch::SandboxState::StartupFailed {
+                            reason,
+                            stderr_capture,
+                        } => Some(
+                            notebook_protocol::protocol::SandboxStateInfo::StartupFailed {
+                                reason: reason.clone(),
+                                stderr_tail: stderr_capture.clone(),
+                            },
+                        ),
+                        crate::sandbox_launch::SandboxState::Degraded { reason } => {
+                            Some(notebook_protocol::protocol::SandboxStateInfo::Degraded {
+                                reason: reason.clone(),
+                            })
+                        }
+                    });
+
                     if let Some(event_stream) = k.sandbox_event_stream.take() {
                         let (observer, obs_tx) = ExecutionObserver::new();
                         state.set_enrichment_observer(obs_tx);
@@ -1484,6 +1514,7 @@ async fn handle_runtime_agent_request(
                     (
                         RuntimeAgentResponse::KernelLaunched {
                             env_source: notebook_protocol::connection::EnvSource::parse(&es),
+                            sandbox_state: sandbox_state_for_response,
                         },
                         Some(rx),
                     )
@@ -1627,6 +1658,36 @@ async fn handle_runtime_agent_request(
                     let es = k.env_source().to_string();
 
                     // ── Sandbox enrichment pipeline (task 08) ────────────────
+                    // Build the sandbox state info DTO before moving k into kernel.
+                    let sandbox_state_for_response: Option<
+                        notebook_protocol::protocol::SandboxStateInfo,
+                    > = k.sandbox_state.lock().ok().and_then(|g| match &*g {
+                        crate::sandbox_launch::SandboxState::Disabled => None,
+                        crate::sandbox_launch::SandboxState::Active {
+                            nono_pid,
+                            kernel_pid,
+                            session_id,
+                        } => Some(notebook_protocol::protocol::SandboxStateInfo::Active {
+                            nono_pid: *nono_pid,
+                            kernel_pid: *kernel_pid,
+                            session_id: session_id.clone(),
+                        }),
+                        crate::sandbox_launch::SandboxState::StartupFailed {
+                            reason,
+                            stderr_capture,
+                        } => Some(
+                            notebook_protocol::protocol::SandboxStateInfo::StartupFailed {
+                                reason: reason.clone(),
+                                stderr_tail: stderr_capture.clone(),
+                            },
+                        ),
+                        crate::sandbox_launch::SandboxState::Degraded { reason } => {
+                            Some(notebook_protocol::protocol::SandboxStateInfo::Degraded {
+                                reason: reason.clone(),
+                            })
+                        }
+                    });
+
                     if let Some(event_stream) = k.sandbox_event_stream.take() {
                         let (observer, obs_tx) = ExecutionObserver::new();
                         state.set_enrichment_observer(obs_tx);
@@ -1657,6 +1718,7 @@ async fn handle_runtime_agent_request(
                     (
                         RuntimeAgentResponse::KernelRestarted {
                             env_source: notebook_protocol::connection::EnvSource::parse(&es),
+                            sandbox_state: sandbox_state_for_response,
                         },
                         Some(rx),
                     )

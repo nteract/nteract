@@ -635,6 +635,13 @@ pub enum NotebookRequest {
 
     /// Abort a peer-scoped multipart upload and discard staged parts.
     AbortBlobUpload { upload_id: String },
+
+    /// Get the sandbox state for the current notebook's running kernel.
+    ///
+    /// Returns the live `SandboxState` from the kernel session. When no kernel
+    /// is running (or the notebook has no sandbox profile), the state is
+    /// `Disabled`. This is a read-only query — it does not modify any state.
+    GetSandboxState {},
 }
 
 /// Responses from daemon to notebook app.
@@ -768,6 +775,45 @@ pub enum NotebookResponse {
 
     /// Blob upload failed before publishing bytes.
     BlobUploadError { reason: BlobUploadErrorKind },
+
+    /// Sandbox state for the current notebook's running kernel.
+    SandboxState {
+        /// Current sandbox state, serialized as a tagged union.
+        ///
+        /// Variants: `{ "type": "Disabled" }`,
+        /// `{ "type": "Active", "nono_pid": u32, "kernel_pid": u32, "session_id": Option<String> }`,
+        /// `{ "type": "StartupFailed", "reason": String, "stderr_tail": Vec<String> }`,
+        /// `{ "type": "Degraded", "reason": String }`.
+        state: SandboxStateInfo,
+    },
+}
+
+/// Sandbox state DTO for the `GetSandboxState` response.
+///
+/// A transport-safe representation of the daemon-side `SandboxState` enum.
+/// Maps one-to-one with the `SandboxStateDto` described in task 09.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SandboxStateInfo {
+    /// No sandbox profile configured or `enabled = false`.
+    Disabled,
+
+    /// Sandbox launched and the nono proxy is healthy.
+    Active {
+        nono_pid: u32,
+        kernel_pid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+
+    /// Sandbox failed to start.
+    StartupFailed {
+        reason: String,
+        stderr_tail: Vec<String>,
+    },
+
+    /// Sandbox started but the nono proxy died mid-session.
+    Degraded { reason: String },
 }
 
 /// Broadcast messages from daemon to all peers in a room.
@@ -893,10 +939,23 @@ pub enum RuntimeAgentRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum RuntimeAgentResponse {
     /// Kernel launched successfully.
-    KernelLaunched { env_source: EnvSource },
+    KernelLaunched {
+        env_source: EnvSource,
+        /// Sandbox state after launch. `None` when sandbox is not active
+        /// (the common case). The coordinator stores this in
+        /// `NotebookRoom::sandbox_state_cache` so `GetSandboxState {}` can
+        /// return it without a round-trip to the runtime agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_state: Option<SandboxStateInfo>,
+    },
 
     /// Kernel restarted successfully (same runtime agent, new kernel).
-    KernelRestarted { env_source: EnvSource },
+    KernelRestarted {
+        env_source: EnvSource,
+        /// Sandbox state after restart. Same semantics as `KernelLaunched`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_state: Option<SandboxStateInfo>,
+    },
 
     /// Code completion result.
     CompletionResult {

@@ -752,6 +752,13 @@ pub struct NotebookRoom {
     /// sync handler to validate connections and prevent stale cleanup from
     /// clobbering state.
     pub current_runtime_agent_id: Arc<RwLock<Option<String>>>,
+    /// Cached sandbox state for the current kernel session.
+    ///
+    /// Set to `Active` when the kernel launches with a sandbox profile, updated
+    /// to `Degraded` when the nono proxy exits unexpectedly, and reset to
+    /// `Disabled` on kernel shutdown.  The `GetSandboxState {}` handler reads
+    /// this without needing a round-trip to the runtime agent.
+    pub sandbox_state_cache: Arc<RwLock<notebook_protocol::protocol::SandboxStateInfo>>,
 }
 
 impl NotebookRoom {
@@ -957,6 +964,9 @@ impl NotebookRoom {
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
+            sandbox_state_cache: Arc::new(RwLock::new(
+                notebook_protocol::protocol::SandboxStateInfo::Disabled,
+            )),
         })
     }
 
@@ -1063,6 +1073,9 @@ impl NotebookRoom {
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
+            sandbox_state_cache: Arc::new(RwLock::new(
+                notebook_protocol::protocol::SandboxStateInfo::Disabled,
+            )),
         }
     }
 
