@@ -5,6 +5,7 @@ import {
   getStatusKeyLabel,
   KERNEL_ERROR_REASON,
   notebookCommandRuntimeStateForStatusKey,
+  projectNotebookCommandRuntimeActions,
   projectNotebookCommandRuntimeStatus,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   RUNTIME_STATUS,
@@ -99,6 +100,113 @@ describe("notebook command runtime projection", () => {
       label: "busy",
       state: "busy",
       statusKey: RUNTIME_STATUS.RUNNING_BUSY,
+    });
+  });
+
+  it("projects stable runtime command affordances from capabilities and host actions", () => {
+    const runtimeStatus = projectNotebookCommandRuntimeStatus({
+      statusKey: RUNTIME_STATUS.RUNNING_IDLE,
+      errorReason: null,
+    });
+    const first = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: true },
+      runtimeStatus,
+      actions: {
+        interruptRuntime: true,
+        restartAndRunAll: true,
+        restartRuntime: true,
+        runAllCells: true,
+        startRuntime: true,
+      },
+    });
+    const second = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: true },
+      runtimeStatus,
+      actions: {
+        interruptRuntime: true,
+        restartAndRunAll: true,
+        restartRuntime: true,
+        runAllCells: true,
+        startRuntime: true,
+      },
+    });
+
+    expect(first).toBe(second);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(first).toEqual({
+      hasRuntimeStatus: true,
+      isRuntimeRunning: true,
+      showAnyRuntimeAction: true,
+      showInterrupt: true,
+      showRestart: true,
+      showRestartAndRunAll: true,
+      showRunAll: true,
+      showRuntimeStart: false,
+    });
+  });
+
+  it("keeps start hidden when the host has no concrete start action", () => {
+    const projection = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: true },
+      runtimeStatus: projectNotebookCommandRuntimeStatus({
+        statusKey: RUNTIME_STATUS.NOT_STARTED,
+      }),
+      actions: {
+        runAllCells: true,
+      },
+    });
+
+    expect(projection).toMatchObject({
+      isRuntimeRunning: false,
+      showRuntimeStart: false,
+      showRunAll: true,
+    });
+  });
+
+  it("gates all runtime actions when execution authority is absent", () => {
+    const projection = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: false },
+      runtimeStatus: projectNotebookCommandRuntimeStatus({
+        statusKey: RUNTIME_STATUS.RUNNING_BUSY,
+      }),
+      actions: {
+        interruptRuntime: true,
+        restartRuntime: true,
+        runAllCells: true,
+      },
+    });
+
+    expect(projection).toMatchObject({
+      hasRuntimeStatus: true,
+      isRuntimeRunning: true,
+      showAnyRuntimeAction: false,
+      showInterrupt: false,
+      showRestart: false,
+      showRunAll: false,
+    });
+  });
+
+  it("hides runtime actions until RuntimeStateDoc supplies a command status", () => {
+    const projection = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: true },
+      runtimeStatus: null,
+      actions: {
+        interruptRuntime: true,
+        restartRuntime: true,
+        runAllCells: true,
+        startRuntime: true,
+      },
+    });
+
+    expect(projection).toEqual({
+      hasRuntimeStatus: false,
+      isRuntimeRunning: false,
+      showAnyRuntimeAction: false,
+      showInterrupt: false,
+      showRestart: false,
+      showRestartAndRunAll: false,
+      showRunAll: false,
+      showRuntimeStart: false,
     });
   });
 });

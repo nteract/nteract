@@ -240,6 +240,21 @@ export {
   type NotebookWorkstationPanelTone,
 } from "./notebook-workstation-panel";
 
+// Notebook workstation selection projection
+export {
+  clearNotebookWorkstationSelectionProjectionCacheForTests,
+  projectNotebookWorkstationSelection,
+  type NotebookRegisteredWorkstation,
+  type NotebookRegisteredWorkstationEnvironment,
+  type NotebookRegisteredWorkstationProjection,
+  type NotebookRegisteredWorkstationStatus,
+  type NotebookWorkstationEnvironmentPolicy,
+  type NotebookWorkstationEnvironmentProjection,
+  type NotebookWorkstationSelectionProjection,
+  type NotebookWorkstationSelectionState,
+  type ProjectNotebookWorkstationSelectionOptions,
+} from "./notebook-workstation-selection";
+
 // Projection cache helpers
 export { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
@@ -319,11 +334,15 @@ export {
   getLifecycleLabel,
   getStatusKeyLabel,
   notebookCommandRuntimeStateForStatusKey,
+  projectNotebookCommandRuntimeActions,
   projectNotebookCommandRuntimeStatus,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   RUNTIME_STATUS_LABELS,
+  type NotebookCommandRuntimeActionAvailability,
+  type NotebookCommandRuntimeActionsProjection,
   type NotebookCommandRuntimeState,
   type NotebookCommandRuntimeStatusProjection,
+  type ProjectNotebookCommandRuntimeActionsOptions,
   type ProjectNotebookCommandRuntimeStatusOptions,
 } from "./notebook-command-runtime";
 
