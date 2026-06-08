@@ -3431,6 +3431,7 @@ async function viewer(
   const shellMetadata = await publicViewerShellMetadata(env, notebookId, headsHash);
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
+  const session = await readCloudAppSession(env, request).catch(() => null);
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
@@ -3447,6 +3448,7 @@ async function viewer(
     hostCapabilities: {
       canManageSharing: true,
     },
+    session: session ? appSessionResponse(session) : null,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     syncTicketEndpoint: `${notebookApiBasePath}/sync-ticket`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),

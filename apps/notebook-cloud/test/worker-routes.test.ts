@@ -412,6 +412,37 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /bootstrap@example\.test|bootstrap-user|Bootstrap User/);
   });
 
+  it("bootstraps notebook viewers with safe app session status", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "viewer-bootstrap-user",
+      email: "viewer-bootstrap@example.test",
+      extraPayload: { email_verified: true },
+      name: "Viewer Bootstrap User",
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/viewer-bootstrap-session/notebook", {
+        headers: { Cookie: cookie },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    const config = notebookViewerConfig(html);
+    assert.equal(config.session?.provider, "oidc");
+    assert.equal(typeof config.session?.expires_at, "number");
+    assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(html, /viewer-bootstrap@example\.test|viewer-bootstrap-user/);
+    assert.doesNotMatch(html, /Viewer Bootstrap User/);
+  });
+
   it("keeps private notebook bootstrap out of anonymous notebook home HTML", async () => {
     const env = fakeEnv({
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
@@ -4432,6 +4463,24 @@ function notebookHomeBootstrap(html: string): {
       provider: string;
       expires_at: number;
     };
+  };
+}
+
+function notebookViewerConfig(html: string): {
+  session?: {
+    provider: string;
+    expires_at: number;
+  } | null;
+} {
+  const match = html.match(
+    /<script id="nteract-cloud-viewer-config" type="application\/json">([^<]+)<\/script>/,
+  );
+  assert.ok(match?.[1], "expected notebook viewer config script");
+  return JSON.parse(match[1]) as {
+    session?: {
+      provider: string;
+      expires_at: number;
+    } | null;
   };
 }
 

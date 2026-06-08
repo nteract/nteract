@@ -13,6 +13,8 @@ export interface CloudAppSessionStatus {
   session: CloudAppSession | null;
 }
 
+const CLOUD_APP_SESSION_EXPIRY_SKEW_SECONDS = 60;
+
 export async function establishCloudAppSession(authState: CloudPrototypeAuthState): Promise<void> {
   if (authState.mode !== "oidc" || !authState.token) {
     return;
@@ -92,4 +94,17 @@ export function isCloudAppSession(value: unknown): value is CloudAppSession {
     Number.isFinite(candidate.expires_at) &&
     Object.keys(candidate).every((key) => key === "provider" || key === "expires_at")
   );
+}
+
+export function cloudAppSessionIsFresh(
+  session: CloudAppSession | null | undefined,
+  nowSeconds = currentEpochSeconds(),
+): boolean {
+  return Boolean(
+    session && session.expires_at > nowSeconds + CLOUD_APP_SESSION_EXPIRY_SKEW_SECONDS,
+  );
+}
+
+function currentEpochSeconds(): number {
+  return Math.floor(Date.now() / 1000);
 }

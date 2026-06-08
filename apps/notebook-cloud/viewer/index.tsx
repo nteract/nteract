@@ -151,6 +151,7 @@ import { cloudSourceLanguage } from "./source-language";
 import { loadSupplementalViewerCss } from "./supplemental-css";
 import {
   clearCloudAppSession,
+  cloudAppSessionIsFresh,
   establishCloudAppSession,
   establishCloudAppSessionFromOidcToken,
   isCloudAppSession,
@@ -281,8 +282,11 @@ function loadConfig(): CloudViewerConfig {
     workstationAttachEndpoint: parsed.workstationAttachEndpoint,
     hostCapabilities: {
       canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
+      canSubmitExecutionRequests: Boolean(parsed.hostCapabilities?.canSubmitExecutionRequests),
     },
+    session: isCloudAppSession(parsed.session) ? parsed.session : null,
     syncEndpoint: parsed.syncEndpoint,
+    syncTicketEndpoint: parsed.syncTicketEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
     outputDocumentBaseUrl: parsed.outputDocumentBaseUrl ?? null,
@@ -352,6 +356,8 @@ function isNotebookListPath(): boolean {
 
 interface CloudPrototypeAuthOptions {
   appSessionRefreshFallback?: boolean;
+  appSessionLoading?: boolean;
+  appSession?: CloudAppSession | null;
 }
 
 interface CloudAppSessionViewState {
@@ -371,8 +377,10 @@ function useCloudPrototypeAuth(
   const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
     cloudPrototypeAuthFromWindow(),
   );
+  const appSession = options?.appSession ?? null;
+  const appSessionLoading = options?.appSessionLoading === true;
   const [authRenewal, setAuthRenewal] = useState<CloudAuthRenewalState>(() =>
-    shouldRefreshStoredOidcToken()
+    shouldRefreshStoredOidcToken() && !cloudAppSessionIsFresh(appSession) && !appSessionLoading
       ? { kind: "refreshing", message: "Refreshing sign-in..." }
       : { kind: "idle", message: null },
   );
@@ -381,11 +389,11 @@ function useCloudPrototypeAuth(
   const appSessionRefreshFallback = options?.appSessionRefreshFallback === true;
   const refreshAuthState = useCallback(() => {
     setAuthState(cloudPrototypeAuthFromWindow());
-    if (!shouldRefreshStoredOidcToken()) {
-      appSessionRefreshFallbackRef.current = null;
+    if (!shouldRefreshStoredOidcToken() || cloudAppSessionIsFresh(appSession)) {
+      appSessionRefreshFallbackRef.current = appSession?.expires_at ?? null;
       setAuthRenewal({ kind: "idle", message: null });
     }
-  }, []);
+  }, [appSession]);
 
   const refreshOidcIfNeeded = useCallback(async () => {
     const oidc = authConfig.oidc;
@@ -393,6 +401,16 @@ function useCloudPrototypeAuth(
       return;
     }
     if (appSessionRefreshFallback) {
+      if (appSessionLoading && !appSession) {
+        setAuthRenewal({ kind: "idle", message: null });
+        return;
+      }
+      const appSessionExpiresAt = appSession?.expires_at ?? null;
+      if (appSessionExpiresAt && cloudAppSessionIsFresh(appSession)) {
+        appSessionRefreshFallbackRef.current = appSessionExpiresAt;
+        setAuthRenewal({ kind: "idle", message: null });
+        return;
+      }
       const fallbackExpiresAt = appSessionRefreshFallbackRef.current;
       if (fallbackExpiresAt && fallbackExpiresAt > currentEpochSeconds() + 60) {
         return;
@@ -414,7 +432,7 @@ function useCloudPrototypeAuth(
         if (appSessionRefreshFallback) {
           const appSession = await readCloudAppSessionStatus().catch(() => null);
           const appSessionExpiresAt = appSession?.session?.expires_at ?? null;
-          if (appSessionExpiresAt && appSessionExpiresAt > currentEpochSeconds() + 60) {
+          if (cloudAppSessionIsFresh(appSession?.session)) {
             appSessionRefreshFallbackRef.current = appSessionExpiresAt;
             console.warn(
               "[notebook-cloud] OIDC session refresh failed; continuing with app session cookie",
@@ -434,7 +452,7 @@ function useCloudPrototypeAuth(
     })();
     refreshPromiseRef.current = refreshPromise;
     return refreshPromise;
-  }, [appSessionRefreshFallback, authConfig.oidc, refreshAuthState]);
+  }, [appSession, appSessionLoading, appSessionRefreshFallback, authConfig.oidc, refreshAuthState]);
 
   useEffect(() => {
     void refreshOidcIfNeeded();
@@ -624,14 +642,16 @@ function CloudNotebookProviders({
 
 function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
-    appSessionRefreshFallback: true,
-  });
-  useCloudAppSessionBridge(authState);
   const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
   );
   const appSessionStatus = useCloudAppSessionStatus(bootstrap?.session ?? null);
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
+    appSessionRefreshFallback: true,
+    appSessionLoading: appSessionStatus.status === "loading",
+    appSession: appSessionStatus.session,
+  });
+  useCloudAppSessionBridge(authState);
   const [listState, setListState] = useState<CloudNotebookListState>(() =>
     initialCloudNotebookListState(authState, bootstrap),
   );
@@ -1413,11 +1433,13 @@ function formatNotebookUpdatedAt(value: string): string {
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const appSessionStatus = useCloudAppSessionStatus(null);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
     appSessionRefreshFallback: true,
+    appSessionLoading: appSessionStatus.status === "loading",
+    appSession: appSessionStatus.session,
   });
   useCloudAppSessionBridge(authState);
-  const appSessionStatus = useCloudAppSessionStatus(null);
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
   const oidcConfigured = Boolean(authConfig.oidc);
@@ -1685,11 +1707,13 @@ function NotebookViewer({
   const loadingPolicy = cloudViewerLoadingPolicy(config);
   const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
+  const appSessionStatus = useCloudAppSessionStatus(config.session ?? null);
   const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
     appSessionRefreshFallback: true,
+    appSessionLoading: appSessionStatus.status === "loading",
+    appSession: appSessionStatus.session,
   });
   useCloudAppSessionBridge(authState);
-  const appSessionStatus = useCloudAppSessionStatus(null);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);

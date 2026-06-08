@@ -46,6 +46,7 @@ import { createOutputResolutionCache, type ResolvedCell } from "./render-resolut
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { subscribeSerializedCloudCellChanges } from "./serialized-cell-changes";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
+import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
 export interface CloudViewerConfig {
@@ -63,7 +64,9 @@ export interface CloudViewerConfig {
   workstationAttachEndpoint?: string;
   hostCapabilities?: {
     canManageSharing?: boolean;
+    canSubmitExecutionRequests?: boolean;
   };
+  session?: CloudAppSession | null;
   syncEndpoint: string;
   syncTicketEndpoint?: string;
   blobBasePath: string;
