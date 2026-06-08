@@ -673,6 +673,24 @@ registers, select it as the default workstation in the notebook UI or call
 `PATCH /api/workstations/default`, then use the Workstations rail in a private
 owner room to request attachment.
 
+With the workstation agent already running, use the toolbar smoke to exercise
+the hosted browser path end to end. It verifies the registered workstation is
+online, selects it as the default, creates a private owner notebook, seeds the
+first-party browser OIDC cache, clicks `Attach compute` in the shared toolbar,
+runs the first cell, reloads the page, and runs it again to catch reconnection
+regressions:
+
+```bash
+pnpm --dir apps/notebook-cloud smoke:hosted:workstation-toolbar
+```
+
+The smoke reads the API key from the environment or
+`${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` and reads the browser OIDC
+token cache from `${NTERACT_PREVIEW_OIDC_TOKEN_PATH:-$HOME/token.preview.json}`.
+It does not print token material. Set
+`NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_WORKSTATION_ID` to target a
+workstation other than `lab2`.
+
 Use the combined runtime/browser smoke when you want the full preview remote
 compute path in one command. It creates one API-key room per requested browser
 scope, keeps that room's runtime peer alive, clicks execution through Chromium
