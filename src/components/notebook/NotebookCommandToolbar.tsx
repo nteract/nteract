@@ -2,6 +2,7 @@ import {
   ArrowDownToLine,
   ChevronsRight,
   Code,
+  Cpu,
   LetterText,
   Play,
   RotateCcw,
@@ -34,6 +35,12 @@ export interface NotebookCommandToolbarUpdateAction {
   onClick: () => void;
 }
 
+export interface NotebookCommandToolbarWorkstationAction {
+  label: string;
+  title: string;
+  onClick: () => void;
+}
+
 export interface NotebookCommandToolbarProps {
   capabilities: Pick<
     NotebookShellCapabilities,
@@ -60,6 +67,7 @@ export interface NotebookCommandToolbarProps {
   onRestartAndRunAll?: () => void;
   onTogglePackages?: () => void;
   updateAction?: NotebookCommandToolbarUpdateAction | null;
+  workstationAction?: NotebookCommandToolbarWorkstationAction | null;
   presenceControls?: ReactNode;
   utilityControls?: ReactNode;
   sharingControls?: ReactNode;
@@ -89,6 +97,7 @@ export function NotebookCommandToolbar({
   onRestartAndRunAll,
   onTogglePackages,
   updateAction = null,
+  workstationAction = null,
   presenceControls,
   utilityControls,
   sharingControls,
@@ -243,6 +252,20 @@ export function NotebookCommandToolbar({
             fill={runtimeStatus?.state === "busy" ? "currentColor" : "none"}
           />
           <span className="hidden @[40rem]:inline">Interrupt</span>
+        </button>
+      ) : null}
+
+      {workstationAction ? (
+        <button
+          type="button"
+          onClick={workstationAction.onClick}
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          title={workstationAction.title}
+          aria-label={workstationAction.label}
+          data-testid="workstation-setup-button"
+        >
+          <Cpu className="h-3 w-3" />
+          <span className="hidden @[40rem]:inline">{workstationAction.label}</span>
         </button>
       ) : null}
 

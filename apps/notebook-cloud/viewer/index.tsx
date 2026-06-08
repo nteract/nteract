@@ -1660,6 +1660,10 @@ function NotebookViewer({
     setRailCollapsed(false);
     setActiveRailPanel("packages");
   }, [activeRailPanel, railCollapsed]);
+  const handleOpenWorkstationsRail = useCallback(() => {
+    setRailCollapsed(false);
+    setActiveRailPanel("workstations");
+  }, []);
   const canAcceptCellMutations =
     Boolean(connectionPeerId) &&
     !connectionError &&
@@ -1737,6 +1741,17 @@ function NotebookViewer({
         registeredWorkstations: [],
       }),
     [canChooseHostedWorkstation, workstationAttachment],
+  );
+  const workstationAction = useMemo(
+    () =>
+      workstationSelection.state === "needs_registration"
+        ? {
+            label: "Set up compute",
+            title: "Open workstations panel",
+            onClick: handleOpenWorkstationsRail,
+          }
+        : null,
+    [handleOpenWorkstationsRail, workstationSelection.state],
   );
   useEffect(() => {
     if (!requestedEditAccess) {
@@ -2169,6 +2184,7 @@ function NotebookViewer({
         onInterruptRuntime: handleCloudInterruptRuntime,
         onRunAllCells: handleCloudRunAllCells,
         onTogglePackages: handleTogglePackagesRail,
+        workstationAction,
       }}
     />
   );

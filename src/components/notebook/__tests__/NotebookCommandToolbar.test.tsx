@@ -175,4 +175,31 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.queryByTestId("kernel-status")).toBeNull();
     expect(screen.queryByTestId("run-all-button")).toBeNull();
   });
+
+  it("can direct eligible users toward workstation setup without a runtime status", () => {
+    const onWorkstationSetup = vi.fn();
+
+    render(
+      <NotebookCommandToolbar
+        capabilities={{
+          ...editableToolbarCapabilities,
+          canExecute: false,
+        }}
+        workstationAction={{
+          label: "Set up compute",
+          title: "Open workstations panel",
+          onClick: onWorkstationSetup,
+        }}
+      />,
+    );
+
+    const setupButton = screen.getByTestId("workstation-setup-button");
+    expect(setupButton).toHaveAccessibleName("Set up compute");
+    expect(setupButton).toHaveAttribute("title", "Open workstations panel");
+
+    fireEvent.click(setupButton);
+
+    expect(onWorkstationSetup).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("run-all-button")).toBeNull();
+  });
 });
