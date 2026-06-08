@@ -362,7 +362,7 @@ test("cloud shell capabilities grant owners full cell, structure, and sharing co
   assert.equal(capabilities.runtime.canWriteRuntimeState, false);
 });
 
-test("cloud shell capabilities surface sharing for authenticated hosted rooms", () => {
+test("cloud shell capabilities surface sharing only for hosted room owners", () => {
   assert.equal(
     cloudNotebookShellCapabilities({
       authState: authState("dev"),
@@ -380,7 +380,7 @@ test("cloud shell capabilities surface sharing for authenticated hosted rooms", 
       hasCodeCells: true,
       hostCapabilities: { canManageSharing: true },
     }).canManageSharing,
-    true,
+    false,
   );
 
   assert.equal(
@@ -429,11 +429,13 @@ test("cloud shell capabilities treat app-session cookies as browser authenticati
     connectionScope: "editor",
     hasAppSession: true,
     hasCodeCells: true,
+    hostCapabilities: { canManageSharing: true },
     runtimeAvailable: true,
   });
 
   assert.equal(editorWithRuntime.auth.canUseAuthenticatedIdentity, true);
   assert.equal(editorWithRuntime.canExecute, false);
+  assert.equal(editorWithRuntime.canManageSharing, false);
 });
 
 test("cloud shell capabilities require the host room to advertise sharing", () => {
