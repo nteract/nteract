@@ -6,7 +6,7 @@ import { getNotebookCatalog } from "./storage.ts";
 import type { AuthenticatedConnection } from "./identity.ts";
 import { cloudLog, durationMs, errorMessage } from "./observability.ts";
 
-const ROOM_HOST_ACTOR_LABEL = "system/schema:notebook-cloud-room";
+const ROOM_HOST_ACTOR_PRINCIPAL = "system:notebook-cloud-room";
 const CHECKPOINT_NOTEBOOK_KEY = "room-host:notebook-doc";
 const CHECKPOINT_RUNTIME_STATE_KEY = "room-host:runtime-state-doc";
 const CHECKPOINT_COMMS_DOC_KEY = "room-host:comms-doc";
@@ -273,8 +273,8 @@ export class RoomMaterializer {
       this.loadedPublishedNotebookHeads = null;
       this.loadedPublishedRuntimeStateHeads = null;
       this.loadedPublishedCommsDocHeads = null;
-      const host = await createEmptyRoomHost(this.notebookId, ROOM_HOST_ACTOR_LABEL);
-      host.seed_initial_code_cell_if_empty(`cell-${crypto.randomUUID()}`);
+      const host = await createEmptyRoomHost(this.notebookId, roomHostActorLabel(this.notebookId));
+      host.seed_initial_code_cell_if_empty(initialHostedCellId(this.notebookId));
       cloudLog("info", "room.materializer.loaded", {
         notebook_id: this.notebookId,
         source: "empty_room",
@@ -505,6 +505,26 @@ export class RoomMaterializer {
       commsDocBytes: commsObject ? new Uint8Array(await commsObject.arrayBuffer()) : undefined,
     };
   }
+}
+
+function roomHostActorLabel(notebookId: string): string {
+  return `${ROOM_HOST_ACTOR_PRINCIPAL}/room:${stableRoomKey(notebookId)}`;
+}
+
+function initialHostedCellId(notebookId: string): string {
+  return `cell-room-${stableRoomKey(notebookId)}`;
+}
+
+// This is part of the hosted room actor contract: empty-room bootstrap must
+// derive the same room-owned actor and starter-cell id across Durable Object
+// restarts so uncheckpointed rooms do not fork different seq-2 changes.
+function stableRoomKey(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, "0");
 }
 
 export function isMaterializedSyncFrame(type: FrameTypeValue): boolean {

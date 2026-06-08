@@ -43,6 +43,8 @@ import {
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
+  projectNotebookWorkstationLaunchReadiness,
+  projectNotebookWorkstationSelection,
   shouldShowNotebookDocumentCommandToolbar,
   type NotebookCommandToolbarStatus,
   type NotebookEnvironmentManager,
@@ -1659,6 +1661,10 @@ function NotebookViewer({
     setRailCollapsed(false);
     setActiveRailPanel("packages");
   }, [activeRailPanel, railCollapsed]);
+  const handleOpenWorkstationsRail = useCallback(() => {
+    setRailCollapsed(false);
+    setActiveRailPanel("workstations");
+  }, []);
   const canAcceptCellMutations =
     Boolean(connectionPeerId) &&
     !connectionError &&
@@ -1722,6 +1728,39 @@ function NotebookViewer({
     shellCapabilities.runtime.connected,
     shellCapabilities.runtime.executionAvailable,
   ]);
+  const canChooseHostedWorkstation =
+    shellCapabilities.access.source === "cloud" &&
+    shellCapabilities.auth.canUseAuthenticatedIdentity &&
+    (shellCapabilities.access.level === "owner" || shellCapabilities.access.level === "editor");
+  const workstationSelection = useMemo(
+    () =>
+      projectNotebookWorkstationSelection({
+        activeAttachment: workstationAttachment,
+        canRegisterWorkstation: canChooseHostedWorkstation,
+        canSelectWorkstation: canChooseHostedWorkstation,
+        canSetDefaultWorkstation: canChooseHostedWorkstation,
+        registeredWorkstations: [],
+      }),
+    [canChooseHostedWorkstation, workstationAttachment],
+  );
+  const workstationLaunchReadiness = useMemo(
+    () =>
+      projectNotebookWorkstationLaunchReadiness({
+        capabilities: shellCapabilities,
+        selection: workstationSelection,
+      }),
+    [shellCapabilities, workstationSelection],
+  );
+  const workstationAction = useMemo(() => {
+    const { primaryAction } = workstationLaunchReadiness;
+    return primaryAction.kind !== "none" && primaryAction.label && primaryAction.title
+      ? {
+          label: primaryAction.label,
+          title: primaryAction.title,
+          onClick: handleOpenWorkstationsRail,
+        }
+      : null;
+  }, [handleOpenWorkstationsRail, workstationLaunchReadiness]);
   useEffect(() => {
     if (!requestedEditAccess) {
       appliedGrantedEditScopeRef.current = null;
@@ -2073,7 +2112,12 @@ function NotebookViewer({
       selectedOutlineItemId={selectedOutlineItemId}
       packagesSummary={null}
       workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
-      workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
+      workstationsPanel={
+        <NotebookWorkstationsPanel
+          capabilities={shellCapabilities}
+          selection={workstationSelection}
+        />
+      }
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}
@@ -2148,6 +2192,7 @@ function NotebookViewer({
         onInterruptRuntime: handleCloudInterruptRuntime,
         onRunAllCells: handleCloudRunAllCells,
         onTogglePackages: handleTogglePackagesRail,
+        workstationAction,
       }}
     />
   );

@@ -1,4 +1,4 @@
-import { Cpu, ListTree, Package } from "lucide-react";
+import { ListTree, Package, Server } from "lucide-react";
 import { useMemo, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   buildNotebookOutlineTree,
@@ -67,7 +67,7 @@ export function NotebookRail({
   className,
 }: NotebookRailProps) {
   const railButtons = workstationsPanel
-    ? [...baseRailButtons, { id: "workstations" as const, label: "Workstations", icon: Cpu }]
+    ? [...baseRailButtons, { id: "workstations" as const, label: "Workstations", icon: Server }]
     : baseRailButtons;
   const title =
     activePanelId === "packages"

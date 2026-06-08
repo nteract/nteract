@@ -188,6 +188,10 @@ export function startCloudBootstrapSync(
   engine.flush();
 }
 
+export function isRecoverableCloudFrameRejection(message: SessionControlMessage): boolean {
+  return message.type === "cloud_frame_rejected" && message.frame_type === FrameType.AUTOMERGE_SYNC;
+}
+
 export async function withReadyTimeout<T>(
   ready: Promise<T>,
   timeoutMs: number,

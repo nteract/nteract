@@ -240,6 +240,44 @@ export {
   type NotebookWorkstationPanelTone,
 } from "./notebook-workstation-panel";
 
+// Notebook workstation selection projection
+export {
+  clearNotebookWorkstationSelectionProjectionCacheForTests,
+  projectNotebookWorkstationSelection,
+  type NotebookRegisteredWorkstation,
+  type NotebookRegisteredWorkstationEnvironment,
+  type NotebookRegisteredWorkstationProjection,
+  type NotebookRegisteredWorkstationStatus,
+  type NotebookWorkstationEnvironmentPolicy,
+  type NotebookWorkstationEnvironmentProjection,
+  type NotebookWorkstationSelectionProjection,
+  type NotebookWorkstationSelectionState,
+  type ProjectNotebookWorkstationSelectionOptions,
+} from "./notebook-workstation-selection";
+
+// Notebook workstation launch-readiness projection
+export {
+  clearNotebookWorkstationLaunchReadinessProjectionCacheForTests,
+  projectNotebookWorkstationLaunchReadiness,
+  type NotebookWorkstationLaunchActionKind,
+  type NotebookWorkstationLaunchActionProjection,
+  type NotebookWorkstationLaunchReadinessProjection,
+  type NotebookWorkstationLaunchReadinessState,
+  type ProjectNotebookWorkstationLaunchReadinessOptions,
+} from "./notebook-workstation-launch";
+
+// Notebook launch environment projection
+export {
+  clearNotebookLaunchEnvironmentProjectionCacheForTests,
+  projectNotebookLaunchEnvironment,
+  type NotebookLaunchEnvironmentOptionKind,
+  type NotebookLaunchEnvironmentOptionProjection,
+  type NotebookLaunchEnvironmentProjection,
+  type NotebookLaunchEnvironmentSource,
+  type NotebookLaunchKernelSpecProjection,
+  type ProjectNotebookLaunchEnvironmentOptions,
+} from "./notebook-launch-environment";
+
 // Projection cache helpers
 export { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
@@ -319,11 +357,15 @@ export {
   getLifecycleLabel,
   getStatusKeyLabel,
   notebookCommandRuntimeStateForStatusKey,
+  projectNotebookCommandRuntimeActions,
   projectNotebookCommandRuntimeStatus,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   RUNTIME_STATUS_LABELS,
+  type NotebookCommandRuntimeActionAvailability,
+  type NotebookCommandRuntimeActionsProjection,
   type NotebookCommandRuntimeState,
   type NotebookCommandRuntimeStatusProjection,
+  type ProjectNotebookCommandRuntimeActionsOptions,
   type ProjectNotebookCommandRuntimeStatusOptions,
 } from "./notebook-command-runtime";
 

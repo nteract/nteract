@@ -506,6 +506,30 @@ describe("RoomMaterializer", () => {
     assertInitialEmptyCodeCell(JSON.parse(viewer.get_cells_json()));
   });
 
+  it("reconstructs uncheckpointed starter rooms with the same room-owned changes", async () => {
+    const state = fakeState();
+    const peer = {
+      id: "peer-viewer",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+      ),
+    };
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+
+    await syncMaterializerWithClient(new RoomMaterializer("demo", state, {} as Env), peer, viewer);
+    const firstCells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string }>;
+    assertInitialEmptyCodeCell(firstCells);
+
+    await syncMaterializerWithClient(new RoomMaterializer("demo", state, {} as Env), peer, viewer);
+    const secondCells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string }>;
+    assertInitialEmptyCodeCell(secondCells);
+    assert.equal(secondCells[0]?.id, firstCells[0]?.id);
+    assert.match(
+      viewer.contributing_actors().join("\n"),
+      /system:notebook-cloud-room\/room:[0-9a-f]{16}/,
+    );
+  });
+
   it("persists and reloads a durable room checkpoint", async () => {
     const state = fakeState();
     const editorIdentity = authenticateDevRequest(

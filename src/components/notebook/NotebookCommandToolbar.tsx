@@ -5,12 +5,17 @@ import {
   LetterText,
   Play,
   RotateCcw,
+  ServerCog,
   Square,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
 import { cn } from "@/lib/utils";
-import type { NotebookCommandRuntimeState, NotebookShellCapabilities } from "./capabilities";
+import {
+  projectNotebookCommandRuntimeActions,
+  type NotebookCommandRuntimeState,
+  type NotebookShellCapabilities,
+} from "./capabilities";
 
 export type { NotebookCommandRuntimeState } from "./capabilities";
 
@@ -25,6 +30,12 @@ export interface NotebookCommandToolbarStatus {
 }
 
 export interface NotebookCommandToolbarUpdateAction {
+  label: string;
+  title: string;
+  onClick: () => void;
+}
+
+export interface NotebookCommandToolbarWorkstationAction {
   label: string;
   title: string;
   onClick: () => void;
@@ -56,6 +67,7 @@ export interface NotebookCommandToolbarProps {
   onRestartAndRunAll?: () => void;
   onTogglePackages?: () => void;
   updateAction?: NotebookCommandToolbarUpdateAction | null;
+  workstationAction?: NotebookCommandToolbarWorkstationAction | null;
   presenceControls?: ReactNode;
   utilityControls?: ReactNode;
   sharingControls?: ReactNode;
@@ -85,6 +97,7 @@ export function NotebookCommandToolbar({
   onRestartAndRunAll,
   onTogglePackages,
   updateAction = null,
+  workstationAction = null,
   presenceControls,
   utilityControls,
   sharingControls,
@@ -97,21 +110,18 @@ export function NotebookCommandToolbar({
 }: NotebookCommandToolbarProps) {
   const { auth, canEditStructure, canExecute, canManageSharing, canRequestEdit, canViewPackages } =
     capabilities;
-  const hasRuntimeStatus = Boolean(runtimeStatus);
-  const isRuntimeRunning =
-    runtimeStatus?.state === "idle" ||
-    runtimeStatus?.state === "busy" ||
-    runtimeStatus?.state === "starting";
   const showAddCellControls = Boolean(onAddCell) && (canEditStructure || addCellControlsDisabled);
-  const showRuntimeStart =
-    hasRuntimeStatus && canExecute && !isRuntimeRunning && Boolean(onStartRuntime);
-  const showRunAll = hasRuntimeStatus && canExecute && Boolean(onRunAllCells);
-  const showRestart = hasRuntimeStatus && canExecute && Boolean(onRestartRuntime);
-  const showRestartAndRunAll = hasRuntimeStatus && canExecute && Boolean(onRestartAndRunAll);
-  const showInterrupt =
-    hasRuntimeStatus && canExecute && isRuntimeRunning && Boolean(onInterruptRuntime);
-  const showAnyRuntimeAction =
-    showRuntimeStart || showRunAll || showRestart || showRestartAndRunAll || showInterrupt;
+  const runtimeActions = projectNotebookCommandRuntimeActions({
+    capabilities: { canExecute },
+    runtimeStatus,
+    actions: {
+      interruptRuntime: Boolean(onInterruptRuntime),
+      restartAndRunAll: Boolean(onRestartAndRunAll),
+      restartRuntime: Boolean(onRestartRuntime),
+      runAllCells: Boolean(onRunAllCells),
+      startRuntime: Boolean(onStartRuntime),
+    },
+  });
   const showPackageToggle = Boolean(runtime && canViewPackages && onTogglePackages);
   const showAuthControls =
     Boolean(authControls) &&
@@ -154,9 +164,11 @@ export function NotebookCommandToolbar({
         </>
       ) : null}
 
-      {showAddCellControls && showAnyRuntimeAction ? <div className="h-4 w-px bg-border" /> : null}
+      {showAddCellControls && runtimeActions.showAnyRuntimeAction ? (
+        <div className="h-4 w-px bg-border" />
+      ) : null}
 
-      {showRuntimeStart ? (
+      {runtimeActions.showRuntimeStart ? (
         <button
           type="button"
           onClick={onStartRuntime}
@@ -171,7 +183,7 @@ export function NotebookCommandToolbar({
         </button>
       ) : null}
 
-      {showRunAll ? (
+      {runtimeActions.showRunAll ? (
         <button
           type="button"
           onClick={onRunAllCells}
@@ -185,7 +197,7 @@ export function NotebookCommandToolbar({
         </button>
       ) : null}
 
-      {showRestart ? (
+      {runtimeActions.showRestart ? (
         <button
           type="button"
           onClick={onRestartRuntime}
@@ -199,7 +211,7 @@ export function NotebookCommandToolbar({
         </button>
       ) : null}
 
-      {showRestartAndRunAll ? (
+      {runtimeActions.showRestartAndRunAll ? (
         <button
           type="button"
           onClick={onRestartAndRunAll}
@@ -221,7 +233,7 @@ export function NotebookCommandToolbar({
         </button>
       ) : null}
 
-      {showInterrupt ? (
+      {runtimeActions.showInterrupt ? (
         <button
           type="button"
           onClick={onInterruptRuntime}
@@ -240,6 +252,20 @@ export function NotebookCommandToolbar({
             fill={runtimeStatus?.state === "busy" ? "currentColor" : "none"}
           />
           <span className="hidden @[40rem]:inline">Interrupt</span>
+        </button>
+      ) : null}
+
+      {workstationAction ? (
+        <button
+          type="button"
+          onClick={workstationAction.onClick}
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          title={workstationAction.title}
+          aria-label={workstationAction.label}
+          data-testid="workstation-setup-button"
+        >
+          <ServerCog className="h-3 w-3" />
+          <span className="hidden @[40rem]:inline">{workstationAction.label}</span>
         </button>
       ) : null}
 

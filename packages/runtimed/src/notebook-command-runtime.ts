@@ -6,6 +6,7 @@ import {
   statusKeyToLegacyStatus,
   type RuntimeStatusKey,
 } from "./derived-state";
+import type { NotebookShellCapabilities } from "./notebook-shell-capabilities";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
 export type NotebookCommandRuntimeState =
@@ -25,14 +26,41 @@ export interface NotebookCommandRuntimeStatusProjection {
   title: string;
 }
 
+export interface NotebookCommandRuntimeActionAvailability {
+  interruptRuntime?: boolean;
+  restartAndRunAll?: boolean;
+  restartRuntime?: boolean;
+  runAllCells?: boolean;
+  startRuntime?: boolean;
+}
+
+export interface NotebookCommandRuntimeActionsProjection {
+  hasRuntimeStatus: boolean;
+  isRuntimeRunning: boolean;
+  showAnyRuntimeAction: boolean;
+  showInterrupt: boolean;
+  showRestart: boolean;
+  showRestartAndRunAll: boolean;
+  showRunAll: boolean;
+  showRuntimeStart: boolean;
+}
+
 export interface ProjectNotebookCommandRuntimeStatusOptions {
   statusKey: RuntimeStatusKey;
   errorReason?: string | null;
   forceError?: boolean;
 }
 
+export interface ProjectNotebookCommandRuntimeActionsOptions {
+  actions?: NotebookCommandRuntimeActionAvailability;
+  capabilities: Pick<NotebookShellCapabilities, "canExecute">;
+  runtimeStatus?: Pick<NotebookCommandRuntimeStatusProjection, "state"> | null;
+}
+
 const COMMAND_RUNTIME_STATUS_CACHE = new Map<string, NotebookCommandRuntimeStatusProjection>();
+const COMMAND_RUNTIME_ACTIONS_CACHE = new Map<string, NotebookCommandRuntimeActionsProjection>();
 const COMMAND_RUNTIME_STATUS_CACHE_LIMIT = 128;
+const COMMAND_RUNTIME_ACTIONS_CACHE_LIMIT = 128;
 
 const ERROR_REASON_LABELS: Record<string, string> = {
   [KERNEL_ERROR_REASON.ENVIRONMENT_PREPARE_FAILED]: "environment setup failed",
@@ -139,6 +167,64 @@ export function projectNotebookCommandRuntimeStatusFromRuntimeState(
   });
 }
 
+export function projectNotebookCommandRuntimeActions({
+  actions,
+  capabilities,
+  runtimeStatus = null,
+}: ProjectNotebookCommandRuntimeActionsOptions): NotebookCommandRuntimeActionsProjection {
+  const runtimeState = runtimeStatus?.state ?? null;
+  const actionAvailability = {
+    interruptRuntime: actions?.interruptRuntime ?? false,
+    restartAndRunAll: actions?.restartAndRunAll ?? false,
+    restartRuntime: actions?.restartRuntime ?? false,
+    runAllCells: actions?.runAllCells ?? false,
+    startRuntime: actions?.startRuntime ?? false,
+  };
+  const cacheKey = stableCacheKey([
+    capabilities.canExecute,
+    runtimeState,
+    actionAvailability.interruptRuntime,
+    actionAvailability.restartAndRunAll,
+    actionAvailability.restartRuntime,
+    actionAvailability.runAllCells,
+    actionAvailability.startRuntime,
+  ]);
+  const cached = getBoundedCacheValue(COMMAND_RUNTIME_ACTIONS_CACHE, cacheKey);
+  if (cached) return cached;
+
+  const hasRuntimeStatus = runtimeState !== null;
+  const isRuntimeRunning =
+    runtimeState === "idle" || runtimeState === "busy" || runtimeState === "starting";
+  const canUseRuntimeAction = hasRuntimeStatus && capabilities.canExecute;
+  const showRuntimeStart =
+    canUseRuntimeAction && !isRuntimeRunning && actionAvailability.startRuntime;
+  const showRunAll = canUseRuntimeAction && actionAvailability.runAllCells;
+  const showRestart = canUseRuntimeAction && actionAvailability.restartRuntime;
+  const showRestartAndRunAll = canUseRuntimeAction && actionAvailability.restartAndRunAll;
+  const showInterrupt =
+    canUseRuntimeAction && isRuntimeRunning && actionAvailability.interruptRuntime;
+  const projection = Object.freeze({
+    hasRuntimeStatus,
+    isRuntimeRunning,
+    showAnyRuntimeAction:
+      showRuntimeStart || showRunAll || showRestart || showRestartAndRunAll || showInterrupt,
+    showInterrupt,
+    showRestart,
+    showRestartAndRunAll,
+    showRunAll,
+    showRuntimeStart,
+  });
+
+  setBoundedCacheValue(
+    COMMAND_RUNTIME_ACTIONS_CACHE,
+    cacheKey,
+    projection,
+    COMMAND_RUNTIME_ACTIONS_CACHE_LIMIT,
+  );
+  return projection;
+}
+
 export function clearNotebookCommandRuntimeStatusCacheForTests(): void {
   COMMAND_RUNTIME_STATUS_CACHE.clear();
+  COMMAND_RUNTIME_ACTIONS_CACHE.clear();
 }

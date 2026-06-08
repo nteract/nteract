@@ -1,7 +1,7 @@
 import {
   Bot,
   Cog,
-  Cpu,
+  Gauge,
   Globe2,
   Laptop,
   UserRound,
@@ -177,7 +177,7 @@ function actorIcon(kind: NotebookActorKind): LucideIcon {
     case "agent":
       return Bot;
     case "runtime":
-      return Cpu;
+      return Gauge;
     case "system":
       return Cog;
     case "local":

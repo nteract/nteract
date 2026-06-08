@@ -1,7 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
 import type { NotebookShellCapabilities } from "../capabilities";
-import { readOnlyNotebookShellCapabilities } from "../capabilities";
+import {
+  projectNotebookWorkstationSelection,
+  readOnlyNotebookShellCapabilities,
+} from "../capabilities";
 import {
   notebookWorkstationsSummary,
   NotebookWorkstationsPanel,
@@ -133,6 +136,67 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.queryByText("Operator")).not.toBeInTheDocument();
     expect(screen.getByText("Not runnable")).toBeVisible();
     expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
+  });
+
+  it("directs eligible cloud users with no registered workstations toward setup", () => {
+    const capabilities: NotebookShellCapabilities = {
+      ...readOnlyNotebookShellCapabilities,
+      access: {
+        ...readOnlyNotebookShellCapabilities.access,
+        level: "owner",
+        source: "cloud",
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        ...readOnlyNotebookShellCapabilities.runtime,
+        source: "cloud",
+        target: {
+          id: "workstation:none",
+          kind: "cloud_workstation",
+          status: "offline",
+          label: "No workstation attached",
+          statusLabel: "Offline",
+          detail: "Attach a user-owned workstation to run cells in this room.",
+          providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Not attached",
+          environmentLabel: "Not attached",
+        },
+      },
+    };
+    const selection = projectNotebookWorkstationSelection({
+      canRegisterWorkstation: true,
+      canSelectWorkstation: true,
+      registeredWorkstations: [],
+    });
+
+    render(<NotebookWorkstationsPanel capabilities={capabilities} selection={selection} />);
+
+    expect(screen.getByTestId("workstation-registration-empty")).toBeVisible();
+    expect(screen.getByText("No workstations yet")).toBeVisible();
+    expect(
+      screen.getByText("Register a workstation to make this notebook runnable from your compute."),
+    ).toBeVisible();
+  });
+
+  it("does not show workstation setup for viewers without compute selection authority", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canRegisterWorkstation: true,
+      canSelectWorkstation: false,
+      registeredWorkstations: [],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+      />,
+    );
+
+    expect(screen.queryByTestId("workstation-registration-empty")).not.toBeInTheDocument();
   });
 
   it("keeps legacy resource labels when structured resources are absent", () => {
