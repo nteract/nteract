@@ -495,13 +495,31 @@ function trimToNull(value: unknown): string | null {
 function metadataCacheKey(metadata: unknown): string {
   const record = metadataRecord(metadata);
   if (!record) return "null";
+  const kernelspec = metadataRecord(record.kernelspec);
+  const languageInfo = metadataRecord(record.language_info);
+  const runt = metadataRecord(record.runt);
+  const uv = metadataRecord(runt?.uv);
+  const conda = metadataRecord(runt?.conda);
+  const pixi = metadataRecord(runt?.pixi);
+  const deno = metadataRecord(runt?.deno);
   return stableCacheKey([
-    record.kernelspec ?? null,
-    record.language_info ?? null,
-    metadataRecord(record.runt)?.uv ?? null,
-    metadataRecord(record.runt)?.conda ?? null,
-    metadataRecord(record.runt)?.pixi ?? null,
-    metadataRecord(record.runt)?.deno ?? null,
+    trimToNull(kernelspec?.name),
+    trimToNull(kernelspec?.display_name),
+    trimToNull(kernelspec?.language),
+    trimToNull(languageInfo?.name),
+    stringArray(uv?.dependencies).length,
+    trimToNull(uv?.["requires-python"]),
+    stringArray(conda?.dependencies).length,
+    trimToNull(conda?.python),
+    stringArray(conda?.channels).length,
+    stringArray(pixi?.dependencies).length,
+    stringArray(pixi?.pypi_dependencies).length,
+    trimToNull(pixi?.python),
+    stringArray(pixi?.channels).length,
+    stringArray(deno?.permissions).length,
+    Boolean(trimToNull(deno?.import_map)),
+    Boolean(trimToNull(deno?.config)),
+    typeof deno?.flexible_npm_imports === "boolean" ? deno.flexible_npm_imports : null,
   ]);
 }
 

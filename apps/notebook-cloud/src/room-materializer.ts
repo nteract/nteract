@@ -515,6 +515,9 @@ function initialHostedCellId(notebookId: string): string {
   return `cell-room-${stableRoomKey(notebookId)}`;
 }
 
+// This is part of the hosted room actor contract: empty-room bootstrap must
+// derive the same room-owned actor and starter-cell id across Durable Object
+// restarts so uncheckpointed rooms do not fork different seq-2 changes.
 function stableRoomKey(value: string): string {
   let hash = 0xcbf29ce484222325n;
   for (const byte of new TextEncoder().encode(value)) {

@@ -79,6 +79,57 @@ describe("notebook launch environment projection", () => {
     });
   });
 
+  it("keeps metadata cache keys stable when equivalent nested metadata is reordered", () => {
+    const first = projectNotebookLaunchEnvironment({
+      metadata: {
+        kernelspec: {
+          name: "python3",
+          display_name: "Python 3",
+          language: "python",
+        },
+        language_info: {
+          name: "python",
+        },
+        runt: {
+          uv: {
+            dependencies: ["polars", "pandas"],
+            "requires-python": ">=3.12",
+          },
+          conda: {
+            dependencies: ["numpy"],
+            python: "3.12",
+            channels: ["conda-forge"],
+          },
+        },
+      },
+    });
+    const second = projectNotebookLaunchEnvironment({
+      metadata: {
+        runt: {
+          conda: {
+            channels: ["conda-forge"],
+            python: "3.12",
+            dependencies: ["numpy"],
+          },
+          uv: {
+            "requires-python": ">=3.12",
+            dependencies: ["polars", "pandas"],
+          },
+        },
+        language_info: {
+          name: "python",
+        },
+        kernelspec: {
+          language: "python",
+          display_name: "Python 3",
+          name: "python3",
+        },
+      },
+    });
+
+    expect(second).toBe(first);
+  });
+
   it("keeps RuntimeStateDoc active env_source and project context as distinct options", () => {
     const projection = projectNotebookLaunchEnvironment({
       runtimeState: {
