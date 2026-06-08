@@ -15,7 +15,11 @@ const tokenPath =
   process.env.NTERACT_PREVIEW_OIDC_TOKEN_PATH ??
   process.env.NOTEBOOK_CLOUD_OIDC_TOKEN_PATH ??
   `${os.homedir()}/token.preview.json`;
-const requestedScope = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE ?? "editor";
+const authMode =
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_AUTH ??
+  (process.env.NOTEBOOK_CLOUD_LIVE_ROOM_ANONYMOUS === "1" ? "anonymous" : "oidc");
+const requestedScope =
+  process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE ?? (authMode === "anonymous" ? "viewer" : "editor");
 const timeoutMs = parsePositiveInteger(
   process.env.NOTEBOOK_CLOUD_LIVE_ROOM_TIMEOUT_MS,
   "NOTEBOOK_CLOUD_LIVE_ROOM_TIMEOUT_MS",
@@ -62,14 +66,15 @@ main().catch((error) => {
 });
 
 async function main() {
+  assertAuthMode(authMode);
   assertScope(requestedScope);
-  const url = new URL(viewerUrl);
-  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
-  const token = JSON.parse(tokenStorageJson);
-  const tokenSecondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(tokenSecondsRemaining) || tokenSecondsRemaining <= 60) {
-    throw new Error(`${tokenPath} is expired or near expiry; refresh it before running the smoke`);
+  if (authMode === "anonymous" && requestedScope !== "viewer") {
+    throw new Error(
+      "NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE must be viewer when NOTEBOOK_CLOUD_LIVE_ROOM_AUTH=anonymous",
+    );
   }
+  const url = new URL(viewerUrl);
+  const tokenInfo = authMode === "oidc" ? await readOidcTokenInfo(tokenPath) : null;
 
   const browser = await chromium.launch({
     headless: process.env.NOTEBOOK_CLOUD_HEADED !== "1",
@@ -78,19 +83,21 @@ async function main() {
 
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
-    await context.addInitScript(
-      ({ origin, scope, tokenJson }) => {
-        try {
-          if (globalThis.location?.origin !== origin) return;
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", scope);
-        } catch {
-          // Sandboxed output frames must deny localStorage. Only the first-party
-          // notebook shell needs the seeded browser token.
-        }
-      },
-      { origin: url.origin, scope: requestedScope, tokenJson: tokenStorageJson },
-    );
+    if (tokenInfo) {
+      await context.addInitScript(
+        ({ origin, scope, tokenJson }) => {
+          try {
+            if (globalThis.location?.origin !== origin) return;
+            globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
+            globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", scope);
+          } catch {
+            // Sandboxed output frames must deny localStorage. Only the first-party
+            // notebook shell needs the seeded browser token.
+          }
+        },
+        { origin: url.origin, scope: requestedScope, tokenJson: tokenInfo.storageJson },
+      );
+    }
 
     const page = await context.newPage();
     const events = {
@@ -271,9 +278,13 @@ async function main() {
     const result = {
       ok: failures.length === 0,
       viewerUrl: url.href,
+      auth: {
+        mode: authMode,
+        requestedScope,
+      },
       token: {
-        path: tokenPath,
-        secondsRemaining: tokenSecondsRemaining,
+        path: tokenInfo?.path ?? null,
+        secondsRemaining: tokenInfo?.secondsRemaining ?? null,
       },
       checks: {
         requestedScope,
@@ -307,7 +318,7 @@ async function main() {
   }
 }
 
-async function readOidcTokenStorageJson(path) {
+async function readOidcTokenInfo(path) {
   const raw = await readFile(path, "utf8");
   const token = JSON.parse(raw);
   if (typeof token.accessToken !== "string" || token.accessToken.length === 0) {
@@ -316,7 +327,15 @@ async function readOidcTokenStorageJson(path) {
   if (!token.claims || typeof token.claims.sub !== "string" || token.claims.sub.length === 0) {
     throw new Error(`${path} is missing claims.sub`);
   }
-  return JSON.stringify(token);
+  const secondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(secondsRemaining) || secondsRemaining <= 60) {
+    throw new Error(`${path} is expired or near expiry; refresh it before running the smoke`);
+  }
+  return {
+    path,
+    secondsRemaining,
+    storageJson: JSON.stringify(token),
+  };
 }
 
 async function pageDiagnostics(page) {
@@ -519,6 +538,12 @@ function safeDiagnosticUrl(value) {
 function assertScope(scope) {
   if (!["viewer", "editor", "owner"].includes(scope)) {
     throw new Error("NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE must be viewer, editor, or owner");
+  }
+}
+
+function assertAuthMode(value) {
+  if (!["oidc", "anonymous"].includes(value)) {
+    throw new Error("NOTEBOOK_CLOUD_LIVE_ROOM_AUTH must be oidc or anonymous");
   }
 }
 

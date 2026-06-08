@@ -169,6 +169,21 @@ socket. Sandboxed output frames must not read localStorage; the smoke tracks
 that denial as a benign iframe error because only the first-party viewer shell
 needs the browser token cache.
 
+For public/read-only notebooks, run the same live-room smoke without browser
+credentials:
+
+```bash
+NOTEBOOK_CLOUD_LIVE_ROOM_AUTH=anonymous \
+NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE=viewer \
+NOTEBOOK_CLOUD_LIVE_ROOM_MIN_CELLS=20 \
+pnpm --dir apps/notebook-cloud smoke:hosted:live-room \
+  https://preview.runt.run/n/topic-viz/topic-viz
+```
+
+Anonymous mode does not read the OIDC token cache or seed `localStorage`. Keep
+the history/completion shortcut checks on OIDC-backed editor or owner smokes
+because anonymous public viewers do not have editable CodeMirror surfaces.
+
 For long-tail notebook rendering sweeps, use `smoke:hosted:live-rooms`. By
 default it reads the same token cache, lists the most recent notebooks visible
 to that principal through `/api/n?limit=5`, and runs the live-room smoke against

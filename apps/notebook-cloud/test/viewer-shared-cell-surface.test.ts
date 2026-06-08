@@ -453,6 +453,9 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
 
   assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_HISTORY/);
   assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_COMPLETION/);
+  assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_AUTH/);
+  assert.match(sourceText, /authMode === "anonymous"/);
+  assert.match(sourceText, /assertAuthMode/);
   assert.match(sourceText, /page\.keyboard\.press\("Control\+R"\)/);
   assert.match(sourceText, /page\.keyboard\.press\("Control\+Space"\)/);
   assert.match(sourceText, /Search history\.\.\./);
