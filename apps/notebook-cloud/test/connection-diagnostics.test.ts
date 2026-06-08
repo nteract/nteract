@@ -26,10 +26,11 @@ describe("cloud connection diagnostics", () => {
   it("reports account access problems from the authenticated access route", async () => {
     const diagnostic = await diagnoseCloudConnectionAccess({
       accessRequestsEndpoint: "/api/n/private/access-requests",
-      authState: authState("oidc"),
+      authState: authState("dev"),
       fetchImpl: async (input, init) => {
+        const headers = new Headers(init?.headers);
         assert.equal(input, "/api/n/private/access-requests");
-        assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer token");
+        assert.equal(headers.get("x-notebook-cloud-dev-token"), "token");
         return Response.json({ error: "principal cannot access private" }, { status: 403 });
       },
     });
