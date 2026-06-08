@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   CloudWebSocketTransport,
   cloudRoomReadyPeerLabel,
+  isRecoverableCloudFrameRejection,
   normalizeConnectionScope,
   startCloudBootstrapSync,
   syncUrl,
@@ -81,6 +82,31 @@ describe("cloud live sync", () => {
     });
 
     assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
+  });
+
+  it("treats rejected NotebookDoc sync frames as recoverable bootstrap failures", () => {
+    assert.equal(
+      isRecoverableCloudFrameRejection({
+        type: "cloud_frame_rejected",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.AUTOMERGE_SYNC,
+        reason: "duplicate seq from stale room-host actor",
+        timestamp: "2026-06-08T00:00:00.000Z",
+      }),
+      true,
+    );
+    assert.equal(
+      isRecoverableCloudFrameRejection({
+        type: "cloud_frame_rejected",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        reason: "viewer cannot execute",
+        timestamp: "2026-06-08T00:00:00.000Z",
+      }),
+      false,
+    );
   });
 
   it("labels authenticated browser sync connections as browser operators", () => {

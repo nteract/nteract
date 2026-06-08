@@ -28,7 +28,11 @@ import {
 } from "./collaborator-auth";
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
-import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
+import {
+  connectCloudSyncRuntime,
+  isRecoverableCloudFrameRejection,
+  type CloudSyncRuntime,
+} from "./live-sync";
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
@@ -519,6 +523,15 @@ export function useCloudViewerSession({
           setConnectionActorLabel(message.actor_label);
         }
         if (message.type === "cloud_frame_rejected") {
+          if (isRecoverableCloudFrameRejection(message)) {
+            const reason = new Error(`Room rejected sync frame: ${message.reason}`);
+            setStatus({
+              kind: "loading",
+              message: "Resynchronizing live notebook room after a rejected sync frame...",
+            });
+            scheduleReconnect(reason);
+            return;
+          }
           setStatus({ kind: "error", message: `Room rejected a frame: ${message.reason}` });
         }
       },
