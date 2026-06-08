@@ -29,8 +29,17 @@ describe("CompactExecutionButton", () => {
     ).toBeTruthy();
   });
 
-  it("renders non-executable execution history as a status readout instead of a button", () => {
-    render(<CompactExecutionButton count={7} canExecute={false} />);
+  it("renders no control for non-executable execution history by default", () => {
+    const { container } = render(<CompactExecutionButton count={7} canExecute={false} />);
+
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByTestId("execution-readout")).toBeNull();
+  });
+
+  it("can render disabled execution history as a status readout", () => {
+    render(<CompactExecutionButton count={7} canExecute={false} showReadoutWhenDisabled />);
 
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByRole("status", { name: "Last execution 7" })).toBeTruthy();

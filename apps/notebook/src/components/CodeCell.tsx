@@ -678,6 +678,7 @@ export const CodeCell = memo(function CodeCell({
               submittedByActorLabel={submittedByActorLabel}
               isCellFocused={isFocused}
               canExecute={canExecute}
+              showReadoutWhenDisabled={!readOnly}
               onExecute={handleExecute}
               onInterrupt={onInterrupt}
               className={cn(
