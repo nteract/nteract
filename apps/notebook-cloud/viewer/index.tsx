@@ -1917,6 +1917,12 @@ function NotebookViewer({
         }
       : null;
   }, [handleAttachWorkstation, handleOpenWorkstationsRail, workstationLaunchReadiness]);
+  const workstationPanelStatusMessage =
+    workstationMutation.message ??
+    workstationsError ??
+    (workstationLaunchReadiness.state === "workstation_unavailable"
+      ? workstationLaunchReadiness.detail
+      : null);
   useEffect(() => {
     if (workstationMutation.kind !== "attach" || !workstationAttachment?.workstation_id) {
       return;
@@ -2283,7 +2289,7 @@ function NotebookViewer({
         <NotebookWorkstationsPanel
           capabilities={shellCapabilities}
           selection={workstationSelection}
-          statusMessage={workstationMutation.message ?? workstationsError}
+          statusMessage={workstationPanelStatusMessage}
           busyWorkstationId={workstationMutation.workstationId}
           onAttachWorkstation={canChooseHostedWorkstation ? handleAttachWorkstation : undefined}
           onSetDefaultWorkstation={

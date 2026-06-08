@@ -215,6 +215,8 @@ async function runBrowserSmoke({
         "cell_output_observed_after_reload_execute",
         "owner_no_workstations_shows_setup_action",
         "owner_offline_default_workstation_shows_review_action",
+        "owner_missing_working_directory_explains_blocked_launch",
+        "owner_missing_environment_explains_blocked_launch",
         "viewer_scope_hides_execution_controls",
         "viewer_scope_hides_workstation_setup_action",
         "editor_scope_can_execute_when_host_capability_exists",
@@ -292,6 +294,7 @@ async function assertOwnerBlockedWorkstationStates({
   const noWorkstations = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
     expectedLabel: "Set up compute",
+    expectedPanelText: "Register a workstation to make this notebook runnable from your compute.",
     expectedTitleIncludes: ["Open workstations panel"],
     registry: {
       default_workstation_id: null,
@@ -305,6 +308,7 @@ async function assertOwnerBlockedWorkstationStates({
   const offlineDefault = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
     expectedLabel: "Review compute",
+    expectedPanelText: "No heartbeat from this workstation recently.",
     expectedTitleIncludes: ["Open workstations panel"],
     registry: {
       default_workstation_id: workstationId,
@@ -326,12 +330,59 @@ async function assertOwnerBlockedWorkstationStates({
     tokenStorageJson,
     url,
   });
-  return [noWorkstations, offlineDefault];
+  const missingWorkingDirectory = await assertOwnerToolbarActionWithMockedWorkstations({
+    browser,
+    expectedLabel: "Review compute",
+    expectedPanelText:
+      "This workstation does not have a working directory configured for notebook execution.",
+    expectedTitleIncludes: ["Open workstations panel"],
+    registry: {
+      default_workstation_id: workstationId,
+      workstations: [
+        {
+          workstation_id: workstationId,
+          display_name: "Workstation without cwd",
+          provider: "runtime_peer",
+          status: "online",
+          default_environment_label: "Current Python",
+          environment_policy: "current_python",
+        },
+      ],
+    },
+    scenario: "missing_working_directory",
+    timeoutMs,
+    tokenStorageJson,
+    url,
+  });
+  const missingEnvironment = await assertOwnerToolbarActionWithMockedWorkstations({
+    browser,
+    expectedLabel: "Review compute",
+    expectedPanelText: "This workstation does not have a runnable default environment configured.",
+    expectedTitleIncludes: ["Open workstations panel"],
+    registry: {
+      default_workstation_id: workstationId,
+      workstations: [
+        {
+          workstation_id: workstationId,
+          display_name: "Workstation without environment",
+          provider: "runtime_peer",
+          status: "online",
+          working_directory: "/home/ubuntu/project",
+        },
+      ],
+    },
+    scenario: "missing_environment",
+    timeoutMs,
+    tokenStorageJson,
+    url,
+  });
+  return [noWorkstations, offlineDefault, missingWorkingDirectory, missingEnvironment];
 }
 
 async function assertOwnerToolbarActionWithMockedWorkstations({
   browser,
   expectedLabel,
+  expectedPanelText = null,
   expectedTitleIncludes,
   registry,
   scenario,
@@ -370,6 +421,10 @@ async function assertOwnerToolbarActionWithMockedWorkstations({
       throw new Error(
         `${scenario} expected one workstation setup/review action, saw ${controls.workstationSetupButtonCount}`,
       );
+    }
+    if (expectedPanelText) {
+      await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
+      await waitForText(page, expectedPanelText, timeoutMs);
     }
     assertCleanBrowserDiagnostics(events);
     return {
