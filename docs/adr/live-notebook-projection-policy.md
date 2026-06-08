@@ -53,13 +53,14 @@ The shared desktop bridge already follows the intended path: it consumes
 `SyncEngine.cellChanges$` changesets and applies narrow cell/output/runtime
 store updates where possible.
 
-The hosted live room path currently diverges. Its cloud session subscribes to
-cell-change notifications but rematerializes live cells instead of consuming
-the `CellChangeset` and applying the same narrow projection path. That is an
-intentional cleanup item, not the desired steady state. Cloud should share the
-same changeset-driven projection helpers so live edits, output updates, and
-future attribution lines arrive through one projection path across desktop and
-Cloud. Tracked in [cleanup-punchlist.md](cleanup-punchlist.md) as `LNP-1`.
+The hosted live room path now follows the same steady-state rule. Its cloud
+session subscribes to `SyncEngine.cellChanges$` through a serialized
+subscription helper and passes each `CellChangeset` into the shared
+`materializeChangeset` projection path with a cloud-provided blob resolver. Full
+live-cell materialization remains for bootstrap and fallback cases, while
+routine source, metadata, execution, and output updates flow through the same
+narrow stores as desktop. The cleanup item is marked complete in
+[cleanup-punchlist.md](cleanup-punchlist.md) as `LNP-1`.
 
 ## Consequences
 
