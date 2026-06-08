@@ -43,6 +43,7 @@ import {
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
+  projectNotebookWorkstationSelection,
   shouldShowNotebookDocumentCommandToolbar,
   type NotebookCommandToolbarStatus,
   type NotebookEnvironmentManager,
@@ -1722,6 +1723,21 @@ function NotebookViewer({
     shellCapabilities.runtime.connected,
     shellCapabilities.runtime.executionAvailable,
   ]);
+  const canChooseHostedWorkstation =
+    shellCapabilities.access.source === "cloud" &&
+    shellCapabilities.auth.canUseAuthenticatedIdentity &&
+    (shellCapabilities.access.level === "owner" || shellCapabilities.access.level === "editor");
+  const workstationSelection = useMemo(
+    () =>
+      projectNotebookWorkstationSelection({
+        activeAttachment: workstationAttachment,
+        canRegisterWorkstation: canChooseHostedWorkstation,
+        canSelectWorkstation: canChooseHostedWorkstation,
+        canSetDefaultWorkstation: canChooseHostedWorkstation,
+        registeredWorkstations: [],
+      }),
+    [canChooseHostedWorkstation, workstationAttachment],
+  );
   useEffect(() => {
     if (!requestedEditAccess) {
       appliedGrantedEditScopeRef.current = null;
@@ -2073,7 +2089,12 @@ function NotebookViewer({
       selectedOutlineItemId={selectedOutlineItemId}
       packagesSummary={null}
       workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
-      workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
+      workstationsPanel={
+        <NotebookWorkstationsPanel
+          capabilities={shellCapabilities}
+          selection={workstationSelection}
+        />
+      }
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={notebookViewModel.packages}

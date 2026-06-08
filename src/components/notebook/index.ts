@@ -16,14 +16,22 @@ export {
 } from "./actor-projection";
 export {
   notebookShellRuntimeTargetSummary,
+  projectNotebookCommandRuntimeActions,
   projectNotebookCommandRuntimeStatus,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   projectNotebookShellCapabilities,
+  projectNotebookWorkstationSelection,
   readOnlyNotebookShellCapabilities,
   resolveNotebookShellRuntimeTarget,
   stabilizeNotebookShellCapabilities,
+  type NotebookCommandRuntimeActionAvailability,
+  type NotebookCommandRuntimeActionsProjection,
   type NotebookCommandRuntimeState,
   type NotebookCommandRuntimeStatusProjection,
+  type NotebookRegisteredWorkstation,
+  type NotebookRegisteredWorkstationEnvironment,
+  type NotebookRegisteredWorkstationProjection,
+  type NotebookRegisteredWorkstationStatus,
   type NotebookActorIdentity,
   type NotebookActorKind,
   type NotebookActorOperator,
@@ -47,9 +55,15 @@ export {
   projectNotebookWorkstationPanel,
   type NotebookWorkstationFactKind,
   type NotebookWorkstationFactProjection,
+  type NotebookWorkstationEnvironmentPolicy,
+  type NotebookWorkstationEnvironmentProjection,
   type NotebookWorkstationPanelProjection,
   type NotebookWorkstationPanelTone,
+  type NotebookWorkstationSelectionProjection,
+  type NotebookWorkstationSelectionState,
+  type ProjectNotebookCommandRuntimeActionsOptions,
   type ProjectNotebookCommandRuntimeStatusOptions,
+  type ProjectNotebookWorkstationSelectionOptions,
 } from "./capabilities";
 export { NotebookDocumentShell, type NotebookDocumentShellProps } from "./NotebookDocumentShell";
 export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./NotebookDocumentHeader";

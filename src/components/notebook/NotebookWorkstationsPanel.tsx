@@ -6,6 +6,7 @@ import {
   FolderOpen,
   MemoryStick,
   Monitor,
+  PlugZap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -14,20 +15,24 @@ import {
   type NotebookShellAccessSource,
   type NotebookWorkstationFactProjection,
   type NotebookWorkstationPanelTone,
+  type NotebookWorkstationSelectionProjection,
 } from "./capabilities";
 import { cn } from "@/lib/utils";
 
 export interface NotebookWorkstationsPanelProps {
   capabilities: NotebookShellCapabilities;
+  selection?: NotebookWorkstationSelectionProjection | null;
   className?: string;
 }
 
 export function NotebookWorkstationsPanel({
   capabilities,
+  selection = null,
   className,
 }: NotebookWorkstationsPanelProps) {
   const projection = projectNotebookWorkstationPanel(capabilities);
   const status = workstationStatusTone(projection.tone);
+  const showRegistrationPrompt = selection?.state === "needs_registration";
 
   return (
     <div className={cn("space-y-3 text-sm", className)} data-testid="notebook-workstations-panel">
@@ -75,6 +80,22 @@ export function NotebookWorkstationsPanel({
           />
         ))}
       </section>
+
+      {showRegistrationPrompt ? (
+        <section
+          className="rounded-md border border-dashed border-border/80 px-3 py-2 text-xs"
+          aria-label="Workstation setup"
+          data-testid="workstation-registration-empty"
+        >
+          <div className="flex min-w-0 items-center gap-2 font-medium text-foreground">
+            <PlugZap className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span>No workstations yet</span>
+          </div>
+          <p className="mt-1 leading-5 text-muted-foreground">
+            Register a workstation to make this notebook runnable from your compute.
+          </p>
+        </section>
+      ) : null}
     </div>
   );
 }
