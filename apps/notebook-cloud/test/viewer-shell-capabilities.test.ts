@@ -136,8 +136,8 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(viewerWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(viewerWithRuntime.canExecute, false);
 
-  // Runtime presence is visible to editors too, and non-viewer room peers may
-  // submit execution-intent request frames while compute is attached.
+  // Runtime presence is visible to editors too, but hosted execution remains
+  // owner-only until the backend exposes an explicit execute capability.
   const editorWithRuntime = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
@@ -150,7 +150,17 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.runtime.target?.id, "attached-workstation");
   assert.equal(editorWithRuntime.runtime.target?.label, "Attached workstation");
   assert.equal(editorWithRuntime.runtime.target?.runtimePeerCount, 1);
-  assert.equal(editorWithRuntime.canExecute, true);
+  assert.equal(editorWithRuntime.canExecute, false);
+
+  const editorWithExecuteCapability = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+    canSubmitExecutionRequests: true,
+  });
+  assert.equal(editorWithExecuteCapability.canExecute, true);
 });
 
 test("cloud shell capabilities prefer RuntimeStateDoc workstation attachment over presence fallback", () => {

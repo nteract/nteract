@@ -1,0 +1,449 @@
+import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
+import { access, mkdir, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
+
+const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const workspaceRoot = notebookCloudWorkspaceRoot({ cwd: appDir });
+
+await loadOptionalEnvFile();
+
+const baseUrl = notebookCloudBaseUrl();
+const apiKey = process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN;
+const workstationId =
+  process.env.NOTEBOOK_CLOUD_WORKSTATION_ID ?? stableWorkstationId(os.hostname());
+const displayName =
+  process.env.NOTEBOOK_CLOUD_WORKSTATION_DISPLAY_NAME ?? `${os.hostname()} workstation`;
+const workingDirectory = path.resolve(process.env.NOTEBOOK_CLOUD_WORKSTATION_CWD ?? process.cwd());
+const pollIntervalMs = parsePositiveInteger(
+  process.env.NOTEBOOK_CLOUD_WORKSTATION_POLL_MS,
+  "NOTEBOOK_CLOUD_WORKSTATION_POLL_MS",
+  2_000,
+);
+const heartbeatIntervalMs = parsePositiveInteger(
+  process.env.NOTEBOOK_CLOUD_WORKSTATION_HEARTBEAT_MS,
+  "NOTEBOOK_CLOUD_WORKSTATION_HEARTBEAT_MS",
+  20_000,
+);
+const runtimedBin = path.resolve(
+  workspaceRoot,
+  process.env.NOTEBOOK_CLOUD_RUNTIMED_BIN ?? "target/release/runtimed",
+);
+const agentRoot = path.resolve(
+  workspaceRoot,
+  process.env.NOTEBOOK_CLOUD_WORKSTATION_AGENT_ROOT ??
+    path.join(".context", "smokes", "hosted-workstation-agent"),
+);
+
+const activeJobs = new Map();
+let lastHeartbeatAt = 0;
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});
+
+async function main() {
+  requireApiKey();
+  await assertBinaryExists(runtimedBin, "runtimed");
+  const pythonPath = await resolvePythonPath();
+  await mkdir(agentRoot, { recursive: true });
+
+  console.log(
+    JSON.stringify({
+      event: "workstation_agent_starting",
+      baseUrl,
+      workstationId,
+      displayName,
+      workingDirectory,
+      pythonPath,
+      pollIntervalMs,
+    }),
+  );
+
+  while (true) {
+    await heartbeatIfNeeded(pythonPath);
+    await pollAttachJobs(pythonPath);
+    await sleep(pollIntervalMs);
+  }
+}
+
+async function heartbeatIfNeeded(pythonPath) {
+  const now = Date.now();
+  if (now - lastHeartbeatAt < heartbeatIntervalMs) {
+    return;
+  }
+  await registerWorkstation(pythonPath);
+  lastHeartbeatAt = now;
+}
+
+async function registerWorkstation(pythonPath) {
+  const response = await fetch(new URL("/api/workstations", baseUrl), {
+    method: "POST",
+    headers: {
+      ...apiKeyHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      workstation_id: workstationId,
+      display_name: displayName,
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      working_directory: workingDirectory,
+      cpu_count: os.cpus().length,
+      memory_bytes: os.totalmem(),
+      capabilities: {
+        launch_current_python: true,
+      },
+      runtime: {
+        binary: "runtimed",
+        python_path: pythonPath,
+      },
+    }),
+  });
+  const body = await responseJson(response);
+  assertResponse(response, body, "register workstation", [200, 201]);
+}
+
+async function pollAttachJobs(pythonPath) {
+  const response = await fetch(
+    new URL(`/api/workstations/${encodeURIComponent(workstationId)}/attach-jobs`, baseUrl),
+    {
+      headers: apiKeyHeaders(),
+    },
+  );
+  const body = await responseJson(response);
+  assertResponse(response, body, "poll attach jobs", [200]);
+  for (const job of normalizeJobs(body)) {
+    if (activeJobs.has(job.job_id)) continue;
+    await startAttachJob(job, pythonPath);
+  }
+}
+
+async function startAttachJob(job, pythonPath) {
+  assert(typeof job.job_id === "string" && job.job_id.length > 0, "attach job missing id");
+  assert(
+    typeof job.notebook_id === "string" && job.notebook_id.length > 0,
+    `attach job ${job.job_id} missing notebook_id`,
+  );
+
+  const runRoot = path.join(agentRoot, safePathPart(job.job_id));
+  const blobRoot = path.join(runRoot, "blobs");
+  const logPath = path.join(runRoot, "runtime-peer.log");
+  await mkdir(blobRoot, { recursive: true });
+  await patchAttachJob(job.job_id, {
+    status: "accepted",
+  });
+
+  const args = [
+    "cloud-runtime-agent",
+    "--auth-kind",
+    "anaconda-key",
+    "--cloud-url",
+    baseUrl,
+    "--notebook-id",
+    job.notebook_id,
+    "--scope",
+    "runtime_peer",
+    "--python-path",
+    pythonPath,
+    "--blob-root",
+    blobRoot,
+    "--working-dir",
+    job.working_directory ?? workingDirectory,
+    "--workstation-id",
+    workstationId,
+    "--workstation-display-name",
+    displayName,
+  ];
+  if (typeof job.notebook_path === "string" && job.notebook_path.length > 0) {
+    args.push("--notebook-path", job.notebook_path);
+  }
+
+  const logFd = openSync(logPath, "a");
+  const child = spawn(runtimedBin, args, {
+    cwd: job.working_directory ?? workingDirectory,
+    env: runtimeAgentEnv(),
+    stdio: ["ignore", logFd, logFd],
+  });
+  closeSync(logFd);
+
+  const active = { child, logPath, ready: false };
+  activeJobs.set(job.job_id, active);
+  console.log(
+    JSON.stringify({
+      event: "attach_job_spawned",
+      jobId: job.job_id,
+      notebookId: job.notebook_id,
+      pid: child.pid,
+      logPath,
+    }),
+  );
+
+  watchRuntimePeer(job.job_id, active).catch((error) => {
+    console.error(
+      JSON.stringify({
+        event: "attach_job_watch_failed",
+        jobId: job.id,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  });
+}
+
+async function watchRuntimePeer(jobId, active) {
+  const readyPoll = setInterval(async () => {
+    if (active.ready) return;
+    const output = await readFile(active.logPath, "utf8").catch(() => "");
+    if (!output.includes("Infrastructure ready, entering main loop")) return;
+    active.ready = true;
+    await patchAttachJob(jobId, {
+      status: "running",
+    });
+  }, 250);
+
+  active.child.on("exit", async (code, signal) => {
+    clearInterval(readyPoll);
+    activeJobs.delete(jobId);
+    await patchAttachJob(jobId, {
+      status: code === 0 ? "completed" : "failed",
+      error_message:
+        code === 0 ? null : `Runtime peer exited with code=${code}, signal=${signal ?? ""}`,
+    }).catch((error) => {
+      console.error(
+        JSON.stringify({
+          event: "attach_job_exit_patch_failed",
+          jobId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    });
+  });
+
+  active.child.on("error", async (error) => {
+    clearInterval(readyPoll);
+    activeJobs.delete(jobId);
+    await patchAttachJob(jobId, {
+      status: "failed",
+      error_message: error.message,
+    });
+  });
+}
+
+async function patchAttachJob(jobId, patch) {
+  const response = await fetch(
+    new URL(
+      `/api/workstations/${encodeURIComponent(workstationId)}/attach-jobs/${encodeURIComponent(jobId)}`,
+      baseUrl,
+    ),
+    {
+      method: "PATCH",
+      headers: {
+        ...apiKeyHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(patch),
+    },
+  );
+  const body = await responseJson(response);
+  assertResponse(response, body, `patch attach job ${jobId}`, [200, 204]);
+}
+
+async function loadOptionalEnvFile() {
+  const envFile =
+    process.env.PREVIEW_RUNT_ENV ??
+    process.env.NOTEBOOK_CLOUD_ENV_FILE ??
+    path.join(os.homedir(), "preview.runt.run", ".env");
+  try {
+    const raw = await readFile(envFile, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const match = trimmed.replace(/^export\s+/, "").match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (!match) continue;
+      const [, key, rawValue] = match;
+      if (process.env[key]) continue;
+      process.env[key] = rawValue.replace(/^["']|["']$/g, "").trim();
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+function requireApiKey() {
+  if (!apiKey) {
+    throw new Error(
+      "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted workstation agent",
+    );
+  }
+}
+
+function apiKeyHeaders() {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+  };
+}
+
+function runtimeAgentEnv() {
+  return compactEnv({
+    HOME: process.env.HOME,
+    PATH: process.env.PATH,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    SSL_CERT_FILE: process.env.SSL_CERT_FILE,
+    SSL_CERT_DIR: process.env.SSL_CERT_DIR,
+    RUST_BACKTRACE: process.env.RUST_BACKTRACE,
+    RUST_LOG: process.env.RUST_LOG ?? "info",
+    RUNT_CLOUD_TOKEN: apiKey,
+  });
+}
+
+function compactEnv(entries) {
+  return Object.fromEntries(
+    Object.entries(entries).filter(([, value]) => typeof value === "string" && value.length > 0),
+  );
+}
+
+async function resolvePythonPath() {
+  const explicit = process.env.NOTEBOOK_CLOUD_RUNTIME_PEER_PYTHON ?? process.env.PYTHON_PATH;
+  if (explicit) {
+    await assertPythonCanLaunchKernel(explicit);
+    return explicit;
+  }
+  const candidates = [
+    path.join(os.homedir(), "k", "bin", "python"),
+    await which("python3"),
+    await which("python"),
+  ].filter(Boolean);
+  for (const candidate of new Set(candidates)) {
+    if (await pythonCanLaunchKernel(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(
+    "No Python with ipykernel was found. Set NOTEBOOK_CLOUD_RUNTIME_PEER_PYTHON to a kernel-capable interpreter.",
+  );
+}
+
+async function assertPythonCanLaunchKernel(pythonPath) {
+  if (await pythonCanLaunchKernel(pythonPath)) return;
+  throw new Error(
+    `${pythonPath} cannot import ipykernel. Set NOTEBOOK_CLOUD_RUNTIME_PEER_PYTHON to a kernel-capable interpreter.`,
+  );
+}
+
+async function pythonCanLaunchKernel(pythonPath) {
+  try {
+    await access(pythonPath);
+  } catch {
+    return false;
+  }
+  return new Promise((resolve) => {
+    const child = spawn(
+      pythonPath,
+      [
+        "-c",
+        "import importlib.util; raise SystemExit(0 if importlib.util.find_spec('ipykernel') else 1)",
+      ],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    );
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      resolve(false);
+    }, 5_000);
+    child.on("error", () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      resolve(code === 0);
+    });
+  });
+}
+
+function which(command) {
+  return new Promise((resolve) => {
+    const child = spawn("sh", ["-lc", `command -v ${quoteShell(command)}`], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.on("close", (code) => {
+      resolve(code === 0 ? stdout.trim() : null);
+    });
+    child.on("error", () => resolve(null));
+  });
+}
+
+async function assertBinaryExists(binaryPath, name) {
+  try {
+    await access(binaryPath);
+  } catch {
+    throw new Error(
+      `Missing ${name} binary at ${binaryPath}. Run \`cargo build --release -p runtimed\` first, or set NOTEBOOK_CLOUD_${name.toUpperCase().replaceAll("-", "_")}_BIN.`,
+    );
+  }
+}
+
+async function responseJson(response) {
+  if (response.status === 204) return {};
+  return response.json().catch(async () => ({ error: await response.text() }));
+}
+
+function assertResponse(response, body, label, expectedStatuses) {
+  if (expectedStatuses.includes(response.status)) return;
+  throw new Error(`${label} failed: HTTP ${response.status} ${JSON.stringify(body).slice(0, 500)}`);
+}
+
+function normalizeJobs(body) {
+  if (Array.isArray(body)) return body;
+  if (Array.isArray(body?.jobs)) return body.jobs;
+  if (Array.isArray(body?.attach_jobs)) return body.attach_jobs;
+  return [];
+}
+
+function stableWorkstationId(hostname) {
+  return `ws-${safePathPart(hostname).slice(0, 80) || "local"}`;
+}
+
+function safePathPart(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function parsePositiveInteger(value, name, fallback) {
+  if (value == null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function quoteShell(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}

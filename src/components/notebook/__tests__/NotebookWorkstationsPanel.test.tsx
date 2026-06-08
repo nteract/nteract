@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
 import type { NotebookShellCapabilities } from "../capabilities";
 import {
@@ -197,6 +197,59 @@ describe("NotebookWorkstationsPanel", () => {
     );
 
     expect(screen.queryByTestId("workstation-registration-empty")).not.toBeInTheDocument();
+  });
+
+  it("renders registered workstation targets with default and attach actions", () => {
+    const attached: string[] = [];
+    const defaults: string[] = [];
+    const selection = projectNotebookWorkstationSelection({
+      canRegisterWorkstation: true,
+      canSelectWorkstation: true,
+      canSetDefaultWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          id: "ws-lab2",
+          displayName: "Lab2",
+          defaultEnvironmentLabel: "Current Python",
+          environmentPolicy: "current_python",
+          provider: "runtime_peer",
+          status: "online",
+          workingDirectory: "/home/ubuntu/project",
+        },
+        {
+          id: "ws-offline",
+          displayName: "Offline workstation",
+          provider: "runtime_peer",
+          status: "offline",
+          statusMessage: "No heartbeat from this workstation recently.",
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+        onAttachWorkstation={(workstationId) => attached.push(workstationId)}
+        onSetDefaultWorkstation={(workstationId) => defaults.push(workstationId)}
+      />,
+    );
+
+    expect(screen.getByText("ws-lab2")).toBeVisible();
+    expect(screen.getByText("Lab2")).toBeVisible();
+    expect(screen.getByText("Default")).toBeVisible();
+    expect(screen.getByText("/home/ubuntu/project")).toBeVisible();
+    const attachButtons = screen.getAllByRole("button", { name: "Attach" });
+    fireEvent.click(attachButtons[0]!);
+    expect(attached).toEqual(["ws-lab2"]);
+
+    expect(screen.getByText("Offline workstation")).toBeVisible();
+    expect(screen.getByText("No heartbeat from this workstation recently.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Set default" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Set default" }));
+    expect(defaults).toEqual(["ws-offline"]);
+    expect(attachButtons[1]).toBeDisabled();
   });
 
   it("keeps legacy resource labels when structured resources are absent", () => {

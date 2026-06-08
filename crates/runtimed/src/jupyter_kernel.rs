@@ -49,6 +49,11 @@ use crate::EnvType;
 use notebook_protocol::protocol::{CommRequestMessage, KernelPorts, LaunchedEnvConfig};
 
 const REDACT_ENV_VALUES_IN_OUTPUTS_ENV: &str = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS";
+const KERNEL_ENV_SECRET_BLOCKLIST: &[&str] = &[
+    "RUNT_CLOUD_TOKEN",
+    "NTERACT_API_KEY",
+    "NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN",
+];
 
 #[cfg(unix)]
 fn ipc_path_prefix(kernel_id: &str) -> PathBuf {
@@ -885,6 +890,7 @@ impl KernelConnection for JupyterKernel {
                 cmd.env(key, value);
             }
         }
+        scrub_secret_kernel_env(&mut cmd);
         cmd.env(
             REDACT_ENV_VALUES_IN_OUTPUTS_ENV,
             if config.redact_env_values_in_outputs {
@@ -3336,6 +3342,12 @@ async fn wait_for_pid_exit(pid: i32, timeout: std::time::Duration) -> bool {
     }
 }
 
+fn scrub_secret_kernel_env(cmd: &mut tokio::process::Command) {
+    for key in KERNEL_ENV_SECRET_BLOCKLIST {
+        cmd.env_remove(key);
+    }
+}
+
 fn prepend_to_path(dir: &std::path::Path) -> String {
     let dir_str = dir.to_string_lossy();
     match std::env::var("PATH") {
@@ -3347,6 +3359,7 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     fn history_entry(source: &str, line: i32) -> HistoryEntry {
         HistoryEntry {
@@ -3354,6 +3367,30 @@ mod tests {
             line,
             source: source.to_string(),
         }
+    }
+
+    #[test]
+    fn scrub_secret_kernel_env_prevents_cloud_credentials_from_inheriting() {
+        let mut cmd = tokio::process::Command::new("python");
+        cmd.env("RUNT_CLOUD_TOKEN", "cloud-secret");
+        cmd.env("NTERACT_API_KEY", "api-secret");
+        cmd.env("NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN", "publish-secret");
+        cmd.env("VISIBLE_KERNEL_ENV", "ok");
+
+        scrub_secret_kernel_env(&mut cmd);
+
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        for key in KERNEL_ENV_SECRET_BLOCKLIST {
+            assert!(
+                envs.iter()
+                    .any(|(name, value)| *name == OsStr::new(key) && value.is_none()),
+                "{key} should be explicitly removed from the kernel environment"
+            );
+        }
+        assert!(envs
+            .iter()
+            .any(|(name, value)| *name == OsStr::new("VISIBLE_KERNEL_ENV")
+                && value == &Some(OsStr::new("ok"))));
     }
 
     #[test]
