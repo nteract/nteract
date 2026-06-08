@@ -19,6 +19,7 @@ const config = {
   },
   transpilePackages: ["@nteract/sift"],
   turbopack: {
+    root: path.join(dirname, "../.."),
     resolveAlias: {
       "./frame-config": frameConfigAdapterImport,
       [frameConfigSourcePath]: frameConfigAdapterImport,

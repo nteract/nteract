@@ -6,7 +6,9 @@
     "dev": "portless run --name nteract-elements next dev",
     "dev:local": "next dev --port 5176",
     "url": "portless get nteract-elements",
-    "build": "next build"
+    "build": "next build",
+    "deploy:workers": "pnpm run build && wrangler deploy -c wrangler.jsonc",
+    "deploy:workers:dry-run": "pnpm run build && wrangler deploy -c wrangler.jsonc --dry-run"
   },
   "dependencies": {
     "@nteract/sift": "workspace:*",
