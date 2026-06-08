@@ -261,7 +261,6 @@ async function main() {
       token: {
         path: tokenPath,
         secondsRemaining: tokenSecondsRemaining,
-        subject: token.claims?.email ?? token.claims?.sub ?? null,
       },
       checks: {
         requestedScope,
