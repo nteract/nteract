@@ -160,6 +160,14 @@ async function runBrowserSmoke({
   const url = new URL(viewerUrl);
   const browser = await chromium.launch({ headless: true });
   try {
+    const blockedRuns = await assertOwnerBlockedWorkstationStates({
+      browser,
+      timeoutMs,
+      tokenStorageJson,
+      url,
+      workstationId,
+    });
+
     const ownerContext = await authenticatedContext(browser, {
       origin: url.origin,
       scope: "owner",
@@ -205,10 +213,13 @@ async function runBrowserSmoke({
         "cell_output_observed_after_execute",
         "page_reload_preserved_output",
         "cell_output_observed_after_reload_execute",
+        "owner_no_workstations_shows_setup_action",
+        "owner_offline_default_workstation_shows_review_action",
         "viewer_scope_hides_execution_controls",
         "viewer_scope_hides_workstation_setup_action",
         "editor_scope_can_execute_when_host_capability_exists",
       ],
+      blockedRuns,
       editorRun,
       scopedControlChecks: [viewerControlCheck],
     };
@@ -233,13 +244,12 @@ async function runOwnerAttachAndExecuteSmoke({
   await setCellSource(cell, source);
 
   await waitForToolbarAction(page, "Attach compute", timeoutMs);
-  const action = {
-    label: await page.getByTestId("workstation-setup-button").getAttribute("aria-label"),
-    title: await page.getByTestId("workstation-setup-button").getAttribute("title"),
-  };
-  if (!action.title?.includes(workstationId) && !action.title?.includes("workstation")) {
-    throw new Error(`unexpected workstation action title: ${action.title ?? "null"}`);
-  }
+  const action = await readToolbarWorkstationAction(page);
+  assertToolbarWorkstationAction(action, {
+    context: "owner attach",
+    label: "Attach compute",
+    titleIncludes: [workstationId, "workstation"],
+  });
   await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
 
   await executeAndWaitForMarker(page, cell, runMarker, timeoutMs);
@@ -270,6 +280,106 @@ async function runOwnerAttachAndExecuteSmoke({
     events,
     screenshotPath: screenshotPath ?? null,
   };
+}
+
+async function assertOwnerBlockedWorkstationStates({
+  browser,
+  timeoutMs,
+  tokenStorageJson,
+  url,
+  workstationId,
+}) {
+  const noWorkstations = await assertOwnerToolbarActionWithMockedWorkstations({
+    browser,
+    expectedLabel: "Set up compute",
+    expectedTitleIncludes: ["Open workstations panel"],
+    registry: {
+      default_workstation_id: null,
+      workstations: [],
+    },
+    scenario: "no_registered_workstations",
+    timeoutMs,
+    tokenStorageJson,
+    url,
+  });
+  const offlineDefault = await assertOwnerToolbarActionWithMockedWorkstations({
+    browser,
+    expectedLabel: "Review compute",
+    expectedTitleIncludes: ["Open workstations panel"],
+    registry: {
+      default_workstation_id: workstationId,
+      workstations: [
+        {
+          workstation_id: workstationId,
+          display_name: "Offline workstation",
+          provider: "runtime_peer",
+          status: "offline",
+          status_message: "No heartbeat from this workstation recently.",
+          default_environment_label: "Current Python",
+          environment_policy: "current_python",
+          working_directory: "/home/ubuntu/project",
+        },
+      ],
+    },
+    scenario: "offline_default_workstation",
+    timeoutMs,
+    tokenStorageJson,
+    url,
+  });
+  return [noWorkstations, offlineDefault];
+}
+
+async function assertOwnerToolbarActionWithMockedWorkstations({
+  browser,
+  expectedLabel,
+  expectedTitleIncludes,
+  registry,
+  scenario,
+  timeoutMs,
+  tokenStorageJson,
+  url,
+}) {
+  const context = await authenticatedContext(browser, {
+    origin: url.origin,
+    scope: "owner",
+    tokenStorageJson,
+  });
+  await context.route("**/api/workstations", (route) =>
+    route.fulfill({
+      body: JSON.stringify(registry),
+      contentType: "application/json",
+      status: 200,
+    }),
+  );
+  try {
+    const page = await context.newPage();
+    const events = collectBrowserDiagnostics(page);
+    await openNotebookShell(page, url.href, timeoutMs);
+    await waitForToolbarAction(page, expectedLabel, timeoutMs);
+    const action = await readToolbarWorkstationAction(page);
+    assertToolbarWorkstationAction(action, {
+      context: scenario,
+      label: expectedLabel,
+      titleIncludes: expectedTitleIncludes,
+    });
+    const controls = await visibleControlSummary(page);
+    if (controls.executeButtonCount > 0 || controls.runAllButtonCount > 0) {
+      throw new Error(`${scenario} unexpectedly exposed execution controls`);
+    }
+    if (controls.workstationSetupButtonCount !== 1) {
+      throw new Error(
+        `${scenario} expected one workstation setup/review action, saw ${controls.workstationSetupButtonCount}`,
+      );
+    }
+    assertCleanBrowserDiagnostics(events);
+    return {
+      action,
+      controls,
+      scenario,
+    };
+  } finally {
+    await context.close().catch(() => {});
+  }
 }
 
 async function assertViewerDoesNotExposeExecutionControls({
@@ -364,6 +474,38 @@ async function visibleControlSummary(page) {
       '[data-testid="workstation-setup-button"]',
     ).length,
   }));
+}
+
+async function readToolbarWorkstationAction(page) {
+  const button = page.getByTestId("workstation-setup-button");
+  if ((await button.count()) === 0) return null;
+  return {
+    label: await button.getAttribute("aria-label"),
+    title: await button.getAttribute("title"),
+  };
+}
+
+export function assertToolbarWorkstationAction(
+  action,
+  { context = "workstation toolbar", label, titleIncludes = [] },
+) {
+  if (!action) {
+    throw new Error(`${context} expected workstation toolbar action ${label}`);
+  }
+  if (action.label !== label) {
+    throw new Error(
+      `${context} expected workstation toolbar action ${label}, saw ${action.label ?? "null"}`,
+    );
+  }
+  for (const expected of titleIncludes) {
+    if (!action.title?.includes(expected)) {
+      throw new Error(
+        `${context} expected workstation toolbar title to include ${expected}, saw ${
+          action.title ?? "null"
+        }`,
+      );
+    }
+  }
 }
 
 function collectBrowserDiagnostics(page) {
@@ -590,6 +732,7 @@ function isBenignPageError(text) {
 
 export function isIgnorableRequestFailure(url, failure) {
   if (/cdn-cgi\/rum|favicon/.test(url)) return true;
+  if (url.endsWith("/api/workstations") && failure === "net::ERR_ABORTED") return true;
   return /preview\.runtusercontent\.com\/frame\//.test(url) && failure === "net::ERR_ABORTED";
 }
 
