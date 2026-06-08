@@ -28,4 +28,12 @@ describe("CompactExecutionButton", () => {
       screen.getByRole("button", { name: "Stop execution submitted by Codex for Kyle" }),
     ).toBeTruthy();
   });
+
+  it("renders non-executable execution history as a status readout instead of a button", () => {
+    render(<CompactExecutionButton count={7} canExecute={false} />);
+
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByRole("status", { name: "Last execution 7" })).toBeTruthy();
+    expect(screen.getByTestId("execution-readout")).toHaveAttribute("data-execution-state", "ran");
+  });
 });

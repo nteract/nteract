@@ -76,6 +76,19 @@ export function CompactExecutionButton({
     }
   };
 
+  const readoutTitle = isExecuting
+    ? submittedByLabel
+      ? `Execution running; submitted by ${submittedByLabel}`
+      : "Execution running"
+    : isQueued
+      ? submittedByLabel
+        ? `Queued for execution by ${submittedByLabel}`
+        : "Queued for execution"
+      : count !== null
+        ? isErrored
+          ? `Last execution ${count} failed`
+          : `Last execution ${count}`
+        : "Execution unavailable";
   const title = canExecute
     ? isExecuting
       ? submittedByLabel
@@ -90,45 +103,72 @@ export function CompactExecutionButton({
             ? `Run cell again; last execution ${count} failed`
             : `Run cell again; last execution ${count}`
           : "Run cell"
-    : "Execution unavailable";
+    : readoutTitle;
+  const classNameValue = cn(
+    "group/exec inline-flex size-5 items-center justify-center rounded-full",
+    "transition-colors duration-150",
+    canExecute && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+    state === "idle" &&
+      "text-muted-foreground/35 opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
+    state === "idle" && isCellFocused && "opacity-70",
+    state === "ran" && "text-muted-foreground/45 hover:bg-primary/5 hover:text-primary",
+    state === "queued" && "text-sky-600 dark:text-sky-400",
+    state === "running" && "text-destructive hover:bg-destructive/10",
+    state === "error" && "text-destructive/70 hover:bg-destructive/10 hover:text-destructive",
+    isQueued || !canExecute ? "cursor-default" : "cursor-pointer",
+    !canExecute && "opacity-65 hover:bg-transparent hover:text-muted-foreground/45",
+    className,
+  );
+  const content =
+    !canExecute && displayCount !== null && (state === "ran" || state === "error") ? (
+      <span className="text-[10px] font-medium tabular-nums" aria-hidden="true">
+        {displayCount}
+      </span>
+    ) : state === "running" ? (
+      <Square className="size-2.5 fill-current animate-exec-squish" aria-hidden="true" />
+    ) : state === "queued" ? (
+      <span
+        className="block size-1.5 rounded-full bg-current animate-queue-breathe"
+        aria-hidden="true"
+      />
+    ) : (
+      <Play className="size-2.5 fill-current" aria-hidden="true" />
+    );
+
+  if (!canExecute) {
+    return (
+      <span
+        className={classNameValue}
+        title={title}
+        aria-label={title}
+        aria-busy={isExecuting || undefined}
+        data-execution-state={state}
+        data-execution-count={count ?? undefined}
+        data-testid="execution-readout"
+        role="status"
+      >
+        {content}
+        {state === "ran" && displayCount !== null ? (
+          <span className="sr-only">Last run {displayCount}</span>
+        ) : null}
+      </span>
+    );
+  }
 
   return (
     <button
       type="button"
       onClick={handleClick}
-      className={cn(
-        "group/exec inline-flex size-5 items-center justify-center rounded-full",
-        "transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-        state === "idle" &&
-          "text-muted-foreground/35 opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
-        state === "idle" && isCellFocused && "opacity-70",
-        state === "ran" && "text-muted-foreground/45 hover:bg-primary/5 hover:text-primary",
-        state === "queued" && "text-sky-600 dark:text-sky-400",
-        state === "running" && "text-destructive hover:bg-destructive/10",
-        state === "error" && "text-destructive/70 hover:bg-destructive/10 hover:text-destructive",
-        isQueued || !canExecute ? "cursor-default" : "cursor-pointer",
-        !canExecute && "opacity-35 hover:bg-transparent hover:text-muted-foreground/45",
-        className,
-      )}
+      className={classNameValue}
       title={title}
       aria-label={title}
-      aria-disabled={isQueued || !canExecute || undefined}
+      aria-disabled={isQueued || undefined}
       aria-busy={isExecuting || undefined}
       data-execution-state={state}
       data-execution-count={count ?? undefined}
       data-testid="execute-button"
     >
-      {state === "running" ? (
-        <Square className="size-2.5 fill-current animate-exec-squish" aria-hidden="true" />
-      ) : state === "queued" ? (
-        <span
-          className="block size-1.5 rounded-full bg-current animate-queue-breathe"
-          aria-hidden="true"
-        />
-      ) : (
-        <Play className="size-2.5 fill-current" aria-hidden="true" />
-      )}
+      {content}
       {state === "ran" && displayCount !== null ? (
         <span className="sr-only">Last run {displayCount}</span>
       ) : null}
