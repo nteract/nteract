@@ -14,6 +14,7 @@ export interface CloudAppSessionStatus {
 }
 
 const CLOUD_APP_SESSION_EXPIRY_SKEW_SECONDS = 60;
+const CLOUD_APP_SESSION_RENEWAL_SKEW_SECONDS = 30 * 60;
 
 export async function establishCloudAppSession(authState: CloudPrototypeAuthState): Promise<void> {
   if (authState.mode !== "oidc" || !authState.token) {
@@ -103,6 +104,13 @@ export function cloudAppSessionIsFresh(
   return Boolean(
     session && session.expires_at > nowSeconds + CLOUD_APP_SESSION_EXPIRY_SKEW_SECONDS,
   );
+}
+
+export function cloudAppSessionNeedsRenewal(
+  session: CloudAppSession | null | undefined,
+  nowSeconds = currentEpochSeconds(),
+): boolean {
+  return !session || session.expires_at <= nowSeconds + CLOUD_APP_SESSION_RENEWAL_SKEW_SECONDS;
 }
 
 function currentEpochSeconds(): number {

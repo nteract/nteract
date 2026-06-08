@@ -93,6 +93,33 @@ test("cloud notebook notices render auth and connection policy through the share
   assert.doesNotMatch(html, /Reset to anonymous/);
 });
 
+test("cloud notebook notices trust a fresh app session over stale localStorage auth", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("oidc_expired"),
+      authRenewal: { kind: "failed", message: "refresh failed" },
+      connectionError: null,
+      hasAppSession: true,
+      status: { kind: "ready", message: "Ready" },
+    }),
+    false,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc_expired"),
+      authRenewal: { kind: "failed", message: "refresh failed" },
+      connectionError: null,
+      hasAppSession: true,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onSignInAgain: () => {},
+    }),
+  );
+
+  assert.equal(html, "");
+});
+
 test("cloud notebook notices distinguish sign-in and access diagnostics from socket failures", () => {
   const signInHtml = renderToStaticMarkup(
     React.createElement(CloudNotebookNotices, {
