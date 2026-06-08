@@ -43,6 +43,7 @@ import {
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
+  projectNotebookWorkstationLaunchReadiness,
   projectNotebookWorkstationSelection,
   shouldShowNotebookDocumentCommandToolbar,
   type NotebookCommandToolbarStatus,
@@ -1742,17 +1743,24 @@ function NotebookViewer({
       }),
     [canChooseHostedWorkstation, workstationAttachment],
   );
-  const workstationAction = useMemo(
+  const workstationLaunchReadiness = useMemo(
     () =>
-      workstationSelection.state === "needs_registration"
-        ? {
-            label: "Set up compute",
-            title: "Open workstations panel",
-            onClick: handleOpenWorkstationsRail,
-          }
-        : null,
-    [handleOpenWorkstationsRail, workstationSelection.state],
+      projectNotebookWorkstationLaunchReadiness({
+        capabilities: shellCapabilities,
+        selection: workstationSelection,
+      }),
+    [shellCapabilities, workstationSelection],
   );
+  const workstationAction = useMemo(() => {
+    const { primaryAction } = workstationLaunchReadiness;
+    return primaryAction.kind !== "none" && primaryAction.label && primaryAction.title
+      ? {
+          label: primaryAction.label,
+          title: primaryAction.title,
+          onClick: handleOpenWorkstationsRail,
+        }
+      : null;
+  }, [handleOpenWorkstationsRail, workstationLaunchReadiness]);
   useEffect(() => {
     if (!requestedEditAccess) {
       appliedGrantedEditScopeRef.current = null;

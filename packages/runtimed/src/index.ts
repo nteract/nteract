@@ -255,6 +255,17 @@ export {
   type ProjectNotebookWorkstationSelectionOptions,
 } from "./notebook-workstation-selection";
 
+// Notebook workstation launch-readiness projection
+export {
+  clearNotebookWorkstationLaunchReadinessProjectionCacheForTests,
+  projectNotebookWorkstationLaunchReadiness,
+  type NotebookWorkstationLaunchActionKind,
+  type NotebookWorkstationLaunchActionProjection,
+  type NotebookWorkstationLaunchReadinessProjection,
+  type NotebookWorkstationLaunchReadinessState,
+  type ProjectNotebookWorkstationLaunchReadinessOptions,
+} from "./notebook-workstation-launch";
+
 // Projection cache helpers
 export { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
