@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type MutableRefObject,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   notebookShellWorkstationAttachmentCacheKey,
   type BlobResolver,
@@ -121,7 +114,7 @@ export function useCloudViewerSession({
     kind: "loading",
     message: loadingPolicy.initialStatusMessage,
   });
-  const [cells, setCells] = useState<ResolvedCell[]>([]);
+  const [, setCells] = useState<ResolvedCell[]>([]);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
   const [workstationAttachment, setWorkstationAttachment] =
     useState<WorkstationAttachmentState | null>(null);
@@ -144,10 +137,6 @@ export function useCloudViewerSession({
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
-
-  useLayoutEffect(() => {
-    projectCloudCellsIntoNotebookViewStores(cells);
-  }, [cells]);
 
   const applyResolvedCells = useCallback((resolvedCells: ResolvedCell[]) => {
     projectCloudCellsIntoNotebookViewStores(resolvedCells);

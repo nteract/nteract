@@ -54,7 +54,7 @@ test("cloud projects live cells into the NotebookView stores", () => {
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
-  assert.match(
+  assert.doesNotMatch(
     sessionSourceText,
     /useLayoutEffect\(\(\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(cells\);/,
   );
