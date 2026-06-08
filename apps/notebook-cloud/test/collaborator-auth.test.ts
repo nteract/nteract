@@ -256,7 +256,7 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.user, "Expired User");
     assert.equal(state.requestedScope, NOTEBOOK_CLOUD_DEFAULT_SCOPE);
     assert.equal(state.problem, "Stored OIDC session is expired. Sign in again.");
-    assert.equal(prototypeAuthSummary(state), "Expired User needs sign-in renewal.");
+    assert.equal(prototypeAuthSummary(state), "Your browser sign-in needs renewal.");
     assert.deepEqual(cloudSyncAuthFromPrototypeAuthState(state), {
       headers: {},
       protocols: [],
