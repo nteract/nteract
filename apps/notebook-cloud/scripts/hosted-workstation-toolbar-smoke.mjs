@@ -195,7 +195,7 @@ async function runBrowserSmoke({
       tokenStorageJson,
       url,
     });
-    const editorRun = await runEditorExecuteSmoke({
+    const editorRun = await assertEditorDoesNotExposeExecutionControls({
       browser,
       runMarker,
       timeoutMs,
@@ -219,7 +219,7 @@ async function runBrowserSmoke({
         "owner_missing_environment_explains_blocked_launch",
         "viewer_scope_hides_execution_controls",
         "viewer_scope_hides_workstation_setup_action",
-        "editor_scope_can_execute_when_host_capability_exists",
+        "editor_scope_hides_execution_controls",
       ],
       blockedRuns,
       editorRun,
@@ -414,9 +414,7 @@ async function assertOwnerToolbarActionWithMockedWorkstations({
       titleIncludes: expectedTitleIncludes,
     });
     const controls = await visibleControlSummary(page);
-    if (controls.executeButtonCount > 0 || controls.runAllButtonCount > 0) {
-      throw new Error(`${scenario} unexpectedly exposed execution controls`);
-    }
+    assertNoExecutionControls(controls, scenario);
     if (controls.workstationSetupButtonCount !== 1) {
       throw new Error(
         `${scenario} expected one workstation setup/review action, saw ${controls.workstationSetupButtonCount}`,
@@ -456,9 +454,7 @@ async function assertViewerDoesNotExposeExecutionControls({
     await waitForNotebookSessionReady(page, timeoutMs);
     await waitForText(page, runMarker, timeoutMs);
     const controls = await visibleControlSummary(page);
-    if (controls.executeButtonCount > 0 || controls.runAllButtonCount > 0) {
-      throw new Error("viewer scope unexpectedly exposed execution controls");
-    }
+    assertNoExecutionControls(controls, "viewer scope");
     if (controls.workstationSetupButtonCount > 0) {
       throw new Error("viewer scope unexpectedly exposed workstation setup controls");
     }
@@ -472,7 +468,13 @@ async function assertViewerDoesNotExposeExecutionControls({
   }
 }
 
-async function runEditorExecuteSmoke({ browser, runMarker, timeoutMs, tokenStorageJson, url }) {
+async function assertEditorDoesNotExposeExecutionControls({
+  browser,
+  runMarker,
+  timeoutMs,
+  tokenStorageJson,
+  url,
+}) {
   const context = await authenticatedContext(browser, {
     origin: url.origin,
     scope: "editor",
@@ -488,11 +490,9 @@ async function runEditorExecuteSmoke({ browser, runMarker, timeoutMs, tokenStora
     const cell = page.locator('[data-cell-type="code"]').first();
     await cell.waitFor({ state: "visible", timeout: timeoutMs });
     await setCellSource(cell, `print(${JSON.stringify(editorMarker)})`);
-    await executeAndWaitForMarker(page, cell, editorMarker, timeoutMs);
+    await waitForText(page, editorMarker, timeoutMs);
     const controls = await visibleControlSummary(page);
-    if (controls.executeButtonCount === 0) {
-      throw new Error("editor scope did not expose execution controls despite host capability");
-    }
+    assertNoExecutionControls(controls, "editor scope");
     assertCleanBrowserDiagnostics(events);
     return {
       controls,
@@ -524,11 +524,32 @@ async function authenticatedContext(browser, { origin, scope, tokenStorageJson }
 async function visibleControlSummary(page) {
   return page.evaluate(() => ({
     executeButtonCount: document.querySelectorAll('[data-testid="execute-button"]').length,
+    interruptButtonCount: document.querySelectorAll('[data-testid="interrupt-kernel-button"]')
+      .length,
+    restartButtonCount: document.querySelectorAll('[data-testid="restart-kernel-button"]').length,
+    restartRunAllButtonCount: document.querySelectorAll('[data-testid="restart-run-all-button"]')
+      .length,
     runAllButtonCount: document.querySelectorAll('[data-testid="run-all-button"]').length,
+    startButtonCount: document.querySelectorAll('[data-testid="start-kernel-button"]').length,
     workstationSetupButtonCount: document.querySelectorAll(
       '[data-testid="workstation-setup-button"]',
     ).length,
   }));
+}
+
+function assertNoExecutionControls(controls, context) {
+  const count =
+    controls.executeButtonCount +
+    controls.interruptButtonCount +
+    controls.restartButtonCount +
+    controls.restartRunAllButtonCount +
+    controls.runAllButtonCount +
+    controls.startButtonCount;
+  if (count > 0) {
+    throw new Error(
+      `${context} unexpectedly exposed execution controls: ${JSON.stringify(controls)}`,
+    );
+  }
 }
 
 async function readToolbarWorkstationAction(page) {
@@ -669,6 +690,7 @@ async function waitForToolbarAction(page, label, timeout) {
 }
 
 async function executeAndWaitForMarker(page, cell, marker, timeout) {
+  await waitForCanExecute(page, timeout);
   const executeButton = cell.getByTestId("execute-button");
   await executeButton.waitFor({ state: "visible", timeout });
   const beforeAria = await executeButton.getAttribute("aria-label");
@@ -676,6 +698,17 @@ async function executeAndWaitForMarker(page, cell, marker, timeout) {
   await executeButton.click({ timeout });
   await waitForExecutionOrdinalAdvance(page, beforeOrdinal, timeout);
   await waitForText(page, marker, timeout);
+}
+
+async function waitForCanExecute(page, timeout) {
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('[data-slot="notebook-document-shell"]')
+        ?.getAttribute("data-can-execute") === "true",
+    null,
+    { timeout },
+  );
 }
 
 async function waitForText(page, text, timeout) {
