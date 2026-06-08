@@ -48,6 +48,7 @@ use crate::blob_store::BlobStore;
 use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_state::KernelState;
+use crate::nono::{EnrichmentPipeline, ExecutionObserver};
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::{LifecycleSignal, QueueCommandReceivers, WorkCommand};
 use crate::protocol::QueueEntry;
@@ -1443,8 +1444,28 @@ async fn handle_runtime_agent_request(
 
             let launch_started = std::time::Instant::now();
             match JupyterKernel::launch(config, shared).await {
-                Ok((k, rx)) => {
+                Ok((mut k, rx)) => {
                     let es = k.env_source().to_string();
+
+                    // ── Sandbox enrichment pipeline (task 08) ────────────────
+                    if let Some(event_stream) = k.sandbox_event_stream.take() {
+                        let (observer, obs_tx) = ExecutionObserver::new();
+                        state.set_enrichment_observer(obs_tx);
+                        let startup_failed = k.sandbox_state.lock().ok().and_then(|g| match &*g {
+                            crate::sandbox_launch::SandboxState::StartupFailed {
+                                reason, ..
+                            } => Some(reason.clone()),
+                            _ => None,
+                        });
+                        EnrichmentPipeline::start(
+                            event_stream,
+                            observer,
+                            ctx.state.clone(),
+                            startup_failed,
+                            tokio_util::sync::CancellationToken::new(),
+                        );
+                    }
+
                     *kernel = Some(k);
                     state.reset();
                     state.set_idle();
@@ -1602,8 +1623,28 @@ async fn handle_runtime_agent_request(
 
             let launch_started = std::time::Instant::now();
             match JupyterKernel::launch(config, shared).await {
-                Ok((k, rx)) => {
+                Ok((mut k, rx)) => {
                     let es = k.env_source().to_string();
+
+                    // ── Sandbox enrichment pipeline (task 08) ────────────────
+                    if let Some(event_stream) = k.sandbox_event_stream.take() {
+                        let (observer, obs_tx) = ExecutionObserver::new();
+                        state.set_enrichment_observer(obs_tx);
+                        let startup_failed = k.sandbox_state.lock().ok().and_then(|g| match &*g {
+                            crate::sandbox_launch::SandboxState::StartupFailed {
+                                reason, ..
+                            } => Some(reason.clone()),
+                            _ => None,
+                        });
+                        EnrichmentPipeline::start(
+                            event_stream,
+                            observer,
+                            ctx.state.clone(),
+                            startup_failed,
+                            tokio_util::sync::CancellationToken::new(),
+                        );
+                    }
+
                     *kernel = Some(k);
                     state.reset();
                     state.set_idle();

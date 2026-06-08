@@ -15,6 +15,7 @@ use runtime_doc::RuntimeStateHandle;
 use tracing::{debug, info, warn};
 
 use crate::kernel_connection::KernelConnection;
+use crate::nono::ExecutionObserverTx;
 use crate::output_prep::{KernelStatus, QueuedCell};
 use crate::protocol::QueueEntry;
 use runtime_doc::QueueEntry as DocQueueEntry;
@@ -55,6 +56,12 @@ pub struct KernelState {
     // ── Shared references (not owned, just held) ───────────────────────
     /// Per-notebook runtime state handle (daemon-authoritative).
     state: RuntimeStateHandle,
+    /// Optional observer for the sandbox enrichment pipeline (task 08).
+    ///
+    /// When a sandbox kernel is running, this is wired to the
+    /// `EnrichmentPipeline` so it knows which execution is active.
+    /// `None` for non-sandboxed kernels (the common case).
+    enrichment_observer: Option<ExecutionObserverTx>,
 }
 
 impl KernelState {
@@ -67,7 +74,19 @@ impl KernelState {
             interrupt_pending: None,
             status: KernelStatus::Starting,
             state,
+            enrichment_observer: None,
         }
+    }
+
+    /// Attach a sandbox enrichment observer (task 08).
+    ///
+    /// When set, `process_next` calls `notify_started` when sending an
+    /// execute request, and `execution_done` calls `notify_finished` when
+    /// the execution completes. Both are non-blocking fire-and-forget.
+    ///
+    /// Call this once after creating a `KernelState` for a sandboxed kernel.
+    pub fn set_enrichment_observer(&mut self, tx: ExecutionObserverTx) {
+        self.enrichment_observer = Some(tx);
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────
@@ -174,6 +193,11 @@ impl KernelState {
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
+            }
+
+            // Notify the sandbox enrichment pipeline (task 08) that execution ended.
+            if let Some(ref obs) = self.enrichment_observer {
+                obs.notify_finished(execution_id.to_string());
             }
 
             // Process next
@@ -340,6 +364,11 @@ impl KernelState {
         // Send execute request via the connection
         conn.execute(&cell.execution_id, cell.cell_id.as_deref(), &cell.code)
             .await?;
+
+        // Notify the sandbox enrichment pipeline (task 08) that execution started.
+        if let Some(ref obs) = self.enrichment_observer {
+            obs.notify_started(cell.execution_id.clone());
+        }
 
         info!(
             "[kernel-state] Sent execute_request: execution_id={}",
