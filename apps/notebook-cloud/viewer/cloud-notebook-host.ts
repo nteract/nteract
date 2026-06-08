@@ -49,8 +49,13 @@ class CloudNotebookHostTransport implements NotebookTransport {
   }
 
   async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
-    if (isNotebookRequest(request) && request.type === "get_history") {
-      return historyResultFromLiveNotebook(this.getRuntime(), request);
+    if (isNotebookRequest(request)) {
+      if (request.type === "get_history") {
+        return historyResultFromLiveNotebook(this.getRuntime(), request);
+      }
+      if (request.type === "complete") {
+        return emptyCompletionResult(request);
+      }
     }
     return this.requireTransport("send request").sendRequest(request, options);
   }
@@ -114,6 +119,17 @@ function matchesHistoryPattern(source: string, pattern: string | null): boolean 
   const escaped = trimmed.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   const globPattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
   return new RegExp(globPattern, "iu").test(source);
+}
+
+function emptyCompletionResult(
+  request: Extract<NotebookRequest, { type: "complete" }>,
+): Extract<NotebookResponse, { result: "completion_result" }> {
+  return {
+    result: "completion_result",
+    items: [],
+    cursor_start: request.cursor_pos,
+    cursor_end: request.cursor_pos,
+  };
 }
 
 export function createCloudNotebookHost({

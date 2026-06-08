@@ -17,21 +17,60 @@ describe("cloud notebook host", () => {
 
     assert.equal(host.transport.connected, false);
     await assert.rejects(
-      host.transport.sendRequest({ type: "complete" }),
+      host.transport.sendRequest({ type: "save_notebook", format_cells: false }),
       /hosted notebook is not connected/,
     );
 
     current = runtimeA;
     assert.equal(host.transport.connected, true);
     current = runtimeB;
-    assert.deepEqual(await host.transport.sendRequest({ type: "complete" }), {
-      result: "b",
-    });
+    assert.deepEqual(
+      await host.transport.sendRequest({ type: "save_notebook", format_cells: false }),
+      {
+        result: "b",
+      },
+    );
     await host.transport.sendFrame(1, new Uint8Array([1, 2, 3]));
 
     host.transport.disconnect();
 
-    assert.deepEqual(calls, ["b:sendRequest:complete", "b:sendFrame:1"]);
+    assert.deepEqual(calls, ["b:sendRequest:save_notebook", "b:sendFrame:1"]);
+  });
+
+  it("returns an immediate empty completion result without touching the room transport", async () => {
+    const calls: string[] = [];
+    const host = createCloudNotebookHost({
+      blobResolver: fixtureBlobResolver,
+      getRuntime: () => createRuntime("cloud", calls),
+    });
+
+    assert.deepEqual(
+      await host.transport.sendRequest({ type: "complete", code: "pri", cursor_pos: 3 }),
+      {
+        result: "completion_result",
+        items: [],
+        cursor_start: 3,
+        cursor_end: 3,
+      },
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  it("returns empty hosted completions even before the live room is connected", async () => {
+    const host = createCloudNotebookHost({
+      blobResolver: fixtureBlobResolver,
+      getRuntime: () => null,
+    });
+
+    assert.deepEqual(
+      await host.transport.sendRequest({ type: "complete", code: "", cursor_pos: 0 }),
+      {
+        result: "completion_result",
+        items: [],
+        cursor_start: 0,
+        cursor_end: 0,
+      },
+    );
   });
 
   it("serves hosted history from the live notebook document without waiting on a runtime request", async () => {
