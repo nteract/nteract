@@ -97,7 +97,11 @@ export function cloudNotebookShellCapabilities({
   const identityImageUrl = cloudIdentityImageUrl(authState);
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
   const attachmentExecutionAvailable = workstationAttachmentCanExecute(workstationAttachment);
-  const effectiveRuntimeAvailable = runtimeAvailable || attachmentExecutionAvailable;
+  const hasAttachmentSnapshot = workstationAttachment !== null;
+  const effectiveRuntimeConnected = hasAttachmentSnapshot ? attachmentConnected : runtimeAvailable;
+  const effectiveRuntimeAvailable = hasAttachmentSnapshot
+    ? attachmentExecutionAvailable
+    : runtimeAvailable;
   const auth = {
     canSignIn: authState.mode !== "oidc",
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
@@ -112,7 +116,7 @@ export function cloudNotebookShellCapabilities({
   };
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
-    connected: isRuntimePeer || runtimeAvailable || attachmentConnected,
+    connected: isRuntimePeer || effectiveRuntimeConnected,
     executionAvailable: effectiveRuntimeAvailable,
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,

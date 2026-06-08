@@ -444,11 +444,46 @@ fn request_allowed_for_scope(
     request: &notebook_protocol::protocol::NotebookRequest,
     connection_scope: ConnectionScope,
 ) -> bool {
-    connection_scope.allows_notebook_write()
-        || matches!(
-            request,
-            notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
-        )
+    matches!(
+        request,
+        notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
+    ) || match request_required_scope(request) {
+        RequestRequiredScope::NotebookWrite => connection_scope.allows_notebook_write(),
+        RequestRequiredScope::Owner => matches!(connection_scope, ConnectionScope::Owner),
+    }
+}
+
+enum RequestRequiredScope {
+    NotebookWrite,
+    Owner,
+}
+
+fn request_required_scope(
+    request: &notebook_protocol::protocol::NotebookRequest,
+) -> RequestRequiredScope {
+    use notebook_protocol::protocol::NotebookRequest;
+
+    match request {
+        NotebookRequest::LaunchKernel { .. }
+        | NotebookRequest::ExecuteCell { .. }
+        | NotebookRequest::ExecuteCellGuarded { .. }
+        | NotebookRequest::GetHistory { .. }
+        | NotebookRequest::Complete { .. }
+        | NotebookRequest::InterruptExecution {}
+        | NotebookRequest::ShutdownKernel {}
+        | NotebookRequest::RunAllCells { .. }
+        | NotebookRequest::RunAllCellsGuarded { .. }
+        | NotebookRequest::SaveNotebook { .. }
+        | NotebookRequest::SyncEnvironment { .. }
+        | NotebookRequest::ApproveTrust { .. }
+        | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
+        NotebookRequest::SendComm { .. }
+        | NotebookRequest::CloneAsEphemeral { .. }
+        | NotebookRequest::GetDocBytes {}
+        | NotebookRequest::CreateBlobUpload { .. }
+        | NotebookRequest::CompleteBlobUpload { .. }
+        | NotebookRequest::AbortBlobUpload { .. } => RequestRequiredScope::NotebookWrite,
+    }
 }
 
 pub(super) fn queue_request_error(
@@ -1056,5 +1091,98 @@ mod tests {
             notebook_protocol::protocol::NotebookResponse::Error { ref error }
                 if error.contains("ExecuteCell is not allowed")
         ));
+    }
+
+    #[tokio::test]
+    async fn enqueue_notebook_request_rejects_editor_execution_without_failing_loop() {
+        let (request_tx, mut request_rx) =
+            mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
+        let request_worker = PeerRequestWorker {
+            tx: request_tx,
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
+
+        let payload = serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
+            id: Some("execute".to_string()),
+            required_heads: Vec::new(),
+            request: NotebookRequest::ExecuteCell {
+                cell_id: "cell-1".to_string(),
+                execution_id: None,
+            },
+        })
+        .unwrap();
+        enqueue_notebook_request(
+            &request_worker,
+            &writer,
+            &payload,
+            "notebook",
+            "peer",
+            ConnectionScope::Editor,
+        )
+        .expect("unauthorized requests should be reported without failing the peer loop");
+
+        assert!(
+            request_rx.try_recv().is_err(),
+            "editor execution should not reach the request worker"
+        );
+        let frame = reliable_rx
+            .try_recv()
+            .expect("unauthorized request should enqueue an error response");
+        assert_eq!(frame.frame_type, NotebookFrameType::Response);
+        let reply: notebook_protocol::protocol::NotebookResponseEnvelope =
+            serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(reply.id.as_deref(), Some("execute"));
+        assert!(matches!(
+            reply.response,
+            notebook_protocol::protocol::NotebookResponse::Error { ref error }
+                if error.contains("ExecuteCell is not allowed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn enqueue_notebook_request_allows_editor_document_scoped_uploads() {
+        let (request_tx, mut request_rx) =
+            mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
+        let request_worker = PeerRequestWorker {
+            tx: request_tx,
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
+
+        let payload = serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
+            id: Some("upload".to_string()),
+            required_heads: Vec::new(),
+            request: NotebookRequest::CreateBlobUpload {
+                media_type: "image/png".to_string(),
+                size: 42,
+                sha256: None,
+                part_size: None,
+                purpose: Some("cell-attachment".to_string()),
+            },
+        })
+        .unwrap();
+        enqueue_notebook_request(
+            &request_worker,
+            &writer,
+            &payload,
+            "notebook",
+            "peer",
+            ConnectionScope::Editor,
+        )
+        .expect("editor document-scoped request should enqueue");
+
+        let envelope = request_rx
+            .try_recv()
+            .expect("editor document-scoped request should reach the request worker");
+        assert_eq!(envelope.id.as_deref(), Some("upload"));
+        assert!(matches!(
+            envelope.request,
+            NotebookRequest::CreateBlobUpload { .. }
+        ));
+        assert!(
+            reliable_rx.try_recv().is_err(),
+            "allowed request should not enqueue an authorization error"
+        );
     }
 }

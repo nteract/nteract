@@ -230,6 +230,36 @@ test("cloud shell capabilities show connecting workstation attachment without en
   assert.equal(capabilities.canExecute, false);
 });
 
+test("cloud shell capabilities do not let presence override a non-executable attachment", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+    runtimePeerCount: 1,
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "connecting",
+      status_message: "Waiting for runtime peer heartbeat",
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: null,
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(capabilities.runtime.connected, true);
+  assert.equal(capabilities.runtime.executionAvailable, false);
+  assert.equal(capabilities.runtime.target?.id, "ws-lab2");
+  assert.equal(capabilities.runtime.target?.status, "connecting");
+  assert.equal(capabilities.canExecute, false);
+});
+
 test("cloud shell capabilities keep user-selected view mode read-only even with editor access", () => {
   const capabilities = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
