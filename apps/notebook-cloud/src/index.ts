@@ -162,17 +162,17 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   },
   {
     match: exactPath("/", "/index.html"),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: (_match, request, env) => homeViewer(request, env),
   },
   {
     match: exactPath("/n", "/n/"),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: (_match, request, env) => notebookListViewer(request, env),
   },
   {
     match: exactPath("/oidc"),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: (_match, request, env) => oidcCallbackViewer(request, env),
   },
   {
@@ -181,17 +181,17 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   },
   {
     match: routePath("/n/:notebookId/debug", { trailingSlash: "optional" }),
-    methods: ["GET"],
-    handler: ({ params }) => debugViewer(params.notebookId),
+    methods: ["GET", "HEAD"],
+    handler: ({ params }, request) => debugViewer(params.notebookId, request),
   },
   {
     match: routePath("/n/:notebookId/r/:revision", { trailingSlash: "optional" }),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: ({ params }, request, env) => viewer(params.notebookId, request, env, params.revision),
   },
   {
     match: routePath("/n/:notebookId/:vanityName", { trailingSlash: "optional" }),
-    methods: ["GET"],
+    methods: ["GET", "HEAD"],
     handler: ({ params }, request, env) => viewer(params.notebookId, request, env),
   },
   {
@@ -3266,7 +3266,10 @@ async function viewer(
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
   };
-  return viewerShell(shellMetadata, env, authConfigForRequest(request, env), config);
+  return responseForRequestMethod(
+    request,
+    viewerShell(shellMetadata, env, authConfigForRequest(request, env), config),
+  );
 }
 
 interface ViewerShellConfig extends Record<string, unknown> {
@@ -3280,38 +3283,54 @@ interface ViewerShellConfig extends Record<string, unknown> {
 }
 
 function homeViewer(request: Request, env: Env): Response {
-  return viewerShell(
-    { title: "nteract", description: "A hosted nteract notebook workspace." },
-    env,
-    authConfigForRequest(request, env),
-    null,
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      { title: "nteract", description: "A hosted nteract notebook workspace." },
+      env,
+      authConfigForRequest(request, env),
+      null,
+    ),
   );
 }
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {
   const bootstrap = await notebookListBootstrap(request, env);
-  return viewerShell(
-    {
-      title: "nteract cloud notebooks",
-      description: "Open, create, and manage hosted nteract notebooks.",
-    },
-    env,
-    authConfigForRequest(request, env),
-    null,
-    bootstrap,
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      {
+        title: "nteract cloud notebooks",
+        description: "Open, create, and manage hosted nteract notebooks.",
+      },
+      env,
+      authConfigForRequest(request, env),
+      null,
+      bootstrap,
+    ),
   );
 }
 
 function oidcCallbackViewer(request: Request, env: Env): Response {
-  return viewerShell(
-    {
-      title: "nteract cloud notebook sign-in",
-      description: "Complete hosted notebook sign-in.",
-    },
-    env,
-    authConfigForRequest(request, env),
-    null,
+  return responseForRequestMethod(
+    request,
+    viewerShell(
+      {
+        title: "nteract cloud notebook sign-in",
+        description: "Complete hosted notebook sign-in.",
+      },
+      env,
+      authConfigForRequest(request, env),
+      null,
+    ),
   );
+}
+
+function responseForRequestMethod(request: Request, response: Response): Response {
+  if (request.method !== "HEAD") {
+    return response;
+  }
+  return new Response(null, response);
 }
 
 interface ViewerShellMetadata {
@@ -3571,7 +3590,7 @@ function isRuntimeWasmBinaryName(value: unknown): value is string {
   return typeof value === "string" && /^runtimed_wasm_bg(?:\.[a-f0-9]{12,64})?\.wasm$/.test(value);
 }
 
-function debugViewer(notebookId: string): Response {
+function debugViewer(notebookId: string, request: Request): Response {
   const escaped = escapeHtml(notebookId);
   const html = `<!doctype html>
 <html lang="en">
@@ -3659,11 +3678,14 @@ function debugViewer(notebookId: string): Response {
 </body>
 </html>`;
 
-  return withCors(
-    withBrowserSecurityHeaders(
-      new Response(html, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      }),
+  return responseForRequestMethod(
+    request,
+    withCors(
+      withBrowserSecurityHeaders(
+        new Response(html, {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+      ),
     ),
   );
 }

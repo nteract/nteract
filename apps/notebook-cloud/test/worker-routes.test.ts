@@ -259,6 +259,22 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(html, /nteract-cloud-bootstrap/);
   });
 
+  it("supports HEAD requests for hosted app shell routes", async () => {
+    const env = fakeEnv();
+
+    for (const pathname of ["/", "/n", "/oidc", "/n/head-demo/debug"]) {
+      const response = await worker.fetch(
+        new Request(`http://localhost${pathname}`, { method: "HEAD" }),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 200, pathname);
+      assert.match(response.headers.get("Content-Type") ?? "", /text\/html/, pathname);
+      assert.equal(await response.text(), "", pathname);
+    }
+  });
+
   it("exchanges OIDC bearer auth for a secure app session cookie", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "session-user",
