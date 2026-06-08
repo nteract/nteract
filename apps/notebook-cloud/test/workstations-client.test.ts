@@ -3,6 +3,9 @@ import { describe, it } from "node:test";
 
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 import {
+  CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
+  CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS,
+  cloudWorkstationRefreshIntervalMs,
   fetchCloudWorkstations,
   requestCloudWorkstationAttachment,
   setCloudDefaultWorkstation,
@@ -118,6 +121,54 @@ describe("cloud workstations client", () => {
         "ws-lab2",
       ),
       { jobId: "job-1", status: "pending" },
+    );
+  });
+
+  it("keeps registry refresh bounded to owner flows that can change workstation selection", () => {
+    assert.equal(
+      cloudWorkstationRefreshIntervalMs({
+        canChooseHostedWorkstation: false,
+        hasRegisteredWorkstations: false,
+        mutationKind: "idle",
+        panelIsOpen: true,
+      }),
+      null,
+    );
+    assert.equal(
+      cloudWorkstationRefreshIntervalMs({
+        canChooseHostedWorkstation: true,
+        hasRegisteredWorkstations: false,
+        mutationKind: "idle",
+        panelIsOpen: false,
+      }),
+      CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
+    );
+    assert.equal(
+      cloudWorkstationRefreshIntervalMs({
+        canChooseHostedWorkstation: true,
+        hasRegisteredWorkstations: true,
+        mutationKind: "idle",
+        panelIsOpen: true,
+      }),
+      CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
+    );
+    assert.equal(
+      cloudWorkstationRefreshIntervalMs({
+        canChooseHostedWorkstation: true,
+        hasRegisteredWorkstations: true,
+        mutationKind: "idle",
+        panelIsOpen: false,
+      }),
+      null,
+    );
+    assert.equal(
+      cloudWorkstationRefreshIntervalMs({
+        canChooseHostedWorkstation: true,
+        hasRegisteredWorkstations: true,
+        mutationKind: "attach",
+        panelIsOpen: false,
+      }),
+      CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS,
     );
   });
 });

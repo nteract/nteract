@@ -7,6 +7,18 @@ export interface CloudWorkstationsState {
   workstations: readonly NotebookRegisteredWorkstation[];
 }
 
+export type CloudWorkstationRegistryMutationKind = "idle" | "default" | "attach";
+
+export interface CloudWorkstationRefreshCadenceOptions {
+  canChooseHostedWorkstation: boolean;
+  hasRegisteredWorkstations: boolean;
+  mutationKind: CloudWorkstationRegistryMutationKind;
+  panelIsOpen: boolean;
+}
+
+export const CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS = 10_000;
+export const CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS = 2_500;
+
 interface CloudWorkstationsResponse {
   default_workstation_id?: unknown;
   workstations?: unknown;
@@ -94,6 +106,24 @@ export async function requestCloudWorkstationAttachment(
     jobId: scalarString(payload.job?.job_id),
     status: scalarString(payload.job?.status),
   };
+}
+
+export function cloudWorkstationRefreshIntervalMs({
+  canChooseHostedWorkstation,
+  hasRegisteredWorkstations,
+  mutationKind,
+  panelIsOpen,
+}: CloudWorkstationRefreshCadenceOptions): number | null {
+  if (!canChooseHostedWorkstation) {
+    return null;
+  }
+  if (mutationKind === "attach") {
+    return CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS;
+  }
+  if (panelIsOpen || !hasRegisteredWorkstations) {
+    return CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS;
+  }
+  return null;
 }
 
 function normalizeCloudWorkstation(value: unknown): NotebookRegisteredWorkstation | null {

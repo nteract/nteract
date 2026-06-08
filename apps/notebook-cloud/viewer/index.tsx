@@ -106,6 +106,7 @@ import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
+  cloudWorkstationRefreshIntervalMs,
   fetchCloudWorkstations,
   requestCloudWorkstationAttachment,
   setCloudDefaultWorkstation,
@@ -1761,12 +1762,19 @@ function NotebookViewer({
           workstationId,
         );
         setWorkstationsError(null);
+        await refreshCloudWorkstations();
       } catch (error) {
         setWorkstationsError(error instanceof Error ? error.message : String(error));
         setWorkstationMutation({ kind: "idle", message: null, workstationId: null });
+        await refreshCloudWorkstations();
       }
     },
-    [authState, config.workstationAttachEndpoint, handleOpenWorkstationsRail],
+    [
+      authState,
+      config.workstationAttachEndpoint,
+      handleOpenWorkstationsRail,
+      refreshCloudWorkstations,
+    ],
   );
   const canAcceptCellMutations =
     Boolean(connectionPeerId) &&
@@ -1840,6 +1848,42 @@ function NotebookViewer({
     shellCapabilities.access.source === "cloud" &&
     shellCapabilities.auth.canUseAuthenticatedIdentity &&
     shellCapabilities.access.level === "owner";
+  const workstationRefreshIntervalMs = cloudWorkstationRefreshIntervalMs({
+    canChooseHostedWorkstation,
+    hasRegisteredWorkstations: workstationsState.workstations.length > 0,
+    mutationKind: workstationMutation.kind,
+    panelIsOpen: activeRailPanel === "workstations" && !railCollapsed,
+  });
+  useEffect(() => {
+    if (workstationRefreshIntervalMs === null) {
+      return;
+    }
+    let disposed = false;
+    let timer: number | null = null;
+    let activeController: AbortController | null = null;
+    const scheduleRefresh = () => {
+      timer = window.setTimeout(() => {
+        const controller = new AbortController();
+        activeController = controller;
+        void refreshCloudWorkstations(controller.signal).finally(() => {
+          if (activeController === controller) {
+            activeController = null;
+          }
+          if (!disposed) {
+            scheduleRefresh();
+          }
+        });
+      }, workstationRefreshIntervalMs);
+    };
+    scheduleRefresh();
+    return () => {
+      disposed = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      activeController?.abort();
+    };
+  }, [refreshCloudWorkstations, workstationRefreshIntervalMs]);
   const workstationSelection = useMemo(
     () =>
       projectNotebookWorkstationSelection({
