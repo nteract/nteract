@@ -313,6 +313,20 @@ export {
   statusKeyToLegacyStatus,
 } from "./derived-state";
 
+// Notebook command runtime projection
+export {
+  clearNotebookCommandRuntimeStatusCacheForTests,
+  getLifecycleLabel,
+  getStatusKeyLabel,
+  notebookCommandRuntimeStateForStatusKey,
+  projectNotebookCommandRuntimeStatus,
+  projectNotebookCommandRuntimeStatusFromRuntimeState,
+  RUNTIME_STATUS_LABELS,
+  type NotebookCommandRuntimeState,
+  type NotebookCommandRuntimeStatusProjection,
+  type ProjectNotebookCommandRuntimeStatusOptions,
+} from "./notebook-command-runtime";
+
 // Notebook client
 export {
   NotebookClient,

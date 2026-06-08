@@ -53,6 +53,28 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.getByRole("button", { name: "Kyle" })).toBeVisible();
   });
 
+  it("renders run-all without requiring host restart actions", () => {
+    const onRunAllCells = vi.fn();
+    const onInterruptRuntime = vi.fn();
+
+    render(
+      <NotebookCommandToolbar
+        capabilities={editableToolbarCapabilities}
+        runtimeStatus={runtimeStatus}
+        onRunAllCells={onRunAllCells}
+        onInterruptRuntime={onInterruptRuntime}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("run-all-button"));
+    fireEvent.click(screen.getByTestId("interrupt-kernel-button"));
+
+    expect(onRunAllCells).toHaveBeenCalledTimes(1);
+    expect(onInterruptRuntime).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("restart-kernel-button")).toBeNull();
+    expect(screen.queryByTestId("restart-run-all-button")).toBeNull();
+  });
+
   it("renders host chrome through named capability-scoped slots", () => {
     render(
       <NotebookCommandToolbar

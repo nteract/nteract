@@ -54,22 +54,45 @@ test("cloud projects live cells into the NotebookView stores", () => {
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
+  assert.doesNotMatch(
+    sessionSourceText,
+    /useLayoutEffect\(\(\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(cells\);/,
+  );
   assert.match(
     sessionSourceText,
-    /useLayoutEffect\(\(\) => \{[\s\S]*cellsRef\.current = cells;[\s\S]*projectCloudCellsIntoNotebookViewStores\(cells\);/,
+    /const applyResolvedCells = useCallback\(\(resolvedCells: ResolvedCell\[\]\) => \{[\s\S]*projectCloudCellsIntoNotebookViewStores\(resolvedCells\);[\s\S]*setCells\(resolvedCells\);/,
   );
+  assert.match(sessionSourceText, /applyResolvedCells\(syncCells\);/);
+  assert.match(sessionSourceText, /applyResolvedCells\(progressiveCells\);/);
+  assert.match(sessionSourceText, /applyResolvedCells\(resolvedCells\);/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*getHandle=\{getLiveNotebookHandle\}/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*canWriteSource=\{canWriteCellSource\}/);
   assert.match(sourceText, /<CrdtBridgeProvider[\s\S]*onSyncNeeded=\{handleSourceSyncNeeded\}/);
-  assert.match(sourceText, /cell\.cellType === "markdown"/);
+  assert.match(sourceText, /const cell = getCellById\(cellId\);/);
+  assert.match(sourceText, /cell\.cell_type === "markdown"/);
   assert.match(sourceText, /return shellCapabilities\.canEditMarkdown/);
   assert.match(sourceText, /return shellCapabilities\.canEditCells/);
   assert.match(
     sourceText,
     /if \(!shellCapabilities\.canEditCells && !shellCapabilities\.canEditMarkdown\) return;/,
   );
+  assert.doesNotMatch(sourceText, /cellsByIdRef/);
   assert.doesNotMatch(sourceText, /handleMarkdownSyncNeeded/);
   assert.doesNotMatch(sourceText, /onSourceChanged=/);
+});
+
+test("cloud live changesets gate stale post-await status writes", () => {
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
+
+  assert.match(
+    sessionSourceText,
+    /const materializeLiveCells = async[\s\S]*\+\+materializeSequence/,
+  );
+  assert.match(
+    sessionSourceText,
+    /const materializeLiveChangeset = async[\s\S]*const sequence = materializeSequence;[\s\S]*await materializeChangeset[\s\S]*if \(disposed \|\| sequence !== materializeSequence\) return;[\s\S]*applyExecutionViewChangeset/,
+  );
 });
 
 test("cloud notebook mutations route through the shared notebook controller", () => {
@@ -269,6 +292,9 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   );
   assert.match(sourceText, /reserveCommandToolbar=\{editAccessPending\}/);
   assert.match(sourceText, /addCellControlsDisabled: editAccessPending/);
+  assert.match(sourceText, /runtimeStatus: cloudRuntimeStatus/);
+  assert.match(sourceText, /onInterruptRuntime: handleCloudInterruptRuntime/);
+  assert.match(sourceText, /onRunAllCells: handleCloudRunAllCells/);
   assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
@@ -379,7 +405,25 @@ test("cloud live materialization skips empty room handles before resolving outpu
   assert.match(sessionSourceText, /const rawCellCount = liveRuntime\.handle\.cell_count\(\);/);
   assert.match(
     sessionSourceText,
-    /if \(rawCellCount === 0 && \(!snapshotResolvedRef\.current \|\| cellsRef\.current\.length > 0\)\) \{\s+return;\s+\}\s+const materialized = await materializeCloudNotebookView/,
+    /if \(rawCellCount === 0 && \(!snapshotResolvedRef\.current \|\| materializedCellCount\(\) > 0\)\) \{\s+return;\s+\}\s+const materialized = await materializeCloudNotebookView/,
+  );
+});
+
+test("cloud live cell changes use serialized incremental materialization", () => {
+  const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
+  const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
+
+  assert.match(
+    sessionSourceText,
+    /import \{ subscribeSerializedCloudCellChanges \} from "\.\/serialized-cell-changes";/,
+  );
+  assert.match(sessionSourceText, /subscribeSerializedCloudCellChanges\(\{/);
+  assert.match(sessionSourceText, /cellChanges\$: liveRuntime\.engine\.cellChanges\$/);
+  assert.match(sessionSourceText, /materializeChangeset\(changeset, \{/);
+  assert.match(sessionSourceText, /blobResolver,/);
+  assert.doesNotMatch(
+    sessionSourceText,
+    /cellChanges\$\s*\.subscribe\(\(\) => materializeLiveCellsSafely/,
   );
 });
 

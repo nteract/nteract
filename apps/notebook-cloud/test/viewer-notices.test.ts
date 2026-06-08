@@ -42,6 +42,32 @@ test("cloud notebook notices render nothing for ready anonymous viewers", () => 
   assert.equal(html, "");
 });
 
+test("cloud notebook notices suppress stale empty status when cells are readable", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasReadableSnapshot: true,
+      status: { kind: "empty", message: "This notebook room has no cells yet." },
+    }),
+    false,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasReadableSnapshot: true,
+      status: { kind: "empty", message: "This notebook room has no cells yet." },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.equal(html, "");
+});
+
 test("cloud notebook notices render auth and connection policy through the shared stack", () => {
   const html = renderToStaticMarkup(
     React.createElement(CloudNotebookNotices, {

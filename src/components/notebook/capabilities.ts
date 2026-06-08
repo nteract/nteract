@@ -1,9 +1,13 @@
 export {
   notebookShellRuntimeTargetSummary,
+  projectNotebookCommandRuntimeStatus,
+  projectNotebookCommandRuntimeStatusFromRuntimeState,
   projectNotebookShellCapabilities,
   readOnlyNotebookShellCapabilities,
   resolveNotebookShellRuntimeTarget,
   stabilizeNotebookShellCapabilities,
+  type NotebookCommandRuntimeState,
+  type NotebookCommandRuntimeStatusProjection,
   type NotebookActorIdentity,
   type NotebookActorKind,
   type NotebookActorOperator,
@@ -29,4 +33,5 @@ export {
   type NotebookWorkstationFactProjection,
   type NotebookWorkstationPanelProjection,
   type NotebookWorkstationPanelTone,
+  type ProjectNotebookCommandRuntimeStatusOptions,
 } from "runtimed";

@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type MutableRefObject,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   notebookShellWorkstationAttachmentCacheKey,
   type BlobResolver,
@@ -17,12 +10,16 @@ import {
   applyOutputChangeset,
   emitBroadcast,
   emitPresence,
+  getCellIdsSnapshot,
+  materializeChangeset,
   resetPoolState,
   resetRuntimeState,
   resetRuntimeStoresProjection,
   startCursorDispatch,
   setPoolState,
   setRuntimeState,
+  type CellChangeset,
+  type JupyterOutput as NotebookStoreJupyterOutput,
 } from "../../notebook/src/notebook-surface";
 import {
   cloudSyncAuthFromPrototypeAuthState,
@@ -41,6 +38,7 @@ import {
 import { CloudViewerPresenceStore } from "./presence";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
+import { subscribeSerializedCloudCellChanges } from "./serialized-cell-changes";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
@@ -66,7 +64,6 @@ export interface CloudViewerConfig {
 }
 
 export interface CloudViewerSession {
-  cellsByIdRef: MutableRefObject<Map<string, ResolvedCell>>;
   connectionActorLabel: string | null;
   connectionError: string | null;
   connectionPeerId: string | null;
@@ -117,12 +114,10 @@ export function useCloudViewerSession({
     kind: "loading",
     message: loadingPolicy.initialStatusMessage,
   });
-  const [cells, setCells] = useState<ResolvedCell[]>([]);
+  const [, setCells] = useState<ResolvedCell[]>([]);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
   const [workstationAttachment, setWorkstationAttachment] =
     useState<WorkstationAttachmentState | null>(null);
-  const cellsRef = useRef<ResolvedCell[]>([]);
-  const cellsByIdRef = useRef(new Map<string, ResolvedCell>());
   const notebookLanguageRef = useRef("python");
   const workstationAttachmentKeyRef = useRef(notebookShellWorkstationAttachmentCacheKey(null));
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
@@ -131,6 +126,7 @@ export function useCloudViewerSession({
   const snapshotResolvedRef = useRef(false);
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const outputResolutionCacheRef = useRef(createOutputResolutionCache());
+  const incrementalOutputCacheRef = useRef(new Map<string, NotebookStoreJupyterOutput>());
   const presenceStoreRef = useRef<CloudViewerPresenceStore | null>(null);
   if (presenceStoreRef.current === null) {
     presenceStoreRef.current = new CloudViewerPresenceStore();
@@ -142,11 +138,10 @@ export function useCloudViewerSession({
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
 
-  useLayoutEffect(() => {
-    cellsRef.current = cells;
-    cellsByIdRef.current = new Map(cells.map((cell) => [cell.id, cell]));
-    projectCloudCellsIntoNotebookViewStores(cells);
-  }, [cells]);
+  const applyResolvedCells = useCallback((resolvedCells: ResolvedCell[]) => {
+    projectCloudCellsIntoNotebookViewStores(resolvedCells);
+    setCells(resolvedCells);
+  }, []);
 
   useEffect(() => resetCloudViewStoreProjection, []);
 
@@ -275,7 +270,7 @@ export function useCloudViewerSession({
               if (syncCells.length === 0) return;
               markCloudViewerLoadMilestone("snapshot-initial-cells");
               preloadSiftWasm(syncCells);
-              setCells(syncCells);
+              applyResolvedCells(syncCells);
               setStatus({
                 kind: "loading",
                 message: `Rendering ${syncCells.length} cells while resolving output payloads...`,
@@ -284,7 +279,7 @@ export function useCloudViewerSession({
             onCellResolved(resolvedCell, _index, progressiveCells) {
               if (progressiveCells.length === 0) return;
               preloadSiftWasm([resolvedCell]);
-              setCells(progressiveCells);
+              applyResolvedCells(progressiveCells);
             },
           },
         });
@@ -305,7 +300,7 @@ export function useCloudViewerSession({
         if (cancelled || liveMaterializedRef.current) return;
         const resolvedCells = materialized.cells;
         preloadSiftWasm(resolvedCells);
-        setCells(resolvedCells);
+        applyResolvedCells(resolvedCells);
         if (resolvedCells.length === 0) {
           setStatus({ kind: "empty", message: "This published notebook has no cells." });
           return;
@@ -385,12 +380,14 @@ export function useCloudViewerSession({
       }, 1_000);
     };
 
+    const materializedCellCount = () => getCellIdsSnapshot().length;
+
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime) => {
       const sequence = ++materializeSequence;
       const previousNotebookLanguage = notebookLanguageRef.current;
       const outputResolutionCache = outputResolutionCacheRef.current;
       const rawCellCount = liveRuntime.handle.cell_count();
-      if (rawCellCount === 0 && (!snapshotResolvedRef.current || cellsRef.current.length > 0)) {
+      if (rawCellCount === 0 && (!snapshotResolvedRef.current || materializedCellCount() > 0)) {
         return;
       }
       const materialized = await materializeCloudNotebookView(liveRuntime.handle, {
@@ -404,7 +401,7 @@ export function useCloudViewerSession({
             liveMaterializedRef.current = true;
             markCloudViewerLoadMilestone("live-initial-cells");
             preloadSiftWasm(syncCells);
-            setCells(syncCells);
+            applyResolvedCells(syncCells);
             setStatus({
               kind: "loading",
               message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
@@ -414,12 +411,12 @@ export function useCloudViewerSession({
             if (progressiveCells.length === 0) return;
             liveMaterializedRef.current = true;
             preloadSiftWasm([resolvedCell]);
-            setCells(progressiveCells);
+            applyResolvedCells(progressiveCells);
           },
         },
       });
       if (materialized.rawCellCount === 0) {
-        if (!snapshotResolvedRef.current || cellsRef.current.length > 0) {
+        if (!snapshotResolvedRef.current || materializedCellCount() > 0) {
           return;
         }
       }
@@ -441,7 +438,7 @@ export function useCloudViewerSession({
       liveMaterializedRef.current = true;
       const resolvedCells = materialized.cells;
       preloadSiftWasm(resolvedCells);
-      setCells(resolvedCells);
+      applyResolvedCells(resolvedCells);
       setStatus(
         resolvedCells.length === 0
           ? { kind: "empty", message: "This notebook room has no cells yet." }
@@ -453,6 +450,36 @@ export function useCloudViewerSession({
       if (resolvedCells.length > 0) {
         markCloudViewerLoadMilestone("live-ready");
       }
+    };
+
+    const materializeLiveChangeset = async (
+      changeset: CellChangeset | null,
+      liveRuntime: CloudSyncRuntime,
+    ) => {
+      const sequence = materializeSequence;
+      await materializeChangeset(changeset, {
+        getHandle: () => liveRuntime.handle,
+        materializeCells: async () => materializeLiveCells(liveRuntime),
+        outputCache: incrementalOutputCacheRef.current,
+        blobResolver,
+      });
+      if (disposed || sequence !== materializeSequence) return;
+
+      applyExecutionViewChangeset(liveRuntime.handle.project_execution_view_changeset?.());
+
+      const currentCellCount = materializedCellCount();
+      if (currentCellCount === 0) {
+        if (snapshotResolvedRef.current) {
+          setStatus({ kind: "empty", message: "This notebook room has no cells yet." });
+        }
+        return;
+      }
+
+      liveMaterializedRef.current = true;
+      setStatus({
+        kind: "ready",
+        message: `Rendering ${currentCellCount} cells from the live notebook room.`,
+      });
     };
 
     const materializeLiveCellsSafely = (liveRuntime: CloudSyncRuntime) => {
@@ -515,8 +542,12 @@ export function useCloudViewerSession({
             emitPresence(payload);
             livePresenceStore?.handlePresence(payload);
           }),
-          liveRuntime.engine.cellChanges$.subscribe(() => {
-            materializeLiveCellsSafely(liveRuntime);
+          subscribeSerializedCloudCellChanges({
+            cellChanges$: liveRuntime.engine.cellChanges$,
+            materializeChangeset: (changeset) => materializeLiveChangeset(changeset, liveRuntime),
+            onMaterializationError: (error) => {
+              console.warn("[notebook-cloud] live changeset materialization failed", error);
+            },
           }),
           liveRuntime.engine.runtimeState$.subscribe((state) => {
             setRuntimeState(state);
@@ -546,7 +577,7 @@ export function useCloudViewerSession({
       })
       .catch((error: unknown) => {
         if (disposed) return;
-        if (cellsRef.current.length === 0) {
+        if (materializedCellCount() === 0) {
           setStatus({
             kind: "error",
             message: `Unable to load live notebook room: ${
@@ -595,6 +626,7 @@ export function useCloudViewerSession({
     connectAttempt,
     loadingPolicy.shouldConnectLiveRoom,
     presenceStore,
+    applyResolvedCells,
     preloadSiftWasm,
     widgetStore,
   ]);
@@ -608,7 +640,6 @@ export function useCloudViewerSession({
   }, []);
 
   return {
-    cellsByIdRef,
     connectionActorLabel,
     connectionError,
     connectionPeerId,

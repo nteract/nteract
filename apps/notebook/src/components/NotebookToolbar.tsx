@@ -6,7 +6,7 @@ import {
   NotebookNotice,
   NotebookNoticeAction,
   NotebookToolbarFrame,
-  type NotebookCommandRuntimeState,
+  projectNotebookCommandRuntimeStatus,
   type NotebookEnvironmentManager,
   type NotebookShellCapabilities,
 } from "@/components/notebook";
@@ -129,6 +129,11 @@ export function NotebookToolbar({
   // has been smoothed over sub-60ms blips; every other sub-state (launching,
   // resolving, …) passes through untouched with its richer label.
   const kernelStatusText = getStatusKeyLabel(statusKey, errorReason);
+  const commandRuntimeStatus = projectNotebookCommandRuntimeStatus({
+    statusKey,
+    errorReason,
+    forceError: Boolean(envProgress?.error),
+  });
   const hasToolbarHandledIpykernelError =
     errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL ||
     errorReason === KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL ||
@@ -179,7 +184,6 @@ export function NotebookToolbar({
             : "uv"
         : (envTypeHint ?? null)
       : null;
-  const runtimeStatusState = notebookCommandRuntimeState(kernelStatus, Boolean(envErrorMessage));
   const runtimeStatusError = envErrorMessage ? (
     <HoverCard openDelay={150} closeDelay={100}>
       <HoverCardTrigger asChild>
@@ -250,7 +254,7 @@ export function NotebookToolbar({
         environmentPanelOpen={isDepsOpen}
         environmentOutOfSync={depsOutOfSync}
         runtimeStatus={{
-          state: runtimeStatusState,
+          state: commandRuntimeStatus.state,
           label: envProgress?.isActive ? (
             envStatusText
           ) : (
@@ -290,31 +294,6 @@ export function NotebookToolbar({
       />
     </NotebookToolbarFrame>
   );
-}
-
-function notebookCommandRuntimeState(
-  kernelStatus: KernelStatus,
-  hasEnvironmentError: boolean,
-): NotebookCommandRuntimeState {
-  if (hasEnvironmentError) {
-    return "error";
-  }
-  switch (kernelStatus) {
-    case KERNEL_STATUS.NOT_STARTED:
-    case KERNEL_STATUS.AWAITING_TRUST:
-    case KERNEL_STATUS.AWAITING_ENV_BUILD:
-      return "not_started";
-    case KERNEL_STATUS.STARTING:
-      return "starting";
-    case KERNEL_STATUS.IDLE:
-      return "idle";
-    case KERNEL_STATUS.BUSY:
-      return "busy";
-    case KERNEL_STATUS.ERROR:
-      return "error";
-    case KERNEL_STATUS.SHUTDOWN:
-      return "shutdown";
-  }
 }
 
 /** Remediation copy for `KernelErrorReason::MissingIpykernel`, branched by

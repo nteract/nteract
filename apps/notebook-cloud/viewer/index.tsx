@@ -42,7 +42,9 @@ import {
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
+  projectNotebookCommandRuntimeStatusFromRuntimeState,
   shouldShowNotebookDocumentCommandToolbar,
+  type NotebookCommandToolbarStatus,
   type NotebookEnvironmentManager,
   type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
@@ -84,8 +86,10 @@ import {
   createNotebookController,
   NotebookView,
   PresenceValueProvider,
+  getCellById,
   setLoggerHost,
   setOpenUrlHost,
+  useRuntimeState,
   type PresenceContextValue,
 } from "../../notebook/src/notebook-surface";
 import {
@@ -1558,7 +1562,6 @@ function NotebookViewer({
     [config.blobBasePath, config.rendererAssetsBasePath],
   );
   const {
-    cellsByIdRef,
     connectionActorLabel,
     connectionError,
     connectionPeerId,
@@ -1587,6 +1590,7 @@ function NotebookViewer({
     presenceStore.getSnapshot,
     presenceStore.getSnapshot,
   );
+  const runtimeState = useRuntimeState();
   const runtimePeerCount = cloudPresenceRuntimePeerCount(presenceSnapshot);
   const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
@@ -1708,6 +1712,16 @@ function NotebookViewer({
       workstationAttachment,
     ],
   );
+  const cloudRuntimeStatus = useMemo<NotebookCommandToolbarStatus | null>(() => {
+    if (!shellCapabilities.runtime.connected && !shellCapabilities.runtime.executionAvailable) {
+      return null;
+    }
+    return projectNotebookCommandRuntimeStatusFromRuntimeState(runtimeState);
+  }, [
+    runtimeState,
+    shellCapabilities.runtime.connected,
+    shellCapabilities.runtime.executionAvailable,
+  ]);
   useEffect(() => {
     if (!requestedEditAccess) {
       appliedGrantedEditScopeRef.current = null;
@@ -1730,11 +1744,11 @@ function NotebookViewer({
   }, [canAcceptCellMutations, connectionPeerId, connectionScope, requestedEditAccess]);
   const canWriteCellSource = useCallback(
     (cellId: string) => {
-      const cell = cellsByIdRef.current.get(cellId);
+      const cell = getCellById(cellId);
       if (!cell) {
         return false;
       }
-      if (cell.cellType === "markdown") {
+      if (cell.cell_type === "markdown") {
         return shellCapabilities.canEditMarkdown;
       }
       return shellCapabilities.canEditCells;
@@ -1805,30 +1819,67 @@ function NotebookViewer({
     },
     [cloudNotebookController],
   );
-  const handleCloudExecuteCell = useCallback((cellId: string) => {
-    const liveRuntime = liveRuntimeRef.current;
-    if (!liveRuntime) {
-      console.warn("[notebook-cloud] cannot execute cell without a live room connection");
-      return;
-    }
+  const createCloudNotebookClient = useCallback(
+    (action: string) => {
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime) {
+        console.warn(`[notebook-cloud] cannot ${action} without a live room connection`);
+        return null;
+      }
+      return {
+        liveRuntime,
+        client: new NotebookClient({
+          transport: liveRuntime.transport,
+          logger: console,
+          getRequiredHeads: () => liveRuntime.handle.get_heads_hex(),
+        }),
+      };
+    },
+    [liveRuntimeRef],
+  );
+  const handleCloudExecuteCell = useCallback(
+    (cellId: string) => {
+      const runtimeClient = createCloudNotebookClient("execute cell");
+      if (!runtimeClient) return;
+
+      void (async () => {
+        const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
+        if (!delivered) {
+          console.warn("[notebook-cloud] execute cell request skipped; notebook sync failed");
+          return;
+        }
+
+        await runtimeClient.client.executeCell(cellId);
+      })().catch((error: unknown) => {
+        console.warn("[notebook-cloud] execute cell request failed", error);
+      });
+    },
+    [createCloudNotebookClient],
+  );
+  const handleCloudRunAllCells = useCallback(() => {
+    const runtimeClient = createCloudNotebookClient("run all cells");
+    if (!runtimeClient) return;
 
     void (async () => {
-      const delivered = await liveRuntime.engine.flushAndWait();
+      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
       if (!delivered) {
-        console.warn("[notebook-cloud] execute cell request skipped; notebook sync failed");
+        console.warn("[notebook-cloud] run all cells request skipped; notebook sync failed");
         return;
       }
 
-      const client = new NotebookClient({
-        transport: liveRuntime.transport,
-        logger: console,
-        getRequiredHeads: () => liveRuntime.handle.get_heads_hex(),
-      });
-      await client.executeCell(cellId);
+      await runtimeClient.client.runAllCells();
     })().catch((error: unknown) => {
-      console.warn("[notebook-cloud] execute cell request failed", error);
+      console.warn("[notebook-cloud] run all cells request failed", error);
     });
-  }, []);
+  }, [createCloudNotebookClient]);
+  const handleCloudInterruptRuntime = useCallback(() => {
+    const runtimeClient = createCloudNotebookClient("interrupt kernel");
+    if (!runtimeClient) return;
+
+    void runtimeClient.client.interruptKernel().catch((error: unknown) => {
+      console.warn("[notebook-cloud] interrupt kernel request failed", error);
+    });
+  }, [createCloudNotebookClient]);
   const handleCloudSetCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       cloudNotebookController.setCellSourceHidden(cellId, hidden);
@@ -2090,9 +2141,12 @@ function NotebookViewer({
         runtime: toolbarRuntime,
         environmentManager: toolbarEnvironmentManager,
         environmentPanelOpen: activeRailPanel === "packages" && !railCollapsed,
+        runtimeStatus: cloudRuntimeStatus,
         addCellControlsDisabled: editAccessPending,
         addAfterCellId: toolbarAddAfterCellId,
         onAddCell: handleCloudAddCell,
+        onInterruptRuntime: handleCloudInterruptRuntime,
+        onRunAllCells: handleCloudRunAllCells,
         onTogglePackages: handleTogglePackagesRail,
       }}
     />

@@ -10,16 +10,9 @@ import {
 import type { ReactNode } from "react";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
 import { cn } from "@/lib/utils";
-import type { NotebookShellCapabilities } from "./capabilities";
+import type { NotebookCommandRuntimeState, NotebookShellCapabilities } from "./capabilities";
 
-export type NotebookCommandRuntimeState =
-  | "not_started"
-  | "starting"
-  | "idle"
-  | "busy"
-  | "error"
-  | "shutdown"
-  | "unknown";
+export type { NotebookCommandRuntimeState } from "./capabilities";
 
 export type NotebookEnvironmentManager = "uv" | "conda" | "pixi";
 
@@ -112,12 +105,13 @@ export function NotebookCommandToolbar({
   const showAddCellControls = Boolean(onAddCell) && (canEditStructure || addCellControlsDisabled);
   const showRuntimeStart =
     hasRuntimeStatus && canExecute && !isRuntimeRunning && Boolean(onStartRuntime);
-  const showRuntimeActions =
-    hasRuntimeStatus &&
-    canExecute &&
-    Boolean(onRunAllCells && onRestartRuntime && onRestartAndRunAll);
+  const showRunAll = hasRuntimeStatus && canExecute && Boolean(onRunAllCells);
+  const showRestart = hasRuntimeStatus && canExecute && Boolean(onRestartRuntime);
+  const showRestartAndRunAll = hasRuntimeStatus && canExecute && Boolean(onRestartAndRunAll);
   const showInterrupt =
     hasRuntimeStatus && canExecute && isRuntimeRunning && Boolean(onInterruptRuntime);
+  const showAnyRuntimeAction =
+    showRuntimeStart || showRunAll || showRestart || showRestartAndRunAll || showInterrupt;
   const showPackageToggle = Boolean(runtime && canViewPackages && onTogglePackages);
   const showAuthControls =
     Boolean(authControls) &&
@@ -160,9 +154,7 @@ export function NotebookCommandToolbar({
         </>
       ) : null}
 
-      {showAddCellControls && (showRuntimeStart || showRuntimeActions || showInterrupt) ? (
-        <div className="h-4 w-px bg-border" />
-      ) : null}
+      {showAddCellControls && showAnyRuntimeAction ? <div className="h-4 w-px bg-border" /> : null}
 
       {showRuntimeStart ? (
         <button
@@ -179,50 +171,54 @@ export function NotebookCommandToolbar({
         </button>
       ) : null}
 
-      {showRuntimeActions ? (
-        <>
-          <button
-            type="button"
-            onClick={onRunAllCells}
-            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-            title="Run all cells"
-            aria-label="Run all cells"
-            data-testid="run-all-button"
-          >
-            <ChevronsRight className="h-3.5 w-3.5" />
-            <span className="hidden @[40rem]:inline">Run all</span>
-          </button>
-          <button
-            type="button"
-            onClick={onRestartRuntime}
-            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-            title="Restart kernel"
-            aria-label="Restart kernel"
-            data-testid="restart-kernel-button"
-          >
-            <RotateCcw className="h-3 w-3" />
-            <span className="hidden @[40rem]:inline">Restart</span>
-          </button>
-          <button
-            type="button"
-            onClick={onRestartAndRunAll}
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-              environmentOutOfSync
-                ? "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/20 dark:text-amber-400"
-                : "text-foreground hover:bg-muted",
-            )}
-            title={
-              environmentOutOfSync
-                ? "Dependencies changed - restart kernel and run all cells"
-                : "Restart kernel and run all cells"
-            }
-            data-testid="restart-run-all-button"
-          >
-            <RotateCcw className="h-3 w-3" />
-            <ChevronsRight className="h-3 w-3 -ml-1" />
-          </button>
-        </>
+      {showRunAll ? (
+        <button
+          type="button"
+          onClick={onRunAllCells}
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          title="Run all cells"
+          aria-label="Run all cells"
+          data-testid="run-all-button"
+        >
+          <ChevronsRight className="h-3.5 w-3.5" />
+          <span className="hidden @[40rem]:inline">Run all</span>
+        </button>
+      ) : null}
+
+      {showRestart ? (
+        <button
+          type="button"
+          onClick={onRestartRuntime}
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          title="Restart kernel"
+          aria-label="Restart kernel"
+          data-testid="restart-kernel-button"
+        >
+          <RotateCcw className="h-3 w-3" />
+          <span className="hidden @[40rem]:inline">Restart</span>
+        </button>
+      ) : null}
+
+      {showRestartAndRunAll ? (
+        <button
+          type="button"
+          onClick={onRestartAndRunAll}
+          className={cn(
+            "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+            environmentOutOfSync
+              ? "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/20 dark:text-amber-400"
+              : "text-foreground hover:bg-muted",
+          )}
+          title={
+            environmentOutOfSync
+              ? "Dependencies changed - restart kernel and run all cells"
+              : "Restart kernel and run all cells"
+          }
+          data-testid="restart-run-all-button"
+        >
+          <RotateCcw className="h-3 w-3" />
+          <ChevronsRight className="h-3 w-3 -ml-1" />
+        </button>
       ) : null}
 
       {showInterrupt ? (

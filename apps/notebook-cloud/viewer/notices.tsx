@@ -30,7 +30,9 @@ export function cloudNotebookHasNotices({
     ? cloudConnectionNoticeDisplay(connectionError, hasReadableSnapshot)
     : null;
   const shouldShowStatusNotice =
-    status.kind !== "ready" && !isStatusDerivedFromConnectionError(status, connectionError);
+    status.kind !== "ready" &&
+    !(status.kind === "empty" && hasReadableSnapshot) &&
+    !isStatusDerivedFromConnectionError(status, connectionError);
 
   return (
     authState.mode === "invalid" ||
@@ -68,7 +70,9 @@ export function CloudNotebookNotices({
     ? cloudConnectionNoticeDisplay(connectionError, hasReadableSnapshot)
     : null;
   const shouldShowStatusNotice =
-    status.kind !== "ready" && !isStatusDerivedFromConnectionError(status, connectionError);
+    status.kind !== "ready" &&
+    !(status.kind === "empty" && hasReadableSnapshot) &&
+    !isStatusDerivedFromConnectionError(status, connectionError);
 
   return (
     <NotebookNoticeStack>
