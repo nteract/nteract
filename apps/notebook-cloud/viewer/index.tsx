@@ -1735,7 +1735,12 @@ function NotebookViewer({
   );
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
-      if (appSessionStatus.session && config.syncTicketEndpoint) {
+      const appSession =
+        appSessionStatus.session ??
+        (appSessionStatus.status === "loading" && config.syncTicketEndpoint
+          ? ((await readCloudAppSessionStatus().catch(() => null))?.session ?? null)
+          : null);
+      if (appSession && config.syncTicketEndpoint) {
         return cloudSyncAuthFromAppSessionTicket({
           endpoint: config.syncTicketEndpoint,
           requestedScope: authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
@@ -1744,7 +1749,7 @@ function NotebookViewer({
       }
       return cloudSyncAuthFromPrototypeAuthState(authState);
     },
-    [appSessionStatus.session, authState, config.syncTicketEndpoint],
+    [appSessionStatus.session, appSessionStatus.status, authState, config.syncTicketEndpoint],
   );
   const {
     connectionActorLabel,
