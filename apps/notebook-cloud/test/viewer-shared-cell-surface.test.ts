@@ -447,6 +447,16 @@ test("hosted smoke waits for shared NotebookView cell markers", () => {
   assert.doesNotMatch(sourceText, /read-only-report-cell/);
 });
 
+test("hosted live room smoke can exercise the shared history shortcut", () => {
+  const sourcePath = new URL("../scripts/hosted-live-room-smoke.mjs", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_HISTORY/);
+  assert.match(sourceText, /page\.keyboard\.press\("Control\+R"\)/);
+  assert.match(sourceText, /Search history\.\.\./);
+  assert.match(sourceText, /notebookHostErrorVisible/);
+});
+
 test("cloud sync keeps routine frame logs out of the browser console", () => {
   const sourcePath = new URL("../viewer/live-sync.ts", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

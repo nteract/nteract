@@ -52,6 +52,7 @@ const requireResolved = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_RESOLVED !=
 const requireOpenSocket = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_OPEN_SOCKET !== "0";
 const requireBlobFetch = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_BLOB_FETCH === "1";
 const requireImagesLoaded = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_REQUIRE_IMAGES_LOADED === "1";
+const checkHistoryShortcut = process.env.NOTEBOOK_CLOUD_LIVE_ROOM_CHECK_HISTORY === "1";
 const screenshotPath = smokeOutputPath(process.env.NOTEBOOK_CLOUD_LIVE_ROOM_SCREENSHOT);
 
 main().catch((error) => {
@@ -180,6 +181,9 @@ async function main() {
     const frameTextMatches =
       expectedFrameTexts.length > 0 ? await waitForFrameTexts(page, expectedFrameTexts) : {};
     await page.waitForTimeout(settleMs);
+    const historyShortcut = checkHistoryShortcut
+      ? await exerciseHistoryShortcut(page, timeoutMs)
+      : null;
 
     const diagnostics = await pageDiagnostics(page);
     if (screenshotPath) {
@@ -273,10 +277,12 @@ async function main() {
         requireOpenSocket,
         requireBlobFetch,
         requireImagesLoaded,
+        checkHistoryShortcut,
         screenshotPath: screenshotPath ?? null,
       },
       diagnostics,
       frameTextMatches,
+      historyShortcut,
       events,
       failures,
     };
@@ -354,6 +360,51 @@ async function pageDiagnostics(page) {
       images,
     };
   });
+}
+
+async function exerciseHistoryShortcut(page, timeout) {
+  const editor = page
+    .locator('[data-cell-type="code"] .cm-content[contenteditable="true"]')
+    .first();
+  await editor.waitFor({ state: "visible", timeout }).catch(async (error) => {
+    const diagnostics = await pageDiagnostics(page).catch(() => null);
+    throw new Error(
+      `Ctrl-R history smoke requires an editable code cell in the chosen notebook: ${
+        error instanceof Error ? error.message : String(error)
+      }\n${JSON.stringify(diagnostics, null, 2)}`,
+    );
+  });
+  await editor.click({ timeout });
+  await page.keyboard.press("Control+R");
+
+  const input = page.getByPlaceholder("Search history...");
+  await input.waitFor({ state: "visible", timeout });
+  await page.waitForTimeout(500);
+
+  const summary = await page.evaluate(() => {
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    const input = document.querySelector('input[placeholder="Search history..."]');
+    return {
+      cellErrorVisible: /This cell encountered an error/i.test(text),
+      dialogVisible: input !== null,
+      notebookHostErrorVisible:
+        /useNotebookHost\(\) must be called inside <NotebookHostProvider>/i.test(text),
+      textSample: text.slice(0, 1_000),
+    };
+  });
+
+  if (!summary.dialogVisible) {
+    throw new Error("Ctrl-R did not open the hosted history dialog");
+  }
+  if (summary.cellErrorVisible || summary.notebookHostErrorVisible) {
+    throw new Error(
+      `Ctrl-R opened a hosted cell error instead of the history dialog: ${JSON.stringify(summary)}`,
+    );
+  }
+
+  await page.keyboard.press("Escape");
+  await input.waitFor({ state: "hidden", timeout }).catch(() => {});
+  return summary;
 }
 
 function isRoomSyncWebSocket(value) {
