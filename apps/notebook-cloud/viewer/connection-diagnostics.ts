@@ -1,5 +1,9 @@
 import { withCloudPrototypeAuthHeaders, type CloudPrototypeAuthState } from "./collaborator-auth";
 
+export const CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC = "Sign in again to open this notebook.";
+export const CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC =
+  "This account does not have access to this notebook. Ask the owner to share it, or refresh sign-in if an invite was just accepted.";
+
 export interface DiagnoseCloudConnectionAccessOptions {
   accessRequestsEndpoint: string;
   authState: CloudPrototypeAuthState;
@@ -30,10 +34,10 @@ export async function diagnoseCloudConnectionAccess({
       return null;
     }
     if (response.status === 401) {
-      return "Sign in again to open this notebook.";
+      return CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC;
     }
     if (response.status === 403 || response.status === 404) {
-      return "This account does not have access to this notebook. Ask the owner to share it, or refresh sign-in if an invite was just accepted.";
+      return CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC;
     }
   } catch {
     return null;

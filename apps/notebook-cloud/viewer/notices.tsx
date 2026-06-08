@@ -6,6 +6,10 @@ import {
   NotebookNoticeStack,
 } from "@/components/notebook/NotebookNotice";
 import { prototypeAuthSummary, type CloudPrototypeAuthState } from "./collaborator-auth";
+import {
+  CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+  CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+} from "./connection-diagnostics";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
 export interface CloudNotebookNoticesProps {
@@ -173,6 +177,23 @@ function cloudConnectionNoticeDisplay(
   message: string;
   tone: "warning";
 } {
+  if (error === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC) {
+    return {
+      title: "Sign in required.",
+      message: "Sign in again to open the live notebook room.",
+      tone: "warning",
+    };
+  }
+
+  if (error === CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC) {
+    return {
+      title: "Notebook access needed.",
+      message:
+        "This account does not have access to this notebook yet. Ask the owner to share it, or refresh sign-in if an invite was just accepted.",
+      tone: "warning",
+    };
+  }
+
   if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
     if (!hasReadableSnapshot) {
       return {

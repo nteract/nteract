@@ -264,6 +264,8 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(noticesText, /function isStatusDerivedFromConnectionError/);
   assert.match(noticesText, /function cloudConnectionNoticeDisplay/);
   assert.match(noticesText, /hasReadableSnapshot: boolean/);
+  assert.match(noticesText, /Sign in required\./);
+  assert.match(noticesText, /Notebook access needed\./);
   assert.match(noticesText, /Live room unavailable\./);
   assert.match(noticesText, /The notebook will load once the account or connection is refreshed\./);
   assert.match(noticesText, /tone=\{connectionNotice\.tone\}/);

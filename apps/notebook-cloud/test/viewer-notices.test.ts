@@ -3,6 +3,10 @@ import { test } from "node:test";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
+import {
+  CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+  CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+} from "../viewer/connection-diagnostics";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "../viewer/notices";
 
 globalThis.React = React;
@@ -84,6 +88,36 @@ test("cloud notebook notices render auth and connection policy through the share
   assert.match(html, /Sign-in refresh failed/);
   assert.match(html, /Live room needs attention/);
   assert.match(html, /Reset to anonymous/);
+});
+
+test("cloud notebook notices distinguish sign-in and access diagnostics from socket failures", () => {
+  const signInHtml = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(signInHtml, /Sign in required/);
+  assert.match(signInHtml, /Sign in again to open the live notebook room/);
+  assert.doesNotMatch(signInHtml, /Live room unavailable/);
+
+  const noAccessHtml = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(noAccessHtml, /Notebook access needed/);
+  assert.match(noAccessHtml, /does not have access to this notebook yet/);
+  assert.doesNotMatch(noAccessHtml, /Live room unavailable/);
 });
 
 test("cloud notebook notices keep dev diagnostics inside the shared stack", () => {
