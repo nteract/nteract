@@ -660,6 +660,20 @@ where
         path.display(),
         start.elapsed()
     );
+    let loaded_sources: HashMap<String, String> = cells
+        .iter()
+        .map(|cell| (cell.id.clone(), cell.source.clone()))
+        .collect();
+    let should_seed_save_baseline = match room.file_binding.path().await {
+        Some(bound_path) => bound_path == path,
+        None => false,
+    };
+    if should_seed_save_baseline {
+        // The file watcher is live while cells stream to the frontend. Seed the
+        // disk-source baseline before exposing batches so an unchanged initial
+        // watch event cannot roll back immediate live edits.
+        *room.persistence.last_save_sources.write().await = loaded_sources;
+    }
     let notebook_path = room
         .file_binding
         .path()

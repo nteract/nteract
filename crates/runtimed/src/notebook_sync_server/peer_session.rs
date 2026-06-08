@@ -247,6 +247,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::{Context, Poll};
@@ -259,6 +260,7 @@ mod tests {
 
     use super::*;
     use crate::blob_store::BlobStore;
+    use crate::notebook_sync_server::apply_ipynb_changes;
 
     #[derive(Default)]
     struct CaptureWriter {
@@ -781,5 +783,82 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_initial_load_seeds_file_watcher_source_baseline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load_path = tmp.path().join("source.ipynb");
+        write_one_cell_notebook(&load_path).await;
+        let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
+        let room = Arc::new(NotebookRoom::new_fresh(
+            Uuid::new_v4(),
+            Some(load_path.clone()),
+            tmp.path(),
+            blob_store,
+            false,
+        ));
+        let mut reader = tokio::io::empty();
+        let mut writer = CaptureWriter::default();
+        let mut peer_state = sync::State::new();
+
+        stream_initial_load(
+            &mut reader,
+            &mut writer,
+            &room,
+            Some(&load_path),
+            tmp.path(),
+            &mut peer_state,
+            NotebookDocPhaseWire::Syncing,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+        )
+        .await
+        .expect("valid notebook should stream successfully");
+
+        assert_eq!(
+            room.persistence
+                .last_save_sources
+                .read()
+                .await
+                .get("loaded-cell")
+                .map(String::as_str),
+            Some("x = 1"),
+            "streaming load should seed the file-watcher baseline"
+        );
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.update_source("loaded-cell", "print('edited')")
+                .expect("live edit should update source");
+        }
+
+        let external_cells = vec![notebook_doc::CellSnapshot {
+            id: "loaded-cell".to_string(),
+            cell_type: "code".to_string(),
+            position: "80".to_string(),
+            source: "x = 1".to_string(),
+            execution_count: "7".to_string(),
+            metadata: serde_json::json!({}),
+            resolved_assets: HashMap::new(),
+            attachments: HashMap::new(),
+        }];
+
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        )
+        .await;
+        assert!(
+            !changed,
+            "unchanged disk contents should not roll back an immediate live edit"
+        );
+
+        let cells = room.doc.read().await.get_cells();
+        assert_eq!(cells[0].source, "print('edited')");
     }
 }
