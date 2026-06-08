@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { NotebookHostProvider } from "@nteract/notebook-host";
 import {
   AlertCircle,
   BookOpen,
@@ -140,6 +141,7 @@ import {
 } from "./notebook-list-cache";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
 import { CloudSharingControls } from "./sharing-controls";
+import { createCloudNotebookHost } from "./cloud-notebook-host";
 import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
@@ -1612,6 +1614,14 @@ function NotebookViewer({
     preloadSiftWasm,
     widgetStore,
   });
+  const cloudNotebookHost = useMemo(
+    () =>
+      createCloudNotebookHost({
+        blobResolver,
+        getRuntime: () => liveRuntimeRef.current,
+      }),
+    [blobResolver, liveRuntimeRef],
+  );
   const presenceSnapshot = useSyncExternalStore(
     presenceStore.subscribe,
     presenceStore.getSnapshot,
@@ -2411,55 +2421,57 @@ function NotebookViewer({
   ) : null;
 
   return (
-    <NotebookDocumentShell
-      rootElement="main"
-      className={
-        showCloudCommandToolbar
-          ? "cloud-notebook-shell cloud-notebook-shell--command-toolbar"
-          : "cloud-notebook-shell"
-      }
-      stageClassName="cloud-notebook-stage"
-      toolbar={toolbar}
-      toolbarLabel="Notebook view status and controls"
-      notices={notices}
-      noticesClassName="cloud-notebook-notices"
-      capabilities={shellCapabilities}
-      rail={rail}
-      stageLabel="Hosted notebook"
-    >
-      <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
+    <NotebookHostProvider host={cloudNotebookHost}>
+      <NotebookDocumentShell
+        rootElement="main"
+        className={
+          showCloudCommandToolbar
+            ? "cloud-notebook-shell cloud-notebook-shell--command-toolbar"
+            : "cloud-notebook-shell"
+        }
+        stageClassName="cloud-notebook-stage"
+        toolbar={toolbar}
+        toolbarLabel="Notebook view status and controls"
+        notices={notices}
+        noticesClassName="cloud-notebook-notices"
+        capabilities={shellCapabilities}
+        rail={rail}
+        stageLabel="Hosted notebook"
+      >
+        <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
-      <PresenceValueProvider value={cloudPresenceContext}>
-        <CrdtBridgeProvider
-          getHandle={getLiveNotebookHandle}
-          canWriteSource={canWriteCellSource}
-          onSyncNeeded={handleSourceSyncNeeded}
-          localActor={connectionActorLabel ?? ""}
-        >
-          <NotebookView
-            cellIds={notebookCellIds}
-            isLoading={notebookViewIsLoading}
-            capabilities={shellCapabilities}
-            canAcceptCellMutations={canAcceptCellMutations}
-            runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-            sessionRuntimeState={connectionError ? "error" : "ready"}
-            onFocusCell={setFocusedCellId}
-            onExecuteCell={handleCloudExecuteCell}
-            onInterruptKernel={() => {}}
-            onDeleteCell={handleCloudDeleteCell}
-            onAddCell={handleCloudAddCell}
-            onMoveCell={handleCloudMoveCell}
-            onSetCellSourceHidden={handleCloudSetCellSourceHidden}
-            onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
-            markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
-            outputHostContext={outputHostContext}
-            deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
-            deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
-            autoFocusFirstCell={false}
-          />
-        </CrdtBridgeProvider>
-      </PresenceValueProvider>
-    </NotebookDocumentShell>
+        <PresenceValueProvider value={cloudPresenceContext}>
+          <CrdtBridgeProvider
+            getHandle={getLiveNotebookHandle}
+            canWriteSource={canWriteCellSource}
+            onSyncNeeded={handleSourceSyncNeeded}
+            localActor={connectionActorLabel ?? ""}
+          >
+            <NotebookView
+              cellIds={notebookCellIds}
+              isLoading={notebookViewIsLoading}
+              capabilities={shellCapabilities}
+              canAcceptCellMutations={canAcceptCellMutations}
+              runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+              sessionRuntimeState={connectionError ? "error" : "ready"}
+              onFocusCell={setFocusedCellId}
+              onExecuteCell={handleCloudExecuteCell}
+              onInterruptKernel={() => {}}
+              onDeleteCell={handleCloudDeleteCell}
+              onAddCell={handleCloudAddCell}
+              onMoveCell={handleCloudMoveCell}
+              onSetCellSourceHidden={handleCloudSetCellSourceHidden}
+              onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
+              markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
+              outputHostContext={outputHostContext}
+              deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
+              deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
+              autoFocusFirstCell={false}
+            />
+          </CrdtBridgeProvider>
+        </PresenceValueProvider>
+      </NotebookDocumentShell>
+    </NotebookHostProvider>
   );
 }
 

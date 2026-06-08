@@ -259,7 +259,7 @@ describe("cloud live sync", () => {
     }
   });
 
-  it("sends notebook requests as cloud request frames and resolves on room acceptance", async () => {
+  it("sends notebook requests as cloud request frames and resolves the room-host response", async () => {
     const fake = installFakeWebSocket();
     try {
       const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
@@ -297,6 +297,7 @@ describe("cloud live sync", () => {
         byte_length: frame.byteLength - 1,
         timestamp: "2026-06-06T00:00:00.000Z",
       });
+      socket.response(envelope.id, { result: "ok" });
 
       assert.deepEqual(await response, { result: "ok" });
     } finally {
@@ -325,6 +326,38 @@ describe("cloud live sync", () => {
       });
 
       await assert.rejects(response, /viewer cannot write request frames/);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("rejects accepted notebook requests when no response arrives", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      const response = transport.sendTypedRequest(
+        FrameType.REQUEST,
+        new TextEncoder().encode(JSON.stringify({ id: "req-1", action: "complete" })),
+        "req-1",
+        20,
+        "complete",
+      );
+      await nextMicrotask();
+      socket.control({
+        type: "cloud_frame_accepted",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        byte_length: socket.sent[0].byteLength - 1,
+        timestamp: "2026-06-06T00:00:00.000Z",
+      });
+
+      await assert.rejects(response, /Request timeout after 20ms: complete/);
     } finally {
       fake.restore();
     }
@@ -478,6 +511,14 @@ class FakeWebSocket extends EventTarget {
     const payload = new TextEncoder().encode(JSON.stringify(value));
     const frame = new Uint8Array(payload.byteLength + 1);
     frame[0] = FrameType.SESSION_CONTROL;
+    frame.set(payload, 1);
+    this.dispatchEvent(messageEvent(frame.buffer));
+  }
+
+  response(id: string, response: Record<string, unknown>): void {
+    const payload = new TextEncoder().encode(JSON.stringify({ id, ...response }));
+    const frame = new Uint8Array(payload.byteLength + 1);
+    frame[0] = FrameType.RESPONSE;
     frame.set(payload, 1);
     this.dispatchEvent(messageEvent(frame.buffer));
   }

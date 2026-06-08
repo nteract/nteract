@@ -6,7 +6,6 @@ import "./index.css";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import { setErrorBoundarySink } from "@/lib/error-boundary";
 import { setBlobPortHost } from "./lib/blob-port";
-import { setKernelCompletionHost } from "./lib/kernel-completion";
 import { logger, setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
 import { setOpenUrlHost } from "./lib/open-url";
@@ -99,7 +98,6 @@ async function boot() {
   setBlobPortHost(host);
   setLoggerHost(host);
   setOpenUrlHost(host);
-  setKernelCompletionHost(host);
   setErrorBoundarySink((error, componentStack) => {
     logger.error(
       "[ErrorBoundary] render error:",

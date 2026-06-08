@@ -1,6 +1,7 @@
 import {
   SyncEngine,
   type FrameTypeValue,
+  type NotebookRequest,
   type NotebookRequestOptions,
   type NotebookResponse,
   type NotebookTransport,
@@ -62,6 +63,24 @@ interface PendingFrameAck {
   reject: (error: Error) => void;
   resolve: () => void;
   timeoutId: ReturnType<typeof setTimeout>;
+}
+
+interface PendingResponse {
+  reject: (error: Error) => void;
+  resolve: (response: NotebookResponse) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
+function requestTimeoutMs(request: NotebookRequest): number {
+  switch (request.type) {
+    case "launch_kernel":
+    case "sync_environment":
+      return 300_000;
+    case "complete":
+      return 7_000;
+    default:
+      return CLOUD_REQUEST_TIMEOUT_MS;
+  }
 }
 
 export function cloudSyncAuthFromLocalStorage(): CloudSyncAuth {
@@ -217,6 +236,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   // Hosted room accept/reject controls currently carry only the frame type, not
   // a request id, so pending acknowledgements are matched FIFO per frame type.
   private pendingFrameAcks = new Map<number, PendingFrameAck[]>();
+  private pendingResponses = new Map<string, PendingResponse>();
   private readySettled = false;
   private readyResolved = false;
   private closed = false;
@@ -313,25 +333,28 @@ export class CloudWebSocketTransport implements NotebookTransport {
       );
     }
 
-    const pending = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
+    const pendingAck = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
+    const pendingResponse = this.awaitResponse(_id, timeoutMs, timeoutLabel);
     try {
       await this.sendFrame(frameType, payload);
-      await pending.promise;
-      return { result: "ok" };
+      await pendingAck.promise;
+      return await pendingResponse;
     } catch (error) {
-      pending.cancel();
+      pendingAck.cancel();
+      this.failPendingResponse(_id, error);
       throw error;
     }
   }
 
   async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
-    const envelope = notebookRequestEnvelope(request, options);
+    const req = request as NotebookRequest;
+    const envelope = notebookRequestEnvelope(req, options);
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
     return this.sendTypedRequest(
       FrameType.REQUEST,
       payload,
       envelope.id,
-      CLOUD_REQUEST_TIMEOUT_MS,
+      requestTimeoutMs(req),
       envelope.action,
     );
   }
@@ -351,6 +374,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.closed = true;
     this.listeners.clear();
     this.queuedFrames = [];
+    this.rejectPendingResponses(new Error("cloud sync socket disconnected"));
     this.socket.close();
   }
 
@@ -374,7 +398,9 @@ export class CloudWebSocketTransport implements NotebookTransport {
       return;
     }
 
-    this.emitFrame(Array.from(bytes));
+    const frame = Array.from(bytes);
+    this.dispatchResponseFrame(frame);
+    this.emitFrame(frame);
   }
 
   private emitFrame(frame: number[]): void {
@@ -418,6 +444,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.listeners.clear();
     this.queuedFrames = [];
     this.rejectPendingFrameAcks(reason);
+    this.rejectPendingResponses(reason);
     if (this.readyResolved && !this.manualDisconnect) {
       this.onDisconnect?.(reason);
     }
@@ -496,10 +523,66 @@ export class CloudWebSocketTransport implements NotebookTransport {
     }
     this.pendingFrameAcks.clear();
   }
+
+  private awaitResponse(
+    id: string,
+    timeoutMs: number,
+    timeoutLabel?: string,
+  ): Promise<NotebookResponse> {
+    const promise = new Promise<NotebookResponse>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        if (this.pendingResponses.delete(id)) {
+          const suffix = timeoutLabel ? `: ${timeoutLabel}` : "";
+          reject(new Error(`Request timeout after ${timeoutMs}ms${suffix}`));
+        }
+      }, timeoutMs);
+      this.pendingResponses.set(id, { reject, resolve, timeoutId });
+    });
+    promise.catch(() => undefined);
+    return promise;
+  }
+
+  private dispatchResponseFrame(bytes: number[]): void {
+    if (bytes[0] !== FrameType.RESPONSE) return;
+
+    let envelope: { id?: string } & Record<string, unknown>;
+    try {
+      envelope = JSON.parse(new TextDecoder().decode(new Uint8Array(bytes.slice(1))));
+    } catch {
+      return;
+    }
+
+    const id = envelope.id;
+    if (typeof id !== "string") return;
+
+    const pending = this.pendingResponses.get(id);
+    if (!pending) return;
+    this.pendingResponses.delete(id);
+    clearTimeout(pending.timeoutId);
+
+    const { id: _id, ...response } = envelope;
+    pending.resolve(response as NotebookResponse);
+  }
+
+  private failPendingResponse(id: string, error: unknown): void {
+    const pending = this.pendingResponses.get(id);
+    if (!pending) return;
+    this.pendingResponses.delete(id);
+    clearTimeout(pending.timeoutId);
+    pending.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+
+  private rejectPendingResponses(error: Error): void {
+    for (const pending of this.pendingResponses.values()) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    this.pendingResponses.clear();
+  }
 }
 
 function notebookRequestEnvelope(
-  request: unknown,
+  request: NotebookRequest,
   options?: NotebookRequestOptions,
 ): { action: string; id: string; required_heads?: string[]; [key: string]: unknown } {
   if (!isRecord(request) || typeof request.type !== "string") {
