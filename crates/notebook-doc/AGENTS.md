@@ -160,3 +160,90 @@ doc.fork_and_merge(|fork| {
 - The cell store is moving toward fully derived: every field comes from
   NotebookDoc/RuntimeStateDoc materialization or explicit transient frame
   handling, with no direct store writes outside the local/daemon paths above.
+
+## Sandbox profile schema (`metadata.runt.sandbox`)
+
+The sandbox profile is stored at `metadata.runt.sandbox` in the notebook's Automerge document. It is **opt-in**: notebooks without this key launch kernels with direct network access (the existing behavior). See `crates/notebook-doc/src/sandbox.rs` for the Rust types and `docs/sandbox/decisions.md` for locked design decisions.
+
+### Key invariants
+
+- The profile contains only credential **names** and routing rules — never secret values. Secret values live in the macOS Keychain (D-9).
+- Sandbox is opt-in per notebook (D-3). A missing `metadata.runt.sandbox` key means no sandbox.
+- Profile changes during a running kernel session take effect on the next kernel launch (D-6).
+- `name` values are stable public identifiers visible to kernel code via `os.environ["<NAME_UPPER>"]`. Renaming a credential is a breaking change for any cell code that references it.
+
+### Types
+
+| Type | Location | Description |
+|------|----------|-------------|
+| `SandboxProfile` | `sandbox.rs` | Root profile: `enabled`, `credentials`, `allowed_domains` |
+| `CredentialRef` | `sandbox.rs` | A named credential reference with routing rules |
+| `RouteRule` | `sandbox.rs` | Per-host injection rule with template |
+| `InjectionKind` | `sandbox.rs` | `Header`, `BasicAuth`, or `Query` (serde: kebab-case) |
+| `ProfileValidationError` | `sandbox.rs` | Enum of validation failures returned by `validate()` |
+| `SandboxProfileError` | `sandbox.rs` | Error type for read/write helpers |
+
+### Read/write API
+
+```rust
+use notebook_doc::sandbox::{read_sandbox_profile, write_sandbox_profile};
+
+// Read (infallible; returns None for absent or invalid profiles)
+let profile: Option<SandboxProfile> = read_sandbox_profile(&doc);
+
+// Write (validates before writing; None removes the field)
+write_sandbox_profile(&mut doc, Some(profile))?;
+write_sandbox_profile(&mut doc, None)?;  // removes sandbox key
+```
+
+### Validation rules (enforced on both read and write)
+
+1. All credential `name` values must be unique.
+2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$`.
+3. All `host` values in routes must be valid hostnames (no scheme, no path).
+4. `allowed_domains` entries must be valid hostnames.
+5. Each `RouteRule` with `inject_as = Header` must have `header` set.
+6. Each `template` must contain the literal substring `{credential}`.
+
+Invalid profiles are **rejected on write** and **treated as `None` on read** (logged as a warning; the notebook continues without sandbox).
+
+### Schema example
+
+```json
+{
+  "enabled": true,
+  "credentials": [
+    {
+      "name": "analytics_api",
+      "description": "API key for analytics.example.com — ask your team lead",
+      "env_var": "ANALYTICS_API_KEY",
+      "keystore_name": "analytics_api",
+      "routes": [
+        {
+          "host": "api.analytics.example.com",
+          "inject_as": "header",
+          "header": "Authorization",
+          "template": "Bearer {credential}"
+        }
+      ]
+    }
+  ],
+  "allowed_domains": [
+    "api.analytics.example.com"
+  ]
+}
+```
+
+### Defaults
+
+| Helper | Logic |
+|--------|-------|
+| `CredentialRef::effective_env_var()` | `env_var` if set, else `name.to_ascii_uppercase().replace('-', "_")` |
+| `CredentialRef::effective_keystore_name()` | `keystore_name` if set, else `name` |
+
+### Consumers
+
+- **Task 05** — translates `SandboxProfile` to nono YAML for process launch
+- **Task 07** — reads at kernel launch time via `read_sandbox_profile`
+- **Task 09** — MCP tools for listing/setting/removing the profile
+- **Task 10** — UI for authoring the profile

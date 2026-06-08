@@ -1157,6 +1157,7 @@ pub(crate) fn build_new_notebook_metadata(
                 conda: None,
                 pixi: None,
                 deno: None,
+                sandbox: None,
                 extra: std::collections::BTreeMap::new(),
             },
         ),
@@ -1246,6 +1247,7 @@ pub(crate) fn build_new_notebook_metadata(
                     conda,
                     pixi,
                     deno: None,
+                    sandbox: None,
                     extra: std::collections::BTreeMap::new(),
                 },
             )

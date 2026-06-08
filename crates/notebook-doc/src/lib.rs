@@ -49,6 +49,7 @@ pub mod mime;
 pub mod pep723;
 pub mod pool_state;
 pub mod presence;
+pub mod sandbox;
 use std::collections::HashMap;
 
 /// Current document schema version.

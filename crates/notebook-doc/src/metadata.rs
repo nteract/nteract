@@ -49,6 +49,18 @@ pub struct RuntMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno: Option<DenoMetadata>,
 
+    /// Network sandbox profile (`metadata.runt.sandbox`).
+    ///
+    /// When `Some`, the daemon reads this profile at kernel launch and wraps
+    /// the kernel in a nono.sh network proxy for credential injection.
+    /// When `None` (the default), the kernel launches with direct network
+    /// access — the existing behavior. Sandbox is opt-in (D-3).
+    ///
+    /// The profile contains only credential *names* and routing rules — never
+    /// secret values. Actual credential values live in the macOS Keychain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<crate::sandbox::SandboxProfile>,
+
     /// Catch-all for unknown/third-party runt keys.
     /// Preserves fields we don't model (e.g. from newer schema versions or extensions)
     /// through deserialization → serialization round-trips.
@@ -70,6 +82,9 @@ where
         std::collections::BTreeMap::deserialize(deserializer)?;
     map.remove("trust_signature");
     map.remove("trust_timestamp");
+    // Remove typed fields that serde flattens back here; they are handled by
+    // their explicit struct fields and must not double-appear in `extra`.
+    map.remove("sandbox");
     Ok(map)
 }
 
@@ -628,6 +643,7 @@ impl RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
+            sandbox: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -645,6 +661,7 @@ impl RuntMetadata {
             }),
             pixi: None,
             deno: None,
+            sandbox: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -663,6 +680,7 @@ impl RuntMetadata {
                 python: None,
             }),
             deno: None,
+            sandbox: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -681,6 +699,7 @@ impl RuntMetadata {
                 config: None,
                 flexible_npm_imports: None,
             }),
+            sandbox: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -697,6 +716,7 @@ impl Default for RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
+            sandbox: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -713,6 +733,7 @@ impl RuntMetadata {
             && self.conda.is_none()
             && self.pixi.is_none()
             && self.deno.is_none()
+            && self.sandbox.is_none()
             && self.extra.is_empty()
             && self.schema_version == "1"
     }
@@ -1014,6 +1035,7 @@ mod tests {
                 conda: None,
                 pixi: None,
                 deno: None,
+                sandbox: None,
                 extra: std::collections::BTreeMap::new(),
             },
             extras: std::collections::BTreeMap::new(),
@@ -1123,6 +1145,7 @@ mod tests {
             conda: None,
             pixi: None,
             deno: None,
+            sandbox: None,
             extra: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_value(&meta).unwrap();

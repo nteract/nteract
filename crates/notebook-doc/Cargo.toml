@@ -16,7 +16,7 @@ serde_json = "1"
 thiserror = { workspace = true }
 toml = "1"
 automunge = { path = "../automunge" }
-log = { version = "0.4", optional = true }
+log = "0.4"
 sha2 = { version = "0.11", optional = true }
 hex = { version = "0.4", optional = true }
 
@@ -30,9 +30,9 @@ uuid = { version = "1", features = ["v5"] }
 
 [features]
 default = []
-# Enable file persistence methods (load_or_create, save_to_file, notebook_doc_filename)
-# and logging. Not available for wasm32 targets.
-persistence = ["dep:log", "dep:sha2", "dep:hex"]
+# Enable file persistence methods (load_or_create, save_to_file, notebook_doc_filename).
+# Not available for wasm32 targets.
+persistence = ["dep:sha2", "dep:hex"]
 
 [lints]
 workspace = true
