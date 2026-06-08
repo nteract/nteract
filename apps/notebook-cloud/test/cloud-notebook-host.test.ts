@@ -17,16 +17,12 @@ describe("cloud notebook host", () => {
 
     assert.equal(host.transport.connected, false);
     await assert.rejects(
-      host.transport.sendRequest({ type: "get_history" }),
+      host.transport.sendRequest({ type: "complete" }),
       /hosted notebook is not connected/,
     );
 
     current = runtimeA;
     assert.equal(host.transport.connected, true);
-    assert.deepEqual(await host.transport.sendRequest({ type: "get_history" }), {
-      result: "a",
-    });
-
     current = runtimeB;
     assert.deepEqual(await host.transport.sendRequest({ type: "complete" }), {
       result: "b",
@@ -35,11 +31,52 @@ describe("cloud notebook host", () => {
 
     host.transport.disconnect();
 
-    assert.deepEqual(calls, [
-      "a:sendRequest:get_history",
-      "b:sendRequest:complete",
-      "b:sendFrame:1",
-    ]);
+    assert.deepEqual(calls, ["b:sendRequest:complete", "b:sendFrame:1"]);
+  });
+
+  it("serves hosted history from the live notebook document without waiting on a runtime request", async () => {
+    const calls: string[] = [];
+    const host = createCloudNotebookHost({
+      blobResolver: fixtureBlobResolver,
+      getRuntime: () =>
+        createRuntime("cloud", calls, {
+          cells: [
+            { id: "md-1", type: "markdown", source: "not history" },
+            { id: "code-1", type: "code", source: "print('hello')" },
+            { id: "code-2", type: "code", source: "import pandas as pd" },
+            { id: "code-3", type: "code", source: "print('hello')" },
+          ],
+        }),
+    });
+
+    assert.deepEqual(
+      await host.transport.sendRequest({
+        type: "get_history",
+        pattern: null,
+        n: 10,
+        unique: true,
+      }),
+      {
+        result: "history_result",
+        entries: [
+          { session: 0, line: 1, source: "print('hello')" },
+          { session: 0, line: 2, source: "import pandas as pd" },
+        ],
+      },
+    );
+    assert.deepEqual(
+      await host.transport.sendRequest({
+        type: "get_history",
+        pattern: "*pandas*",
+        n: 10,
+        unique: true,
+      }),
+      {
+        result: "history_result",
+        entries: [{ session: 0, line: 1, source: "import pandas as pd" }],
+      },
+    );
+    assert.deepEqual(calls, []);
   });
 
   it("exposes the cloud blob resolver without a local daemon port", async () => {
@@ -58,7 +95,14 @@ const fixtureBlobResolver: BlobResolver = {
   fetch: async (ref) => new Response(ref.blob),
 };
 
-function createRuntime(label: string, calls: string[]): CloudSyncRuntime {
+function createRuntime(
+  label: string,
+  calls: string[],
+  options: {
+    cells?: Array<{ id: string; source: string; type: string }>;
+  } = {},
+): CloudSyncRuntime {
+  const cells = options.cells ?? [];
   const transport: NotebookTransport = {
     connected: true,
     disconnect: () => {
@@ -82,5 +126,12 @@ function createRuntime(label: string, calls: string[]): CloudSyncRuntime {
     sendTypedRequest: async () => ({ result: "ok" }),
   };
 
-  return { transport } as CloudSyncRuntime;
+  return {
+    handle: {
+      get_cell_ids: () => cells.map((cell) => cell.id),
+      get_cell_source: (cellId: string) => cells.find((cell) => cell.id === cellId)?.source ?? null,
+      get_cell_type: (cellId: string) => cells.find((cell) => cell.id === cellId)?.type ?? null,
+    },
+    transport,
+  } as CloudSyncRuntime;
 }

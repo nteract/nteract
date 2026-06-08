@@ -1842,7 +1842,9 @@ function NotebookViewer({
     if (!shellCapabilities.runtime.connected && !shellCapabilities.runtime.executionAvailable) {
       return null;
     }
-    return projectNotebookCommandRuntimeStatusFromRuntimeState(runtimeState);
+    return projectNotebookCommandRuntimeStatusFromRuntimeState(runtimeState, {
+      executionAvailable: shellCapabilities.runtime.executionAvailable,
+    });
   }, [
     runtimeState,
     shellCapabilities.runtime.connected,

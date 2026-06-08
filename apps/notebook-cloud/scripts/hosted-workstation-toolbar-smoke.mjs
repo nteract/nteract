@@ -255,6 +255,8 @@ async function runOwnerAttachAndExecuteSmoke({
   await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
 
   await executeAndWaitForMarker(page, cell, runMarker, timeoutMs);
+  const afterFirstRunKernelStatus = await readKernelStatus(page);
+  assertKernelStatusNotInitializing(afterFirstRunKernelStatus, "after first execution");
   const afterFirstRunAria = await cell.getByTestId("execute-button").getAttribute("aria-label");
 
   await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
@@ -269,6 +271,8 @@ async function runOwnerAttachAndExecuteSmoke({
   const afterReloadRunAria = await reloadedCell
     .getByTestId("execute-button")
     .getAttribute("aria-label");
+  const afterReloadKernelStatus = await readKernelStatus(page);
+  assertKernelStatusNotInitializing(afterReloadKernelStatus, "after reload execution");
 
   if (screenshotPath) {
     await saveSmokeScreenshot(page, screenshotPath);
@@ -276,12 +280,40 @@ async function runOwnerAttachAndExecuteSmoke({
   assertCleanBrowserDiagnostics(events);
   return {
     action,
+    afterFirstRunKernelStatus,
     afterFirstRunAria,
+    afterReloadKernelStatus,
     afterReloadRunAria,
     beforeReloadRunAria,
     events,
     screenshotPath: screenshotPath ?? null,
   };
+}
+
+async function readKernelStatus(page) {
+  return page.evaluate(() => {
+    const status = document.querySelector('[data-testid="kernel-status"]');
+    if (!status) return null;
+    return {
+      ariaLabel: status.getAttribute("aria-label"),
+      label: status.textContent?.trim() ?? "",
+      state: status.getAttribute("data-kernel-status"),
+      title: status.getAttribute("title"),
+    };
+  });
+}
+
+function assertKernelStatusNotInitializing(status, context) {
+  if (!status) {
+    throw new Error(`${context} expected a visible kernel status after hosted execution`);
+  }
+  if (status.state === "not_started" || /initializing/i.test(status.label)) {
+    throw new Error(
+      `${context} left hosted kernel status initializing after execution: ${JSON.stringify(
+        status,
+      )}`,
+    );
+  }
 }
 
 async function assertOwnerBlockedWorkstationStates({

@@ -3,6 +3,8 @@ import type {
   BlobResolver,
   FrameListener,
   FrameTypeValue,
+  HistoryEntry,
+  NotebookRequest,
   NotebookRequestOptions,
   NotebookResponse,
   NotebookTransport,
@@ -47,6 +49,9 @@ class CloudNotebookHostTransport implements NotebookTransport {
   }
 
   async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
+    if (isNotebookRequest(request) && request.type === "get_history") {
+      return historyResultFromLiveNotebook(this.getRuntime(), request);
+    }
     return this.requireTransport("send request").sendRequest(request, options);
   }
 
@@ -66,6 +71,49 @@ class CloudNotebookHostTransport implements NotebookTransport {
     }
     return runtime.transport;
   }
+}
+
+function isNotebookRequest(request: unknown): request is NotebookRequest {
+  return typeof request === "object" && request !== null && "type" in request;
+}
+
+function historyResultFromLiveNotebook(
+  runtime: CloudSyncRuntime | null,
+  request: Extract<NotebookRequest, { type: "get_history" }>,
+): Extract<NotebookResponse, { result: "history_result" }> {
+  if (!runtime) {
+    return { result: "history_result", entries: [] };
+  }
+
+  const unique = request.unique;
+  const limit = Math.max(0, Math.min(500, Math.floor(request.n)));
+  const seenSources = new Set<string>();
+  const entries: HistoryEntry[] = [];
+  let line = 0;
+  for (const cellId of runtime.handle.get_cell_ids()) {
+    if (runtime.handle.get_cell_type(cellId) !== "code") continue;
+    const source = runtime.handle.get_cell_source(cellId)?.trim();
+    if (!source || !matchesHistoryPattern(source, request.pattern)) continue;
+    if (unique && seenSources.has(source)) continue;
+    seenSources.add(source);
+    entries.push({ session: 0, line: ++line, source });
+  }
+
+  return {
+    result: "history_result",
+    entries: entries.slice(Math.max(0, entries.length - limit)),
+  };
+}
+
+function matchesHistoryPattern(source: string, pattern: string | null): boolean {
+  const trimmed = pattern?.trim();
+  if (!trimmed) return true;
+  if (!/[*?]/.test(trimmed)) {
+    return source.toLocaleLowerCase().includes(trimmed.toLocaleLowerCase());
+  }
+  const escaped = trimmed.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const globPattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(globPattern, "iu").test(source);
 }
 
 export function createCloudNotebookHost({

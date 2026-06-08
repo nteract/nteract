@@ -388,7 +388,11 @@ async function exerciseHistoryShortcut(page, timeout) {
 
   const input = page.getByPlaceholder("Search history...");
   await input.waitFor({ state: "visible", timeout });
-  await page.waitForTimeout(500);
+  await page.waitForFunction(
+    () => !/Searching history\.\.\./i.test(document.body.textContent ?? ""),
+    undefined,
+    { timeout },
+  );
 
   const summary = await page.evaluate(() => {
     const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
@@ -396,6 +400,7 @@ async function exerciseHistoryShortcut(page, timeout) {
     return {
       cellErrorVisible: /This cell encountered an error/i.test(text),
       dialogVisible: input !== null,
+      searchingVisible: /Searching history\.\.\./i.test(text),
       notebookHostErrorVisible:
         /useNotebookHost\(\) must be called inside <NotebookHostProvider>/i.test(text),
       textSample: text.slice(0, 1_000),
@@ -409,6 +414,9 @@ async function exerciseHistoryShortcut(page, timeout) {
     throw new Error(
       `Ctrl-R opened a hosted cell error instead of the history dialog: ${JSON.stringify(summary)}`,
     );
+  }
+  if (summary.searchingVisible) {
+    throw new Error(`Ctrl-R history dialog stayed in loading state: ${JSON.stringify(summary)}`);
   }
 
   await page.keyboard.press("Escape");
