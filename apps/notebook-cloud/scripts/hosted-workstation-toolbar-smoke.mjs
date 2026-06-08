@@ -160,61 +160,42 @@ async function runBrowserSmoke({
   const url = new URL(viewerUrl);
   const browser = await chromium.launch({ headless: true });
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    await context.addInitScript(
-      ({ origin, tokenJson }) => {
-        try {
-          if (globalThis.location?.origin !== origin) return;
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", "owner");
-        } catch {
-          // Output frames intentionally cannot read first-party localStorage.
-        }
-      },
-      { origin: url.origin, tokenJson: tokenStorageJson },
-    );
-
-    const page = await context.newPage();
-    const events = collectBrowserDiagnostics(page);
-    await openNotebookShell(page, url.href, timeoutMs);
-    const cell = await ensureCodeCell(page, timeoutMs);
-    await setCellSource(cell, source);
-
-    await waitForToolbarAction(page, "Attach compute", timeoutMs);
-    const action = {
-      label: await page.getByTestId("workstation-setup-button").getAttribute("aria-label"),
-      title: await page.getByTestId("workstation-setup-button").getAttribute("title"),
-    };
-    if (!action.title?.includes(workstationId) && !action.title?.includes("workstation")) {
-      throw new Error(`unexpected workstation action title: ${action.title ?? "null"}`);
+    const ownerContext = await authenticatedContext(browser, {
+      origin: url.origin,
+      scope: "owner",
+      tokenStorageJson,
+    });
+    let ownerRun;
+    try {
+      ownerRun = await runOwnerAttachAndExecuteSmoke({
+        context: ownerContext,
+        runMarker,
+        screenshotPath,
+        source,
+        timeoutMs,
+        url,
+        workstationId,
+      });
+    } finally {
+      await ownerContext.close().catch(() => {});
     }
-    await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
 
-    await executeAndWaitForMarker(page, cell, runMarker, timeoutMs);
-    const afterFirstRunAria = await cell.getByTestId("execute-button").getAttribute("aria-label");
-
-    await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
-    await waitForNotebookReady(page, timeoutMs);
-    await waitForText(page, runMarker, timeoutMs);
-    const reloadedCell = page.locator('[data-cell-type="code"]').first();
-    await reloadedCell.waitFor({ state: "visible", timeout: timeoutMs });
-    const beforeReloadRunAria = await reloadedCell
-      .getByTestId("execute-button")
-      .getAttribute("aria-label");
-    await executeAndWaitForMarker(page, reloadedCell, runMarker, timeoutMs);
-    const afterReloadRunAria = await reloadedCell
-      .getByTestId("execute-button")
-      .getAttribute("aria-label");
-
-    if (screenshotPath) {
-      await saveSmokeScreenshot(page, screenshotPath);
+    const scopedControlChecks = [];
+    for (const scope of ["viewer", "editor"]) {
+      scopedControlChecks.push(
+        await assertScopeDoesNotExposeExecutionControls({
+          browser,
+          runMarker,
+          scope,
+          timeoutMs,
+          tokenStorageJson,
+          url,
+        }),
+      );
     }
-    assertCleanBrowserDiagnostics(events);
+
     return {
-      action,
-      afterFirstRunAria,
-      afterReloadRunAria,
-      beforeReloadRunAria,
+      ...ownerRun,
       checks: [
         "oidc_token_seeded_in_browser_storage",
         "toolbar_attach_compute_rendered",
@@ -223,13 +204,133 @@ async function runBrowserSmoke({
         "cell_output_observed_after_execute",
         "page_reload_preserved_output",
         "cell_output_observed_after_reload_execute",
+        "viewer_scope_hides_execution_controls",
+        "viewer_scope_hides_workstation_setup_action",
+        "editor_scope_hides_execution_controls_until_execute_capability_exists",
       ],
-      events,
-      screenshotPath: screenshotPath ?? null,
+      scopedControlChecks,
     };
   } finally {
     await browser.close().catch(() => {});
   }
+}
+
+async function runOwnerAttachAndExecuteSmoke({
+  context,
+  runMarker,
+  screenshotPath,
+  source,
+  timeoutMs,
+  url,
+  workstationId,
+}) {
+  const page = await context.newPage();
+  const events = collectBrowserDiagnostics(page);
+  await openNotebookShell(page, url.href, timeoutMs);
+  const cell = await ensureCodeCell(page, timeoutMs);
+  await setCellSource(cell, source);
+
+  await waitForToolbarAction(page, "Attach compute", timeoutMs);
+  const action = {
+    label: await page.getByTestId("workstation-setup-button").getAttribute("aria-label"),
+    title: await page.getByTestId("workstation-setup-button").getAttribute("title"),
+  };
+  if (!action.title?.includes(workstationId) && !action.title?.includes("workstation")) {
+    throw new Error(`unexpected workstation action title: ${action.title ?? "null"}`);
+  }
+  await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
+
+  await executeAndWaitForMarker(page, cell, runMarker, timeoutMs);
+  const afterFirstRunAria = await cell.getByTestId("execute-button").getAttribute("aria-label");
+
+  await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+  await waitForNotebookReady(page, timeoutMs);
+  await waitForText(page, runMarker, timeoutMs);
+  const reloadedCell = page.locator('[data-cell-type="code"]').first();
+  await reloadedCell.waitFor({ state: "visible", timeout: timeoutMs });
+  const beforeReloadRunAria = await reloadedCell
+    .getByTestId("execute-button")
+    .getAttribute("aria-label");
+  await executeAndWaitForMarker(page, reloadedCell, runMarker, timeoutMs);
+  const afterReloadRunAria = await reloadedCell
+    .getByTestId("execute-button")
+    .getAttribute("aria-label");
+
+  if (screenshotPath) {
+    await saveSmokeScreenshot(page, screenshotPath);
+  }
+  assertCleanBrowserDiagnostics(events);
+  return {
+    action,
+    afterFirstRunAria,
+    afterReloadRunAria,
+    beforeReloadRunAria,
+    events,
+    screenshotPath: screenshotPath ?? null,
+  };
+}
+
+async function assertScopeDoesNotExposeExecutionControls({
+  browser,
+  runMarker,
+  scope,
+  timeoutMs,
+  tokenStorageJson,
+  url,
+}) {
+  const context = await authenticatedContext(browser, {
+    origin: url.origin,
+    scope,
+    tokenStorageJson,
+  });
+  try {
+    const page = await context.newPage();
+    const events = collectBrowserDiagnostics(page);
+    await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await waitForNotebookSessionReady(page, timeoutMs);
+    await waitForText(page, runMarker, timeoutMs);
+    const controls = await visibleControlSummary(page);
+    if (controls.executeButtonCount > 0 || controls.runAllButtonCount > 0) {
+      throw new Error(`${scope} scope unexpectedly exposed execution controls`);
+    }
+    if (scope === "viewer" && controls.workstationSetupButtonCount > 0) {
+      throw new Error("viewer scope unexpectedly exposed workstation setup controls");
+    }
+    assertCleanBrowserDiagnostics(events);
+    return {
+      controls,
+      scope,
+    };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function authenticatedContext(browser, { origin, scope, tokenStorageJson }) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.addInitScript(
+    ({ expectedOrigin, requestedScope, tokenJson }) => {
+      try {
+        if (globalThis.location?.origin !== expectedOrigin) return;
+        globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
+        globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", requestedScope);
+      } catch {
+        // Output frames intentionally cannot read first-party localStorage.
+      }
+    },
+    { expectedOrigin: origin, requestedScope: scope, tokenJson: tokenStorageJson },
+  );
+  return context;
+}
+
+async function visibleControlSummary(page) {
+  return page.evaluate(() => ({
+    executeButtonCount: document.querySelectorAll('[data-testid="execute-button"]').length,
+    runAllButtonCount: document.querySelectorAll('[data-testid="run-all-button"]').length,
+    workstationSetupButtonCount: document.querySelectorAll(
+      '[data-testid="workstation-setup-button"]',
+    ).length,
+  }));
 }
 
 function collectBrowserDiagnostics(page) {
@@ -282,6 +383,10 @@ async function openNotebookShell(page, href, timeout) {
 
 async function waitForNotebookReady(page, timeout) {
   await page.waitForSelector('[data-testid="notebook-toolbar"]', { timeout });
+  await waitForNotebookSessionReady(page, timeout);
+}
+
+async function waitForNotebookSessionReady(page, timeout) {
   await page.waitForFunction(
     () =>
       document.querySelector("[data-notebook-synced]")?.getAttribute("data-notebook-synced") ===
