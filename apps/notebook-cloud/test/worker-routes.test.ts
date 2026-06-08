@@ -1348,6 +1348,51 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("does not create attach jobs or runtime peer grants for offline workstations", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "offline",
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 409);
+    const body = (await attach.json()) as {
+      error?: string;
+      workstation?: { workstation_id?: string; status?: string };
+    };
+    assert.equal(body.error, "workstation is not online");
+    assert.equal(body.workstation?.workstation_id, "ws-lab2");
+    assert.equal(body.workstation?.status, "offline");
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+  });
+
   it("reuses the active workstation attach job for repeated owner requests", async () => {
     const env = fakeEnv();
     seedNotebook(env, "attach-demo");
