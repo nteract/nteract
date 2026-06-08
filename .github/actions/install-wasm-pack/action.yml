@@ -52,12 +52,21 @@ runs:
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
 
-        curl --fail --location --show-error --retry 10 --retry-delay 2 \
+        if curl --fail --location --show-error --retry 10 --retry-delay 2 --retry-all-errors \
           --output "$tmp/$asset" \
-          "$url"
-        tar -xzf "$tmp/$asset" -C "$tmp"
+          "$url"; then
+          tar -xzf "$tmp/$asset" -C "$tmp"
+          bin="$(find "$tmp" -type f \( -name wasm-pack -o -name wasm-pack.exe \) -print -quit)"
+        else
+          echo "::warning::wasm-pack release download failed; falling back to cargo install"
+          cargo_root="$tmp/cargo-install"
+          cargo install wasm-pack --version "$version" --locked --root "$cargo_root"
+          case "$RUNNER_OS" in
+            Windows) bin="$cargo_root/bin/wasm-pack.exe" ;;
+            *) bin="$cargo_root/bin/wasm-pack" ;;
+          esac
+        fi
 
-        bin="$(find "$tmp" -type f \( -name wasm-pack -o -name wasm-pack.exe \) -print -quit)"
         if [ -z "$bin" ]; then
           echo "wasm-pack binary not found in $asset" >&2
           exit 1
