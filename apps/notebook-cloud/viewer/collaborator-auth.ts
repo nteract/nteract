@@ -424,7 +424,7 @@ export function prototypeAuthDiagnostics(
       {
         label: "Credential",
         value:
-          "OIDC bearer token stored locally; sent as an HTTP header and WebSocket subprotocol.",
+          "OIDC bearer token cached for sign-in renewal; first-party APIs use an app-session cookie and sync-ticket WebSockets.",
       },
     );
     if (state.oidcClaims?.sub) {
