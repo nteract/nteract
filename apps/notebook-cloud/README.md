@@ -649,6 +649,30 @@ old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
 private; anonymous hosted render smokes may return a catalog 404 unless the
 browser context has a credential for the owning principal.
 
+Hosted workstation agent smoke:
+
+```bash
+cargo build --release -p runtimed
+NTERACT_CLOUD_URL=https://preview.runt.run \
+NOTEBOOK_CLOUD_WORKSTATION_ID=lab2 \
+NOTEBOOK_CLOUD_WORKSTATION_DISPLAY_NAME="lab2 workstation" \
+NOTEBOOK_CLOUD_WORKSTATION_CWD="$PWD" \
+pnpm --dir apps/notebook-cloud smoke:hosted:workstation-agent
+```
+
+The workstation agent reads `NTERACT_API_KEY` from the environment and also
+loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
+registers and heartbeats the current machine through `POST /api/workstations`,
+polls `GET /api/workstations/:workstationId/attach-jobs`, and spawns
+`runtimed cloud-runtime-agent` for pending attach jobs. The API key is passed to
+the runtime peer through `RUNT_CLOUD_TOKEN`, not through argv; `runtimed`
+removes cloud/API-key environment variables again before launching the Python
+kernel. Run this helper inside tmux for preview/manual testing so the polling
+agent stays alive while the browser attaches workstations. After the agent
+registers, select it as the default workstation in the notebook UI or call
+`PATCH /api/workstations/default`, then use the Workstations rail in a private
+owner room to request attachment.
+
 Use the combined runtime/browser smoke when you want the full preview remote
 compute path in one command. It creates one API-key room per requested browser
 scope, keeps that room's runtime peer alive, clicks execution through Chromium
