@@ -359,6 +359,7 @@ fn cmd_integration(filter: Option<String>) {
 fn require_tool(name: &str, install_hint: &str) {
     let ok = Command::new(name)
         .arg("--version")
+        .stdin(Stdio::null()) // prevent interactive mode from hanging waiting for user input
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -376,6 +377,7 @@ fn require_tool(name: &str, install_hint: &str) {
 fn require_cargo_subcommand(name: &str, install_hint: &str) {
     let ok = Command::new("cargo")
         .args([name, "--version"])
+        .stdin(Stdio::null()) // prevent interactive mode from hanging waiting for user input
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
