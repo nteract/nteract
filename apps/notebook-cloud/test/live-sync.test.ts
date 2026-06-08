@@ -259,7 +259,7 @@ describe("cloud live sync", () => {
     }
   });
 
-  it("sends notebook requests as cloud request frames and resolves the room-host response", async () => {
+  it("sends notebook requests as cloud request frames and resolves on room-host ack", async () => {
     const fake = installFakeWebSocket();
     try {
       const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
@@ -297,7 +297,6 @@ describe("cloud live sync", () => {
         byte_length: frame.byteLength - 1,
         timestamp: "2026-06-06T00:00:00.000Z",
       });
-      socket.response(envelope.id, { result: "ok" });
 
       assert.deepEqual(await response, { result: "ok" });
     } finally {
@@ -331,7 +330,7 @@ describe("cloud live sync", () => {
     }
   });
 
-  it("rejects accepted notebook requests when no response arrives", async () => {
+  it("resolves accepted notebook requests without waiting for a response frame", async () => {
     const fake = installFakeWebSocket();
     try {
       const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
@@ -357,7 +356,7 @@ describe("cloud live sync", () => {
         timestamp: "2026-06-06T00:00:00.000Z",
       });
 
-      await assert.rejects(response, /Request timeout after 20ms: complete/);
+      assert.deepEqual(await response, { result: "ok" });
     } finally {
       fake.restore();
     }
