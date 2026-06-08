@@ -136,8 +136,8 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(viewerWithRuntime.runtime.target?.runtimePeerCount, 1);
   assert.equal(viewerWithRuntime.canExecute, false);
 
-  // Runtime presence is visible to editors too, and non-viewer room peers may
-  // submit execution-intent request frames while compute is attached.
+  // Runtime presence is visible to editors too, but hosted execution remains
+  // owner-only until the backend exposes an explicit execute capability.
   const editorWithRuntime = cloudNotebookShellCapabilities({
     authState: authState("oidc", "editor"),
     connectionScope: "editor",
@@ -150,7 +150,17 @@ test("cloud shell capabilities surface execution only when a runtime is availabl
   assert.equal(editorWithRuntime.runtime.target?.id, "attached-workstation");
   assert.equal(editorWithRuntime.runtime.target?.label, "Attached workstation");
   assert.equal(editorWithRuntime.runtime.target?.runtimePeerCount, 1);
-  assert.equal(editorWithRuntime.canExecute, true);
+  assert.equal(editorWithRuntime.canExecute, false);
+
+  const editorWithExecuteCapability = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "editor"),
+    connectionScope: "editor",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+    canSubmitExecutionRequests: true,
+  });
+  assert.equal(editorWithExecuteCapability.canExecute, true);
 });
 
 test("cloud shell capabilities prefer RuntimeStateDoc workstation attachment over presence fallback", () => {
@@ -217,6 +227,36 @@ test("cloud shell capabilities show connecting workstation attachment without en
   assert.equal(capabilities.runtime.target?.status, "connecting");
   assert.equal(capabilities.runtime.target?.statusLabel, "Connecting");
   assert.equal(capabilities.runtime.target?.detail, "Waiting for runtime peer heartbeat");
+  assert.equal(capabilities.canExecute, false);
+});
+
+test("cloud shell capabilities do not let presence override a non-executable attachment", () => {
+  const capabilities = cloudNotebookShellCapabilities({
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimeAvailable: true,
+    runtimePeerCount: 1,
+    workstationAttachment: {
+      workstation_id: "ws-lab2",
+      display_name: "Lab 2",
+      provider: "local_daemon",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "connecting",
+      status_message: "Waiting for runtime peer heartbeat",
+      cpu_count: null,
+      memory_bytes: null,
+      working_directory: null,
+      updated_at: "2026-06-07T21:00:00Z",
+    },
+  });
+
+  assert.equal(capabilities.runtime.connected, true);
+  assert.equal(capabilities.runtime.executionAvailable, false);
+  assert.equal(capabilities.runtime.target?.id, "ws-lab2");
+  assert.equal(capabilities.runtime.target?.status, "connecting");
   assert.equal(capabilities.canExecute, false);
 });
 

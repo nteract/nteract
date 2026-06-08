@@ -106,6 +106,13 @@ import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
+  cloudWorkstationRefreshIntervalMs,
+  fetchCloudWorkstations,
+  requestCloudWorkstationAttachment,
+  setCloudDefaultWorkstation,
+  type CloudWorkstationsState,
+} from "./workstations-client";
+import {
   cloudPresenceHasRuntimePeer,
   cloudPresenceRuntimePeerCount,
   type CloudViewerPresencePeer,
@@ -239,6 +246,9 @@ function loadConfig(): CloudViewerConfig {
     !parsed.aclEndpoint ||
     !parsed.invitesEndpoint ||
     !parsed.accessRequestsEndpoint ||
+    !parsed.workstationsEndpoint ||
+    !parsed.workstationDefaultEndpoint ||
+    !parsed.workstationAttachEndpoint ||
     !parsed.syncEndpoint ||
     !parsed.blobBasePath ||
     !parsed.rendererAssetsBasePath ||
@@ -257,8 +267,13 @@ function loadConfig(): CloudViewerConfig {
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
     accessRequestsEndpoint: parsed.accessRequestsEndpoint,
+    workstationsEndpoint: parsed.workstationsEndpoint,
+    workstationDefaultEndpoint: parsed.workstationDefaultEndpoint,
+    workstationAttachEndpoint: parsed.workstationAttachEndpoint,
     hostCapabilities: {
       canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
+      canSubmitExecutionRequests:
+        parsed.hostCapabilities?.canSubmitExecutionRequests === true ? true : undefined,
     },
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
@@ -1539,6 +1554,16 @@ function NotebookViewer({
     null,
   );
   const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
+  const [workstationsState, setWorkstationsState] = useState<CloudWorkstationsState>({
+    defaultWorkstationId: null,
+    workstations: [],
+  });
+  const [workstationsError, setWorkstationsError] = useState<string | null>(null);
+  const [workstationMutation, setWorkstationMutation] = useState<{
+    kind: "idle" | "default" | "attach";
+    message: string | null;
+    workstationId: string | null;
+  }>({ kind: "idle", message: null, workstationId: null });
   const [selectedInteractionMode, setSelectedInteractionMode] =
     useState<NotebookInteractionMode>("view");
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
@@ -1665,6 +1690,93 @@ function NotebookViewer({
     setRailCollapsed(false);
     setActiveRailPanel("workstations");
   }, []);
+  const canLoadCloudWorkstations = authState.mode === "dev" || authState.mode === "oidc";
+  const refreshCloudWorkstations = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!canLoadCloudWorkstations || !config.workstationsEndpoint) {
+        setWorkstationsState({ defaultWorkstationId: null, workstations: [] });
+        setWorkstationsError(null);
+        return;
+      }
+      try {
+        const next = await fetchCloudWorkstations(config.workstationsEndpoint, authState, signal);
+        if (signal?.aborted) return;
+        setWorkstationsState(next);
+        setWorkstationsError(null);
+      } catch (error) {
+        if (signal?.aborted) return;
+        setWorkstationsError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [authState, canLoadCloudWorkstations, config.workstationsEndpoint],
+  );
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshCloudWorkstations(controller.signal);
+    return () => controller.abort();
+  }, [refreshCloudWorkstations]);
+  const handleSetDefaultWorkstation = useCallback(
+    async (workstationId: string) => {
+      if (!config.workstationDefaultEndpoint) {
+        return;
+      }
+      setWorkstationMutation({
+        kind: "default",
+        message: null,
+        workstationId,
+      });
+      try {
+        const defaultWorkstationId = await setCloudDefaultWorkstation(
+          config.workstationDefaultEndpoint,
+          authState,
+          workstationId,
+        );
+        setWorkstationsState((previous) => ({
+          ...previous,
+          defaultWorkstationId: defaultWorkstationId ?? workstationId,
+        }));
+        setWorkstationsError(null);
+        await refreshCloudWorkstations();
+      } catch (error) {
+        setWorkstationsError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setWorkstationMutation({ kind: "idle", message: null, workstationId: null });
+      }
+    },
+    [authState, config.workstationDefaultEndpoint, refreshCloudWorkstations],
+  );
+  const handleAttachWorkstation = useCallback(
+    async (workstationId: string) => {
+      if (!config.workstationAttachEndpoint) {
+        return;
+      }
+      setWorkstationMutation({
+        kind: "attach",
+        message: "Attach requested. Waiting for the workstation to join this room.",
+        workstationId,
+      });
+      handleOpenWorkstationsRail();
+      try {
+        await requestCloudWorkstationAttachment(
+          config.workstationAttachEndpoint,
+          authState,
+          workstationId,
+        );
+        setWorkstationsError(null);
+        await refreshCloudWorkstations();
+      } catch (error) {
+        setWorkstationsError(error instanceof Error ? error.message : String(error));
+        setWorkstationMutation({ kind: "idle", message: null, workstationId: null });
+        await refreshCloudWorkstations();
+      }
+    },
+    [
+      authState,
+      config.workstationAttachEndpoint,
+      handleOpenWorkstationsRail,
+      refreshCloudWorkstations,
+    ],
+  );
   const canAcceptCellMutations =
     Boolean(connectionPeerId) &&
     !connectionError &&
@@ -1689,6 +1801,7 @@ function NotebookViewer({
   );
   const requestedEditAccess = roomEditAccess.requestedDocumentEditAccess;
   const editAccessPending = roomEditAccess.editAccessPending;
+  const canSubmitExecutionRequests = connectionScope === "owner";
   const shellCapabilities = useMemo(
     () =>
       cloudNotebookShellCapabilities({
@@ -1702,6 +1815,7 @@ function NotebookViewer({
         runtimeAvailable: runtimePeerAvailable,
         runtimePeerCount,
         workstationAttachment,
+        canSubmitExecutionRequests,
         hostCapabilities: config.hostCapabilities,
       }),
     [
@@ -1712,6 +1826,7 @@ function NotebookViewer({
       connectionActorLabel,
       connectionScope,
       editAccessRequestPending,
+      canSubmitExecutionRequests,
       runtimePeerCount,
       runtimePeerAvailable,
       selectedInteractionMode,
@@ -1731,7 +1846,43 @@ function NotebookViewer({
   const canChooseHostedWorkstation =
     shellCapabilities.access.source === "cloud" &&
     shellCapabilities.auth.canUseAuthenticatedIdentity &&
-    (shellCapabilities.access.level === "owner" || shellCapabilities.access.level === "editor");
+    shellCapabilities.access.level === "owner";
+  const workstationRefreshIntervalMs = cloudWorkstationRefreshIntervalMs({
+    canChooseHostedWorkstation,
+    hasRegisteredWorkstations: workstationsState.workstations.length > 0,
+    mutationKind: workstationMutation.kind,
+    panelIsOpen: activeRailPanel === "workstations" && !railCollapsed,
+  });
+  useEffect(() => {
+    if (workstationRefreshIntervalMs === null) {
+      return;
+    }
+    let disposed = false;
+    let timer: number | null = null;
+    let activeController: AbortController | null = null;
+    const scheduleRefresh = () => {
+      timer = window.setTimeout(() => {
+        const controller = new AbortController();
+        activeController = controller;
+        void refreshCloudWorkstations(controller.signal).finally(() => {
+          if (activeController === controller) {
+            activeController = null;
+          }
+          if (!disposed) {
+            scheduleRefresh();
+          }
+        });
+      }, workstationRefreshIntervalMs);
+    };
+    scheduleRefresh();
+    return () => {
+      disposed = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      activeController?.abort();
+    };
+  }, [refreshCloudWorkstations, workstationRefreshIntervalMs]);
   const workstationSelection = useMemo(
     () =>
       projectNotebookWorkstationSelection({
@@ -1739,9 +1890,10 @@ function NotebookViewer({
         canRegisterWorkstation: canChooseHostedWorkstation,
         canSelectWorkstation: canChooseHostedWorkstation,
         canSetDefaultWorkstation: canChooseHostedWorkstation,
-        registeredWorkstations: [],
+        defaultWorkstationId: workstationsState.defaultWorkstationId,
+        registeredWorkstations: workstationsState.workstations,
       }),
-    [canChooseHostedWorkstation, workstationAttachment],
+    [canChooseHostedWorkstation, workstationAttachment, workstationsState],
   );
   const workstationLaunchReadiness = useMemo(
     () =>
@@ -1752,15 +1904,35 @@ function NotebookViewer({
     [shellCapabilities, workstationSelection],
   );
   const workstationAction = useMemo(() => {
-    const { primaryAction } = workstationLaunchReadiness;
+    const { primaryAction, workstationId } = workstationLaunchReadiness;
     return primaryAction.kind !== "none" && primaryAction.label && primaryAction.title
       ? {
           label: primaryAction.label,
           title: primaryAction.title,
-          onClick: handleOpenWorkstationsRail,
+          onClick:
+            primaryAction.kind === "attach_workstation" && workstationId
+              ? () => handleAttachWorkstation(workstationId)
+              : handleOpenWorkstationsRail,
         }
       : null;
-  }, [handleOpenWorkstationsRail, workstationLaunchReadiness]);
+  }, [handleAttachWorkstation, handleOpenWorkstationsRail, workstationLaunchReadiness]);
+  const workstationPanelStatusMessage =
+    workstationMutation.message ??
+    workstationsError ??
+    (workstationLaunchReadiness.state === "workstation_unavailable"
+      ? workstationLaunchReadiness.detail
+      : null);
+  useEffect(() => {
+    if (workstationMutation.kind !== "attach" || !workstationAttachment?.workstation_id) {
+      return;
+    }
+    if (
+      !workstationMutation.workstationId ||
+      workstationMutation.workstationId === workstationAttachment.workstation_id
+    ) {
+      setWorkstationMutation({ kind: "idle", message: null, workstationId: null });
+    }
+  }, [workstationAttachment?.workstation_id, workstationMutation]);
   useEffect(() => {
     if (!requestedEditAccess) {
       appliedGrantedEditScopeRef.current = null;
@@ -2116,6 +2288,12 @@ function NotebookViewer({
         <NotebookWorkstationsPanel
           capabilities={shellCapabilities}
           selection={workstationSelection}
+          statusMessage={workstationPanelStatusMessage}
+          busyWorkstationId={workstationMutation.workstationId}
+          onAttachWorkstation={canChooseHostedWorkstation ? handleAttachWorkstation : undefined}
+          onSetDefaultWorkstation={
+            canChooseHostedWorkstation ? handleSetDefaultWorkstation : undefined
+          }
         />
       }
       packagesPanel={

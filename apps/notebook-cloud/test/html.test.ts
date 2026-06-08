@@ -98,6 +98,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /"invitesEndpoint":"\/api\/n\/demo\/invites"/);
     assert.match(html, /"accessRequestsEndpoint":"\/api\/n\/demo\/access-requests"/);
     assert.match(html, /"hostCapabilities":\{"canManageSharing":true\}/);
+    assert.doesNotMatch(html, /"canSubmitExecutionRequests":true/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
     assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);

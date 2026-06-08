@@ -53,10 +53,9 @@ export interface CloudNotebookShellCapabilityInput {
   workstationAttachment?: WorkstationAttachmentState | null;
   /**
    * Whether this browser connection may create execution intent in the hosted
-   * room. This is a capability, not an interaction mode: owners and editors can
-   * submit execution requests when compute is attached, while future
-   * execute-scope policy can replace this without changing the shared shell
-   * projection.
+   * room. This is a capability, not an interaction mode: owners can submit
+   * execution requests by default, and hosts may opt editors in when the room
+   * can safely materialize editor-authored execution request frames.
    */
   canSubmitExecutionRequests?: boolean;
   /**
@@ -65,6 +64,7 @@ export interface CloudNotebookShellCapabilityInput {
    */
   hostCapabilities?: {
     canManageSharing?: boolean;
+    canSubmitExecutionRequests?: boolean;
   };
 }
 
@@ -79,7 +79,7 @@ export function cloudNotebookShellCapabilities({
   runtimeAvailable = false,
   runtimePeerCount = runtimeAvailable ? 1 : 0,
   workstationAttachment = null,
-  canSubmitExecutionRequests = connectionScope === "owner" || connectionScope === "editor",
+  canSubmitExecutionRequests = connectionScope === "owner",
   hostCapabilities,
 }: CloudNotebookShellCapabilityInput): NotebookShellCapabilities {
   const interaction = projectCloudNotebookEditAccess({
@@ -97,7 +97,11 @@ export function cloudNotebookShellCapabilities({
   const identityImageUrl = cloudIdentityImageUrl(authState);
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
   const attachmentExecutionAvailable = workstationAttachmentCanExecute(workstationAttachment);
-  const effectiveRuntimeAvailable = runtimeAvailable || attachmentExecutionAvailable;
+  const hasAttachmentSnapshot = workstationAttachment !== null;
+  const effectiveRuntimeConnected = hasAttachmentSnapshot ? attachmentConnected : runtimeAvailable;
+  const effectiveRuntimeAvailable = hasAttachmentSnapshot
+    ? attachmentExecutionAvailable
+    : runtimeAvailable;
   const auth = {
     canSignIn: authState.mode !== "oidc",
     canUseAuthenticatedIdentity: authenticated && !authNeedsAttention,
@@ -112,7 +116,7 @@ export function cloudNotebookShellCapabilities({
   };
   const runtime = {
     canWriteRuntimeState: isRuntimePeer,
-    connected: isRuntimePeer || runtimeAvailable || attachmentConnected,
+    connected: isRuntimePeer || effectiveRuntimeConnected,
     executionAvailable: effectiveRuntimeAvailable,
     source: "cloud" as const,
     actorLabel: isRuntimePeer ? connectionActorLabel : null,

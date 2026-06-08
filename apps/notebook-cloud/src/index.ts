@@ -25,23 +25,37 @@ import {
   blobKey,
   commsDocSnapshotKey,
   createNotebookWithOwnerAcl,
+  createWorkstationAttachJob,
   ensureCatalogSchema,
+  getCanonicalPrincipalForTransport,
+  getDefaultWorkstationId,
   getNotebookAclRows,
   getNotebookRow,
   getNotebookCatalog,
   getPublicPublishedNotebookRow,
+  getWorkstationRow,
   grantNotebookAclRow,
+  listPendingWorkstationAttachJobs,
   listNotebooksForPrincipal,
+  listWorkstationsForPrincipal,
   recordBlob,
   recordRevision,
+  registerWorkstation,
   revokeNotebookAclRow,
   runtimeStateSnapshotKey,
   snapshotKey,
+  setDefaultWorkstation,
   updateNotebookTitle,
+  updateWorkstationAttachJobStatus,
   type ListedNotebookRow,
   type NotebookAclRow,
   type NotebookAccessRequestRow,
   type NotebookAccessRequestStatus,
+  type WorkstationAttachJobRow,
+  type WorkstationAttachJobStatus,
+  type WorkstationRegistrationInput,
+  type WorkstationRow,
+  type WorkstationStatus,
 } from "./storage.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
 import {
@@ -190,6 +204,32 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     handler: (_match, request, env) => routeListNotebooks(request, env),
   },
   {
+    match: exactPath("/api/workstations"),
+    methods: ["GET", "POST"],
+    handler: (_match, request, env) => routeWorkstations(request, env),
+  },
+  {
+    match: exactPath("/api/workstations/default"),
+    methods: ["PATCH"],
+    handler: (_match, request, env) => routeDefaultWorkstation(request, env),
+  },
+  {
+    match: routePath("/api/workstations/:workstationId/attach-jobs/:jobId", {
+      trailingSlash: "optional",
+    }),
+    methods: ["PATCH"],
+    handler: ({ params }, request, env) =>
+      routeWorkstationAttachJob(request, env, params.workstationId, params.jobId),
+  },
+  {
+    match: routePath("/api/workstations/:workstationId/attach-jobs", {
+      trailingSlash: "optional",
+    }),
+    methods: ["GET"],
+    handler: ({ params }, request, env) =>
+      routeWorkstationAttachJobs(request, env, params.workstationId),
+  },
+  {
     match: routePath("/api/n/:notebookId", { trailingSlash: "optional" }),
     methods: ["GET"],
     handler: ({ params }, request, env) => routeCatalog(request, env, params.notebookId),
@@ -217,6 +257,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     match: routePath("/api/n/:notebookId/access-requests", { trailingSlash: "optional" }),
     handler: ({ params }, request, env) =>
       routeNotebookAccessRequests(request, env, params.notebookId),
+  },
+  {
+    match: routePath("/api/n/:notebookId/workstation-attachments", { trailingSlash: "optional" }),
+    methods: ["POST"],
+    handler: ({ params }, request, env) =>
+      routeNotebookWorkstationAttachment(request, env, params.notebookId),
   },
   {
     match: routePath("/api/n/:notebookId/access-requests/:accessRequestId", {
@@ -713,6 +759,326 @@ function parseNotebookListLimit(request: Request): number | Response {
   return Math.min(limit, MAX_NOTEBOOK_LIST_LIMIT);
 }
 
+const WORKSTATION_HEARTBEAT_STALE_MS = 90_000;
+const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
+
+async function routeWorkstations(request: Request, env: Env): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to manage workstations" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+
+  if (request.method === "GET") {
+    const [workstations, defaultWorkstationId] = await Promise.all([
+      listWorkstationsForPrincipal(env, ownerPrincipal),
+      getDefaultWorkstationId(env, ownerPrincipal),
+    ]);
+    return json({
+      ok: true,
+      default_workstation_id: defaultWorkstationId,
+      workstations: workstations.map((workstation) =>
+        workstationResponseRow(workstation, {
+          defaultWorkstationId,
+          now: Date.now(),
+        }),
+      ),
+    });
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const payload = await readRequiredJsonObject(request, "workstation registration body");
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const registration = parseWorkstationRegistrationPayload(payload);
+  if (registration instanceof Response) {
+    return registration;
+  }
+
+  const workstation = await registerWorkstation(env, ownerPrincipal, registration);
+  if (!workstation) {
+    return json({ error: "workstation was not registered" }, 500);
+  }
+  cloudLog("info", "workstation.registered", {
+    principal: ownerPrincipal,
+    workstation_id: workstation.workstation_id,
+    provider: workstation.provider,
+    counter: "workstation_registrations",
+    counter_delta: 1,
+  });
+  return json(
+    {
+      ok: true,
+      workstation: workstationResponseRow(workstation, {
+        defaultWorkstationId: await getDefaultWorkstationId(env, ownerPrincipal),
+        now: Date.now(),
+      }),
+    },
+    201,
+  );
+}
+
+async function routeDefaultWorkstation(request: Request, env: Env): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to select a default workstation" }, 401);
+  }
+
+  const payload = await readRequiredJsonObject(request, "default workstation body");
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const workstationId = boundedStringField(
+    payload.workstation_id ?? payload.workstationId,
+    "workstation_id",
+    128,
+  );
+  if (workstationId instanceof Response) {
+    return workstationId;
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const selected = await setDefaultWorkstation(env, ownerPrincipal, workstationId);
+  if (!selected) {
+    return json({ error: "workstation not found" }, 404);
+  }
+
+  return json({
+    ok: true,
+    default_workstation_id: selected,
+  });
+}
+
+async function routeNotebookWorkstationAttachment(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  const payload = await readOptionalJsonObject(request, "workstation attachment body");
+  if (payload instanceof Response) {
+    return payload;
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const explicitWorkstationId = optionalBoundedStringField(
+    payload?.workstation_id ?? payload?.workstationId,
+    "workstation_id",
+    128,
+  );
+  if (explicitWorkstationId instanceof Response) {
+    return explicitWorkstationId;
+  }
+  const workstationId =
+    explicitWorkstationId ?? (await getDefaultWorkstationId(env, ownerPrincipal));
+  if (!workstationId) {
+    return json({ error: "choose a default workstation before attaching compute" }, 409);
+  }
+
+  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  if (!workstation) {
+    return json({ error: "workstation not found" }, 404);
+  }
+
+  const projectedStatus = workstationStatusForResponse(workstation, Date.now());
+  if (projectedStatus !== "online") {
+    return json(
+      {
+        error: "workstation is not online",
+        workstation: workstationResponseRow(workstation, {
+          defaultWorkstationId: workstationId,
+          now: Date.now(),
+        }),
+      },
+      409,
+    );
+  }
+
+  await grantNotebookAclRow(env, {
+    notebookId,
+    subjectKind: "principal",
+    subject: ownerPrincipal,
+    scope: "runtime_peer",
+    actorLabel: identity.actorLabel,
+  });
+  const job = await createWorkstationAttachJob(env, {
+    notebookId,
+    ownerPrincipal,
+    workstationId,
+    actorLabel: identity.actorLabel,
+  });
+  if (!job) {
+    return json({ error: "workstation attach job was not created" }, 500);
+  }
+
+  cloudLog("info", "workstation.attach.requested", {
+    notebook_id: notebookId,
+    principal: ownerPrincipal,
+    workstation_id: workstationId,
+    job_id: job.id,
+    counter: "workstation_attach_requests",
+    counter_delta: 1,
+  });
+  return json(
+    {
+      ok: true,
+      job: workstationAttachJobResponseRow(request, job),
+      workstation: workstationResponseRow(workstation, {
+        defaultWorkstationId: workstationId,
+        now: Date.now(),
+      }),
+    },
+    202,
+  );
+}
+
+async function routeWorkstationAttachJobs(
+  request: Request,
+  env: Env,
+  workstationId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to poll workstation jobs" }, 401);
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  if (!workstation) {
+    return json({ error: "workstation not found" }, 404);
+  }
+
+  const limit = parseWorkstationAttachJobsLimit(request);
+  if (limit instanceof Response) {
+    return limit;
+  }
+  const jobs = await listPendingWorkstationAttachJobs(env, ownerPrincipal, workstationId, limit);
+  return json({
+    ok: true,
+    workstation: workstationResponseRow(workstation, {
+      defaultWorkstationId: await getDefaultWorkstationId(env, ownerPrincipal),
+      now: Date.now(),
+    }),
+    jobs: jobs.map((job) => workstationAttachJobResponseRow(request, job)),
+  });
+}
+
+async function routeWorkstationAttachJob(
+  request: Request,
+  env: Env,
+  workstationId: string,
+  jobId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const identity = await authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (isAnonymousViewer(identity)) {
+    return json({ error: "sign in to update workstation jobs" }, 401);
+  }
+
+  const payload = await readRequiredJsonObject(request, "workstation attach job body");
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const statusValue = boundedStringField(payload.status, "status", 24);
+  if (statusValue instanceof Response) {
+    return statusValue;
+  }
+  if (!isWorkstationAttachJobStatus(statusValue) || statusValue === "pending") {
+    return json(
+      {
+        error: "status must be accepted, running, failed, completed, or cancelled",
+      },
+      400,
+    );
+  }
+  const errorMessageValue = optionalBoundedStringField(
+    payload.error_message ?? payload.errorMessage,
+    "error_message",
+    512,
+  );
+  if (errorMessageValue instanceof Response) {
+    return errorMessageValue;
+  }
+
+  const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
+  const job = await updateWorkstationAttachJobStatus(env, {
+    ownerPrincipal,
+    workstationId,
+    jobId,
+    status: statusValue,
+    errorMessage: errorMessageValue,
+  });
+  if (!job) {
+    return json({ error: "workstation attach job not found" }, 404);
+  }
+  return json({
+    ok: true,
+    job: workstationAttachJobResponseRow(request, job),
+  });
+}
+
 async function readCreateNotebookPayload(
   request: Request,
 ): Promise<CreateNotebookPayload | Response> {
@@ -755,6 +1121,272 @@ function optionalPayloadString(
     return json({ error: `${options.field} is too long` }, 400);
   }
   return value;
+}
+
+async function canonicalPrincipalForIdentity(
+  env: Env,
+  identity: AuthenticatedConnection,
+): Promise<string> {
+  return (await getCanonicalPrincipalForTransport(env, identity.principal)) ?? identity.principal;
+}
+
+async function readRequiredJsonObject(
+  request: Request,
+  bodyName: string,
+): Promise<Record<string, unknown> | Response> {
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: `${bodyName} must be JSON` }, 400);
+  }
+  if (!isRecord(payload)) {
+    return json({ error: `${bodyName} must be a JSON object` }, 400);
+  }
+  return payload;
+}
+
+async function readOptionalJsonObject(
+  request: Request,
+  bodyName: string,
+): Promise<Record<string, unknown> | null | Response> {
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+  return readRequiredJsonObject(request, bodyName);
+}
+
+function parseWorkstationRegistrationPayload(
+  payload: Record<string, unknown>,
+): WorkstationRegistrationInput | Response {
+  const workstationId = boundedStringField(
+    payload.workstation_id ?? payload.workstationId,
+    "workstation_id",
+    128,
+  );
+  if (workstationId instanceof Response) {
+    return workstationId;
+  }
+  const displayName =
+    optionalBoundedStringField(payload.display_name ?? payload.displayName, "display_name", 160) ??
+    workstationId;
+  if (displayName instanceof Response) {
+    return displayName;
+  }
+  const provider = optionalBoundedStringField(payload.provider, "provider", 80);
+  if (provider instanceof Response) {
+    return provider;
+  }
+  const providerLabel = optionalBoundedStringField(
+    payload.provider_label ?? payload.providerLabel,
+    "provider_label",
+    120,
+  );
+  if (providerLabel instanceof Response) {
+    return providerLabel;
+  }
+  const statusMessage = optionalBoundedStringField(
+    payload.status_message ?? payload.statusMessage,
+    "status_message",
+    240,
+  );
+  if (statusMessage instanceof Response) {
+    return statusMessage;
+  }
+  const defaultEnvironmentLabel = optionalBoundedStringField(
+    payload.default_environment_label ?? payload.defaultEnvironmentLabel,
+    "default_environment_label",
+    160,
+  );
+  if (defaultEnvironmentLabel instanceof Response) {
+    return defaultEnvironmentLabel;
+  }
+  const environmentPolicy = optionalBoundedStringField(
+    payload.environment_policy ?? payload.environmentPolicy,
+    "environment_policy",
+    80,
+  );
+  if (environmentPolicy instanceof Response) {
+    return environmentPolicy;
+  }
+  const workingDirectory = optionalBoundedStringField(
+    payload.working_directory ?? payload.workingDirectory,
+    "working_directory",
+    512,
+  );
+  if (workingDirectory instanceof Response) {
+    return workingDirectory;
+  }
+  const cpuCount = optionalPositiveIntegerField(payload.cpu_count ?? payload.cpuCount, "cpu_count");
+  if (cpuCount instanceof Response) {
+    return cpuCount;
+  }
+  const memoryBytes = optionalPositiveIntegerField(
+    payload.memory_bytes ?? payload.memoryBytes,
+    "memory_bytes",
+  );
+  if (memoryBytes instanceof Response) {
+    return memoryBytes;
+  }
+  const environmentsJson = normalizeWorkstationEnvironmentsJson(payload.environments);
+  if (environmentsJson instanceof Response) {
+    return environmentsJson;
+  }
+
+  return {
+    workstationId,
+    displayName,
+    provider,
+    providerLabel,
+    statusMessage,
+    defaultEnvironmentLabel,
+    environmentPolicy,
+    workingDirectory,
+    cpuCount,
+    memoryBytes,
+    environmentsJson,
+  };
+}
+
+function normalizeWorkstationEnvironmentsJson(value: unknown): string | null | Response {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!Array.isArray(value)) {
+    return json({ error: "environments must be an array" }, 400);
+  }
+  const normalized: Array<Record<string, unknown>> = [];
+  for (const rawEnvironment of value.slice(0, 16)) {
+    if (!isRecord(rawEnvironment)) {
+      return json({ error: "environments must contain JSON objects" }, 400);
+    }
+    const id = boundedStringField(rawEnvironment.id, "environment.id", 128);
+    if (id instanceof Response) {
+      return id;
+    }
+    const label = boundedStringField(rawEnvironment.label, "environment.label", 160);
+    if (label instanceof Response) {
+      return label;
+    }
+    const detail = optionalBoundedStringField(rawEnvironment.detail, "environment.detail", 240);
+    if (detail instanceof Response) {
+      return detail;
+    }
+    const health = optionalBoundedStringField(rawEnvironment.health, "environment.health", 240);
+    if (health instanceof Response) {
+      return health;
+    }
+    const policy = optionalBoundedStringField(rawEnvironment.policy, "environment.policy", 80);
+    if (policy instanceof Response) {
+      return policy;
+    }
+    normalized.push({
+      id,
+      label,
+      available: rawEnvironment.available === false ? false : true,
+      is_default: rawEnvironment.is_default === true || rawEnvironment.isDefault === true,
+      detail,
+      health,
+      policy,
+    });
+  }
+  return JSON.stringify(normalized);
+}
+
+function workstationResponseRow(
+  workstation: WorkstationRow,
+  options: { defaultWorkstationId: string | null; now: number },
+): Record<string, unknown> {
+  const status = workstationStatusForResponse(workstation, options.now);
+  return {
+    workstation_id: workstation.workstation_id,
+    display_name: workstation.display_name,
+    provider: workstation.provider,
+    provider_label: workstation.provider_label,
+    status,
+    status_message:
+      status === "offline" && workstation.status === "online"
+        ? "No heartbeat from this workstation recently."
+        : workstation.status_message,
+    default_environment_label: workstation.default_environment_label,
+    environment_policy: workstation.environment_policy,
+    working_directory: workstation.working_directory,
+    cpu_count: workstation.cpu_count,
+    memory_bytes: workstation.memory_bytes,
+    environments: parseStoredWorkstationEnvironments(workstation.environments_json),
+    created_at: workstation.created_at,
+    updated_at: workstation.updated_at,
+    last_seen_at: workstation.last_seen_at,
+    is_default: options.defaultWorkstationId === workstation.workstation_id,
+  };
+}
+
+function workstationStatusForResponse(workstation: WorkstationRow, now: number): WorkstationStatus {
+  if (workstation.status === "online" && workstation.last_seen_at) {
+    const lastSeen = Date.parse(workstation.last_seen_at);
+    if (Number.isFinite(lastSeen) && now - lastSeen > WORKSTATION_HEARTBEAT_STALE_MS) {
+      return "offline";
+    }
+  }
+  return workstation.status;
+}
+
+function parseStoredWorkstationEnvironments(value: string | null): unknown[] {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function workstationAttachJobResponseRow(
+  request: Request,
+  job: WorkstationAttachJobRow,
+): Record<string, unknown> {
+  return {
+    job_id: job.id,
+    notebook_id: job.notebook_id,
+    workstation_id: job.workstation_id,
+    status: job.status,
+    requested_at: job.requested_at,
+    updated_at: job.updated_at,
+    accepted_at: job.accepted_at,
+    finished_at: job.finished_at,
+    error_message: job.error_message,
+    runtime_peer: {
+      cloud_url: new URL(request.url).origin,
+      notebook_id: job.notebook_id,
+      scope: "runtime_peer",
+    },
+  };
+}
+
+function parseWorkstationAttachJobsLimit(request: Request): number | Response {
+  const value = new URL(request.url).searchParams.get("limit");
+  if (value === null || value.trim() === "") {
+    return 10;
+  }
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1) {
+    return json({ error: "limit must be a positive integer" }, 400);
+  }
+  return Math.min(limit, MAX_WORKSTATION_ATTACH_JOBS_LIMIT);
+}
+
+function isWorkstationAttachJobStatus(value: string): value is WorkstationAttachJobStatus {
+  return (
+    value === "pending" ||
+    value === "accepted" ||
+    value === "running" ||
+    value === "failed" ||
+    value === "completed" ||
+    value === "cancelled"
+  );
 }
 
 async function createUniqueNotebookId(env: Env): Promise<string | null> {
@@ -2285,6 +2917,46 @@ function optionalStringField(value: unknown, fieldName: string): string | null |
   return trimmed ? trimmed : null;
 }
 
+function boundedStringField(
+  value: unknown,
+  fieldName: string,
+  maxLength: number,
+): string | Response {
+  const text = stringField(value, fieldName);
+  if (text instanceof Response) {
+    return text;
+  }
+  if (text.length > maxLength) {
+    return json({ error: `${fieldName} is too long` }, 400);
+  }
+  return text;
+}
+
+function optionalBoundedStringField(
+  value: unknown,
+  fieldName: string,
+  maxLength: number,
+): string | null | Response {
+  const text = optionalStringField(value, fieldName);
+  if (text instanceof Response || text === null) {
+    return text;
+  }
+  if (text.length > maxLength) {
+    return json({ error: `${fieldName} is too long` }, 400);
+  }
+  return text;
+}
+
+function optionalPositiveIntegerField(value: unknown, fieldName: string): number | null | Response {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return json({ error: `${fieldName} must be a positive integer` }, 400);
+  }
+  return value;
+}
+
 function isOwnerAclInput(row: ParsedNotebookAclInput): boolean {
   return row.subject_kind === "principal" && row.scope === "owner";
 }
@@ -2568,6 +3240,9 @@ async function viewer(
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,
     accessRequestsEndpoint: `${notebookApiBasePath}/access-requests`,
+    workstationsEndpoint: "/api/workstations",
+    workstationDefaultEndpoint: "/api/workstations/default",
+    workstationAttachEndpoint: `${notebookApiBasePath}/workstation-attachments`,
     hostCapabilities: {
       canManageSharing: true,
     },
@@ -2586,6 +3261,9 @@ interface ViewerShellConfig extends Record<string, unknown> {
   rendererAssetsBasePath?: string;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;
+  workstationAttachEndpoint?: string;
+  workstationDefaultEndpoint?: string;
+  workstationsEndpoint?: string;
 }
 
 function homeViewer(request: Request, env: Env): Response {

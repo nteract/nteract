@@ -1138,6 +1138,410 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { error: "sign in to list notebooks" });
   });
 
+  it("registers and lists user-owned workstations", async () => {
+    const env = fakeEnv();
+
+    const register = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "ws-lab2",
+          display_name: "Lab2",
+          provider: "runtime_peer",
+          default_environment_label: "Current Python",
+          environment_policy: "current_python",
+          working_directory: "/home/ubuntu/project",
+          cpu_count: 8,
+          memory_bytes: 16_000_000_000,
+          environments: [
+            {
+              id: "current-python",
+              label: "Current Python",
+              policy: "current_python",
+              is_default: true,
+            },
+          ],
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(register.status, 201);
+    const registered = (await register.json()) as {
+      workstation: Record<string, unknown>;
+    };
+    assert.equal(registered.workstation.workstation_id, "ws-lab2");
+    assert.equal(registered.workstation.status, "online");
+    assert.doesNotMatch(JSON.stringify(registered), /secret|token/i);
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: {
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as {
+      default_workstation_id: string | null;
+      workstations: Array<Record<string, unknown>>;
+    };
+    assert.equal(body.default_workstation_id, null);
+    assert.equal(body.workstations.length, 1);
+    assert.equal(body.workstations[0]?.display_name, "Lab2");
+    assert.equal(body.workstations[0]?.is_default, false);
+  });
+
+  it("lets users select a default workstation", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/default", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      default_workstation_id: "ws-lab2",
+    });
+    assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), "ws-lab2");
+  });
+
+  it("does not let users select another principal's workstation as their default", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/default", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "workstation not found" });
+    assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), undefined);
+  });
+
+  it("creates workstation attach jobs through notebook owner authority", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    env.DB.workstationDefaults.set("user:dev:alice", "ws-lab2");
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({}),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 202);
+    const body = (await attach.json()) as {
+      job: { job_id: string; notebook_id: string; status: string };
+    };
+    assert.equal(body.job.notebook_id, "attach-demo");
+    assert.equal(body.job.status, "pending");
+    assert.equal(env.DB.workstationAttachJobs.get(body.job.job_id)?.workstation_id, "ws-lab2");
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      true,
+    );
+
+    const poll = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(poll.status, 200);
+    const polled = (await poll.json()) as { jobs: Array<{ job_id: string }> };
+    assert.deepEqual(
+      polled.jobs.map((job) => job.job_id),
+      [body.job.job_id],
+    );
+  });
+
+  it("does not attach another principal's workstation to an owned notebook", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 404);
+    assert.deepEqual(await attach.json(), { error: "workstation not found" });
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+  });
+
+  it("does not create attach jobs or runtime peer grants for offline workstations", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, {
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+      status: "offline",
+    });
+
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-lab2" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(attach.status, 409);
+    const body = (await attach.json()) as {
+      error?: string;
+      workstation?: { workstation_id?: string; status?: string };
+    };
+    assert.equal(body.error, "workstation is not online");
+    assert.equal(body.workstation?.workstation_id, "ws-lab2");
+    assert.equal(body.workstation?.status, "offline");
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "attach-demo" &&
+          row.subject === "user:dev:alice" &&
+          row.scope === "runtime_peer",
+      ),
+      false,
+    );
+  });
+
+  it("reuses the active workstation attach job for repeated owner requests", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "attach-demo");
+    seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+
+    async function attach() {
+      return worker.fetch(
+        new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Operator": "browser:tab",
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+          body: JSON.stringify({ workstation_id: "ws-lab2" }),
+        }),
+        env,
+        fakeContext(),
+      );
+    }
+
+    const first = await attach();
+    const second = await attach();
+
+    assert.equal(first.status, 202);
+    assert.equal(second.status, 202);
+    const firstBody = (await first.json()) as { job: { job_id: string } };
+    const secondBody = (await second.json()) as { job: { job_id: string } };
+    assert.equal(secondBody.job.job_id, firstBody.job.job_id);
+    assert.equal(env.DB.workstationAttachJobs.size, 1);
+  });
+
+  it("only lists attach jobs for the authenticated workstation owner", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-alice",
+      notebookId: "nb-alice",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+    });
+    seedWorkstationAttachJob(env, {
+      id: "job-bob",
+      notebookId: "nb-bob",
+      ownerPrincipal: "user:dev:bob",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs", {
+        headers: {
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { jobs: Array<{ job_id: string }> };
+    assert.deepEqual(
+      body.jobs.map((job) => job.job_id),
+      ["job-alice"],
+    );
+  });
+
+  it("allows workstation owners to update attach job status", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-1",
+      notebookId: "nb-1",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-1", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "running" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { job: { job_id: string; status: string } };
+    assert.deepEqual(body.job, {
+      job_id: "job-1",
+      notebook_id: "nb-1",
+      workstation_id: "ws-lab2",
+      status: "running",
+      requested_at: "2026-05-22T00:00:00.000Z",
+      updated_at: env.DB.workstationAttachJobs.get("job-1")?.updated_at,
+      accepted_at: env.DB.workstationAttachJobs.get("job-1")?.accepted_at,
+      finished_at: null,
+      error_message: null,
+      runtime_peer: {
+        cloud_url: "http://localhost",
+        notebook_id: "nb-1",
+        scope: "runtime_peer",
+      },
+    });
+    assert.equal(env.DB.workstationAttachJobs.get("job-1")?.status, "running");
+    assert.ok(env.DB.workstationAttachJobs.get("job-1")?.accepted_at);
+  });
+
+  it("does not let workstation owners update another principal's attach job", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:bob", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-bob",
+      notebookId: "nb-bob",
+      ownerPrincipal: "user:dev:bob",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-bob", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "running" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "workstation attach job not found" });
+    assert.equal(env.DB.workstationAttachJobs.get("job-bob")?.status, "pending");
+  });
+
   it("lists notebooks through canonical Anaconda account ACLs", async (t) => {
     const token = anacondaApiKeyToken({ jti: "list-notebooks-canonical-account" });
     const env = fakeEnv(anacondaApiKeyEnv());
@@ -3429,6 +3833,59 @@ function seedAcl(
   });
 }
 
+function seedWorkstation(
+  env: FakeEnv,
+  input: {
+    ownerPrincipal: string;
+    workstationId: string;
+    status?: WorkstationRow["status"];
+  },
+): void {
+  env.DB.workstations.set(workstationKey(input.ownerPrincipal, input.workstationId), {
+    owner_principal: input.ownerPrincipal,
+    workstation_id: input.workstationId,
+    display_name: "Lab2",
+    provider: "runtime_peer",
+    provider_label: null,
+    status: input.status ?? "online",
+    status_message: null,
+    default_environment_label: "Current Python",
+    environment_policy: "current_python",
+    working_directory: "/home/ubuntu/project",
+    cpu_count: 8,
+    memory_bytes: 16_000_000_000,
+    environments_json: null,
+    created_at: "2026-05-22T00:00:00.000Z",
+    updated_at: "2026-05-22T00:00:00.000Z",
+    last_seen_at: new Date().toISOString(),
+  });
+}
+
+function seedWorkstationAttachJob(
+  env: FakeEnv,
+  input: {
+    id: string;
+    notebookId: string;
+    ownerPrincipal: string;
+    workstationId: string;
+    status?: WorkstationAttachJobRow["status"];
+  },
+): void {
+  env.DB.workstationAttachJobs.set(input.id, {
+    id: input.id,
+    notebook_id: input.notebookId,
+    owner_principal: input.ownerPrincipal,
+    workstation_id: input.workstationId,
+    status: input.status ?? "pending",
+    requested_by_actor_label: "user:dev:alice/browser:tab",
+    requested_at: "2026-05-22T00:00:00.000Z",
+    updated_at: "2026-05-22T00:00:00.000Z",
+    accepted_at: null,
+    finished_at: null,
+    error_message: null,
+  });
+}
+
 function seedPendingInvite(
   env: FakeEnv,
   input: {
@@ -3674,6 +4131,39 @@ interface RevisionRow {
   created_at: string;
 }
 
+interface WorkstationRow {
+  owner_principal: string;
+  workstation_id: string;
+  display_name: string;
+  provider: string;
+  provider_label: string | null;
+  status: "online" | "offline" | "connecting" | "attention" | "unknown";
+  status_message: string | null;
+  default_environment_label: string | null;
+  environment_policy: string | null;
+  working_directory: string | null;
+  cpu_count: number | null;
+  memory_bytes: number | null;
+  environments_json: string | null;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string | null;
+}
+
+interface WorkstationAttachJobRow {
+  id: string;
+  notebook_id: string;
+  owner_principal: string;
+  workstation_id: string;
+  status: "pending" | "accepted" | "running" | "failed" | "completed" | "cancelled";
+  requested_by_actor_label: string;
+  requested_at: string;
+  updated_at: string;
+  accepted_at: string | null;
+  finished_at: string | null;
+  error_message: string | null;
+}
+
 class FakeD1 implements D1Database {
   readonly notebooks = new Map<string, NotebookRow>();
   readonly revisions: RevisionRow[] = [];
@@ -3683,6 +4173,9 @@ class FakeD1 implements D1Database {
   readonly accountLinks = new Map<string, PrincipalAccountLinkRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly accessRequests = new Map<string, NotebookAccessRequestRow>();
+  readonly workstations = new Map<string, WorkstationRow>();
+  readonly workstationDefaults = new Map<string, string>();
+  readonly workstationAttachJobs = new Map<string, WorkstationAttachJobRow>();
   readonly batchSizes: number[] = [];
   afterBlockedOwnerDelete?: () => void;
 
@@ -4052,6 +4545,127 @@ class FakeD1Statement implements D1PreparedStatement {
         return okResult(undefined, { changes: 1 });
       }
       return okResult(undefined, { changes: 0 });
+    } else if (this.query.includes("INSERT INTO workstations")) {
+      const [
+        ownerPrincipal,
+        workstationId,
+        displayName,
+        provider,
+        providerLabel,
+        statusMessage,
+        defaultEnvironmentLabel,
+        environmentPolicy,
+        workingDirectory,
+        cpuCount,
+        memoryBytes,
+        environmentsJson,
+        createdAt,
+        updatedAt,
+        lastSeenAt,
+      ] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        number | null,
+        number | null,
+        string | null,
+        string,
+        string,
+        string,
+      ];
+      const key = workstationKey(ownerPrincipal, workstationId);
+      const existing = this.db.workstations.get(key);
+      this.db.workstations.set(key, {
+        owner_principal: ownerPrincipal,
+        workstation_id: workstationId,
+        display_name: displayName,
+        provider,
+        provider_label: providerLabel,
+        status: "online",
+        status_message: statusMessage,
+        default_environment_label: defaultEnvironmentLabel,
+        environment_policy: environmentPolicy,
+        working_directory: workingDirectory,
+        cpu_count: cpuCount,
+        memory_bytes: memoryBytes,
+        environments_json: environmentsJson,
+        created_at: existing?.created_at ?? createdAt,
+        updated_at: updatedAt,
+        last_seen_at: lastSeenAt,
+      });
+      return okResult(undefined, { changes: existing ? 0 : 1 });
+    } else if (this.query.includes("INSERT INTO workstation_defaults")) {
+      const [ownerPrincipal, workstationId] = this.values as [string, string, string];
+      this.db.workstationDefaults.set(ownerPrincipal, workstationId);
+      return okResult(undefined, { changes: 1 });
+    } else if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
+      const [id, notebookId, ownerPrincipal, workstationId, actorLabel, requestedAt, updatedAt] =
+        this.values as [string, string, string, string, string, string, string];
+      this.db.workstationAttachJobs.set(id, {
+        id,
+        notebook_id: notebookId,
+        owner_principal: ownerPrincipal,
+        workstation_id: workstationId,
+        status: "pending",
+        requested_by_actor_label: actorLabel,
+        requested_at: requestedAt,
+        updated_at: updatedAt,
+        accepted_at: null,
+        finished_at: null,
+        error_message: null,
+      });
+      return okResult(undefined, { changes: 1 });
+    } else if (this.query.includes("UPDATE workstation_attach_jobs")) {
+      const [
+        status,
+        updatedAt,
+        statusForAcceptedAt,
+        acceptedAt,
+        statusForFinishedAt,
+        finishedAt,
+        errorMessage,
+        jobId,
+        ownerPrincipal,
+        workstationId,
+      ] = this.values as [
+        WorkstationAttachJobRow["status"],
+        string,
+        WorkstationAttachJobRow["status"],
+        string,
+        WorkstationAttachJobRow["status"],
+        string,
+        string | null,
+        string,
+        string,
+        string,
+      ];
+      const job = this.db.workstationAttachJobs.get(jobId);
+      if (job && job.owner_principal === ownerPrincipal && job.workstation_id === workstationId) {
+        job.status = status;
+        job.updated_at = updatedAt;
+        if (
+          (statusForAcceptedAt === "accepted" || statusForAcceptedAt === "running") &&
+          job.accepted_at === null
+        ) {
+          job.accepted_at = acceptedAt;
+        }
+        if (
+          statusForFinishedAt === "failed" ||
+          statusForFinishedAt === "completed" ||
+          statusForFinishedAt === "cancelled"
+        ) {
+          job.finished_at = finishedAt;
+        }
+        job.error_message = errorMessage;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebooks")) {
       const [id, ownerPrincipal, maybeTitleOrCreatedAt, createdAtOrUpdatedAt, maybeUpdatedAt] = this
         .values as [string, string, string | null, string | undefined, string | undefined];
@@ -4303,6 +4917,42 @@ class FakeD1Statement implements D1PreparedStatement {
       }
       return (this.db.accountLinks.get(this.values[0] as string) as T | undefined) ?? null;
     }
+    if (this.query.includes("FROM workstations")) {
+      const [ownerPrincipal, workstationId] = this.values as [string, string];
+      return (
+        (this.db.workstations.get(workstationKey(ownerPrincipal, workstationId)) as
+          | T
+          | undefined) ?? null
+      );
+    }
+    if (this.query.includes("FROM workstation_defaults")) {
+      const ownerPrincipal = this.values[0] as string;
+      const workstationId = this.db.workstationDefaults.get(ownerPrincipal);
+      return workstationId ? ({ workstation_id: workstationId } as T) : null;
+    }
+    if (this.query.includes("FROM workstation_attach_jobs")) {
+      if (this.query.includes("notebook_id = ?")) {
+        const [notebookId, ownerPrincipal, workstationId] = this.values as [string, string, string];
+        return (
+          ([...this.db.workstationAttachJobs.values()]
+            .filter(
+              (job) =>
+                job.notebook_id === notebookId &&
+                job.owner_principal === ownerPrincipal &&
+                job.workstation_id === workstationId &&
+                (job.status === "pending" || job.status === "accepted" || job.status === "running"),
+            )
+            .sort((left, right) => right.requested_at.localeCompare(left.requested_at))[0] as
+            | T
+            | undefined) ?? null
+        );
+      }
+      const [jobId, ownerPrincipal, workstationId] = this.values as [string, string, string];
+      const job = this.db.workstationAttachJobs.get(jobId);
+      return job?.owner_principal === ownerPrincipal && job.workstation_id === workstationId
+        ? (job as T)
+        : null;
+    }
     if (this.query.includes("FROM notebook_invites")) {
       if (this.query.includes("WHERE notebook_id = ?")) {
         const [notebookId, email, scope, providerHint] = this.values as [
@@ -4396,6 +5046,34 @@ class FakeD1Statement implements D1PreparedStatement {
             (left, right) =>
               right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
           )
+          .slice(0, limit) as T[],
+      );
+    }
+    if (this.query.includes("FROM workstations")) {
+      const ownerPrincipal = this.values[0] as string;
+      return okResult(
+        [...this.db.workstations.values()]
+          .filter((workstation) => workstation.owner_principal === ownerPrincipal)
+          .sort(
+            (left, right) =>
+              (right.last_seen_at ?? right.updated_at).localeCompare(
+                left.last_seen_at ?? left.updated_at,
+              ) || right.workstation_id.localeCompare(left.workstation_id),
+          ) as T[],
+      );
+    }
+    if (this.query.includes("FROM workstation_attach_jobs")) {
+      const [ownerPrincipal, workstationId, limitValue] = this.values as [string, string, number];
+      const limit = Number.isFinite(limitValue) ? limitValue : Number.POSITIVE_INFINITY;
+      return okResult(
+        [...this.db.workstationAttachJobs.values()]
+          .filter(
+            (job) =>
+              job.owner_principal === ownerPrincipal &&
+              job.workstation_id === workstationId &&
+              job.status === "pending",
+          )
+          .sort((left, right) => left.requested_at.localeCompare(right.requested_at))
           .slice(0, limit) as T[],
       );
     }
@@ -4511,6 +5189,10 @@ function scopeRank(scope: NotebookAclRow["scope"]): number {
     case "viewer":
       return 1;
   }
+}
+
+function workstationKey(ownerPrincipal: string, workstationId: string): string {
+  return `${ownerPrincipal}\0${workstationId}`;
 }
 
 interface BlobRow {

@@ -178,6 +178,13 @@ enum Commands {
         /// Defaults to the process current directory.
         #[arg(long, alias = "cwd")]
         working_dir: Option<PathBuf>,
+        /// Stable workstation id to present to the hosted room. Non-secret.
+        #[arg(long)]
+        workstation_id: Option<String>,
+        /// Human-readable workstation name to present to the hosted room.
+        /// Non-secret.
+        #[arg(long)]
+        workstation_display_name: Option<String>,
     },
 
     /// Warm a pool environment (internal, spawned by daemon warming loops).
@@ -473,6 +480,8 @@ async fn main() -> anyhow::Result<()> {
             python_path,
             notebook_path,
             working_dir,
+            workstation_id,
+            workstation_display_name,
         }) => {
             let cli_args = runtimed::workstation::CloudAgentArgs {
                 cloud_url,
@@ -480,13 +489,28 @@ async fn main() -> anyhow::Result<()> {
                 scope,
                 auth_kind,
             };
-            let config =
+            let mut config =
                 runtimed::workstation::build_cloud_config(&cli_args, |k| std::env::var(k).ok())
                     .map_err(|e| {
                         eprintln!("[cloud-runtime-agent] Config error: {}", e);
                         e
                     })?;
             let resolved_working_dir = working_dir.or_else(|| std::env::current_dir().ok());
+            if python_path.is_none()
+                && (workstation_id.is_some()
+                    || workstation_display_name.is_some()
+                    || resolved_working_dir.is_some())
+            {
+                config.workstation = Some(notebook_cloud_transport::CloudWorkstationMetadata {
+                    workstation_id: workstation_id.clone(),
+                    display_name: workstation_display_name.clone(),
+                    default_environment_label: None,
+                    environment_policy: None,
+                    working_directory: resolved_working_dir
+                        .as_deref()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                });
+            }
             let result = match python_path {
                 // Launch-on-attach: allocate and *start* a current_python runtime.
                 Some(python_path) => {
@@ -495,16 +519,18 @@ async fn main() -> anyhow::Result<()> {
                             notebook_path.as_deref(),
                             resolved_working_dir.as_deref(),
                         );
+                    let mut workstation_metadata =
+                        runtimed::workstation::current_python_workstation_metadata(
+                            launch_working_dir.as_deref(),
+                        );
+                    workstation_metadata.workstation_id = workstation_id;
+                    workstation_metadata.display_name = workstation_display_name;
                     let target = runtimed::workstation::RoomTarget {
                         cloud_url: config.cloud_url.clone(),
                         notebook_id: config.notebook_id.clone(),
                         scope: config.scope.clone(),
                         operator,
-                        workstation: Some(
-                            runtimed::workstation::current_python_workstation_metadata(
-                                launch_working_dir.as_deref(),
-                            ),
-                        ),
+                        workstation: Some(workstation_metadata),
                     };
                     runtimed::workstation::allocate_current_python_runtime(
                         target,

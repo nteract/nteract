@@ -207,12 +207,12 @@ async function processExists(pid) {
 }
 
 export function parseScopes(value) {
-  const raw = value ?? "owner,editor";
+  const raw = value ?? "owner";
   const parsed = raw
     .split(/,|\s+/)
     .map((scope) => scope.trim())
     .filter(Boolean);
-  const scopes = parsed.length > 0 ? parsed : ["owner", "editor"];
+  const scopes = parsed.length > 0 ? parsed : ["owner"];
   for (const scope of scopes) {
     if (!["owner", "editor"].includes(scope)) {
       throw new Error("NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES must contain owner or editor");

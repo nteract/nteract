@@ -85,6 +85,63 @@ export interface PrincipalAccountLinkRow {
   last_seen_at: string;
 }
 
+export type WorkstationStatus = "online" | "offline" | "connecting" | "attention" | "unknown";
+
+export type WorkstationAttachJobStatus =
+  | "pending"
+  | "accepted"
+  | "running"
+  | "failed"
+  | "completed"
+  | "cancelled";
+
+export interface WorkstationRow {
+  owner_principal: string;
+  workstation_id: string;
+  display_name: string;
+  provider: string;
+  provider_label: string | null;
+  status: WorkstationStatus;
+  status_message: string | null;
+  default_environment_label: string | null;
+  environment_policy: string | null;
+  working_directory: string | null;
+  cpu_count: number | null;
+  memory_bytes: number | null;
+  environments_json: string | null;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string | null;
+}
+
+export interface WorkstationRegistrationInput {
+  workstationId: string;
+  displayName: string;
+  provider?: string | null;
+  providerLabel?: string | null;
+  statusMessage?: string | null;
+  defaultEnvironmentLabel?: string | null;
+  environmentPolicy?: string | null;
+  workingDirectory?: string | null;
+  cpuCount?: number | null;
+  memoryBytes?: number | null;
+  environmentsJson?: string | null;
+}
+
+export interface WorkstationAttachJobRow {
+  id: string;
+  notebook_id: string;
+  owner_principal: string;
+  workstation_id: string;
+  status: WorkstationAttachJobStatus;
+  requested_by_actor_label: string;
+  requested_at: string;
+  updated_at: string;
+  accepted_at: string | null;
+  finished_at: string | null;
+  error_message: string | null;
+}
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -204,6 +261,51 @@ const SCHEMA_STATEMENTS = [
     ON notebook_access_requests(notebook_id, status, created_at)`,
   `CREATE INDEX IF NOT EXISTS notebook_access_requests_requester_idx
     ON notebook_access_requests(requester_principal, notebook_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS workstations (
+    owner_principal TEXT NOT NULL,
+    workstation_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'runtime_peer',
+    provider_label TEXT,
+    status TEXT NOT NULL CHECK (status IN ('online', 'offline', 'connecting', 'attention', 'unknown')),
+    status_message TEXT,
+    default_environment_label TEXT,
+    environment_policy TEXT,
+    working_directory TEXT,
+    cpu_count INTEGER,
+    memory_bytes INTEGER,
+    environments_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_seen_at TEXT,
+    PRIMARY KEY (owner_principal, workstation_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS workstations_owner_updated_idx
+    ON workstations(owner_principal, updated_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS workstation_defaults (
+    owner_principal TEXT PRIMARY KEY,
+    workstation_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS workstation_attach_jobs (
+    id TEXT PRIMARY KEY,
+    notebook_id TEXT NOT NULL,
+    owner_principal TEXT NOT NULL,
+    workstation_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'running', 'failed', 'completed', 'cancelled')),
+    requested_by_actor_label TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    accepted_at TEXT,
+    finished_at TEXT,
+    error_message TEXT,
+    FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS workstation_attach_jobs_active_unique_idx
+    ON workstation_attach_jobs(notebook_id, owner_principal, workstation_id)
+    WHERE status IN ('pending', 'accepted', 'running')`,
+  `CREATE INDEX IF NOT EXISTS workstation_attach_jobs_poll_idx
+    ON workstation_attach_jobs(owner_principal, workstation_id, status, requested_at)`,
 ];
 
 const SCHEMA_MIGRATIONS = [
@@ -596,6 +698,389 @@ export async function revokeNotebookAclRow(
     .bind(row.notebookId, row.subjectKind, row.subject, row.scope, row.notebookId, row.subject)
     .run();
   return d1Changes(result) > 0;
+}
+
+export async function registerWorkstation(
+  env: Env,
+  ownerPrincipal: string,
+  input: WorkstationRegistrationInput,
+): Promise<WorkstationRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO workstations (
+       owner_principal,
+       workstation_id,
+       display_name,
+       provider,
+       provider_label,
+       status,
+       status_message,
+       default_environment_label,
+       environment_policy,
+       working_directory,
+       cpu_count,
+       memory_bytes,
+       environments_json,
+       created_at,
+       updated_at,
+       last_seen_at
+     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(owner_principal, workstation_id) DO UPDATE SET
+       display_name = excluded.display_name,
+       provider = excluded.provider,
+       provider_label = excluded.provider_label,
+       status = excluded.status,
+       status_message = excluded.status_message,
+       default_environment_label = excluded.default_environment_label,
+       environment_policy = excluded.environment_policy,
+       working_directory = excluded.working_directory,
+       cpu_count = excluded.cpu_count,
+       memory_bytes = excluded.memory_bytes,
+       environments_json = excluded.environments_json,
+       updated_at = excluded.updated_at,
+       last_seen_at = excluded.last_seen_at`,
+  )
+    .bind(
+      ownerPrincipal,
+      input.workstationId,
+      input.displayName,
+      input.provider ?? "runtime_peer",
+      input.providerLabel ?? null,
+      input.statusMessage ?? null,
+      input.defaultEnvironmentLabel ?? null,
+      input.environmentPolicy ?? null,
+      input.workingDirectory ?? null,
+      input.cpuCount ?? null,
+      input.memoryBytes ?? null,
+      input.environmentsJson ?? null,
+      now,
+      now,
+      now,
+    )
+    .run();
+  return getWorkstationRow(env, ownerPrincipal, input.workstationId);
+}
+
+export async function getWorkstationRow(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+): Promise<WorkstationRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return env.DB.prepare(
+    `SELECT owner_principal,
+            workstation_id,
+            display_name,
+            provider,
+            provider_label,
+            status,
+            status_message,
+            default_environment_label,
+            environment_policy,
+            working_directory,
+            cpu_count,
+            memory_bytes,
+            environments_json,
+            created_at,
+            updated_at,
+            last_seen_at
+       FROM workstations
+      WHERE owner_principal = ?
+        AND workstation_id = ?`,
+  )
+    .bind(ownerPrincipal, workstationId)
+    .first<WorkstationRow>();
+}
+
+export async function listWorkstationsForPrincipal(
+  env: Env,
+  ownerPrincipal: string,
+): Promise<WorkstationRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT owner_principal,
+            workstation_id,
+            display_name,
+            provider,
+            provider_label,
+            status,
+            status_message,
+            default_environment_label,
+            environment_policy,
+            working_directory,
+            cpu_count,
+            memory_bytes,
+            environments_json,
+            created_at,
+            updated_at,
+            last_seen_at
+       FROM workstations
+      WHERE owner_principal = ?
+      ORDER BY last_seen_at DESC, updated_at DESC, workstation_id`,
+  )
+    .bind(ownerPrincipal)
+    .all<WorkstationRow>();
+  return rows.results ?? [];
+}
+
+export async function getDefaultWorkstationId(
+  env: Env,
+  ownerPrincipal: string,
+): Promise<string | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const row = await env.DB.prepare(
+    `SELECT workstation_id
+       FROM workstation_defaults
+      WHERE owner_principal = ?`,
+  )
+    .bind(ownerPrincipal)
+    .first<Pick<WorkstationRow, "workstation_id">>();
+  return row?.workstation_id ?? null;
+}
+
+export async function setDefaultWorkstation(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+): Promise<string | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  if (!workstation) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO workstation_defaults (owner_principal, workstation_id, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(owner_principal) DO UPDATE SET
+       workstation_id = excluded.workstation_id,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(ownerPrincipal, workstationId, now)
+    .run();
+  return workstationId;
+}
+
+export async function createWorkstationAttachJob(
+  env: Env,
+  input: {
+    notebookId: string;
+    ownerPrincipal: string;
+    workstationId: string;
+    actorLabel: string;
+  },
+): Promise<WorkstationAttachJobRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const existing = await getActiveWorkstationAttachJob(env, input);
+  if (existing) {
+    return existing;
+  }
+
+  const now = new Date().toISOString();
+  const jobId = crypto.randomUUID();
+  const insert = env.DB.prepare(
+    `INSERT INTO workstation_attach_jobs (
+       id,
+       notebook_id,
+       owner_principal,
+       workstation_id,
+       status,
+       requested_by_actor_label,
+       requested_at,
+       updated_at
+     ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+  ).bind(
+    jobId,
+    input.notebookId,
+    input.ownerPrincipal,
+    input.workstationId,
+    input.actorLabel,
+    now,
+    now,
+  );
+  try {
+    await insert.run();
+  } catch (error) {
+    const racedExisting = await getActiveWorkstationAttachJob(env, input);
+    if (racedExisting) {
+      return racedExisting;
+    }
+    throw error;
+  }
+  return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, jobId);
+}
+
+export async function listPendingWorkstationAttachJobs(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+  limit = 10,
+): Promise<WorkstationAttachJobRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT id,
+            notebook_id,
+            owner_principal,
+            workstation_id,
+            status,
+            requested_by_actor_label,
+            requested_at,
+            updated_at,
+            accepted_at,
+            finished_at,
+            error_message
+       FROM workstation_attach_jobs
+      WHERE owner_principal = ?
+        AND workstation_id = ?
+        AND status = 'pending'
+      ORDER BY requested_at ASC
+      LIMIT ?`,
+  )
+    .bind(ownerPrincipal, workstationId, limit)
+    .all<WorkstationAttachJobRow>();
+  return rows.results ?? [];
+}
+
+export async function updateWorkstationAttachJobStatus(
+  env: Env,
+  input: {
+    ownerPrincipal: string;
+    workstationId: string;
+    jobId: string;
+    status: WorkstationAttachJobStatus;
+    errorMessage?: string | null;
+  },
+): Promise<WorkstationAttachJobRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE workstation_attach_jobs
+        SET status = ?,
+            updated_at = ?,
+            accepted_at = CASE
+              WHEN ? IN ('accepted', 'running') AND accepted_at IS NULL THEN ?
+              ELSE accepted_at
+            END,
+            finished_at = CASE
+              WHEN ? IN ('failed', 'completed', 'cancelled') THEN ?
+              ELSE finished_at
+            END,
+            error_message = ?
+      WHERE id = ?
+        AND owner_principal = ?
+        AND workstation_id = ?`,
+  )
+    .bind(
+      input.status,
+      now,
+      input.status,
+      now,
+      input.status,
+      now,
+      input.errorMessage ?? null,
+      input.jobId,
+      input.ownerPrincipal,
+      input.workstationId,
+    )
+    .run();
+  return getWorkstationAttachJob(env, input.ownerPrincipal, input.workstationId, input.jobId);
+}
+
+async function getActiveWorkstationAttachJob(
+  env: Env,
+  input: {
+    notebookId: string;
+    ownerPrincipal: string;
+    workstationId: string;
+  },
+): Promise<WorkstationAttachJobRow | null> {
+  const row = await env
+    .DB!.prepare(
+      `SELECT id,
+            notebook_id,
+            owner_principal,
+            workstation_id,
+            status,
+            requested_by_actor_label,
+            requested_at,
+            updated_at,
+            accepted_at,
+            finished_at,
+            error_message
+       FROM workstation_attach_jobs
+      WHERE notebook_id = ?
+        AND owner_principal = ?
+        AND workstation_id = ?
+        AND status IN ('pending', 'accepted', 'running')
+      ORDER BY requested_at DESC
+      LIMIT 1`,
+    )
+    .bind(input.notebookId, input.ownerPrincipal, input.workstationId)
+    .first<WorkstationAttachJobRow>();
+  return row;
+}
+
+async function getWorkstationAttachJob(
+  env: Env,
+  ownerPrincipal: string,
+  workstationId: string,
+  jobId: string,
+): Promise<WorkstationAttachJobRow | null> {
+  const row = await env
+    .DB!.prepare(
+      `SELECT id,
+            notebook_id,
+            owner_principal,
+            workstation_id,
+            status,
+            requested_by_actor_label,
+            requested_at,
+            updated_at,
+            accepted_at,
+            finished_at,
+            error_message
+       FROM workstation_attach_jobs
+      WHERE id = ?
+        AND owner_principal = ?
+        AND workstation_id = ?`,
+    )
+    .bind(jobId, ownerPrincipal, workstationId)
+    .first<WorkstationAttachJobRow>();
+  return row;
 }
 
 export interface CreateNotebookWithOwnerAclResult {

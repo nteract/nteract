@@ -1,0 +1,213 @@
+import type { NotebookRegisteredWorkstation } from "runtimed";
+
+import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
+
+export interface CloudWorkstationsState {
+  defaultWorkstationId: string | null;
+  workstations: readonly NotebookRegisteredWorkstation[];
+}
+
+export type CloudWorkstationRegistryMutationKind = "idle" | "default" | "attach";
+
+export interface CloudWorkstationRefreshCadenceOptions {
+  canChooseHostedWorkstation: boolean;
+  hasRegisteredWorkstations: boolean;
+  mutationKind: CloudWorkstationRegistryMutationKind;
+  panelIsOpen: boolean;
+}
+
+export const CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS = 10_000;
+export const CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS = 2_500;
+
+interface CloudWorkstationsResponse {
+  default_workstation_id?: unknown;
+  workstations?: unknown;
+}
+
+interface CloudWorkstationAttachmentResponse {
+  job?: {
+    job_id?: unknown;
+    status?: unknown;
+  };
+}
+
+export async function fetchCloudWorkstations(
+  endpoint: string,
+  authState: CloudPrototypeAuthState,
+  signal?: AbortSignal,
+): Promise<CloudWorkstationsState> {
+  const response = await fetchWithCloudPrototypeAuth(
+    endpoint,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    },
+    authState,
+  );
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "Unable to load workstations"));
+  }
+  const payload = (await response.json()) as CloudWorkstationsResponse;
+  const workstations = Array.isArray(payload.workstations)
+    ? payload.workstations.map(normalizeCloudWorkstation).filter(isNotebookRegisteredWorkstation)
+    : [];
+  return {
+    defaultWorkstationId: scalarString(payload.default_workstation_id),
+    workstations,
+  };
+}
+
+export async function setCloudDefaultWorkstation(
+  endpoint: string,
+  authState: CloudPrototypeAuthState,
+  workstationId: string,
+): Promise<string | null> {
+  const response = await fetchWithCloudPrototypeAuth(
+    endpoint,
+    {
+      method: "PATCH",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ workstation_id: workstationId }),
+    },
+    authState,
+  );
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "Unable to set default workstation"));
+  }
+  const payload = (await response.json()) as { default_workstation_id?: unknown };
+  return scalarString(payload.default_workstation_id);
+}
+
+export async function requestCloudWorkstationAttachment(
+  endpoint: string,
+  authState: CloudPrototypeAuthState,
+  workstationId: string,
+): Promise<{ jobId: string | null; status: string | null }> {
+  const response = await fetchWithCloudPrototypeAuth(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ workstation_id: workstationId }),
+    },
+    authState,
+  );
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, "Unable to attach workstation"));
+  }
+  const payload = (await response.json()) as CloudWorkstationAttachmentResponse;
+  return {
+    jobId: scalarString(payload.job?.job_id),
+    status: scalarString(payload.job?.status),
+  };
+}
+
+export function cloudWorkstationRefreshIntervalMs({
+  canChooseHostedWorkstation,
+  hasRegisteredWorkstations,
+  mutationKind,
+  panelIsOpen,
+}: CloudWorkstationRefreshCadenceOptions): number | null {
+  if (!canChooseHostedWorkstation) {
+    return null;
+  }
+  if (mutationKind === "attach") {
+    return CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS;
+  }
+  if (panelIsOpen || !hasRegisteredWorkstations) {
+    return CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS;
+  }
+  return null;
+}
+
+function normalizeCloudWorkstation(value: unknown): NotebookRegisteredWorkstation | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const id = scalarString(raw.workstation_id);
+  const displayName = scalarString(raw.display_name);
+  if (!id || !displayName) {
+    return null;
+  }
+  return {
+    id,
+    displayName,
+    provider: scalarString(raw.provider),
+    providerLabel: scalarString(raw.provider_label),
+    status: normalizeStatus(raw.status),
+    statusMessage: scalarString(raw.status_message),
+    defaultEnvironmentLabel: scalarString(raw.default_environment_label),
+    environmentPolicy: scalarString(raw.environment_policy),
+    workingDirectory: scalarString(raw.working_directory),
+    cpuCount: scalarNumber(raw.cpu_count),
+    memoryBytes: scalarNumber(raw.memory_bytes),
+    updatedAt: scalarString(raw.updated_at) ?? scalarString(raw.last_seen_at),
+    environments: normalizeCloudEnvironments(raw.environments),
+  };
+}
+
+function normalizeCloudEnvironments(value: unknown): NotebookRegisteredWorkstation["environments"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((raw) => {
+      if (!raw || typeof raw !== "object") return null;
+      const item = raw as Record<string, unknown>;
+      const id = scalarString(item.id);
+      const label = scalarString(item.label);
+      if (!id || !label) return null;
+      return {
+        id,
+        label,
+        available: item.available === false ? false : true,
+        detail: scalarString(item.detail),
+        health: scalarString(item.health),
+        isDefault: item.is_default === true || item.isDefault === true,
+        policy: scalarString(item.policy),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function isNotebookRegisteredWorkstation(
+  value: NotebookRegisteredWorkstation | null,
+): value is NotebookRegisteredWorkstation {
+  return Boolean(value);
+}
+
+function normalizeStatus(value: unknown): NotebookRegisteredWorkstation["status"] {
+  return value === "online" ||
+    value === "offline" ||
+    value === "connecting" ||
+    value === "attention" ||
+    value === "unknown"
+    ? value
+    : "unknown";
+}
+
+function scalarString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function scalarNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
+  const payload = await response.json().catch(() => null);
+  if (payload && typeof payload === "object") {
+    const message = scalarString((payload as Record<string, unknown>).error);
+    if (message) {
+      return message;
+    }
+  }
+  return `${fallback} (${response.status})`;
+}

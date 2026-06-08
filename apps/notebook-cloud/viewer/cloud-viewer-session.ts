@@ -56,8 +56,12 @@ export interface CloudViewerConfig {
   aclEndpoint: string;
   invitesEndpoint: string;
   accessRequestsEndpoint: string;
+  workstationsEndpoint?: string;
+  workstationDefaultEndpoint?: string;
+  workstationAttachEndpoint?: string;
   hostCapabilities?: {
     canManageSharing?: boolean;
+    canSubmitExecutionRequests?: boolean;
   };
   syncEndpoint: string;
   blobBasePath: string;

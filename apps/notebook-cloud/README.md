@@ -649,18 +649,61 @@ old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
 private; anonymous hosted render smokes may return a catalog 404 unless the
 browser context has a credential for the owning principal.
 
+Hosted workstation agent smoke:
+
+```bash
+cargo build --release -p runtimed
+NTERACT_CLOUD_URL=https://preview.runt.run \
+NOTEBOOK_CLOUD_WORKSTATION_ID=lab2 \
+NOTEBOOK_CLOUD_WORKSTATION_DISPLAY_NAME="lab2 workstation" \
+NOTEBOOK_CLOUD_WORKSTATION_CWD="$PWD" \
+pnpm --dir apps/notebook-cloud smoke:hosted:workstation-agent
+```
+
+The workstation agent reads `NTERACT_API_KEY` from the environment and also
+loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
+registers and heartbeats the current machine through `POST /api/workstations`,
+polls `GET /api/workstations/:workstationId/attach-jobs`, and spawns
+`runtimed cloud-runtime-agent` for pending attach jobs. The API key is passed to
+the runtime peer through `RUNT_CLOUD_TOKEN`, not through argv; `runtimed`
+removes cloud/API-key environment variables again before launching the Python
+kernel. Run this helper inside tmux for preview/manual testing so the polling
+agent stays alive while the browser attaches workstations. After the agent
+registers, select it as the default workstation in the notebook UI or call
+`PATCH /api/workstations/default`, then use the Workstations rail in a private
+owner room to request attachment.
+
+With the workstation agent already running, use the toolbar smoke to exercise
+the hosted browser path end to end. It verifies the registered workstation is
+online, selects it as the default, creates a private owner notebook, seeds the
+first-party browser OIDC cache, clicks `Attach compute` in the shared toolbar,
+runs the first cell, reloads the page, and runs it again to catch reconnection
+regressions:
+
+```bash
+pnpm --dir apps/notebook-cloud smoke:hosted:workstation-toolbar
+```
+
+The smoke reads the API key from the environment or
+`${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` and reads the browser OIDC
+token cache from `${NTERACT_PREVIEW_OIDC_TOKEN_PATH:-$HOME/token.preview.json}`.
+It does not print token material. Set
+`NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_WORKSTATION_ID` to target a
+workstation other than `lab2`.
+
 Use the combined runtime/browser smoke when you want the full preview remote
 compute path in one command. It creates one API-key room per requested browser
 scope, keeps that room's runtime peer alive, clicks execution through Chromium
-for `owner` and `editor` scope by default, then stops each peer it started:
+for `owner` scope by default, then stops each peer it started:
 
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
 pnpm --dir apps/notebook-cloud smoke:hosted:runtime-browser-execute
 ```
 
-Set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES=owner` for a single-scope
-run, or set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_CODE` when you need a fixed
+Set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_SCOPES=owner,editor` when
+intentionally exercising a deployment with explicit editor execution capability,
+or set `NOTEBOOK_CLOUD_RUNTIME_BROWSER_EXECUTE_CODE` when you need a fixed
 source/output marker for a trace.
 
 To exercise the actual hosted browser execution path against a private room,
