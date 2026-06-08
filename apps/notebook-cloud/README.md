@@ -211,6 +211,8 @@ NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_URLS='[
   {
     "label": "topic-viz",
     "url": "https://preview.runt.run/n/topic-viz/topic-viz",
+    "auth": "anonymous",
+    "scope": "viewer",
     "expectedText": "import plotly.graph_objects as go",
     "expectedFrameTexts": ["PROBLEM_MARKDOWN"],
     "minCells": 20,

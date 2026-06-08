@@ -30,6 +30,8 @@ describe("hosted live room matrix smoke helpers", () => {
           {
             url: "https://preview.runt.run/n/topic-viz/topic-viz",
             label: "topic-viz",
+            auth: "anonymous",
+            scope: "viewer",
             expectedPageTexts: ["MathNet topic visualization"],
             expectedFrameTexts: ["PROBLEM_MARKDOWN"],
             minCells: 20,
@@ -44,6 +46,8 @@ describe("hosted live room matrix smoke helpers", () => {
         {
           url: "https://preview.runt.run/n/topic-viz/topic-viz",
           label: "topic-viz",
+          auth: "anonymous",
+          scope: "viewer",
           expectedPageTexts: ["MathNet topic visualization"],
           expectedFrameTexts: ["PROBLEM_MARKDOWN"],
           minCells: 20,
@@ -76,6 +80,8 @@ describe("hosted live room matrix smoke helpers", () => {
     const env = smokeEnvForMatrixEntry(
       {
         url: "https://preview.runt.run/n/topic-viz/topic-viz",
+        auth: "anonymous",
+        scope: "viewer",
         expectedText: "import plotly.graph_objects as go",
         expectedFrameTexts: ["PROBLEM_MARKDOWN"],
         minCells: 20,
@@ -87,6 +93,8 @@ describe("hosted live room matrix smoke helpers", () => {
       {},
     );
 
+    assert.equal(env.NOTEBOOK_CLOUD_LIVE_ROOM_AUTH, "anonymous");
+    assert.equal(env.NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE, "viewer");
     assert.equal(env.NOTEBOOK_CLOUD_LIVE_ROOM_EXPECTED_TEXT, "import plotly.graph_objects as go");
     assert.equal(env.NOTEBOOK_CLOUD_LIVE_ROOM_EXPECTED_FRAME_TEXTS, '["PROBLEM_MARKDOWN"]');
     assert.equal(env.NOTEBOOK_CLOUD_LIVE_ROOM_MIN_CELLS, "20");

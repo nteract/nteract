@@ -56,6 +56,7 @@ export function smokeEnvForMatrixEntry(entry, baseEnv = process.env) {
       baseEnv.NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_REQUIRE_IMAGES_LOADED ?? "0",
   };
 
+  setOptionalString(env, "NOTEBOOK_CLOUD_LIVE_ROOM_AUTH", entry.auth ?? entry.authMode);
   setOptionalString(env, "NOTEBOOK_CLOUD_LIVE_ROOM_SCOPE", entry.scope);
   setOptionalString(env, "NOTEBOOK_CLOUD_LIVE_ROOM_EXPECTED_TEXT", entry.expectedText);
   setOptionalTexts(env, "NOTEBOOK_CLOUD_LIVE_ROOM_EXPECTED_PAGE_TEXTS", entry.expectedPageTexts);
