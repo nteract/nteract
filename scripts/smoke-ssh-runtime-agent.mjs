@@ -19,7 +19,7 @@ dependencies = ["ipykernel"]
 
 function parseArgs(argv) {
   const options = {
-    sshHost: process.env.RUNTIMED_SSH_RUNTIME_HOST ?? "lab2",
+    sshHost: process.env.RUNTIMED_SSH_RUNTIME_HOST ?? "lab-runner1",
     remoteCommand:
       process.env.RUNTIMED_SSH_RUNTIME_COMMAND ?? "/usr/local/bin/runtimed-nightly",
     runtimedBin:
@@ -66,7 +66,7 @@ function parseArgs(argv) {
       console.log(`Usage: smoke-ssh-runtime-agent.mjs [options]
 
 Options:
-  --ssh-host <host>             SSH host to run the runtime agent on (default: lab2)
+  --ssh-host <host>             SSH host to run the runtime agent on (default: lab-runner1)
   --remote-command <path>       Remote runtimed binary (default: /usr/local/bin/runtimed-nightly)
   --runtimed-bin <path>         Local runtimed binary (default: target/debug/runtimed)
   --runtime-agent-exe <path>    Local SSH runtime-agent wrapper
@@ -123,6 +123,10 @@ function collectOutputText(result) {
       return "";
     })
     .join("");
+}
+
+function pythonStringLiteral(value) {
+  return JSON.stringify(String(value));
 }
 
 function shellQuote(value) {
@@ -273,8 +277,11 @@ async function main() {
     });
 
     const result = await session.runCell(
-      `import socket, platform
-print(socket.gethostname())
+      `import hashlib, platform, socket
+expected_hostname = ${pythonStringLiteral(options.expectedHostname)}
+actual_hostname = socket.gethostname()
+print("hostname_matches_expected", actual_hostname == expected_hostname)
+print("hostname_sha256", hashlib.sha256(actual_hostname.encode()).hexdigest())
 print(platform.platform())
 `,
       { timeoutMs: options.timeoutMs },
@@ -284,8 +291,10 @@ print(platform.platform())
     if (result.status !== "done" || !result.success) {
       throw new Error(`execution did not complete successfully: ${JSON.stringify(result)}`);
     }
-    if (!text.includes(options.expectedHostname)) {
-      throw new Error(`execution output did not include ${options.expectedHostname}: ${text}`);
+    if (!text.includes("hostname_matches_expected True")) {
+      throw new Error(
+        `execution output did not confirm hostname ${options.expectedHostname}: ${text}`,
+      );
     }
 
     console.log(
