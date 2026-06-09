@@ -142,7 +142,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /buildCloudShareAccessRows\(\{ acl, invites, accessRequests \}\)/,
   );
   assert.match(sourceText, /editControls=\{[\s\S]*<CloudNotebookEditModeButton/);
-  assert.match(sourceText, /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState\) \? \(/);
+  assert.match(
+    sourceText,
+    /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*hasAppSession: Boolean\(appSessionStatus\.session\),[\s\S]*\}\) \? \(/,
+  );
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
   assert.match(sourceText, /identityControls=\{null\}/);
   assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);

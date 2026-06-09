@@ -13,6 +13,7 @@ import {
   clearCloudPrototypeDevAuth,
   cloudSyncAuthFromAppSessionCookie,
   cloudSyncAuthFromPrototypeAuthState,
+  shouldShowCloudHeaderSignIn,
   withCloudPrototypeAuthHeaders,
   isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
@@ -23,6 +24,7 @@ import {
   storeCloudRequestedScope,
   validatePrototypeToken,
   type CloudPrototypeAuthStorage,
+  type CloudPrototypeAuthState,
 } from "../viewer/collaborator-auth.ts";
 
 describe("cloud collaborator auth", () => {
@@ -178,6 +180,21 @@ describe("cloud collaborator auth", () => {
       }),
       false,
     );
+  });
+
+  it("trusts an app-session cookie over stale localStorage renewal state in header chrome", () => {
+    assert.equal(shouldShowCloudHeaderSignIn(authState("oidc_expired")), true);
+    assert.equal(
+      shouldShowCloudHeaderSignIn(authState("oidc_expired"), { hasAppSession: true }),
+      false,
+    );
+    assert.equal(
+      shouldShowCloudHeaderSignIn(authState("oidc_expired"), { appSessionLoading: true }),
+      false,
+    );
+    assert.equal(shouldShowCloudHeaderSignIn(authState("anonymous")), true);
+    assert.equal(shouldShowCloudHeaderSignIn(authState("oidc")), false);
+    assert.equal(shouldShowCloudHeaderSignIn(authState("dev")), false);
   });
 
   it("keeps dev-token headers for prototype browser app APIs", () => {
@@ -534,4 +551,15 @@ function base64UrlJson(value: Record<string, unknown>): string {
 
 function base64Url(value: string): string {
   return Buffer.from(value).toString("base64url");
+}
+
+function authState(mode: CloudPrototypeAuthState["mode"]): CloudPrototypeAuthState {
+  return {
+    mode,
+    token: mode === "dev" || mode === "oidc" ? "token" : null,
+    user: mode === "anonymous" ? null : "User",
+    oidcClaims: null,
+    requestedScope: "owner",
+    problem: mode === "invalid" || mode === "oidc_expired" ? "auth problem" : null,
+  };
 }

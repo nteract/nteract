@@ -44,6 +44,7 @@ import {
   cloudSyncAuthFromPrototypeAuthState,
   prepareCloudOidcViewerLogin,
   storeCloudRequestedScope,
+  shouldShowCloudHeaderSignIn,
 } from "./collaborator-auth";
 import { createCloudNotebookCellId } from "./cloud-cell-id";
 import { useCloudViewerSession } from "./cloud-viewer-session";
@@ -79,11 +80,7 @@ import {
 } from "./use-cloud-auth";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
-import {
-  CloudNotebookEditModeButton,
-  CloudNotebookSignInButton,
-  shouldShowCloudHeaderSignIn,
-} from "./cloud-auth-controls";
+import { CloudNotebookEditModeButton, CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudNotebookTitle } from "./cloud-notebook-title";
 import { CloudPresenceStatus } from "./cloud-presence-status";
 
@@ -812,7 +809,10 @@ export function NotebookViewer({
         <CloudPresenceStatus connectionError={connectionError} store={presenceStore} />
       }
       authControls={
-        shouldShowCloudHeaderSignIn(authState) ? (
+        shouldShowCloudHeaderSignIn(authState, {
+          appSessionLoading: appSessionStatus.status === "loading",
+          hasAppSession: Boolean(appSessionStatus.session),
+        }) ? (
           <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
         ) : null
       }
