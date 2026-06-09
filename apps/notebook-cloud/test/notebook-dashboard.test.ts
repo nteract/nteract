@@ -219,6 +219,44 @@ describe("cloud notebook dashboard projection", () => {
     );
   });
 
+  it("does not repeat the continuation notebook in the default recent work list", () => {
+    const continued = notebook({
+      id: "topic-viz",
+      title: "Topic Visualization",
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: "published-topic",
+    });
+    const followUp = notebook({
+      id: "workstation-notes",
+      title: "Workstation Notes",
+      scope: "owner",
+      updatedAt: "2026-06-06T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const model = projectCloudNotebookDashboard([followUp, continued]);
+    const defaultView = projectCloudNotebookDashboardView(model);
+    const ownedView = projectCloudNotebookDashboardView(model, { filterId: "owned" });
+    const searchView = projectCloudNotebookDashboardView(model, { query: "topic" });
+
+    assert.equal(model.continueNotebook?.notebook_id, "topic-viz");
+    assert.deepEqual(
+      defaultView.sections.flatMap((section) =>
+        section.rows.map((row) => row.notebook.notebook_id),
+      ),
+      ["workstation-notes"],
+    );
+    assert.deepEqual(
+      ownedView.sections.flatMap((section) => section.rows.map((row) => row.notebook.notebook_id)),
+      ["topic-viz", "workstation-notes"],
+    );
+    assert.deepEqual(
+      searchView.sections.flatMap((section) => section.rows.map((row) => row.notebook.notebook_id)),
+      ["topic-viz"],
+    );
+  });
+
   it("keeps generated runs and untitled notebooks below recognizable work by default", () => {
     const generated = notebook({
       id: "toolbar-smoke",
@@ -241,8 +279,15 @@ describe("cloud notebook dashboard projection", () => {
       updatedAt: "2026-06-01T12:00:00.000Z",
       latestRevisionId: "published-topic",
     });
+    const followUp = notebook({
+      id: "workstation-notes",
+      title: "Workstation Notes",
+      scope: "owner",
+      updatedAt: "2026-05-31T12:00:00.000Z",
+      latestRevisionId: null,
+    });
 
-    const model = projectCloudNotebookDashboard([generated, untitled, realWork]);
+    const model = projectCloudNotebookDashboard([generated, untitled, followUp, realWork]);
     const view = projectCloudNotebookDashboardView(model);
 
     assert.equal(model.continueNotebook?.notebook_id, "topic-viz");
@@ -253,7 +298,7 @@ describe("cloud notebook dashboard projection", () => {
         section.notebooks.map((item) => item.notebook_id),
       ]),
       [
-        ["named", "Recent work", ["topic-viz"]],
+        ["named", "Recent work", ["workstation-notes"]],
         ["generated", "Generated runs", ["toolbar-smoke"]],
         ["untitled", "Needs title", ["untitled-new"]],
       ],
@@ -268,7 +313,7 @@ describe("cloud notebook dashboard projection", () => {
         ]),
       ),
       [
-        ["topic-viz", null, [["published", "Published"]], null],
+        ["workstation-notes", null, [], null],
         ["toolbar-smoke", "Generated run", [], null],
         ["untitled-new", "Needs title", [], "untitled-new"],
       ],

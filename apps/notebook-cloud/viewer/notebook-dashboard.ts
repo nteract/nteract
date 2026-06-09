@@ -151,7 +151,14 @@ export function projectCloudNotebookDashboardView(
     filterId,
     query,
     resultCount: filtered.length,
-    sections: cloudNotebookDashboardSections(filtered, { filterId, query }),
+    sections: cloudNotebookDashboardSections(filtered, {
+      continueNotebookId:
+        filterId === "all" && query.length === 0
+          ? (model.continueNotebook?.notebook_id ?? null)
+          : null,
+      filterId,
+      query,
+    }),
     showResultCount: filterId !== "all" || query.length > 0,
   };
 }
@@ -259,6 +266,7 @@ function cloudNotebookDashboardFilterGroups(
 function cloudNotebookDashboardSections(
   notebooks: readonly CloudNotebookListItem[],
   context: {
+    continueNotebookId: string | null;
     filterId: CloudNotebookDashboardFilterId;
     query: string;
   },
@@ -279,7 +287,7 @@ function cloudNotebookDashboardSections(
   }
 
   if (context.query.length === 0 && (context.filterId === "all" || context.filterId === "owned")) {
-    return cloudNotebookWorkSections(notebooks);
+    return cloudNotebookWorkSections(notebooks, { omitNotebookId: context.continueNotebookId });
   }
 
   const buckets = activityBuckets(notebooks);
@@ -303,10 +311,14 @@ const SECONDARY_DASHBOARD_SECTION_LIMIT = 5;
 
 function cloudNotebookWorkSections(
   notebooks: readonly CloudNotebookListItem[],
+  options: { omitNotebookId: string | null },
 ): CloudNotebookDashboardSection[] {
-  const namedWork = notebooks.filter(
-    (notebook) => cloudNotebookHasTitle(notebook) && !cloudNotebookIsGeneratedRun(notebook),
-  );
+  const namedWork = notebooks.filter((notebook) => {
+    if (notebook.notebook_id === options.omitNotebookId) {
+      return false;
+    }
+    return cloudNotebookHasTitle(notebook) && !cloudNotebookIsGeneratedRun(notebook);
+  });
   const generatedRuns = notebooks.filter(cloudNotebookIsGeneratedRun);
   const untitled = notebooks.filter((notebook) => !cloudNotebookHasTitle(notebook));
 
