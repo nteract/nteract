@@ -93,7 +93,7 @@ import {
 import { getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
 import { useNotebookQueueProjection } from "@/components/notebook/state/execution-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
-import { useDetectRuntime, useNotebookMetadata, usePixiDeps } from "./lib/notebook-metadata";
+import { useDetectRuntime, useNotebookMetadata, usePixiDeps, useSandboxProfile } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput } from "./types";
@@ -502,10 +502,26 @@ function AppContent() {
     const prev = prevSandboxStateRef.current;
     const curr = runtimeState.sandbox_state.state;
     prevSandboxStateRef.current = curr;
+    if (prev !== curr) {
+      logger.info(`[sandbox] state transition: ${prev} → ${curr}`, runtimeState.sandbox_state);
+    }
     if (prev !== "Degraded" && curr === "Degraded") {
       setSandboxDegradedDismissed(false);
     }
-  }, [runtimeState.sandbox_state.state]);
+  }, [runtimeState.sandbox_state]);
+
+  // Sandbox profile from notebook metadata (opt-in per notebook).
+  const sandboxProfile = useSandboxProfile();
+
+  // Whether the sandbox enabled flag diverges from the running kernel's sandbox
+  // state. Treated the same as out-of-sync deps: prompts a kernel restart.
+  const kernelIsRunning =
+    kernelStatus === KERNEL_STATUS.IDLE ||
+    kernelStatus === KERNEL_STATUS.BUSY ||
+    kernelStatus === KERNEL_STATUS.STARTING;
+  const sandboxShouldBeActive = sandboxProfile?.enabled === true;
+  const sandboxIsActive = runtimeState.sandbox_state.state === "Active";
+  const sandboxOutOfSync = kernelIsRunning && sandboxShouldBeActive !== sandboxIsActive;
 
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
@@ -1617,7 +1633,7 @@ function AppContent() {
           onToggleDependencies={handleTogglePackagesRail}
           isDepsOpen={packagesRailOpen}
           capabilities={shellCapabilities}
-          depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
+          depsOutOfSync={(envSyncState ? !envSyncState.inSync : false) || sandboxOutOfSync}
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
