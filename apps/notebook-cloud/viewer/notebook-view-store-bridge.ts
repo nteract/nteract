@@ -7,6 +7,7 @@ import {
 import { projectMarkdownPlan } from "@/lib/markdown-projection";
 import {
   deleteExecutions,
+  getExecutionById,
   setCellExecutionPointer,
   setExecution,
   setNotebookQueueProjection,
@@ -29,10 +30,6 @@ export function projectCloudCellsIntoNotebookViewStores(cells: readonly Resolved
   });
 
   replaceNotebookCells(projectedCells.map(({ notebookCell }) => notebookCell));
-  setNotebookQueueProjection({
-    executing_cell_id: null,
-    queued_cell_ids: [],
-  });
 
   const nextCloudOwnedExecutionIds = new Set<string>();
   const nextCloudOwnedOutputIds = new Set<string>();
@@ -53,11 +50,15 @@ export function projectCloudCellsIntoNotebookViewStores(cells: readonly Resolved
     const outputIds = outputs
       .map((output) => output.output_id)
       .filter((outputId): outputId is string => typeof outputId === "string");
-    const executionId =
-      cell.executionId ?? (outputIds.length > 0 ? `cloud-execution:${cell.id}` : null);
+    const syntheticExecutionId = outputIds.length > 0 ? `cloud-execution:${cell.id}` : null;
+    const executionId = cell.executionId ?? syntheticExecutionId;
     setCellExecutionPointer(cell.id, executionId);
-    if (executionId) {
-      nextCloudOwnedExecutionIds.add(executionId);
+    if (executionId && !getExecutionById(executionId)) {
+      if (executionId === syntheticExecutionId) {
+        nextCloudOwnedExecutionIds.add(executionId);
+      }
+      // Snapshot/live cell materialization can seed a display placeholder, but
+      // it must never downgrade a real RuntimeStateDoc execution snapshot.
       setExecution(executionId, {
         execution_count: cell.executionCount,
         status: "done",

@@ -25,11 +25,11 @@ use nteract_identity::{ActorLabel, ConnectionScope, Operator, Principal};
 use runtime_doc::{
     diff_output_ids_in_place, output_ids_for_execution, runtime_state_policy_snapshot,
     validate_runtime_state_sync_scope, CommsDoc, CommsState, ExecutionState,
-    ExecutionViewChangeset, ExecutionViewProjector, KernelActivity, RuntimeLifecycle, RuntimeState,
-    RuntimeStateDoc, RuntimeStateWriteScope, WorkstationAttachmentState,
+    ExecutionViewChangeset, ExecutionViewProjector, KernelActivity, QueueEntry, RuntimeLifecycle,
+    RuntimeState, RuntimeStateDoc, RuntimeStateWriteScope, WorkstationAttachmentState,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
 const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
@@ -120,6 +120,70 @@ fn notebook_execution_pointers(doc: &NotebookDoc) -> Vec<(String, Option<String>
             (cell.id, execution_id)
         })
         .collect()
+}
+
+fn parse_requested_cell_execution_ids(
+    request: &serde_json::Value,
+) -> Result<Option<HashMap<String, String>>, JsError> {
+    let Some(raw) = request.get("cell_execution_ids") else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(raw.clone())
+        .map(Some)
+        .map_err(|e| JsError::new(&format!("decode cell_execution_ids: {e}")))
+}
+
+fn validate_requested_execution_ids(
+    requested_execution_ids: Option<&HashMap<String, String>>,
+    existing_execution_ids: &HashSet<String>,
+    allocated_execution_ids: &mut HashSet<String>,
+) -> Result<(), JsError> {
+    let Some(requested_execution_ids) = requested_execution_ids else {
+        return Ok(());
+    };
+
+    let mut supplied = HashSet::new();
+    for execution_id in requested_execution_ids.values() {
+        if uuid::Uuid::parse_str(execution_id).is_err() {
+            return Err(JsError::new(&format!(
+                "execution_id is not a valid UUID: {execution_id}"
+            )));
+        }
+        if !supplied.insert(execution_id.clone()) {
+            return Err(JsError::new(&format!(
+                "duplicate execution_id in request: {execution_id}"
+            )));
+        }
+        if existing_execution_ids.contains(execution_id) {
+            return Err(JsError::new(&format!(
+                "execution_id already exists: {execution_id}"
+            )));
+        }
+    }
+
+    allocated_execution_ids.extend(supplied);
+    Ok(())
+}
+
+fn allocate_hosted_execution_id(allocated_execution_ids: &mut HashSet<String>) -> String {
+    loop {
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        if allocated_execution_ids.insert(execution_id.clone()) {
+            return execution_id;
+        }
+    }
+}
+
+fn restore_cell_execution_pointers(
+    doc: &mut NotebookDoc,
+    cell_pointers: &[(String, Option<String>)],
+) {
+    for (cell_id, execution_id) in cell_pointers.iter().rev() {
+        let _ = doc.set_execution_id(cell_id, execution_id.as_deref());
+    }
 }
 
 /// Event returned from `receive_frame()` for the frontend to handle.
@@ -1006,13 +1070,13 @@ impl RoomHostHandle {
 
     /// Handle a NotebookRequest frame (`frame_types::REQUEST`).
     ///
-    /// The hosted room only acts on cell-execution requests: an authorized
-    /// browser peer asks to run a cell, and the room host (the one peer that can
-    /// create execution intent) writes the queued execution into RuntimeStateDoc
-    /// for an attached `runtime_peer` to pick up. Other request kinds
-    /// (LaunchKernel, RunAllCells, kernel lifecycle) are local-daemon concerns
-    /// and are ignored here so they leave the room unchanged rather than
-    /// erroring the peer.
+    /// The hosted room only acts on execution intent requests: an authorized
+    /// browser peer asks to run synced notebook cells, and the room host (the
+    /// one peer that can create execution intent) writes queued executions into
+    /// RuntimeStateDoc for an attached `runtime_peer` to pick up. Other request
+    /// kinds (LaunchKernel, kernel lifecycle) are local-daemon concerns and are
+    /// ignored here so they leave the room unchanged rather than erroring the
+    /// peer.
     fn receive_request(
         &mut self,
         peer_id: &str,
@@ -1032,6 +1096,9 @@ impl RoomHostHandle {
             // causal guard is deferred (see ADR run-cell follow-ups).
             Some("execute_cell") | Some("execute_cell_guarded") => {
                 self.handle_execute_cell(&request, peer_id, submitter_actor_label)
+            }
+            Some("run_all_cells") | Some("run_all_cells_guarded") => {
+                self.handle_run_all_cells(&request, peer_id, submitter_actor_label)
             }
             _ => Ok(RoomHostFrameResult::empty()),
         }
@@ -1131,11 +1198,25 @@ impl RoomHostHandle {
         // Point the cell at its execution, matching the daemon's ExecuteCell path.
         // If stamping fails, roll back the queued execution so a runtime_peer does
         // not pick up an orphan that no cell points at.
+        let previous_execution_id = self.doc.get_execution_id(cell_id);
         if let Err(e) = self.doc.set_execution_id(cell_id, Some(&execution_id)) {
             let _ = self
                 .state_doc
                 .remove_executions(std::slice::from_ref(&execution_id));
             return Err(JsError::new(&format!("stamp execution_id on cell: {e}")));
+        }
+
+        let queue_entry = QueueEntry {
+            execution_id: execution_id.clone(),
+        };
+        if let Err(e) = self.append_queued_entries(std::slice::from_ref(&queue_entry)) {
+            let _ = self
+                .state_doc
+                .remove_executions(std::slice::from_ref(&execution_id));
+            let _ = self
+                .doc
+                .set_execution_id(cell_id, previous_execution_id.as_deref());
+            return Err(e);
         }
 
         // Broadcast the new queued execution (RuntimeStateDoc) and the cell's
@@ -1151,6 +1232,139 @@ impl RoomHostHandle {
         self.queue_notebook_sync_for_peer(peer_id, true, &mut result.outbound)?;
         self.queue_notebook_sync_for_other_peers(peer_id, &mut result.outbound)?;
         Ok(result)
+    }
+
+    /// Create queued executions for every code cell in the hosted notebook.
+    fn handle_run_all_cells(
+        &mut self,
+        request: &serde_json::Value,
+        peer_id: &str,
+        submitter_actor_label: &str,
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let requested_execution_ids = parse_requested_cell_execution_ids(request)?;
+        let cells = self.doc.get_cells();
+        let code_cells: Vec<_> = cells
+            .into_iter()
+            .filter(|cell| cell.cell_type == "code")
+            .collect();
+        if code_cells.is_empty() {
+            return Ok(RoomHostFrameResult::empty());
+        }
+
+        let (existing_execution_ids, next_seq) = {
+            let state = self.state_doc.read_state();
+            let existing_execution_ids: HashSet<String> =
+                state.executions.keys().cloned().collect();
+            let next_seq = state
+                .executions
+                .values()
+                .filter_map(|exec| exec.seq)
+                .max()
+                .map(|m| m + 1)
+                .unwrap_or(0);
+            (existing_execution_ids, next_seq)
+        };
+        let mut allocated_execution_ids = existing_execution_ids.clone();
+        validate_requested_execution_ids(
+            requested_execution_ids.as_ref(),
+            &existing_execution_ids,
+            &mut allocated_execution_ids,
+        )?;
+
+        let mut entries = Vec::new();
+        for cell in &code_cells {
+            let execution_id = requested_execution_ids
+                .as_ref()
+                .and_then(|ids| ids.get(&cell.id).cloned())
+                .unwrap_or_else(|| allocate_hosted_execution_id(&mut allocated_execution_ids));
+            let seq = next_seq + entries.len() as u64;
+            entries.push((
+                execution_id,
+                cell.id.clone(),
+                cell.source.clone(),
+                seq,
+                self.doc.get_execution_id(&cell.id),
+            ));
+        }
+
+        let mut created_execution_ids = Vec::new();
+        for (execution_id, cell_id, source, seq, _) in &entries {
+            let created = self
+                .state_doc
+                .create_execution_with_source_provenance(
+                    execution_id,
+                    source,
+                    *seq,
+                    Some(submitter_actor_label),
+                    Some(cell_id),
+                )
+                .map_err(|e| JsError::new(&format!("create execution: {e}")))?;
+            if !created {
+                let _ = self.state_doc.remove_executions(&created_execution_ids);
+                return Err(JsError::new(&format!(
+                    "execution_id already exists: {execution_id}"
+                )));
+            }
+            created_execution_ids.push(execution_id.clone());
+        }
+
+        let mut stamped_cell_pointers = Vec::new();
+        for (execution_id, cell_id, _, _, previous_execution_id) in &entries {
+            if let Err(e) = self.doc.set_execution_id(cell_id, Some(execution_id)) {
+                let _ = self.state_doc.remove_executions(&created_execution_ids);
+                restore_cell_execution_pointers(&mut self.doc, &stamped_cell_pointers);
+                return Err(JsError::new(&format!("stamp execution_id on cell: {e}")));
+            }
+            stamped_cell_pointers.push((cell_id.clone(), previous_execution_id.clone()));
+        }
+
+        let queued_entries: Vec<QueueEntry> = entries
+            .iter()
+            .map(|(execution_id, _, _, _, _)| QueueEntry {
+                execution_id: execution_id.clone(),
+            })
+            .collect();
+        if let Err(e) = self.append_queued_entries(&queued_entries) {
+            let _ = self.state_doc.remove_executions(&created_execution_ids);
+            restore_cell_execution_pointers(&mut self.doc, &stamped_cell_pointers);
+            return Err(e);
+        }
+
+        let mut result = RoomHostFrameResult {
+            changed: true,
+            notebook_changed: true,
+            runtime_state_changed: true,
+            outbound: Vec::new(),
+        };
+        self.queue_runtime_state_sync_for_peer(peer_id, true, &mut result.outbound)?;
+        self.queue_runtime_state_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        self.queue_notebook_sync_for_peer(peer_id, true, &mut result.outbound)?;
+        self.queue_notebook_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        Ok(result)
+    }
+
+    fn append_queued_entries(&mut self, entries: &[QueueEntry]) -> Result<(), JsError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let queue = self.state_doc.read_state().queue;
+        let executing = queue.executing;
+        let mut queued = queue.queued;
+        let mut seen = HashSet::new();
+        if let Some(entry) = &executing {
+            seen.insert(entry.execution_id.clone());
+        }
+        for entry in &queued {
+            seen.insert(entry.execution_id.clone());
+        }
+        for entry in entries {
+            if seen.insert(entry.execution_id.clone()) {
+                queued.push(entry.clone());
+            }
+        }
+        self.state_doc
+            .set_queue(executing.as_ref(), &queued)
+            .map_err(|e| JsError::new(&format!("publish queued executions: {e}")))
     }
 
     fn queue_current_sync_for_peer(
@@ -4216,6 +4430,13 @@ mod tests {
         // principal, matching every other execution producer.
         assert_eq!(exec.submitted_by_actor_label.as_deref(), Some(actor));
         assert_eq!(
+            state.queue.queued,
+            vec![QueueEntry {
+                execution_id: eid.clone()
+            }],
+            "accepted hosted execution intent is immediately visible in the queue projection"
+        );
+        assert_eq!(
             host.doc.get_execution_id("cell-1").as_deref(),
             Some(eid.as_str()),
             "the cell points at its queued execution"
@@ -4232,6 +4453,104 @@ mod tests {
             host.state_doc.read_state().executions.len(),
             1,
             "still exactly one execution after a duplicate run"
+        );
+    }
+
+    #[test]
+    fn hosted_run_all_queues_code_cells_and_publishes_queue_projection() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.seed_initial_code_cell_if_empty("cell-1")
+            .expect("seed code cell");
+        host.doc
+            .update_source("cell-1", "print('one')")
+            .expect("source 1");
+        host.doc
+            .add_cell_after("markdown-1", "markdown", Some("cell-1"))
+            .expect("add markdown");
+        host.doc
+            .add_cell_after("cell-2", "code", Some("markdown-1"))
+            .expect("add code");
+        host.doc
+            .update_source("cell-2", "print('two')")
+            .expect("source 2");
+
+        // Register a runtime peer so the accepted queue is fanned out to the
+        // executor as well as visible to the browser peer.
+        let mut initial = Vec::new();
+        host.queue_current_sync_for_peer("runtime-peer", false, true, true, &mut initial)
+            .expect("initial runtime peer sync");
+
+        let supplied = "22222222-2222-4222-8222-222222222222";
+        let actor = "user:anaconda:alice/browser:cloud";
+        let result = host
+            .handle_run_all_cells(
+                &json!({
+                    "action": "run_all_cells",
+                    "cell_execution_ids": {
+                        "cell-2": supplied
+                    }
+                }),
+                "owner-peer",
+                actor,
+            )
+            .expect("dispatch ok");
+
+        assert!(result.runtime_state_changed);
+        assert!(result.notebook_changed);
+        assert!(
+            result.outbound.iter().any(|f| {
+                f.peer_id == "runtime-peer" && f.frame_type == frame_types::RUNTIME_STATE_SYNC
+            }),
+            "run-all should fan out queued executions to the registered runtime peer"
+        );
+
+        let state = host.state_doc.read_state();
+        assert_eq!(state.executions.len(), 2, "only code cells are queued");
+        let cell_1_execution_id = host
+            .doc
+            .get_execution_id("cell-1")
+            .expect("cell 1 execution pointer");
+        let cell_2_execution_id = host
+            .doc
+            .get_execution_id("cell-2")
+            .expect("cell 2 execution pointer");
+        assert_eq!(cell_2_execution_id, supplied);
+        assert_eq!(
+            host.doc.get_execution_id("markdown-1"),
+            None,
+            "markdown cells are not queued"
+        );
+
+        let first = state
+            .executions
+            .get(&cell_1_execution_id)
+            .expect("cell 1 execution");
+        let second = state
+            .executions
+            .get(&cell_2_execution_id)
+            .expect("cell 2 execution");
+        assert_eq!(first.status, "queued");
+        assert_eq!(first.source.as_deref(), Some("print('one')"));
+        assert_eq!(first.cell_id.as_deref(), Some("cell-1"));
+        assert_eq!(first.seq, Some(0));
+        assert_eq!(first.submitted_by_actor_label.as_deref(), Some(actor));
+        assert_eq!(second.status, "queued");
+        assert_eq!(second.source.as_deref(), Some("print('two')"));
+        assert_eq!(second.cell_id.as_deref(), Some("cell-2"));
+        assert_eq!(second.seq, Some(1));
+        assert_eq!(second.submitted_by_actor_label.as_deref(), Some(actor));
+        assert_eq!(
+            state.queue.queued,
+            vec![
+                QueueEntry {
+                    execution_id: cell_1_execution_id
+                },
+                QueueEntry {
+                    execution_id: cell_2_execution_id
+                },
+            ],
+            "run-all publishes the visible queue in notebook order"
         );
     }
 

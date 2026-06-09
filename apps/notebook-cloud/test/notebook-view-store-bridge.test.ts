@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { updateCellSourceById } from "@/components/notebook/state/cell-store";
+import {
+  getExecutionById,
+  getNotebookQueueProjection,
+  setExecution,
+  setNotebookQueueProjection,
+} from "@/components/notebook/state/execution-store";
 import { createNotebookViewModelFromNotebookCells } from "@/components/notebook/state/view-model-store";
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import {
@@ -63,6 +69,70 @@ describe("cloud NotebookView store bridge", () => {
 
     assert.equal(projectCalls, 1);
     assert.deepEqual(outlineTitlesFromStore(), ["Stable title"]);
+  });
+
+  it("preserves RuntimeStateDoc-owned queue projection during cell materialization", () => {
+    setNotebookQueueProjection({
+      executing_cell_id: "cell-running",
+      queued_cell_ids: ["cell-queued"],
+    });
+
+    projectCloudCellsIntoNotebookViewStores([
+      {
+        id: "cell-running",
+        cellType: "code",
+        source: "print('running')",
+        language: "python",
+        executionId: "exec-running",
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+      {
+        id: "cell-queued",
+        cellType: "code",
+        source: "print('queued')",
+        language: "python",
+        executionId: "exec-queued",
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+    ]);
+
+    assert.deepEqual(getNotebookQueueProjection(), {
+      executing_cell_id: "cell-running",
+      queued_cell_ids: ["cell-queued"],
+    });
+  });
+
+  it("does not overwrite runtime-owned execution snapshots with cloud placeholders", () => {
+    setExecution("exec-real", {
+      execution_count: 7,
+      status: "running",
+      success: null,
+      output_ids: ["out-runtime"],
+    });
+
+    projectCloudCellsIntoNotebookViewStores([
+      {
+        id: "cell-1",
+        cellType: "code",
+        source: "print('snapshot')",
+        language: "python",
+        executionId: "exec-real",
+        executionCount: 3,
+        outputs: [],
+        metadata: {},
+      },
+    ]);
+
+    assert.deepEqual(getExecutionById("exec-real"), {
+      execution_count: 7,
+      status: "running",
+      success: null,
+      output_ids: ["out-runtime"],
+    });
   });
 });
 
