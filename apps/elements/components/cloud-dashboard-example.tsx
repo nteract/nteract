@@ -4,18 +4,14 @@ import {
   ArrowUpRight,
   BookOpen,
   Clock3,
-  Columns3,
   Command,
   FilePlus2,
   Globe2,
-  Inbox,
-  ListFilter,
   Pin,
   RefreshCw,
   Search,
   Server,
   Share2,
-  Table2,
   UserRound,
   type LucideIcon,
 } from "lucide-react";
@@ -35,15 +31,6 @@ interface DashboardNotebook {
   share: ShareState;
   compute: ComputeState;
   pinned?: boolean;
-}
-
-interface RankedPattern {
-  id: string;
-  rank: string;
-  title: string;
-  verdict: string;
-  note: string;
-  icon: LucideIcon;
 }
 
 const notebooks = [
@@ -172,68 +159,6 @@ const notebooks = [
   },
 ] satisfies readonly DashboardNotebook[];
 
-const rankedPatterns = [
-  {
-    id: "one",
-    rank: "1",
-    title: "Notebook Switcher First",
-    verdict: "base direction",
-    note: "Keep search first, then add precedence and filters without returning to a dashboard.",
-    icon: Command,
-  },
-  {
-    id: "five",
-    rank: "5",
-    title: "Inbox Style",
-    verdict: "borrow filters",
-    note: "Useful for explicit state buckets, but the full inbox layout feels too app-like.",
-    icon: Inbox,
-  },
-  {
-    id: "eight",
-    rank: "8",
-    title: "Activity Log",
-    verdict: "borrow time groups",
-    note: "Good scan path for testing clutter: today, yesterday, earlier.",
-    icon: Clock3,
-  },
-  {
-    id: "ten",
-    rank: "10",
-    title: "Pinned + Recent",
-    verdict: "borrow precedence",
-    note: "A pin/favorite lane keeps real notebooks above smoke-test noise.",
-    icon: Pin,
-  },
-] satisfies readonly RankedPattern[];
-
-const essentialPatterns = [
-  {
-    id: "two",
-    rank: "2",
-    title: "Triage Buckets",
-    verdict: "cleanup essential",
-    note: "Recent, needs title, and published are still useful product states.",
-    icon: ListFilter,
-  },
-  {
-    id: "nine",
-    rank: "9",
-    title: "Finder Columns",
-    verdict: "organization essential",
-    note: "Project grouping matters, but this should probably be a filter mode.",
-    icon: Columns3,
-  },
-  {
-    id: "eleven",
-    rank: "11",
-    title: "Bare File Browser",
-    verdict: "density essential",
-    note: "The table is boring, but it is the baseline for dense inventory legibility.",
-    icon: Table2,
-  },
-] satisfies readonly RankedPattern[];
-
 const dashboardFacts = {
   visible: 100,
   owned: 88,
@@ -243,14 +168,9 @@ const dashboardFacts = {
 
 export function CloudDashboardExample() {
   return (
-    <div className="not-prose space-y-6" data-elements-slot="cloud-dashboard">
+    <div className="not-prose" data-elements-slot="cloud-dashboard">
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-background">
         <DashboardReviewFrame />
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
-        <RankedPatternPanel title="Use these as input to direction 1" patterns={rankedPatterns} />
-        <RankedPatternPanel title="Keep as baseline constraints" patterns={essentialPatterns} />
       </section>
     </div>
   );
@@ -266,14 +186,14 @@ function DashboardReviewFrame() {
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
             <Command className="size-3.5" aria-hidden="true" />
-            Direction 1 with useful pieces from 5, 8, and 10
+            Notebook home
           </div>
           <h2 className="mt-2 text-2xl font-semibold tracking-normal md:text-3xl">
             Find a notebook
           </h2>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-fd-muted-foreground">
-            Search stays primary. Filters, activity groups, and pinned work become quiet precedence
-            controls around the list.
+            Search stays primary. Pinned work, activity groups, and cleanup filters make large
+            notebook inventories readable without turning the home into a project board.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -343,7 +263,7 @@ function DashboardReviewFrame() {
               <Server className="size-3.5" aria-hidden="true" />
               Workstation
             </div>
-            <h3 className="mt-2 text-base font-semibold">Lab workstation</h3>
+            <h3 className="mt-2 text-base font-semibold">Default workstation</h3>
             <p className="mt-2 text-sm leading-6 text-fd-muted-foreground">
               Host-owned context only. Execution controls stay inside the opened notebook.
             </p>
@@ -362,45 +282,6 @@ function DashboardReviewFrame() {
         </aside>
       </main>
     </div>
-  );
-}
-
-function RankedPatternPanel({
-  title,
-  patterns,
-}: {
-  title: string;
-  patterns: readonly RankedPattern[];
-}) {
-  return (
-    <section className="rounded-lg border border-fd-border bg-fd-background p-4">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <div className="mt-4 grid gap-3">
-        {patterns.map((pattern) => {
-          const Icon = pattern.icon;
-          return (
-            <article
-              key={pattern.id}
-              className="grid grid-cols-[2rem_auto_minmax(0,1fr)] items-start gap-3 border-t border-fd-border pt-3"
-            >
-              <span className="inline-flex size-8 items-center justify-center rounded-md border border-fd-border text-xs font-semibold text-fd-muted-foreground">
-                {pattern.rank}
-              </span>
-              <Icon className="mt-1 size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <div className="min-w-0">
-                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-                  <h4 className="m-0 text-sm font-semibold">{pattern.title}</h4>
-                  <span className="text-xs font-medium text-fd-muted-foreground">
-                    {pattern.verdict}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm leading-6 text-fd-muted-foreground">{pattern.note}</p>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 
