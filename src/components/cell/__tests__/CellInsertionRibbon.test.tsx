@@ -24,17 +24,23 @@ describe("CellInsertionRibbon", () => {
     const { container } = render(<CellInsertionRibbon onInsert={onInsert} />);
 
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
+    const primaryBridge = container.querySelector('[data-slot="cell-adder-primary-bridge"]');
     expect(hitTarget).toHaveAttribute("aria-label", "Add code cell here");
     expect(hitTarget).toHaveAttribute("title", "Add code cell here");
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
+    expect(primaryBridge).toBeNull();
 
     fireEvent.pointerEnter(hitTarget!);
+    const activePrimaryBridge = container.querySelector('[data-slot="cell-adder-primary-bridge"]');
     expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toHaveClass(
       "bg-sky-400",
     );
-    expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toHaveClass(
-      "opacity-100",
-    );
+    expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toBeNull();
+    expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
+    expect(activePrimaryBridge).toHaveClass("h-6");
+    expect(activePrimaryBridge).toHaveClass("bg-sky-500/12");
+    expect(activePrimaryBridge).toHaveClass("border-sky-500/20");
+    expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-6");
 
     fireEvent.click(hitTarget!);
 
@@ -47,7 +53,6 @@ describe("CellInsertionRibbon", () => {
     const adder = container.querySelector('[data-slot="cell-adder"]');
     const continuation = container.querySelector('[data-slot="cell-adder-ribbon-continuation"]');
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
-    const glyph = container.querySelector('[data-slot="cell-adder-primary-glyph"]');
 
     fireEvent.pointerEnter(adder!);
 
@@ -56,7 +61,7 @@ describe("CellInsertionRibbon", () => {
     expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toBeNull();
     expect(continuation).toHaveClass("bg-gray-300/70");
     expect(hitTarget).toHaveClass("bg-transparent");
-    expect(glyph).toHaveClass("opacity-0");
+    expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toBeNull();
   });
 
   it("keeps explicit actions out of the tab order until the row is awake", () => {
@@ -89,6 +94,7 @@ describe("CellInsertionRibbon", () => {
     const actions = container.querySelector('[data-slot="cell-adder-actions"]');
     const palette = container.querySelector('[data-slot="cell-adder-action-palette"]');
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
+    const primaryBridge = container.querySelector('[data-slot="cell-adder-primary-bridge"]');
     const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
     const leadingRule = container.querySelector('[data-slot="cell-adder-leading-rule"]');
     const trailingRule = container.querySelector('[data-slot="cell-adder-trailing-rule"]');
@@ -96,18 +102,31 @@ describe("CellInsertionRibbon", () => {
     expect(actions).toHaveClass("opacity-100");
     expect(actions).toHaveClass("flex-1");
     expect(palette).toHaveClass("shrink-0");
-    expect(palette).toHaveClass("pl-0.5");
+    expect(palette).toHaveClass("pl-0");
+    expect(palette).toHaveClass("gap-0");
+    expect(palette).not.toHaveClass("bg-emerald-500/8");
     expect(palette).not.toHaveClass("rounded-full");
     expect(palette).not.toHaveClass("shadow-sm");
-    expect(hitTarget).toHaveClass("bg-emerald-500/6");
-    expect(hitTarget).toHaveClass("text-emerald-700");
+    expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
+    expect(primaryBridge).toHaveClass("bg-emerald-500/12");
+    expect(primaryBridge).toHaveClass("h-6");
+    expect(primaryBridge).toHaveClass("border-emerald-500/20");
     expect(intent).toHaveClass("bg-emerald-400");
     expect(leadingRule).toHaveClass("w-2");
-    expect(leadingRule).toHaveClass("bg-emerald-400/50");
+    expect(leadingRule).toHaveClass("h-6");
+    expect(leadingRule).toHaveClass("bg-emerald-500/12");
+    expect(leadingRule).toHaveClass("border-emerald-500/20");
     expect(trailingRule).toHaveClass("bg-gradient-to-r");
     expect(trailingRule).toHaveClass("from-emerald-400/35");
     expect(trailingRule).toHaveClass("flex-1");
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("text-emerald-700");
+    expect(screen.getByTitle("Add markdown cell")).toHaveClass("rounded-l-none");
+    expect(screen.getByTitle("Add markdown cell")).toHaveClass("border-emerald-500/20");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("bg-emerald-500/12");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("border-emerald-500/20");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("border-x-0");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("text-muted-foreground/45");
+    expect(screen.getByTitle("Add code cell")).not.toHaveClass("text-emerald-700");
   });
 
   it("softens the terminal row into a document tail", () => {
@@ -131,5 +150,7 @@ describe("CellInsertionRibbon", () => {
     );
     expect(intent).toHaveClass("h-7");
     expect(intent).toHaveClass("bg-gradient-to-b");
+    expect(container.querySelector('[data-slot="cell-adder-primary-bridge"]')).toBeNull();
+    expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-px");
   });
 });

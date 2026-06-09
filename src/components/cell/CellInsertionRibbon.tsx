@@ -1,4 +1,4 @@
-import { Code, LetterText, Plus } from "lucide-react";
+import { Code, LetterText } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { notebookCellLayoutVars } from "./cell-layout";
@@ -26,14 +26,19 @@ const terminalInsertionRibbonClasses: Record<CellInsertionType, string> = {
 };
 
 const actionButtonIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-500/12 text-sky-700 ring-sky-500/20 hover:bg-sky-500/16 dark:text-sky-300",
+  code: "border-sky-500/20 bg-sky-500/12 text-sky-700 hover:bg-sky-500/16 dark:border-sky-300/20 dark:text-sky-300",
   markdown:
-    "bg-emerald-500/12 text-emerald-700 ring-emerald-500/20 hover:bg-emerald-500/16 dark:text-emerald-300",
+    "border-emerald-500/20 bg-emerald-500/12 text-emerald-700 hover:bg-emerald-500/16 dark:border-emerald-300/20 dark:text-emerald-300",
 };
 
-const insertionRuleIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-400/50 dark:bg-sky-300/40",
-  markdown: "bg-emerald-400/50 dark:bg-emerald-300/40",
+const insertionBridgeSurfaceClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-500/12 dark:bg-sky-400/10",
+  markdown: "bg-emerald-500/12 dark:bg-emerald-400/10",
+};
+
+const insertionBridgeBorderClasses: Record<CellInsertionType, string> = {
+  code: "border-sky-500/20 dark:border-sky-300/20",
+  markdown: "border-emerald-500/20 dark:border-emerald-300/20",
 };
 
 const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
@@ -42,9 +47,9 @@ const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
     "bg-gradient-to-r from-emerald-400/35 via-border/35 to-transparent dark:from-emerald-300/30 dark:via-border/30",
 };
 
-const insertionChannelIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-500/6 text-sky-700 dark:text-sky-300",
-  markdown: "bg-emerald-500/6 text-emerald-700 dark:text-emerald-300",
+const insertionTypeOrder: Record<CellInsertionType, number> = {
+  code: 0,
+  markdown: 1,
 };
 
 export function CellInsertionRibbon({
@@ -63,6 +68,7 @@ export function CellInsertionRibbon({
   const visualActiveType = resolvedActiveType ?? null;
   const isOpen = interactionActive || forceActionsVisible;
   const actionTabIndex = isOpen ? 0 : -1;
+  const bridgeActiveType = terminal ? null : visualActiveType;
   const ribbonClass = visualActiveType
     ? terminal
       ? terminalInsertionRibbonClasses[visualActiveType]
@@ -76,18 +82,46 @@ export function CellInsertionRibbon({
     onActiveTypeChange?.(type);
   };
 
-  const actionButtonClass = (type: CellInsertionType) =>
-    cn(
-      "inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors ring-1 ring-transparent",
+  const actionButtonClass = (type: CellInsertionType) => {
+    const isActive = visualActiveType === type;
+    const isBridgeLead =
+      bridgeActiveType !== null && insertionTypeOrder[type] < insertionTypeOrder[bridgeActiveType];
+    const isBridged =
+      bridgeActiveType !== null && insertionTypeOrder[type] <= insertionTypeOrder[bridgeActiveType];
+    const bridgeClasses = bridgeActiveType
+      ? cn(
+          insertionBridgeSurfaceClasses[bridgeActiveType],
+          insertionBridgeBorderClasses[bridgeActiveType],
+        )
+      : null;
+
+    return cn(
+      "inline-flex h-6 items-center justify-center gap-1 border border-transparent px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors",
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-      visualActiveType === type
+      isBridged ? "rounded-none" : "rounded-full",
+      bridgeActiveType === type && "rounded-l-none rounded-r-full",
+      bridgeActiveType === "code" && type === "markdown" && "ml-1",
+      isActive
         ? actionButtonIntentClasses[type]
-        : "hover:bg-muted/45 hover:text-foreground",
+        : isBridgeLead && bridgeClasses
+          ? cn(
+              bridgeClasses,
+              "border-x-0",
+              "text-muted-foreground/45 hover:text-muted-foreground/65",
+            )
+          : "hover:bg-muted/45 hover:text-foreground",
     );
+  };
 
   const leadingInsertionRuleClass = cn(
-    "h-px rounded-full transition-colors duration-150",
-    visualActiveType ? insertionRuleIntentClasses[visualActiveType] : "bg-border/45",
+    "transition-colors duration-150",
+    bridgeActiveType
+      ? cn(
+          "h-6 border-y",
+          insertionBridgeSurfaceClasses[bridgeActiveType],
+          insertionBridgeBorderClasses[bridgeActiveType],
+        )
+      : "h-px rounded-full bg-border/45",
   );
   const trailingInsertionRuleClass = cn(
     "h-px rounded-full transition-colors duration-150",
@@ -156,24 +190,27 @@ export function CellInsertionRibbon({
         onFocus={() => setActiveType("code")}
         onClick={() => onInsert("code")}
         className={cn(
-          "flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
+          "relative flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
           visualActiveType
-            ? insertionChannelIntentClasses[visualActiveType]
+            ? "text-muted-foreground/0"
             : isOpen
               ? "bg-transparent text-muted-foreground/35 hover:bg-muted/20 hover:text-muted-foreground/65"
               : "text-muted-foreground/0 hover:bg-muted/20",
           terminal && "h-7",
         )}
       >
-        <Plus
-          data-slot="cell-adder-primary-glyph"
-          className={cn(
-            "size-3 transition-opacity duration-150",
-            visualActiveType ? "opacity-100" : "opacity-0",
-          )}
-          aria-hidden="true"
-        />
+        {bridgeActiveType ? (
+          <span
+            data-slot="cell-adder-primary-bridge"
+            className={cn(
+              "pointer-events-none absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded-l-full border-y border-l",
+              insertionBridgeSurfaceClasses[bridgeActiveType],
+              insertionBridgeBorderClasses[bridgeActiveType],
+            )}
+            aria-hidden="true"
+          />
+        ) : null}
         <span className="sr-only">Add code cell here</span>
       </button>
       <div
@@ -196,7 +233,10 @@ export function CellInsertionRibbon({
         />
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1"
+          className={cn(
+            "flex h-7 shrink-0 items-center py-0 pl-0 pr-1 transition-colors duration-150",
+            bridgeActiveType ? "gap-0" : "gap-1",
+          )}
         >
           <button
             type="button"
@@ -208,7 +248,6 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("code")}
             className={actionButtonClass("code")}
           >
-            <Plus className="h-2.5 w-2.5" aria-hidden="true" />
             <Code className="h-3 w-3" aria-hidden="true" />
             <span>Code</span>
           </button>
@@ -222,7 +261,6 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("markdown")}
             className={actionButtonClass("markdown")}
           >
-            <Plus className="h-2.5 w-2.5" aria-hidden="true" />
             <LetterText className="h-3 w-3" aria-hidden="true" />
             <span>Markdown</span>
           </button>
