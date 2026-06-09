@@ -1,5 +1,8 @@
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
-import { isCloudNotebookListItem, type CloudNotebookListItem } from "./notebook-dashboard";
+import {
+  isCloudNotebookListItem,
+  type CloudNotebookListItem,
+} from "@/components/notebook/workspace/notebook-dashboard";
 
 export const CLOUD_NOTEBOOK_LIST_CACHE_STORAGE_KEY =
   "nteract:notebook-cloud:notebook-list-cache:v1";

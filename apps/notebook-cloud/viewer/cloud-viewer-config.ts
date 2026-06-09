@@ -1,6 +1,6 @@
 import { isCloudAppSession } from "./app-session";
 import type { CloudViewerConfig } from "./cloud-viewer-session";
-import { isCloudNotebookListItem } from "./notebook-dashboard";
+import { isCloudNotebookListItem } from "@/components/notebook/workspace/notebook-dashboard";
 import { normalizeOidcAuthConfig, type CloudOidcAuthConfig } from "./oidc-auth";
 import type {
   CloudNotebookListBootstrap,

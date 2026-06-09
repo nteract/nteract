@@ -21,7 +21,7 @@ import {
   type CloudNotebookDashboardRowFact,
   type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
-} from "./notebook-dashboard";
+} from "@/components/notebook/workspace/notebook-dashboard";
 
 interface CloudNotebookDashboardRenameState {
   notebookId: string;

@@ -8,7 +8,7 @@ import {
   writeCachedCloudNotebookList,
 } from "../viewer/notebook-list-cache";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
-import type { CloudNotebookListItem } from "../viewer/notebook-dashboard";
+import type { CloudNotebookListItem } from "@/components/notebook/workspace/notebook-dashboard";
 
 describe("cloud notebook list cache", () => {
   it("round-trips notebooks for the same browser identity", () => {

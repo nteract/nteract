@@ -27,7 +27,10 @@ import type {
   CloudNotebookUpdateResponse,
   CloudViewerAuthConfig,
 } from "./cloud-viewer-types";
-import { projectCloudNotebookDashboard, type CloudNotebookListItem } from "./notebook-dashboard";
+import {
+  projectCloudNotebookDashboard,
+  type CloudNotebookListItem,
+} from "@/components/notebook/workspace/notebook-dashboard";
 import {
   clearCachedCloudNotebookList,
   readCachedCloudNotebookList,

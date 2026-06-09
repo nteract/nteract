@@ -6,7 +6,7 @@ import {
   projectCloudNotebookDashboard,
   projectCloudNotebookDashboardView,
   type CloudNotebookListItem,
-} from "../viewer/notebook-dashboard";
+} from "@/components/notebook/workspace/notebook-dashboard";
 
 describe("cloud notebook dashboard projection", () => {
   it("sorts by recency and derives dashboard summary counts", () => {
