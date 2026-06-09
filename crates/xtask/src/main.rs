@@ -4,7 +4,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, ExitStatus, Stdio};
 use std::thread;
@@ -2899,6 +2899,7 @@ fn dev_daemon_running() -> bool {
 
 #[cfg(unix)]
 fn dev_daemon_socket_reports_running() -> bool {
+    use std::io::Write as _;
     use std::os::unix::net::UnixStream;
 
     let Ok(mut stream) = UnixStream::connect(dev_socket_path()) else {
@@ -2939,14 +2940,19 @@ fn dev_daemon_socket_reports_running() -> bool {
     false
 }
 
-fn send_json_frame_sync(stream: &mut impl Write, value: &serde_json::Value) -> std::io::Result<()> {
+#[cfg(unix)]
+fn send_json_frame_sync(
+    stream: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
     let payload = serde_json::to_vec(value).map_err(std::io::Error::other)?;
     stream.write_all(&(payload.len() as u32).to_be_bytes())?;
     stream.write_all(&payload)?;
     stream.flush()
 }
 
-fn recv_json_frame_sync(stream: &mut impl Read) -> std::io::Result<serde_json::Value> {
+#[cfg(unix)]
+fn recv_json_frame_sync(stream: &mut impl std::io::Read) -> std::io::Result<serde_json::Value> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
