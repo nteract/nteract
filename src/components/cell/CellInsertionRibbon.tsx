@@ -158,8 +158,9 @@ export function CellInsertionRibbon({
         onFocus={() => setActiveType("code")}
         onClick={() => onInsert("code")}
         className={cn(
-          "flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
+          "flex h-full shrink-0 items-center justify-center overflow-hidden rounded-none transition-[background-color,color,width] duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
+          isOpen ? "w-0 pointer-events-none" : "w-[var(--cell-content-column-inset,3.25rem)]",
           visualActiveType
             ? insertionChannelIntentClasses[visualActiveType]
             : isOpen
@@ -190,10 +191,7 @@ export function CellInsertionRibbon({
         />
         <div
           data-slot="cell-adder-action-palette"
-          className={cn(
-            "flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1 transition-colors duration-150",
-            visualActiveType && insertionBridgeIntentClasses[visualActiveType],
-          )}
+          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1 transition-colors duration-150"
         >
           <button
             type="button"
