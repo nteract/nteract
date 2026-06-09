@@ -35,6 +35,11 @@ describe("cloud notebook dashboard projection", () => {
     const model = projectCloudNotebookDashboard([oldViewer, newOwner, editor]);
 
     assert.equal(model.continueNotebook?.notebook_id, "owner-new");
+    assert.deepEqual(model.continueRow, {
+      contextLabel: null,
+      facts: [],
+      notebook: newOwner,
+    });
     assert.deepEqual(
       model.notebooks.map((item) => item.notebook_id),
       ["owner-new", "editor-mid", "viewer-old"],
@@ -184,11 +189,15 @@ describe("cloud notebook dashboard projection", () => {
     );
     assert.deepEqual(
       sharedView.sections.flatMap((section) =>
-        section.rows.map((row) => [row.notebook.notebook_id, row.contextLabel]),
+        section.rows.map((row) => [
+          row.notebook.notebook_id,
+          row.contextLabel,
+          row.facts.map((fact) => [fact.kind, fact.label]),
+        ]),
       ),
       [
-        ["renderer-regression", "Shared edit access"],
-        ["archive", "Shared view access"],
+        ["renderer-regression", "Shared edit access", [["access", "editor"]]],
+        ["archive", "Shared view access", [["access", "viewer"]]],
       ],
     );
   });
@@ -234,12 +243,16 @@ describe("cloud notebook dashboard projection", () => {
     );
     assert.deepEqual(
       view.sections.flatMap((section) =>
-        section.rows.map((row) => [row.notebook.notebook_id, row.contextLabel]),
+        section.rows.map((row) => [
+          row.notebook.notebook_id,
+          row.contextLabel,
+          row.facts.map((fact) => [fact.kind, fact.label]),
+        ]),
       ),
       [
-        ["topic-viz", null],
-        ["toolbar-smoke", "Generated run"],
-        ["untitled-new", "Needs title"],
+        ["topic-viz", null, [["published", "Published"]]],
+        ["toolbar-smoke", "Generated run", []],
+        ["untitled-new", "Needs title", []],
       ],
     );
   });

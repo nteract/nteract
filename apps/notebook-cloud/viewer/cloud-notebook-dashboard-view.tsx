@@ -4,7 +4,6 @@ import {
   Check,
   Clock,
   ExternalLink,
-  Globe2,
   Loader2,
   PencilLine,
   Search,
@@ -19,6 +18,7 @@ import {
   type CloudNotebookDashboardFilterId,
   type CloudNotebookDashboardModel,
   type CloudNotebookDashboardRow,
+  type CloudNotebookDashboardRowFact,
   type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
@@ -47,7 +47,7 @@ export function CloudNotebookDashboard({
   onRenameTitleChange: (title: string) => void;
   onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const continued = model.continueNotebook;
+  const continued = model.continueRow;
   const [query, setQuery] = useState("");
   const [filterId, setFilterId] = useState<CloudNotebookDashboardFilterId>("all");
   const view = useMemo(
@@ -61,25 +61,18 @@ export function CloudNotebookDashboard({
         <section className="cloud-dashboard-continue" aria-labelledby="cloud-dashboard-continue">
           <div className="cloud-dashboard-continue-main">
             <p>Continue</p>
-            <h2 id="cloud-dashboard-continue">{cloudNotebookDisplayTitle(continued)}</h2>
+            <h2 id="cloud-dashboard-continue">{cloudNotebookDisplayTitle(continued.notebook)}</h2>
             <div className="cloud-dashboard-continue-facts">
               <span>
                 <Clock aria-hidden="true" />
-                {formatNotebookUpdatedAt(continued.updated_at)}
+                {formatNotebookUpdatedAt(continued.notebook.updated_at)}
               </span>
-              <span>
-                <UserRound aria-hidden="true" />
-                {formatNotebookScope(continued.scope)}
-              </span>
-              {continued.latest_revision_id ? (
-                <span>
-                  <Globe2 aria-hidden="true" />
-                  Published
-                </span>
-              ) : null}
+              {continued.facts.map((fact) => (
+                <CloudNotebookDashboardFact key={fact.kind} fact={fact} />
+              ))}
             </div>
           </div>
-          <a className="cloud-dashboard-primary-link" href={continued.viewer_url}>
+          <a className="cloud-dashboard-primary-link" href={continued.notebook.viewer_url}>
             Open notebook
             <ExternalLink aria-hidden="true" />
           </a>
@@ -300,18 +293,13 @@ function CloudNotebookDashboardRow({
       <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
         {detail ? <span className="cloud-notebook-list-detail">{detail}</span> : null}
-        <span className="cloud-notebook-list-row-facts">
-          <span>
-            <UserRound aria-hidden="true" />
-            {formatNotebookScope(notebook.scope)}
+        {row.facts.length > 0 ? (
+          <span className="cloud-notebook-list-row-facts">
+            {row.facts.map((fact) => (
+              <CloudNotebookDashboardFact key={fact.kind} fact={fact} />
+            ))}
           </span>
-          {notebook.latest_revision_id ? (
-            <span data-state="published">
-              <Share2 aria-hidden="true" />
-              Published
-            </span>
-          ) : null}
-        </span>
+        ) : null}
       </a>
       <span className="cloud-notebook-list-updated">
         <Clock aria-hidden="true" />
@@ -346,17 +334,22 @@ function canRenameCloudNotebook(notebook: CloudNotebookListItem): boolean {
   return notebook.scope === "owner" || notebook.scope === "editor";
 }
 
-function formatNotebookScope(scope: CloudNotebookListItem["scope"]): string {
-  switch (scope) {
-    case "owner":
-      return "owner";
-    case "editor":
-      return "editor";
-    case "runtime_peer":
-      return "runtime";
-    case "viewer":
-      return "viewer";
+function CloudNotebookDashboardFact({ fact }: { fact: CloudNotebookDashboardRowFact }) {
+  if (fact.kind === "published") {
+    return (
+      <span data-state="published">
+        <Share2 aria-hidden="true" />
+        {fact.label}
+      </span>
+    );
   }
+
+  return (
+    <span>
+      <UserRound aria-hidden="true" />
+      {fact.label}
+    </span>
+  );
 }
 
 function formatNotebookUpdatedAt(value: string): string {

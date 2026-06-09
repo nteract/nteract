@@ -37,6 +37,7 @@ export interface CloudNotebookDashboardFilter {
 
 export interface CloudNotebookDashboardModel {
   continueNotebook: CloudNotebookListItem | null;
+  continueRow: CloudNotebookDashboardRow | null;
   filters: readonly CloudNotebookDashboardFilter[];
   metrics: readonly CloudNotebookDashboardMetric[];
   notebooks: readonly CloudNotebookListItem[];
@@ -55,7 +56,13 @@ export interface CloudNotebookDashboardSection {
 
 export interface CloudNotebookDashboardRow {
   contextLabel: string | null;
+  facts: readonly CloudNotebookDashboardRowFact[];
   notebook: CloudNotebookListItem;
+}
+
+export interface CloudNotebookDashboardRowFact {
+  kind: "access" | "published";
+  label: string;
 }
 
 export interface CloudNotebookDashboardSectionFilterAction {
@@ -109,6 +116,7 @@ export function projectCloudNotebookDashboard(
 
   return {
     continueNotebook: namedWork[0] ?? titled[0] ?? sorted[0] ?? null,
+    continueRow: dashboardRow(namedWork[0] ?? titled[0] ?? sorted[0] ?? null),
     filters: cloudNotebookDashboardFilters({
       notebooks,
       generatedCount,
@@ -391,10 +399,20 @@ function cloudNotebookCanRename(notebook: CloudNotebookListItem): boolean {
 }
 
 function dashboardRows(notebooks: readonly CloudNotebookListItem[]): CloudNotebookDashboardRow[] {
-  return notebooks.map((notebook) => ({
+  return notebooks
+    .map(dashboardRow)
+    .filter((row): row is CloudNotebookDashboardRow => Boolean(row));
+}
+
+function dashboardRow(notebook: CloudNotebookListItem | null): CloudNotebookDashboardRow | null {
+  if (!notebook) {
+    return null;
+  }
+  return {
     contextLabel: cloudNotebookDashboardRowContextLabel(notebook),
+    facts: Object.freeze(cloudNotebookDashboardRowFacts(notebook)),
     notebook,
-  }));
+  };
 }
 
 function cloudNotebookDashboardRowContextLabel(notebook: CloudNotebookListItem): string | null {
@@ -415,6 +433,29 @@ function cloudNotebookDashboardRowContextLabel(notebook: CloudNotebookListItem):
       break;
   }
   return null;
+}
+
+function cloudNotebookDashboardRowFacts(
+  notebook: CloudNotebookListItem,
+): CloudNotebookDashboardRowFact[] {
+  const facts: CloudNotebookDashboardRowFact[] = [];
+  switch (notebook.scope) {
+    case "editor":
+      facts.push({ kind: "access", label: "editor" });
+      break;
+    case "viewer":
+      facts.push({ kind: "access", label: "viewer" });
+      break;
+    case "runtime_peer":
+      facts.push({ kind: "access", label: "runtime" });
+      break;
+    case "owner":
+      break;
+  }
+  if (notebook.latest_revision_id) {
+    facts.push({ kind: "published", label: "Published" });
+  }
+  return facts;
 }
 
 function cloudNotebookIsGeneratedRun(notebook: CloudNotebookListItem): boolean {
