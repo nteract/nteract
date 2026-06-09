@@ -34,8 +34,7 @@ describe("CellInsertionRibbon", () => {
     );
     expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toBeNull();
     expect(hitTarget).toHaveClass("bg-sky-500/8");
-    expect(hitTarget).toHaveClass("w-0");
-    expect(hitTarget).toHaveClass("pointer-events-none");
+    expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
     expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-full");
 
     fireEvent.click(hitTarget!);
@@ -102,7 +101,7 @@ describe("CellInsertionRibbon", () => {
     expect(palette).not.toHaveClass("rounded-full");
     expect(palette).not.toHaveClass("shadow-sm");
     expect(hitTarget).toHaveClass("bg-emerald-500/8");
-    expect(hitTarget).toHaveClass("w-0");
+    expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
     expect(intent).toHaveClass("bg-emerald-400");
     expect(leadingRule).toHaveClass("w-2");
     expect(leadingRule).toHaveClass("h-full");
