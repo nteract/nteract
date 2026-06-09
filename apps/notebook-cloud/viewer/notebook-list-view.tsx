@@ -278,7 +278,7 @@ export function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerA
     <main className="cloud-notebook-list-page">
       <header className="cloud-notebook-list-header">
         <div>
-          <a className="cloud-notebook-list-brand" href="/">
+          <a className="cloud-notebook-list-brand" href="/n">
             nteract
           </a>
           <h1>Notebooks</h1>

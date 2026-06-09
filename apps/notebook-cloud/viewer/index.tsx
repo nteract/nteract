@@ -49,6 +49,9 @@ function App() {
   );
 
   if (isHomePath()) {
+    // The Worker currently redirects / and /index.html to /n. Keep this route
+    // mounted for the temporary redirect's rollback path and future home-page
+    // experiments that may serve the viewer shell directly again.
     return <CloudHomeView authConfig={authConfig} />;
   }
 

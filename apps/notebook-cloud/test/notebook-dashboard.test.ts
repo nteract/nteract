@@ -161,7 +161,7 @@ describe("cloud notebook dashboard projection", () => {
     assert.equal(view.sections[0]?.action, null);
   });
 
-  it("projects search-first activity sections without mutating the dashboard model", () => {
+  it("projects search-first sections and search-aware filter counts without mutating the model", () => {
     const topic = notebook({
       id: "topic-viz",
       title: "Topic Visualization",
@@ -186,6 +186,7 @@ describe("cloud notebook dashboard projection", () => {
 
     const model = projectCloudNotebookDashboard([archive, renderer, topic]);
     const searchView = projectCloudNotebookDashboardView(model, { query: "render" });
+    const oldSearchView = projectCloudNotebookDashboardView(model, { query: "archived" });
     const sharedView = projectCloudNotebookDashboardView(model, { filterId: "shared" });
     const defaultView = projectCloudNotebookDashboardView(model);
 
@@ -195,6 +196,30 @@ describe("cloud notebook dashboard projection", () => {
     assert.deepEqual(
       searchView.sections.flatMap((section) => section.notebooks.map((item) => item.notebook_id)),
       ["renderer-regression"],
+    );
+    assert.deepEqual(
+      searchView.sections.map((section) => [section.id, section.title, section.detail]),
+      [["search", "Search results", "1 notebook matching search"]],
+    );
+    assert.deepEqual(
+      oldSearchView.sections.map((section) => [section.id, section.title, section.detail]),
+      [["search", "Search results", "1 notebook matching search"]],
+    );
+    assert.deepEqual(
+      searchView.filters.map((filter) => [filter.id, filter.count, filter.group]),
+      [
+        ["all", 1, "work"],
+        ["shared", 1, "work"],
+      ],
+    );
+    assert.deepEqual(
+      defaultView.filters.map((filter) => [filter.id, filter.count, filter.group]),
+      [
+        ["all", 3, "work"],
+        ["owned", 1, "work"],
+        ["shared", 2, "work"],
+        ["published", 1, "work"],
+      ],
     );
     assert.deepEqual(
       sharedView.sections.map((section) => [section.id, section.title, section.notebooks.length]),

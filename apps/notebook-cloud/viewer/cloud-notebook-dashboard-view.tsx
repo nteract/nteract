@@ -98,7 +98,7 @@ export function CloudNotebookDashboard({
             ) : null}
           </div>
           <nav className="cloud-dashboard-filters" aria-label="Notebook filters">
-            {model.filterGroups.map((group) => (
+            {view.filterGroups.map((group) => (
               <div
                 key={group.id}
                 className="cloud-dashboard-filter-group"

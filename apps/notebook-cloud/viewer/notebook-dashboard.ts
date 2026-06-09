@@ -85,6 +85,8 @@ export type CloudNotebookDashboardSectionAction =
 export interface CloudNotebookDashboardView {
   emptyMessage: string;
   filterId: CloudNotebookDashboardFilterId;
+  filterGroups: readonly CloudNotebookDashboardFilterGroup[];
+  filters: readonly CloudNotebookDashboardFilter[];
   query: string;
   resultCount: number;
   sections: readonly CloudNotebookDashboardSection[];
@@ -107,20 +109,7 @@ export function projectCloudNotebookDashboard(
   });
   const titled = sorted.filter(cloudNotebookHasTitle);
   const namedWork = titled.filter((notebook) => !cloudNotebookIsGeneratedRun(notebook));
-  const generatedCount = sorted.filter(cloudNotebookIsGeneratedRun).length;
-  const untitled = sorted.filter((notebook) => !cloudNotebookHasTitle(notebook));
-  const ownerCount = notebooks.filter((notebook) => notebook.scope === "owner").length;
-  const publishedCount = notebooks.filter((notebook) =>
-    Boolean(notebook.latest_revision_id),
-  ).length;
-
-  const filters = cloudNotebookDashboardFilters({
-    notebooks,
-    generatedCount,
-    ownerCount,
-    publishedCount,
-    untitledCount: untitled.length,
-  });
+  const filters = cloudNotebookDashboardFilters(notebooks);
 
   return {
     continueNotebook: namedWork[0] ?? titled[0] ?? sorted[0] ?? null,
@@ -142,13 +131,20 @@ export function projectCloudNotebookDashboardView(
     ? (input?.filterId ?? "all")
     : "all";
   const query = normalizeSearchQuery(input?.query);
-  const filtered = model.notebooks
-    .filter((notebook) => cloudNotebookMatchesFilter(notebook, filterId))
-    .filter((notebook) => cloudNotebookMatchesSearch(notebook, query));
+  const searched = model.notebooks.filter((notebook) =>
+    cloudNotebookMatchesSearch(notebook, query),
+  );
+  const filters = cloudNotebookVisibleDashboardFilters(
+    cloudNotebookDashboardFiltersWithCounts(model.filters, searched),
+    { filterId, query },
+  );
+  const filtered = searched.filter((notebook) => cloudNotebookMatchesFilter(notebook, filterId));
 
   return {
     emptyMessage: cloudNotebookDashboardEmptyMessage(filterId, query),
     filterId,
+    filterGroups: cloudNotebookDashboardFilterGroups(filters),
+    filters,
     query,
     resultCount: filtered.length,
     sections: cloudNotebookDashboardSections(filtered, {
@@ -213,20 +209,16 @@ function cloudNotebookHasTitle(notebook: CloudNotebookListItem): boolean {
   return Boolean(notebook.title?.trim());
 }
 
-function cloudNotebookDashboardFilters({
-  generatedCount,
-  notebooks,
-  ownerCount,
-  publishedCount,
-  untitledCount,
-}: {
-  generatedCount: number;
-  notebooks: readonly CloudNotebookListItem[];
-  ownerCount: number;
-  publishedCount: number;
-  untitledCount: number;
-}): CloudNotebookDashboardFilter[] {
+function cloudNotebookDashboardFilters(
+  notebooks: readonly CloudNotebookListItem[],
+): CloudNotebookDashboardFilter[] {
+  const generatedCount = notebooks.filter(cloudNotebookIsGeneratedRun).length;
+  const ownerCount = notebooks.filter((notebook) => notebook.scope === "owner").length;
+  const publishedCount = notebooks.filter((notebook) =>
+    Boolean(notebook.latest_revision_id),
+  ).length;
   const sharedCount = notebooks.filter((notebook) => notebook.scope !== "owner").length;
+  const untitledCount = notebooks.filter((notebook) => !cloudNotebookHasTitle(notebook)).length;
   const filters: CloudNotebookDashboardFilter[] = [
     { id: "all", label: "Recent", count: notebooks.length, group: "work" },
   ];
@@ -246,6 +238,28 @@ function cloudNotebookDashboardFilters({
     filters.push({ id: "untitled", label: "Untitled", count: untitledCount, group: "cleanup" });
   }
   return filters;
+}
+
+function cloudNotebookDashboardFiltersWithCounts(
+  filters: readonly CloudNotebookDashboardFilter[],
+  notebooks: readonly CloudNotebookListItem[],
+): CloudNotebookDashboardFilter[] {
+  return filters.map((filter) => ({
+    ...filter,
+    count: notebooks.filter((notebook) => cloudNotebookMatchesFilter(notebook, filter.id)).length,
+  }));
+}
+
+function cloudNotebookVisibleDashboardFilters(
+  filters: readonly CloudNotebookDashboardFilter[],
+  context: { filterId: CloudNotebookDashboardFilterId; query: string },
+): CloudNotebookDashboardFilter[] {
+  if (context.query.length === 0) {
+    return [...filters];
+  }
+  return filters.filter(
+    (filter) => filter.id === "all" || filter.id === context.filterId || filter.count > 0,
+  );
 }
 
 function cloudNotebookDashboardFilterGroups(
@@ -290,6 +304,21 @@ function cloudNotebookDashboardSections(
     return cloudNotebookWorkSections(notebooks, { omitNotebookId: context.continueNotebookId });
   }
 
+  if (context.query.length > 0) {
+    return [
+      {
+        action: null,
+        detail: bucketDetail(notebooks.length, "matching search"),
+        id: "search",
+        notebooks,
+        overflowAction: null,
+        rows: dashboardRows(notebooks),
+        title: "Search results",
+        totalCount: notebooks.length,
+      },
+    ];
+  }
+
   const buckets = activityBuckets(notebooks);
   for (const bucket of buckets) {
     if (bucket.notebooks.length === 0) continue;
@@ -300,7 +329,7 @@ function cloudNotebookDashboardSections(
       notebooks: bucket.notebooks,
       overflowAction: null,
       rows: dashboardRows(bucket.notebooks),
-      title: context.query.length > 0 && bucket.id === "latest" ? "Search results" : bucket.title,
+      title: bucket.title,
       totalCount: bucket.totalCount,
     });
   }
