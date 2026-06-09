@@ -55,12 +55,18 @@ output focus, reconnect) before merge.
 2. **Cloud `workstationAttachment` → shared runtime-state store.**
    `cloud-viewer-session.ts` holds a `workstationAttachment` `useState` that is a
    copy of `useRuntimeState().workstation` (the same subscription pushes the full
-   state via `setRuntimeState`). Hazard: it is deduped by `workstationAttachmentKeyRef`
-   to avoid re-renders on unchanged attachments, and reset in four
-   disconnect/room-change sites. A naive `useRuntimeState().workstation` re-renders
-   on every runtime tick and changes reset timing. Needs an equality-aware
-   selector (e.g. `useRuntimeStateWorkstation()`) on the runtime-state store and
-   careful handling of the reset sites.
+   state via `setRuntimeState`). #3515 strengthens this: the worker now publishes
+   workstation claim progress into RuntimeStateDoc
+   (`publishWorkstationAttachJobRuntimeState` -> room `setWorkstationAttachment`,
+   via the pure `projectNotebookWorkstationAttachmentFromClaim`), so the
+   attachment is a RuntimeStateDoc-owned fact end to end and the session's
+   `useState` is clearly a shadow of the projected runtime state. Hazard: it is
+   deduped by `workstationAttachmentKeyRef` to avoid re-renders on unchanged
+   attachments, and reset in four disconnect/room-change sites. A naive
+   `useRuntimeState().workstation` re-renders on every runtime tick and changes
+   reset timing. Converge by consuming the projected attachment through an
+   equality-aware selector (e.g. `useRuntimeStateWorkstation()`) on the
+   runtime-state store, preserving the reset sites' clear-on-disconnect behavior.
 
 3. **Rail/outline chrome (`activeRailPanel`, `railCollapsed`,
    `selectedOutlineItemId`) → shared `rail-ui-state` store.** Declared identically

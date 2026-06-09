@@ -124,16 +124,19 @@ export function NotebookViewer({
     appSessionStatus.refreshAppSessionStatus,
   );
   // Cell focus is owned by the shared cell-ui-state store, not host React state.
-  // NotebookView already writes and synchronously flushes focus on user
-  // interaction (publishInteractionTarget). Read focus from the store for host
-  // chrome, and route programmatic focus (e.g. focus-after-add from the
-  // controller) through the same store with a synchronous flush so it propagates
-  // without a per-host bridge re-render.
+  // NotebookView already writes and synchronously flushes the interaction target
+  // on user focus (publishInteractionTarget, which carries the real
+  // cell/editor/output kind), so its onFocusCell is a no-op here. Routing it
+  // through the store would double-write: a transient { kind: "cell" } before the
+  // real { kind: "editor" | "output" }. The host only writes the store for
+  // *programmatic* focus the controller drives (focus-after-add), which has no
+  // publishInteractionTarget of its own; that goes through the set+flush path.
   const focusedCellId = useFocusedCellId();
   const focusCellInStore = useCallback((id: string | null) => {
     setFocusedCellId(id);
     flushCellUIState();
   }, []);
+  const handleNotebookViewFocus = useCallback(() => {}, []);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
@@ -926,7 +929,7 @@ export function NotebookViewer({
               canAcceptCellMutations={canAcceptCellMutations}
               runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
               sessionRuntimeState={connectionError ? "error" : "ready"}
-              onFocusCell={focusCellInStore}
+              onFocusCell={handleNotebookViewFocus}
               onExecuteCell={handleCloudExecuteCell}
               onInterruptKernel={() => {}}
               onDeleteCell={handleCloudDeleteCell}
