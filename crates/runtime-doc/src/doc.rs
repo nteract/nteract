@@ -81,6 +81,18 @@
 //!       outputs: List[Map] (inline manifests, OutputModel only)
 //!       seq: Int           (insertion order)
 //!       capture_msg_id: Str (Output widget capture routing, "" if not capturing)
+//!   cell_annotations/       Map (keyed by execution_id; post-genesis, may be absent)
+//!     {execution_id}/       Map
+//!       kind: Str           (e.g. "sandbox_http_block")
+//!       message: Str
+//!       details: Str|null   (JSON-encoded extra payload)
+//!   sandbox_state/          Map (post-genesis, may be absent; defaults to Disabled)
+//!     state: Str            ("Disabled" | "Active" | "StartupFailed" | "Degraded")
+//!     nono_pid: Uint        (present when state == "Active")
+//!     kernel_pid: Uint      (present when state == "Active")
+//!     session_id: Str|null  (present when state == "Active")
+//!     reason: Str           (present when state == "StartupFailed" | "Degraded")
+//!     stderr_tail: List[Str] (present when state == "StartupFailed")
 //!   runtime_state_doc_id: Str|null
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
@@ -354,6 +366,43 @@ pub struct WorkstationAttachmentState {
     pub updated_at: Option<String>,
 }
 
+/// Sandbox state for the active kernel session.
+///
+/// Projected from the `sandbox_state/` map in RuntimeStateDoc.  Absent on
+/// documents created before the field existed — callers must treat absence as
+/// [`SandboxStateInfo::Disabled`], which is the `Default`.
+///
+/// Mirrors (and replaces) the transport-level `SandboxStateInfo` in
+/// `notebook-protocol`.  The doc-level type is the single source of truth;
+/// the protocol crate re-exports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SandboxStateInfo {
+    /// No sandbox profile configured or `enabled = false`.
+    Disabled,
+    /// Sandbox launched and the nono proxy is healthy.
+    Active {
+        nono_pid: u32,
+        kernel_pid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+    /// Sandbox failed to start.
+    StartupFailed {
+        reason: String,
+        #[serde(default)]
+        stderr_tail: Vec<String>,
+    },
+    /// Sandbox started but the nono proxy died mid-session.
+    Degraded { reason: String },
+}
+
+impl Default for SandboxStateInfo {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeState {
@@ -390,6 +439,13 @@ pub struct RuntimeState {
     /// deserialize to `{}`. Never written to the notebook export.
     #[serde(default)]
     pub cell_annotations: HashMap<String, CellAnnotation>,
+    /// Current sandbox state for the active kernel session.
+    ///
+    /// Absent on old documents (pre-sandbox field) — deserializes to
+    /// [`SandboxStateInfo::Disabled`] via the `Default` impl.
+    /// Written by the daemon on kernel launch and on proxy state changes.
+    #[serde(default)]
+    pub sandbox_state: SandboxStateInfo,
 }
 
 /// A single sandbox annotation for one execution.
@@ -3113,6 +3169,7 @@ impl RuntimeStateDoc {
             project_context: self.project_context(),
             workstation,
             cell_annotations: self.read_cell_annotations(),
+            sandbox_state: self.read_sandbox_state(),
         }
     }
 
@@ -3222,6 +3279,93 @@ impl RuntimeStateDoc {
             .is_some()
         {
             self.doc.delete(&annotations_map, execution_id)?;
+        }
+        Ok(())
+    }
+
+    // ── Sandbox state ────────────────────────────────────────────────
+
+    /// Read the current sandbox state from the document.
+    ///
+    /// Returns [`SandboxStateInfo::Disabled`] when the `sandbox_state` root key
+    /// is absent (old documents, pre-sandbox field) — Pattern B post-genesis
+    /// field default.
+    fn read_sandbox_state(&self) -> SandboxStateInfo {
+        let Some(map) = self.get_map("sandbox_state") else {
+            return SandboxStateInfo::Disabled;
+        };
+        let state = self.read_str(&map, "state");
+        match state.as_str() {
+            "Active" => SandboxStateInfo::Active {
+                nono_pid: self
+                    .read_opt_u64(&map, "nono_pid")
+                    .unwrap_or(0)
+                    .try_into()
+                    .unwrap_or(0),
+                kernel_pid: self
+                    .read_opt_u64(&map, "kernel_pid")
+                    .unwrap_or(0)
+                    .try_into()
+                    .unwrap_or(0),
+                session_id: self.read_opt_str(&map, "session_id"),
+            },
+            "StartupFailed" => SandboxStateInfo::StartupFailed {
+                reason: self.read_str(&map, "reason"),
+                stderr_tail: self.read_str_list(&map, "stderr_tail"),
+            },
+            "Degraded" => SandboxStateInfo::Degraded {
+                reason: self.read_str(&map, "reason"),
+            },
+            _ => SandboxStateInfo::Disabled,
+        }
+    }
+
+    /// Write the sandbox state into the document.
+    ///
+    /// Called by the daemon on kernel launch and when the nono proxy changes
+    /// state (healthy → degraded, startup failure).  Uses
+    /// `get_or_create_root_map("sandbox_state")` so the first write on an old
+    /// document adds the key without a schema bump.
+    pub fn set_sandbox_state(&mut self, state: &SandboxStateInfo) -> Result<(), RuntimeStateError> {
+        let map = self.get_or_create_root_map("sandbox_state")?;
+        match state {
+            SandboxStateInfo::Disabled => {
+                self.doc.put(&map, "state", "Disabled")?;
+            }
+            SandboxStateInfo::Active {
+                nono_pid,
+                kernel_pid,
+                session_id,
+            } => {
+                self.doc.put(&map, "state", "Active")?;
+                self.doc
+                    .put(&map, "nono_pid", ScalarValue::Uint(*nono_pid as u64))?;
+                self.doc
+                    .put(&map, "kernel_pid", ScalarValue::Uint(*kernel_pid as u64))?;
+                match session_id {
+                    Some(sid) => self.doc.put(&map, "session_id", sid.as_str())?,
+                    None => self.doc.put(&map, "session_id", ScalarValue::Null)?,
+                }
+            }
+            SandboxStateInfo::StartupFailed {
+                reason,
+                stderr_tail,
+            } => {
+                self.doc.put(&map, "state", "StartupFailed")?;
+                self.doc.put(&map, "reason", reason.as_str())?;
+                // Overwrite the list by deleting and re-creating it.
+                if self.doc.get(&map, "stderr_tail").ok().flatten().is_some() {
+                    self.doc.delete(&map, "stderr_tail")?;
+                }
+                let list = self.doc.put_object(&map, "stderr_tail", ObjType::List)?;
+                for (i, line) in stderr_tail.iter().enumerate() {
+                    self.doc.insert(&list, i, line.as_str())?;
+                }
+            }
+            SandboxStateInfo::Degraded { reason } => {
+                self.doc.put(&map, "state", "Degraded")?;
+                self.doc.put(&map, "reason", reason.as_str())?;
+            }
         }
         Ok(())
     }
@@ -7911,5 +8055,78 @@ mod tests {
             changeset.execution_upserts.is_empty(),
             "stable annotation must not emit upsert"
         );
+    }
+
+    // ── Sandbox state tests ──────────────────────────────────────────
+
+    #[test]
+    fn sandbox_state_defaults_to_disabled_on_new_doc() {
+        let doc = RuntimeStateDoc::new();
+        assert_eq!(doc.read_sandbox_state(), SandboxStateInfo::Disabled);
+        assert_eq!(doc.read_state().sandbox_state, SandboxStateInfo::Disabled);
+    }
+
+    #[test]
+    fn sandbox_state_defaults_to_disabled_on_old_doc() {
+        // Simulate an old doc that has no sandbox_state key.
+        let doc = RuntimeStateDoc::new_empty();
+        assert_eq!(doc.read_sandbox_state(), SandboxStateInfo::Disabled);
+    }
+
+    #[test]
+    fn sandbox_state_round_trips_active() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let state = SandboxStateInfo::Active {
+            nono_pid: 1234,
+            kernel_pid: 5678,
+            session_id: Some("ses-abc".to_string()),
+        };
+        doc.set_sandbox_state(&state)?;
+        assert_eq!(doc.read_sandbox_state(), state);
+        assert_eq!(doc.read_state().sandbox_state, state);
+        Ok(())
+    }
+
+    #[test]
+    fn sandbox_state_round_trips_startup_failed() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let state = SandboxStateInfo::StartupFailed {
+            reason: "nono exited with code 1".to_string(),
+            stderr_tail: vec!["error: permission denied".to_string()],
+        };
+        doc.set_sandbox_state(&state)?;
+        assert_eq!(doc.read_sandbox_state(), state);
+        Ok(())
+    }
+
+    #[test]
+    fn sandbox_state_round_trips_degraded() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let state = SandboxStateInfo::Degraded {
+            reason: "nono proxy exited with code 1".to_string(),
+        };
+        doc.set_sandbox_state(&state)?;
+        assert_eq!(doc.read_sandbox_state(), state);
+        Ok(())
+    }
+
+    #[test]
+    fn sandbox_state_transitions() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_sandbox_state(&SandboxStateInfo::Active {
+            nono_pid: 1,
+            kernel_pid: 2,
+            session_id: None,
+        })?;
+        doc.set_sandbox_state(&SandboxStateInfo::Degraded {
+            reason: "proxy died".to_string(),
+        })?;
+        assert_eq!(
+            doc.read_sandbox_state(),
+            SandboxStateInfo::Degraded {
+                reason: "proxy died".to_string()
+            }
+        );
+        Ok(())
     }
 }

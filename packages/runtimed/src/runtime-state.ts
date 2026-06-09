@@ -364,6 +364,15 @@ export interface RuntimeState {
    * Written by the daemon when sandbox state changes (launch, degradation,
    * startup failure).
    */
+  /**
+   * Current sandbox state for the active kernel session.
+   *
+   * Absent on documents projected before this field was added to the Rust
+   * `RuntimeState` struct — the daemon writes it on kernel launch and on proxy
+   * state changes.  The WASM projection always serializes the field (defaulting
+   * to `{ state: "Disabled" }` for old docs), so consumers can rely on it
+   * being present after the first RuntimeStateDoc sync.
+   */
   sandbox_state: SandboxStateInfo;
 }
 

@@ -1607,6 +1607,12 @@ pub(crate) async fn handle(
                         )?;
                         sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
                         // runtime_agent_id doesn't change on restart — same runtime agent
+                        {
+                            let sc = room.sandbox_state_cache.try_read();
+                            if let Ok(sc) = sc {
+                                sd.set_sandbox_state(&*sc)?;
+                            }
+                        }
                         Ok(())
                     }) {
                         warn!("[runtime-state] {}", e);
@@ -1785,6 +1791,12 @@ pub(crate) async fn handle(
                                 sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
                                 if let Some(ref aid) = agent_id {
                                     sd.set_runtime_agent_id(aid)?;
+                                }
+                                {
+                                    let sc = room.sandbox_state_cache.try_read();
+                                    if let Ok(sc) = sc {
+                                        sd.set_sandbox_state(&*sc)?;
+                                    }
                                 }
                                 Ok(())
                             }) {

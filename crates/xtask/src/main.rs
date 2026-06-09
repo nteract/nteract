@@ -2908,7 +2908,10 @@ fn ensure_nono_binary(release: bool) {
             .map(|s| s.contains(NONO_VERSION))
             .unwrap_or(false);
         if version_ok {
-            println!("nono {NONO_VERSION} found in cache at {}", cached_bin.display());
+            println!(
+                "nono {NONO_VERSION} found in cache at {}",
+                cached_bin.display()
+            );
             install_nono_from_cache(&cached_bin, release);
             return;
         }
@@ -2923,8 +2926,12 @@ fn ensure_nono_binary(release: bool) {
     );
     let tarball_path = cache_dir.join(&tarball_name);
 
-    fs::create_dir_all(&cache_dir)
-        .unwrap_or_else(|e| panic!("failed to create nono cache dir {}: {e}", cache_dir.display()));
+    fs::create_dir_all(&cache_dir).unwrap_or_else(|e| {
+        panic!(
+            "failed to create nono cache dir {}: {e}",
+            cache_dir.display()
+        )
+    });
 
     println!("Downloading nono {NONO_VERSION} for {host_triple}...");
     let status = Command::new("curl")
@@ -3004,7 +3011,10 @@ fn ensure_nono_binary(release: bool) {
             .unwrap_or_else(|e| panic!("failed to set nono permissions in cache: {e}"));
     }
 
-    println!("nono {NONO_VERSION} downloaded and cached at {}", cached_bin.display());
+    println!(
+        "nono {NONO_VERSION} downloaded and cached at {}",
+        cached_bin.display()
+    );
     install_nono_from_cache(&cached_bin, release);
 }
 

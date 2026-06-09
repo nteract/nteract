@@ -4885,6 +4885,7 @@ dependencies = [
  "log",
  "notebook-doc",
  "notebook-wire",
+ "runtime-doc",
  "serde",
  "serde_json",
  "tokio",

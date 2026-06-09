@@ -6,10 +6,12 @@
 use std::path::PathBuf;
 
 use crate::connection::{EnvSource, LaunchSpec};
+// Re-export the canonical doc-level type so callers don't need a direct dep on runtime-doc.
 pub use notebook_wire::{
     InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire, SessionControlMessage,
     SessionSyncStatusWire,
 };
+pub use runtime_doc::SandboxStateInfo;
 use serde::{Deserialize, Serialize};
 
 // ── Data structs referenced by protocol enums ───────────────────────────────
@@ -786,34 +788,6 @@ pub enum NotebookResponse {
         /// `{ "type": "Degraded", "reason": String }`.
         state: SandboxStateInfo,
     },
-}
-
-/// Sandbox state DTO for the `GetSandboxState` response.
-///
-/// A transport-safe representation of the daemon-side `SandboxState` enum.
-/// Maps one-to-one with the `SandboxStateDto` described in task 09.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SandboxStateInfo {
-    /// No sandbox profile configured or `enabled = false`.
-    Disabled,
-
-    /// Sandbox launched and the nono proxy is healthy.
-    Active {
-        nono_pid: u32,
-        kernel_pid: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
-    },
-
-    /// Sandbox failed to start.
-    StartupFailed {
-        reason: String,
-        stderr_tail: Vec<String>,
-    },
-
-    /// Sandbox started but the nono proxy died mid-session.
-    Degraded { reason: String },
 }
 
 /// Broadcast messages from daemon to all peers in a room.
