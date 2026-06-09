@@ -160,7 +160,7 @@ function getCellExecutionIdGetter(cell_id: string): () => string | null {
   return () => _cellToExecution.get(cell_id) ?? null;
 }
 
-function subscribeNotebookQueueProjection(callback: () => void): () => void {
+export function subscribeNotebookQueueProjection(callback: () => void): () => void {
   _queueProjectionSubscribers.add(callback);
   return () => {
     _queueProjectionSubscribers.delete(callback);

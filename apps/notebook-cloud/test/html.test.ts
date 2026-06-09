@@ -166,9 +166,9 @@ describe("HTML script serialization", () => {
     assert.match(html, /"syncEndpoint":"\/n\/demo\/sync"/);
   });
 
-  it("serves the root path as the notebook-cloud sign-in shell", async () => {
+  it("redirects the root path to the notebook list shell", async () => {
     const response = await worker.fetch(
-      new Request("https://preview.runt.run/"),
+      new Request("https://preview.runt.run/?source=bookmark"),
       fakeEnv({
         NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
         NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
@@ -176,30 +176,23 @@ describe("HTML script serialization", () => {
       }),
       fakeContext(),
     );
-    const html = await response.text();
 
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Cache-Control"), "no-store");
-    assert.match(html, /<title>nteract<\/title>/);
-    assert.match(html, /id="nteract-cloud-auth-config"/);
-    assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
-    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-viewer\.js"/);
-    assert.doesNotMatch(html, /rel="modulepreload" href="[^"]*runtimed_wasm\.js/);
-    assert.doesNotMatch(html, /rel="preload" href="[^"]*runtimed_wasm_bg\.wasm/);
-    assert.doesNotMatch(html, /In the Loop - Collaborative Notebooks/);
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("Location"), "https://preview.runt.run/n?source=bookmark");
   });
 
-  it("serves stale preview index requests as the notebook-cloud sign-in shell", async () => {
+  it("redirects stale preview index requests to the notebook list shell", async () => {
     const response = await worker.fetch(
-      new Request("https://preview.runt.run/index.html"),
+      new Request("https://preview.runt.run/index.html?source=stale-bookmark"),
       fakeEnv(),
       fakeContext(),
     );
-    const html = await response.text();
 
-    assert.equal(response.status, 200);
-    assert.match(html, /<title>nteract<\/title>/);
-    assert.doesNotMatch(html, /In the Loop - Collaborative Notebooks/);
+    assert.equal(response.status, 302);
+    assert.equal(
+      response.headers.get("Location"),
+      "https://preview.runt.run/n?source=stale-bookmark",
+    );
   });
 
   it("injects OIDC runtime config without exposing it through health", async () => {

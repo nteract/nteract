@@ -6,6 +6,7 @@ import {
   type NotebookInteractionTarget,
 } from "runtimed";
 import { getCellIdsSnapshot, subscribeIds } from "./cell-store";
+import { getNotebookQueueProjection, subscribeNotebookQueueProjection } from "./execution-store";
 
 export interface NotebookFindMatch {
   cellId: string;
@@ -29,9 +30,6 @@ export interface NotebookFindMatch {
 
 let _focusedCellId: string | null = null;
 const _interactionStore = createNotebookInteractionStore();
-let _executingCellIds: Set<string> = new Set();
-let _queuedCellIds: Set<string> = new Set();
-let _queuedCellPriority = new Map<string, number>();
 let _searchQuery: string | undefined; // eslint-disable-line -- intentionally uninitialized alongside siblings
 let _searchCurrentMatch: NotebookFindMatch | null = null;
 
@@ -39,8 +37,6 @@ let _searchCurrentMatch: NotebookFindMatch | null = null;
 
 const _focusSubscribers = new Set<() => void>();
 const _interactionSubscribers = new Set<() => void>();
-const _executingSubscribers = new Set<() => void>();
-const _queuedSubscribers = new Set<() => void>();
 const _searchQuerySubscribers = new Set<() => void>();
 const _searchMatchSubscribers = new Set<() => void>();
 
@@ -63,8 +59,6 @@ export function flushCellUIState(): void {
 export interface NotebookCellUIStateBridgeInput {
   focusedCellId: string | null;
   activeInteractionTarget?: NotebookInteractionTarget | null;
-  executingCellIds?: Set<string>;
-  queuedCellIds?: Iterable<string>;
   searchQuery?: string;
   searchCurrentMatch?: NotebookFindMatch | null;
 }
@@ -72,15 +66,13 @@ export interface NotebookCellUIStateBridgeInput {
 /**
  * Project host-owned transient notebook UI state into the shared cell UI store.
  *
- * Hosts own focus/search/execution state because those facts come from their
- * transport, runtime, and app shell. Cell components consume the shared store so
- * desktop, cloud, and fixture hosts do not grow separate focus contracts.
+ * Hosts own focus/search state because those facts come from their transport
+ * and app shell. Runtime execution and queue state is projected through the
+ * shared execution store, not this transient UI store.
  */
 export function useNotebookCellUIStateBridge({
   focusedCellId,
   activeInteractionTarget,
-  executingCellIds,
-  queuedCellIds,
   searchQuery,
   searchCurrentMatch,
 }: NotebookCellUIStateBridgeInput): void {
@@ -89,28 +81,12 @@ export function useNotebookCellUIStateBridge({
   } else {
     setFocusedCellId(focusedCellId);
   }
-  if (executingCellIds) setExecutingCellIds(executingCellIds);
-  if (queuedCellIds) setQueuedCellIds(queuedCellIds);
   setSearchQuery(searchQuery);
   setSearchCurrentMatch(searchCurrentMatch ?? null);
 
   useLayoutEffect(() => {
     flushCellUIState();
   });
-}
-
-function setsEqual(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const v of a) if (!b.has(v)) return false;
-  return true;
-}
-
-function mapsEqual(a: Map<string, number>, b: Map<string, number>): boolean {
-  if (a.size !== b.size) return false;
-  for (const [key, value] of a) {
-    if (b.get(key) !== value) return false;
-  }
-  return true;
 }
 
 function queuePriorityForIndex(index: number, length: number): number {
@@ -156,24 +132,6 @@ function setDerivedFocusedCellId(id: string | null): void {
   if (id === _focusedCellId) return;
   _focusedCellId = id;
   _dirtySubscribers.add(_focusSubscribers);
-}
-
-export function setExecutingCellIds(ids: Set<string>): void {
-  if (setsEqual(_executingCellIds, ids)) return;
-  _executingCellIds = ids;
-  _dirtySubscribers.add(_executingSubscribers);
-}
-
-export function setQueuedCellIds(ids: Iterable<string>): void {
-  const orderedIds = Array.from(ids);
-  const nextIds = new Set(orderedIds);
-  const nextPriority = new Map(
-    orderedIds.map((id, index) => [id, queuePriorityForIndex(index, orderedIds.length)]),
-  );
-  if (setsEqual(_queuedCellIds, nextIds) && mapsEqual(_queuedCellPriority, nextPriority)) return;
-  _queuedCellIds = nextIds;
-  _queuedCellPriority = nextPriority;
-  _dirtySubscribers.add(_queuedSubscribers);
 }
 
 export function setSearchQuery(query: string | undefined): void {
@@ -367,60 +325,59 @@ function getIsNextSnapshot(cellId: string): () => boolean {
 }
 
 function subscribeExecutingFor(_cellId: string): (cb: () => void) => () => void {
-  return (cb: () => void) => {
-    _executingSubscribers.add(cb);
-    return () => _executingSubscribers.delete(cb);
-  };
+  return subscribeNotebookQueueProjection;
 }
 
 function getIsExecutingSnapshot(cellId: string): () => boolean {
-  let prev = _executingCellIds.has(cellId);
+  let prev = getNotebookQueueProjection().executing_cell_id === cellId;
   return () => {
-    const next = _executingCellIds.has(cellId);
+    const next = getNotebookQueueProjection().executing_cell_id === cellId;
     if (next !== prev) prev = next;
     return prev;
   };
 }
 
 function subscribeExecutingForGroup(): (cb: () => void) => () => void {
-  return (cb: () => void) => {
-    _executingSubscribers.add(cb);
-    return () => _executingSubscribers.delete(cb);
-  };
+  return subscribeNotebookQueueProjection;
 }
 
 function getIsGroupExecutingSnapshot(groupCellIds: string[] | undefined): () => boolean {
   let prev = false;
   return () => {
-    const next = groupCellIds?.some((id) => _executingCellIds.has(id)) ?? false;
+    const executingCellId = getNotebookQueueProjection().executing_cell_id;
+    const next = executingCellId !== null && (groupCellIds?.includes(executingCellId) ?? false);
     if (next !== prev) prev = next;
     return prev;
   };
 }
 
 function subscribeQueuedFor(_cellId: string): (cb: () => void) => () => void {
-  return (cb: () => void) => {
-    _queuedSubscribers.add(cb);
-    return () => _queuedSubscribers.delete(cb);
-  };
+  return subscribeNotebookQueueProjection;
 }
 
 function getIsQueuedSnapshot(cellId: string): () => boolean {
-  let prev = _queuedCellIds.has(cellId);
+  let prev = getNotebookQueueProjection().queued_cell_ids.includes(cellId);
   return () => {
-    const next = _queuedCellIds.has(cellId);
+    const next = getNotebookQueueProjection().queued_cell_ids.includes(cellId);
     if (next !== prev) prev = next;
     return prev;
   };
 }
 
 function getQueuePrioritySnapshot(cellId: string): () => number {
-  let prev = _queuedCellPriority.get(cellId) ?? 0;
+  let prev = queuePriorityForCell(cellId);
   return () => {
-    const next = _queuedCellPriority.get(cellId) ?? 0;
+    const next = queuePriorityForCell(cellId);
     if (next !== prev) prev = next;
     return prev;
   };
+}
+
+function queuePriorityForCell(cellId: string): number {
+  const queuedCellIds = getNotebookQueueProjection().queued_cell_ids;
+  const index = queuedCellIds.indexOf(cellId);
+  if (index === -1) return 0;
+  return queuePriorityForIndex(index, queuedCellIds.length);
 }
 
 function subscribeSearchQuery(cb: () => void): () => void {

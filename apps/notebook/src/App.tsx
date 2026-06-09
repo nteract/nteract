@@ -802,11 +802,7 @@ function AppContent() {
     }
   }, [blobPort, getEngine]);
 
-  // Split queue state into executing (currently running) and queued (waiting).
   const notebookQueueProjection = useNotebookQueueProjection();
-  const executingCellIds = new Set(
-    notebookQueueProjection.executing_cell_id ? [notebookQueueProjection.executing_cell_id] : [],
-  );
   const getOutlineStatusLabel = useCallback(
     (cell: { id: string; cellType: string; executionCount: number | null }) => {
       if (cell.id === notebookQueueProjection.executing_cell_id) return "running";
@@ -830,8 +826,6 @@ function AppContent() {
   // ── Sync host-owned transient UI state into shared cell UI store ─────
   useNotebookCellUIStateBridge({
     focusedCellId,
-    executingCellIds,
-    queuedCellIds: notebookQueueProjection.queued_cell_ids,
     searchQuery: globalFind.query,
     searchCurrentMatch: globalFind.currentMatch,
   });

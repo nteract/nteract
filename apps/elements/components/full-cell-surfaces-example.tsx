@@ -19,9 +19,7 @@ import {
 } from "../../notebook/src/notebook-surface";
 import {
   flushCellUIState,
-  setExecutingCellIds,
   setFocusedCellId,
-  setQueuedCellIds,
   setSearchCurrentMatch,
   setSearchQuery,
 } from "@/components/notebook/state/cell-ui-state";
@@ -37,6 +35,7 @@ import {
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,
+  setNotebookQueueProjection,
 } from "@/components/notebook/state/execution-store";
 import { resetNotebookOutputs, setOutput } from "@/components/notebook/state/output-store";
 import { createFixtureNotebookHost } from "./fixture-notebook-host";
@@ -377,8 +376,7 @@ function seedFullCellFixtures() {
   }
 
   setFocusedCellId(codeCell.id);
-  setExecutingCellIds(new Set());
-  setQueuedCellIds(new Set());
+  setNotebookQueueProjection({ executing_cell_id: null, queued_cell_ids: [] });
   setSearchQuery(undefined);
   setSearchCurrentMatch(null);
   flushCellUIState();
