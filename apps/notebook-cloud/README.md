@@ -392,13 +392,16 @@ an API key:
 
 ```text
 Authorization: Bearer <NTERACT_API_KEY>
-X-Notebook-Cloud-Auth-Provider: anaconda-api-key
+X-Notebook-Cloud-Auth-Provider: anaconda-api-key  # optional selector
 ```
 
 `runt publish` treats this as publish bearer auth. It defaults to the current
 hosted staging URL, `https://preview.runt.run`, accepts `NTERACT_CLOUD_URL` for
 a different deployment, loads publish-related values from `.env`, and maps
-`NTERACT_API_KEY` to the current provider header automatically.
+`NTERACT_API_KEY` to the current provider header automatically. The hosted
+Worker also recognizes Anaconda API keys by their JWT `ver: "api:1"` shape and
+routes them to API-key validation when that provider is configured; the selector
+header remains useful for explicit clients and logs.
 The Worker validates the token through Anaconda `whoami`; the validated
 `cloud:write` scope, not unverified JWT payload claims, is what authorizes owner
 publishes. Existing token values can be reused if they pass that validation.
@@ -721,9 +724,10 @@ short-lived OIDC bearer token. The credential is passed to the runtime peer
 through `RUNT_CLOUD_TOKEN`, not through argv; `runtimed` removes cloud
 environment variables again before launching the Python kernel. Run this helper
 inside tmux for preview/manual testing so the polling agent stays alive while
-the browser attaches workstations. After the agent registers, select it as the
-default workstation in the notebook UI or call `PATCH /api/workstations/default`,
-then use the Workstations rail in a private owner room to request attachment.
+the browser attaches workstations. The first registered workstation becomes the
+account default automatically; use the Workstations rail or
+`PATCH /api/workstations/default` only when switching to another machine. In a
+private owner room, the toolbar can then request attachment directly.
 
 With the workstation agent already running, use the toolbar smoke to exercise
 the hosted browser path end to end. It verifies the registered workstation is

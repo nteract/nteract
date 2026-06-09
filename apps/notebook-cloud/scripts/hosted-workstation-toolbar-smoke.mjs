@@ -103,15 +103,18 @@ async function main() {
     throw new Error(`workstation ${workstationId} is not online; status=${workstation.status}`);
   }
 
-  await fetchJson({
-    baseUrl,
-    body: { workstation_id: workstationId },
-    label: "set default workstation",
-    method: "PATCH",
-    pathname: "/api/workstations/default",
-    authKind,
-    credential: cloudCredential,
-  });
+  const workstationWasDefault = workstationList.default_workstation_id === workstationId;
+  if (!workstationWasDefault) {
+    await fetchJson({
+      baseUrl,
+      body: { workstation_id: workstationId },
+      label: "set default workstation",
+      method: "PATCH",
+      pathname: "/api/workstations/default",
+      authKind,
+      credential: cloudCredential,
+    });
+  }
   const created = await fetchJson({
     baseUrl,
     body: { title, vanity_name: vanityName },
@@ -151,11 +154,14 @@ async function main() {
     workstation: {
       id: workstationId,
       displayName: scalarString(workstation.display_name),
+      wasDefaultBeforeSmoke: workstationWasDefault,
       status: scalarString(workstation.status),
     },
     checks: [
       "workstation_registered_online",
-      "default_workstation_selected",
+      workstationWasDefault
+        ? "default_workstation_already_selected"
+        : "default_workstation_selected",
       "notebook_created",
       ...browserResult.checks,
     ],
