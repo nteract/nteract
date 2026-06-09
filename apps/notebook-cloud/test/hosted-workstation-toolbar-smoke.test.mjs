@@ -46,7 +46,7 @@ describe("hosted workstation toolbar smoke helpers", () => {
     );
   });
 
-  it("checks blocked and attach workstation toolbar action labels", () => {
+  it("checks blocked and start workstation toolbar action labels", () => {
     assert.doesNotThrow(() =>
       assertToolbarWorkstationAction(
         {
