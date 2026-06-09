@@ -83,9 +83,23 @@ async function main() {
   );
 
   while (true) {
-    await heartbeatIfNeeded(pythonPath);
-    await pollAttachJobs(pythonPath);
+    await runAgentStep("heartbeat", () => heartbeatIfNeeded(pythonPath));
+    await runAgentStep("poll_attach_jobs", () => pollAttachJobs(pythonPath));
     await sleep(pollIntervalMs);
+  }
+}
+
+async function runAgentStep(step, fn) {
+  try {
+    await fn();
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "workstation_agent_step_failed",
+        step,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 }
 
@@ -182,13 +196,23 @@ async function startAttachJob(job, pythonPath) {
 
 async function watchRuntimePeer(jobId, active) {
   const readyPoll = setInterval(async () => {
-    if (active.ready) return;
-    const output = await readFile(active.logPath, "utf8").catch(() => "");
-    if (!output.includes("Infrastructure ready, entering main loop")) return;
-    active.ready = true;
-    await patchAttachJob(jobId, {
-      status: "running",
-    });
+    try {
+      if (active.ready) return;
+      const output = await readFile(active.logPath, "utf8").catch(() => "");
+      if (!output.includes("Infrastructure ready, entering main loop")) return;
+      active.ready = true;
+      await patchAttachJob(jobId, {
+        status: "running",
+      });
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "attach_job_ready_patch_failed",
+          jobId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
   }, 250);
 
   active.child.on("exit", async (code, signal) => {
@@ -215,6 +239,14 @@ async function watchRuntimePeer(jobId, active) {
     await patchAttachJob(jobId, {
       status: "failed",
       error_message: error.message,
+    }).catch((patchError) => {
+      console.error(
+        JSON.stringify({
+          event: "attach_job_error_patch_failed",
+          jobId,
+          message: patchError instanceof Error ? patchError.message : String(patchError),
+        }),
+      );
     });
   });
 }
