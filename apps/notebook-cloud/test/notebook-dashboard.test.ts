@@ -374,8 +374,16 @@ describe("cloud notebook dashboard projection", () => {
       updatedAt: "2026-06-08T16:00:00.000Z",
       latestRevisionId: null,
     });
+    const generatedSync = notebook({
+      id: "sync-recovery",
+      title: "Sync Recovery Smoke",
+      scope: "owner",
+      updatedAt: "2026-06-08T15:00:00.000Z",
+      latestRevisionId: null,
+    });
 
     const model = projectCloudNotebookDashboard([
+      generatedSync,
       generated,
       latencyNotes,
       debugNotes,
@@ -392,7 +400,7 @@ describe("cloud notebook dashboard projection", () => {
       ]),
       [
         ["named", "Recent work", ["debugging-imports", "latency-q2"]],
-        ["generated", "Generated runs", ["toolbar-smoke"]],
+        ["generated", "Generated runs", ["toolbar-smoke", "sync-recovery"]],
       ],
     );
   });

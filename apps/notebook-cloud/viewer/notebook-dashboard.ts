@@ -508,6 +508,7 @@ function cloudNotebookDashboardRowFacts(
 function cloudNotebookIsGeneratedRun(notebook: CloudNotebookListItem): boolean {
   const title = notebook.title?.trim() ?? "";
   return (
+    /^Sync Recovery Smoke$/u.test(title) ||
     /^Toolbar attach smoke 20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}/u.test(title) ||
     /\b20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}/u.test(title)
   );
