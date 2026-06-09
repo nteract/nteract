@@ -121,6 +121,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   const sourceText = readFileSync(sourcePath, "utf8");
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
+  const presenceSourcePath = new URL("../viewer/cloud-presence-status.tsx", import.meta.url);
+  const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const sharingSourcePath = new URL("../viewer/sharing-controls.tsx", import.meta.url);
   const sharingSourceText = readFileSync(sharingSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
@@ -166,16 +168,16 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /const presenceStoreRef = useRef<CloudViewerPresenceStore \| null>\(null\)/,
   );
   assert.match(
-    sourceText,
+    presenceSourceText,
     /useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\)/,
   );
   assert.match(
     sourceText,
     /utilityControls=\{[\s\S]*<CloudPresenceStatus[\s\S]*store=\{presenceStore\}/,
   );
-  assert.match(sourceText, /cloudViewerPresenceDisplay,/);
-  assert.match(sourceText, /<AvatarGroup className="cloud-presence-avatar-group"/);
-  assert.match(sourceText, /data-slot="cloud-presence-stack"/);
+  assert.match(presenceSourceText, /cloudViewerPresenceDisplay,/);
+  assert.match(presenceSourceText, /<AvatarGroup className="cloud-presence-avatar-group"/);
+  assert.match(presenceSourceText, /data-slot="cloud-presence-stack"/);
   assert.doesNotMatch(sourceText, /useState\(initialCloudViewerPresence\)/);
   assert.doesNotMatch(sourceText, /setPresence\(/);
   assert.doesNotMatch(sourceText, /label=\{compactCloudPresenceLabel\(presenceDisplay\.label\)\}/);
@@ -214,7 +216,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sharePanelCss, /width: min\(30rem, calc\(100vw - 1\.5rem\)\);/);
   assert.doesNotMatch(sharePanelCss, /position: absolute;/);
   assert.match(
-    sourceText,
+    presenceSourceText,
     /function CloudPresenceStatus[\s\S]*const presence = useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\);[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);/,
   );
   assert.match(cssText, /\.cloud-presence-stack \{[\s\S]*min-width: 1\.75rem;[\s\S]*height: 2rem;/);
@@ -252,6 +254,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
 test("cloud viewer presents live-room failures as one host notice", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const presenceSourcePath = new URL("../viewer/cloud-presence-status.tsx", import.meta.url);
+  const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const noticesPath = new URL("../viewer/notices.tsx", import.meta.url);
   const noticesText = readFileSync(noticesPath, "utf8");
 
@@ -274,10 +278,10 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(noticesText, /tone=\{connectionNotice\.tone\}/);
   assert.match(noticesText, /Live room reconnecting\./);
   assert.match(noticesText, /tone: "warning"/);
-  assert.match(sourceText, /function cloudConnectionStatusErrorTitle/);
-  assert.match(sourceText, /aria-label=\{title\}/);
+  assert.match(presenceSourceText, /function cloudConnectionStatusErrorTitle/);
+  assert.match(presenceSourceText, /aria-label=\{title\}/);
   assert.match(
-    sourceText,
+    presenceSourceText,
     /Room unavailable: \$\{cloudConnectionStatusErrorTitle\(connectionError\)\}/,
   );
   assert.doesNotMatch(sourceText, /title="Live room connection failed\."/);

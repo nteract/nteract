@@ -9,7 +9,7 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { AlertCircle, Check, Loader2, UserRound, X } from "lucide-react";
+import { AlertCircle, Check, Loader2, X } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
@@ -31,13 +31,6 @@ import {
   useNotebookCellUIStateBridge,
   useNotebookViewModel,
 } from "@/components/notebook";
-import {
-  Avatar,
-  AvatarBadge,
-  AvatarFallback,
-  AvatarGroup,
-  AvatarGroupCount,
-} from "@/components/ui/avatar";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
@@ -71,13 +64,7 @@ import { beginOidcLogin } from "./oidc-auth";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
-import {
-  cloudPresenceHasRuntimePeer,
-  cloudPresenceRuntimePeerCount,
-  type CloudViewerPresencePeer,
-  type CloudViewerPresenceStore,
-  cloudViewerPresenceDisplay,
-} from "./presence";
+import { cloudPresenceHasRuntimePeer, cloudPresenceRuntimePeerCount } from "./presence";
 import type { ResolvedCell } from "./render-resolution";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
 import type { ViewerStatus } from "./notice-types";
@@ -122,6 +109,8 @@ import {
   CloudNotebookSignInButton,
   shouldShowCloudHeaderSignIn,
 } from "./cloud-auth-controls";
+import { CloudNotebookTitle } from "./cloud-notebook-title";
+import { CloudPresenceStatus } from "./cloud-presence-status";
 import "./index.css";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
@@ -1120,165 +1109,6 @@ function cloudAccessRequestNotice(
 
 function initialCloudRailCollapsed(): boolean {
   return true;
-}
-
-function CloudNotebookTitle() {
-  const title = cloudNotebookRouteTitle();
-
-  return (
-    <div className="cloud-notebook-title" title={title.title}>
-      <span>{title.label}</span>
-      {title.detail ? <small>{title.detail}</small> : null}
-    </div>
-  );
-}
-
-function cloudNotebookRouteTitle(): {
-  label: string;
-  detail: string | null;
-  title: string;
-} {
-  const pathParts = window.location.pathname.split("/").filter(Boolean);
-  const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;
-  const decodedSlug = safeDecodeRouteSegment(routeSlug);
-
-  if (decodedSlug) {
-    const label = humanizeCloudRouteTitle(decodedSlug);
-    return {
-      label,
-      detail: null,
-      title: label,
-    };
-  }
-
-  return {
-    label: "Cloud Notebook",
-    detail: null,
-    title: "Cloud Notebook",
-  };
-}
-
-function humanizeCloudRouteTitle(value: string): string {
-  return value
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .map((word) => {
-      if (!word) return word;
-      return `${word[0]?.toUpperCase() ?? ""}${word.slice(1).toLowerCase()}`;
-    })
-    .join(" ");
-}
-
-function safeDecodeRouteSegment(value: string | null | undefined): string | null {
-  if (!value) return null;
-  try {
-    return decodeURIComponent(value).trim() || null;
-  } catch {
-    return value.trim() || null;
-  }
-}
-
-function cloudConnectionStatusErrorTitle(error: string): string {
-  if (/\bfailed to connect\s+wss?:\/\//i.test(error)) {
-    return "unable to join the live room";
-  }
-  return sanitizeCloudConnectionError(error);
-}
-
-function sanitizeCloudConnectionError(error: string): string {
-  return error.replace(/\bwss?:\/\/[^\s]+/gi, (rawUrl) => {
-    try {
-      const url = new URL(rawUrl);
-      return `${url.protocol}//${url.host}${url.pathname}`;
-    } catch {
-      return rawUrl.replace(/[?#].*$/, "");
-    }
-  });
-}
-
-function CloudPresenceStatus({
-  connectionError,
-  store,
-}: {
-  connectionError: string | null;
-  store: CloudViewerPresenceStore;
-}) {
-  const presence = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
-  const presenceDisplay = cloudViewerPresenceDisplay(presence);
-  const connected = presenceDisplay.connected && !connectionError;
-  const title = connectionError
-    ? `Room unavailable: ${cloudConnectionStatusErrorTitle(connectionError)}`
-    : presenceDisplay.title;
-  const state = connected ? "live" : presence.connection === "connecting" ? "joining" : "waiting";
-
-  return (
-    <span
-      className="cloud-presence-stack"
-      data-slot="cloud-presence-stack"
-      data-state={state}
-      title={title}
-      aria-label={title}
-    >
-      <AvatarGroup className="cloud-presence-avatar-group" aria-hidden="true">
-        {presenceDisplay.peers.map((peer) => (
-          <CloudPresenceAvatar key={peer.id} peer={peer} connected={connected} />
-        ))}
-        {presenceDisplay.hiddenCount > 0 ? (
-          <AvatarGroupCount className="cloud-presence-avatar-count" data-size="sm">
-            +{presenceDisplay.hiddenCount}
-          </AvatarGroupCount>
-        ) : null}
-      </AvatarGroup>
-      <span className="sr-only">{presenceDisplay.label}</span>
-    </span>
-  );
-}
-
-function CloudPresenceAvatar({
-  connected,
-  peer,
-}: {
-  connected: boolean;
-  peer: CloudViewerPresencePeer;
-}) {
-  const status = connected ? peer.status : "offline";
-  return (
-    <Avatar
-      size="sm"
-      className="cloud-presence-avatar"
-      data-kind={peer.kind}
-      data-status={status}
-      title={peer.label}
-    >
-      <AvatarFallback>
-        {peer.kind === "anonymous" ? (
-          <>
-            <UserRound aria-hidden="true" />
-            {peer.count && peer.count > 1 ? (
-              <span className="cloud-presence-anonymous-count">{peer.count}</span>
-            ) : null}
-          </>
-        ) : (
-          cloudPresenceInitials(peer.label)
-        )}
-      </AvatarFallback>
-      <AvatarBadge data-status={status} />
-    </Avatar>
-  );
-}
-
-function cloudPresenceInitials(label: string): string {
-  const words = label
-    .split(/[\s@._-]+/g)
-    .map((word) => word.trim())
-    .filter(Boolean);
-  const initials = words
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
-  return initials || "?";
 }
 
 function ViewerStartupError({ message }: { message: string }) {
