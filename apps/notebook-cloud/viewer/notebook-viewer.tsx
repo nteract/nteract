@@ -26,7 +26,9 @@ import {
   type NotebookEnvironmentManager,
   type NotebookInteractionMode,
   type NotebookPackageSection,
-  useNotebookCellUIStateBridge,
+  flushCellUIState,
+  setFocusedCellId,
+  useFocusedCellId,
   useNotebookViewModel,
 } from "@/components/notebook";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
@@ -121,7 +123,17 @@ export function NotebookViewer({
     appSessionStatus.status === "loading",
     appSessionStatus.refreshAppSessionStatus,
   );
-  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
+  // Cell focus is owned by the shared cell-ui-state store, not host React state.
+  // NotebookView already writes and synchronously flushes focus on user
+  // interaction (publishInteractionTarget). Read focus from the store for host
+  // chrome, and route programmatic focus (e.g. focus-after-add from the
+  // controller) through the same store with a synchronous flush so it propagates
+  // without a per-host bridge re-render.
+  const focusedCellId = useFocusedCellId();
+  const focusCellInStore = useCallback((id: string | null) => {
+    setFocusedCellId(id);
+    flushCellUIState();
+  }, []);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
@@ -231,8 +243,6 @@ export function NotebookViewer({
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
-
-  useNotebookCellUIStateBridge({ focusedCellId });
 
   const notebookViewModel = useNotebookViewModel({
     metadata: notebookMetadata,
@@ -386,10 +396,15 @@ export function NotebookViewer({
             requestCloudMaterialization(liveRuntime);
           }
         },
-        onFocusCell: setFocusedCellId,
+        onFocusCell: focusCellInStore,
         logPrefix: "[notebook-cloud]",
       }),
-    [canWriteCellSource, requestCloudMaterialization, shellCapabilities.canEditStructure],
+    [
+      canWriteCellSource,
+      focusCellInStore,
+      requestCloudMaterialization,
+      shellCapabilities.canEditStructure,
+    ],
   );
   const handleCloudAddCell = useCallback(
     (type: "code" | "markdown", afterCellId?: string | null) => {
@@ -911,7 +926,7 @@ export function NotebookViewer({
               canAcceptCellMutations={canAcceptCellMutations}
               runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
               sessionRuntimeState={connectionError ? "error" : "ready"}
-              onFocusCell={setFocusedCellId}
+              onFocusCell={focusCellInStore}
               onExecuteCell={handleCloudExecuteCell}
               onInterruptKernel={() => {}}
               onDeleteCell={handleCloudDeleteCell}
