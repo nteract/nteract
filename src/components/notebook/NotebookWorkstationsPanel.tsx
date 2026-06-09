@@ -48,6 +48,21 @@ export function NotebookWorkstationsPanel({
   const status = workstationStatusTone(projection.tone);
   const showRegistrationPrompt = selection?.state === "needs_registration";
   const registeredWorkstations = selection?.registeredWorkstations ?? [];
+  const compactDetachedTarget =
+    projection.targetId === "workstation:none" && registeredWorkstations.length > 0;
+  const activeRegisteredWorkstationId =
+    selection?.activeWorkstationId ??
+    (projection.targetId && projection.targetId !== "workstation:none"
+      ? projection.targetId
+      : null);
+  const hasVisibleRegisteredWorkstations = registeredWorkstations.some((workstation) =>
+    shouldShowRegisteredWorkstation(workstation, activeRegisteredWorkstationId),
+  );
+  const visibleStatusMessage =
+    statusMessage &&
+    !registeredWorkstations.some((workstation) => workstation.statusMessage === statusMessage)
+      ? statusMessage
+      : null;
   const visibleTargetId =
     projection.targetId &&
     projection.targetKind !== "local_daemon" &&
@@ -58,7 +73,10 @@ export function NotebookWorkstationsPanel({
   return (
     <div className={cn("space-y-3 text-sm", className)} data-testid="notebook-workstations-panel">
       <section
-        className="space-y-2 border-b border-border/70 pb-3"
+        className={cn(
+          "space-y-2 border-b border-border/70",
+          compactDetachedTarget ? "pb-2" : "pb-3",
+        )}
         aria-label="Active workstation target"
       >
         <div className="flex min-w-0 items-start gap-3">
@@ -84,34 +102,38 @@ export function NotebookWorkstationsPanel({
           </div>
         </div>
 
-        <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5 text-xs">
-          {projection.facts.map((fact) => (
-            <WorkstationFact
-              key={fact.kind}
-              fact={fact}
-              icon={workstationFactIcon(fact, projection.source)}
-            />
-          ))}
-        </div>
+        {compactDetachedTarget ? null : (
+          <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5 text-xs">
+            {projection.facts.map((fact) => (
+              <WorkstationFact
+                key={fact.kind}
+                fact={fact}
+                icon={workstationFactIcon(fact, projection.source)}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
-      {statusMessage ? (
+      {visibleStatusMessage ? (
         <section className="text-xs leading-5 text-muted-foreground" aria-live="polite">
-          {statusMessage}
+          {visibleStatusMessage}
         </section>
       ) : null}
 
-      {registeredWorkstations.length > 0 ? (
+      {hasVisibleRegisteredWorkstations ? (
         <section className="space-y-1.5" aria-label="Registered workstations">
-          {registeredWorkstations.map((workstation) => (
-            <RegisteredWorkstationRow
-              key={workstation.id}
-              busy={busyWorkstationId === workstation.id}
-              workstation={workstation}
-              onAttachWorkstation={onAttachWorkstation}
-              onSetDefaultWorkstation={onSetDefaultWorkstation}
-            />
-          ))}
+          {registeredWorkstations.map((workstation) =>
+            shouldShowRegisteredWorkstation(workstation, activeRegisteredWorkstationId) ? (
+              <RegisteredWorkstationRow
+                key={workstation.id}
+                busy={busyWorkstationId === workstation.id}
+                workstation={workstation}
+                onAttachWorkstation={onAttachWorkstation}
+                onSetDefaultWorkstation={onSetDefaultWorkstation}
+              />
+            ) : null,
+          )}
         </section>
       ) : null}
 
@@ -132,6 +154,13 @@ export function NotebookWorkstationsPanel({
       ) : null}
     </div>
   );
+}
+
+function shouldShowRegisteredWorkstation(
+  workstation: NotebookRegisteredWorkstationProjection,
+  activeRegisteredWorkstationId: string | null,
+): boolean {
+  return !workstation.isAttached && workstation.id !== activeRegisteredWorkstationId;
 }
 
 function RegisteredWorkstationRow({
