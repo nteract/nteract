@@ -14,18 +14,12 @@ import {
   AlertCircle,
   BookOpen,
   Check,
-  Clock,
-  ExternalLink,
   FilePlus2,
-  Globe2,
   KeyRound,
   Loader2,
   LogIn,
   LogOut,
-  PencilLine,
   RotateCcw,
-  Search,
-  Share2,
   UserRound,
   X,
 } from "lucide-react";
@@ -126,16 +120,11 @@ import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
-  cloudNotebookDisplayTitle,
-  cloudNotebookShortId,
   isCloudNotebookListItem,
   projectCloudNotebookDashboard,
-  projectCloudNotebookDashboardView,
-  type CloudNotebookDashboardFilterId,
-  type CloudNotebookDashboardModel,
-  type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
+import { CloudNotebookDashboard } from "./cloud-notebook-dashboard-view";
 import {
   clearCachedCloudNotebookList,
   readCachedCloudNotebookList,
@@ -1060,287 +1049,6 @@ function cloudNotebookListFirstName(authState: CloudPrototypeAuthState): string 
   return claimName.split(/\s+/u)[0] ?? null;
 }
 
-function CloudNotebookDashboard({
-  model,
-  canRename,
-  renameState,
-  renameSavingId,
-  onOpenRename,
-  onCancelRename,
-  onRenameTitleChange,
-  onSaveRename,
-}: {
-  model: CloudNotebookDashboardModel;
-  canRename: boolean;
-  renameState: CloudNotebookRenameState | null;
-  renameSavingId: string | null;
-  onOpenRename: (notebook: CloudNotebookListItem) => void;
-  onCancelRename: () => void;
-  onRenameTitleChange: (title: string) => void;
-  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
-}) {
-  const continued = model.continueNotebook;
-  const [query, setQuery] = useState("");
-  const [filterId, setFilterId] = useState<CloudNotebookDashboardFilterId>("all");
-  const view = useMemo(
-    () => projectCloudNotebookDashboardView(model, { filterId, query }),
-    [filterId, model, query],
-  );
-
-  return (
-    <div className="cloud-dashboard">
-      {continued ? (
-        <section className="cloud-dashboard-continue" aria-labelledby="cloud-dashboard-continue">
-          <div className="cloud-dashboard-continue-main">
-            <p>Continue</p>
-            <h2 id="cloud-dashboard-continue">{cloudNotebookDisplayTitle(continued)}</h2>
-            <div className="cloud-dashboard-continue-facts">
-              <span>
-                <Clock aria-hidden="true" />
-                {formatNotebookUpdatedAt(continued.updated_at)}
-              </span>
-              <span>
-                <UserRound aria-hidden="true" />
-                {formatNotebookScope(continued.scope)}
-              </span>
-              {continued.latest_revision_id ? (
-                <span>
-                  <Globe2 aria-hidden="true" />
-                  Published
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <a className="cloud-dashboard-primary-link" href={continued.viewer_url}>
-            Open notebook
-            <ExternalLink aria-hidden="true" />
-          </a>
-        </section>
-      ) : null}
-      <section className="cloud-dashboard-switcher" aria-label="Notebook home">
-        <section className="cloud-dashboard-main" aria-label="Notebook switcher">
-          <div className="cloud-dashboard-search-row">
-            <label className="cloud-dashboard-search">
-              <Search aria-hidden="true" />
-              <input
-                type="search"
-                value={query}
-                placeholder="Search notebooks"
-                aria-label="Search notebooks"
-                onChange={(event) => setQuery(event.currentTarget.value)}
-              />
-            </label>
-            <span className="cloud-dashboard-result-count" aria-live="polite">
-              {view.resultCount} notebook{view.resultCount === 1 ? "" : "s"}
-            </span>
-          </div>
-          <nav className="cloud-dashboard-filters" aria-label="Notebook filters">
-            {model.filters.map((filter) => (
-              <button
-                key={filter.id}
-                type="button"
-                aria-pressed={view.filterId === filter.id}
-                data-active={view.filterId === filter.id ? "true" : undefined}
-                onClick={() => setFilterId(filter.id)}
-              >
-                <span>{filter.label}</span>
-                <strong>{filter.count}</strong>
-              </button>
-            ))}
-          </nav>
-          {view.sections.length > 0 ? (
-            <div className="cloud-dashboard-notebooks">
-              {view.sections.map((section) => (
-                <CloudNotebookDashboardSectionView
-                  key={section.id}
-                  section={section}
-                  canRename={canRename}
-                  renameState={renameState}
-                  renameSavingId={renameSavingId}
-                  onOpenRename={onOpenRename}
-                  onCancelRename={onCancelRename}
-                  onRenameTitleChange={onRenameTitleChange}
-                  onSaveRename={onSaveRename}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="cloud-notebook-list-state" data-kind="empty" role="status">
-              <BookOpen aria-hidden="true" />
-              <span>{view.emptyMessage}</span>
-            </div>
-          )}
-        </section>
-      </section>
-    </div>
-  );
-}
-
-function CloudNotebookDashboardSectionView({
-  section,
-  canRename,
-  renameState,
-  renameSavingId,
-  onOpenRename,
-  onCancelRename,
-  onRenameTitleChange,
-  onSaveRename,
-}: {
-  section: CloudNotebookDashboardSection;
-  canRename: boolean;
-  renameState: CloudNotebookRenameState | null;
-  renameSavingId: string | null;
-  onOpenRename: (notebook: CloudNotebookListItem) => void;
-  onCancelRename: () => void;
-  onRenameTitleChange: (title: string) => void;
-  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
-}) {
-  const action = canRename ? section.action : null;
-
-  return (
-    <section className="cloud-dashboard-notebook-section" data-section={section.id}>
-      <div className="cloud-dashboard-section-heading">
-        <div>
-          <h2>{section.title}</h2>
-          <p>{section.detail}</p>
-        </div>
-        {action?.kind === "rename" ? (
-          <button
-            type="button"
-            className="cloud-dashboard-section-action"
-            onClick={() => onOpenRename(action.notebook)}
-          >
-            <PencilLine aria-hidden="true" />
-            {action.label}
-          </button>
-        ) : null}
-      </div>
-      <ul className="cloud-notebook-list">
-        {section.notebooks.map((notebook) => (
-          <li key={notebook.notebook_id}>
-            <CloudNotebookDashboardRow
-              notebook={notebook}
-              canRename={canRename}
-              renameTitle={
-                renameState?.notebookId === notebook.notebook_id ? renameState.title : null
-              }
-              renameSaving={renameSavingId === notebook.notebook_id}
-              onOpenRename={onOpenRename}
-              onCancelRename={onCancelRename}
-              onRenameTitleChange={onRenameTitleChange}
-              onSaveRename={onSaveRename}
-            />
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function CloudNotebookDashboardRow({
-  notebook,
-  canRename,
-  renameTitle,
-  renameSaving,
-  onOpenRename,
-  onCancelRename,
-  onRenameTitleChange,
-  onSaveRename,
-}: {
-  notebook: CloudNotebookListItem;
-  canRename: boolean;
-  renameTitle: string | null;
-  renameSaving: boolean;
-  onOpenRename: (notebook: CloudNotebookListItem) => void;
-  onCancelRename: () => void;
-  onRenameTitleChange: (title: string) => void;
-  onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
-}) {
-  if (renameTitle !== null) {
-    return (
-      <form className="cloud-notebook-list-rename-form" onSubmit={onSaveRename}>
-        <input
-          aria-label={`Notebook title for ${cloudNotebookShortId(notebook.notebook_id)}`}
-          type="text"
-          value={renameTitle}
-          maxLength={160}
-          placeholder="Untitled notebook"
-          disabled={renameSaving}
-          onChange={(event) => onRenameTitleChange(event.currentTarget.value)}
-        />
-        <button type="submit" disabled={renameSaving} title="Save title" aria-label="Save title">
-          {renameSaving ? (
-            <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-          ) : (
-            <Check aria-hidden="true" />
-          )}
-        </button>
-        <button
-          type="button"
-          disabled={renameSaving}
-          title="Cancel rename"
-          aria-label="Cancel rename"
-          onClick={onCancelRename}
-        >
-          <X aria-hidden="true" />
-        </button>
-      </form>
-    );
-  }
-
-  const hasTitle = Boolean(notebook.title?.trim());
-
-  return (
-    <div className="cloud-notebook-list-row">
-      <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
-        <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
-        {hasTitle ? null : (
-          <span className="cloud-notebook-list-detail">
-            Created {formatNotebookUpdatedAt(notebook.created_at)}
-          </span>
-        )}
-        <span className="cloud-notebook-list-row-facts">
-          <span>
-            <UserRound aria-hidden="true" />
-            {formatNotebookScope(notebook.scope)}
-          </span>
-          {notebook.latest_revision_id ? (
-            <span data-state="published">
-              <Share2 aria-hidden="true" />
-              Published
-            </span>
-          ) : null}
-        </span>
-      </a>
-      <span className="cloud-notebook-list-updated">
-        <Clock aria-hidden="true" />
-        {formatNotebookUpdatedAt(notebook.updated_at)}
-      </span>
-      <span className="cloud-notebook-list-row-actions">
-        {canRename && canRenameCloudNotebook(notebook) ? (
-          <button
-            type="button"
-            className="cloud-notebook-list-icon-button"
-            title="Rename notebook"
-            aria-label={`Rename ${cloudNotebookDisplayTitle(notebook)}`}
-            onClick={() => onOpenRename(notebook)}
-          >
-            <PencilLine aria-hidden="true" />
-          </button>
-        ) : null}
-        <a
-          className="cloud-notebook-list-icon-button"
-          href={notebook.viewer_url}
-          title="Open notebook"
-          aria-label={`Open ${cloudNotebookDisplayTitle(notebook)}`}
-        >
-          <ExternalLink aria-hidden="true" />
-        </a>
-      </span>
-    </div>
-  );
-}
-
 function cloudNotebookListEndpoint(): string {
   return new URL("api/n?limit=100", `${window.location.origin}/`).href;
 }
@@ -1460,34 +1168,6 @@ function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookLis
       candidate.session === null ||
       isCloudAppSession(candidate.session))
   );
-}
-
-function canRenameCloudNotebook(notebook: CloudNotebookListItem): boolean {
-  return notebook.scope === "owner" || notebook.scope === "editor";
-}
-
-function formatNotebookScope(scope: CloudNotebookListItem["scope"]): string {
-  switch (scope) {
-    case "owner":
-      return "owner";
-    case "editor":
-      return "editor";
-    case "runtime_peer":
-      return "runtime";
-    case "viewer":
-      return "viewer";
-  }
-}
-
-function formatNotebookUpdatedAt(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "unknown";
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
 }
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {

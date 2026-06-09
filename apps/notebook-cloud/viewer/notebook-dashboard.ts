@@ -73,6 +73,7 @@ export function projectCloudNotebookDashboard(
     );
   });
   const titled = sorted.filter(cloudNotebookHasTitle);
+  const namedWork = titled.filter((notebook) => !cloudNotebookIsGeneratedRun(notebook));
   const untitled = sorted.filter((notebook) => !cloudNotebookHasTitle(notebook));
   const editableCount = notebooks.filter(
     (notebook) => notebook.scope === "owner" || notebook.scope === "editor",
@@ -83,7 +84,7 @@ export function projectCloudNotebookDashboard(
   ).length;
 
   return {
-    continueNotebook: titled[0] ?? sorted[0] ?? null,
+    continueNotebook: namedWork[0] ?? titled[0] ?? sorted[0] ?? null,
     filters: cloudNotebookDashboardFilters({
       notebooks,
       ownerCount,
@@ -225,21 +226,12 @@ function cloudNotebookDashboardSections(
   }
 
   if (context.filterId === "untitled") {
-    const nextRenameable = notebooks.find(cloudNotebookCanRename);
-    sections.push({
-      action: nextRenameable
-        ? {
-            kind: "rename",
-            label: "Title next",
-            notebook: nextRenameable,
-          }
-        : null,
-      id: "untitled",
-      title: "Needs title",
-      detail: "Rename notebooks worth keeping so they stay easy to find.",
-      notebooks,
-    });
+    sections.push(untitledNotebookSection(notebooks));
     return sections;
+  }
+
+  if (context.query.length === 0 && (context.filterId === "all" || context.filterId === "owned")) {
+    return cloudNotebookWorkSections(notebooks);
   }
 
   const buckets = activityBuckets(notebooks);
@@ -256,8 +248,68 @@ function cloudNotebookDashboardSections(
   return sections;
 }
 
+function cloudNotebookWorkSections(
+  notebooks: readonly CloudNotebookListItem[],
+): CloudNotebookDashboardSection[] {
+  const namedWork = notebooks.filter(
+    (notebook) => cloudNotebookHasTitle(notebook) && !cloudNotebookIsGeneratedRun(notebook),
+  );
+  const generatedRuns = notebooks.filter(cloudNotebookIsGeneratedRun);
+  const untitled = notebooks.filter((notebook) => !cloudNotebookHasTitle(notebook));
+
+  const sections: CloudNotebookDashboardSection[] = [];
+  if (namedWork.length > 0) {
+    sections.push({
+      action: null,
+      detail: bucketDetail(namedWork.length, "ready to reopen"),
+      id: "named",
+      notebooks: namedWork,
+      title: "Recent work",
+    });
+  }
+  if (generatedRuns.length > 0) {
+    sections.push({
+      action: null,
+      detail: bucketDetail(generatedRuns.length, "from smoke and debug work"),
+      id: "generated",
+      notebooks: generatedRuns,
+      title: "Generated runs",
+    });
+  }
+  if (untitled.length > 0) {
+    sections.push(untitledNotebookSection(untitled));
+  }
+  return sections;
+}
+
+function untitledNotebookSection(
+  notebooks: readonly CloudNotebookListItem[],
+): CloudNotebookDashboardSection {
+  const nextRenameable = notebooks.find(cloudNotebookCanRename);
+  return {
+    action: nextRenameable
+      ? {
+          kind: "rename",
+          label: "Title next",
+          notebook: nextRenameable,
+        }
+      : null,
+    id: "untitled",
+    title: "Needs title",
+    detail: "Rename notebooks worth keeping so they stay easy to find.",
+    notebooks,
+  };
+}
+
 function cloudNotebookCanRename(notebook: CloudNotebookListItem): boolean {
   return notebook.scope === "owner" || notebook.scope === "editor";
+}
+
+function cloudNotebookIsGeneratedRun(notebook: CloudNotebookListItem): boolean {
+  const title = notebook.title?.trim() ?? "";
+  return (
+    /\b(?:smoke|debug|latency)\b/iu.test(title) || /\b20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}/u.test(title)
+  );
 }
 
 function cloudNotebookMatchesFilter(

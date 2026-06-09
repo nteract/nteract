@@ -178,6 +178,47 @@ describe("cloud notebook dashboard projection", () => {
       ],
     );
   });
+
+  it("keeps generated runs and untitled notebooks below recognizable work by default", () => {
+    const generated = notebook({
+      id: "toolbar-smoke",
+      title: "Toolbar attach smoke 2026-06-08T19:26:35.312Z",
+      scope: "owner",
+      updatedAt: "2026-06-08T19:26:35.312Z",
+      latestRevisionId: null,
+    });
+    const untitled = notebook({
+      id: "untitled-new",
+      title: null,
+      scope: "owner",
+      updatedAt: "2026-06-08T18:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const realWork = notebook({
+      id: "topic-viz",
+      title: "Topic Visualization",
+      scope: "owner",
+      updatedAt: "2026-06-01T12:00:00.000Z",
+      latestRevisionId: "published-topic",
+    });
+
+    const model = projectCloudNotebookDashboard([generated, untitled, realWork]);
+    const view = projectCloudNotebookDashboardView(model);
+
+    assert.equal(model.continueNotebook?.notebook_id, "topic-viz");
+    assert.deepEqual(
+      view.sections.map((section) => [
+        section.id,
+        section.title,
+        section.notebooks.map((item) => item.notebook_id),
+      ]),
+      [
+        ["named", "Recent work", ["topic-viz"]],
+        ["generated", "Generated runs", ["toolbar-smoke"]],
+        ["untitled", "Needs title", ["untitled-new"]],
+      ],
+    );
+  });
 });
 
 function notebook(input: {
