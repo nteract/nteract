@@ -192,8 +192,8 @@ function DashboardReviewFrame() {
             Find a notebook
           </h2>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-fd-muted-foreground">
-            Search stays primary. Pinned work, activity groups, and cleanup filters make large
-            notebook inventories readable without turning the home into a project board.
+            Search is the first affordance. Pins, recent groups, and title-cleanup filters keep
+            high-signal rooms ahead of smoke-test clutter.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -221,7 +221,7 @@ function DashboardReviewFrame() {
           <section className="grid gap-3 md:grid-cols-4" aria-label="Notebook filters">
             <FilterChip label="All" value={String(dashboardFacts.visible)} active />
             <FilterChip label="Pinned" value={String(pinned.length)} />
-            <FilterChip label="Untitled" value={String(dashboardFacts.untitled)} />
+            <FilterChip label="Needs title" value={String(dashboardFacts.untitled)} />
             <FilterChip label="Published" value={String(dashboardFacts.published)} />
           </section>
 
@@ -261,18 +261,23 @@ function DashboardReviewFrame() {
           <section className="rounded-lg border border-fd-border p-4">
             <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
               <Server className="size-3.5" aria-hidden="true" />
-              Workstation
+              Workstation context
             </div>
             <h3 className="mt-2 text-base font-semibold">Default workstation</h3>
             <p className="mt-2 text-sm leading-6 text-fd-muted-foreground">
-              Host-owned context only. Execution controls stay inside the opened notebook.
+              Host-owned readiness only. Run, restart, and interrupt controls stay inside the opened
+              notebook.
             </p>
           </section>
           <section className="rounded-lg border border-fd-border p-4">
             <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
               <Share2 className="size-3.5" aria-hidden="true" />
-              Sharing
+              Sharing metadata
             </div>
+            <p className="mt-2 text-sm leading-6 text-fd-muted-foreground">
+              Safe counts for inventory scan. Preview content comes only from explicit published
+              revisions.
+            </p>
             <dl className="mt-3 grid gap-2 text-sm">
               <FactRow label="Published" value={String(dashboardFacts.published)} />
               <FactRow label="Untitled" value={String(dashboardFacts.untitled)} />

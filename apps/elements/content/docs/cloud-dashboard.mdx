@@ -9,9 +9,19 @@ The hosted dashboard is app-level product chrome. It should help a signed-in
 user open the right room quickly without becoming another notebook shell,
 metrics board, or project-management surface.
 
-This fixture keeps the notebook list search-first. Pinned work, activity
-grouping, and cleanup filters add precedence around the inventory instead of
-competing with it.
+This fixture keeps the notebook list search-first. The surrounding controls are
+only there to make a large inventory readable: pin important rooms, find recent
+activity, expose cleanup work, and summarize host-owned context.
+
+The example below models three behaviors:
+
+- Search and filters refine the inventory by title, project, title-cleanup
+  state, and published state.
+- Pinned work and recent activity create precedence so real notebooks stay
+  ahead of smoke-test clutter.
+- Workstation and sharing summaries stay informational. Opening a notebook is
+  where execution, runtime state, and access management move into the notebook
+  shell.
 
 <CloudDashboardExample />
 
@@ -19,7 +29,7 @@ competing with it.
 
 - `/n` should feel like a notebook switcher first.
 - Search is the first action; filters refine inventory rather than becoming a
-  separate inbox app.
+  separate task queue.
 - Pinned and recently active notebooks stay above generated testing noise.
 - Untitled and smoke-test rooms remain visible for cleanup, but they should not
   dominate the scan path.
