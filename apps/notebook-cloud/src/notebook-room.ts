@@ -192,6 +192,9 @@ export class NotebookRoom {
     notebookId: string,
     request: Request,
   ): Promise<Response> {
+    // Worker-internal control path only. External traffic reaches this Durable
+    // Object through the Worker's strict `/n/:notebookId/sync` WebSocket route,
+    // so `/internal/*` is not publicly routable unless that router changes.
     if (request.method !== "POST") {
       return json({ error: "method not allowed" }, 405);
     }
