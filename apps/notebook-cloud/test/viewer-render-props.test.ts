@@ -2,16 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as ts from "typescript";
+import { viewerCorpus, viewerFunctionSource, viewerModuleTexts } from "./viewer-source-corpus";
 
 test("cloud notebook rendering uses shared cell chrome instead of report-mode cells", () => {
-  const sourcePaths = [new URL("../viewer/index.tsx", import.meta.url)];
   const offenders: string[] = [];
 
-  for (const sourcePath of sourcePaths) {
-    const sourceText = readFileSync(sourcePath, "utf8");
+  for (const { name, text } of viewerModuleTexts) {
     const sourceFile = ts.createSourceFile(
-      sourcePath.pathname,
-      sourceText,
+      name,
+      text,
       ts.ScriptTarget.Latest,
       true,
       ts.ScriptKind.TSX,
@@ -31,7 +30,7 @@ test("cloud notebook rendering uses shared cell chrome instead of report-mode ce
 
           if (hasReportMode) {
             const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-            offenders.push(`${sourcePath.pathname}:${tagName}:${position.line + 1}`);
+            offenders.push(`${name}:${tagName}:${position.line + 1}`);
           }
         }
       }
@@ -50,8 +49,7 @@ test("cloud notebook rendering uses shared cell chrome instead of report-mode ce
 });
 
 test("cloud viewer keeps theme resolution out of first-class notebook chrome", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /useTheme\(CLOUD_VIEWER_THEME_STORAGE_KEY\)/);
   assert.match(sourceText, /applyDocumentTheme\(resolvedTheme\)/);
@@ -64,14 +62,9 @@ test("cloud viewer keeps theme resolution out of first-class notebook chrome", (
 });
 
 test("cloud home keeps prototype controls out of the primary auth surface", () => {
-  const sourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
-  const homeSource = sourceText.slice(
-    sourceText.indexOf("export function CloudHomeView"),
-    sourceText.indexOf("export function OidcCallbackView"),
-  );
+  const homeSource = viewerFunctionSource("CloudHomeView");
   const homePanelCss = cssText.slice(
     cssText.indexOf(".cloud-home-panel"),
     cssText.indexOf(".cloud-home-status"),
@@ -98,11 +91,9 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
 });
 
 test("cloud callback keeps sign-in handoff in the entry surface language", () => {
-  const sourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
-  const callbackSource = sourceText.slice(sourceText.indexOf("export function OidcCallbackView"));
+  const callbackSource = viewerFunctionSource("OidcCallbackView");
 
   assert.match(callbackSource, /className="cloud-home"/);
   assert.match(callbackSource, /className="cloud-home-layout"/);
@@ -117,8 +108,7 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
 });
 
 test("cloud viewer routes notebook header controls through the shared shell chrome", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
   const presenceSourcePath = new URL("../viewer/cloud-presence-status.tsx", import.meta.url);
@@ -252,8 +242,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
 });
 
 test("cloud viewer presents live-room failures as one host notice", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const presenceSourcePath = new URL("../viewer/cloud-presence-status.tsx", import.meta.url);
   const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const noticesPath = new URL("../viewer/notices.tsx", import.meta.url);
@@ -290,10 +279,9 @@ test("cloud viewer presents live-room failures as one host notice", () => {
 });
 
 test("cloud viewer defers supplemental CSS loading until the notebook surface mounts", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sourceFile = ts.createSourceFile(
-    sourcePath.pathname,
+    "viewer-corpus.tsx",
     sourceText,
     ts.ScriptTarget.Latest,
     true,

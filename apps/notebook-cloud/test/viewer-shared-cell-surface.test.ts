@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { test } from "node:test";
+import { viewerCorpus, viewerFileContaining } from "./viewer-source-corpus";
 
 test("cloud notebook body renders through the desktop NotebookView surface", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/notebook-surface"/);
   assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
@@ -49,8 +49,7 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
 });
 
 test("cloud projects live cells into the NotebookView stores", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
@@ -96,8 +95,7 @@ test("cloud live changesets gate stale post-await status writes", () => {
 });
 
 test("cloud notebook mutations route through the shared notebook controller", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /createNotebookController/);
   assert.match(sourceText, /const cloudNotebookController = useMemo/);
@@ -112,8 +110,7 @@ test("cloud notebook mutations route through the shared notebook controller", ()
 });
 
 test("cloud command toolbar inserts below the focused cell before falling back to the tail", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(
     sourceText,
@@ -126,8 +123,7 @@ test("cloud command toolbar inserts below the focused cell before falling back t
 });
 
 test("cloud projects host focus through the shared cell UI state bridge", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /useNotebookCellUIStateBridge/);
   assert.match(
@@ -143,8 +139,7 @@ test("cloud projects host focus through the shared cell UI state bridge", () => 
 });
 
 test("cloud passes shared NotebookView source and output visibility handlers", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(
     sourceText,
@@ -166,8 +161,7 @@ test("cloud passes shared NotebookView source and output visibility handlers", (
 });
 
 test("cloud wires shared presence and cleans projected store entries", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
   const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
@@ -198,8 +192,7 @@ test("cloud wires shared presence and cleans projected store entries", () => {
 });
 
 test("cloud package rail renders package metadata through the shared shell panel", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /NotebookPackageSummaryPanel/);
   assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
@@ -208,8 +201,7 @@ test("cloud package rail renders package metadata through the shared shell panel
 });
 
 test("cloud package rail stays package-only and leaves sync/env state to app chrome", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(
     sourceText,
@@ -222,8 +214,7 @@ test("cloud package rail stays package-only and leaves sync/env state to app chr
 });
 
 test("cloud workstation registry state lives in the workstation manager hook", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerFileContaining("export function NotebookViewer");
   const hookSourcePath = new URL("../viewer/use-cloud-workstations.ts", import.meta.url);
   const hookSourceText = readFileSync(hookSourcePath, "utf8");
 
@@ -262,8 +253,7 @@ test("cloud identity chrome renders through the shared actor projection surface"
 });
 
 test("cloud presence chrome renders as an isolated host avatar stack", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const presenceSourcePath = new URL("../viewer/cloud-presence-status.tsx", import.meta.url);
   const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const hostedSmokePath = new URL("../scripts/hosted-render-smoke.mjs", import.meta.url);
@@ -289,8 +279,7 @@ test("cloud presence chrome renders as an isolated host avatar stack", () => {
 });
 
 test("cloud edit mode chrome renders through the shared shell component", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerFileContaining("export function NotebookViewer");
   const authControlsSourcePath = new URL("../viewer/cloud-auth-controls.tsx", import.meta.url);
   const authControlsSourceText = readFileSync(authControlsSourcePath, "utf8");
   const shellHookSourcePath = new URL("../viewer/use-cloud-shell-capabilities.ts", import.meta.url);
@@ -356,8 +345,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
 });
 
 test("cloud rail binds through the shared document rail adapter", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /NotebookDocumentRail/);
   assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
@@ -365,8 +353,7 @@ test("cloud rail binds through the shared document rail adapter", () => {
 });
 
 test("cloud host notices sit in the shared shell above the rail and notebook stage", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
   const shellPath = new URL(
@@ -404,8 +391,7 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
 });
 
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /NotebookDocumentRail/);
   assert.match(sourceText, /useNotebookViewModel\(/);
@@ -421,8 +407,7 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
 });
 
 test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /const handledHeadingHashRef = useRef<string \| null>\(null\)/);
   assert.match(sourceText, /const headingAnchorId = decodeHashAnchorId\(hash\)/);
@@ -437,8 +422,7 @@ test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
 });
 
 test("cloud live materialization skips empty room handles before resolving outputs", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
@@ -474,8 +458,7 @@ test("cloud live cell changes use serialized incremental materialization", () =>
 });
 
 test("cloud viewer shell keeps render endpoints out of the interactive load path", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.doesNotMatch(sourceText, /renderEndpoint/);
   assert.doesNotMatch(sourceText, /pinnedRenderBasePath/);
@@ -508,8 +491,7 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
 });
 
 test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const routeSourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
   const authSourcePath = new URL("../viewer/use-cloud-auth.ts", import.meta.url);
@@ -549,8 +531,7 @@ test("cloud notebook list waits for app-session cookies before catalog fetches",
 });
 
 test("cloud app-session live sync requests owner and lets the backend downgrade", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: "owner"/);
   assert.doesNotMatch(
@@ -569,8 +550,7 @@ test("cloud sync keeps routine frame logs out of the browser console", () => {
 });
 
 test("cloud installs a host logger sink for shared notebook components", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /setLoggerHost/);
   assert.match(sourceText, /debug: \(\) => \{\}/);
