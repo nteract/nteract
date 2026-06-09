@@ -76,7 +76,6 @@ export interface CloudViewerConfig {
 }
 
 export interface CloudViewerSession {
-  catalogNotebook: CloudNotebookCatalogNotebook | null;
   connectionActorLabel: string | null;
   connectionError: string | null;
   connectionPeerId: string | null;
@@ -112,14 +111,7 @@ interface CloudNotebookCatalogRevision {
   runtime_state_doc_id: string | null;
 }
 
-export interface CloudNotebookCatalogNotebook {
-  id: string;
-  owner_principal: string;
-  title: string | null;
-}
-
 interface CloudNotebookCatalog {
-  notebook?: CloudNotebookCatalogNotebook;
   revisions?: CloudNotebookCatalogRevision[];
 }
 
@@ -139,7 +131,6 @@ export function useCloudViewerSession({
     message: loadingPolicy.initialStatusMessage,
   });
   const [, setCells] = useState<ResolvedCell[]>([]);
-  const [catalogNotebook, setCatalogNotebook] = useState<CloudNotebookCatalogNotebook | null>(null);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
   const [workstationAttachment, setWorkstationAttachment] =
     useState<WorkstationAttachmentState | null>(null);
@@ -169,42 +160,6 @@ export function useCloudViewerSession({
   }, []);
 
   useEffect(() => resetCloudViewStoreProjection, []);
-
-  useEffect(() => {
-    if (authRenewalKind === "refreshing") {
-      return;
-    }
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const catalogResponse = await fetch(
-          config.catalogEndpoint,
-          withCloudPrototypeAuthHeaders({ headers: { Accept: "application/json" } }, authState),
-        );
-        if (!catalogResponse.ok) {
-          if (!cancelled) {
-            setCatalogNotebook(null);
-          }
-          return;
-        }
-
-        const catalog = (await catalogResponse.json()) as CloudNotebookCatalog;
-        if (!cancelled) {
-          setCatalogNotebook(catalog.notebook ?? null);
-        }
-      } catch {
-        if (!cancelled) {
-          setCatalogNotebook(null);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authRenewalKind, authState, config.catalogEndpoint]);
 
   useEffect(() => {
     if (authRenewalKind === "refreshing") {
@@ -731,7 +686,6 @@ export function useCloudViewerSession({
   }, []);
 
   return {
-    catalogNotebook,
     connectionActorLabel,
     connectionError,
     connectionPeerId,
