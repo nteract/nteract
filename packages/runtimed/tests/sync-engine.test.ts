@@ -2026,6 +2026,102 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("projects plain CommsDoc JSON when the handle resolver is unavailable", async () => {
+      const commId = "plain-json-comm";
+      handle = createMockHandle({
+        get_runtime_state: vi.fn(() => runtimeStateWithComm(commId, {})),
+        get_comms_state: vi.fn(() => ({ comms: { [commId]: { value: 7 } } })),
+        resolve_comm_state: vi.fn(() => undefined),
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      const emissions: Array<{
+        opened: Array<{ commId: string; state: unknown }>;
+        updated: Array<{ commId: string; state: unknown }>;
+      }> = [];
+      engine.commChanges$.subscribe((c) => emissions.push(c));
+      engine.reProjectComms();
+
+      await vi.waitFor(() => expect(emissions.length).toBe(1));
+      expect(emissions[0].opened.map((o) => o.commId)).toEqual([commId]);
+      expect((emissions[0].opened[0].state as Record<string, unknown>).value).toBe(7);
+
+      engine.stop();
+    });
+
+    it("does not treat plain inline or blob traitlets as ContentRefs", async () => {
+      const commId = "plain-content-ref-key-traitlet-comm";
+      handle = createMockHandle({
+        get_runtime_state: vi.fn(() => runtimeStateWithComm(commId, {})),
+        get_comms_state: vi.fn(() => ({
+          comms: {
+            [commId]: {
+              layout: { inline: true, display: "flex" },
+              marker: { blob: "ordinary-traitlet" },
+              payload: { blob: "ordinary-payload", size: 3, extra: "state" },
+            },
+          },
+        })),
+        resolve_comm_state: vi.fn(() => undefined),
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      const emissions: Array<{
+        opened: Array<{ commId: string; state: unknown }>;
+      }> = [];
+      engine.commChanges$.subscribe((c) => emissions.push(c));
+      engine.reProjectComms();
+
+      await vi.waitFor(() => expect(emissions.length).toBe(1));
+      expect(emissions[0].opened.map((o) => o.commId)).toEqual([commId]);
+      expect(emissions[0].opened[0].state).toMatchObject({
+        layout: { inline: true, display: "flex" },
+        marker: { blob: "ordinary-traitlet" },
+        payload: { blob: "ordinary-payload", size: 3, extra: "state" },
+      });
+
+      engine.stop();
+    });
+
+    it("replays the current comm projection for subscribers installed after bootstrap", async () => {
+      const commId = "late-subscriber-comm";
+      handle = createMockHandle({
+        get_runtime_state: vi.fn(() => runtimeStateWithComm(commId, {})),
+        get_comms_state: vi.fn(() => ({ comms: { [commId]: { value: 7 } } })),
+        resolve_comm_state: vi.fn(() => ({
+          state: { value: 7 },
+          buffer_paths: [] as string[][],
+          text_paths: [] as string[][],
+        })),
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      // Cloud starts the engine while connecting the socket, then installs
+      // React/widget-store subscribers after the runtime is returned. The
+      // adapter must be able to replay the current durable comm projection
+      // into those late subscribers, especially after reconnect.
+      const emissions: Array<{
+        opened: Array<{ commId: string; state: unknown }>;
+        updated: Array<{ commId: string; state: unknown }>;
+      }> = [];
+      engine.commChanges$.subscribe((c) => emissions.push(c));
+      const beforeReplay = emissions.length;
+      engine.reProjectComms();
+
+      await vi.waitFor(() => expect(emissions.length).toBeGreaterThan(beforeReplay));
+      const replay = emissions.at(-1)!;
+      expect(replay.opened.map((o) => o.commId)).toEqual([commId]);
+      expect((replay.opened[0].state as Record<string, unknown>).value).toBe(7);
+
+      engine.stop();
+    });
+
     it("inlines text-MIME blobs into emitted comm state", async () => {
       const commId = "abc123";
       const pythonSource = "class Counter: count = 0";
@@ -2228,15 +2324,24 @@ describe("SyncEngine", () => {
 
     it("re-surfaces an update dropped while resolver was not ready", async () => {
       // Simulates the race where an update to an already-opened comm
-      // arrives before blob_port is set (resolve_comm_state returns
-      // undefined). Before the fix, projectComms advanced the diff's
-      // recorded json for that comm, so the next projection saw "no
-      // change" and never re-emitted — the update was lost.
+      // arrives before blob/content resolution is ready
+      // (resolve_comm_state returns undefined). Before the fix,
+      // projectComms advanced the diff's recorded json for that comm,
+      // so the next projection saw "no change" and never re-emitted —
+      // the update was lost. Plain JSON states now fall back to raw
+      // CommsDoc state; this test stays on a blob-backed state so it
+      // still exercises the resolver-deferred path.
       const commId = "race1";
       let portReady = false;
       handle = createMockHandle({
         resolve_comm_state: vi.fn((_id: unknown) =>
-          portReady ? { state: { value: 42 }, buffer_paths: [], text_paths: [] } : undefined,
+          portReady
+            ? {
+                state: { image: "http://127.0.0.1:1234/blob/hash-b" },
+                buffer_paths: [["image"]],
+                text_paths: [],
+              }
+            : undefined,
         ),
       });
 
@@ -2252,7 +2357,7 @@ describe("SyncEngine", () => {
       // Open: resolver ready, comm opens fine.
       portReady = true;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
-        runtimeStateSyncEvent(runtimeStateWithComm(commId, { value: 1 })),
+        runtimeStateSyncEvent(runtimeStateWithComm(commId, { image: { blob: "hash-a", size: 1 } })),
       ]);
       transport.deliver([0x05, 0x01]);
       await vi.waitFor(() => expect(emissions.length).toBe(1));
@@ -2263,7 +2368,7 @@ describe("SyncEngine", () => {
       // re-surfaced on later projections.
       portReady = false;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
-        runtimeStateSyncEvent(runtimeStateWithComm(commId, { value: 2 })),
+        runtimeStateSyncEvent(runtimeStateWithComm(commId, { image: { blob: "hash-b", size: 1 } })),
       ]);
       transport.deliver([0x05, 0x02]);
 
@@ -2276,7 +2381,7 @@ describe("SyncEngine", () => {
       // state and concluding "no change."
       portReady = true;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
-        runtimeStateSyncEvent(runtimeStateWithComm(commId, { value: 2 })),
+        runtimeStateSyncEvent(runtimeStateWithComm(commId, { image: { blob: "hash-b", size: 1 } })),
       ]);
       transport.deliver([0x05, 0x03]);
 

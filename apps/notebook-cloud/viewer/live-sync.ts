@@ -619,6 +619,8 @@ export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     cell_count: () => handle.cell_count(),
     get_heads_hex: () => handle.get_heads_hex(),
     get_dependency_fingerprint: () => handle.get_dependency_fingerprint(),
+    get_runtime_state: () => handle.get_runtime_state(),
+    get_comms_state: () => handle.get_comms_state(),
     resolve_comm_state: (commId) =>
       handle.resolve_comm_state(commId) as
         | {

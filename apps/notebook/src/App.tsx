@@ -13,6 +13,10 @@ import {
 } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
+import {
+  applyWidgetCommBroadcastToStore,
+  applyWidgetCommChangesToStore,
+} from "@/components/widgets/comm-changes-store-bridge";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import { SavedWidgetStateProvider } from "@/components/widgets/saved-widget-state-context";
 import {
@@ -739,41 +743,19 @@ function AppContent() {
     if (!engine) return;
 
     const commSub = engine.commChanges$.subscribe((changes) => {
-      for (const comm of changes.opened) {
-        widgetStore.createModel(comm.commId, comm.state, comm.bufferPaths);
-        if (comm.unresolvedOutputs) {
-          resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
-        }
-      }
-      for (const comm of changes.updated) {
+      applyWidgetCommChangesToStore(widgetStore, changes, {
         // Suppress CRDT echoes for keys with pending optimistic values
         // (e.g. slider being dragged — don't clobber with stale echo).
-        const filtered = updateManager.shouldSuppressEcho(comm.commId, comm.state);
-        if (filtered) {
-          widgetStore.updateModel(comm.commId, filtered, comm.bufferPaths);
-        }
-        if (comm.unresolvedOutputs) {
-          resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
-        }
-      }
-      for (const commId of changes.closed) {
-        updateManager.clearComm(commId);
-        widgetStore.deleteModel(commId);
-      }
+        shouldSuppressEcho: (commId, state) => updateManager.shouldSuppressEcho(commId, state),
+        clearComm: (commId) => updateManager.clearComm(commId),
+        resolveOutputs: resolveCommOutputs,
+      });
     });
 
     // Custom comm messages (buttons, model.send()) are ephemeral events
     // delivered via broadcast, not CRDT state. Route to WidgetStore.
     const customSub = engine.commBroadcasts$.subscribe((broadcast) => {
-      const content = broadcast.content as Record<string, unknown> | undefined;
-      const data = content?.data as Record<string, unknown> | undefined;
-      if (data?.method === "custom") {
-        const commId = content?.comm_id as string;
-        const inner = (data?.content as Record<string, unknown>) ?? {};
-        const buffers = (broadcast as { buffers?: number[][] }).buffers;
-        const arrayBuffers = buffers?.map((arr: number[]) => new Uint8Array(arr).buffer);
-        widgetStore.emitCustomMessage(commId, inner, arrayBuffers);
-      }
+      applyWidgetCommBroadcastToStore(widgetStore, broadcast);
     });
 
     return () => {
