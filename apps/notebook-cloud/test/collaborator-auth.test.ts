@@ -7,6 +7,7 @@ import {
   NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
+  cloudBrowserCanUseAuthenticatedApi,
   cloudHttpHeadersFromPrototypeAuthState,
   cloudNotebookSignInCopy,
   clearCloudPrototypeDevAuth,
@@ -146,6 +147,37 @@ describe("cloud collaborator auth", () => {
     assert.equal(headers.get("Accept"), "application/json");
     assert.equal(headers.has("Authorization"), false);
     assert.equal(headers.has("X-Scope"), false);
+  });
+
+  it("waits for app-session cookies before loading authenticated browser APIs", () => {
+    assert.equal(
+      cloudBrowserCanUseAuthenticatedApi({
+        authState: { mode: "oidc" },
+        hasAppSession: false,
+      }),
+      false,
+    );
+    assert.equal(
+      cloudBrowserCanUseAuthenticatedApi({
+        authState: { mode: "oidc" },
+        hasAppSession: true,
+      }),
+      true,
+    );
+    assert.equal(
+      cloudBrowserCanUseAuthenticatedApi({
+        authState: { mode: "dev" },
+        hasAppSession: false,
+      }),
+      true,
+    );
+    assert.equal(
+      cloudBrowserCanUseAuthenticatedApi({
+        authState: { mode: "anonymous" },
+        hasAppSession: false,
+      }),
+      false,
+    );
   });
 
   it("keeps dev-token headers for prototype browser app APIs", () => {

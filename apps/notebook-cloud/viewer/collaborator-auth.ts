@@ -46,6 +46,11 @@ export interface CloudPrototypeAuthState {
   problem: string | null;
 }
 
+export interface CloudBrowserAuthenticatedApiOptions {
+  authState: Pick<CloudPrototypeAuthState, "mode">;
+  hasAppSession: boolean;
+}
+
 export interface CloudPrototypeAuthStorage {
   getItem(key: string): string | null;
   removeItem(key: string): void;
@@ -104,6 +109,13 @@ export function cloudPrototypeAuthFromWindow(): CloudPrototypeAuthState {
 
 export function isCloudPrototypeAuthStorageKey(key: string | null): boolean {
   return key === null || NOTEBOOK_CLOUD_AUTH_STORAGE_KEYS.has(key);
+}
+
+export function cloudBrowserCanUseAuthenticatedApi({
+  authState,
+  hasAppSession,
+}: CloudBrowserAuthenticatedApiOptions): boolean {
+  return authState.mode === "dev" || hasAppSession;
 }
 
 export function readCloudPrototypeAuth(

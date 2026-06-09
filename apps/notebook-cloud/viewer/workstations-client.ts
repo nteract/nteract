@@ -16,11 +16,6 @@ export interface CloudWorkstationRefreshCadenceOptions {
   panelIsOpen: boolean;
 }
 
-export interface CloudWorkstationsLoadCredentialOptions {
-  authState: Pick<CloudPrototypeAuthState, "mode">;
-  hasAppSession: boolean;
-}
-
 export const CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS = 10_000;
 export const CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS = 2_500;
 
@@ -129,13 +124,6 @@ export function cloudWorkstationRefreshIntervalMs({
     return CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS;
   }
   return null;
-}
-
-export function cloudWorkstationsCanLoad({
-  authState,
-  hasAppSession,
-}: CloudWorkstationsLoadCredentialOptions): boolean {
-  return authState.mode === "dev" || hasAppSession;
 }
 
 function normalizeCloudWorkstation(value: unknown): NotebookRegisteredWorkstation | null {

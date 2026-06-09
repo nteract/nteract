@@ -63,6 +63,7 @@ import { NotebookClient, type NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
   clearCloudPrototypeDevAuth,
+  cloudBrowserCanUseAuthenticatedApi,
   cloudNotebookSignInCopy,
   fetchWithCloudPrototypeAuth,
   cloudSyncAuthFromAppSessionCookie,
@@ -151,7 +152,6 @@ import {
 } from "./use-cloud-auth";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
-import { cloudWorkstationsCanLoad } from "./workstations-client";
 import "./index.css";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
@@ -1180,7 +1180,7 @@ function NotebookViewer({
   }, []);
   const hasBrowserAppIdentity =
     Boolean(appSessionStatus.session) || authState.mode === "dev" || authState.mode === "oidc";
-  const canLoadCloudWorkstations = cloudWorkstationsCanLoad({
+  const canUseAuthenticatedCloudApi = cloudBrowserCanUseAuthenticatedApi({
     authState,
     hasAppSession: Boolean(appSessionStatus.session),
   });
@@ -1221,7 +1221,7 @@ function NotebookViewer({
     workstationSelection,
   } = useCloudWorkstationManager({
     authState,
-    canLoadCloudWorkstations,
+    canLoadCloudWorkstations: canUseAuthenticatedCloudApi,
     capabilities: shellCapabilities,
     config,
     onOpenWorkstationsRail: handleOpenWorkstationsRail,
@@ -1512,7 +1512,7 @@ function NotebookViewer({
   );
   const loadOwnAccessRequest = useCallback(
     async (options?: { signal?: AbortSignal }) => {
-      if (connectionScope !== "viewer" || !hasBrowserAppIdentity) {
+      if (connectionScope !== "viewer" || !canUseAuthenticatedCloudApi) {
         return;
       }
 
@@ -1542,9 +1542,9 @@ function NotebookViewer({
     [
       applyLatestAccessRequest,
       authState,
+      canUseAuthenticatedCloudApi,
       config.accessRequestsEndpoint,
       connectionScope,
-      hasBrowserAppIdentity,
     ],
   );
   useEffect(() => {
@@ -1552,15 +1552,18 @@ function NotebookViewer({
       setLatestAccessRequest(null);
       return;
     }
+    if (!canUseAuthenticatedCloudApi) {
+      return;
+    }
     const controller = new AbortController();
     void loadOwnAccessRequest({ signal: controller.signal });
     return () => controller.abort();
-  }, [connectionScope, hasBrowserAppIdentity, loadOwnAccessRequest]);
+  }, [canUseAuthenticatedCloudApi, connectionScope, hasBrowserAppIdentity, loadOwnAccessRequest]);
   useEffect(() => {
     if (
       latestAccessRequest?.status !== "pending" ||
       connectionScope !== "viewer" ||
-      !hasBrowserAppIdentity
+      !canUseAuthenticatedCloudApi
     ) {
       return;
     }
@@ -1573,7 +1576,12 @@ function NotebookViewer({
       controller.abort();
       window.clearInterval(intervalId);
     };
-  }, [connectionScope, hasBrowserAppIdentity, latestAccessRequest?.status, loadOwnAccessRequest]);
+  }, [
+    canUseAuthenticatedCloudApi,
+    connectionScope,
+    latestAccessRequest?.status,
+    loadOwnAccessRequest,
+  ]);
   const requestCloudEditAccess = useCallback(() => {
     void (async () => {
       setAccessRequestError(null);
