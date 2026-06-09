@@ -26,7 +26,7 @@ export interface RouteRule {
 }
 
 export interface CredentialRef {
-  /** Stable identifier. Matches `^[a-zA-Z][a-zA-Z0-9_]*$`. */
+  /** Stable identifier. Matches `^[a-zA-Z][a-zA-Z0-9_-]*$`. */
   name: string;
   description?: string;
   env_var?: string;
@@ -47,8 +47,8 @@ export interface ProfileValidationError {
   message: string;
 }
 
-/** `^[a-zA-Z][a-zA-Z0-9_]*$` — matches the Rust regex used in task 03. */
-const CREDENTIAL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+/** `^[a-zA-Z][a-zA-Z0-9_-]*$` — matches the Rust regex used in task 03. */
+const CREDENTIAL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
 /**
  * Validate a hostname: no scheme, no path, no port, no whitespace.
@@ -70,7 +70,7 @@ function isValidHostname(host: string): boolean {
  *
  * Rules (must match the Rust validator exactly):
  * 1. All credential `name` values must be unique.
- * 2. All `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$`.
+ * 2. All `name` values must match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
  * 3. All `host` values in routes must be valid hostnames (no scheme, no path).
  * 4. `allowed_domains` entries must be valid hostnames.
  * 5. Each `RouteRule` with `inject_as = "header"` must set `header`.
@@ -101,7 +101,7 @@ export function validateSandboxProfile(
     if (!CREDENTIAL_NAME_RE.test(cred.name)) {
       errors.push({
         field: `credentials[${ci}].name`,
-        message: `Credential name \`${cred.name}\` must match ^[a-zA-Z][a-zA-Z0-9_]*$.`,
+        message: `Credential name \`${cred.name}\` must match ^[a-zA-Z][a-zA-Z0-9_-]*$.`,
       });
     }
 

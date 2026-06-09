@@ -199,7 +199,7 @@ write_sandbox_profile(&mut doc, None)?;  // removes sandbox key
 ### Validation rules (enforced on both read and write)
 
 1. All credential `name` values must be unique.
-2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$`.
+2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
 3. All `host` values in routes must be valid hostnames (no scheme, no path).
 4. `allowed_domains` entries must be valid hostnames.
 5. Each `RouteRule` with `inject_as = Header` must have `header` set.

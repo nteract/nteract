@@ -133,7 +133,7 @@ pub fn write_sandbox_profile(
 Implement a `validate()` method on `SandboxProfile` that returns a `Vec<ProfileValidationError>`:
 
 - All credential `name` values must be unique
-- All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$` (must yield valid env var names)
+- All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_-]*$` (must yield valid env var names after replacing `-` with `_`)
 - All `host` values in routes must be valid hostnames (no schemes, no paths)
 - `allowed_domains` entries must be valid hostnames
 - Each `RouteRule` with `inject_as = Header` must set `header`

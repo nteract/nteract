@@ -171,6 +171,18 @@ function RouteDialog({ existing, open, onClose, onSaved }: RouteDialogProps) {
 
 // ── Add credential reference dialog ───────────────────────────────────────
 
+/** Matches `^[a-zA-Z][a-zA-Z0-9_-]*$` — must stay in sync with the Rust validator. */
+const CRED_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+
+function validateCredRefName(name: string, existingNames: Set<string>): string | null {
+  if (!name.trim()) return "Name is required.";
+  if (!CRED_NAME_RE.test(name.trim()))
+    return "Must start with a letter; only letters, digits, underscores, and hyphens allowed.";
+  if (existingNames.has(name.trim()))
+    return "This credential is already referenced by this notebook.";
+  return null;
+}
+
 interface AddCredRefDialogProps {
   open: boolean;
   onClose: () => void;
@@ -207,12 +219,9 @@ function AddCredRefDialog({
   }, [name, available]);
 
   function handleAdd() {
-    if (!name.trim()) {
-      setNameError("Name is required.");
-      return;
-    }
-    if (existingNames.has(name.trim())) {
-      setNameError("This credential is already referenced by this notebook.");
+    const err = validateCredRefName(name, existingNames);
+    if (err) {
+      setNameError(err);
       return;
     }
     onAdded({ name: name.trim(), description: description.trim() || undefined, routes: [] });
@@ -240,10 +249,21 @@ function AddCredRefDialog({
               id="cref-name"
               value={name}
               onChange={(e) => {
-                setName(e.target.value);
-                setNameError(null);
+                const v = e.target.value;
+                setName(v);
+                // Show format error as-you-type once the field is non-empty;
+                // clear it when the input becomes empty so "required" only
+                // shows on submit.
+                if (v) {
+                  setNameError(CRED_NAME_RE.test(v.trim()) ? null : "Must start with a letter; only letters, digits, underscores, and hyphens allowed.");
+                } else {
+                  setNameError(null);
+                }
               }}
-              placeholder="my_api_key"
+              onBlur={() => {
+                if (name) setNameError(validateCredRefName(name, existingNames));
+              }}
+              placeholder="my-api-key"
               list="cred-suggestions"
               autoComplete="off"
             />

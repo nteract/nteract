@@ -9,7 +9,7 @@
 /// out to `security list-generic-passwords`. The index never contains secret
 /// values.
 ///
-/// Name validation: `^[a-zA-Z][a-zA-Z0-9_]*$` — identical to task 03's Rust
+/// Name validation: `^[a-zA-Z][a-zA-Z0-9_-]*$` — identical to task 03's Rust
 /// validator so TypeScript and Rust agree on what names are legal.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -26,7 +26,7 @@ pub struct CredentialMeta {
 /// Keychain service name — matches nono's lookup convention.
 const KEYCHAIN_SERVICE: &str = "nono";
 
-/// Validate that a credential name matches `^[a-zA-Z][a-zA-Z0-9_]*$`.
+/// Validate that a credential name matches `^[a-zA-Z][a-zA-Z0-9_-]*$`.
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Credential name must not be empty.".to_string());
@@ -42,9 +42,9 @@ fn validate_name(name: &str) -> Result<(), String> {
         ));
     }
     for ch in chars {
-        if !ch.is_ascii_alphanumeric() && ch != '_' {
+        if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-' {
             return Err(format!(
-                "Credential name may only contain letters, digits, and underscores; got '{}'.",
+                "Credential name may only contain letters, digits, underscores, and hyphens; got '{}'.",
                 ch
             ));
         }

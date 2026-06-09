@@ -479,7 +479,7 @@ mod tests {
         let profile = SandboxProfile {
             enabled: true,
             credentials: vec![CredentialRef {
-                name: "bad-name".to_string(), // hyphens not allowed
+                name: "123bad".to_string(), // starts with digit — invalid
                 description: None,
                 env_var: None,
                 keystore_name: None,

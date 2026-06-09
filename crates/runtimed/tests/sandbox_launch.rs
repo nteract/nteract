@@ -249,7 +249,7 @@ fn profile_translation_error_for_invalid_profile() {
     let profile = SandboxProfile {
         enabled: true,
         credentials: vec![CredentialRef {
-            name: "bad-name-with-hyphen".to_string(), // hyphens not allowed
+            name: "123bad-starts-with-digit".to_string(), // starts with digit — invalid
             description: None,
             env_var: None,
             keystore_name: None,

@@ -434,7 +434,7 @@ mod tests {
         let bad_profile = SandboxProfile {
             enabled: true,
             credentials: vec![CredentialRef {
-                name: "bad-name".to_string(), // hyphens not allowed
+                name: "123bad".to_string(), // starts with digit — invalid
                 description: None,
                 env_var: None,
                 keystore_name: None,
@@ -451,7 +451,7 @@ mod tests {
             !errors.is_empty(),
             "bad profile should produce validation errors"
         );
-        assert!(errors.iter().any(|e| e.contains("bad-name")));
+        assert!(errors.iter().any(|e| e.contains("123bad")));
     }
 
     // ── get_sandbox_status: Disabled when no runtime ──────────────────────

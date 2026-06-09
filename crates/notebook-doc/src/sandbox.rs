@@ -47,7 +47,7 @@
 //!
 //! | Field | Type | Description |
 //! |-------|------|-------------|
-//! | `name` | `String` | **Stable identifier.** Must match `^[a-zA-Z][a-zA-Z0-9_]*$`. Appears in cell code via `os.environ["<NAME_UPPER>"]`. |
+//! | `name` | `String` | **Stable identifier.** Must match `^[a-zA-Z][a-zA-Z0-9_-]*$`. Appears in cell code via `os.environ["<NAME_UPPER>"]`. |
 //! | `description` | `Option<String>` | Human-readable note; surfaced as the error message when the credential is missing. |
 //! | `env_var` | `Option<String>` | Env var name injected into the kernel. Defaults to `name.to_ascii_uppercase()` with `-` → `_`. |
 //! | `keystore_name` | `Option<String>` | macOS Keychain entry name. Defaults to `name`. |
@@ -74,7 +74,7 @@
 //! ## Validation rules (enforced by [`SandboxProfile::validate`])
 //!
 //! 1. All credential `name` values must be unique.
-//! 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$`.
+//! 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
 //! 3. All `host` values in routes must be valid hostnames (no scheme, no path).
 //! 4. `allowed_domains` entries must be valid hostnames.
 //! 5. Each `RouteRule` with `inject_as = Header` must have `header` set.
@@ -133,7 +133,7 @@ pub struct SandboxProfile {
 pub struct CredentialRef {
     /// Stable identifier for this credential.
     ///
-    /// Must match `^[a-zA-Z][a-zA-Z0-9_]*$`. This name is the public API
+    /// Must match `^[a-zA-Z][a-zA-Z0-9_-]*$`. This name is the public API
     /// surface for kernel authors: changing it is a breaking change for
     /// any cell code that references `os.environ["<UPPER_NAME>"]`.
     pub name: String,
@@ -286,7 +286,7 @@ pub enum InjectionKind {
 pub enum ProfileValidationError {
     /// Two credentials share the same name.
     DuplicateCredentialName { name: String },
-    /// A credential name does not match `^[a-zA-Z][a-zA-Z0-9_]*$`.
+    /// A credential name does not match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
     InvalidCredentialName { name: String },
     /// A route host is not a valid hostname (no scheme, no path allowed).
     InvalidRouteHost { credential: String, host: String },
@@ -306,7 +306,7 @@ impl std::fmt::Display for ProfileValidationError {
             }
             Self::InvalidCredentialName { name } => write!(
                 f,
-                "invalid credential name '{name}': must match ^[a-zA-Z][a-zA-Z0-9_]*$"
+                "invalid credential name '{name}': must match ^[a-zA-Z][a-zA-Z0-9_-]*$"
             ),
             Self::InvalidRouteHost { credential, host } => write!(
                 f,
@@ -343,7 +343,7 @@ impl SandboxProfile {
     /// ## Validation rules
     ///
     /// 1. All credential `name` values must be unique.
-    /// 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$`.
+    /// 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
     /// 3. All `host` values in routes must be valid hostnames (no scheme, no path).
     /// 4. `allowed_domains` entries must be valid hostnames.
     /// 5. Each `RouteRule` with `inject_as = Header` must have `header` set.
@@ -411,12 +411,12 @@ impl SandboxProfile {
 
 // ── Hostname validation helpers ───────────────────────────────────────
 
-/// Returns `true` if `name` matches `^[a-zA-Z][a-zA-Z0-9_]*$`.
+/// Returns `true` if `name` matches `^[a-zA-Z][a-zA-Z0-9_-]*$`.
 ///
 /// This ensures the name:
 /// - Starts with a letter (valid env var prefix)
-/// - Contains only letters, digits, and underscores (no hyphens)
-/// - Can be safely used as `os.environ["<NAME_UPPER>"]` in Python
+/// - Contains only letters, digits, underscores, and hyphens
+/// - Can be safely used as an env var after replacing hyphens with underscores
 fn is_valid_credential_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -430,8 +430,8 @@ fn is_valid_credential_name(name: &str) -> bool {
     if !first.is_ascii_alphabetic() {
         return false;
     }
-    // Remaining chars must be letters, digits, or underscores
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    // Remaining chars must be letters, digits, underscores, or hyphens
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Returns `true` if `s` is a plausible hostname: no scheme (`://`), no path
@@ -605,6 +605,8 @@ mod tests {
         assert!(is_valid_credential_name("A"));
         assert!(is_valid_credential_name("abc123"));
         assert!(is_valid_credential_name("Abc_Def"));
+        assert!(is_valid_credential_name("my-api-key")); // hyphens now allowed
+        assert!(is_valid_credential_name("my-demo-server"));
     }
 
     #[test]
@@ -612,7 +614,6 @@ mod tests {
         assert!(!is_valid_credential_name(""));
         assert!(!is_valid_credential_name("123abc")); // starts with digit
         assert!(!is_valid_credential_name("_abc")); // starts with underscore
-        assert!(!is_valid_credential_name("abc-def")); // contains hyphen
         assert!(!is_valid_credential_name("abc def")); // contains space
         assert!(!is_valid_credential_name("abc.def")); // contains dot
     }
@@ -682,7 +683,7 @@ mod tests {
         let profile = SandboxProfile {
             enabled: true,
             credentials: vec![CredentialRef {
-                name: "bad-name".to_string(), // hyphens not allowed
+                name: "123bad".to_string(), // starts with digit — invalid
                 description: None,
                 env_var: None,
                 keystore_name: None,
@@ -693,7 +694,7 @@ mod tests {
         let errors = profile.validate();
         assert!(
             errors.iter().any(
-                |e| matches!(e, ProfileValidationError::InvalidCredentialName { name } if name == "bad-name")
+                |e| matches!(e, ProfileValidationError::InvalidCredentialName { name } if name == "123bad")
             ),
             "expected InvalidCredentialName, got: {errors:?}"
         );
@@ -997,7 +998,7 @@ mod tests {
         let bad_profile = SandboxProfile {
             enabled: true,
             credentials: vec![CredentialRef {
-                name: "bad-name".to_string(), // invalid: contains hyphen
+                name: "123bad".to_string(), // starts with digit — invalid
                 description: None,
                 env_var: None,
                 keystore_name: None,
@@ -1027,7 +1028,7 @@ mod tests {
             "enabled": true,
             "credentials": [
                 {
-                    "name": "bad-name", // invalid: hyphens not allowed
+                    "name": "123bad", // starts with digit — invalid
                     "routes": []
                 }
             ],

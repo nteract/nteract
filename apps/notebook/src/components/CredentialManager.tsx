@@ -30,13 +30,13 @@ import type { CredentialMeta } from "@nteract/notebook-host";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/** Validation: `^[a-zA-Z][a-zA-Z0-9_]*$` — must match the Rust validator. */
-const CREDENTIAL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+/** Validation: `^[a-zA-Z][a-zA-Z0-9_-]*$` — must match the Rust validator. */
+const CREDENTIAL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
 function validateCredentialName(name: string): string | null {
   if (!name) return "Name is required.";
   if (!CREDENTIAL_NAME_RE.test(name))
-    return "Name must start with a letter and contain only letters, digits, and underscores.";
+    return "Name must start with a letter and contain only letters, digits, underscores, and hyphens.";
   return null;
 }
 
