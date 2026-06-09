@@ -56,6 +56,7 @@ import {
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
+import { SandboxStatusBadge } from "./components/SandboxStatusBadge";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { useNotebook } from "./hooks/useNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
@@ -490,6 +491,18 @@ function AppContent() {
   // derivers below and the path read further down. Single subscription
   // point; the derivers are pure and don't add re-renders.
   const runtimeState = useRuntimeState();
+
+  // Sandbox degraded-state toast — show once when the proxy dies mid-session.
+  const [sandboxDegradedDismissed, setSandboxDegradedDismissed] = useState(false);
+  const prevSandboxStateRef = useRef(runtimeState.sandbox_state.state);
+  useEffect(() => {
+    const prev = prevSandboxStateRef.current;
+    const curr = runtimeState.sandbox_state.state;
+    prevSandboxStateRef.current = curr;
+    if (prev !== "Degraded" && curr === "Degraded") {
+      setSandboxDegradedDismissed(false);
+    }
+  }, [runtimeState.sandbox_state.state]);
 
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
@@ -1537,6 +1550,30 @@ function AppContent() {
             </button>
           </div>
         )}
+        {runtimeState.sandbox_state.state === "Degraded" && !sandboxDegradedDismissed && (
+          <div className="flex items-center justify-between gap-3 border-b border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-900 dark:border-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-100">
+            <span>
+              The sandbox proxy stopped. Subsequent network calls will fail. Restart the kernel to
+              recover.
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                className="text-xs font-medium underline-offset-2 hover:underline"
+                onClick={handleRestartKernel}
+              >
+                Restart kernel
+              </button>
+              <button
+                type="button"
+                className="text-xs font-medium opacity-75 hover:opacity-100"
+                onClick={() => setSandboxDegradedDismissed(true)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
         {shouldShowKernelLaunchErrorBanner({
           lifecycle,
           errorDetails,
@@ -1581,6 +1618,7 @@ function AppContent() {
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
+          trailingControls={<SandboxStatusBadge />}
         />
         {globalFind.isOpen && (
           <GlobalFindBar

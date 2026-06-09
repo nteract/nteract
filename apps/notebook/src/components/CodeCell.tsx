@@ -44,7 +44,9 @@ import { presenceSenderExtension } from "../lib/presence-sender";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType, JupyterOutput } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
+import { CellAnnotationOverlay } from "./CellAnnotationOverlay";
 import { HistorySearchDialog } from "./HistorySearchDialog";
+import { useRuntimeState } from "../lib/runtime-state";
 
 const SIMPLE_OUTPUT_MAX_CHARS = 2000;
 const SIMPLE_OUTPUT_MAX_LINES = 24;
@@ -366,6 +368,9 @@ export const CodeCell = memo(function CodeCell({
   const outputs = useCellOutputs(cell.id);
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
+  // Look up any sandbox annotation for this cell's latest execution.
+  const { cell_annotations } = useRuntimeState();
+  const cellAnnotation = executionId != null ? cell_annotations[executionId] : undefined;
   const previousOutputCountRef = useRef(outputs.length);
   const executionCount = execution?.execution_count ?? null;
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
@@ -793,8 +798,12 @@ export const CodeCell = memo(function CodeCell({
               </div>
             ) : null
           ) : (
-            <OutputArea
-              outputs={outputs}
+            <>
+              {cellAnnotation && (
+                <CellAnnotationOverlay annotation={cellAnnotation} />
+              )}
+              <OutputArea
+                outputs={outputs}
               cellId={cell.id}
               executionCount={executionCount}
               preloadIframe={!deferOutputIsolatedFrameUntilVisible}
@@ -812,6 +821,7 @@ export const CodeCell = memo(function CodeCell({
               focused={outputFocused}
               useOutputWell={showOutputChrome}
             />
+            </>
           )
         }
         outputRightGutterContent={

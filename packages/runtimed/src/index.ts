@@ -89,6 +89,7 @@ export {
 
 // Runtime state
 export {
+  type CellAnnotation,
   type CommDocEntry,
   DEFAULT_RUNTIME_STATE,
   type EnvState,
@@ -110,6 +111,7 @@ export {
   type QueueState,
   type RuntimeLifecycle,
   type RuntimeState,
+  type SandboxStateInfo,
   type TrustState,
   type TrustStatus,
   type WorkstationAttachmentState,

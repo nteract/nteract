@@ -211,6 +211,18 @@ export interface CellAnnotation {
   details?: unknown;
 }
 
+/**
+ * Sandbox runtime state for the active kernel session.
+ *
+ * Mirrors `SandboxStateInfo` from the notebook protocol (task 07).
+ * The daemon writes this into RuntimeStateDoc when sandbox state changes.
+ */
+export type SandboxStateInfo =
+  | { state: "Disabled" }
+  | { state: "Active"; nono_pid: number; kernel_pid: number }
+  | { state: "StartupFailed"; reason: string }
+  | { state: "Degraded"; reason: string };
+
 /** Snapshot of a comm channel from RuntimeStateDoc. */
 export interface CommDocEntry {
   target_name: string;
@@ -336,14 +348,23 @@ export interface RuntimeState {
    * Room-host-owned active workstation attachment projection.
    */
   workstation: WorkstationAttachmentState | null;
-  /**
-   * Ephemeral per-execution sandbox annotations written by the daemon.
-   *
-   * Keyed by `execution_id`. Empty (`{}`) on old documents that predate the
-   * sandbox feature and on any doc that has never had an annotation written.
-   * Never written to the notebook export.
-   */
+/**
+ * Ephemeral per-execution sandbox annotations written by the daemon.
+ *
+ * Keyed by `execution_id`. Empty (`{}`) on old documents that predate the
+ * sandbox feature and on any doc that has never had an annotation written.
+ * Never written to the notebook export.
+ */
   cell_annotations: Record<string, CellAnnotation>;
+  /**
+   * Current sandbox state for the active kernel session.
+   *
+   * Mirrors `SandboxStateInfo` from the notebook protocol. Defaults to
+   * `Disabled` on old documents or documents without a sandbox profile.
+   * Written by the daemon when sandbox state changes (launch, degradation,
+   * startup failure).
+   */
+  sandbox_state: SandboxStateInfo;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -388,6 +409,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   project_context: { state: "Pending" },
   workstation: null,
   cell_annotations: {},
+  sandbox_state: { state: "Disabled" },
 };
 
 // ── Utilities ────────────────────────────────────────────────────────
