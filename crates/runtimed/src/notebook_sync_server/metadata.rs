@@ -1045,7 +1045,11 @@ pub(crate) async fn resolve_metadata_snapshot(
     {
         let doc = room.doc.read().await;
         if let Some(snapshot) = doc.get_metadata_snapshot() {
-            debug!("[notebook-sync] Resolved metadata snapshot from Automerge doc");
+            let sandbox_enabled = snapshot.runt.sandbox.as_ref().map(|s| s.enabled);
+            debug!(
+                "[resolve-metadata] From Automerge doc — sandbox={:?}",
+                sandbox_enabled
+            );
             return Some(snapshot);
         }
     }
@@ -1056,13 +1060,18 @@ pub(crate) async fn resolve_metadata_snapshot(
             if let Ok(nb) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(metadata) = nb.get("metadata") {
                     let snapshot = NotebookMetadataSnapshot::from_metadata_value(metadata);
-                    debug!("[notebook-sync] Resolved metadata snapshot from disk");
+                    let sandbox_enabled = snapshot.runt.sandbox.as_ref().map(|s| s.enabled);
+                    debug!(
+                        "[resolve-metadata] From disk — sandbox={:?}",
+                        sandbox_enabled
+                    );
                     return Some(snapshot);
                 }
             }
         }
     }
 
+    debug!("[resolve-metadata] No metadata found (doc empty, no disk path)");
     None
 }
 
@@ -4152,10 +4161,9 @@ pub(crate) async fn auto_launch_kernel(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
-                        // auto-launch path does not apply a sandbox profile;
-                        // sandbox is a per-notebook opt-in that requires the notebook doc
-                        // and is handled through the explicit LaunchKernel request path.
-                        sandbox_profile: None,
+                        sandbox_profile: metadata_snapshot
+                            .as_ref()
+                            .and_then(|snap| snap.runt.sandbox.clone()),
                     }
                 })
                 .await
@@ -4194,6 +4202,12 @@ pub(crate) async fn auto_launch_kernel(
                             sd.set_runtime_agent_id(&runtime_agent_id)?;
                             // Fresh kernel is in sync with its launched config
                             sd.set_env_sync(true, &[], &[], false, false)?;
+                            {
+                                let sc = room.sandbox_state_cache.try_read();
+                                if let Ok(sc) = sc {
+                                    sd.set_sandbox_state(&*sc)?;
+                                }
+                            }
                             Ok(())
                         }) {
                             warn!("[runtime-state] {}", e);

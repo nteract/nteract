@@ -1111,6 +1111,18 @@ pub fn create_empty_notebook(
     // tool call itself is the consent event. See `handle_create_notebook` and
     // `seed_trust_from_doc_metadata`.
 
+    let sandbox_enabled = metadata_snapshot
+        .runt
+        .sandbox
+        .as_ref()
+        .map(|s| s.enabled)
+        .unwrap_or(false);
+    tracing::info!(
+        "[create-notebook] Writing metadata for new notebook (env_id={}, sandbox_enabled={})",
+        env_id,
+        sandbox_enabled
+    );
+
     doc.set_metadata_snapshot(&metadata_snapshot)
         .map_err(|e| format!("Failed to set metadata: {}", e))?;
     doc.add_cell(0, &uuid::Uuid::new_v4().to_string(), "code")
@@ -1157,7 +1169,11 @@ pub(crate) fn build_new_notebook_metadata(
                 conda: None,
                 pixi: None,
                 deno: None,
-                sandbox: None,
+                sandbox: Some(notebook_doc::sandbox::SandboxProfile {
+                    enabled: true,
+                    credentials: vec![],
+                    allowed_domains: vec![],
+                }),
                 extra: std::collections::BTreeMap::new(),
             },
         ),
@@ -1247,7 +1263,11 @@ pub(crate) fn build_new_notebook_metadata(
                     conda,
                     pixi,
                     deno: None,
-                    sandbox: None,
+                    sandbox: Some(notebook_doc::sandbox::SandboxProfile {
+                        enabled: true,
+                        credentials: vec![],
+                        allowed_domains: vec![],
+                    }),
                     extra: std::collections::BTreeMap::new(),
                 },
             )

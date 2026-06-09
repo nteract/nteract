@@ -1523,6 +1523,18 @@ pub(crate) async fn handle(
     let sandbox_profile: Option<notebook_doc::sandbox::SandboxProfile> = metadata_snapshot
         .as_ref()
         .and_then(|snap| snap.runt.sandbox.clone());
+    info!(
+        "[launch-kernel] sandbox profile from metadata: {}",
+        match &sandbox_profile {
+            None => "absent (None)".to_string(),
+            Some(p) => format!(
+                "present (enabled={}, credentials={}, allowed_domains={})",
+                p.enabled,
+                p.credentials.len(),
+                p.allowed_domains.len()
+            ),
+        }
+    );
     if let Some(ref profile) = sandbox_profile {
         if profile.enabled {
             info!(
@@ -1583,6 +1595,10 @@ pub(crate) async fn handle(
                     env_source: es,
                     sandbox_state,
                 }) => {
+                    info!(
+                        "[launch-kernel] KernelRestarted — sandbox_state={:?}",
+                        sandbox_state
+                    );
                     // Store launched config for env sync drift detection
                     {
                         let mut lc = room.runtime_agent_launched_config.write().await;
@@ -1631,10 +1647,14 @@ pub(crate) async fn handle(
                     };
                 }
                 Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                    reset_starting_state(room, None).await;
-                    return NotebookResponse::Error {
-                        error: format!("Agent restart failed: {}", error),
-                    };
+                    let msg = format!("Agent restart failed: {}", error);
+                    publish_environment_launch_error(
+                        room,
+                        resolved_env_source.as_str(),
+                        None,
+                        &msg,
+                    );
+                    return NotebookResponse::Error { error: msg };
                 }
                 Ok(_) => {
                     reset_starting_state(room, None).await;
@@ -1755,6 +1775,10 @@ pub(crate) async fn handle(
                         env_source: es,
                         sandbox_state,
                     }) => {
+                        info!(
+                            "[launch-kernel] KernelLaunched — sandbox_state={:?}",
+                            sandbox_state
+                        );
                         // Store launched config for env sync drift detection
                         {
                             let mut lc = room.runtime_agent_launched_config.write().await;

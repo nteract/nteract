@@ -3988,6 +3988,11 @@ fn test_build_new_notebook_metadata_deno() {
     assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
     assert!(metadata.runt.uv.is_none());
     assert!(metadata.runt.conda.is_none());
+    // New notebooks default to sandbox enabled with no credentials.
+    let sandbox = metadata.runt.sandbox.as_ref().expect("sandbox should be set for new notebooks");
+    assert!(sandbox.enabled);
+    assert!(sandbox.credentials.is_empty());
+    assert!(sandbox.allowed_domains.is_empty());
 }
 
 #[test]
@@ -4014,6 +4019,11 @@ fn test_build_new_notebook_metadata_python_uv() {
     assert!(metadata.runt.uv.is_some());
     assert!(metadata.runt.conda.is_none());
     assert!(metadata.runt.uv.as_ref().unwrap().dependencies.is_empty());
+    // New notebooks default to sandbox enabled with no credentials.
+    let sandbox = metadata.runt.sandbox.as_ref().expect("sandbox should be set for new notebooks");
+    assert!(sandbox.enabled);
+    assert!(sandbox.credentials.is_empty());
+    assert!(sandbox.allowed_domains.is_empty());
 }
 
 #[test]
@@ -4043,6 +4053,11 @@ fn test_build_new_notebook_metadata_python_conda() {
         metadata.runt.conda.as_ref().unwrap().channels,
         vec!["conda-forge".to_string()]
     );
+    // New notebooks default to sandbox enabled with no credentials.
+    let sandbox = metadata.runt.sandbox.as_ref().expect("sandbox should be set for new notebooks");
+    assert!(sandbox.enabled);
+    assert!(sandbox.credentials.is_empty());
+    assert!(sandbox.allowed_domains.is_empty());
 }
 
 #[test]

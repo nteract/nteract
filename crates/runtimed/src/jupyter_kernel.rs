@@ -1567,16 +1567,37 @@ impl KernelConnection for JupyterKernel {
             .collect();
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let wait_start = std::time::Instant::now();
+            let mut last_log_at = std::time::Instant::now();
+            info!(
+                "[jupyter-kernel] Waiting for IPC sockets: kernel_id={} count={} prefix={}",
+                kernel_id, socket_paths.len(), connection_info.ip
+            );
             loop {
-                if socket_paths
+                let ready: Vec<_> = socket_paths
                     .iter()
-                    .all(|p| std::path::Path::new(p).exists())
-                {
-                    debug!(
-                        "[jupyter-kernel] All 5 IPC sockets ready (prefix={})",
-                        connection_info.ip
+                    .filter(|p| std::path::Path::new(p.as_str()).exists())
+                    .collect();
+                if ready.len() == socket_paths.len() {
+                    info!(
+                        "[jupyter-kernel] All {} IPC sockets ready: kernel_id={} elapsed_ms={}",
+                        socket_paths.len(), kernel_id, wait_start.elapsed().as_millis()
                     );
                     break;
+                }
+                // Log progress every 2 seconds so we can see which sockets are missing.
+                if last_log_at.elapsed().as_secs() >= 2 {
+                    let missing: Vec<_> = socket_paths
+                        .iter()
+                        .filter(|p| !std::path::Path::new(p.as_str()).exists())
+                        .collect();
+                    info!(
+                        "[jupyter-kernel] Still waiting for IPC sockets: kernel_id={} \
+                         ready={}/{} elapsed_ms={} missing={:?}",
+                        kernel_id, ready.len(), socket_paths.len(),
+                        wait_start.elapsed().as_millis(), missing
+                    );
+                    last_log_at = std::time::Instant::now();
                 }
                 if std::time::Instant::now() >= deadline {
                     let missing: Vec<_> = socket_paths
@@ -1591,7 +1612,50 @@ impl KernelConnection for JupyterKernel {
                         missing
                     ));
                 }
+
+                // Short sleep, then check if nono is still alive before the
+                // next socket poll.  Using kill(pid, 0) avoids consuming the
+                // handle.exit oneshot (which the process watcher task needs).
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                #[cfg(unix)]
+                if let Some(ref h) = sandbox_handle_opt {
+                    let nono_pid = h.nono_pid;
+                    // SAFETY: kill(pid, 0) sends no signal; it only checks
+                    // whether the process exists.  Safe to call at any time.
+                    let alive = unsafe { libc::kill(nono_pid as libc::pid_t, 0) } == 0;
+                    if !alive {
+                        // nono is gone — read stderr from the ring buffer.
+                        let stderr_lines: Vec<String> = h
+                            .stderr_buffer
+                            .lock()
+                            .map(|buf| buf.iter().cloned().collect())
+                            .unwrap_or_default();
+                        let stderr_tail = if stderr_lines.is_empty() {
+                            "(no stderr captured)".to_string()
+                        } else {
+                            stderr_lines.join("\n")
+                        };
+                        let reason = format!(
+                            "nono exited (PID={}) before kernel IPC sockets appeared",
+                            nono_pid
+                        );
+                        error!(
+                            "[jupyter-kernel] {} kernel_id={} stderr={}",
+                            reason, kernel_id, stderr_tail
+                        );
+                        if let Ok(mut state) = sandbox_state_arc.lock() {
+                            *state = crate::sandbox_launch::SandboxState::StartupFailed {
+                                reason: reason.clone(),
+                                stderr_capture: stderr_lines,
+                            };
+                        }
+                        if let Some(ref prefix) = ipc_prefix {
+                            cleanup_ipc_sockets(prefix);
+                        }
+                        return Err(anyhow::anyhow!("{}\n{}", reason, stderr_tail));
+                    }
+                }
             }
         }
 

@@ -51,10 +51,13 @@ pub struct RuntMetadata {
 
     /// Network sandbox profile (`metadata.runt.sandbox`).
     ///
-    /// When `Some`, the daemon reads this profile at kernel launch and wraps
-    /// the kernel in a nono.sh network proxy for credential injection.
-    /// When `None` (the default), the kernel launches with direct network
-    /// access — the existing behavior. Sandbox is opt-in (D-3).
+    /// When `Some` with `enabled = true`, the daemon reads this profile at
+    /// kernel launch and wraps the kernel in a nono.sh network proxy for
+    /// credential injection. New notebooks are created with
+    /// `{ enabled: true }` so the sandbox is on by default; set
+    /// `enabled = false` to opt out. When `None` (old notebooks without this
+    /// field), the kernel launches with direct network access — the legacy
+    /// behavior preserved for backward compatibility (D-3).
     ///
     /// The profile contains only credential *names* and routing rules — never
     /// secret values. Actual credential values live in the macOS Keychain.

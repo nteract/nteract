@@ -49,16 +49,17 @@
 //! Signalling the kernel first lets it flush; signalling nono after lets the
 //! audit log finalize cleanly.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::nono::NonoUnavailable;
 
@@ -67,6 +68,8 @@ use crate::nono::NonoUnavailable;
 /// Capacity of the stdout/stderr drain channels.  When full, the oldest item is
 /// dropped so the drain task never blocks.
 const DRAIN_CHANNEL_CAPACITY: usize = 2048;
+/// Number of stderr lines to keep in the ring buffer for exit diagnostics.
+const STDERR_BUFFER_LINES: usize = 100;
 
 /// Backoff interval between kernel-PID discovery attempts.
 const KERNEL_DISCOVERY_BACKOFF: Duration = Duration::from_millis(100);
@@ -124,6 +127,12 @@ pub struct SupervisorHandle {
     pub stdout_lines: mpsc::Receiver<StdoutLine>,
     /// Resolves once nono exits.
     pub exit: oneshot::Receiver<SupervisorExit>,
+    /// Rolling ring buffer of the last N stderr lines from nono.
+    ///
+    /// Populated continuously by the drain task so callers can read recent
+    /// stderr without having to consume the `stderr_lines` channel.
+    /// Useful for surfacing diagnostic context when nono exits unexpectedly.
+    pub stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
 }
 
 /// Sentinel stored in `kernel_pid` before discovery succeeds.
@@ -218,6 +227,63 @@ impl Supervisor {
         let mut cmd = tokio::process::Command::new(nono_binary);
         cmd.arg("run");
         cmd.arg("-vv");
+        cmd.arg("--allow-cwd");
+
+        // Grant filesystem access so the kernel can reach its Python
+        // environment, project files above the CWD, and package caches.
+        //
+        // We cannot use `--allow $HOME` directly: nono rejects any path that
+        // contains its own state root (`$HOME/.nono`). Instead:
+        //
+        // 1. If the CWD is inside $HOME, allow the direct child of $HOME that
+        //    contains it (e.g. CWD=~/code/proj/src → allow ~/code). This
+        //    covers the whole project tree including ancestors of CWD where
+        //    pyproject.toml / Cargo.toml / .git live.
+        //
+        // 2. Allow common user data directories that hold Python envs and
+        //    package caches (.cache, .local, .config, and macOS Library).
+        //    These are direct children of $HOME and do not contain .nono.
+        //
+        // The sandbox is focused on network control, not filesystem isolation.
+        let home_os: Option<std::ffi::OsString> = config.env.iter()
+            .find(|(k, _)| k == "HOME")
+            .map(|(_, v)| v.clone())
+            .or_else(|| std::env::var_os("HOME").map(Into::into));
+
+        if let Some(ref home_os) = home_os {
+            let home = std::path::Path::new(home_os);
+
+            // (1) Direct child of HOME that contains the CWD.
+            if config.cwd.starts_with(home) {
+                let mut ancestor = config.cwd.as_path();
+                while let Some(parent) = ancestor.parent() {
+                    if parent == home {
+                        // `ancestor` is now a direct child of HOME.
+                        cmd.arg("--allow");
+                        cmd.arg(ancestor);
+                        break;
+                    }
+                    ancestor = parent;
+                }
+            }
+
+            // (2) Common user data directories (no overlap with .nono).
+            let user_dirs: &[&str] = &[
+                ".cache",   // uv cache, pip cache
+                ".local",   // uv environments, pip --user installs
+                ".config",  // Python / tool config
+                #[cfg(target_os = "macos")]
+                "Library",  // macOS: ~/Library/Caches, ~/Library/Python, etc.
+            ];
+            for name in user_dirs {
+                let p = home.join(name);
+                if p.exists() {
+                    cmd.arg("--allow");
+                    cmd.arg(&p);
+                }
+            }
+        }
+
         cmd.arg("--profile");
         cmd.arg(&config.profile_path);
         cmd.arg("--name");
@@ -300,8 +366,14 @@ impl Supervisor {
             .expect("stderr was piped — take() should succeed");
 
         // ── Start drain tasks ───────────────────────────────────────────
+        let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
+            Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
         tokio::spawn(drain_stdout_task(raw_stdout, stdout_tx.clone()));
-        tokio::spawn(drain_stderr_task(raw_stderr, stderr_tx.clone()));
+        tokio::spawn(drain_stderr_task(
+            raw_stderr,
+            stderr_tx.clone(),
+            Arc::clone(&stderr_buffer),
+        ));
 
         // ── Kernel PID discovery ────────────────────────────────────────
         let kernel_pid = Arc::new(AtomicI32::new(NONE_PID));
@@ -323,12 +395,13 @@ impl Supervisor {
 
         // ── Process watcher task ────────────────────────────────────────
         let kernel_pid_watch = Arc::clone(&kernel_pid);
+        let stderr_buffer_for_watcher = Arc::clone(&stderr_buffer);
         tokio::spawn(process_watcher_task(
             child,
             nono_pid,
             nono_pgid,
             kernel_pid_watch,
-            stderr_tx,
+            stderr_buffer_for_watcher,
             exit_tx,
             shutdown_rx,
         ));
@@ -346,6 +419,7 @@ impl Supervisor {
             stderr_lines: stderr_rx,
             stdout_lines: stdout_rx,
             exit: exit_rx,
+            stderr_buffer,
         };
 
         Ok((supervisor, handle))
@@ -458,7 +532,11 @@ async fn drain_stdout_task(stdout: tokio::process::ChildStdout, tx: mpsc::Sender
 /// Drain nono's stderr line-by-line into a bounded channel.
 ///
 /// Same backpressure behaviour as `drain_stdout_task`.
-async fn drain_stderr_task(stderr: tokio::process::ChildStderr, tx: mpsc::Sender<StderrLine>) {
+async fn drain_stderr_task(
+    stderr: tokio::process::ChildStderr,
+    tx: mpsc::Sender<StderrLine>,
+    buffer: Arc<StdMutex<VecDeque<String>>>,
+) {
     let reader = BufReader::new(stderr);
     let mut lines = reader.lines();
     let mut dropped: u64 = 0;
@@ -467,6 +545,13 @@ async fn drain_stderr_task(stderr: tokio::process::ChildStderr, tx: mpsc::Sender
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
+                // Push into the ring buffer for exit diagnostics.
+                if let Ok(mut buf) = buffer.lock() {
+                    if buf.len() >= STDERR_BUFFER_LINES {
+                        buf.pop_front();
+                    }
+                    buf.push_back(line.clone());
+                }
                 let item = StderrLine {
                     raw: line,
                     at: Instant::now(),
@@ -527,9 +612,24 @@ async fn discover_kernel_pid(
     loop {
         match children_of(nono_pid) {
             Ok(children) => {
+                if children.is_empty() {
+                    debug!(
+                        "[nono::supervisor] No children of nono PID {} yet — retrying",
+                        nono_pid
+                    );
+                } else {
+                    info!(
+                        "[nono::supervisor] Found {} child(ren) of nono PID {}: {:?}",
+                        children.len(), nono_pid, children
+                    );
+                }
                 for child_pid in children {
                     // Filter out the /usr/bin/log helper.
                     if is_log_stream_process(child_pid) {
+                        debug!(
+                            "[nono::supervisor] Skipping /usr/bin/log helper PID {}",
+                            child_pid
+                        );
                         continue;
                     }
                     // If we know the kernel executable name, match against it.
@@ -541,7 +641,7 @@ async fn discover_kernel_pid(
                             // non-log child exists.
                         }
                     }
-                    debug!(
+                    info!(
                         "[nono::supervisor] Kernel PID discovered: {} (child of nono PID {})",
                         child_pid, nono_pid
                     );
@@ -550,7 +650,7 @@ async fn discover_kernel_pid(
                 }
             }
             Err(e) => {
-                debug!(
+                warn!(
                     "[nono::supervisor] children_of({}) error: {} — retrying",
                     nono_pid, e
                 );
@@ -738,37 +838,32 @@ async fn process_watcher_task(
     nono_pid: u32,
     nono_pgid: u32,
     kernel_pid: Arc<AtomicI32>,
-    _stderr_tx: mpsc::Sender<StderrLine>,
+    stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
     exit_tx: oneshot::Sender<SupervisorExit>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
-    // Collect recent stderr lines for exit diagnostics.  We keep a rolling
-    // buffer so the exit variant can include context without reading the whole
-    // history from the drain channel.
-    let (diag_tx, mut diag_rx) = mpsc::channel::<String>(256);
-
-    // Tee stderr through the diagnostic buffer.  The primary stderr_tx already
-    // gets all lines from drain_stderr_task; here we just record the raw text
-    // for exit reporting.  We close diag_tx immediately — the watcher below
-    // collects the first N lines from the drain channel directly.
-    drop(diag_tx);
-
-    // Track whether the kernel has been seen alive at least once.
-    let kernel_ever_started = false;
-
     tokio::select! {
         // ── nono exited ────────────────────────────────────────────────
         status = child.wait() => {
             let exit_code = status.ok().and_then(|s| s.code());
-            debug!(
+            warn!(
                 "[nono::supervisor] nono PID={} exited with code={:?}",
                 nono_pid, exit_code
             );
 
-            // Collect diagnostic stderr lines (best-effort, non-blocking).
-            let mut stderr_capture: Vec<String> = Vec::new();
-            while let Ok(line) = diag_rx.try_recv() {
-                stderr_capture.push(line);
+            // Snapshot the stderr ring buffer for diagnostics.
+            let stderr_capture: Vec<String> = stderr_buffer
+                .lock()
+                .map(|buf| buf.iter().cloned().collect())
+                .unwrap_or_default();
+
+            if !stderr_capture.is_empty() {
+                warn!(
+                    "[nono::supervisor] nono PID={} last {} stderr lines:\n{}",
+                    nono_pid,
+                    stderr_capture.len(),
+                    stderr_capture.join("\n")
+                );
             }
 
             // Kill the kernel if it is still alive (orphan recovery).
@@ -782,10 +877,10 @@ async fn process_watcher_task(
                 signal_pid(kpid as u32, libc::SIGKILL);
             }
 
+            // kernel_ever_started is not reliably tracked yet (the polling
+            // loop was removed); treat non-zero exit as StartupFailure.
             let exit = if exit_code == Some(0) {
                 SupervisorExit::CleanExit
-            } else if kernel_ever_started {
-                SupervisorExit::ProxyDied { exit_code, stderr_capture }
             } else {
                 SupervisorExit::StartupFailure { exit_code, stderr_capture }
             };
@@ -799,17 +894,10 @@ async fn process_watcher_task(
                 "[nono::supervisor] Shutdown signal received for nono PID={}; exit channel will be resolved by shutdown()",
                 nono_pid
             );
-            // The actual signalling sequence is performed by Supervisor::shutdown
-            // after this task exits.  We just resolve the exit channel here so
-            // callers waiting on it know we are done.
             let _ = exit_tx.send(SupervisorExit::Shutdown);
         }
     }
 
-    // Poll for kernel liveness in the background so kernel_ever_started can
-    // be tracked.  We do this separately from the select! to avoid holding a
-    // guard across an await.
-    let _ = kernel_ever_started; // suppress unused-variable warning
     let _ = nono_pgid; // unused on non-Unix
 }
 

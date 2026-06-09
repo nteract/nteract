@@ -508,20 +508,10 @@ function AppContent() {
     if (prev !== "Degraded" && curr === "Degraded") {
       setSandboxDegradedDismissed(false);
     }
-  }, [runtimeState.sandbox_state]);
+  }, [runtimeState.sandbox_state.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sandbox profile from notebook metadata (opt-in per notebook).
   const sandboxProfile = useSandboxProfile();
-
-  // Whether the sandbox enabled flag diverges from the running kernel's sandbox
-  // state. Treated the same as out-of-sync deps: prompts a kernel restart.
-  const kernelIsRunning =
-    kernelStatus === KERNEL_STATUS.IDLE ||
-    kernelStatus === KERNEL_STATUS.BUSY ||
-    kernelStatus === KERNEL_STATUS.STARTING;
-  const sandboxShouldBeActive = sandboxProfile?.enabled === true;
-  const sandboxIsActive = runtimeState.sandbox_state.state === "Active";
-  const sandboxOutOfSync = kernelIsRunning && sandboxShouldBeActive !== sandboxIsActive;
 
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
@@ -648,6 +638,17 @@ function AppContent() {
 
   // Derive values from daemon kernel
   const envSource = kernelInfo.envSource ?? null;
+
+  // Whether the sandbox enabled flag diverges from the running kernel's sandbox
+  // state. Treated the same as out-of-sync deps: prompts a kernel restart.
+  const kernelIsRunning =
+    kernelStatus === KERNEL_STATUS.IDLE ||
+    kernelStatus === KERNEL_STATUS.BUSY ||
+    kernelStatus === KERNEL_STATUS.STARTING;
+  const sandboxShouldBeActive = sandboxProfile?.enabled === true;
+  const sandboxIsActive = runtimeState.sandbox_state.state === "Active";
+  const sandboxOutOfSync = kernelIsRunning && sandboxShouldBeActive !== sandboxIsActive;
+
   const shellCapabilities = useMemo(
     () =>
       desktopNotebookShellCapabilities({

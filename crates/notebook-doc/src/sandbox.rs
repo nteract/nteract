@@ -88,8 +88,10 @@ use serde::{Deserialize, Serialize};
 /// The profile is safe to version-control and share with collaborators;
 /// the actual credentials live in the macOS Keychain on each machine.
 ///
-/// Sandbox is **opt-in**: a notebook without this field runs with direct
-/// network access (existing behavior). Set `enabled = true` to activate.
+/// New notebooks are created with `enabled = true` so the sandbox is active
+/// by default. Old notebooks that predate this field have no `sandbox` key
+/// and launch kernels with direct network access (legacy behavior). Set
+/// `enabled = false` to disable the sandbox without removing the profile.
 ///
 /// See the module-level documentation for the full schema reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

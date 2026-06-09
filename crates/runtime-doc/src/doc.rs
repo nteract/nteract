@@ -376,7 +376,7 @@ pub struct WorkstationAttachmentState {
 /// `notebook-protocol`.  The doc-level type is the single source of truth;
 /// the protocol crate re-exports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "state")]
 pub enum SandboxStateInfo {
     /// No sandbox profile configured or `enabled = false`.
     Disabled,
