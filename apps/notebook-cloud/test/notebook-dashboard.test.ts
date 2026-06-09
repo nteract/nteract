@@ -38,6 +38,7 @@ describe("cloud notebook dashboard projection", () => {
     assert.deepEqual(model.continueRow, {
       contextLabel: null,
       facts: [],
+      identityLabel: null,
       notebook: newOwner,
     });
     assert.deepEqual(
@@ -140,6 +141,16 @@ describe("cloud notebook dashboard projection", () => {
 
     assert.equal(cloudNotebookDisplayTitle(untitled), "Untitled notebook");
     assert.equal(cloudNotebookShortId(untitled.notebook_id), "01KTHB58...D74P");
+
+    const model = projectCloudNotebookDashboard([untitled]);
+    const view = projectCloudNotebookDashboardView(model);
+
+    assert.deepEqual(
+      view.sections.flatMap((section) =>
+        section.rows.map((row) => [row.notebook.notebook_id, row.identityLabel]),
+      ),
+      [["01KTHB58DSJWERSEWHD3EJD74P", "01KTHB58...D74P"]],
+    );
   });
 
   it("does not recommend renaming read-only untitled notebooks", () => {
@@ -206,11 +217,12 @@ describe("cloud notebook dashboard projection", () => {
           row.notebook.notebook_id,
           row.contextLabel,
           row.facts.map((fact) => [fact.kind, fact.label]),
+          row.identityLabel,
         ]),
       ),
       [
-        ["renderer-regression", "Shared edit access", [["access", "editor"]]],
-        ["archive", "Shared view access", [["access", "viewer"]]],
+        ["renderer-regression", "Shared edit access", [["access", "editor"]], null],
+        ["archive", "Shared view access", [["access", "viewer"]], null],
       ],
     );
   });
@@ -260,12 +272,13 @@ describe("cloud notebook dashboard projection", () => {
           row.notebook.notebook_id,
           row.contextLabel,
           row.facts.map((fact) => [fact.kind, fact.label]),
+          row.identityLabel,
         ]),
       ),
       [
-        ["topic-viz", null, [["published", "Published"]]],
-        ["toolbar-smoke", "Generated run", []],
-        ["untitled-new", "Needs title", []],
+        ["topic-viz", null, [["published", "Published"]], null],
+        ["toolbar-smoke", "Generated run", [], null],
+        ["untitled-new", "Needs title", [], "untitled-new"],
       ],
     );
   });

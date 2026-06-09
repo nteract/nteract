@@ -295,7 +295,9 @@ function CloudNotebookDashboardRow({
   const hasTitle = Boolean(notebook.title?.trim());
   const detail = hasTitle
     ? row.contextLabel
-    : `Created ${formatNotebookUpdatedAt(notebook.created_at)}`;
+    : row.identityLabel
+      ? `Created ${formatNotebookUpdatedAt(notebook.created_at)} · ${row.identityLabel}`
+      : `Created ${formatNotebookUpdatedAt(notebook.created_at)}`;
 
   return (
     <div className="cloud-notebook-list-row">

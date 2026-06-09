@@ -67,6 +67,7 @@ export interface CloudNotebookDashboardSection {
 export interface CloudNotebookDashboardRow {
   contextLabel: string | null;
   facts: readonly CloudNotebookDashboardRowFact[];
+  identityLabel: string | null;
   notebook: CloudNotebookListItem;
 }
 
@@ -444,6 +445,9 @@ function dashboardRow(notebook: CloudNotebookListItem | null): CloudNotebookDash
   return {
     contextLabel: cloudNotebookDashboardRowContextLabel(notebook),
     facts: Object.freeze(cloudNotebookDashboardRowFacts(notebook)),
+    identityLabel: cloudNotebookHasTitle(notebook)
+      ? null
+      : cloudNotebookShortId(notebook.notebook_id),
     notebook,
   };
 }
