@@ -51,13 +51,21 @@ export interface ProfileValidationError {
 const CREDENTIAL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
 /**
- * Validate a hostname: no scheme, no path, no port, no whitespace.
- * A bare IP address or dotted hostname is accepted; an empty string is not.
+ * Validate a hostname with optional port: no scheme, no path, no whitespace.
+ * `localhost:8877`, `api.example.com:443`, and `*.example.com` are all accepted.
  */
 function isValidHostname(host: string): boolean {
   if (!host || host.includes("/") || host.includes(" ")) return false;
   // Strip a leading wildcard like `*.example.com`
-  const bare = host.startsWith("*.") ? host.slice(2) : host;
+  let bare = host.startsWith("*.") ? host.slice(2) : host;
+  // Strip an optional port suffix like `:8877`
+  const colonIdx = bare.lastIndexOf(":");
+  if (colonIdx !== -1) {
+    const portStr = bare.slice(colonIdx + 1);
+    const port = Number(portStr);
+    if (!portStr || !Number.isInteger(port) || port < 1 || port > 65535) return false;
+    bare = bare.slice(0, colonIdx);
+  }
   // Each label: 1-63 chars, alphanumeric + hyphen, not starting/ending with hyphen
   const labelRe = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
   return bare.split(".").every((label) => label.length > 0 && labelRe.test(label));

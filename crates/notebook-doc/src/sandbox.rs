@@ -434,12 +434,13 @@ fn is_valid_credential_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// Returns `true` if `s` is a plausible hostname: no scheme (`://`), no path
-/// (`/`), non-empty, and contains only valid hostname characters.
+/// Returns `true` if `s` is a plausible host (hostname with optional port):
+/// no scheme (`://`), no path (`/`), non-empty.
 ///
-/// This is a conservative but not exhaustive hostname validator — its job
-/// is to catch obvious mistakes (accidentally including `https://` or
-/// a path suffix) rather than to fully implement RFC 1123.
+/// An explicit port suffix (e.g. `localhost:8877`, `api.example.com:443`) is
+/// accepted. This is a conservative but not exhaustive validator — its job is
+/// to catch obvious mistakes (accidentally including `https://` or a path
+/// suffix) rather than to fully implement RFC 1123.
 fn is_valid_hostname(s: &str) -> bool {
     if s.is_empty() {
         return false;
@@ -456,17 +457,23 @@ fn is_valid_hostname(s: &str) -> bool {
     if s.contains('?') {
         return false;
     }
-    // Reject ports in the form host:port (ports are implicit, handled by nono)
-    // We allow a single colon only when it's not followed by digits-only
-    // (to avoid rejecting IPv6, though nono likely doesn't support those)
-    if let Some(colon_pos) = s.find(':') {
-        let after = &s[colon_pos + 1..];
-        if after.chars().all(|c| c.is_ascii_digit()) && !after.is_empty() {
-            return false;
+    // Strip an optional port suffix like `:8877`
+    let host_part = if let Some(colon_pos) = s.rfind(':') {
+        let port_str = &s[colon_pos + 1..];
+        if !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit()) {
+            let port: u32 = port_str.parse().unwrap_or(0);
+            if port < 1 || port > 65535 {
+                return false;
+            }
+            &s[..colon_pos]
+        } else {
+            s
         }
-    }
+    } else {
+        s
+    };
     // Must start with an alphanumeric or wildcard (*.)
-    let effective = s.strip_prefix("*.").unwrap_or(s);
+    let effective = host_part.strip_prefix("*.").unwrap_or(host_part);
     if effective.is_empty() {
         return false;
     }
@@ -627,6 +634,8 @@ mod tests {
         assert!(is_valid_hostname("localhost"));
         assert!(is_valid_hostname("api-v2.example.com"));
         assert!(is_valid_hostname("*.example.com")); // wildcard
+        assert!(is_valid_hostname("localhost:8877")); // port allowed
+        assert!(is_valid_hostname("api.example.com:443")); // port allowed
     }
 
     #[test]
@@ -636,7 +645,7 @@ mod tests {
         assert!(!is_valid_hostname("http://example.com"));
         assert!(!is_valid_hostname("api.example.com/v1")); // has path
         assert!(!is_valid_hostname("api.example.com?q=1")); // has query
-        assert!(!is_valid_hostname("api.example.com:443")); // has explicit port
+        assert!(!is_valid_hostname("api.example.com:99999")); // port out of range
     }
 
     // ── SandboxProfile::validate ───────────────────────────────────────

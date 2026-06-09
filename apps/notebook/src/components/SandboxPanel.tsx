@@ -77,7 +77,6 @@ function RouteDialog({ existing, open, onClose, onSaved }: RouteDialogProps) {
   function validate(): boolean {
     const errs: Record<string, string> = {};
     if (!host.trim()) errs.host = "Host is required.";
-    if (injectAs === "header" && !header.trim()) errs.header = "Header name is required.";
     if (!template.includes("{credential}"))
       errs.template = "Template must contain `{credential}`.";
     setErrors(errs);
@@ -86,11 +85,12 @@ function RouteDialog({ existing, open, onClose, onSaved }: RouteDialogProps) {
 
   function handleSave() {
     if (!validate()) return;
+    const effectiveHeader = injectAs === "header" ? (header.trim() || "Authorization") : undefined;
     const route: RouteRule = {
       host: host.trim(),
       inject_as: injectAs,
       template,
-      ...(injectAs === "header" ? { header: header.trim() } : {}),
+      ...(effectiveHeader !== undefined ? { header: effectiveHeader } : {}),
     };
     onSaved(route);
     onClose();
