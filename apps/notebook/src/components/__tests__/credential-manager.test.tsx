@@ -7,8 +7,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 import * as React from "react";
-import { NotebookHostContext } from "@nteract/notebook-host";
-import type { CredentialMeta } from "@nteract/notebook-host";
+import { NotebookHostProvider } from "@nteract/notebook-host";
+import type { CredentialMeta, NotebookHost } from "@nteract/notebook-host";
 import { CredentialManager } from "../CredentialManager";
 
 // ── Mock host ──────────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ function makeMockHost(creds: CredentialMeta[] = []) {
         if (i !== -1) store.splice(i, 1);
       }),
     },
-  } as unknown as Parameters<typeof NotebookHostContext.Provider>[0]["value"];
+  } as unknown as NotebookHost;
 }
 
 function renderWithHost(
@@ -35,9 +35,9 @@ function renderWithHost(
   host: ReturnType<typeof makeMockHost>,
 ) {
   return render(
-    <NotebookHostContext.Provider value={host as never}>
+    <NotebookHostProvider host={host as never}>
       {ui}
-    </NotebookHostContext.Provider>,
+    </NotebookHostProvider>,
   );
 }
 

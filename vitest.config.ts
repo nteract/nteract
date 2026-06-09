@@ -63,6 +63,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "~": path.resolve(__dirname, "./apps/notebook/src"),
     },
   },
 });
