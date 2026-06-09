@@ -232,7 +232,15 @@ function containsContentRef(value: unknown): boolean {
   if (!isRecord(value)) {
     return Array.isArray(value) ? value.some(containsContentRef) : false;
   }
-  if (typeof value.blob === "string" || Object.prototype.hasOwnProperty.call(value, "inline")) {
+  const keys = Object.keys(value);
+  if (keys.length === 1 && Object.prototype.hasOwnProperty.call(value, "inline")) {
+    return true;
+  }
+  if (
+    typeof value.blob === "string" &&
+    typeof value.size === "number" &&
+    keys.every((key) => key === "blob" || key === "size" || key === "media_type")
+  ) {
     return true;
   }
   return Object.values(value).some(containsContentRef);

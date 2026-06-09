@@ -1965,14 +1965,27 @@ fn walk_and_resolve_comm_state(
     match val {
         serde_json::Value::Object(obj) => {
             // Check for inline ContentRef: {"inline": ...}
-            if let Some(inner) = obj.get("inline") {
+            if obj.len() == 1 && obj.contains_key("inline") {
+                let inner = obj.get("inline").expect("inline key exists");
                 return inner.clone();
             }
 
-            // Check for blob ContentRef: {"blob": string, "size": number}
-            if let (Some(serde_json::Value::String(hash)), Some(serde_json::Value::Number(_))) =
-                (obj.get("blob"), obj.get("size"))
-            {
+            // Check for blob ContentRef: {"blob": string, "size": number, "media_type"?: string}
+            let is_exact_blob_ref = matches!(
+                (obj.get("blob"), obj.get("size")),
+                (
+                    Some(serde_json::Value::String(_)),
+                    Some(serde_json::Value::Number(_))
+                )
+            ) && obj
+                .keys()
+                .all(|key| key == "blob" || key == "size" || key == "media_type");
+
+            if is_exact_blob_ref {
+                let hash = obj
+                    .get("blob")
+                    .and_then(|value| value.as_str())
+                    .expect("exact blob ref has string blob");
                 // Anywidget reserves `_esm` and `_css` for URL-preferring
                 // loaders: `_esm` flows through `import(url)` and `_css`
                 // through `<link rel=stylesheet href=url>`, both of which
@@ -4768,6 +4781,25 @@ mod tests {
             "value": { "inline": 42 },
         }));
         assert_eq!(resolved, json!({ "value": 42 }));
+        assert!(buffer_paths.is_empty());
+        assert!(text_paths.is_empty());
+    }
+
+    #[test]
+    fn ordinary_inline_and_blob_properties_are_preserved() {
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "layout": { "inline": true, "display": "flex" },
+            "marker": { "blob": "not-a-content-ref" },
+            "payload": { "blob": "also-not-a-content-ref", "size": 3, "extra": "state" },
+        }));
+        assert_eq!(
+            resolved,
+            json!({
+                "layout": { "inline": true, "display": "flex" },
+                "marker": { "blob": "not-a-content-ref" },
+                "payload": { "blob": "also-not-a-content-ref", "size": 3, "extra": "state" },
+            })
+        );
         assert!(buffer_paths.is_empty());
         assert!(text_paths.is_empty());
     }

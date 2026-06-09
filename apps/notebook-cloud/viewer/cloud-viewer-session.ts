@@ -382,15 +382,8 @@ export function useCloudViewerSession({
       setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
         if (liveRuntimeRef.current !== liveRuntime) return;
         try {
-          const changed = liveRuntime.handle.set_comm_state_batch(commId, JSON.stringify(patch));
-          if (changed) {
-            liveRuntime.engine.scheduleFlush();
-          } else {
-            console.warn("[notebook-cloud] widget state update did not mutate CommsDoc", {
-              commId,
-              keys: Object.keys(patch),
-            });
-          }
+          liveRuntime.handle.set_comm_state_batch(commId, JSON.stringify(patch));
+          liveRuntime.engine.scheduleFlush();
         } catch (error) {
           console.warn("[notebook-cloud] widget state update failed", error);
         }

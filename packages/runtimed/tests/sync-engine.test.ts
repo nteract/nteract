@@ -2051,6 +2051,42 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("does not treat plain inline or blob traitlets as ContentRefs", async () => {
+      const commId = "plain-content-ref-key-traitlet-comm";
+      handle = createMockHandle({
+        get_runtime_state: vi.fn(() => runtimeStateWithComm(commId, {})),
+        get_comms_state: vi.fn(() => ({
+          comms: {
+            [commId]: {
+              layout: { inline: true, display: "flex" },
+              marker: { blob: "ordinary-traitlet" },
+              payload: { blob: "ordinary-payload", size: 3, extra: "state" },
+            },
+          },
+        })),
+        resolve_comm_state: vi.fn(() => undefined),
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      const emissions: Array<{
+        opened: Array<{ commId: string; state: unknown }>;
+      }> = [];
+      engine.commChanges$.subscribe((c) => emissions.push(c));
+      engine.reProjectComms();
+
+      await vi.waitFor(() => expect(emissions.length).toBe(1));
+      expect(emissions[0].opened.map((o) => o.commId)).toEqual([commId]);
+      expect(emissions[0].opened[0].state).toMatchObject({
+        layout: { inline: true, display: "flex" },
+        marker: { blob: "ordinary-traitlet" },
+        payload: { blob: "ordinary-payload", size: 3, extra: "state" },
+      });
+
+      engine.stop();
+    });
+
     it("replays the current comm projection for subscribers installed after bootstrap", async () => {
       const commId = "late-subscriber-comm";
       handle = createMockHandle({
