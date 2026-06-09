@@ -1,35 +1,33 @@
 ---
 title: Cell anatomy
-description: A fixture-backed inventory map for existing nteract cell components.
+description: A boundary map for nteract cell chrome, paired with the full production-backed cell surface.
 ---
 
 import { CellAnatomyExample } from "@/components/cell-anatomy-example";
 import { FullCellSurfacesClient } from "@/components/full-cell-surfaces-client";
 
-The first component family to document is the existing cell frame. This page
-now renders the production-used cell shell pieces with fixture content, so the
-catalog starts from current imports instead of a new visual fork or outdated
-helpers. The left edge is currently ribbon-first: the ribbon carries cell type
-and focus color without reserving permanent layout space for execution state.
-Editable code cells place execution identity in a quiet current line at the
-source/result boundary. Add-cell rows now belong to the same spine: they keep a
-neutral continuation visible between cells, paint only the hovered or focused
-insertion action, and fade the terminal spine into the notebook tail instead of
-ending with a hard marker.
+This page has two jobs. The first slice is a boundary map for the existing cell
+chrome: ribbon accents, insertion rows, and the quiet current line at the
+source/result boundary. It should not introduce component-name labels, fixture
+badges, or standalone editor/output slices that look like proposed notebook UI.
+
+The full production-backed cell surface appears below that map. Use it when the
+catalog needs to inspect the integrated editor, markdown preview, output area,
+presence, hidden-cell grouping, stable DOM ordering, or notebook navigation
+chrome.
 
 <CellAnatomyExample />
 
 ## Full cell surfaces
 
-The next cell slice imports the notebook app cell components directly and feeds
+This cell slice imports the notebook app cell components directly and feeds
 them fixture state through the same stores they use in the desktop app. It also
 mounts the production `NotebookView` workspace shell with local visual order so
 stable DOM ordering, hidden-cell grouping, cell adders, and navigation chrome
-are visible without opening a notebook document. The rendered boundary map makes
-the split explicit: catalog fixtures seed cell, execution, output, focus,
-CRDT-provider state, and local order, while notebook document projection, kernel
-execution, iframe bootstrap, DnD persistence, and Automerge sync remain
-production boundaries.
+are visible without opening a notebook document. Catalog fixtures seed cell,
+execution, output, focus, CRDT-provider state, and local order, while notebook
+document projection, kernel execution, iframe bootstrap, DnD persistence, and
+Automerge sync remain production boundaries.
 
 <FullCellSurfacesClient />
 
@@ -40,19 +38,10 @@ should not own cell rendering. A clear cell anatomy gives the sidebar a stable
 contract while preserving the existing `NotebookView` DOM-order invariant.
 
 This docs site should keep moving component by component toward runtime-free
-fixtures. The cell frame, compact execution button, execution count,
-cell-type ribbon accents, code-cell current line, `CodeMirrorEditor`,
-`OutputArea`, cell-level presence indicators, focused edge controls, insertion
-rows, and the full code/markdown/raw cell components now render from current
-source. The presence example seeds the notebook cursor registry through a
-fixture presence snapshot, without connecting runtimed or generated WASM.
-The full `MarkdownCell` fixture now starts in preview mode and sends its
-`text/markdown` payload through the docs `IsolatedFrame` adapter, keeping the
-production component path visible while the runtime iframe bundle stays outside
-the catalog. The `NotebookView` fixture uses the same rule at the workspace
-level: import the production shell first, then keep order mutation, notebook
-documents, runtime, sync, and iframe responsibilities behind named fixture
-adapters.
+fixtures. Boundary maps can document ownership and state vocabulary, but full
+surface examples should import the production shell first and keep order
+mutation, notebook documents, runtime, sync, and iframe responsibilities behind
+named fixture adapters.
 
 Unused legacy cell helper components should be removed rather than cataloged.
 Catalog entries need to trace to notebook app usage, an active migration target,
