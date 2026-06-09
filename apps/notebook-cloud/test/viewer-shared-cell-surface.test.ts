@@ -287,23 +287,25 @@ test("cloud presence chrome renders as an isolated host avatar stack", () => {
 test("cloud edit mode chrome renders through the shared shell component", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const authControlsSourcePath = new URL("../viewer/cloud-auth-controls.tsx", import.meta.url);
+  const authControlsSourceText = readFileSync(authControlsSourcePath, "utf8");
   const shellHookSourcePath = new URL("../viewer/use-cloud-shell-capabilities.ts", import.meta.url);
   const shellHookSourceText = readFileSync(shellHookSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
 
   assert.match(sourceText, /useCloudShellCapabilities/);
-  assert.match(sourceText, /NotebookEditModeButton/);
+  assert.match(authControlsSourceText, /NotebookEditModeButton/);
   assert.match(
-    sourceText,
+    authControlsSourceText,
     /<NotebookEditModeButton[\s\S]*mode=\{accessPending \? "view" : interaction\.selectedMode\}/,
   );
   assert.match(
-    sourceText,
+    authControlsSourceText,
     /<NotebookEditModeButton[\s\S]*state=\{accessPending \? "viewing" : interaction\.state\}/,
   );
-  assert.match(sourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
-  assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
+  assert.match(authControlsSourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
+  assert.match(authControlsSourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
   assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
   assert.doesNotMatch(sourceText, /cloudNotebookShellCapabilities/);
@@ -321,8 +323,8 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     /setSelectedInteractionMode\("edit"\);[\s\S]*\[canAcceptCellMutations, connectionPeerId, connectionScope/,
   );
   assert.match(sourceText, /accessPending=\{editAccessPending\}/);
-  assert.match(sourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
-  assert.match(sourceText, /disabled=\{accessPending\}/);
+  assert.match(authControlsSourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
+  assert.match(authControlsSourceText, /disabled=\{accessPending\}/);
   assert.match(
     sourceText,
     /const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar\(shellCapabilities, \{[\s\S]*reserve: editAccessPending,[\s\S]*\}\)/,
@@ -340,7 +342,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
   assert.match(
-    sourceText,
+    authControlsSourceText,
     /if \(mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner"\) \{/,
   );
   assert.match(sourceText, /storeCloudRequestedScope\(window\.localStorage, "editor"\)/);
@@ -504,6 +506,8 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
 test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const routeSourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
+  const routeSourceText = readFileSync(routeSourcePath, "utf8");
   const authSourcePath = new URL("../viewer/use-cloud-auth.ts", import.meta.url);
   const authSourceText = readFileSync(authSourcePath, "utf8");
 
@@ -516,13 +520,13 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
     /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
   );
   assert.match(
-    sourceText,
+    routeSourceText,
     /\[authState, bootstrap, canFetchNotebookList, refreshIndex, waitingForAppSession\]/,
   );
 });
 
 test("cloud notebook list waits for app-session cookies before catalog fetches", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(

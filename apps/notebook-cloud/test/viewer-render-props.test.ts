@@ -64,13 +64,13 @@ test("cloud viewer keeps theme resolution out of first-class notebook chrome", (
 });
 
 test("cloud home keeps prototype controls out of the primary auth surface", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
   const homeSource = sourceText.slice(
-    sourceText.indexOf("function CloudHomeView"),
-    sourceText.indexOf("function OidcCallbackView"),
+    sourceText.indexOf("export function CloudHomeView"),
+    sourceText.indexOf("export function OidcCallbackView"),
   );
   const homePanelCss = cssText.slice(
     cssText.indexOf(".cloud-home-panel"),
@@ -98,14 +98,11 @@ test("cloud home keeps prototype controls out of the primary auth surface", () =
 });
 
 test("cloud callback keeps sign-in handoff in the entry surface language", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
-  const callbackSource = sourceText.slice(
-    sourceText.indexOf("function OidcCallbackView"),
-    sourceText.indexOf("function NotebookViewer"),
-  );
+  const callbackSource = sourceText.slice(sourceText.indexOf("export function OidcCallbackView"));
 
   assert.match(callbackSource, /className="cloud-home"/);
   assert.match(callbackSource, /className="cloud-home-layout"/);
