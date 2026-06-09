@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     default: "nteract elements",
     template: "%s | nteract elements",
   },
-  description: "Notebook UI and rendering examples from nteract/nteract.",
+  description: "Notebook workspace surfaces and data workflow components from nteract/nteract.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -8,7 +8,7 @@ export function baseOptions(): BaseLayoutProps {
     },
     links: [
       {
-        text: "Catalog",
+        text: "Surfaces",
         url: "/docs",
         active: "nested-url",
       },

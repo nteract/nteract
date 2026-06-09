@@ -37,136 +37,136 @@ interface CatalogGroup {
 
 const catalogGroups = [
   {
-    title: "Shell",
+    title: "Workspace",
     entries: [
       {
-        title: "Notebook shell capabilities",
-        description: "Host capability facts for shared notebook chrome.",
-        href: "/docs/notebook-shell-capabilities",
-        icon: ToggleLeft,
-      },
-      {
-        title: "Cloud notebook shell",
-        description: "Presence, sync, workstations, sharing, mode, and auth.",
-        href: "/docs/cloud-notebook-shell",
-        icon: Cloud,
-      },
-      {
         title: "Cloud dashboard",
-        description: "Notebook home, continuation, workstation context, and sharing previews.",
+        description: "Notebook home, recent work, workstation state, and sharing.",
         href: "/docs/cloud-dashboard",
         icon: LayoutDashboard,
       },
       {
         title: "Compute placement",
-        description: "Rail, environment, and connect-flow options for workstations.",
+        description: "Workstation selection and environment context.",
         href: "/docs/compute-placement",
         icon: Workflow,
       },
       {
+        title: "Identity and environment",
+        description: "User context, access state, and runtime connection.",
+        href: "/docs/identity-environment-surfaces",
+        icon: IdCard,
+      },
+      {
+        title: "Cloud notebook shell",
+        description: "Presence, sync state, collaboration, and sharing controls.",
+        href: "/docs/cloud-notebook-shell",
+        icon: Cloud,
+      },
+    ],
+  },
+  {
+    title: "Notebook",
+    entries: [
+      {
         title: "Notebook toolbar",
-        description: "Runtime and command toolbar state across hosts.",
+        description: "Execution controls, kernel state, and runtime commands.",
         href: "/docs/notebook-toolbar-surfaces",
         icon: PanelTop,
       },
       {
         title: "Notebook outline",
-        description: "Rail-first navigation for long notebooks.",
+        description: "Navigation and document structure for long notebooks.",
         href: "/docs/notebook-outline",
         icon: PanelLeft,
       },
       {
-        title: "Identity and environment",
-        description: "Actors, access state, runtime, and package context.",
-        href: "/docs/identity-environment-surfaces",
-        icon: IdCard,
-      },
-    ],
-  },
-  {
-    title: "Cells",
-    entries: [
-      {
-        title: "Cell anatomy",
-        description: "Inventory map for current nteract cells.",
-        href: "/docs/cell-anatomy",
-        icon: FileCode2,
-      },
-      {
         title: "Cell execution language",
-        description: "Execution language and cell source states.",
+        description: "Execution state, queued runs, and cell status.",
         href: "/docs/cell-execution-language",
         icon: SquareCode,
       },
       {
         title: "Cell insertion affordances",
-        description: "Insertion ribbons and add-cell controls.",
+        description: "Add code, markdown, and data cells.",
         href: "/docs/cell-insertion-affordances",
         icon: ListPlus,
       },
       {
-        title: "Editor surfaces",
-        description: "CodeMirror fixtures for notebook source editing.",
-        href: "/docs/editor-surfaces",
-        icon: TextCursorInput,
-      },
-      {
         title: "Search surfaces",
-        description: "Find and history search over fixture notebook state.",
+        description: "Find in notebook and execution history.",
         href: "/docs/search-surfaces",
         icon: Search,
+      },
+      {
+        title: "Editor surfaces",
+        description: "Code editing with syntax highlighting and completion.",
+        href: "/docs/editor-surfaces",
+        icon: TextCursorInput,
       },
     ],
   },
   {
-    title: "Runtime",
+    title: "Execution & Output",
     entries: [
       {
+        title: "Output renderers",
+        description: "Rich outputs: tables, charts, dataframes, and artifacts.",
+        href: "/docs/output-renderers",
+        icon: Boxes,
+      },
+      {
+        title: "Widget surfaces",
+        description: "Interactive controls and ipywidget components.",
+        href: "/docs/widget-surfaces",
+        icon: SlidersHorizontal,
+      },
+      {
+        title: "Output isolation",
+        description: "Secure rendering and sandboxed output frames.",
+        href: "/docs/isolated-output-surfaces",
+        icon: Frame,
+      },
+      {
         title: "Runtime surfaces",
-        description: "Trust and environment decisions with fixture state.",
+        description: "Environment trust, kernel state, and execution context.",
         href: "/docs/runtime-surfaces",
         icon: ShieldCheck,
       },
       {
         title: "Package managers",
-        description: "Dependency headers and package-state controls.",
+        description: "Dependency management and package installation state.",
         href: "/docs/package-manager-surfaces",
         icon: PackageCheck,
-      },
-      {
-        title: "Read-only notebooks",
-        description: "Hosted notebook cells through shared components.",
-        href: "/docs/read-only-notebook-surfaces",
-        icon: BookOpen,
       },
     ],
   },
   {
-    title: "Rendering",
+    title: "Components",
     entries: [
       {
-        title: "Output renderers",
-        description: "Runtime-free fixtures for output components.",
-        href: "/docs/output-renderers",
-        icon: Boxes,
+        title: "Cell anatomy",
+        description: "Cell structure and component inventory.",
+        href: "/docs/cell-anatomy",
+        icon: FileCode2,
       },
       {
-        title: "Output isolation",
-        description: "Frame policy, host context, and MCP output mapping.",
-        href: "/docs/isolated-output-surfaces",
-        icon: Frame,
-      },
-      {
-        title: "Widget surfaces",
-        description: "Fixture-backed ipywidget controls and adapter notes.",
-        href: "/docs/widget-surfaces",
-        icon: SlidersHorizontal,
+        title: "Read-only notebooks",
+        description: "Published notebook views without execution.",
+        href: "/docs/read-only-notebook-surfaces",
+        icon: BookOpen,
       },
       {
         title: "Theme surfaces",
-        description: "Classic and cream palettes under shared tokens.",
+        description: "Color palettes and visual styling.",
         href: "/docs/theme-surfaces",
         icon: Palette,
+      },
+      {
+        title: "Notebook shell capabilities",
+        description: "Host capabilities and feature detection.",
+        href: "/docs/notebook-shell-capabilities",
+        icon: ToggleLeft,
       },
     ],
   },
@@ -187,8 +187,8 @@ export default function Home() {
               Elements
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-fd-muted-foreground">
-              {catalogCount} production-backed notebook surfaces for shell, cells, runtime, and
-              rendering work.
+              {catalogCount} notebook workspace surfaces for workspace, execution, and data
+              workflows.
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
@@ -208,12 +208,12 @@ export default function Home() {
           </div>
         </header>
 
-        <section className="grid gap-x-8 gap-y-7 py-7 lg:grid-cols-2">
+        <section className="grid gap-x-8 gap-y-8 py-8 lg:grid-cols-2">
           {catalogGroups.map((group) => (
             <section key={group.title} aria-labelledby={`${group.title.toLowerCase()}-group`}>
               <h2
                 id={`${group.title.toLowerCase()}-group`}
-                className="text-xs font-semibold uppercase tracking-normal text-fd-muted-foreground"
+                className="border-b border-fd-border pb-2 text-sm font-semibold text-fd-foreground"
               >
                 {group.title}
               </h2>
@@ -235,16 +235,16 @@ function CatalogLink({ entry }: { entry: CatalogEntry }) {
   return (
     <Link
       href={entry.href}
-      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-fd-border bg-fd-background px-3 py-2.5 transition-colors hover:bg-fd-muted/40"
+      className="group grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-fd-border bg-fd-background px-3.5 py-2.5 transition-colors hover:border-fd-foreground/20 hover:bg-fd-muted/30"
     >
-      <Icon className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+      <Icon className="size-4 text-fd-muted-foreground transition-colors group-hover:text-fd-foreground" aria-hidden="true" />
       <span className="min-w-0">
-        <span className="block truncate text-sm font-semibold">{entry.title}</span>
-        <span className="mt-0.5 block truncate text-xs text-fd-muted-foreground">
+        <span className="block truncate text-sm font-medium">{entry.title}</span>
+        <span className="mt-0.5 block truncate text-xs leading-5 text-fd-muted-foreground">
           {entry.description}
         </span>
       </span>
-      <ArrowRight className="size-3.5 text-fd-muted-foreground" aria-hidden="true" />
+      <ArrowRight className="size-3.5 text-fd-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
     </Link>
   );
 }

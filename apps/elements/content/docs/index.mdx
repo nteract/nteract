@@ -1,18 +1,18 @@
 ---
 title: Elements
-description: Notebook UI and rendering examples from nteract/nteract.
+description: Notebook workspace surfaces from nteract/nteract.
 ---
 
-`nteract/nteract` is the canonical home for notebook UI and rendering work.
-This catalog is the in-repo successor direction for examples that used to live
-around `nteract/elements`.
+`nteract/nteract` is the canonical home for notebook UI and data workflow surfaces.
+This catalog documents production-backed notebook workspace components organized by
+user workflow: workspace, notebook, execution, and output.
 
 ## What belongs here
 
-- Runtime-free notebook UI fixtures.
-- Rendering examples for markdown, rich output, and widgets.
-- Component documentation for reusable notebook presentation surfaces.
-- Migration notes for any old `nteract/elements` examples worth recreating.
+- Production notebook workspace surfaces with deterministic fixtures.
+- Execution state, runtime controls, and observability components.
+- Rich output rendering: tables, charts, dataframes, and artifacts.
+- Workspace context: workstations, compute, identity, and collaboration.
 
 ## What stays elsewhere
 
@@ -22,34 +22,40 @@ repo-level `docs/` tree.
 
 ## Current direction
 
-Keep the catalog production-backed. It should render shared shell, rail,
-toolbar, identity, package, cell, output, and widget components from
-deterministic fixtures without importing the desktop runtime, sync engine,
-Cloudflare host, or generated runtimed WASM bindings. Renderer-specific assets
-like Sift WASM should stay explicit, docs-served adapters.
+Keep the catalog production-backed. It should render shared workspace, notebook,
+execution, and output components from deterministic fixtures without importing the
+desktop runtime, sync engine, Cloudflare host, or generated runtimed WASM bindings.
+Renderer-specific assets like Sift WASM should stay explicit, docs-served adapters.
 
-## Production-backed catalog
+## Notebook workspace surfaces
 
-The catalog should make it obvious which surfaces are nteract-owned notebook
-concepts and which boundaries still need a notebook-semantic wrapper.
+The catalog documents surfaces for data notebook workflows, organized by where they
+appear in the user's work:
 
-- [Notebook shell capabilities](/docs/notebook-shell-capabilities)
-- [Cloud notebook shell](/docs/cloud-notebook-shell)
-- [Cloud dashboard](/docs/cloud-dashboard)
-- [Compute placement](/docs/compute-placement)
-- [Identity and environment surfaces](/docs/identity-environment-surfaces)
-- [Notebook toolbar surfaces](/docs/notebook-toolbar-surfaces)
-- [Notebook outline rail](/docs/notebook-outline)
-- [Package manager surfaces](/docs/package-manager-surfaces)
-- [Cell anatomy](/docs/cell-anatomy)
-- [Cell execution language](/docs/cell-execution-language)
-- [Cell insertion affordances](/docs/cell-insertion-affordances)
-- [Editor surfaces](/docs/editor-surfaces)
-- [Runtime surfaces](/docs/runtime-surfaces)
-- [Search surfaces](/docs/search-surfaces)
-- [Markdown typography](/docs/markdown-typography)
-- [Output renderers](/docs/output-renderers)
-- [Output isolation surfaces](/docs/isolated-output-surfaces)
-- [Read-only notebook surfaces](/docs/read-only-notebook-surfaces)
-- [Theme surfaces](/docs/theme-surfaces)
-- [Widget surfaces](/docs/widget-surfaces)
+**Workspace**
+- [Cloud dashboard](/docs/cloud-dashboard) — Notebook home, recent work, workstation state
+- [Compute placement](/docs/compute-placement) — Workstation selection and environment context
+- [Identity and environment](/docs/identity-environment-surfaces) — User context and access state
+- [Cloud notebook shell](/docs/cloud-notebook-shell) — Presence, sync, and collaboration
+
+**Notebook**
+- [Notebook toolbar](/docs/notebook-toolbar-surfaces) — Execution controls and kernel state
+- [Notebook outline](/docs/notebook-outline) — Navigation and document structure
+- [Cell execution language](/docs/cell-execution-language) — Execution state and cell status
+- [Cell insertion](/docs/cell-insertion-affordances) — Add code, markdown, and data cells
+- [Search](/docs/search-surfaces) — Find in notebook and execution history
+- [Editor](/docs/editor-surfaces) — Code editing and syntax highlighting
+
+**Execution & Output**
+- [Output renderers](/docs/output-renderers) — Tables, charts, dataframes, and artifacts
+- [Widget surfaces](/docs/widget-surfaces) — Interactive controls and ipywidgets
+- [Output isolation](/docs/isolated-output-surfaces) — Secure rendering and sandboxing
+- [Runtime surfaces](/docs/runtime-surfaces) — Environment trust and kernel state
+- [Package managers](/docs/package-manager-surfaces) — Dependency management
+
+**Components**
+- [Cell anatomy](/docs/cell-anatomy) — Cell structure and component inventory
+- [Read-only notebooks](/docs/read-only-notebook-surfaces) — Published notebook views
+- [Theme surfaces](/docs/theme-surfaces) — Color palettes and visual styling
+- [Notebook shell capabilities](/docs/notebook-shell-capabilities) — Host capabilities
+- [Markdown typography](/docs/markdown-typography) — Document formatting
