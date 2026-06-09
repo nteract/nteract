@@ -16,7 +16,7 @@ export function requireElement<T extends Element = HTMLElement>(selector: string
   return element;
 }
 
-export function loadConfig(): CloudViewerConfig {
+function loadConfig(): CloudViewerConfig {
   const element = requireElement<HTMLScriptElement>("#nteract-cloud-viewer-config");
   const parsed = JSON.parse(element.textContent ?? "{}") as Partial<CloudViewerConfig>;
   if (

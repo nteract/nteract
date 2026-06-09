@@ -1,15 +1,19 @@
-// Shared source-text guardrail corpus for the cloud viewer.
+// Shared source-text guardrail corpus for the cloud viewer entry.
 //
 // The cloud viewer entry is split into focused modules (route views, leaf
 // components, hooks, config) instead of one large viewer/index.tsx. These
-// guardrail tests assert that the viewer routes notebook chrome through the
+// guardrail tests assert that the entry routes notebook chrome through the
 // shared shell and does not reintroduce bespoke cell/toolbar/presence surfaces.
-// They must follow the code, not a single file: a guardrail checks that a
-// pattern exists (or stays absent) somewhere across the viewer surface,
-// regardless of which module currently owns it.
+// They follow the code instead of pinning index.tsx: an assertion checks that a
+// pattern exists (or stays absent) across the decomposed entry modules below,
+// regardless of which one currently owns it.
 //
-// Add new viewer modules to VIEWER_MODULE_FILES so the corpus keeps covering
-// them. Files that do not exist yet are skipped, so the list can lead the split.
+// This is an explicit allowlist of the entry surface, not the whole viewer dir.
+// Sibling modules that own a separate concern (notices.tsx, sharing-controls.tsx)
+// are read directly by the tests instead, so the corpus's absence-assertions
+// (e.g. "CloudSharingControls is not redefined in the entry") stay meaningful.
+// Add an entry module here as the split grows; files that do not exist yet are
+// skipped, so the list can lead the split.
 
 import { existsSync, readFileSync } from "node:fs";
 
@@ -41,7 +45,7 @@ export const viewerModuleTexts: ReadonlyArray<{ name: string; text: string }> =
 
 // The viewer entry plus every module it delegates to, concatenated with file
 // markers. Use for presence/absence assertions that should hold across the
-// viewer surface.
+// decomposed entry modules.
 export const viewerCorpus: string = viewerModuleTexts
   .map((entry) => `/* ===== ${entry.name} ===== */\n${entry.text}`)
   .join("\n\n");

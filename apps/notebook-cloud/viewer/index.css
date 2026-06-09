@@ -174,12 +174,12 @@ body {
 }
 
 .cloud-presence-avatar[data-kind="self"] [data-slot="avatar-fallback"] {
-  color: #047857;
+  color: var(--cloud-accent-strong);
 }
 
 .cloud-presence-avatar[data-kind="anonymous"] [data-slot="avatar-fallback"] {
-  background: color-mix(in srgb, #10b981 10%, var(--background));
-  color: #047857;
+  background: color-mix(in srgb, var(--cloud-accent-bright) 10%, var(--background));
+  color: var(--cloud-accent-strong);
 }
 
 .cloud-presence-avatar[data-kind="anonymous"] svg {
@@ -195,7 +195,7 @@ body {
   height: 0.875rem;
   border-radius: 999px;
   padding-inline: 0.1875rem;
-  background: #047857;
+  background: var(--cloud-accent-strong);
   color: white;
   font-size: 0.5625rem;
   font-weight: 750;
@@ -203,7 +203,7 @@ body {
 }
 
 .cloud-presence-avatar [data-slot="avatar-badge"] {
-  background: #10b981;
+  background: var(--cloud-accent-bright);
 }
 
 .cloud-presence-avatar [data-slot="avatar-badge"][data-status="idle"] {
@@ -452,7 +452,7 @@ body {
 }
 
 .cloud-new-notebook-form input:focus-visible {
-  outline: 2px solid color-mix(in srgb, #0f766e 42%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--cloud-accent) 42%, transparent);
   outline-offset: 2px;
 }
 
@@ -866,7 +866,7 @@ body {
 }
 
 .cloud-notebook-list-row-facts [data-state="published"] {
-  color: color-mix(in srgb, #0f766e 84%, var(--foreground));
+  color: color-mix(in srgb, var(--cloud-accent) 84%, var(--foreground));
 }
 
 .cloud-notebook-list-updated {
@@ -940,7 +940,7 @@ body {
 }
 
 .cloud-notebook-list-rename-form input:focus {
-  outline: 2px solid color-mix(in srgb, #0f766e 42%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--cloud-accent) 42%, transparent);
   outline-offset: 1px;
 }
 
@@ -997,10 +997,6 @@ body {
   }
 
   .cloud-dashboard-summary {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .cloud-dashboard-aside {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1086,8 +1082,8 @@ main.flex > .cloud-report-toolbar {
   display: grid;
   align-self: start;
   gap: 0.875rem;
-  --cloud-home-panel-border: color-mix(in srgb, #10b981 68%, transparent);
-  --cloud-home-panel-wash: color-mix(in srgb, #10b981 5%, var(--background));
+  --cloud-home-panel-border: color-mix(in srgb, var(--cloud-accent-bright) 68%, transparent);
+  --cloud-home-panel-wash: color-mix(in srgb, var(--cloud-accent-bright) 5%, var(--background));
   border-top: 1px solid var(--cloud-home-panel-border);
   padding: 0.75rem 0.25rem;
   background: linear-gradient(
@@ -1126,11 +1122,11 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-home-status[data-mode="oidc"] > svg {
-  color: #0f766e;
+  color: var(--cloud-accent);
 }
 
 .cloud-home-status[data-mode="ready"] > svg {
-  color: #0f766e;
+  color: var(--cloud-accent);
 }
 
 .cloud-home-status[data-mode="error"] > svg {
@@ -1455,9 +1451,9 @@ main.flex > .cloud-report-toolbar {
   justify-content: space-between;
   gap: 0.75rem;
   margin: 0.75rem 1rem 0;
-  border-top: 1px solid color-mix(in srgb, #10b981 36%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--cloud-accent-bright) 36%, transparent);
   padding: 0.625rem;
-  background: color-mix(in srgb, #10b981 6%, var(--background));
+  background: color-mix(in srgb, var(--cloud-accent-bright) 6%, var(--background));
 }
 
 .cloud-share-public > div {
@@ -1592,7 +1588,7 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-share-state[data-tone="success"] {
-  color: #047857;
+  color: var(--cloud-accent-strong);
 }
 
 .cloud-share-state[data-tone="pending"] {
@@ -1606,11 +1602,11 @@ main.flex > .cloud-report-toolbar {
 
 .cloud-share-message {
   margin: 0 1rem 0.875rem;
-  border: 1px solid color-mix(in srgb, #0f766e 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cloud-accent) 30%, transparent);
   border-radius: 6px;
   padding: 0.5rem 0.625rem;
-  color: #0f766e;
-  background: color-mix(in srgb, #0f766e 8%, var(--background));
+  color: var(--cloud-accent);
+  background: color-mix(in srgb, var(--cloud-accent) 8%, var(--background));
   font-size: 0.8125rem;
   line-height: 1.35;
 }
@@ -1715,7 +1711,7 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-auth-session div[data-tone="success"] strong {
-  color: #047857;
+  color: var(--cloud-accent-strong);
 }
 
 .cloud-auth-session div[data-tone="warning"] strong {
@@ -1794,7 +1790,7 @@ main.flex > .cloud-report-toolbar {
 }
 
 .cloud-auth-diagnostics div[data-tone="success"] dd {
-  color: #0f766e;
+  color: var(--cloud-accent);
 }
 
 .cloud-auth-dev-section {
