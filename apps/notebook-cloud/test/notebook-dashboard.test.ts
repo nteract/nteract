@@ -166,7 +166,11 @@ describe("cloud notebook dashboard projection", () => {
     const model = projectCloudNotebookDashboard([archive, renderer, topic]);
     const searchView = projectCloudNotebookDashboardView(model, { query: "render" });
     const sharedView = projectCloudNotebookDashboardView(model, { filterId: "shared" });
+    const defaultView = projectCloudNotebookDashboardView(model);
 
+    assert.equal(defaultView.showResultCount, false);
+    assert.equal(searchView.showResultCount, true);
+    assert.equal(sharedView.showResultCount, true);
     assert.deepEqual(
       searchView.sections.flatMap((section) => section.notebooks.map((item) => item.notebook_id)),
       ["renderer-regression"],
@@ -176,6 +180,15 @@ describe("cloud notebook dashboard projection", () => {
       [
         ["latest", "Latest activity", 1],
         ["earlier", "Earlier", 1],
+      ],
+    );
+    assert.deepEqual(
+      sharedView.sections.flatMap((section) =>
+        section.rows.map((row) => [row.notebook.notebook_id, row.contextLabel]),
+      ),
+      [
+        ["renderer-regression", "Shared edit access"],
+        ["archive", "Shared view access"],
       ],
     );
   });
@@ -217,6 +230,16 @@ describe("cloud notebook dashboard projection", () => {
         ["named", "Recent work", ["topic-viz"]],
         ["generated", "Generated runs", ["toolbar-smoke"]],
         ["untitled", "Needs title", ["untitled-new"]],
+      ],
+    );
+    assert.deepEqual(
+      view.sections.flatMap((section) =>
+        section.rows.map((row) => [row.notebook.notebook_id, row.contextLabel]),
+      ),
+      [
+        ["topic-viz", null],
+        ["toolbar-smoke", "Generated run"],
+        ["untitled-new", "Needs title"],
       ],
     );
   });

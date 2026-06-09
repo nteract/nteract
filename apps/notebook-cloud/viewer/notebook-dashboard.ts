@@ -48,8 +48,14 @@ export interface CloudNotebookDashboardSection {
   id: string;
   notebooks: readonly CloudNotebookListItem[];
   overflowAction?: CloudNotebookDashboardSectionFilterAction | null;
+  rows: readonly CloudNotebookDashboardRow[];
   title: string;
   totalCount: number;
+}
+
+export interface CloudNotebookDashboardRow {
+  contextLabel: string | null;
+  notebook: CloudNotebookListItem;
 }
 
 export interface CloudNotebookDashboardSectionFilterAction {
@@ -72,6 +78,7 @@ export interface CloudNotebookDashboardView {
   query: string;
   resultCount: number;
   sections: readonly CloudNotebookDashboardSection[];
+  showResultCount: boolean;
 }
 
 export function projectCloudNotebookDashboard(
@@ -154,6 +161,7 @@ export function projectCloudNotebookDashboardView(
     query,
     resultCount: filtered.length,
     sections: cloudNotebookDashboardSections(filtered, { filterId, query }),
+    showResultCount: filterId !== "all" || query.length > 0,
   };
 }
 
@@ -272,6 +280,7 @@ function cloudNotebookDashboardSections(
       id: bucket.id,
       notebooks: bucket.notebooks,
       overflowAction: null,
+      rows: dashboardRows(bucket.notebooks),
       title: context.query.length > 0 && bucket.id === "latest" ? "Search results" : bucket.title,
       totalCount: bucket.totalCount,
     });
@@ -298,6 +307,7 @@ function cloudNotebookWorkSections(
       id: "named",
       notebooks: namedWork,
       overflowAction: null,
+      rows: dashboardRows(namedWork),
       title: "Recent work",
       totalCount: namedWork.length,
     });
@@ -332,6 +342,7 @@ function generatedNotebookSection(
     id: "generated",
     notebooks: visibleNotebooks,
     overflowAction,
+    rows: dashboardRows(visibleNotebooks),
     title: "Generated runs",
     totalCount: notebooks.length,
   };
@@ -355,6 +366,7 @@ function untitledNotebookSection(
     title: "Needs title",
     detail: "Rename notebooks worth keeping so they stay easy to find.",
     notebooks: visibleNotebooks,
+    rows: dashboardRows(visibleNotebooks),
     overflowAction:
       options.limit && notebooks.length > visibleNotebooks.length
         ? {
@@ -376,6 +388,33 @@ function limitNotebooks(
 
 function cloudNotebookCanRename(notebook: CloudNotebookListItem): boolean {
   return notebook.scope === "owner" || notebook.scope === "editor";
+}
+
+function dashboardRows(notebooks: readonly CloudNotebookListItem[]): CloudNotebookDashboardRow[] {
+  return notebooks.map((notebook) => ({
+    contextLabel: cloudNotebookDashboardRowContextLabel(notebook),
+    notebook,
+  }));
+}
+
+function cloudNotebookDashboardRowContextLabel(notebook: CloudNotebookListItem): string | null {
+  if (!cloudNotebookHasTitle(notebook)) {
+    return "Needs title";
+  }
+  if (cloudNotebookIsGeneratedRun(notebook)) {
+    return "Generated run";
+  }
+  switch (notebook.scope) {
+    case "editor":
+      return "Shared edit access";
+    case "viewer":
+      return "Shared view access";
+    case "runtime_peer":
+      return "Runtime peer access";
+    case "owner":
+      break;
+  }
+  return null;
 }
 
 function cloudNotebookIsGeneratedRun(notebook: CloudNotebookListItem): boolean {

@@ -18,6 +18,7 @@ import {
   projectCloudNotebookDashboardView,
   type CloudNotebookDashboardFilterId,
   type CloudNotebookDashboardModel,
+  type CloudNotebookDashboardRow,
   type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
 } from "./notebook-dashboard";
@@ -97,9 +98,11 @@ export function CloudNotebookDashboard({
                 onChange={(event) => setQuery(event.currentTarget.value)}
               />
             </label>
-            <span className="cloud-dashboard-result-count" aria-live="polite">
-              {view.resultCount} notebook{view.resultCount === 1 ? "" : "s"}
-            </span>
+            {view.showResultCount ? (
+              <span className="cloud-dashboard-result-count" aria-live="polite">
+                {view.resultCount} notebook{view.resultCount === 1 ? "" : "s"}
+              </span>
+            ) : null}
           </div>
           <nav className="cloud-dashboard-filters" aria-label="Notebook filters">
             {model.filters.map((filter) => (
@@ -198,15 +201,15 @@ function CloudNotebookDashboardSectionView({
         ) : null}
       </div>
       <ul className="cloud-notebook-list">
-        {section.notebooks.map((notebook) => (
-          <li key={notebook.notebook_id}>
+        {section.rows.map((row) => (
+          <li key={row.notebook.notebook_id}>
             <CloudNotebookDashboardRow
-              notebook={notebook}
+              row={row}
               canRename={canRename}
               renameTitle={
-                renameState?.notebookId === notebook.notebook_id ? renameState.title : null
+                renameState?.notebookId === row.notebook.notebook_id ? renameState.title : null
               }
-              renameSaving={renameSavingId === notebook.notebook_id}
+              renameSaving={renameSavingId === row.notebook.notebook_id}
               onOpenRename={onOpenRename}
               onCancelRename={onCancelRename}
               onRenameTitleChange={onRenameTitleChange}
@@ -235,7 +238,7 @@ function CloudNotebookDashboardSectionView({
 }
 
 function CloudNotebookDashboardRow({
-  notebook,
+  row,
   canRename,
   renameTitle,
   renameSaving,
@@ -244,7 +247,7 @@ function CloudNotebookDashboardRow({
   onRenameTitleChange,
   onSaveRename,
 }: {
-  notebook: CloudNotebookListItem;
+  row: CloudNotebookDashboardRow;
   canRename: boolean;
   renameTitle: string | null;
   renameSaving: boolean;
@@ -254,6 +257,7 @@ function CloudNotebookDashboardRow({
   onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   if (renameTitle !== null) {
+    const notebook = row.notebook;
     return (
       <form className="cloud-notebook-list-rename-form" onSubmit={onSaveRename}>
         <input
@@ -285,17 +289,17 @@ function CloudNotebookDashboardRow({
     );
   }
 
+  const { notebook } = row;
   const hasTitle = Boolean(notebook.title?.trim());
+  const detail = hasTitle
+    ? row.contextLabel
+    : `Created ${formatNotebookUpdatedAt(notebook.created_at)}`;
 
   return (
     <div className="cloud-notebook-list-row">
       <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
-        {hasTitle ? null : (
-          <span className="cloud-notebook-list-detail">
-            Created {formatNotebookUpdatedAt(notebook.created_at)}
-          </span>
-        )}
+        {detail ? <span className="cloud-notebook-list-detail">{detail}</span> : null}
         <span className="cloud-notebook-list-row-facts">
           <span>
             <UserRound aria-hidden="true" />
