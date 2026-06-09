@@ -521,9 +521,7 @@ jobs:
     # artifacts for the native E2E smoke below. Keep it off per-commit PR CI;
     # run it post-merge or manually when the native smoke signal is needed.
     if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
-    # Dedicated Anaconda sandbox EC2 runner pool, only used by
-    # post-merge/manual lanes.
-    runs-on: nteract-linux-ci
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -549,9 +547,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
-
-      - uses: ./.github/actions/prepare-self-hosted-rust
-        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -895,9 +890,7 @@ jobs:
   # job above.
   e2e:
     name: "E2E: ${{ matrix.name }}"
-    # Dedicated Anaconda sandbox EC2 runner pool, only used by
-    # post-merge/manual lanes.
-    runs-on: nteract-linux-ci
+    runs-on: ubuntu-22.04
     needs: [changes, build-linux]
     # Native WebDriver smoke is intentionally post-merge/manual. PR coverage
     # stays in Browser E2E so agent commit churn does not fan out Tauri builds.
@@ -905,7 +898,7 @@ jobs:
     strategy:
       fail-fast: false
       # The native WebDriver app uses fixed display/WebDriver ports, so keep
-      # this matrix serial even when multiple Anaconda runner services exist.
+      # this matrix serial.
       max-parallel: 1
       matrix:
         include:
@@ -1150,9 +1143,7 @@ jobs:
   # Python daemon integration tests — builds its own runtimed binary
   runtimed-py-integration:
     name: runtimed-py Integration Tests
-    # Dedicated Anaconda sandbox EC2 runner pool, only used by
-    # post-merge/manual lanes.
-    runs-on: nteract-linux-ci
+    runs-on: ubuntu-24.04
     needs: [changes]
     # This daemon-heavy lane is ~30 minutes on stock GitHub runners. Keep it
     # on post-merge/manual runs so PR pushes do not pay that long tail.
@@ -1162,9 +1153,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           lfs: true
-
-      - uses: ./.github/actions/prepare-self-hosted-rust
-        if: runner.environment == 'self-hosted'
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -1448,9 +1436,9 @@ jobs:
             echo
             echo "| Lane | Result | Runner class | Signal | Failure triage |"
             echo "| --- | --- | --- | --- | --- |"
-            echo "| Linux release artifacts | ${{ needs.build-linux.result }} | Anaconda self-hosted | release-like Linux binaries and Tauri E2E app | native build / self-hosted runner / release readiness |"
-            echo "| Native E2E | ${{ needs.e2e.result }} | Anaconda self-hosted | Tauri WebDriver smoke and env pool startup | native shell / daemon pool / runner infra |"
-            echo "| runtimed-py Integration Tests | ${{ needs.runtimed-py-integration.result }} | Anaconda self-hosted | daemon-backed Python bindings and dx integration | Python packaging / maturin / env-heavy daemon behavior |"
+            echo "| Linux release artifacts | ${{ needs.build-linux.result }} | GitHub-hosted ubuntu-22.04 | release-like Linux binaries and Tauri E2E app | native build / GitHub-hosted runner / release readiness |"
+            echo "| Native E2E | ${{ needs.e2e.result }} | GitHub-hosted ubuntu-22.04 | Tauri WebDriver smoke and env pool startup | native shell / daemon pool / runner infra |"
+            echo "| runtimed-py Integration Tests | ${{ needs.runtimed-py-integration.result }} | GitHub-hosted ubuntu-24.04 | daemon-backed Python bindings and dx integration | Python packaging / maturin / env-heavy daemon behavior |"
             echo "| macOS and Windows release matrix | ${{ needs.build.result }} | GitHub-hosted | platform release build, clippy, and tests | platform compile/test drift; inspect matrix legs because Windows is non-blocking |"
             echo "| Clippy & Tests (Linux) aggregate | ${{ needs.clippy-and-tests.result }} | GitHub-hosted | Linux Rust shard aggregator | summary check for Rust shard failures |"
           } > long-tail-ci-summary.md
