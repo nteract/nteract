@@ -65,7 +65,9 @@ export function useCloudWorkstationManager({
   const refreshCloudWorkstations = useCallback(
     async (signal?: AbortSignal) => {
       if (!canLoadCloudWorkstations || !config.workstationsEndpoint) {
-        setWorkstationsState({ defaultWorkstationId: null, workstations: [] });
+        if (!capabilities.auth.canUseAuthenticatedIdentity) {
+          setWorkstationsState({ defaultWorkstationId: null, workstations: [] });
+        }
         setWorkstationsError(null);
         return;
       }
@@ -79,7 +81,12 @@ export function useCloudWorkstationManager({
         setWorkstationsError(error instanceof Error ? error.message : String(error));
       }
     },
-    [authState, canLoadCloudWorkstations, config.workstationsEndpoint],
+    [
+      authState,
+      canLoadCloudWorkstations,
+      capabilities.auth.canUseAuthenticatedIdentity,
+      config.workstationsEndpoint,
+    ],
   );
 
   useEffect(() => {
@@ -148,7 +155,7 @@ export function useCloudWorkstationManager({
   );
 
   const workstationRefreshIntervalMs = cloudWorkstationRefreshIntervalMs({
-    canChooseHostedWorkstation,
+    canChooseHostedWorkstation: canChooseHostedWorkstation && canLoadCloudWorkstations,
     hasRegisteredWorkstations: workstationsState.workstations.length > 0,
     mutationKind: workstationMutation.kind,
     panelIsOpen,
@@ -223,6 +230,9 @@ export function useCloudWorkstationManager({
 
   const workstationPanelStatusMessage =
     workstationMutation.message ??
+    (!canLoadCloudWorkstations && canChooseHostedWorkstation
+      ? "Preparing workstation access..."
+      : null) ??
     workstationsError ??
     (workstationLaunchReadiness.state === "workstation_unavailable"
       ? workstationLaunchReadiness.detail

@@ -228,6 +228,8 @@ test("cloud workstation registry state lives in the workstation manager hook", (
   const hookSourceText = readFileSync(hookSourcePath, "utf8");
 
   assert.match(sourceText, /useCloudWorkstationManager/);
+  assert.match(sourceText, /cloudWorkstationsCanLoad/);
+  assert.match(sourceText, /canLoadCloudWorkstations,\s*capabilities: shellCapabilities/);
   assert.match(sourceText, /selection=\{workstationSelection\}/);
   assert.match(sourceText, /busyWorkstationId=\{busyWorkstationId\}/);
   assert.match(sourceText, /onAttachWorkstation=\{onAttachWorkstation\}/);

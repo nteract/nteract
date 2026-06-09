@@ -151,6 +151,7 @@ import {
 } from "./use-cloud-auth";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
+import { cloudWorkstationsCanLoad } from "./workstations-client";
 import "./index.css";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
@@ -1179,6 +1180,10 @@ function NotebookViewer({
   }, []);
   const hasBrowserAppIdentity =
     Boolean(appSessionStatus.session) || authState.mode === "dev" || authState.mode === "oidc";
+  const canLoadCloudWorkstations = cloudWorkstationsCanLoad({
+    authState,
+    hasAppSession: Boolean(appSessionStatus.session),
+  });
   const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
     useCloudShellCapabilities({
       authState,
@@ -1216,7 +1221,7 @@ function NotebookViewer({
     workstationSelection,
   } = useCloudWorkstationManager({
     authState,
-    canLoadCloudWorkstations: hasBrowserAppIdentity,
+    canLoadCloudWorkstations,
     capabilities: shellCapabilities,
     config,
     onOpenWorkstationsRail: handleOpenWorkstationsRail,

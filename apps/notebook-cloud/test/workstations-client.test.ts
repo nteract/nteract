@@ -6,6 +6,7 @@ import {
   CLOUD_WORKSTATIONS_ACTIVE_REFRESH_INTERVAL_MS,
   CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS,
   cloudWorkstationRefreshIntervalMs,
+  cloudWorkstationsCanLoad,
   fetchCloudWorkstations,
   requestCloudWorkstationAttachment,
   setCloudDefaultWorkstation,
@@ -169,6 +170,37 @@ describe("cloud workstations client", () => {
         panelIsOpen: false,
       }),
       CLOUD_WORKSTATIONS_ATTACH_REFRESH_INTERVAL_MS,
+    );
+  });
+
+  it("waits for browser app-session cookies before loading the registry", () => {
+    assert.equal(
+      cloudWorkstationsCanLoad({
+        authState: { mode: "oidc" },
+        hasAppSession: false,
+      }),
+      false,
+    );
+    assert.equal(
+      cloudWorkstationsCanLoad({
+        authState: { mode: "oidc" },
+        hasAppSession: true,
+      }),
+      true,
+    );
+    assert.equal(
+      cloudWorkstationsCanLoad({
+        authState: { mode: "dev" },
+        hasAppSession: false,
+      }),
+      true,
+    );
+    assert.equal(
+      cloudWorkstationsCanLoad({
+        authState: { mode: "anonymous" },
+        hasAppSession: false,
+      }),
+      false,
     );
   });
 });
