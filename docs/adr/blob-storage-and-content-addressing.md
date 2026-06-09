@@ -473,22 +473,24 @@ elsewhere, some are surfaced here for the first time.
    ref or misses one is silently a data-loss bug at the next sweep. Worth
    considering a debug-mode ref-source map (hash -> Vec<(room_id, ref_kind)>)
    that the sweep can dump on demand.
-2. **No backend abstraction.** `BlobStore` is hard-coded to the local
-   filesystem. Desktop will keep using the local filesystem store as its
-   source of truth; the hosted path needs a real object-store backend (R2
-   for the prototype, signed-origin or per-tenant bucket for production)
-   with streaming reads and paginated listing. The right shape is a
-   `BlobBackend` trait (storage concern: filesystem, R2, etc.) kept
-   separate from `BlobResolver` (host/viewer concern: how a renderer
-   fetches blob bytes given a hash). Conflating them would force the
-   browser viewer to know about daemon filesystem assumptions or force the
-   storage layer to know about HTTP routing. Punchlist BS-6.
-3. **Authenticated blob HTTP.** `Access-Control-Allow-Origin: *` plus loopback
-   is acceptable for the single-user desktop today. The moment the daemon
-   serves more than one local OS user (multi-tenant Anaconda hosted on the
-   same node, future SSH-forwarded scenarios), the unauthenticated blob HTTP
-   becomes a cross-user read. The hosted side already addresses this via
-   `/api/n/:id/blobs/:hash` and a signed origin; the desktop side does not.
+2. ~~**No backend abstraction.**~~ **Resolved: no `BlobBackend` trait.**
+   The hosted path shipped on R2 inside the cloud Worker without touching
+   `BlobStore`; the daemon keeps the local filesystem store as its source of
+   truth. Convergence lives at the contract layer - bare sha256 keys,
+   host-neutral `ContentRef`s, the `BlobResolver` read indirection, and the
+   upload protocol - not at a Rust storage trait. The storage/read-authority
+   separation stands either way: backends store bytes, `BlobResolver` decides
+   how an authorized viewer obtains them. Reopen only if the daemon itself
+   ever needs to target object storage directly. Punchlist BS-6 is closed on
+   this decision.
+3. ~~**Authenticated blob HTTP.**~~ **Resolved as a boundary, not a
+   feature.** The loopback blob server is permanently a single-user desktop
+   surface. It must never be bound beyond loopback or exposed to remote peers
+   or multi-OS-user nodes; any remote or multi-user read goes through a
+   room-authorized resolver (the hosted `/api/n/:id/blobs/:hash` route today,
+   capability URLs for private notebooks per punchlist HCA-6).
+   `test_blob_server_binds_loopback_only` pins the binding. Punchlist BS-5 is
+   closed on this decision.
 4. **Per-blob ACL.** A room ACL today gates *connect*; once a peer is
    authenticated it can `GET` any blob in the store regardless of which room
    the blob belongs to. This is correct for single-user desktop and acceptable
@@ -512,9 +514,12 @@ elsewhere, some are surfaced here for the first time.
    different `media_type` overwrites the sidecar (`put_disk` fast path).
    That is intentional for the `application/json` -> `text/javascript`
    case but means any peer with write access can rewrite the served
-   `Content-Type` of an existing blob. Not exploitable on a single-user
-   desktop, plausibly a vector once the protocol carries authenticated remote
-   peers.
+   `Content-Type` of an existing blob. Decision: the desktop sidecar rewrite
+   stays a single-user convenience; hosted and any remote-peer backend must
+   be first-writer-wins for blob metadata, preferring to serve media type
+   from the reference layer's `media_type`. The hosted blob PUT currently
+   rewrites R2 `httpMetadata.contentType` on every put; punchlist BS-13
+   tracks the first-writer-wins change.
 8. ~~**No `Content-Length`-bounded streaming on the read path.**~~ **Resolved**
    by punchlist BS-1. `BlobStore::open_reader` returns either an in-memory
    `Bytes` (memory-layer hit) or an open `tokio::fs::File` (disk-only).

@@ -65,6 +65,13 @@ local client/daemon -> room host or bridge <-> remote daemon(runtime_peer)
   `NotebookSync` and `RuntimeAgent`, with the handshake variant selecting the
   envelope shape. That is workable locally but fragile as a cross-machine
   boundary.
+- The hosted dispatch contract is now implemented in `runtimed-wasm`:
+  owner-scoped `REQUEST` frames are validated by the room host, become queued
+  executions with coordinator-owned provenance in `RuntimeStateDoc`
+  (`receive_request`), and the runtime peer consumes them through normal
+  `RuntimeStateDoc` sync while the shared policy rejects runtime-peer-forged
+  execution intent. Active-target selection and disconnect/liveness gating
+  remain open in `remote-workstation-doc-agents.md`.
 
 ### Findings
 
@@ -85,8 +92,9 @@ local client/daemon -> room host or bridge <-> remote daemon(runtime_peer)
 
 - Keep `RuntimeAgent` documentation explicitly local-daemon scoped.
 - Treat `runtime_peer` sidecars as normal authenticated room connections.
-- Before hosted runtime execution ships, define which request variants can be
-  sent by editors/owners and how they route to the active runtime peer.
+- Request variants are owner-only today and route through the
+  `RuntimeStateDoc` queue. The remaining dispatch work is active-target
+  selection and liveness gating (see `remote-workstation-doc-agents.md`).
 - Do not expose the `RuntimeAgent` handshake as a cross-machine API without a
   new protocol decision.
 
@@ -117,15 +125,25 @@ document path that later references the content hash.
   publishing bytes. Multipart upload validates part hashes and the final hash.
 - `PutBlob` uses the typed-frame path while multipart session control uses
   `NotebookRequest::{CreateBlobUpload, CompleteBlobUpload, AbortBlobUpload}`.
-- The current local notebook peer loop enqueues `PutBlob` frames without a
-  scope check. Multipart request handling is intercepted before generic request
-  dispatch and also has no scope annotation today.
-- This is acceptable for the current local same-UID daemon path because local
-  connections authenticate as owner. It is not sufficient for hosted
-  multi-user rooms where viewer/editor/runtime-peer scopes are distinct.
+- Hosted rooms now enforce the upload gate: `allowsBlobUpload` permits only
+  `runtime_peer` and `owner`, checked at both the `PUT_BLOB` frame prefilter
+  and the HTTP upload route. Editor uploads stay denied until reference-path
+  validation ships with them (staged policy recorded in
+  `hosted-room-authorization.md` Decision 3).
+- The local notebook peer loop still enqueues `PutBlob` frames without a
+  scope check, and multipart request handling is intercepted before generic
+  request dispatch with no scope annotation. That is acceptable for the
+  current local same-UID daemon path because local connections authenticate
+  as owner; punchlist BS-12 tracks daemon parity with the hosted gate.
+- Hosted publish now validates reachability: a snapshot revision is rejected
+  with `424 missing_blobs` when any materialized render ref is missing from
+  the destination blob store, before any D1 revision row is recorded.
 - Blob reads are unauthenticated on the local loopback HTTP origin and rely on
-  same-machine isolation plus hash unguessability. Hosted reads already need a
-  room-aware resolver or signed output origin.
+  same-machine isolation plus hash unguessability; that surface is now
+  declared permanently single-user (`blob-storage-and-content-addressing.md`
+  open question 3). Hosted reads ride the viewer-authorized
+  `/api/n/:id/blobs/:hash` route; private sharing still needs the capability
+  mechanism tracked as HCA-6.
 
 ### Findings
 
@@ -155,7 +173,8 @@ document path that later references the content hash.
 ### Required follow-ups
 
 - Add scope annotations for `PutBlob` and multipart upload request variants
-  before exposing hosted multi-user room sockets.
+  in the daemon peer loop (punchlist BS-12). The hosted room host already
+  gates uploads by scope.
 - Keep the shared `RuntimeStateDoc` write policy in the hosted room host and
   daemon paths. `editor` and `owner` must remain limited to existing widget
   comm state, while `runtime_peer` remains the explicit writer for runtime
@@ -168,8 +187,12 @@ document path that later references the content hash.
 - Keep `BlobBackend` storage concerns separate from `BlobResolver` read
   authority. The former stores bytes; the latter decides how an authorized
   viewer obtains them.
-- Add publish-time reachability validation: a snapshot revision should not
-  advance until every reachable blob ref exists in the destination backend.
+- ~~Add publish-time reachability validation: a snapshot revision should not
+  advance until every reachable blob ref exists in the destination backend.~~
+  Done: `validateSnapshotPair` HEAD-checks every materialized render ref and
+  fails the publish before recording a revision. The residual risk is
+  schema drift between the publish walk and the daemon GC walk (punchlist
+  BS-14).
 
 ## Summary
 
