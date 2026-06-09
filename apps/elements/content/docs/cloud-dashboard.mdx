@@ -9,9 +9,11 @@ The hosted dashboard is app-level product chrome. It should help a signed-in
 user continue recent notebook work, inspect visible notebooks, and understand
 whether compute is ready without becoming another notebook shell.
 
-This fixture uses the current list endpoint shape plus deterministic workstation
-and sharing facts. It keeps the extra facts illustrative until the production
-API has stable projections for them.
+This fixture runs the real `projectCloudNotebookDashboard` projection from
+`@/components/notebook/workspace`, the same one the hosted `/n` dashboard uses,
+over deterministic notebooks. Ordering, the summary metrics, and the published /
+access sidebar come from shared code, so the catalog cannot drift from
+production behavior; only per-notebook display flavor stays local.
 
 <CloudDashboardExample />
 

@@ -20,7 +20,7 @@ import {
   type CloudNotebookDashboardModel,
   type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
-} from "./notebook-dashboard";
+} from "@/components/notebook/workspace/notebook-dashboard";
 import type { CloudNotebookRenameState } from "./cloud-viewer-types";
 
 export function CloudNotebookDashboard({

@@ -19,7 +19,10 @@ import {
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
 import { cloudResponseError } from "./cloud-response";
-import { projectCloudNotebookDashboard, type CloudNotebookListItem } from "./notebook-dashboard";
+import {
+  projectCloudNotebookDashboard,
+  type CloudNotebookListItem,
+} from "@/components/notebook/workspace/notebook-dashboard";
 import {
   clearCachedCloudNotebookList,
   readCachedCloudNotebookList,

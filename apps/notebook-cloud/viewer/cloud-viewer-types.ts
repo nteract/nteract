@@ -1,6 +1,6 @@
 import type { CloudAppSession } from "./app-session";
 import type { CloudViewerConfig } from "./cloud-viewer-session";
-import type { CloudNotebookListItem } from "./notebook-dashboard";
+import type { CloudNotebookListItem } from "@/components/notebook/workspace/notebook-dashboard";
 import type { CloudOidcAuthConfig } from "./oidc-auth";
 
 export interface CloudViewerAuthConfig {

@@ -4,11 +4,8 @@ import {
   ArrowRight,
   BookOpen,
   Clock3,
-  Cpu,
-  Database,
   FilePlus2,
   Globe2,
-  HardDrive,
   LayoutDashboard,
   Link2,
   LockKeyhole,
@@ -20,6 +17,11 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  projectCloudNotebookDashboard,
+  type CloudNotebookDashboardMetric,
+  type CloudNotebookListItem,
+} from "@/components/notebook/workspace/notebook-dashboard";
 
 type NotebookAccess = "owner" | "editor" | "viewer";
 
@@ -79,54 +81,51 @@ const notebooks = [
   },
 ] satisfies readonly DashboardNotebook[];
 
+// The catalog drives ordering, metrics, and the sidebar from the same shared
+// projection the hosted /n dashboard uses, so this fixture cannot drift from
+// production behavior. Display-only flavor (per-notebook summary, share state)
+// stays local because the list API does not carry it.
+const METRIC_ICONS: Record<CloudNotebookDashboardMetric["icon"], LucideIcon> = {
+  notebooks: BookOpen,
+  owned: UserRound,
+  published: Globe2,
+};
+
 const dashboard = projectDashboard(notebooks);
 
 function projectDashboard(source: readonly DashboardNotebook[]) {
-  const sorted = [...source].sort((left, right) => {
-    const accessOrder = accessRank(right.access) - accessRank(left.access);
-    return accessOrder || left.title.localeCompare(right.title);
-  });
-  const editableCount = source.filter(
-    (notebook) => notebook.access === "owner" || notebook.access === "editor",
-  ).length;
-  const ownedCount = source.filter((notebook) => notebook.access === "owner").length;
-  const publicCount = source.filter((notebook) => notebook.public).length;
-
+  const byId = new Map(source.map((notebook) => [notebook.id, notebook] as const));
+  const model = projectCloudNotebookDashboard(source.map(toListItem));
+  const display = (item: CloudNotebookListItem): DashboardNotebook =>
+    byId.get(item.notebook_id) ?? source[0]!;
   return {
-    continueNotebook: source[0]!,
-    notebooks: sorted,
-    metrics: [
-      {
-        label: "Visible notebooks",
-        value: String(source.length),
-        detail: `${editableCount} editable`,
-        icon: BookOpen,
-      },
-      {
-        label: "Owned",
-        value: String(ownedCount),
-        detail: "can manage access",
-        icon: UserRound,
-      },
-      {
-        label: "Public links",
-        value: String(publicCount),
-        detail: "metadata safe to share",
-        icon: Globe2,
-      },
-    ] satisfies readonly DashboardMetric[],
+    continueNotebook: model.continueNotebook ? display(model.continueNotebook) : source[0]!,
+    notebooks: model.notebooks.map(display),
+    published: model.sidebar.published.map(display),
+    access: model.sidebar.access,
+    metrics: model.metrics.map((metric) => ({
+      label: metric.label,
+      value: metric.value,
+      detail: metric.detail,
+      icon: METRIC_ICONS[metric.icon],
+    })),
   };
 }
 
-function accessRank(access: NotebookAccess): number {
-  switch (access) {
-    case "owner":
-      return 3;
-    case "editor":
-      return 2;
-    case "viewer":
-      return 1;
-  }
+function toListItem(notebook: DashboardNotebook, index: number): CloudNotebookListItem {
+  // Earlier in the fixture array reads as more recently updated.
+  const updatedAt = new Date(Date.UTC(2026, 5, 8, 12) - index * 3_600_000).toISOString();
+  return {
+    notebook_id: notebook.id,
+    title: notebook.title,
+    owner_principal: "user:dev:kyle",
+    scope: notebook.access,
+    created_at: updatedAt,
+    updated_at: updatedAt,
+    latest_revision_id: notebook.latestRevision === "published" ? `rev-${notebook.id}` : null,
+    viewer_url: "#cloud-dashboard-notebooks",
+    endpoints: { catalog: "", acl: "", access_requests: "" },
+  };
 }
 
 export function CloudDashboardExample() {
@@ -237,40 +236,53 @@ function CloudDashboardFrame() {
         <aside className="grid content-start gap-5">
           <section
             className="border-t border-fd-border pt-4"
-            aria-labelledby="cloud-dashboard-account"
+            aria-labelledby="cloud-dashboard-published"
           >
-            <div className="flex items-start gap-2">
-              <UserRound className="mt-0.5 size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <div className="min-w-0">
-                <h3 id="cloud-dashboard-account" className="text-sm font-semibold">
-                  Signed in
-                </h3>
-                <p className="mt-1 text-sm leading-5 text-fd-muted-foreground">
-                  Owner and editor notebooks can manage access and request compute from a
-                  workstation.
-                </p>
-              </div>
-            </div>
+            <p className="text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
+              Sharing
+            </p>
+            <h3 id="cloud-dashboard-published" className="mt-1 text-base font-semibold">
+              Published previews
+            </h3>
+            {dashboard.published.length > 0 ? (
+              <ul className="mt-3 grid gap-1">
+                {dashboard.published.map((notebook) => (
+                  <li key={notebook.id}>
+                    <a
+                      href="#cloud-dashboard-notebooks"
+                      className="-mx-1.5 inline-flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-sm text-fd-foreground no-underline hover:bg-fd-muted/50"
+                    >
+                      <Globe2
+                        className="size-3.5 text-emerald-600 dark:text-emerald-400"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{notebook.title}</span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-sm leading-5 text-fd-muted-foreground">
+                Publish a revision to expose safe metadata and revision-aware preview images.
+              </p>
+            )}
           </section>
 
           <section
-            className="border-t border-emerald-500/30 pt-4"
-            aria-labelledby="cloud-dashboard-workstation"
+            className="border-t border-fd-border pt-4"
+            aria-labelledby="cloud-dashboard-access"
           >
-            <p className="font-mono text-[0.68rem] uppercase tracking-normal text-fd-muted-foreground">
-              ws-lab2
+            <p className="text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
+              Access
             </p>
-            <h3 id="cloud-dashboard-workstation" className="mt-1 text-base font-semibold">
-              Lab workstation
+            <h3 id="cloud-dashboard-access" className="mt-1 text-base font-semibold">
+              Your roles
             </h3>
-            <div className="mt-3 grid gap-2 text-sm text-fd-muted-foreground">
-              <WorkstationFact icon={Cpu} label="8 CPU" />
-              <WorkstationFact icon={HardDrive} label="31 GiB RAM" />
-              <WorkstationFact icon={Database} label="Current Python" />
-            </div>
-            <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-              Default workstation candidate
-            </div>
+            <dl className="mt-3 grid grid-cols-3 gap-2">
+              <AccessStat label="Owned" value={dashboard.access.owned} />
+              <AccessStat label="Editable" value={dashboard.access.editable} />
+              <AccessStat label="View-only" value={dashboard.access.viewOnly} />
+            </dl>
           </section>
         </aside>
       </main>
@@ -376,12 +388,14 @@ function NotebookScope({ access }: { access: NotebookAccess }) {
   );
 }
 
-function WorkstationFact({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+function AccessStat({ label, value }: { label: string; value: number }) {
   return (
-    <span className="inline-flex items-center gap-2">
-      <Icon className="size-3.5" aria-hidden="true" />
-      {label}
-    </span>
+    <div className="grid gap-0.5">
+      <dt className="text-[0.68rem] font-medium uppercase tracking-normal text-fd-muted-foreground">
+        {label}
+      </dt>
+      <dd className="m-0 text-xl font-semibold">{value}</dd>
+    </div>
   );
 }
 
