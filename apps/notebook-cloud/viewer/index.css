@@ -569,7 +569,7 @@ body {
 }
 
 .cloud-dashboard-filter-group[data-group="cleanup"] {
-  margin-left: auto;
+  gap: 0.25rem;
 }
 
 .cloud-dashboard-filters button {
@@ -597,6 +597,9 @@ body {
 
 .cloud-dashboard-filter-group[data-group="cleanup"] button {
   color: color-mix(in srgb, var(--foreground) 56%, transparent);
+  font-size: 0.75rem;
+  min-height: 1.75rem;
+  padding-inline: 0.5rem;
 }
 
 .cloud-dashboard-filter-group[data-group="cleanup"] button[data-active="true"] {
@@ -980,10 +983,6 @@ body {
   .cloud-dashboard-switcher,
   .cloud-dashboard-search-row {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .cloud-dashboard-filter-group[data-group="cleanup"] {
-    margin-left: 0;
   }
 
   .cloud-dashboard-continue {
