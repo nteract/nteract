@@ -557,7 +557,19 @@ body {
 .cloud-dashboard-filters {
   display: flex;
   flex-wrap: wrap;
+  gap: 0.5rem 0.875rem;
+  align-items: center;
+}
+
+.cloud-dashboard-filter-group {
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.375rem;
+  min-width: 0;
+}
+
+.cloud-dashboard-filter-group[data-group="cleanup"] {
+  margin-left: auto;
 }
 
 .cloud-dashboard-filters button {
@@ -581,6 +593,14 @@ body {
   border-color: color-mix(in srgb, var(--foreground) 12%, transparent);
   color: var(--foreground);
   background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.cloud-dashboard-filter-group[data-group="cleanup"] button {
+  color: color-mix(in srgb, var(--foreground) 56%, transparent);
+}
+
+.cloud-dashboard-filter-group[data-group="cleanup"] button[data-active="true"] {
+  color: var(--foreground);
 }
 
 .cloud-dashboard-filters strong {
@@ -960,6 +980,10 @@ body {
   .cloud-dashboard-switcher,
   .cloud-dashboard-search-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cloud-dashboard-filter-group[data-group="cleanup"] {
+    margin-left: 0;
   }
 
   .cloud-dashboard-continue {

@@ -98,17 +98,26 @@ export function CloudNotebookDashboard({
             ) : null}
           </div>
           <nav className="cloud-dashboard-filters" aria-label="Notebook filters">
-            {model.filters.map((filter) => (
-              <button
-                key={filter.id}
-                type="button"
-                aria-pressed={view.filterId === filter.id}
-                data-active={view.filterId === filter.id ? "true" : undefined}
-                onClick={() => setFilterId(filter.id)}
+            {model.filterGroups.map((group) => (
+              <div
+                key={group.id}
+                className="cloud-dashboard-filter-group"
+                data-group={group.id}
+                aria-label={group.label}
               >
-                <span>{filter.label}</span>
-                <strong>{filter.count}</strong>
-              </button>
+                {group.filters.map((filter) => (
+                  <button
+                    key={filter.id}
+                    type="button"
+                    aria-pressed={view.filterId === filter.id}
+                    data-active={view.filterId === filter.id ? "true" : undefined}
+                    onClick={() => setFilterId(filter.id)}
+                  >
+                    <span>{filter.label}</span>
+                    <strong>{filter.count}</strong>
+                  </button>
+                ))}
+              </div>
             ))}
           </nav>
           {view.sections.length > 0 ? (

@@ -31,13 +31,23 @@ export type CloudNotebookDashboardFilterId =
 
 export interface CloudNotebookDashboardFilter {
   count: number;
+  group: CloudNotebookDashboardFilterGroupId;
   id: CloudNotebookDashboardFilterId;
+  label: string;
+}
+
+export type CloudNotebookDashboardFilterGroupId = "work" | "cleanup";
+
+export interface CloudNotebookDashboardFilterGroup {
+  filters: readonly CloudNotebookDashboardFilter[];
+  id: CloudNotebookDashboardFilterGroupId;
   label: string;
 }
 
 export interface CloudNotebookDashboardModel {
   continueNotebook: CloudNotebookListItem | null;
   continueRow: CloudNotebookDashboardRow | null;
+  filterGroups: readonly CloudNotebookDashboardFilterGroup[];
   filters: readonly CloudNotebookDashboardFilter[];
   metrics: readonly CloudNotebookDashboardMetric[];
   notebooks: readonly CloudNotebookListItem[];
@@ -114,16 +124,19 @@ export function projectCloudNotebookDashboard(
     Boolean(notebook.latest_revision_id),
   ).length;
 
+  const filters = cloudNotebookDashboardFilters({
+    notebooks,
+    generatedCount,
+    ownerCount,
+    publishedCount,
+    untitledCount: untitled.length,
+  });
+
   return {
     continueNotebook: namedWork[0] ?? titled[0] ?? sorted[0] ?? null,
     continueRow: dashboardRow(namedWork[0] ?? titled[0] ?? sorted[0] ?? null),
-    filters: cloudNotebookDashboardFilters({
-      notebooks,
-      generatedCount,
-      ownerCount,
-      publishedCount,
-      untitledCount: untitled.length,
-    }),
+    filterGroups: cloudNotebookDashboardFilterGroups(filters),
+    filters,
     notebooks: sorted,
     metrics: [
       {
@@ -236,21 +249,41 @@ function cloudNotebookDashboardFilters({
   publishedCount: number;
   untitledCount: number;
 }): CloudNotebookDashboardFilter[] {
+  const sharedCount = notebooks.filter((notebook) => notebook.scope !== "owner").length;
   const filters: CloudNotebookDashboardFilter[] = [
-    { id: "all", label: "Recent", count: notebooks.length },
-    { id: "owned", label: "Owned", count: ownerCount },
-    {
-      id: "shared",
-      label: "Shared",
-      count: notebooks.filter((notebook) => notebook.scope !== "owner").length,
-    },
-    { id: "published", label: "Published", count: publishedCount },
+    { id: "all", label: "Recent", count: notebooks.length, group: "work" },
   ];
-  if (generatedCount > 0) {
-    filters.push({ id: "generated", label: "Generated", count: generatedCount });
+  if (ownerCount > 0) {
+    filters.push({ id: "owned", label: "Owned", count: ownerCount, group: "work" });
   }
-  filters.push({ id: "untitled", label: "Untitled", count: untitledCount });
+  if (sharedCount > 0) {
+    filters.push({ id: "shared", label: "Shared", count: sharedCount, group: "work" });
+  }
+  if (publishedCount > 0) {
+    filters.push({ id: "published", label: "Published", count: publishedCount, group: "work" });
+  }
+  if (generatedCount > 0) {
+    filters.push({ id: "generated", label: "Generated", count: generatedCount, group: "cleanup" });
+  }
+  if (untitledCount > 0) {
+    filters.push({ id: "untitled", label: "Untitled", count: untitledCount, group: "cleanup" });
+  }
   return filters;
+}
+
+function cloudNotebookDashboardFilterGroups(
+  filters: readonly CloudNotebookDashboardFilter[],
+): CloudNotebookDashboardFilterGroup[] {
+  const work = filters.filter((filter) => filter.group === "work");
+  const cleanup = filters.filter((filter) => filter.group === "cleanup");
+  const groups: CloudNotebookDashboardFilterGroup[] = [];
+  if (work.length > 0) {
+    groups.push({ id: "work", label: "Notebook views", filters: Object.freeze(work) });
+  }
+  if (cleanup.length > 0) {
+    groups.push({ id: "cleanup", label: "Cleanup filters", filters: Object.freeze(cleanup) });
+  }
+  return groups;
 }
 
 function cloudNotebookDashboardSections(

@@ -53,13 +53,26 @@ describe("cloud notebook dashboard projection", () => {
       ],
     );
     assert.deepEqual(
-      model.filters.map((filter) => [filter.id, filter.label, filter.count]),
+      model.filters.map((filter) => [filter.id, filter.label, filter.count, filter.group]),
       [
-        ["all", "Recent", 3],
-        ["owned", "Owned", 1],
-        ["shared", "Shared", 2],
-        ["published", "Published", 2],
-        ["untitled", "Untitled", 0],
+        ["all", "Recent", 3, "work"],
+        ["owned", "Owned", 1, "work"],
+        ["shared", "Shared", 2, "work"],
+        ["published", "Published", 2, "work"],
+      ],
+    );
+    assert.deepEqual(
+      model.filterGroups.map((group) => ({
+        filters: group.filters.map((filter) => filter.id),
+        id: group.id,
+        label: group.label,
+      })),
+      [
+        {
+          filters: ["all", "owned", "shared", "published"],
+          id: "work",
+          label: "Notebook views",
+        },
       ],
     );
   });
@@ -283,14 +296,23 @@ describe("cloud notebook dashboard projection", () => {
     const untitledSection = defaultView.sections.find((section) => section.id === "untitled");
 
     assert.deepEqual(
-      model.filters.map((filter) => [filter.id, filter.count]),
+      model.filters.map((filter) => [filter.id, filter.count, filter.group]),
       [
-        ["all", 13],
-        ["owned", 13],
-        ["shared", 0],
-        ["published", 0],
-        ["generated", 7],
-        ["untitled", 6],
+        ["all", 13, "work"],
+        ["owned", 13, "work"],
+        ["generated", 7, "cleanup"],
+        ["untitled", 6, "cleanup"],
+      ],
+    );
+    assert.deepEqual(
+      model.filterGroups.map((group) => ({
+        filters: group.filters.map((filter) => filter.id),
+        id: group.id,
+        label: group.label,
+      })),
+      [
+        { filters: ["all", "owned"], id: "work", label: "Notebook views" },
+        { filters: ["generated", "untitled"], id: "cleanup", label: "Cleanup filters" },
       ],
     );
     assert.equal(generatedSection?.notebooks.length, 5);
