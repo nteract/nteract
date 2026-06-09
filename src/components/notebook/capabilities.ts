@@ -21,6 +21,8 @@ export {
   type NotebookLaunchKernelSpecProjection,
   type NotebookRegisteredWorkstation,
   type NotebookRegisteredWorkstationEnvironment,
+  type NotebookRegisteredWorkstationFactKind,
+  type NotebookRegisteredWorkstationFactProjection,
   type NotebookRegisteredWorkstationProjection,
   type NotebookRegisteredWorkstationStatus,
   type NotebookActorIdentity,

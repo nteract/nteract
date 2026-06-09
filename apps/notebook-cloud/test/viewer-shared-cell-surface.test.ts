@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { test } from "node:test";
+import { viewerCorpus, viewerFileContaining } from "./viewer-source-corpus";
 
 test("cloud notebook body renders through the desktop NotebookView surface", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /from "\.\.\/\.\.\/notebook\/src\/notebook-surface"/);
   assert.match(sourceText, /<NotebookView[\s\S]*cellIds=\{notebookCellIds\}/);
@@ -49,8 +49,7 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
 });
 
 test("cloud projects live cells into the NotebookView stores", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
@@ -96,8 +95,7 @@ test("cloud live changesets gate stale post-await status writes", () => {
 });
 
 test("cloud notebook mutations route through the shared notebook controller", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /createNotebookController/);
   assert.match(sourceText, /const cloudNotebookController = useMemo/);
@@ -112,8 +110,7 @@ test("cloud notebook mutations route through the shared notebook controller", ()
 });
 
 test("cloud command toolbar inserts below the focused cell before falling back to the tail", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(
     sourceText,
@@ -126,8 +123,7 @@ test("cloud command toolbar inserts below the focused cell before falling back t
 });
 
 test("cloud projects host focus through the shared cell UI state bridge", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /useNotebookCellUIStateBridge/);
   assert.match(
@@ -143,8 +139,7 @@ test("cloud projects host focus through the shared cell UI state bridge", () => 
 });
 
 test("cloud passes shared NotebookView source and output visibility handlers", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(
     sourceText,
@@ -166,8 +161,7 @@ test("cloud passes shared NotebookView source and output visibility handlers", (
 });
 
 test("cloud wires shared presence and cleans projected store entries", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
   const bridgeSourcePath = new URL("../viewer/notebook-view-store-bridge.ts", import.meta.url);
@@ -198,8 +192,7 @@ test("cloud wires shared presence and cleans projected store entries", () => {
 });
 
 test("cloud package rail renders package metadata through the shared shell panel", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /NotebookPackageSummaryPanel/);
   assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
@@ -208,8 +201,7 @@ test("cloud package rail renders package metadata through the shared shell panel
 });
 
 test("cloud package rail stays package-only and leaves sync/env state to app chrome", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(
     sourceText,
@@ -219,6 +211,34 @@ test("cloud package rail stays package-only and leaves sync/env state to app chr
   assert.doesNotMatch(sourceText, /createNotebookEnvironmentSurface/);
   assert.doesNotMatch(sourceText, /syncLabel: connectionScope/);
   assert.doesNotMatch(sourceText, /Live sync connected/);
+});
+
+test("cloud workstation registry state lives in the workstation manager hook", () => {
+  const sourceText = viewerFileContaining("export function NotebookViewer");
+  const hookSourcePath = new URL("../viewer/use-cloud-workstations.ts", import.meta.url);
+  const hookSourceText = readFileSync(hookSourcePath, "utf8");
+
+  assert.match(sourceText, /useCloudWorkstationManager/);
+  assert.match(sourceText, /cloudBrowserCanUseAuthenticatedApi/);
+  assert.match(
+    sourceText,
+    /canLoadCloudWorkstations:\s*canUseAuthenticatedCloudApi,\s*capabilities: shellCapabilities/,
+  );
+  assert.match(sourceText, /selection=\{workstationSelection\}/);
+  assert.match(sourceText, /busyWorkstationId=\{busyWorkstationId\}/);
+  assert.match(sourceText, /onAttachWorkstation=\{onAttachWorkstation\}/);
+  assert.match(sourceText, /onSetDefaultWorkstation=\{onSetDefaultWorkstation\}/);
+  assert.doesNotMatch(sourceText, /fetchCloudWorkstations/);
+  assert.doesNotMatch(sourceText, /setCloudDefaultWorkstation/);
+  assert.doesNotMatch(sourceText, /requestCloudWorkstationAttachment/);
+  assert.doesNotMatch(sourceText, /projectNotebookWorkstationSelection/);
+  assert.doesNotMatch(sourceText, /cloudWorkstationRefreshIntervalMs/);
+  assert.match(hookSourceText, /fetchCloudWorkstations/);
+  assert.match(hookSourceText, /setCloudDefaultWorkstation/);
+  assert.match(hookSourceText, /requestCloudWorkstationAttachment/);
+  assert.match(hookSourceText, /projectNotebookWorkstationSelection/);
+  assert.match(hookSourceText, /projectNotebookWorkstationLaunchReadiness/);
+  assert.match(hookSourceText, /cloudWorkstationRefreshIntervalMs/);
 });
 
 test("cloud identity chrome renders through the shared actor projection surface", () => {
@@ -233,52 +253,62 @@ test("cloud identity chrome renders through the shared actor projection surface"
 });
 
 test("cloud presence chrome renders as an isolated host avatar stack", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
+  const presenceSourcePath = new URL("../viewer/cloud-presence-status.tsx", import.meta.url);
+  const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const hostedSmokePath = new URL("../scripts/hosted-render-smoke.mjs", import.meta.url);
   const hostedSmokeText = readFileSync(hostedSmokePath, "utf8");
   const collabSmokePath = new URL("../scripts/hosted-collab-smoke.mjs", import.meta.url);
   const collabSmokeText = readFileSync(collabSmokePath, "utf8");
 
-  assert.match(sourceText, /CloudViewerPresenceStore/);
+  assert.match(presenceSourceText, /CloudViewerPresenceStore/);
   assert.match(
-    sourceText,
+    presenceSourceText,
     /useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\)/,
   );
-  assert.match(sourceText, /<AvatarGroup className="cloud-presence-avatar-group"/);
-  assert.match(sourceText, /data-slot="cloud-presence-stack"/);
+  assert.match(presenceSourceText, /<AvatarGroup className="cloud-presence-avatar-group"/);
+  assert.match(presenceSourceText, /data-slot="cloud-presence-stack"/);
   assert.match(hostedSmokeText, /\[data-slot='cloud-presence-stack'\]/);
   assert.match(collabSmokeText, /\[data-slot='cloud-presence-stack'\]/);
   assert.doesNotMatch(sourceText, /NotebookPresenceStatus/);
+  assert.doesNotMatch(presenceSourceText, /NotebookPresenceStatus/);
   assert.doesNotMatch(sourceText, /compactCloudPresenceLabel/);
+  assert.doesNotMatch(presenceSourceText, /compactCloudPresenceLabel/);
   assert.doesNotMatch(hostedSmokeText, /notebook-presence-status/);
   assert.doesNotMatch(collabSmokeText, /notebook-presence-status/);
 });
 
 test("cloud edit mode chrome renders through the shared shell component", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerFileContaining("export function NotebookViewer");
+  const authControlsSourcePath = new URL("../viewer/cloud-auth-controls.tsx", import.meta.url);
+  const authControlsSourceText = readFileSync(authControlsSourcePath, "utf8");
+  const shellHookSourcePath = new URL("../viewer/use-cloud-shell-capabilities.ts", import.meta.url);
+  const shellHookSourceText = readFileSync(shellHookSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
 
-  assert.match(sourceText, /NotebookEditModeButton/);
+  assert.match(sourceText, /useCloudShellCapabilities/);
+  assert.match(authControlsSourceText, /NotebookEditModeButton/);
   assert.match(
-    sourceText,
+    authControlsSourceText,
     /<NotebookEditModeButton[\s\S]*mode=\{accessPending \? "view" : interaction\.selectedMode\}/,
   );
   assert.match(
-    sourceText,
+    authControlsSourceText,
     /<NotebookEditModeButton[\s\S]*state=\{accessPending \? "viewing" : interaction\.state\}/,
   );
-  assert.match(sourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
-  assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
+  assert.match(authControlsSourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
+  assert.match(authControlsSourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
-  assert.match(sourceText, /projectCloudNotebookEditAccess/);
-  assert.match(sourceText, /selectedMode: selectedInteractionMode/);
-  assert.match(sourceText, /editAccessRequestPending/);
+  assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
+  assert.doesNotMatch(sourceText, /cloudNotebookShellCapabilities/);
+  assert.match(shellHookSourceText, /projectCloudNotebookEditAccess/);
+  assert.match(shellHookSourceText, /cloudNotebookShellCapabilities/);
+  assert.match(shellHookSourceText, /selectedMode/);
+  assert.match(shellHookSourceText, /editAccessRequestPending/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
-  assert.match(sourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
+  assert.match(shellHookSourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
   assert.doesNotMatch(sourceText, /appliedGrantedEditScopeRef/);
   assert.doesNotMatch(sourceText, /requestedEditAccess/);
   assert.doesNotMatch(
@@ -286,8 +316,8 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     /setSelectedInteractionMode\("edit"\);[\s\S]*\[canAcceptCellMutations, connectionPeerId, connectionScope/,
   );
   assert.match(sourceText, /accessPending=\{editAccessPending\}/);
-  assert.match(sourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
-  assert.match(sourceText, /disabled=\{accessPending\}/);
+  assert.match(authControlsSourceText, /state=\{accessPending \? "viewing" : interaction\.state\}/);
+  assert.match(authControlsSourceText, /disabled=\{accessPending\}/);
   assert.match(
     sourceText,
     /const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar\(shellCapabilities, \{[\s\S]*reserve: editAccessPending,[\s\S]*\}\)/,
@@ -305,7 +335,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
   assert.doesNotMatch(cssText, /cloud-command-toolbar-placeholder/);
   assert.match(
-    sourceText,
+    authControlsSourceText,
     /if \(mode === "edit" && accessLevel !== "editor" && accessLevel !== "owner"\) \{/,
   );
   assert.match(sourceText, /storeCloudRequestedScope\(window\.localStorage, "editor"\)/);
@@ -315,8 +345,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
 });
 
 test("cloud rail binds through the shared document rail adapter", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /NotebookDocumentRail/);
   assert.match(sourceText, /<NotebookDocumentRail[\s\S]*viewModel=\{notebookViewModel\}/);
@@ -324,8 +353,7 @@ test("cloud rail binds through the shared document rail adapter", () => {
 });
 
 test("cloud host notices sit in the shared shell above the rail and notebook stage", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
   const shellPath = new URL(
@@ -363,8 +391,7 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
 });
 
 test("cloud viewer shell uses the shared notebook rail as an adapter surface", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /NotebookDocumentRail/);
   assert.match(sourceText, /useNotebookViewModel\(/);
@@ -380,8 +407,7 @@ test("cloud viewer shell uses the shared notebook rail as an adapter surface", (
 });
 
 test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /const handledHeadingHashRef = useRef<string \| null>\(null\)/);
   assert.match(sourceText, /const headingAnchorId = decodeHashAnchorId\(hash\)/);
@@ -396,8 +422,7 @@ test("cloud outline keeps iframe heading hashes at parent cell anchors", () => {
 });
 
 test("cloud live materialization skips empty room handles before resolving outputs", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
   const sessionSourcePath = new URL("../viewer/cloud-viewer-session.ts", import.meta.url);
   const sessionSourceText = readFileSync(sessionSourcePath, "utf8");
 
@@ -433,8 +458,7 @@ test("cloud live cell changes use serialized incremental materialization", () =>
 });
 
 test("cloud viewer shell keeps render endpoints out of the interactive load path", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.doesNotMatch(sourceText, /renderEndpoint/);
   assert.doesNotMatch(sourceText, /pinnedRenderBasePath/);
@@ -467,23 +491,47 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
 });
 
 test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
+  const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
+  const routeSourceText = readFileSync(routeSourcePath, "utf8");
+  const authSourcePath = new URL("../viewer/use-cloud-auth.ts", import.meta.url);
+  const authSourceText = readFileSync(authSourcePath, "utf8");
 
   assert.match(
     sourceText,
     /useCloudAppSessionBridge\(\s*authState,\s*appSessionStatus\.session,\s*appSessionStatus\.status === "loading",\s*appSessionStatus\.refreshAppSessionStatus,\s*\)/,
   );
   assert.match(
-    sourceText,
+    authSourceText,
     /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
   );
-  assert.match(sourceText, /\[authState, bootstrap, hasAppSession, refreshIndex, signedIn\]/);
+  assert.match(
+    routeSourceText,
+    /\[authState, bootstrap, canFetchNotebookList, refreshIndex, waitingForAppSession\]/,
+  );
+});
+
+test("cloud notebook list waits for app-session cookies before catalog fetches", () => {
+  const sourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /const canFetchNotebookList = authState\.mode === "dev" \|\| hasAppSession;/,
+  );
+  assert.match(
+    sourceText,
+    /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*\{ kind: "loading" \}[\s\S]*return;/,
+  );
+  assert.match(
+    sourceText,
+    /fetchCloudNotebookList\(authState, controller\.signal\)/,
+    "catalog fetch should still use the existing auth helper once the cookie-backed state is ready",
+  );
 });
 
 test("cloud app-session live sync requests owner and lets the backend downgrade", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /cloudSyncAuthFromAppSessionCookie\(\{[\s\S]*requestedScope: "owner"/);
   assert.doesNotMatch(
@@ -502,8 +550,7 @@ test("cloud sync keeps routine frame logs out of the browser console", () => {
 });
 
 test("cloud installs a host logger sink for shared notebook components", () => {
-  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
-  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceText = viewerCorpus;
 
   assert.match(sourceText, /setLoggerHost/);
   assert.match(sourceText, /debug: \(\) => \{\}/);

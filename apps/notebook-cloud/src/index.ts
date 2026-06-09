@@ -166,7 +166,7 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/", "/index.html"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request, env) => homeViewer(request, env),
+    handler: (_match, request) => rootNotebookListRedirect(request),
   },
   {
     match: exactPath("/n", "/n/"),
@@ -3476,16 +3476,10 @@ interface ViewerShellConfig extends Record<string, unknown> {
   workstationsEndpoint?: string;
 }
 
-function homeViewer(request: Request, env: Env): Response {
-  return responseForRequestMethod(
-    request,
-    viewerShell(
-      { title: "nteract", description: "A hosted nteract notebook workspace." },
-      env,
-      authConfigForRequest(request, env),
-      null,
-    ),
-  );
+function rootNotebookListRedirect(request: Request): Response {
+  const url = new URL(request.url);
+  url.pathname = "/n";
+  return Response.redirect(url.toString(), 302);
 }
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {

@@ -71,12 +71,12 @@ describe("NotebookWorkstationsPanel", () => {
   it("renders a local executable runtime as a workstation target", () => {
     render(<NotebookWorkstationsPanel capabilities={localReadyCapabilities} />);
 
-    expect(screen.getByText("local-daemon")).toBeVisible();
+    expect(screen.queryByText("local-daemon")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "This machine" })).toBeVisible();
     expect(screen.getByText("Ready")).toBeVisible();
     expect(screen.queryByText("The local daemon is available for this notebook.")).toBeNull();
-    expect(screen.getAllByText("Local daemon")).toHaveLength(2);
-    expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
+    expect(screen.getByText("Local daemon")).toBeVisible();
+    expect(screen.getByText("Notebook runtime")).toBeVisible();
     expect(screen.getByText("Default env")).toBeVisible();
     expect(screen.getByText("Kernel")).toBeVisible();
     expect(screen.getByText("idle")).toBeVisible();
@@ -123,15 +123,15 @@ describe("NotebookWorkstationsPanel", () => {
 
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
 
-    expect(screen.getByText("workstation:none")).toBeVisible();
+    expect(screen.queryByText("workstation:none")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "No workstation attached" })).toBeVisible();
     expect(screen.getByText("Offline")).toBeVisible();
     expect(
       screen.getByText("Attach a user-owned workstation to run cells in this room."),
     ).toBeVisible();
-    expect(screen.getAllByText("Cloud room")).toHaveLength(2);
+    expect(screen.getByText("Cloud room")).toBeVisible();
     expect(screen.queryByText("Kyle")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Not attached")).toHaveLength(2);
+    expect(screen.getByText("Not attached")).toBeVisible();
     expect(screen.queryByText("Principal")).not.toBeInTheDocument();
     expect(screen.queryByText("Operator")).not.toBeInTheDocument();
     expect(screen.getByText("Not runnable")).toBeVisible();
@@ -176,9 +176,11 @@ describe("NotebookWorkstationsPanel", () => {
     render(<NotebookWorkstationsPanel capabilities={capabilities} selection={selection} />);
 
     expect(screen.getByTestId("workstation-registration-empty")).toBeVisible();
-    expect(screen.getByText("No workstations yet")).toBeVisible();
+    expect(screen.getByText("No workstation registered")).toBeVisible();
     expect(
-      screen.getByText("Register a workstation to make this notebook runnable from your compute."),
+      screen.getByText(
+        "Run the workstation agent on a machine you own, then attach it here to start compute.",
+      ),
     ).toBeVisible();
   });
 
@@ -236,9 +238,10 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByText("ws-lab2")).toBeVisible();
+    expect(screen.getByText("id ws-lab2")).toBeVisible();
     expect(screen.getByText("Lab2")).toBeVisible();
     expect(screen.getByText("Default")).toBeVisible();
+    expect(screen.getByText("Env")).toBeVisible();
     expect(screen.getByText("/home/ubuntu/project")).toBeVisible();
     const attachButtons = screen.getAllByRole("button", { name: "Attach" });
     fireEvent.click(attachButtons[0]!);
@@ -250,6 +253,245 @@ describe("NotebookWorkstationsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Set default" }));
     expect(defaults).toEqual(["ws-offline"]);
     expect(attachButtons[1]).toBeDisabled();
+  });
+
+  it("keeps the detached cloud target compact when registered workstations are listed", () => {
+    const capabilities: NotebookShellCapabilities = {
+      ...readOnlyNotebookShellCapabilities,
+      access: {
+        ...readOnlyNotebookShellCapabilities.access,
+        level: "owner",
+        source: "cloud",
+      },
+      auth: {
+        canSignIn: false,
+        canUseAuthenticatedIdentity: true,
+        needsAttention: false,
+      },
+      runtime: {
+        ...readOnlyNotebookShellCapabilities.runtime,
+        source: "cloud",
+        target: {
+          id: "workstation:none",
+          kind: "cloud_workstation",
+          status: "offline",
+          label: "No workstation attached",
+          statusLabel: "Offline",
+          detail: "Attach a user-owned workstation to run cells in this room.",
+          providerLabel: "Cloud room",
+          defaultEnvironmentLabel: "Not attached",
+          environmentLabel: "Not attached",
+        },
+      },
+    };
+    const selection = projectNotebookWorkstationSelection({
+      canRegisterWorkstation: true,
+      canSelectWorkstation: true,
+      canSetDefaultWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          id: "ws-lab2",
+          displayName: "Lab2",
+          defaultEnvironmentLabel: "Current Python",
+          environmentPolicy: "current_python",
+          provider: "runtime_peer",
+          status: "offline",
+          statusMessage: "No heartbeat from this workstation recently.",
+          workingDirectory: "/home/ubuntu/project",
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={capabilities}
+        selection={selection}
+        statusMessage="No heartbeat from this workstation recently."
+        onAttachWorkstation={() => {}}
+        onSetDefaultWorkstation={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "No workstation attached" })).toBeVisible();
+    expect(
+      screen.getByText("Attach a user-owned workstation to run cells in this room."),
+    ).toBeVisible();
+    expect(screen.queryByText("Cloud room")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not runnable")).not.toBeInTheDocument();
+    expect(screen.getByText("Lab2")).toBeVisible();
+    expect(screen.getByText("Current Python")).toBeVisible();
+    expect(screen.getByText("id ws-lab2")).toBeVisible();
+    expect(screen.getAllByText("No heartbeat from this workstation recently.")).toHaveLength(1);
+  });
+
+  it("does not duplicate the attached workstation in the registered list", () => {
+    const capabilities: NotebookShellCapabilities = {
+      ...readOnlyNotebookShellCapabilities,
+      canExecute: true,
+      access: {
+        ...readOnlyNotebookShellCapabilities.access,
+        level: "owner",
+        source: "cloud",
+      },
+      runtime: {
+        ...readOnlyNotebookShellCapabilities.runtime,
+        canWriteRuntimeState: true,
+        connected: true,
+        executionAvailable: true,
+        source: "cloud",
+        target: {
+          id: "ws-lab2",
+          kind: "runtime_peer",
+          status: "ready",
+          label: "Lab2",
+          statusLabel: "Ready",
+          providerLabel: "Runtime peer",
+          defaultEnvironmentLabel: "Current Python",
+          environmentLabel: "Current Python",
+          cpuCount: 8,
+          memoryBytes: 30 * 1024 ** 3,
+          workingDirectoryLabel: "/home/ubuntu/project",
+        },
+      },
+    };
+    const selection = projectNotebookWorkstationSelection({
+      activeAttachment: {
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+        cpu_count: 8,
+        memory_bytes: 30 * 1024 ** 3,
+        working_directory: "/home/ubuntu/project",
+      },
+      canRegisterWorkstation: true,
+      canSelectWorkstation: true,
+      canSetDefaultWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          id: "ws-lab2",
+          displayName: "Lab2",
+          defaultEnvironmentLabel: "Current Python",
+          environmentPolicy: "current_python",
+          provider: "runtime_peer",
+          status: "online",
+          workingDirectory: "/home/ubuntu/project",
+        },
+        {
+          id: "ws-gpu",
+          displayName: "GPU host",
+          defaultEnvironmentLabel: "CUDA Python",
+          environmentPolicy: "current_python",
+          provider: "runtime_peer",
+          status: "online",
+          workingDirectory: "/home/ubuntu/gpu",
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={capabilities}
+        selection={selection}
+        onAttachWorkstation={() => {}}
+        onSetDefaultWorkstation={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Lab2" })).toBeVisible();
+    expect(screen.getAllByText("Runtime peer")).toHaveLength(1);
+    expect(screen.getAllByText("Current Python")).toHaveLength(1);
+    expect(screen.getByText("id ws-lab2")).toBeVisible();
+    expect(screen.getAllByTestId("registered-workstation")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: "GPU host" })).toBeVisible();
+    expect(screen.getByText("CUDA Python")).toBeVisible();
+    expect(screen.getByText("id ws-gpu")).toBeVisible();
+  });
+
+  it("keeps an online registered workstation actionable when a matching attachment is stale", () => {
+    const attached: string[] = [];
+    const capabilities: NotebookShellCapabilities = {
+      ...readOnlyNotebookShellCapabilities,
+      access: {
+        ...readOnlyNotebookShellCapabilities.access,
+        level: "owner",
+        source: "cloud",
+      },
+      runtime: {
+        ...readOnlyNotebookShellCapabilities.runtime,
+        source: "cloud",
+        target: {
+          id: "ws-lab2",
+          kind: "cloud_workstation",
+          status: "attention",
+          label: "Lab2",
+          statusLabel: "Needs attention",
+          detail:
+            "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
+          providerLabel: "Runtime peer",
+          defaultEnvironmentLabel: "Current Python",
+          environmentLabel: "Current Python",
+          workingDirectoryLabel: "/home/ubuntu/project",
+        },
+      },
+    };
+    const selection = projectNotebookWorkstationSelection({
+      activeAttachment: {
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "error",
+        status_message:
+          "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
+        working_directory: "/home/ubuntu/project",
+      },
+      canRegisterWorkstation: true,
+      canSelectWorkstation: true,
+      canSetDefaultWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          id: "ws-lab2",
+          displayName: "Lab2",
+          defaultEnvironmentLabel: "Current Python",
+          environmentPolicy: "current_python",
+          provider: "runtime_peer",
+          status: "online",
+          workingDirectory: "/home/ubuntu/project",
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={capabilities}
+        selection={selection}
+        onAttachWorkstation={(workstationId) => attached.push(workstationId)}
+        onSetDefaultWorkstation={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(2);
+    expect(screen.getByText("Needs attention")).toBeVisible();
+    expect(screen.getByText(/runtime peer disconnected/)).toBeVisible();
+    expect(screen.queryByText("Runtime peer")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Current Python")).toHaveLength(1);
+    expect(screen.getAllByText("/home/ubuntu/project")).toHaveLength(1);
+    expect(screen.getAllByText("id ws-lab2")).toHaveLength(1);
+    expect(screen.getByTestId("registered-workstation")).toBeVisible();
+    expect(screen.getByText("Online")).toBeVisible();
+    expect(screen.getByText("Default")).toBeVisible();
+    expect(screen.queryByText("Attached")).not.toBeInTheDocument();
+    const attachButton = screen.getByRole("button", { name: "Attach" });
+    expect(attachButton).toBeEnabled();
+    fireEvent.click(attachButton);
+    expect(attached).toEqual(["ws-lab2"]);
   });
 
   it("keeps legacy resource labels when structured resources are absent", () => {
@@ -277,7 +519,7 @@ describe("NotebookWorkstationsPanel", () => {
 
     expect(screen.getByRole("heading", { name: "Remote devbox" })).toBeVisible();
     expect(screen.getByText("Default env")).toBeVisible();
-    expect(screen.getAllByText("Current Python")).toHaveLength(2);
+    expect(screen.getByText("Current Python")).toBeVisible();
     expect(screen.getByText("Resources")).toBeVisible();
     expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
     expect(screen.getByText("Runtime peers")).toBeVisible();

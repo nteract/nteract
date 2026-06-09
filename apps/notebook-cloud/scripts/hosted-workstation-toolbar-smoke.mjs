@@ -323,7 +323,8 @@ async function assertOwnerBlockedWorkstationStates({
   const noWorkstations = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
     expectedLabel: "Set up compute",
-    expectedPanelText: "Register a workstation to make this notebook runnable from your compute.",
+    expectedPanelText:
+      "Run the workstation agent on a machine you own, then attach it here to start compute.",
     expectedTitleIncludes: ["Open workstations panel"],
     registry: {
       default_workstation_id: null,
