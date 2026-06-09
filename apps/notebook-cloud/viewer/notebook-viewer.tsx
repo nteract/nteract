@@ -44,8 +44,7 @@ import {
 } from "./collaborator-auth";
 import { createCloudNotebookCellId } from "./cloud-cell-id";
 import { useCloudViewerSession } from "./cloud-viewer-session";
-import { projectCloudNotebookEditAccess } from "./edit-access";
-import { cloudNotebookShellCapabilities } from "./shell-capabilities";
+import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
 import {
   CrdtBridgeProvider,
   createNotebookController,
@@ -284,60 +283,22 @@ export function NotebookViewer({
   }, []);
   const hasBrowserAppIdentity =
     Boolean(appSessionStatus.session) || authState.mode === "dev" || authState.mode === "oidc";
-  const canAcceptCellMutations =
-    Boolean(connectionPeerId) &&
-    !connectionError &&
-    (status.kind === "ready" || status.kind === "empty");
-  const editAccessRequestPending = !connectionError && status.kind === "loading";
-  const roomEditAccess = useMemo(
-    () =>
-      projectCloudNotebookEditAccess({
-        authState,
-        connectionScope,
-        selectedMode: selectedInteractionMode,
-        canAcceptCellMutations,
-        editAccessRequestPending,
-      }),
-    [
+  const { shellCapabilities, canAcceptCellMutations, editAccessPending } =
+    useCloudShellCapabilities({
       authState,
-      canAcceptCellMutations,
       connectionScope,
-      editAccessRequestPending,
-      selectedInteractionMode,
-    ],
-  );
-  const editAccessPending = roomEditAccess.editAccessPending;
-  const shellCapabilities = useMemo(
-    () =>
-      cloudNotebookShellCapabilities({
-        authState,
-        connectionScope,
-        connectionActorLabel,
-        hasAppSession: Boolean(appSessionStatus.session),
-        hasCodeCells: codeCellCount > 0,
-        selectedMode: selectedInteractionMode,
-        canAcceptCellMutations,
-        editAccessRequestPending,
-        runtimeAvailable: runtimePeerAvailable,
-        runtimePeerCount,
-        workstationAttachment,
-        hostCapabilities: config.hostCapabilities,
-      }),
-    [
-      authState,
-      appSessionStatus.session,
-      canAcceptCellMutations,
-      codeCellCount,
-      config.hostCapabilities,
       connectionActorLabel,
-      connectionScope,
-      editAccessRequestPending,
-      runtimePeerCount,
+      connectionPeerId,
+      connectionError,
+      status,
+      selectedMode: selectedInteractionMode,
+      hasAppSession: Boolean(appSessionStatus.session),
+      codeCellCount,
       runtimePeerAvailable,
-      selectedInteractionMode,
+      runtimePeerCount,
       workstationAttachment,
-    ],
-  );
+      hostCapabilities: config.hostCapabilities,
+    });
   const cloudRuntimeStatus = useMemo<NotebookCommandToolbarStatus | null>(() => {
     if (!shellCapabilities.runtime.connected && !shellCapabilities.runtime.executionAvailable) {
       return null;

@@ -29,6 +29,7 @@ const VIEWER_MODULE_FILES = [
   "cloud-auth-controls.tsx",
   "use-cloud-auth.ts",
   "use-cloud-workstations.ts",
+  "use-cloud-shell-capabilities.ts",
   "cloud-viewer-config.ts",
   "cloud-viewer-types.ts",
 ] as const;
