@@ -7,7 +7,6 @@ import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget
 import { WidgetUpdateManager } from "@/components/widgets/widget-update-manager";
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 import { WidgetView } from "@/components/widgets/widget-view";
-import type { CommChanges } from "runtimed";
 export {
   projectCloudWidgetComms,
   type ProjectCloudWidgetCommsOptions,
@@ -62,38 +61,9 @@ function CloudWidgetViewRenderer({ data }: { data: unknown }) {
   return modelId ? <WidgetView modelId={modelId} /> : null;
 }
 
-export function applyCloudWidgetCommChanges(store: WidgetStore, changes: CommChanges): void {
-  for (const comm of changes.opened) {
-    store.createModel(comm.commId, cloudWidgetStateWithMetadata(comm), comm.bufferPaths);
-  }
-  for (const comm of changes.updated) {
-    if (!store.getModel(comm.commId)) {
-      store.createModel(comm.commId, cloudWidgetStateWithMetadata(comm), comm.bufferPaths);
-      continue;
-    }
-    const filtered = cloudWidgetUpdateManager.shouldSuppressEcho(comm.commId, comm.state);
-    if (filtered) {
-      store.updateModel(comm.commId, filtered, comm.bufferPaths);
-    }
-  }
-  for (const commId of changes.closed) {
-    cloudWidgetUpdateManager.clearComm(commId);
-    store.deleteModel(commId);
-  }
-}
-
-function cloudWidgetStateWithMetadata(
-  comm: CommChanges["opened"][number] | CommChanges["updated"][number],
-): Record<string, unknown> {
-  const state = { ...comm.state };
-  state._model_module ??= comm.modelModule || undefined;
-  state._model_name ??= comm.modelName || undefined;
-  return state;
-}
-
 let cloudWidgetStoreRef: WidgetStore | null = null;
 
-const cloudWidgetUpdateManager = new WidgetUpdateManager({
+export const cloudWidgetUpdateManager = new WidgetUpdateManager({
   getStore: () => cloudWidgetStoreRef,
   getCrdtWriter: getCrdtCommWriter,
 });

@@ -367,8 +367,9 @@ export class SyncEngine {
    * ContentRef blobs replaced by URL strings. Subscribers drive their
    * widget store directly — no Jupyter message synthesis needed.
    *
-   * Depends on `handle.resolve_comm_state()` (optional on SyncableHandle).
-   * If the handle doesn't implement it, this observable never emits.
+   * Uses `handle.resolve_comm_state()` when available. Plain JSON CommsDoc
+   * state that has no ContentRefs can project directly from document truth;
+   * ContentRef-backed state defers until the host provides a resolver.
    */
   readonly commChanges$: Observable<CommChanges>;
 

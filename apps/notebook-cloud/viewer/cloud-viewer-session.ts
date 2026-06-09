@@ -5,6 +5,10 @@ import {
   type CommChanges,
   type WorkstationAttachmentState,
 } from "runtimed";
+import {
+  applyWidgetCommBroadcastToStore,
+  applyWidgetCommChangesToStore,
+} from "@/components/widgets/comm-changes-store-bridge";
 import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import type { WidgetStore } from "@/components/widgets/widget-store";
 import { diagnoseCloudConnectionAccess } from "./connection-diagnostics";
@@ -47,7 +51,7 @@ import { CloudViewerPresenceStore } from "./presence";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { subscribeSerializedCloudCellChanges } from "./serialized-cell-changes";
-import { applyCloudWidgetCommChanges } from "./widget-runtime";
+import { cloudWidgetUpdateManager } from "./widget-runtime";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
@@ -623,18 +627,14 @@ export function useCloudViewerSession({
           }),
           liveRuntime.engine.commChanges$.subscribe((changes) => {
             recordCloudWidgetCommChangesDiagnostic(liveRuntime, changes);
-            applyCloudWidgetCommChanges(widgetStore, changes);
+            applyWidgetCommChangesToStore(widgetStore, changes, {
+              shouldSuppressEcho: (commId, state) =>
+                cloudWidgetUpdateManager.shouldSuppressEcho(commId, state),
+              clearComm: (commId) => cloudWidgetUpdateManager.clearComm(commId),
+            });
           }),
           liveRuntime.engine.commBroadcasts$.subscribe((broadcast) => {
-            const content = broadcast.content as Record<string, unknown> | undefined;
-            const data = content?.data as Record<string, unknown> | undefined;
-            if (data?.method !== "custom") return;
-            const commId = content?.comm_id;
-            if (typeof commId !== "string") return;
-            const inner = (data.content as Record<string, unknown> | undefined) ?? {};
-            const buffers = (broadcast as { buffers?: number[][] }).buffers;
-            const arrayBuffers = buffers?.map((arr: number[]) => new Uint8Array(arr).buffer);
-            widgetStore.emitCustomMessage(commId, inner, arrayBuffers);
+            applyWidgetCommBroadcastToStore(widgetStore, broadcast);
           }),
           liveRuntime.engine.poolState$.subscribe((state) => {
             setPoolState(state);
