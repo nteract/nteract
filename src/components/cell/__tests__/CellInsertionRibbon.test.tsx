@@ -37,9 +37,9 @@ describe("CellInsertionRibbon", () => {
     );
     expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toBeNull();
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
-    expect(activePrimaryBridge).toHaveClass("h-px");
-    expect(activePrimaryBridge).toHaveClass("bg-sky-400/50");
-    expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-px");
+    expect(activePrimaryBridge).toHaveClass("h-6");
+    expect(activePrimaryBridge).toHaveClass("bg-sky-500/12");
+    expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-6");
 
     fireEvent.click(hitTarget!);
 
@@ -106,12 +106,12 @@ describe("CellInsertionRibbon", () => {
     expect(palette).not.toHaveClass("rounded-full");
     expect(palette).not.toHaveClass("shadow-sm");
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
-    expect(primaryBridge).toHaveClass("bg-emerald-400/50");
-    expect(primaryBridge).toHaveClass("h-px");
+    expect(primaryBridge).toHaveClass("bg-emerald-500/12");
+    expect(primaryBridge).toHaveClass("h-6");
     expect(intent).toHaveClass("bg-emerald-400");
     expect(leadingRule).toHaveClass("w-2");
-    expect(leadingRule).toHaveClass("h-px");
-    expect(leadingRule).toHaveClass("bg-emerald-400/50");
+    expect(leadingRule).toHaveClass("h-6");
+    expect(leadingRule).toHaveClass("bg-emerald-500/12");
     expect(trailingRule).toHaveClass("bg-gradient-to-r");
     expect(trailingRule).toHaveClass("from-emerald-400/35");
     expect(trailingRule).toHaveClass("flex-1");
