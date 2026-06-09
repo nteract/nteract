@@ -345,6 +345,58 @@ describe("cloud notebook dashboard projection", () => {
     );
   });
 
+  it("does not classify ordinary prose titles as generated runs", () => {
+    const smokeResearch = notebook({
+      id: "wildfire-smoke",
+      title: "Wildfire smoke dispersion",
+      scope: "owner",
+      updatedAt: "2026-06-08T19:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const debugNotes = notebook({
+      id: "debugging-imports",
+      title: "Debugging the import pipeline",
+      scope: "owner",
+      updatedAt: "2026-06-08T18:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const latencyNotes = notebook({
+      id: "latency-q2",
+      title: "Latency benchmarks Q2",
+      scope: "owner",
+      updatedAt: "2026-06-08T17:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const generated = notebook({
+      id: "toolbar-smoke",
+      title: "Toolbar attach smoke 2026-06-08T19:26:35.312Z",
+      scope: "owner",
+      updatedAt: "2026-06-08T16:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const model = projectCloudNotebookDashboard([
+      generated,
+      latencyNotes,
+      debugNotes,
+      smokeResearch,
+    ]);
+    const view = projectCloudNotebookDashboardView(model);
+
+    assert.equal(model.continueNotebook?.notebook_id, "wildfire-smoke");
+    assert.deepEqual(
+      view.sections.map((section) => [
+        section.id,
+        section.title,
+        section.notebooks.map((item) => item.notebook_id),
+      ]),
+      [
+        ["named", "Recent work", ["debugging-imports", "latency-q2"]],
+        ["generated", "Generated runs", ["toolbar-smoke"]],
+      ],
+    );
+  });
+
   it("limits cleanup-heavy sections and exposes drill-in filters", () => {
     const generated = Array.from({ length: 7 }, (_, index) =>
       notebook({

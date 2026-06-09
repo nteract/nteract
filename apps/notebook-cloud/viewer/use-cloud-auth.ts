@@ -47,12 +47,10 @@ export function useCloudPrototypeAuth(
       : { kind: "idle", message: null },
   );
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
-  const appSessionRefreshFallbackRef = useRef<number | null>(null);
   const appSessionRefreshFallback = options?.appSessionRefreshFallback === true;
   const refreshAuthState = useCallback(() => {
     setAuthState(cloudPrototypeAuthFromWindow());
     if (!shouldRefreshStoredOidcToken() || cloudAppSessionIsFresh(appSession)) {
-      appSessionRefreshFallbackRef.current = appSession?.expires_at ?? null;
       setAuthRenewal({ kind: "idle", message: null });
     }
   }, [appSession]);
@@ -67,10 +65,9 @@ export function useCloudPrototypeAuth(
         setAuthRenewal({ kind: "idle", message: null });
         return;
       }
-      const appSessionExpiresAt = appSession?.expires_at ?? null;
-      if (appSessionExpiresAt && cloudAppSessionIsFresh(appSession)) {
-        appSessionRefreshFallbackRef.current = appSessionExpiresAt;
+      if (cloudAppSessionIsFresh(appSession)) {
         setAuthRenewal({ kind: "idle", message: null });
+        return;
       }
     }
     if (refreshPromiseRef.current) {
@@ -81,15 +78,12 @@ export function useCloudPrototypeAuth(
       setAuthRenewal({ kind: "refreshing", message: "Refreshing sign-in..." });
       try {
         await refreshStoredOidcToken(oidc, { storage: window.localStorage });
-        appSessionRefreshFallbackRef.current = null;
         refreshAuthState();
         setAuthRenewal({ kind: "idle", message: null });
       } catch (error) {
         if (appSessionRefreshFallback) {
           const appSession = await readCloudAppSessionStatus().catch(() => null);
-          const appSessionExpiresAt = appSession?.session?.expires_at ?? null;
           if (cloudAppSessionIsFresh(appSession?.session)) {
-            appSessionRefreshFallbackRef.current = appSessionExpiresAt;
             console.warn(
               "[notebook-cloud] OIDC session refresh failed; continuing with app session cookie",
               error,
@@ -131,7 +125,6 @@ export function useCloudPrototypeAuth(
       if (!isCloudPrototypeAuthStorageKey(event.key)) {
         return;
       }
-      appSessionRefreshFallbackRef.current = null;
       refreshAuthState();
       void refreshOidcIfNeeded();
     };
