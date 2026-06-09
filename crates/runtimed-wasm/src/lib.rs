@@ -1092,8 +1092,10 @@ impl RoomHostHandle {
         let request: serde_json::Value = serde_json::from_slice(payload)
             .map_err(|e| JsError::new(&format!("decode request: {e}")))?;
         match request.get("action").and_then(|v| v.as_str()) {
-            // Guarded and unguarded both create the execution; the observed-heads
-            // causal guard is deferred (see ADR run-cell follow-ups).
+            // Guarded and unguarded execution intent (single-cell and run-all)
+            // both create executions; the observed-heads causal guard is deferred
+            // (see ADR run-cell follow-ups). Until then `_guarded` is accepted for
+            // wire parity but does not validate the requester's NotebookDoc heads.
             Some("execute_cell") | Some("execute_cell_guarded") => {
                 self.handle_execute_cell(&request, peer_id, submitter_actor_label)
             }
