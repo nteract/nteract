@@ -3,6 +3,7 @@ import {
   ChevronsRight,
   Code,
   LetterText,
+  Loader2,
   Play,
   RotateCcw,
   ServerCog,
@@ -36,7 +37,9 @@ export interface NotebookCommandToolbarUpdateAction {
 }
 
 export interface NotebookCommandToolbarWorkstationAction {
+  disabled?: boolean;
   label: string;
+  pending?: boolean;
   title: string;
   onClick: () => void;
 }
@@ -259,12 +262,17 @@ export function NotebookCommandToolbar({
         <button
           type="button"
           onClick={workstationAction.onClick}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          disabled={workstationAction.disabled || workstationAction.pending}
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title={workstationAction.title}
           aria-label={workstationAction.label}
           data-testid="workstation-setup-button"
         >
-          <ServerCog className="h-3 w-3" />
+          {workstationAction.pending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <ServerCog className="h-3 w-3" />
+          )}
           <span className="hidden @[40rem]:inline">{workstationAction.label}</span>
         </button>
       ) : null}

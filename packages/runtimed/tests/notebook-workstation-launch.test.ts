@@ -146,12 +146,14 @@ describe("notebook workstation launch readiness projection", () => {
     expect(projection).toMatchObject({
       canRun: false,
       state: "needs_attachment",
-      statusLabel: "Attach needed",
+      detail: "This workstation is available and can start compute for this notebook.",
+      statusLabel: "Ready to start",
       targetLabel: "Lab2 workstation",
       workstationId: "ws-lab2",
       primaryAction: {
         kind: "attach_workstation",
-        label: "Attach compute",
+        label: "Start compute",
+        title: "Start compute on Lab2 workstation",
       },
     });
   });

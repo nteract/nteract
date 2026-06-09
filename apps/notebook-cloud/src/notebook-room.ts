@@ -96,6 +96,11 @@ export class NotebookRoom {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const workstationAttachmentNotebookId = workstationAttachmentControlNotebookId(url.pathname);
+    if (workstationAttachmentNotebookId) {
+      return this.handleWorkstationAttachmentControl(workstationAttachmentNotebookId, request);
+    }
+
     const notebookId = notebookIdFromPath(url.pathname);
 
     if (!notebookId) {
@@ -181,6 +186,57 @@ export class NotebookRoom {
       headers: webSocketUpgradeHeaders(identity),
       webSocket: client,
     } as ResponseInit & { webSocket: CloudflareWebSocket });
+  }
+
+  private async handleWorkstationAttachmentControl(
+    notebookId: string,
+    request: Request,
+  ): Promise<Response> {
+    // Worker-internal control path only. External traffic reaches this Durable
+    // Object through the Worker's strict `/n/:notebookId/sync` WebSocket route,
+    // so `/internal/*` is not publicly routable unless that router changes.
+    if (request.method !== "POST") {
+      return json({ error: "method not allowed" }, 405);
+    }
+
+    let payload: unknown;
+    try {
+      payload = await request.json();
+    } catch {
+      return json({ error: "workstation attachment control body must be JSON" }, 400);
+    }
+    if (!isRecord(payload) || !("attachment" in payload)) {
+      return json({ error: "workstation attachment control body requires attachment" }, 400);
+    }
+
+    const attachment = payload.attachment as WorkstationAttachmentState | null;
+    const startedAt = Date.now();
+    try {
+      const materializer = this.materializerFor(notebookId);
+      const result = await materializer.setWorkstationAttachment(attachment);
+      if (result.changed) {
+        this.deliverRoomHostFrames(notebookId, result);
+        await materializer.checkpoint();
+      }
+      cloudLog("debug", "room.workstation_attachment.control_published", {
+        notebook_id: notebookId,
+        changed: result.changed,
+        duration_ms: durationMs(startedAt),
+        outbound_frame_count: result.outbound.length,
+        counter: "workstation_attachment_control_published",
+        counter_delta: result.changed ? 1 : 0,
+      });
+      return json({ ok: true, changed: result.changed }, 200);
+    } catch (error) {
+      cloudLog("warn", "room.workstation_attachment.control_publish_failed", {
+        notebook_id: notebookId,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(error),
+        counter: "workstation_attachment_control_publish_failed",
+        counter_delta: 1,
+      });
+      return json({ error: "workstation attachment publish failed" }, 500);
+    }
   }
 
   async webSocketMessage(
@@ -1022,6 +1078,18 @@ function notebookIdFromPath(pathname: string): string | undefined {
     return undefined;
   }
   return decodeURIComponent(match[1]);
+}
+
+function workstationAttachmentControlNotebookId(pathname: string): string | undefined {
+  const match = pathname.match(/^\/internal\/n\/([^/]+)\/workstation-attachment\/?$/);
+  if (!match) {
+    return undefined;
+  }
+  return decodeURIComponent(match[1]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function json(value: unknown, status: number): Response {

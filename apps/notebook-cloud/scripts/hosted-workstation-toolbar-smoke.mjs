@@ -223,9 +223,9 @@ async function runBrowserSmoke({
       ...ownerRun,
       checks: [
         "oidc_token_seeded_in_browser_storage",
-        "toolbar_attach_compute_rendered",
-        "toolbar_attach_compute_clicked",
-        "execute_button_rendered_after_attach",
+        "toolbar_start_compute_rendered",
+        "toolbar_start_compute_clicked",
+        "execute_button_rendered_after_compute_start",
         "cell_output_observed_after_execute",
         "page_reload_preserved_output",
         "cell_output_observed_after_reload_execute",
@@ -260,11 +260,11 @@ async function runOwnerAttachAndExecuteSmoke({
   const cell = await ensureCodeCell(page, timeoutMs);
   await setCellSource(cell, source);
 
-  await waitForToolbarAction(page, "Attach compute", timeoutMs);
+  await waitForToolbarAction(page, "Start compute", timeoutMs);
   const action = await readToolbarWorkstationAction(page);
   assertToolbarWorkstationAction(action, {
     context: "owner attach",
-    label: "Attach compute",
+    label: "Start compute",
     titleIncludes: [workstationId, "workstation"],
   });
   await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });

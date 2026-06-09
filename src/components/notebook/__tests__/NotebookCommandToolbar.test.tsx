@@ -202,4 +202,32 @@ describe("NotebookCommandToolbar", () => {
     expect(onWorkstationSetup).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("run-all-button")).toBeNull();
   });
+
+  it("shows pending workstation start without dispatching duplicate requests", () => {
+    const onWorkstationSetup = vi.fn();
+
+    render(
+      <NotebookCommandToolbar
+        capabilities={{
+          ...editableToolbarCapabilities,
+          canExecute: false,
+        }}
+        workstationAction={{
+          label: "Starting",
+          pending: true,
+          title: "Starting compute on Lab2 workstation",
+          onClick: onWorkstationSetup,
+        }}
+      />,
+    );
+
+    const setupButton = screen.getByTestId("workstation-setup-button");
+    expect(setupButton).toHaveAccessibleName("Starting");
+    expect(setupButton).toHaveAttribute("title", "Starting compute on Lab2 workstation");
+    expect(setupButton).toBeDisabled();
+
+    fireEvent.click(setupButton);
+
+    expect(onWorkstationSetup).not.toHaveBeenCalled();
+  });
 });

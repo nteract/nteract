@@ -732,7 +732,7 @@ private owner room, the toolbar can then request attachment directly.
 With the workstation agent already running, use the toolbar smoke to exercise
 the hosted browser path end to end. It verifies the registered workstation is
 online, selects it as the default, creates a private owner notebook, seeds the
-first-party browser OIDC cache, clicks `Attach compute` in the shared toolbar,
+first-party browser OIDC cache, clicks `Start compute` in the shared toolbar,
 runs the first cell, reloads the page, and runs it again to catch reconnection
 regressions:
 

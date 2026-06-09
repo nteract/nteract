@@ -257,6 +257,15 @@ export {
   type ProjectNotebookWorkstationSelectionOptions,
 } from "./notebook-workstation-selection";
 
+// Notebook workstation attachment projections
+export {
+  projectNotebookWorkstationAttachmentFromClaim,
+  type NotebookWorkstationAttachmentClaim,
+  type NotebookWorkstationAttachmentClaimStatus,
+  type NotebookWorkstationAttachmentTarget,
+  type ProjectNotebookWorkstationAttachmentFromClaimOptions,
+} from "./notebook-workstation-attachment";
+
 // Notebook workstation launch-readiness projection
 export {
   clearNotebookWorkstationLaunchReadinessProjectionCacheForTests,

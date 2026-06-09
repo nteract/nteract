@@ -24,6 +24,10 @@ interface CloudWorkstationMutationState {
   workstationId: string | null;
 }
 
+interface AttachWorkstationOptions {
+  revealPanel?: boolean;
+}
+
 interface UseCloudWorkstationManagerInput {
   config: Pick<
     CloudViewerConfig,
@@ -127,16 +131,18 @@ export function useCloudWorkstationManager({
   );
 
   const handleAttachWorkstation = useCallback(
-    async (workstationId: string) => {
+    async (workstationId: string, options: AttachWorkstationOptions = {}) => {
       if (!config.workstationAttachEndpoint) {
         return;
       }
       setWorkstationMutation({
         kind: "attach",
-        message: "Attach requested. Waiting for the workstation to join this room.",
+        message: "Starting compute. Waiting for the workstation to join this notebook.",
         workstationId,
       });
-      onOpenWorkstationsRail();
+      if (options.revealPanel) {
+        onOpenWorkstationsRail();
+      }
       try {
         await requestCloudWorkstationAttachment(
           config.workstationAttachEndpoint,
@@ -216,6 +222,21 @@ export function useCloudWorkstationManager({
 
   const workstationAction = useMemo<NotebookCommandToolbarWorkstationAction | null>(() => {
     const { primaryAction, workstationId } = workstationLaunchReadiness;
+    if (workstationMutation.kind === "attach" && workstationMutation.workstationId) {
+      const pendingTarget =
+        workstationLaunchReadiness.workstationId === workstationMutation.workstationId
+          ? workstationLaunchReadiness.targetLabel
+          : null;
+      return {
+        disabled: true,
+        label: "Starting",
+        pending: true,
+        title: pendingTarget
+          ? `Starting compute on ${pendingTarget}`
+          : "Starting compute on the selected workstation",
+        onClick: () => {},
+      };
+    }
     return primaryAction.kind !== "none" && primaryAction.label && primaryAction.title
       ? {
           label: primaryAction.label,
@@ -226,7 +247,13 @@ export function useCloudWorkstationManager({
               : onOpenWorkstationsRail,
         }
       : null;
-  }, [handleAttachWorkstation, onOpenWorkstationsRail, workstationLaunchReadiness]);
+  }, [
+    handleAttachWorkstation,
+    onOpenWorkstationsRail,
+    workstationLaunchReadiness,
+    workstationMutation.kind,
+    workstationMutation.workstationId,
+  ]);
 
   const workstationPanelStatusMessage =
     workstationMutation.message ??
@@ -253,7 +280,9 @@ export function useCloudWorkstationManager({
   return useMemo(
     () => ({
       busyWorkstationId: workstationMutation.workstationId,
-      onAttachWorkstation: canChooseHostedWorkstation ? handleAttachWorkstation : undefined,
+      onAttachWorkstation: canChooseHostedWorkstation
+        ? (workstationId: string) => handleAttachWorkstation(workstationId, { revealPanel: true })
+        : undefined,
       onSetDefaultWorkstation: canChooseHostedWorkstation ? handleSetDefaultWorkstation : undefined,
       workstationAction,
       workstationPanelStatusMessage,
