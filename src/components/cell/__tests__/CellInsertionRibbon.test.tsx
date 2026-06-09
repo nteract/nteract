@@ -102,6 +102,7 @@ describe("CellInsertionRibbon", () => {
     expect(actions).toHaveClass("flex-1");
     expect(palette).toHaveClass("shrink-0");
     expect(palette).toHaveClass("pl-0");
+    expect(palette).toHaveClass("gap-0");
     expect(palette).not.toHaveClass("bg-emerald-500/8");
     expect(palette).not.toHaveClass("rounded-full");
     expect(palette).not.toHaveClass("shadow-sm");
@@ -116,7 +117,10 @@ describe("CellInsertionRibbon", () => {
     expect(trailingRule).toHaveClass("from-emerald-400/35");
     expect(trailingRule).toHaveClass("flex-1");
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("text-emerald-700");
-    expect(screen.getByTitle("Add code cell")).not.toHaveClass("bg-emerald-500/12");
+    expect(screen.getByTitle("Add markdown cell")).toHaveClass("rounded-l-none");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("bg-emerald-500/12");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("text-muted-foreground/45");
+    expect(screen.getByTitle("Add code cell")).not.toHaveClass("text-emerald-700");
   });
 
   it("softens the terminal row into a document tail", () => {
@@ -140,5 +144,7 @@ describe("CellInsertionRibbon", () => {
     );
     expect(intent).toHaveClass("h-7");
     expect(intent).toHaveClass("bg-gradient-to-b");
+    expect(container.querySelector('[data-slot="cell-adder-primary-bridge"]')).toBeNull();
+    expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-px");
   });
 });

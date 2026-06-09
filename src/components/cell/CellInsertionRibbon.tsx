@@ -42,6 +42,11 @@ const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
     "bg-gradient-to-r from-emerald-400/35 via-border/35 to-transparent dark:from-emerald-300/30 dark:via-border/30",
 };
 
+const insertionTypeOrder: Record<CellInsertionType, number> = {
+  code: 0,
+  markdown: 1,
+};
+
 export function CellInsertionRibbon({
   terminal = false,
   activeType,
@@ -58,6 +63,7 @@ export function CellInsertionRibbon({
   const visualActiveType = resolvedActiveType ?? null;
   const isOpen = interactionActive || forceActionsVisible;
   const actionTabIndex = isOpen ? 0 : -1;
+  const bridgeActiveType = terminal ? null : visualActiveType;
   const ribbonClass = visualActiveType
     ? terminal
       ? terminalInsertionRibbonClasses[visualActiveType]
@@ -71,19 +77,34 @@ export function CellInsertionRibbon({
     onActiveTypeChange?.(type);
   };
 
-  const actionButtonClass = (type: CellInsertionType) =>
-    cn(
-      "inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors ring-1 ring-transparent",
+  const actionButtonClass = (type: CellInsertionType) => {
+    const isActive = visualActiveType === type;
+    const isBridgeLead =
+      bridgeActiveType !== null && insertionTypeOrder[type] < insertionTypeOrder[bridgeActiveType];
+    const isBridged =
+      bridgeActiveType !== null && insertionTypeOrder[type] <= insertionTypeOrder[bridgeActiveType];
+
+    return cn(
+      "inline-flex h-6 items-center justify-center gap-1 px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors ring-1 ring-transparent",
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-      visualActiveType === type
+      isBridged ? "rounded-none" : "rounded-full",
+      bridgeActiveType === type && "rounded-l-none rounded-r-full",
+      bridgeActiveType === "code" && type === "markdown" && "ml-1",
+      isActive
         ? actionButtonIntentClasses[type]
-        : "hover:bg-muted/45 hover:text-foreground",
+        : isBridgeLead && bridgeActiveType
+          ? cn(
+              insertionBridgeSurfaceClasses[bridgeActiveType],
+              "text-muted-foreground/45 hover:text-muted-foreground/65",
+            )
+          : "hover:bg-muted/45 hover:text-foreground",
     );
+  };
 
   const leadingInsertionRuleClass = cn(
     "transition-colors duration-150",
-    visualActiveType
-      ? cn("h-6", insertionBridgeSurfaceClasses[visualActiveType])
+    bridgeActiveType
+      ? cn("h-6", insertionBridgeSurfaceClasses[bridgeActiveType])
       : "h-px rounded-full bg-border/45",
   );
   const trailingInsertionRuleClass = cn(
@@ -163,12 +184,12 @@ export function CellInsertionRibbon({
           terminal && "h-7",
         )}
       >
-        {visualActiveType ? (
+        {bridgeActiveType ? (
           <span
             data-slot="cell-adder-primary-bridge"
             className={cn(
               "pointer-events-none absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded-l-full",
-              insertionBridgeSurfaceClasses[visualActiveType],
+              insertionBridgeSurfaceClasses[bridgeActiveType],
             )}
             aria-hidden="true"
           />
@@ -195,7 +216,10 @@ export function CellInsertionRibbon({
         />
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0 pr-1 transition-colors duration-150"
+          className={cn(
+            "flex h-7 shrink-0 items-center py-0 pl-0 pr-1 transition-colors duration-150",
+            bridgeActiveType ? "gap-0" : "gap-1",
+          )}
         >
           <button
             type="button"
