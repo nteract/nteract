@@ -410,7 +410,7 @@ function cloudNotebookListHeaderDetail(
   authState: CloudPrototypeAuthState,
   hasAppSession: boolean,
 ): string {
-  if (authState.mode === "oidc_expired") {
+  if (authState.mode === "oidc_expired" && !hasAppSession) {
     return "Session expired";
   }
   if (authState.mode === "anonymous" && !hasAppSession) {

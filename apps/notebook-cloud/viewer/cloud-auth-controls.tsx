@@ -103,11 +103,3 @@ export function CloudNotebookSignInButton({
     </button>
   );
 }
-
-export function shouldShowCloudHeaderSignIn(authState: CloudPrototypeAuthState): boolean {
-  return (
-    authState.mode === "anonymous" ||
-    authState.mode === "invalid" ||
-    authState.mode === "oidc_expired"
-  );
-}

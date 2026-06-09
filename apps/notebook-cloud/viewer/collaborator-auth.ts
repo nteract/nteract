@@ -118,6 +118,20 @@ export function cloudBrowserCanUseAuthenticatedApi({
   return authState.mode === "dev" || hasAppSession;
 }
 
+export function shouldShowCloudHeaderSignIn(
+  authState: CloudPrototypeAuthState,
+  options?: { appSessionLoading?: boolean; hasAppSession?: boolean },
+): boolean {
+  if (options?.hasAppSession || options?.appSessionLoading) {
+    return false;
+  }
+  return (
+    authState.mode === "anonymous" ||
+    authState.mode === "invalid" ||
+    authState.mode === "oidc_expired"
+  );
+}
+
 export function readCloudPrototypeAuth(
   storage: Pick<CloudPrototypeAuthStorage, "getItem">,
 ): CloudPrototypeAuthState {
