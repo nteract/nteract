@@ -1176,10 +1176,33 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
 
+      # Fetch the exact pixi the daemon targets (PIXI_TARGET_VERSION in
+      # crates/kernel-launch/src/tools.rs) with curl retries. This lane launches
+      # a real kernel in a pixi project (test_pixi_auto_detection), and the
+      # launcher prefers system pixi on PATH, so pinning keeps `pixi info --json`
+      # and `pixi shell-hook --json` output matched to the daemon's tested
+      # version. The retries absorb transient release-CDN failures that an
+      # unguarded download (prefix-dev/setup-pixi has neither pin nor retry here)
+      # turns into a full-lane failure before any test runs.
       - name: Install pixi
-        uses: prefix-dev/setup-pixi@v0.9.5
-        with:
-          run-install: false
+        run: |
+          set -euo pipefail
+          version="$(grep -oP 'PIXI_TARGET_VERSION: &str = "\K[^"]+' crates/kernel-launch/src/tools.rs)"
+          echo "Installing pinned pixi ${version}"
+          asset="pixi-x86_64-unknown-linux-musl.tar.gz"
+          base="https://github.com/prefix-dev/pixi/releases/download/v${version}"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          for f in "$asset" "$asset.sha256"; do
+            curl --fail --location --show-error --retry 10 --retry-delay 2 --retry-all-errors \
+              --output "$tmp/$f" "$base/$f"
+          done
+          ( cd "$tmp" && sha256sum --check --status "$asset.sha256" )
+          mkdir -p "$HOME/.pixi/bin"
+          tar -xzf "$tmp/$asset" -C "$HOME/.pixi/bin" pixi
+          chmod +x "$HOME/.pixi/bin/pixi"
+          echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
+          "$HOME/.pixi/bin/pixi" --version
 
       # Build wasm + renderer plugins (gitignored; runtimed embeds them)
       - uses: ./.github/actions/build-runtime-artifacts
@@ -1194,12 +1217,26 @@ jobs:
         # VIRTUAL_ENV plus `uv run --active` pins maturin to this same .venv
         # so the bindings land where pytest will look.
         run: |
-          uv sync --no-default-groups \
-            --package runtimed \
-            --package dx \
-            --package nteract \
-            --package nteract-kernel-launcher \
-            --group dev
+          set -euo pipefail
+          # uv sync hits the network for the workspace packages; the self-hosted
+          # pool sees intermittent registry/resolver hiccups, so retry transient
+          # failures before failing the lane.
+          for attempt in 1 2 3; do
+            if uv sync --no-default-groups \
+              --package runtimed \
+              --package dx \
+              --package nteract \
+              --package nteract-kernel-launcher \
+              --group dev; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "uv sync failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+            echo "uv sync attempt ${attempt} failed; retrying in $((attempt * 10))s..." >&2
+            sleep "$((attempt * 10))"
+          done
           cd crates/runtimed-py && \
             VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv" \
             uv run --active --directory ../../python/runtimed maturin develop
