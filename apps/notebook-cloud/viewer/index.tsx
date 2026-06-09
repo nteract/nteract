@@ -270,6 +270,8 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   const hasExplicitAuth = authState.mode === "dev" || authState.mode === "oidc";
   const hasAppSession = Boolean(appSessionStatus.session);
   const signedIn = hasExplicitAuth || hasAppSession;
+  const canFetchNotebookList = authState.mode === "dev" || hasAppSession;
+  const waitingForAppSession = authState.mode === "oidc" && !hasAppSession;
   const dashboardModel = useMemo(
     () => (listState.kind === "ready" ? projectCloudNotebookDashboard(listState.notebooks) : null),
     [listState],
@@ -280,15 +282,21 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   }, [resolvedTheme]);
 
   useEffect(() => {
-    if (!signedIn) {
+    const cachedNotebooks =
+      readCachedCloudNotebookListFromWindow(authState) ?? bootstrap?.notebooks ?? null;
+    if (!canFetchNotebookList) {
+      if (waitingForAppSession) {
+        setListState(
+          cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" },
+        );
+        return;
+      }
       clearCachedCloudNotebookListFromWindow();
       setListState({ kind: "signed_out" });
       return;
     }
 
     const controller = new AbortController();
-    const cachedNotebooks =
-      readCachedCloudNotebookListFromWindow(authState) ?? bootstrap?.notebooks ?? null;
     setListState(
       cachedNotebooks ? { kind: "ready", notebooks: cachedNotebooks } : { kind: "loading" },
     );
@@ -317,7 +325,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     return () => {
       controller.abort();
     };
-  }, [authState, bootstrap, hasAppSession, refreshIndex, signedIn]);
+  }, [authState, bootstrap, canFetchNotebookList, refreshIndex, waitingForAppSession]);
 
   const refreshList = () => {
     setRefreshIndex((value) => value + 1);

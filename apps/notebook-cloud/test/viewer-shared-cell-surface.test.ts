@@ -480,7 +480,29 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
     authSourceText,
     /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
   );
-  assert.match(sourceText, /\[authState, bootstrap, hasAppSession, refreshIndex, signedIn\]/);
+  assert.match(
+    sourceText,
+    /\[authState, bootstrap, canFetchNotebookList, refreshIndex, waitingForAppSession\]/,
+  );
+});
+
+test("cloud notebook list waits for app-session cookies before catalog fetches", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(
+    sourceText,
+    /const canFetchNotebookList = authState\.mode === "dev" \|\| hasAppSession;/,
+  );
+  assert.match(
+    sourceText,
+    /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*\{ kind: "loading" \}[\s\S]*return;/,
+  );
+  assert.match(
+    sourceText,
+    /fetchCloudNotebookList\(authState, controller\.signal\)/,
+    "catalog fetch should still use the existing auth helper once the cookie-backed state is ready",
+  );
 });
 
 test("cloud app-session live sync requests owner and lets the backend downgrade", () => {
