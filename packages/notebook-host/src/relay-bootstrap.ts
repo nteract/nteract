@@ -7,6 +7,7 @@ export interface RelayBootstrapCoordinatorOptions {
   onReady: (cb: (payload: DaemonReadyPayload) => void) => Unlisten;
   requiresReadyGeneration: boolean;
   beforeBootstrap?: (trigger: RelayBootstrapTrigger) => void;
+  prepareRelay?: (generation?: number) => Promise<void>;
   bootstrap: (isCancelled: () => boolean, trigger: RelayBootstrapTrigger) => Promise<boolean>;
   notifyRelayReady: (generation?: number) => Promise<void>;
   onBootstrapError?: (error: unknown, trigger: RelayBootstrapTrigger) => void;
@@ -72,11 +73,17 @@ export function startRelayBootstrapCoordinator(
           return EMPTY;
         }
 
-        return from(options.bootstrap(isCancelled, trigger)).pipe(
+        const generation = trigger.payload.relay_generation;
+        const bootstrap$ = options.prepareRelay
+          ? from(options.prepareRelay(generation)).pipe(
+              switchMap(() => options.bootstrap(isCancelled, trigger)),
+            )
+          : from(options.bootstrap(isCancelled, trigger));
+
+        return bootstrap$.pipe(
           switchMap((bootstrapped) => {
             if (!bootstrapped || isCancelled()) return EMPTY;
 
-            const generation = trigger.payload.relay_generation;
             return from(options.notifyRelayReady(generation)).pipe(
               catchError((error: unknown) => {
                 options.onNotifyError?.(error, generation);

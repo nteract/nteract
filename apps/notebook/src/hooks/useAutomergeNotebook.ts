@@ -345,6 +345,7 @@ export function useNotebook() {
         setLoadError(null);
       },
       bootstrap: (isCancelled) => bootstrap(() => cancelled || isCancelled()),
+      prepareRelay: host.relay.prepareSync,
       notifyRelayReady,
       onMissingGeneration: () => {
         logger.debug(

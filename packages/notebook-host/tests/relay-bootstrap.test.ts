@@ -103,6 +103,69 @@ describe("startRelayBootstrapCoordinator", () => {
     coordinator.stop();
   });
 
+  it("prepares the relay channel before bootstrap", async () => {
+    const ready = createReadySource();
+    const order: string[] = [];
+    const prepareRelay = vi.fn(async () => {
+      order.push("prepare");
+    });
+    const bootstrap = vi.fn(async () => {
+      order.push("bootstrap");
+      return true;
+    });
+    const notifyRelayReady = vi.fn(async () => {
+      order.push("notify");
+    });
+
+    const coordinator = startCoordinator({
+      onReady: ready.onReady,
+      prepareRelay,
+      bootstrap,
+      notifyRelayReady,
+    });
+
+    ready.emit({ notebook_id: "nb-1", relay_generation: 7 });
+    await flushMicrotasks();
+
+    expect(prepareRelay).toHaveBeenCalledWith(7);
+    expect(bootstrap).toHaveBeenCalledTimes(1);
+    expect(notifyRelayReady).toHaveBeenCalledWith(7);
+    expect(order).toEqual(["prepare", "bootstrap", "notify"]);
+
+    coordinator.stop();
+  });
+
+  it("does not bootstrap when relay preparation fails", async () => {
+    const ready = createReadySource();
+    const error = new Error("stale frame channel");
+    const prepareRelay = vi.fn(async () => {
+      throw error;
+    });
+    const bootstrap = vi.fn(async () => true);
+    const notifyRelayReady = vi.fn(async () => {});
+    const onBootstrapError = vi.fn();
+
+    const coordinator = startCoordinator({
+      onReady: ready.onReady,
+      prepareRelay,
+      bootstrap,
+      notifyRelayReady,
+      onBootstrapError,
+    });
+
+    ready.emit({ notebook_id: "nb-1", relay_generation: 7 });
+    await flushMicrotasks();
+
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(notifyRelayReady).not.toHaveBeenCalled();
+    expect(onBootstrapError).toHaveBeenCalledWith(error, {
+      kind: "ready",
+      payload: { notebook_id: "nb-1", relay_generation: 7 },
+    });
+
+    coordinator.stop();
+  });
+
   it("applies the daemon actor label before creating the notebook handle", async () => {
     const ready = createReadySource();
     const authoritativeActor = "local:quill/desktop:daemon";

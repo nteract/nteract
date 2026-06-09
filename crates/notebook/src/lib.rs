@@ -832,7 +832,7 @@ async fn setup_sync_receivers(
         // this wait — the mpsc channel is unbounded, so nothing is lost.
         let channel_wait_started = std::time::Instant::now();
         let channel_wait_timeout = std::time::Duration::from_secs(30);
-        let frame_channel = loop {
+        let initial_frame_channel = loop {
             if sync_generation_for_cleanup.load(Ordering::SeqCst) != current_generation {
                 info!(
                     "[notebook-sync] Stale relay for {} (gen {} superseded) before channel registration",
@@ -887,7 +887,7 @@ async fn setup_sync_receivers(
             }
         };
 
-        let Some(frame_channel) = frame_channel else {
+        let Some(_initial_frame_channel) = initial_frame_channel else {
             warn!(
                 "[notebook-sync] Frame relay stopped before frontend channel registration (gen {})",
                 current_generation,
@@ -937,6 +937,19 @@ async fn setup_sync_receivers(
                 );
                 break;
             }
+
+            let Some(frame_channel) = frame_channel_rx
+                .borrow()
+                .as_ref()
+                .filter(|subscription| subscription.generation == current_generation)
+                .cloned()
+            else {
+                warn!(
+                    "[notebook-sync] No frontend frame channel for {} (gen {}) — dropping frame",
+                    notebook_id_for_relay, current_generation,
+                );
+                continue;
+            };
 
             if let Err(e) = frame_channel
                 .channel

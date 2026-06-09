@@ -190,6 +190,13 @@ export interface HostRelay {
   readonly requiresReadyGeneration: boolean;
 
   /**
+   * Attach the host frame listener for the current relay generation before
+   * the frontend sends its bootstrap sync frame. Hosts that do not buffer
+   * frames can omit this.
+   */
+  prepareSync?(generation?: number): Promise<void>;
+
+  /**
    * Signal that the JS frame listener is attached and the Tauri-side
    * relay may replay any buffered frames. Matches the existing
    * `notify_sync_ready` Tauri command. No-op in hosts where the main
