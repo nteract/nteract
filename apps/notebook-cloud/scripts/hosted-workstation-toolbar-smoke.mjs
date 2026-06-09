@@ -6,6 +6,11 @@ import { pathToFileURL } from "node:url";
 import { chromium } from "@playwright/test";
 
 import {
+  buildWorkstationAuthHeaders,
+  DEFAULT_WORKSTATION_AUTH_KIND,
+  normalizeWorkstationAuthKind,
+} from "./hosted-workstation-agent-core.mjs";
+import {
   saveSmokeScreenshot,
   smokeJsonReportPath,
   smokeOutputPath,
@@ -23,7 +28,12 @@ async function main() {
   await loadOptionalEnvFile();
 
   const baseUrl = process.env.NTERACT_CLOUD_URL ?? "https://preview.runt.run";
-  const apiKey = process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN;
+  const authKind = normalizeWorkstationAuthKind(
+    process.env.NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_AUTH_KIND ??
+      process.env.NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND ??
+      process.env.NTERACT_CLOUD_AUTH_KIND ??
+      DEFAULT_WORKSTATION_AUTH_KIND,
+  );
   const workstationId =
     process.env.NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_WORKSTATION_ID ??
     process.env.NOTEBOOK_CLOUD_WORKSTATION_ID ??
@@ -56,14 +66,17 @@ async function main() {
   );
   const reportPath = smokeJsonReportPath("hosted-workstation-toolbar-smoke");
 
-  if (!apiKey) {
+  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
+  const token = JSON.parse(tokenStorageJson);
+  const cloudCredential =
+    authKind === "oidc"
+      ? token.accessToken
+      : (process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN);
+  if (!cloudCredential) {
     throw new Error(
       "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted workstation toolbar smoke",
     );
   }
-
-  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
-  const token = JSON.parse(tokenStorageJson);
   const tokenSecondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
   if (!Number.isFinite(tokenSecondsRemaining) || tokenSecondsRemaining <= 60) {
     throw new Error(
@@ -75,7 +88,8 @@ async function main() {
     baseUrl,
     label: "list workstations",
     pathname: "/api/workstations",
-    token: apiKey,
+    authKind,
+    credential: cloudCredential,
   });
   const workstation = Array.isArray(workstationList.workstations)
     ? workstationList.workstations.find((item) => item?.workstation_id === workstationId)
@@ -95,7 +109,8 @@ async function main() {
     label: "set default workstation",
     method: "PATCH",
     pathname: "/api/workstations/default",
-    token: apiKey,
+    authKind,
+    credential: cloudCredential,
   });
   const created = await fetchJson({
     baseUrl,
@@ -104,7 +119,8 @@ async function main() {
     label: "create notebook",
     method: "POST",
     pathname: "/api/n",
-    token: apiKey,
+    authKind,
+    credential: cloudCredential,
   });
   const viewerUrl = scalarString(created.viewer_url);
   if (!viewerUrl) {
@@ -123,6 +139,7 @@ async function main() {
   const report = {
     ok: true,
     baseUrl,
+    authKind,
     notebookId: created.notebook_id,
     source,
     title,
@@ -818,13 +835,13 @@ async function fetchJson({
   label,
   method = "GET",
   pathname,
-  token,
+  authKind,
+  credential,
 }) {
   const requestInit = {
     headers: {
-      Authorization: `Bearer ${token}`,
+      ...buildWorkstationAuthHeaders(authKind, credential),
       "Content-Type": "application/json",
-      "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
       "X-Scope": "owner",
     },
     method,

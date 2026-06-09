@@ -714,14 +714,16 @@ The workstation agent reads `NTERACT_API_KEY` from the environment and also
 loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
 registers and heartbeats the current machine through `POST /api/workstations`,
 polls `GET /api/workstations/:workstationId/attach-jobs`, and spawns
-`runtimed cloud-runtime-agent` for pending attach jobs. The API key is passed to
-the runtime peer through `RUNT_CLOUD_TOKEN`, not through argv; `runtimed`
-removes cloud/API-key environment variables again before launching the Python
-kernel. Run this helper inside tmux for preview/manual testing so the polling
-agent stays alive while the browser attaches workstations. After the agent
-registers, select it as the default workstation in the notebook UI or call
-`PATCH /api/workstations/default`, then use the Workstations rail in a private
-owner room to request attachment.
+`runtimed cloud-runtime-agent` for pending attach jobs. API-key auth is the
+default (`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`); set
+`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc` when `NTERACT_API_KEY` carries a
+short-lived OIDC bearer token. The credential is passed to the runtime peer
+through `RUNT_CLOUD_TOKEN`, not through argv; `runtimed` removes cloud
+environment variables again before launching the Python kernel. Run this helper
+inside tmux for preview/manual testing so the polling agent stays alive while
+the browser attaches workstations. After the agent registers, select it as the
+default workstation in the notebook UI or call `PATCH /api/workstations/default`,
+then use the Workstations rail in a private owner room to request attachment.
 
 With the workstation agent already running, use the toolbar smoke to exercise
 the hosted browser path end to end. It verifies the registered workstation is
@@ -737,7 +739,9 @@ pnpm --dir apps/notebook-cloud smoke:hosted:workstation-toolbar
 The smoke reads the API key from the environment or
 `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` and reads the browser OIDC
 token cache from `${NTERACT_PREVIEW_OIDC_TOKEN_PATH:-$HOME/token.preview.json}`.
-It does not print token material. Set
+Set `NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_AUTH_KIND=oidc` (or the shared
+`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc`) to use that OIDC token for setup
+calls when an API key is not available. It does not print token material. Set
 `NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_WORKSTATION_ID` to target a
 workstation other than `lab2`.
 

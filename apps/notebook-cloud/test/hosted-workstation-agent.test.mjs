@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildWorkstationAuthHeaders,
   buildAttachJobSpawnPlan,
   buildRuntimeAgentEnv,
   buildWorkstationRegistrationPayload,
+  normalizeWorkstationAuthKind,
   parsePositiveInteger,
   stableWorkstationId,
 } from "../scripts/hosted-workstation-agent-core.mjs";
@@ -50,6 +52,25 @@ describe("hosted workstation agent launch contract", () => {
     ]);
   });
 
+  it("can launch runtime peers with OIDC bearer auth without an API-key provider header", () => {
+    const plan = buildAttachJobSpawnPlan({
+      job: {
+        job_id: "job-oidc",
+        notebook_id: "nb-oidc",
+      },
+      pythonPath: "/opt/k/bin/python",
+      agentRoot: "/tmp/agent",
+      baseUrl: "https://preview.runt.run",
+      workingDirectory: "/home/ubuntu/project",
+      workstationId: "ws-lab2",
+      displayName: "lab2 workstation",
+      authKind: "oidc",
+    });
+
+    assert.deepEqual(plan.args.slice(0, 3), ["cloud-runtime-agent", "--auth-kind", "oidc"]);
+    assert.equal(plan.args.includes("oidc-token"), false);
+  });
+
   it("lets an attach job override cwd and notebook path without putting secrets in argv", () => {
     const plan = buildAttachJobSpawnPlan({
       job: {
@@ -74,7 +95,7 @@ describe("hosted workstation agent launch contract", () => {
     assert.equal(plan.args.includes("secret-api-key"), false);
   });
 
-  it("passes the API key only through the runtime peer environment", () => {
+  it("passes the cloud credential only through the runtime peer environment", () => {
     const env = buildRuntimeAgentEnv(
       {
         HOME: "/home/ubuntu",
@@ -91,6 +112,19 @@ describe("hosted workstation agent launch contract", () => {
     assert.equal(env.HOME, "/home/ubuntu");
     assert.equal(env.PATH, "/usr/bin");
     assert.equal(env.RUST_LOG, "info");
+  });
+
+  it("builds workstation auth headers for API-key and OIDC credentials", () => {
+    assert.deepEqual(buildWorkstationAuthHeaders("anaconda-key", "key-secret"), {
+      Authorization: "Bearer key-secret",
+      "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+    });
+    assert.deepEqual(buildWorkstationAuthHeaders("oidc", "oidc-secret"), {
+      Authorization: "Bearer oidc-secret",
+    });
+    assert.equal(normalizeWorkstationAuthKind("anaconda-api-key"), "anaconda-key");
+    assert.equal(normalizeWorkstationAuthKind("oidc-bearer"), "oidc");
+    assert.throws(() => normalizeWorkstationAuthKind("cookie"), /WORKSTATION_AUTH_KIND/);
   });
 
   it("projects stable registration metadata for the current Python launcher", () => {

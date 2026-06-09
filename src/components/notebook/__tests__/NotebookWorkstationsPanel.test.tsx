@@ -477,9 +477,10 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "Previous attachment" })).toBeVisible();
+    expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(1);
     expect(screen.getByText("Needs attention")).toBeVisible();
-    expect(screen.getByText(/runtime peer disconnected/)).toBeVisible();
+    expect(screen.getByText(/Lab2: runtime peer disconnected/)).toBeVisible();
     expect(screen.queryByText("Runtime peer")).not.toBeInTheDocument();
     expect(screen.getAllByText("Current Python")).toHaveLength(1);
     expect(screen.getAllByText("/home/ubuntu/project")).toHaveLength(1);

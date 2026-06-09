@@ -573,10 +573,8 @@ body {
 }
 
 .cloud-dashboard-filters button {
-  display: inline-grid;
-  grid-template-columns: minmax(0, auto) auto;
+  display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
   min-height: 2rem;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -604,12 +602,6 @@ body {
 
 .cloud-dashboard-filter-group[data-group="cleanup"] button[data-active="true"] {
   color: var(--foreground);
-}
-
-.cloud-dashboard-filters strong {
-  color: color-mix(in srgb, var(--foreground) 54%, transparent);
-  font-size: 0.75rem;
-  font-weight: 700;
 }
 
 .cloud-dashboard-continue {

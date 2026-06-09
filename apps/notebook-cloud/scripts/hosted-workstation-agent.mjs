@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import {
   buildAttachJobSpawnPlan,
   buildRuntimeAgentEnv,
+  buildWorkstationAuthHeaders,
   buildWorkstationRegistrationPayload,
+  DEFAULT_WORKSTATION_AUTH_KIND,
+  normalizeWorkstationAuthKind,
   parsePositiveInteger,
   stableWorkstationId,
 } from "./hosted-workstation-agent-core.mjs";
@@ -20,7 +23,13 @@ const workspaceRoot = notebookCloudWorkspaceRoot({ cwd: appDir });
 await loadOptionalEnvFile();
 
 const baseUrl = notebookCloudBaseUrl();
-const apiKey = process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN;
+const cloudCredential =
+  process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN;
+const authKind = normalizeWorkstationAuthKind(
+  process.env.NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND ??
+    process.env.NTERACT_CLOUD_AUTH_KIND ??
+    DEFAULT_WORKSTATION_AUTH_KIND,
+);
 const workstationId =
   process.env.NOTEBOOK_CLOUD_WORKSTATION_ID ?? stableWorkstationId(os.hostname());
 const displayName =
@@ -55,7 +64,7 @@ main().catch((error) => {
 });
 
 async function main() {
-  requireApiKey();
+  requireCloudCredential();
   await assertBinaryExists(runtimedBin, "runtimed");
   const pythonPath = await resolvePythonPath();
   await mkdir(agentRoot, { recursive: true });
@@ -68,6 +77,7 @@ async function main() {
       displayName,
       workingDirectory,
       pythonPath,
+      authKind,
       pollIntervalMs,
     }),
   );
@@ -92,7 +102,7 @@ async function registerWorkstation(pythonPath) {
   const response = await fetch(new URL("/api/workstations", baseUrl), {
     method: "POST",
     headers: {
-      ...apiKeyHeaders(),
+      ...cloudAuthHeaders(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(
@@ -112,7 +122,7 @@ async function pollAttachJobs(pythonPath) {
   const response = await fetch(
     new URL(`/api/workstations/${encodeURIComponent(workstationId)}/attach-jobs`, baseUrl),
     {
-      headers: apiKeyHeaders(),
+      headers: cloudAuthHeaders(),
     },
   );
   const body = await responseJson(response);
@@ -132,6 +142,7 @@ async function startAttachJob(job, pythonPath) {
     workingDirectory,
     workstationId,
     displayName,
+    authKind,
   });
   await mkdir(plan.blobRoot, { recursive: true });
   await patchAttachJob(job.job_id, {
@@ -217,7 +228,7 @@ async function patchAttachJob(jobId, patch) {
     {
       method: "PATCH",
       headers: {
-        ...apiKeyHeaders(),
+        ...cloudAuthHeaders(),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(patch),
@@ -250,23 +261,20 @@ async function loadOptionalEnvFile() {
   }
 }
 
-function requireApiKey() {
-  if (!apiKey) {
+function requireCloudCredential() {
+  if (!cloudCredential) {
     throw new Error(
       "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted workstation agent",
     );
   }
 }
 
-function apiKeyHeaders() {
-  return {
-    Authorization: `Bearer ${apiKey}`,
-    "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
-  };
+function cloudAuthHeaders() {
+  return buildWorkstationAuthHeaders(authKind, cloudCredential);
 }
 
 function runtimeAgentEnv() {
-  return buildRuntimeAgentEnv(process.env, apiKey);
+  return buildRuntimeAgentEnv(process.env, cloudCredential);
 }
 
 async function resolvePythonPath() {

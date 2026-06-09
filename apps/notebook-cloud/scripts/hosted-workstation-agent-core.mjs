@@ -1,6 +1,9 @@
 import os from "node:os";
 import path from "node:path";
 
+export const DEFAULT_WORKSTATION_AUTH_KIND = "anaconda-key";
+export const WORKSTATION_AUTH_KINDS = new Set([DEFAULT_WORKSTATION_AUTH_KIND, "oidc"]);
+
 export function buildWorkstationRegistrationPayload({
   workstationId,
   displayName,
@@ -36,6 +39,7 @@ export function buildAttachJobSpawnPlan({
   workingDirectory,
   workstationId,
   displayName,
+  authKind = DEFAULT_WORKSTATION_AUTH_KIND,
 }) {
   assert(typeof job.job_id === "string" && job.job_id.length > 0, "attach job missing id");
   assert(
@@ -47,10 +51,11 @@ export function buildAttachJobSpawnPlan({
   const blobRoot = path.join(runRoot, "blobs");
   const logPath = path.join(runRoot, "runtime-peer.log");
   const launchDirectory = job.working_directory ?? workingDirectory;
+  const normalizedAuthKind = normalizeWorkstationAuthKind(authKind);
   const args = [
     "cloud-runtime-agent",
     "--auth-kind",
-    "anaconda-key",
+    normalizedAuthKind,
     "--cloud-url",
     baseUrl,
     "--notebook-id",
@@ -82,7 +87,7 @@ export function buildAttachJobSpawnPlan({
   };
 }
 
-export function buildRuntimeAgentEnv(env, apiKey) {
+export function buildRuntimeAgentEnv(env, credential) {
   return compactEnv({
     HOME: env.HOME,
     PATH: env.PATH,
@@ -92,8 +97,41 @@ export function buildRuntimeAgentEnv(env, apiKey) {
     SSL_CERT_DIR: env.SSL_CERT_DIR,
     RUST_BACKTRACE: env.RUST_BACKTRACE,
     RUST_LOG: env.RUST_LOG ?? "info",
-    RUNT_CLOUD_TOKEN: apiKey,
+    RUNT_CLOUD_TOKEN: credential,
   });
+}
+
+export function buildWorkstationAuthHeaders(authKind, credential) {
+  const normalizedAuthKind = normalizeWorkstationAuthKind(authKind);
+  const token = credential?.trim();
+  assert(token, "hosted workstation credential is required");
+  const headers = {
+    Authorization: `Bearer ${token}`,
+  };
+  if (normalizedAuthKind === "anaconda-key") {
+    headers["X-Notebook-Cloud-Auth-Provider"] = "anaconda-api-key";
+  }
+  return headers;
+}
+
+export function normalizeWorkstationAuthKind(value) {
+  const normalized = String(value ?? DEFAULT_WORKSTATION_AUTH_KIND)
+    .trim()
+    .toLowerCase();
+  if (normalized === "anaconda-api-key") {
+    return DEFAULT_WORKSTATION_AUTH_KIND;
+  }
+  if (normalized === "oidc-bearer") {
+    return "oidc";
+  }
+  if (WORKSTATION_AUTH_KINDS.has(normalized)) {
+    return normalized;
+  }
+  throw new Error(
+    `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND must be ${Array.from(WORKSTATION_AUTH_KINDS).join(
+      " or ",
+    )}`,
+  );
 }
 
 export function compactEnv(entries) {
