@@ -50,6 +50,19 @@ export function NotebookWorkstationsPanel({
   const registeredWorkstations = selection?.registeredWorkstations ?? [];
   const compactDetachedTarget =
     projection.targetId === "workstation:none" && registeredWorkstations.length > 0;
+  const compactRecoverableTarget =
+    !compactDetachedTarget &&
+    Boolean(
+      projection.targetId &&
+      projection.targetId !== "workstation:none" &&
+      registeredWorkstations.some(
+        (workstation) =>
+          workstation.id === projection.targetId &&
+          !workstation.isAttached &&
+          workstation.canAttach,
+      ),
+    );
+  const compactTargetFacts = compactDetachedTarget || compactRecoverableTarget;
   const activeRegisteredWorkstationId =
     registeredWorkstations.find((workstation) => workstation.isAttached)?.id ??
     (!selection && projection.targetId && projection.targetId !== "workstation:none"
@@ -65,6 +78,7 @@ export function NotebookWorkstationsPanel({
       : null;
   const visibleTargetId =
     projection.targetId &&
+    !compactRecoverableTarget &&
     projection.targetKind !== "local_daemon" &&
     projection.targetId !== "workstation:none"
       ? `id ${projection.targetId}`
@@ -73,10 +87,7 @@ export function NotebookWorkstationsPanel({
   return (
     <div className={cn("space-y-3 text-sm", className)} data-testid="notebook-workstations-panel">
       <section
-        className={cn(
-          "space-y-2 border-b border-border/70",
-          compactDetachedTarget ? "pb-2" : "pb-3",
-        )}
+        className={cn("space-y-2 border-b border-border/70", compactTargetFacts ? "pb-2" : "pb-3")}
         aria-label="Active workstation target"
       >
         <div className="flex min-w-0 items-start gap-3">
@@ -102,7 +113,7 @@ export function NotebookWorkstationsPanel({
           </div>
         </div>
 
-        {compactDetachedTarget ? null : (
+        {compactTargetFacts ? null : (
           <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5 text-xs">
             {projection.facts.map((fact) => (
               <WorkstationFact

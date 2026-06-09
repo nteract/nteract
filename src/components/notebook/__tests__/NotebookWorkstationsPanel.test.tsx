@@ -480,6 +480,10 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(2);
     expect(screen.getByText("Needs attention")).toBeVisible();
     expect(screen.getByText(/runtime peer disconnected/)).toBeVisible();
+    expect(screen.queryByText("Runtime peer")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Current Python")).toHaveLength(1);
+    expect(screen.getAllByText("/home/ubuntu/project")).toHaveLength(1);
+    expect(screen.getAllByText("id ws-lab2")).toHaveLength(1);
     expect(screen.getByTestId("registered-workstation")).toBeVisible();
     expect(screen.getByText("Online")).toBeVisible();
     expect(screen.getByText("Default")).toBeVisible();
