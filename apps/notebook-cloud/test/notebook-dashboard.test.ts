@@ -92,9 +92,10 @@ describe("cloud notebook dashboard projection", () => {
     const untitledView = projectCloudNotebookDashboardView(model, { filterId: "untitled" });
     assert.deepEqual(
       untitledView.sections.map((section) => ({
-        action: section.action
-          ? [section.action.kind, section.action.label, section.action.notebook.notebook_id]
-          : null,
+        action:
+          section.action?.kind === "rename"
+            ? [section.action.kind, section.action.label, section.action.notebook.notebook_id]
+            : null,
         id: section.id,
         title: section.title,
         notebooks: section.notebooks.map((item) => item.notebook_id),
@@ -218,6 +219,63 @@ describe("cloud notebook dashboard projection", () => {
         ["untitled", "Needs title", ["untitled-new"]],
       ],
     );
+  });
+
+  it("limits cleanup-heavy sections and exposes drill-in filters", () => {
+    const generated = Array.from({ length: 7 }, (_, index) =>
+      notebook({
+        id: `generated-${index}`,
+        title: `Toolbar attach smoke 2026-06-08T19:2${index}:35.312Z`,
+        scope: "owner",
+        updatedAt: `2026-06-08T19:2${index}:35.312Z`,
+        latestRevisionId: null,
+      }),
+    );
+    const untitled = Array.from({ length: 6 }, (_, index) =>
+      notebook({
+        id: `untitled-${index}`,
+        title: null,
+        scope: "owner",
+        updatedAt: `2026-06-08T18:0${index}:00.000Z`,
+        latestRevisionId: null,
+      }),
+    );
+
+    const model = projectCloudNotebookDashboard([...generated, ...untitled]);
+    const defaultView = projectCloudNotebookDashboardView(model);
+    const generatedSection = defaultView.sections.find((section) => section.id === "generated");
+    const untitledSection = defaultView.sections.find((section) => section.id === "untitled");
+
+    assert.deepEqual(
+      model.filters.map((filter) => [filter.id, filter.count]),
+      [
+        ["all", 13],
+        ["owned", 13],
+        ["shared", 0],
+        ["published", 0],
+        ["generated", 7],
+        ["untitled", 6],
+      ],
+    );
+    assert.equal(generatedSection?.notebooks.length, 5);
+    assert.equal(generatedSection?.totalCount, 7);
+    assert.deepEqual(generatedSection?.overflowAction, {
+      filterId: "generated",
+      kind: "filter",
+      label: "Review generated",
+    });
+    assert.equal(untitledSection?.notebooks.length, 5);
+    assert.equal(untitledSection?.totalCount, 6);
+    assert.deepEqual(untitledSection?.overflowAction, {
+      filterId: "untitled",
+      kind: "filter",
+      label: "Review untitled",
+    });
+
+    const generatedView = projectCloudNotebookDashboardView(model, { filterId: "generated" });
+    assert.equal(generatedView.resultCount, 7);
+    assert.equal(generatedView.sections[0]?.notebooks.length, 7);
+    assert.equal(generatedView.sections[0]?.overflowAction, null);
   });
 });
 

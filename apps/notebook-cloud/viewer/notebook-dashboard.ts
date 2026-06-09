@@ -21,7 +21,13 @@ export interface CloudNotebookDashboardMetric {
   icon: "notebooks" | "owned" | "published";
 }
 
-export type CloudNotebookDashboardFilterId = "all" | "owned" | "shared" | "published" | "untitled";
+export type CloudNotebookDashboardFilterId =
+  | "all"
+  | "owned"
+  | "shared"
+  | "published"
+  | "generated"
+  | "untitled";
 
 export interface CloudNotebookDashboardFilter {
   count: number;
@@ -41,14 +47,24 @@ export interface CloudNotebookDashboardSection {
   detail: string;
   id: string;
   notebooks: readonly CloudNotebookListItem[];
+  overflowAction?: CloudNotebookDashboardSectionFilterAction | null;
   title: string;
+  totalCount: number;
 }
 
-export interface CloudNotebookDashboardSectionAction {
-  kind: "rename";
+export interface CloudNotebookDashboardSectionFilterAction {
+  filterId: CloudNotebookDashboardFilterId;
+  kind: "filter";
   label: string;
-  notebook: CloudNotebookListItem;
 }
+
+export type CloudNotebookDashboardSectionAction =
+  | CloudNotebookDashboardSectionFilterAction
+  | {
+      kind: "rename";
+      label: string;
+      notebook: CloudNotebookListItem;
+    };
 
 export interface CloudNotebookDashboardView {
   emptyMessage: string;
@@ -74,6 +90,7 @@ export function projectCloudNotebookDashboard(
   });
   const titled = sorted.filter(cloudNotebookHasTitle);
   const namedWork = titled.filter((notebook) => !cloudNotebookIsGeneratedRun(notebook));
+  const generatedCount = sorted.filter(cloudNotebookIsGeneratedRun).length;
   const untitled = sorted.filter((notebook) => !cloudNotebookHasTitle(notebook));
   const editableCount = notebooks.filter(
     (notebook) => notebook.scope === "owner" || notebook.scope === "editor",
@@ -87,6 +104,7 @@ export function projectCloudNotebookDashboard(
     continueNotebook: namedWork[0] ?? titled[0] ?? sorted[0] ?? null,
     filters: cloudNotebookDashboardFilters({
       notebooks,
+      generatedCount,
       ownerCount,
       publishedCount,
       untitledCount: untitled.length,
@@ -190,17 +208,19 @@ function cloudNotebookHasTitle(notebook: CloudNotebookListItem): boolean {
 }
 
 function cloudNotebookDashboardFilters({
+  generatedCount,
   notebooks,
   ownerCount,
   publishedCount,
   untitledCount,
 }: {
+  generatedCount: number;
   notebooks: readonly CloudNotebookListItem[];
   ownerCount: number;
   publishedCount: number;
   untitledCount: number;
 }): CloudNotebookDashboardFilter[] {
-  return [
+  const filters: CloudNotebookDashboardFilter[] = [
     { id: "all", label: "Recent", count: notebooks.length },
     { id: "owned", label: "Owned", count: ownerCount },
     {
@@ -209,8 +229,12 @@ function cloudNotebookDashboardFilters({
       count: notebooks.filter((notebook) => notebook.scope !== "owner").length,
     },
     { id: "published", label: "Published", count: publishedCount },
-    { id: "untitled", label: "Untitled", count: untitledCount },
   ];
+  if (generatedCount > 0) {
+    filters.push({ id: "generated", label: "Generated", count: generatedCount });
+  }
+  filters.push({ id: "untitled", label: "Untitled", count: untitledCount });
+  return filters;
 }
 
 function cloudNotebookDashboardSections(
@@ -226,7 +250,12 @@ function cloudNotebookDashboardSections(
   }
 
   if (context.filterId === "untitled") {
-    sections.push(untitledNotebookSection(notebooks));
+    sections.push(untitledNotebookSection(notebooks, { limit: null }));
+    return sections;
+  }
+
+  if (context.filterId === "generated") {
+    sections.push(generatedNotebookSection(notebooks, { limit: null }));
     return sections;
   }
 
@@ -242,11 +271,15 @@ function cloudNotebookDashboardSections(
       detail: bucket.detail,
       id: bucket.id,
       notebooks: bucket.notebooks,
+      overflowAction: null,
       title: context.query.length > 0 && bucket.id === "latest" ? "Search results" : bucket.title,
+      totalCount: bucket.totalCount,
     });
   }
   return sections;
 }
+
+const SECONDARY_DASHBOARD_SECTION_LIMIT = 5;
 
 function cloudNotebookWorkSections(
   notebooks: readonly CloudNotebookListItem[],
@@ -264,28 +297,52 @@ function cloudNotebookWorkSections(
       detail: bucketDetail(namedWork.length, "ready to reopen"),
       id: "named",
       notebooks: namedWork,
+      overflowAction: null,
       title: "Recent work",
+      totalCount: namedWork.length,
     });
   }
   if (generatedRuns.length > 0) {
-    sections.push({
-      action: null,
-      detail: bucketDetail(generatedRuns.length, "from smoke and debug work"),
-      id: "generated",
-      notebooks: generatedRuns,
-      title: "Generated runs",
-    });
+    sections.push(
+      generatedNotebookSection(generatedRuns, { limit: SECONDARY_DASHBOARD_SECTION_LIMIT }),
+    );
   }
   if (untitled.length > 0) {
-    sections.push(untitledNotebookSection(untitled));
+    sections.push(untitledNotebookSection(untitled, { limit: SECONDARY_DASHBOARD_SECTION_LIMIT }));
   }
   return sections;
 }
 
+function generatedNotebookSection(
+  notebooks: readonly CloudNotebookListItem[],
+  options: { limit: number | null },
+): CloudNotebookDashboardSection {
+  const visibleNotebooks = limitNotebooks(notebooks, options.limit);
+  const overflowAction =
+    options.limit && notebooks.length > visibleNotebooks.length
+      ? {
+          filterId: "generated" as const,
+          kind: "filter" as const,
+          label: "Review generated",
+        }
+      : null;
+  return {
+    action: overflowAction,
+    detail: bucketDetail(notebooks.length, "from smoke and debug work"),
+    id: "generated",
+    notebooks: visibleNotebooks,
+    overflowAction,
+    title: "Generated runs",
+    totalCount: notebooks.length,
+  };
+}
+
 function untitledNotebookSection(
   notebooks: readonly CloudNotebookListItem[],
+  options: { limit: number | null },
 ): CloudNotebookDashboardSection {
   const nextRenameable = notebooks.find(cloudNotebookCanRename);
+  const visibleNotebooks = limitNotebooks(notebooks, options.limit);
   return {
     action: nextRenameable
       ? {
@@ -297,8 +354,24 @@ function untitledNotebookSection(
     id: "untitled",
     title: "Needs title",
     detail: "Rename notebooks worth keeping so they stay easy to find.",
-    notebooks,
+    notebooks: visibleNotebooks,
+    overflowAction:
+      options.limit && notebooks.length > visibleNotebooks.length
+        ? {
+            filterId: "untitled",
+            kind: "filter",
+            label: "Review untitled",
+          }
+        : null,
+    totalCount: notebooks.length,
   };
+}
+
+function limitNotebooks(
+  notebooks: readonly CloudNotebookListItem[],
+  limit: number | null,
+): readonly CloudNotebookListItem[] {
+  return limit === null ? notebooks : notebooks.slice(0, limit);
 }
 
 function cloudNotebookCanRename(notebook: CloudNotebookListItem): boolean {
@@ -325,6 +398,8 @@ function cloudNotebookMatchesFilter(
       return notebook.scope !== "owner";
     case "published":
       return Boolean(notebook.latest_revision_id);
+    case "generated":
+      return cloudNotebookIsGeneratedRun(notebook);
     case "untitled":
       return !cloudNotebookHasTitle(notebook);
   }
@@ -361,6 +436,8 @@ function cloudNotebookDashboardEmptyMessage(
       return "No notebooks have been shared with this account.";
     case "published":
       return "No published notebooks yet.";
+    case "generated":
+      return "No generated runs.";
     case "untitled":
       return "No untitled notebooks.";
   }
@@ -375,6 +452,7 @@ function activityBuckets(notebooks: readonly CloudNotebookListItem[]): {
   id: "latest" | "recent" | "earlier";
   notebooks: CloudNotebookListItem[];
   title: string;
+  totalCount: number;
 }[] {
   const anchorTime = notebooks.reduce((latest, notebook) => {
     const time = Date.parse(notebook.updated_at);
@@ -387,6 +465,7 @@ function activityBuckets(notebooks: readonly CloudNotebookListItem[]): {
         title: "Recent notebooks",
         detail: `${notebooks.length} notebook${notebooks.length === 1 ? "" : "s"}`,
         notebooks: [...notebooks],
+        totalCount: notebooks.length,
       },
     ];
   }
@@ -418,18 +497,21 @@ function activityBuckets(notebooks: readonly CloudNotebookListItem[]): {
       title: "Latest activity",
       detail: bucketDetail(latest.length, "updated most recently"),
       notebooks: latest,
+      totalCount: latest.length,
     },
     {
       id: "recent",
       title: "Previous activity",
       detail: bucketDetail(recent.length, "from the last week"),
       notebooks: recent,
+      totalCount: recent.length,
     },
     {
       id: "earlier",
       title: "Earlier",
       detail: bucketDetail(earlier.length, "older notebooks"),
       notebooks: earlier,
+      totalCount: earlier.length,
     },
   ];
 }

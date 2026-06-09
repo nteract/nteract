@@ -763,6 +763,31 @@ body {
   list-style: none;
 }
 
+.cloud-dashboard-section-footnote {
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  padding-block: 0.75rem;
+  color: color-mix(in srgb, var(--foreground) 52%, transparent);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.cloud-dashboard-section-footnote button {
+  border: 0;
+  padding: 0;
+  color: color-mix(in srgb, var(--foreground) 76%, transparent);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.cloud-dashboard-section-footnote button:hover {
+  color: var(--foreground);
+}
+
 .cloud-notebook-list-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(10rem, auto) auto;

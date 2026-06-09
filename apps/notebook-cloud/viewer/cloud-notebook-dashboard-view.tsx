@@ -126,6 +126,7 @@ export function CloudNotebookDashboard({
                   renameSavingId={renameSavingId}
                   onOpenRename={onOpenRename}
                   onCancelRename={onCancelRename}
+                  onSelectFilter={setFilterId}
                   onRenameTitleChange={onRenameTitleChange}
                   onSaveRename={onSaveRename}
                 />
@@ -150,6 +151,7 @@ function CloudNotebookDashboardSectionView({
   renameSavingId,
   onOpenRename,
   onCancelRename,
+  onSelectFilter,
   onRenameTitleChange,
   onSaveRename,
 }: {
@@ -159,10 +161,15 @@ function CloudNotebookDashboardSectionView({
   renameSavingId: string | null;
   onOpenRename: (notebook: CloudNotebookListItem) => void;
   onCancelRename: () => void;
+  onSelectFilter: (filterId: CloudNotebookDashboardFilterId) => void;
   onRenameTitleChange: (title: string) => void;
   onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const action = canRename ? section.action : null;
+  const action = section.action?.kind === "rename" && !canRename ? null : section.action;
+  const hiddenCount = Math.max(0, section.totalCount - section.notebooks.length);
+  const overflowAction = section.overflowAction;
+  const actionAlreadyReviewsOverflow =
+    action?.kind === "filter" && action.filterId === overflowAction?.filterId;
 
   return (
     <section className="cloud-dashboard-notebook-section" data-section={section.id}>
@@ -178,6 +185,14 @@ function CloudNotebookDashboardSectionView({
             onClick={() => onOpenRename(action.notebook)}
           >
             <PencilLine aria-hidden="true" />
+            {action.label}
+          </button>
+        ) : action?.kind === "filter" ? (
+          <button
+            type="button"
+            className="cloud-dashboard-section-action"
+            onClick={() => onSelectFilter(action.filterId)}
+          >
             {action.label}
           </button>
         ) : null}
@@ -200,6 +215,21 @@ function CloudNotebookDashboardSectionView({
           </li>
         ))}
       </ul>
+      {hiddenCount > 0 && overflowAction ? (
+        <p className="cloud-dashboard-section-footnote">
+          Showing {section.notebooks.length} of {section.totalCount}.
+          {actionAlreadyReviewsOverflow ? null : (
+            <>
+              {" "}
+              Use the{" "}
+              <button type="button" onClick={() => onSelectFilter(overflowAction.filterId)}>
+                {overflowAction.label}
+              </button>{" "}
+              filter to review the rest.
+            </>
+          )}
+        </p>
+      ) : null}
     </section>
   );
 }
