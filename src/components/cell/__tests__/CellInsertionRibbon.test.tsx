@@ -39,6 +39,7 @@ describe("CellInsertionRibbon", () => {
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
     expect(activePrimaryBridge).toHaveClass("h-6");
     expect(activePrimaryBridge).toHaveClass("bg-sky-500/12");
+    expect(activePrimaryBridge).toHaveClass("border-sky-500/20");
     expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-6");
 
     fireEvent.click(hitTarget!);
@@ -109,16 +110,21 @@ describe("CellInsertionRibbon", () => {
     expect(hitTarget).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
     expect(primaryBridge).toHaveClass("bg-emerald-500/12");
     expect(primaryBridge).toHaveClass("h-6");
+    expect(primaryBridge).toHaveClass("border-emerald-500/20");
     expect(intent).toHaveClass("bg-emerald-400");
     expect(leadingRule).toHaveClass("w-2");
     expect(leadingRule).toHaveClass("h-6");
     expect(leadingRule).toHaveClass("bg-emerald-500/12");
+    expect(leadingRule).toHaveClass("border-emerald-500/20");
     expect(trailingRule).toHaveClass("bg-gradient-to-r");
     expect(trailingRule).toHaveClass("from-emerald-400/35");
     expect(trailingRule).toHaveClass("flex-1");
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("text-emerald-700");
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("rounded-l-none");
+    expect(screen.getByTitle("Add markdown cell")).toHaveClass("border-emerald-500/20");
     expect(screen.getByTitle("Add code cell")).toHaveClass("bg-emerald-500/12");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("border-emerald-500/20");
+    expect(screen.getByTitle("Add code cell")).toHaveClass("border-x-0");
     expect(screen.getByTitle("Add code cell")).toHaveClass("text-muted-foreground/45");
     expect(screen.getByTitle("Add code cell")).not.toHaveClass("text-emerald-700");
   });

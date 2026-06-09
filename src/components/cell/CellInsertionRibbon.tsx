@@ -26,14 +26,19 @@ const terminalInsertionRibbonClasses: Record<CellInsertionType, string> = {
 };
 
 const actionButtonIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-500/12 text-sky-700 ring-sky-500/20 hover:bg-sky-500/16 dark:text-sky-300",
+  code: "border-sky-500/20 bg-sky-500/12 text-sky-700 hover:bg-sky-500/16 dark:border-sky-300/20 dark:text-sky-300",
   markdown:
-    "bg-emerald-500/12 text-emerald-700 ring-emerald-500/20 hover:bg-emerald-500/16 dark:text-emerald-300",
+    "border-emerald-500/20 bg-emerald-500/12 text-emerald-700 hover:bg-emerald-500/16 dark:border-emerald-300/20 dark:text-emerald-300",
 };
 
 const insertionBridgeSurfaceClasses: Record<CellInsertionType, string> = {
   code: "bg-sky-500/12 dark:bg-sky-400/10",
   markdown: "bg-emerald-500/12 dark:bg-emerald-400/10",
+};
+
+const insertionBridgeBorderClasses: Record<CellInsertionType, string> = {
+  code: "border-sky-500/20 dark:border-sky-300/20",
+  markdown: "border-emerald-500/20 dark:border-emerald-300/20",
 };
 
 const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
@@ -83,18 +88,25 @@ export function CellInsertionRibbon({
       bridgeActiveType !== null && insertionTypeOrder[type] < insertionTypeOrder[bridgeActiveType];
     const isBridged =
       bridgeActiveType !== null && insertionTypeOrder[type] <= insertionTypeOrder[bridgeActiveType];
+    const bridgeClasses = bridgeActiveType
+      ? cn(
+          insertionBridgeSurfaceClasses[bridgeActiveType],
+          insertionBridgeBorderClasses[bridgeActiveType],
+        )
+      : null;
 
     return cn(
-      "inline-flex h-6 items-center justify-center gap-1 px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors ring-1 ring-transparent",
+      "inline-flex h-6 items-center justify-center gap-1 border border-transparent px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors",
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
       isBridged ? "rounded-none" : "rounded-full",
       bridgeActiveType === type && "rounded-l-none rounded-r-full",
       bridgeActiveType === "code" && type === "markdown" && "ml-1",
       isActive
         ? actionButtonIntentClasses[type]
-        : isBridgeLead && bridgeActiveType
+        : isBridgeLead && bridgeClasses
           ? cn(
-              insertionBridgeSurfaceClasses[bridgeActiveType],
+              bridgeClasses,
+              "border-x-0",
               "text-muted-foreground/45 hover:text-muted-foreground/65",
             )
           : "hover:bg-muted/45 hover:text-foreground",
@@ -104,7 +116,11 @@ export function CellInsertionRibbon({
   const leadingInsertionRuleClass = cn(
     "transition-colors duration-150",
     bridgeActiveType
-      ? cn("h-6", insertionBridgeSurfaceClasses[bridgeActiveType])
+      ? cn(
+          "h-6 border-y",
+          insertionBridgeSurfaceClasses[bridgeActiveType],
+          insertionBridgeBorderClasses[bridgeActiveType],
+        )
       : "h-px rounded-full bg-border/45",
   );
   const trailingInsertionRuleClass = cn(
@@ -188,8 +204,9 @@ export function CellInsertionRibbon({
           <span
             data-slot="cell-adder-primary-bridge"
             className={cn(
-              "pointer-events-none absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded-l-full",
+              "pointer-events-none absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded-l-full border-y border-l",
               insertionBridgeSurfaceClasses[bridgeActiveType],
+              insertionBridgeBorderClasses[bridgeActiveType],
             )}
             aria-hidden="true"
           />
