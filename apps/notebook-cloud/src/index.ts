@@ -947,6 +947,10 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
   if (!workstation) {
     return json({ error: "workstation was not registered" }, 500);
   }
+  const existingDefaultWorkstationId = await getDefaultWorkstationId(env, ownerPrincipal);
+  const defaultWorkstationId =
+    existingDefaultWorkstationId ??
+    (await setDefaultWorkstation(env, ownerPrincipal, workstation.workstation_id));
   cloudLog("info", "workstation.registered", {
     principal: ownerPrincipal,
     workstation_id: workstation.workstation_id,
@@ -958,7 +962,7 @@ async function routeWorkstations(request: Request, env: Env): Promise<Response> 
     {
       ok: true,
       workstation: workstationResponseRow(workstation, {
-        defaultWorkstationId: await getDefaultWorkstationId(env, ownerPrincipal),
+        defaultWorkstationId,
         now: Date.now(),
       }),
     },

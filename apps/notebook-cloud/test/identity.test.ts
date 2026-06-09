@@ -420,11 +420,39 @@ describe("Anaconda API key identity", () => {
     assert.equal(identity.metadata.provider, "anaconda-api-key");
   });
 
-  it("does not use API-key shape sniffing when OIDC auth is configured", async (t) => {
+  it("auto-routes API-key-shaped bearer tokens even when OIDC auth is configured", async (t) => {
+    const token = anacondaApiKeyToken({ sub: "api-key-token-subject" });
+    const { env: oidcEnv } = await oidcTokenFixture({ subject: "browser-user" });
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          userId: "api-key-user",
+          scopes: ["cloud:write"],
+        }),
+      ),
+    );
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {
+        ...oidcEnv,
+        ...anacondaApiKeyEnv(),
+      },
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:api-key-user/agent:runt-publish");
+    assert.equal(identity.metadata.provider, "anaconda-api-key");
+  });
+
+  it("does not shape-sniff API-key tokens when API-key validation is not configured", async (t) => {
     const token = anacondaApiKeyToken({ sub: "api-key-token-subject" });
     const { env: oidcEnv } = await oidcTokenFixture({ subject: "browser-user" });
     t.mock.method(globalThis, "fetch", async () => {
-      throw new Error("Anaconda whoami should not be called without an explicit API-key provider");
+      throw new Error("Anaconda whoami should not be called without API-key configuration");
     });
 
     await assert.rejects(
@@ -438,10 +466,7 @@ describe("Anaconda API key identity", () => {
               },
             },
           ),
-          {
-            ...oidcEnv,
-            ...anacondaApiKeyEnv(),
-          },
+          oidcEnv,
         ),
       (error) =>
         (error instanceof AuthError &&

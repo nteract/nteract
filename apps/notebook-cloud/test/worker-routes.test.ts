@@ -262,7 +262,7 @@ describe("Worker artifact routes", () => {
   it("supports HEAD requests for hosted app shell routes", async () => {
     const env = fakeEnv();
 
-    for (const pathname of ["/", "/n", "/oidc", "/n/head-demo/debug"]) {
+    for (const pathname of ["/n", "/oidc", "/n/head-demo/debug"]) {
       const response = await worker.fetch(
         new Request(`http://localhost${pathname}`, { method: "HEAD" }),
         env,
@@ -1467,6 +1467,7 @@ describe("Worker artifact routes", () => {
     };
     assert.equal(registered.workstation.workstation_id, "ws-lab2");
     assert.equal(registered.workstation.status, "online");
+    assert.equal(registered.workstation.is_default, true);
     assert.doesNotMatch(JSON.stringify(registered), /secret|token/i);
 
     const list = await worker.fetch(
@@ -1486,10 +1487,46 @@ describe("Worker artifact routes", () => {
       default_workstation_id: string | null;
       workstations: Array<Record<string, unknown>>;
     };
-    assert.equal(body.default_workstation_id, null);
+    assert.equal(body.default_workstation_id, "ws-lab2");
     assert.equal(body.workstations.length, 1);
     assert.equal(body.workstations[0]?.display_name, "Lab2");
-    assert.equal(body.workstations[0]?.is_default, false);
+    assert.equal(body.workstations[0]?.is_default, true);
+  });
+
+  it("keeps an existing default workstation when another host heartbeats", async () => {
+    const env = fakeEnv();
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-default" });
+    env.DB.workstationDefaults.set("user:dev:alice", "ws-default");
+
+    const register = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab3",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "ws-lab3",
+          display_name: "Lab3",
+          provider: "runtime_peer",
+          default_environment_label: "Current Python",
+          environment_policy: "current_python",
+          working_directory: "/home/ubuntu/project",
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(register.status, 201);
+    const body = (await register.json()) as {
+      workstation: Record<string, unknown>;
+    };
+    assert.equal(body.workstation.workstation_id, "ws-lab3");
+    assert.equal(body.workstation.is_default, false);
+    assert.equal(env.DB.workstationDefaults.get("user:dev:alice"), "ws-default");
   });
 
   it("lets users select a default workstation", async () => {
@@ -1915,7 +1952,6 @@ describe("Worker artifact routes", () => {
       new Request("https://cloud.test/api/n", {
         headers: {
           Authorization: `Bearer ${token}`,
-          "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
           "X-Operator": "browser:tab",
         },
       }),

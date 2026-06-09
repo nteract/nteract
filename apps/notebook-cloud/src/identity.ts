@@ -213,7 +213,7 @@ export async function authenticateRequestWithProviders(
   const oidcConfig = oidcConfigFromEnv(env);
   const oidcPartial = hasPartialOidcConfig(env);
   const anacondaApiKeyCredential = anacondaApiKeyCredentialFromRequest(request, {
-    allowJwtShapeFallback: !oidcConfig && !oidcPartial,
+    allowJwtShapeFallback: Boolean(anacondaApiKeyConfig) || (!oidcConfig && !oidcPartial),
   });
   const routeBearerToOidc = shouldRouteBearerToOidc(request, {
     anacondaApiKeyCredential,
