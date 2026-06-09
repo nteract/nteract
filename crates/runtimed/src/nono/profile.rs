@@ -316,13 +316,22 @@ fn build_nono_json(profile: &SandboxProfile) -> Result<serde_json::Value, serde_
     let mut sorted_creds = profile.credentials.clone();
     sorted_creds.sort_by(|a, b| a.name.cmp(&b.name));
 
+    // Only include credentials that have at least one route — nono 0.62.x
+    // requires `upstream` in every `custom_credentials` entry, so credentials
+    // with no routes cannot appear in the profile JSON.  They are still passed
+    // via `--env-credential` for plain env-var injection (see `translate`).
+    let routed_creds: Vec<_> = sorted_creds
+        .iter()
+        .filter(|c| !c.routes.is_empty())
+        .collect();
+
     // Build the credentials list (just names).
     let credentials_list: Vec<serde_json::Value> =
-        sorted_creds.iter().map(|c| json!(c.name)).collect();
+        routed_creds.iter().map(|c| json!(c.name)).collect();
 
     // Build the custom_credentials map.
     let mut custom_credentials = serde_json::Map::new();
-    for cred in &sorted_creds {
+    for cred in &routed_creds {
         let entry = build_custom_credential_entry(cred);
         custom_credentials.insert(cred.name.clone(), entry);
     }
@@ -367,8 +376,9 @@ fn build_nono_json(profile: &SandboxProfile) -> Result<serde_json::Value, serde_
 /// - `credential_format` ← first Header-injection route's `template` with
 ///   `{credential}` replaced by `{}` (the nono format token)
 ///
-/// Credentials without routes still need a `credential_key` entry so nono knows
-/// which Keychain entry to load.
+/// Only called for credentials that have at least one route; credentials with no
+/// routes are excluded from the profile JSON entirely (nono 0.62.x requires
+/// `upstream` in every entry) and are handled via `--env-credential` only.
 fn build_custom_credential_entry(cred: &notebook_doc::sandbox::CredentialRef) -> serde_json::Value {
     let credential_key = cred.effective_keystore_name().to_string();
 
@@ -382,8 +392,8 @@ fn build_custom_credential_entry(cred: &notebook_doc::sandbox::CredentialRef) ->
     entry.insert("credential_key".to_string(), json!(credential_key));
 
     if let Some(route) = header_route {
-        // Build the upstream URL from the route host.
-        let upstream = format!("https://{}", route.host);
+        // Build the upstream URL from the route host and scheme.
+        let upstream = format!("{}://{}", route.scheme.as_str(), route.host);
         entry.insert("upstream".to_string(), json!(upstream));
 
         if let Some(header_name) = &route.header {
@@ -395,7 +405,7 @@ fn build_custom_credential_entry(cred: &notebook_doc::sandbox::CredentialRef) ->
         entry.insert("credential_format".to_string(), json!(format_str));
     } else if let Some(route) = cred.routes.first() {
         // Non-header route: still emit upstream so nono knows where to proxy.
-        let upstream = format!("https://{}", route.host);
+        let upstream = format!("{}://{}", route.scheme.as_str(), route.host);
         entry.insert("upstream".to_string(), json!(upstream));
     }
 

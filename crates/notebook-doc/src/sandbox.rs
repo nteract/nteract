@@ -47,7 +47,7 @@
 //!
 //! | Field | Type | Description |
 //! |-------|------|-------------|
-//! | `name` | `String` | **Stable identifier.** Must match `^[a-zA-Z][a-zA-Z0-9_-]*$`. Appears in cell code via `os.environ["<NAME_UPPER>"]`. |
+//! | `name` | `String` | **Stable identifier.** Must match `^[a-zA-Z][a-zA-Z0-9_]*$`. Appears in cell code via `os.environ["<NAME_UPPER>"]`. |
 //! | `description` | `Option<String>` | Human-readable note; surfaced as the error message when the credential is missing. |
 //! | `env_var` | `Option<String>` | Env var name injected into the kernel. Defaults to `name.to_ascii_uppercase()` with `-` → `_`. |
 //! | `keystore_name` | `Option<String>` | macOS Keychain entry name. Defaults to `name`. |
@@ -74,7 +74,7 @@
 //! ## Validation rules (enforced by [`SandboxProfile::validate`])
 //!
 //! 1. All credential `name` values must be unique.
-//! 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
+//! 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$`.
 //! 3. All `host` values in routes must be valid hostnames (no scheme, no path).
 //! 4. `allowed_domains` entries must be valid hostnames.
 //! 5. Each `RouteRule` with `inject_as = Header` must have `header` set.
@@ -133,7 +133,7 @@ pub struct SandboxProfile {
 pub struct CredentialRef {
     /// Stable identifier for this credential.
     ///
-    /// Must match `^[a-zA-Z][a-zA-Z0-9_-]*$`. This name is the public API
+    /// Must match `^[a-zA-Z][a-zA-Z0-9_]*$`. This name is the public API
     /// surface for kernel authors: changing it is a breaking change for
     /// any cell code that references `os.environ["<UPPER_NAME>"]`.
     pub name: String,
@@ -149,8 +149,7 @@ pub struct CredentialRef {
 
     /// Explicit env var name to inject into the kernel environment.
     ///
-    /// When absent, the effective name is `name.to_ascii_uppercase()` with
-    /// hyphens replaced by underscores (e.g. `my-key` → `MY_KEY`).
+    /// When absent, the effective name is `name.to_ascii_uppercase()`.
     /// See [`CredentialRef::effective_env_var`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_var: Option<String>,
@@ -243,9 +242,16 @@ impl CredentialRef {
 pub struct RouteRule {
     /// Upstream hostname (no scheme, no path, no port).
     ///
-    /// Valid: `api.analytics.example.com`
+    /// Valid: `api.analytics.example.com`, `localhost:8877`
     /// Invalid: `https://api.analytics.example.com`, `api.example.com/v1`
     pub host: String,
+
+    /// Whether to use HTTP or HTTPS when forwarding to the upstream.
+    ///
+    /// Defaults to `Https` when absent. Set to `Http` for plain-HTTP local
+    /// services (e.g. `localhost:8877`) where TLS is not available.
+    #[serde(default, skip_serializing_if = "RouteScheme::is_default")]
+    pub scheme: RouteScheme,
 
     /// How the credential is injected into the upstream request.
     pub inject_as: InjectionKind,
@@ -267,6 +273,37 @@ pub struct RouteRule {
     pub template: String,
 }
 
+/// Whether the upstream connection uses HTTP or HTTPS.
+///
+/// Defaults to `Https`. Set `Http` for plain-HTTP local services
+/// (e.g. `localhost:8877`) where TLS is not available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteScheme {
+    Http,
+    Https,
+}
+
+impl Default for RouteScheme {
+    fn default() -> Self {
+        RouteScheme::Https
+    }
+}
+
+impl RouteScheme {
+    /// Used by `#[serde(skip_serializing_if)]` to omit the default value.
+    pub fn is_default(&self) -> bool {
+        *self == RouteScheme::Https
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RouteScheme::Http => "http",
+            RouteScheme::Https => "https",
+        }
+    }
+}
+
 /// How a credential is injected into the upstream HTTP request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -286,7 +323,7 @@ pub enum InjectionKind {
 pub enum ProfileValidationError {
     /// Two credentials share the same name.
     DuplicateCredentialName { name: String },
-    /// A credential name does not match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
+    /// A credential name does not match `^[a-zA-Z][a-zA-Z0-9_]*$`.
     InvalidCredentialName { name: String },
     /// A route host is not a valid hostname (no scheme, no path allowed).
     InvalidRouteHost { credential: String, host: String },
@@ -306,7 +343,7 @@ impl std::fmt::Display for ProfileValidationError {
             }
             Self::InvalidCredentialName { name } => write!(
                 f,
-                "invalid credential name '{name}': must match ^[a-zA-Z][a-zA-Z0-9_-]*$"
+                "invalid credential name '{name}': must match ^[a-zA-Z][a-zA-Z0-9_]*$"
             ),
             Self::InvalidRouteHost { credential, host } => write!(
                 f,
@@ -343,7 +380,7 @@ impl SandboxProfile {
     /// ## Validation rules
     ///
     /// 1. All credential `name` values must be unique.
-    /// 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_-]*$`.
+    /// 2. All credential `name` values must match `^[a-zA-Z][a-zA-Z0-9_]*$`.
     /// 3. All `host` values in routes must be valid hostnames (no scheme, no path).
     /// 4. `allowed_domains` entries must be valid hostnames.
     /// 5. Each `RouteRule` with `inject_as = Header` must have `header` set.
@@ -411,12 +448,12 @@ impl SandboxProfile {
 
 // ── Hostname validation helpers ───────────────────────────────────────
 
-/// Returns `true` if `name` matches `^[a-zA-Z][a-zA-Z0-9_-]*$`.
+/// Returns `true` if `name` matches `^[a-zA-Z][a-zA-Z0-9_]*$`.
 ///
 /// This ensures the name:
 /// - Starts with a letter (valid env var prefix)
-/// - Contains only letters, digits, underscores, and hyphens
-/// - Can be safely used as an env var after replacing hyphens with underscores
+/// - Contains only letters, digits, and underscores (no hyphens)
+/// - Is a valid env var name as-is (no transformation needed)
 fn is_valid_credential_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -430,8 +467,8 @@ fn is_valid_credential_name(name: &str) -> bool {
     if !first.is_ascii_alphabetic() {
         return false;
     }
-    // Remaining chars must be letters, digits, underscores, or hyphens
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    // Remaining chars must be letters, digits, or underscores
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Returns `true` if `s` is a plausible host (hostname with optional port):
@@ -612,8 +649,6 @@ mod tests {
         assert!(is_valid_credential_name("A"));
         assert!(is_valid_credential_name("abc123"));
         assert!(is_valid_credential_name("Abc_Def"));
-        assert!(is_valid_credential_name("my-api-key")); // hyphens now allowed
-        assert!(is_valid_credential_name("my-demo-server"));
     }
 
     #[test]
@@ -623,6 +658,7 @@ mod tests {
         assert!(!is_valid_credential_name("_abc")); // starts with underscore
         assert!(!is_valid_credential_name("abc def")); // contains space
         assert!(!is_valid_credential_name("abc.def")); // contains dot
+        assert!(!is_valid_credential_name("abc-def")); // hyphens not allowed
     }
 
     // ── is_valid_hostname ──────────────────────────────────────────────
@@ -875,8 +911,6 @@ mod tests {
 
     #[test]
     fn effective_env_var_hyphen_to_underscore() {
-        // Note: hyphens in names are rejected by validation, but effective_env_var
-        // still converts them correctly for robustness.
         let cred = CredentialRef {
             name: "my_key".to_string(),
             description: None,

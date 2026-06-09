@@ -1039,8 +1039,13 @@ impl KernelConnection for JupyterKernel {
         #[cfg(unix)]
         let use_ipc = kernel_type != "deno";
 
+        // Sandboxed launches must use TCP transport. macOS seatbelt blocks
+        // AF_UNIX bind() regardless of filesystem permissions, and nono's
+        // proxy already handles localhost TCP traffic.  Force ipc_prefix to
+        // None when a sandbox profile is present so the launch falls through
+        // to the TCP branch.
         #[cfg(unix)]
-        let ipc_prefix = if use_ipc {
+        let ipc_prefix = if use_ipc && sandbox_prereqs.is_none() {
             crate::ensure_ipc_socket_dir()?;
             Some(ipc_path_prefix(&kernel_id))
         } else {
@@ -1174,17 +1179,19 @@ impl KernelConnection for JupyterKernel {
                 );
 
                 if let Some(prereqs) = sandbox_prereqs {
-                    // ── Sandbox IPC spawn ────────────────────────────────
-                    let kernel_argv = extract_kernel_argv(&cmd);
-                    let kernel_env =
-                        extract_kernel_env(&cmd, &prereqs.translated.kernel_env_overrides);
-                    let supervisor_config = SupervisorConfig {
-                        kernel_argv,
-                        profile_path: prereqs.translated.profile_json_path.to_path_buf(),
-                        cwd: cwd.clone(),
-                        env: kernel_env,
-                        name: Some(format!("nteract-kernel-{}", kernel_id)),
-                    };
+                     // ── Sandbox IPC spawn ────────────────────────────────
+                     let kernel_argv = extract_kernel_argv(&cmd);
+                     let kernel_env =
+                         extract_kernel_env(&cmd, &prereqs.translated.kernel_env_overrides);
+                     let supervisor_config = SupervisorConfig {
+                         kernel_argv,
+                         profile_path: prereqs.translated.profile_json_path.to_path_buf(),
+                         cwd: cwd.clone(),
+                         env: kernel_env,
+                         name: Some(format!("nteract-kernel-{}", kernel_id)),
+                         extra_allow_paths: vec![crate::ipc_socket_dir()],
+                         open_ports: vec![],
+                     };
                     let spawn_started = std::time::Instant::now();
                     match Supervisor::spawn(&prereqs.nono_binary, supervisor_config).await {
                         Ok((supervisor, handle)) => {
@@ -1312,17 +1319,19 @@ impl KernelConnection for JupyterKernel {
                     drop(listeners);
                     let spawn_started = std::time::Instant::now();
                     let kernel_argv = extract_kernel_argv(&cmd);
-                    let kernel_env =
+                     let kernel_env =
                         extract_kernel_env(&cmd, &prereqs.translated.kernel_env_overrides);
-                    let supervisor_config = SupervisorConfig {
-                        kernel_argv,
-                        profile_path: prereqs.translated.profile_json_path.to_path_buf(),
-                        cwd: cwd.clone(),
-                        env: kernel_env,
-                        name: Some(format!("nteract-kernel-{}", kernel_id)),
-                    };
-                    #[cfg(not(windows))]
-                    drop(listeners);
+                     let supervisor_config = SupervisorConfig {
+                         kernel_argv,
+                         profile_path: prereqs.translated.profile_json_path.to_path_buf(),
+                         cwd: cwd.clone(),
+                         env: kernel_env,
+                         name: Some(format!("nteract-kernel-{}", kernel_id)),
+                         extra_allow_paths: vec![crate::ipc_socket_dir()],
+                         open_ports: ports.to_vec(),
+                     };
+                     #[cfg(not(windows))]
+                     drop(listeners);
                     match Supervisor::spawn(&prereqs.nono_binary, supervisor_config).await {
                         Ok((supervisor, handle)) => {
                             info!(

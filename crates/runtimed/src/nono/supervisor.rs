@@ -95,6 +95,17 @@ pub struct SupervisorConfig {
     pub env: Vec<(OsString, OsString)>,
     /// Optional human label, passed as `--name` for audit log readability.
     pub name: Option<String>,
+    /// Extra paths to pass as `--allow <path>` to nono in addition to the
+    /// standard home-directory grants.  Use this to grant read+write access to
+    /// directories that fall outside the standard user-tree grants, such as the
+    /// IPC socket directory under `/tmp`.
+    pub extra_allow_paths: Vec<PathBuf>,
+    /// TCP ports the kernel must be allowed to bind and accept on localhost.
+    /// Each entry is passed as `--open-port <port>` to nono so that the
+    /// sandboxed child can call `bind()` on those ports for ZMQ sockets.
+    /// Without this, nono's network sandbox blocks `bind()` and the kernel
+    /// fails with `ZMQError: Operation not permitted`.
+    pub open_ports: Vec<u16>,
 }
 
 /// A running nono supervisor instance.
@@ -282,6 +293,22 @@ impl Supervisor {
                     cmd.arg(&p);
                 }
             }
+        }
+
+        // Extra per-launch allow paths (e.g. the IPC socket directory under
+        // /tmp that the kernel needs to bind Unix domain sockets).
+        for path in &config.extra_allow_paths {
+            cmd.arg("--allow");
+            cmd.arg(path);
+        }
+
+        // ZMQ kernel ports: allow the sandboxed child to bind and accept
+        // connections on each port so the kernel can start its shell/iopub/hb
+        // etc. sockets.  Without these grants nono blocks bind() on arbitrary
+        // TCP ports and the kernel exits with ZMQError: Operation not permitted.
+        for port in &config.open_ports {
+            cmd.arg("--open-port");
+            cmd.arg(port.to_string());
         }
 
         cmd.arg("--profile");

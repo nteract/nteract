@@ -65,7 +65,7 @@ async fn delete_credential(name: String) -> Result<(), String>;
 
 `CredentialMeta` carries name and description only — never the value. Description can be stored in a separate keychain item or as a generic-password attribute.
 
-Validate `name` against `^[a-zA-Z][a-zA-Z0-9_-]*$` (matches task 03's validation). Reject names that begin with `nono-builtin-` or other reserved prefixes if any apply.
+Validate `name` against `^[a-zA-Z][a-zA-Z0-9_]*$` (matches task 03's validation). Reject names that begin with `nono-builtin-` or other reserved prefixes if any apply.
 
 ### 2. Credential manager UI
 

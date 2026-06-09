@@ -35,7 +35,7 @@ import type { CredentialMeta } from "@nteract/notebook-host";
 import { useNotebookHost } from "@nteract/notebook-host";
 
 import { setSandboxProfile, useSandboxProfile } from "~/lib/notebook-metadata";
-import type { CredentialRef, InjectionKind, RouteRule, SandboxProfile } from "@/sandbox/types";
+import type { CredentialRef, InjectionKind, RouteRule, RouteScheme, SandboxProfile } from "@/sandbox/types";
 import { emptySandboxProfile, validateSandboxProfile } from "@/sandbox/types";
 import { CredentialManager } from "./CredentialManager";
 
@@ -57,6 +57,7 @@ interface RouteDialogProps {
 
 function RouteDialog({ existing, open, onClose, onSaved }: RouteDialogProps) {
   const [host, setHost] = React.useState(existing?.host ?? "");
+  const [scheme, setScheme] = React.useState<RouteScheme>(existing?.scheme ?? "https");
   const [injectAs, setInjectAs] = React.useState<InjectionKind>(existing?.inject_as ?? "header");
   const [header, setHeader] = React.useState(existing?.header ?? "");
   const [template, setTemplate] = React.useState(
@@ -67,6 +68,7 @@ function RouteDialog({ existing, open, onClose, onSaved }: RouteDialogProps) {
   React.useEffect(() => {
     if (open) {
       setHost(existing?.host ?? "");
+      setScheme(existing?.scheme ?? "https");
       setInjectAs(existing?.inject_as ?? "header");
       setHeader(existing?.header ?? "");
       setTemplate(existing?.template ?? "Bearer {credential}");
@@ -88,6 +90,7 @@ function RouteDialog({ existing, open, onClose, onSaved }: RouteDialogProps) {
     const effectiveHeader = injectAs === "header" ? (header.trim() || "Authorization") : undefined;
     const route: RouteRule = {
       host: host.trim(),
+      ...(scheme !== "https" ? { scheme } : {}),
       inject_as: injectAs,
       template,
       ...(effectiveHeader !== undefined ? { header: effectiveHeader } : {}),
@@ -115,6 +118,19 @@ function RouteDialog({ existing, open, onClose, onSaved }: RouteDialogProps) {
               placeholder="api.example.com"
             />
             {errors.host && <p className="text-destructive text-xs">{errors.host}</p>}
+          </div>
+          <div className="flex items-center justify-between">
+            <div className="grid gap-0.5">
+              <Label htmlFor="route-scheme">Use HTTPS</Label>
+              <p className="text-muted-foreground text-xs">
+                Disable for plain-HTTP local services (e.g. localhost:8877).
+              </p>
+            </div>
+            <Switch
+              id="route-scheme"
+              checked={scheme === "https"}
+              onCheckedChange={(checked) => setScheme(checked ? "https" : "http")}
+            />
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="route-inject">Injection type</Label>
@@ -263,7 +279,7 @@ function AddCredRefDialog({
               onBlur={() => {
                 if (name) setNameError(validateCredRefName(name, existingNames));
               }}
-              placeholder="my-api-key"
+              placeholder="my_api_key"
               list="cred-suggestions"
               autoComplete="off"
             />
@@ -306,7 +322,12 @@ function normalizeProfile(raw: SandboxProfile | undefined): SandboxProfile {
   if (!raw) return emptySandboxProfile();
   return {
     enabled: raw.enabled ?? false,
-    credentials: Array.isArray(raw.credentials) ? raw.credentials : [],
+    credentials: Array.isArray(raw.credentials)
+      ? raw.credentials.map((c) => ({
+          ...c,
+          routes: Array.isArray(c.routes) ? c.routes : [],
+        }))
+      : [],
     allowed_domains: Array.isArray(raw.allowed_domains) ? raw.allowed_domains : [],
   };
 }
@@ -377,10 +398,6 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
     setDraft((prev) => ({ ...prev, ...patch }));
   }
 
-  function updateCred(index: number, patch: Partial<CredentialRef>) {
-    const updated = draft.credentials.map((c, i) => (i === index ? { ...c, ...patch } : c));
-    patchDraft({ credentials: updated });
-  }
 
   function removeCred(index: number) {
     patchDraft({ credentials: draft.credentials.filter((_, i) => i !== index) });
@@ -623,10 +640,6 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
             } else {
               addRoute(routeDialogState.credName, route);
             }
-            updateCred(
-              draft.credentials.findIndex((c) => c.name === routeDialogState.credName),
-              {},
-            );
           }}
         />
       )}
