@@ -31,20 +31,15 @@ const actionButtonIntentClasses: Record<CellInsertionType, string> = {
     "bg-emerald-500/12 text-emerald-700 ring-emerald-500/20 hover:bg-emerald-500/16 dark:text-emerald-300",
 };
 
-const insertionBridgeIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-500/8 dark:bg-sky-400/10",
-  markdown: "bg-emerald-500/8 dark:bg-emerald-400/10",
+const insertionBridgeLineClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-400/50 dark:bg-sky-300/40",
+  markdown: "bg-emerald-400/50 dark:bg-emerald-300/40",
 };
 
 const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
   code: "bg-gradient-to-r from-sky-400/35 via-border/35 to-transparent dark:from-sky-300/30 dark:via-border/30",
   markdown:
     "bg-gradient-to-r from-emerald-400/35 via-border/35 to-transparent dark:from-emerald-300/30 dark:via-border/30",
-};
-
-const insertionChannelIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-500/8 dark:bg-sky-400/10",
-  markdown: "bg-emerald-500/8 dark:bg-emerald-400/10",
 };
 
 export function CellInsertionRibbon({
@@ -86,10 +81,8 @@ export function CellInsertionRibbon({
     );
 
   const leadingInsertionRuleClass = cn(
-    "transition-colors duration-150",
-    visualActiveType
-      ? cn("h-full", insertionBridgeIntentClasses[visualActiveType])
-      : "h-px rounded-full bg-border/45",
+    "h-px rounded-full transition-colors duration-150",
+    visualActiveType ? insertionBridgeLineClasses[visualActiveType] : "bg-border/45",
   );
   const trailingInsertionRuleClass = cn(
     "h-px rounded-full transition-colors duration-150",
@@ -158,16 +151,26 @@ export function CellInsertionRibbon({
         onFocus={() => setActiveType("code")}
         onClick={() => onInsert("code")}
         className={cn(
-          "flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
+          "relative flex h-full w-[var(--cell-content-column-inset,3.25rem)] shrink-0 items-center justify-center rounded-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-inset",
           visualActiveType
-            ? insertionChannelIntentClasses[visualActiveType]
+            ? "text-muted-foreground/0"
             : isOpen
               ? "bg-transparent text-muted-foreground/35 hover:bg-muted/20 hover:text-muted-foreground/65"
               : "text-muted-foreground/0 hover:bg-muted/20",
           terminal && "h-7",
         )}
       >
+        {visualActiveType ? (
+          <span
+            data-slot="cell-adder-primary-bridge"
+            className={cn(
+              "pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 rounded-full",
+              insertionBridgeLineClasses[visualActiveType],
+            )}
+            aria-hidden="true"
+          />
+        ) : null}
         <span className="sr-only">Add code cell here</span>
       </button>
       <div
@@ -190,7 +193,7 @@ export function CellInsertionRibbon({
         />
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1 transition-colors duration-150"
+          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0 pr-1 transition-colors duration-150"
         >
           <button
             type="button"
