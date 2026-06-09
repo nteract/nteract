@@ -195,14 +195,14 @@ function launchProjectionForCandidate(
     }
     return launchProjection({
       canRun: false,
-      detail: "This workstation is available but not attached to the notebook yet.",
+      detail: "This workstation is available and can start compute for this notebook.",
       primaryAction: launchAction(
         "attach_workstation",
-        "Attach compute",
-        `Attach ${candidate.displayName} to this notebook`,
+        "Start compute",
+        `Start compute on ${candidate.displayName}`,
       ),
       state: "needs_attachment",
-      statusLabel: "Attach needed",
+      statusLabel: "Ready to start",
       targetLabel: candidate.displayName,
       workstationId: candidate.id,
     });

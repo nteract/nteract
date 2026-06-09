@@ -76,12 +76,12 @@ describe("hosted workstation toolbar smoke helpers", () => {
     assert.doesNotThrow(() =>
       assertToolbarWorkstationAction(
         {
-          label: "Attach compute",
-          title: "Attach lab2 workstation to this notebook",
+          label: "Start compute",
+          title: "Start compute on lab2 workstation",
         },
         {
           context: "online default workstation",
-          label: "Attach compute",
+          label: "Start compute",
           titleIncludes: ["lab2", "workstation"],
         },
       ),
@@ -108,10 +108,10 @@ describe("hosted workstation toolbar smoke helpers", () => {
     assert.throws(
       () =>
         assertToolbarWorkstationAction(
-          { label: "Attach compute", title: "Open workstations panel" },
+          { label: "Start compute", title: "Open workstations panel" },
           {
             context: "wrong target",
-            label: "Attach compute",
+            label: "Start compute",
             titleIncludes: ["lab2"],
           },
         ),

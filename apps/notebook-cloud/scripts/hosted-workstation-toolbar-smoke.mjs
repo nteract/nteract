@@ -260,11 +260,11 @@ async function runOwnerAttachAndExecuteSmoke({
   const cell = await ensureCodeCell(page, timeoutMs);
   await setCellSource(cell, source);
 
-  await waitForToolbarAction(page, "Attach compute", timeoutMs);
+  await waitForToolbarAction(page, "Start compute", timeoutMs);
   const action = await readToolbarWorkstationAction(page);
   assertToolbarWorkstationAction(action, {
     context: "owner attach",
-    label: "Attach compute",
+    label: "Start compute",
     titleIncludes: [workstationId, "workstation"],
   });
   await page.getByTestId("workstation-setup-button").click({ timeout: timeoutMs });
