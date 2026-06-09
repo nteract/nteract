@@ -19,7 +19,9 @@ import {
 } from "./cloud-viewer-config";
 import type { CloudViewerConfig } from "./cloud-viewer-session";
 import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-types";
-import { CloudHomeView, CloudNotebookListView, OidcCallbackView } from "./cloud-route-views";
+import { CloudHomeView } from "./home-view";
+import { CloudNotebookListView } from "./notebook-list-view";
+import { OidcCallbackView } from "./oidc-callback-view";
 import { NotebookViewer } from "./notebook-viewer";
 import "./index.css";
 

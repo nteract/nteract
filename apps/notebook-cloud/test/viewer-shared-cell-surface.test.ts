@@ -492,7 +492,7 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
 
 test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
   const sourceText = viewerCorpus;
-  const routeSourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
+  const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
   const authSourcePath = new URL("../viewer/use-cloud-auth.ts", import.meta.url);
   const authSourceText = readFileSync(authSourcePath, "utf8");
@@ -512,7 +512,7 @@ test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange
 });
 
 test("cloud notebook list waits for app-session cookies before catalog fetches", () => {
-  const sourcePath = new URL("../viewer/cloud-route-views.tsx", import.meta.url);
+  const sourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(

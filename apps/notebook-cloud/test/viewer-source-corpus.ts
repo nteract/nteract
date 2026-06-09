@@ -18,7 +18,9 @@ import { readFileSync } from "node:fs";
 const VIEWER_MODULE_FILES = [
   "index.tsx",
   "notebook-viewer.tsx",
-  "cloud-route-views.tsx",
+  "home-view.tsx",
+  "notebook-list-view.tsx",
+  "oidc-callback-view.tsx",
   "cloud-notebook-dashboard-view.tsx",
   "cloud-presence-status.tsx",
   "cloud-notebook-title.tsx",

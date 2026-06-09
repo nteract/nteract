@@ -5,23 +5,19 @@ import {
   FilePlus2,
   KeyRound,
   Loader2,
-  LogIn,
   LogOut,
   RotateCcw,
-  UserRound,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import {
   clearCloudPrototypeDevAuth,
   fetchWithCloudPrototypeAuth,
-  prepareCloudOidcViewerLogin,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
-import { beginOidcLogin, completeOidcRedirect } from "./oidc-auth";
 import { cloudResponseError } from "./cloud-response";
-import { clearCloudAppSession, establishCloudAppSessionFromOidcToken } from "./app-session";
+import { clearCloudAppSession } from "./app-session";
 import { CloudNotebookDashboard } from "./cloud-notebook-dashboard-view";
-import { isNotebookListPath, loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
+import { loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
 import type {
   CloudNotebookCreateResponse,
   CloudNotebookListBootstrap,
@@ -31,7 +27,6 @@ import type {
   CloudNotebookUpdateResponse,
   CloudViewerAuthConfig,
 } from "./cloud-viewer-types";
-import type { ViewerStatus } from "./notice-types";
 import { projectCloudNotebookDashboard, type CloudNotebookListItem } from "./notebook-dashboard";
 import {
   clearCachedCloudNotebookList,
@@ -537,269 +532,4 @@ function isCloudNotebookListResponse(value: unknown): value is CloudNotebookList
   }
   const candidate = value as Record<string, unknown>;
   return candidate.ok === true && Array.isArray(candidate.notebooks);
-}
-
-export function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
-  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const appSessionStatus = useCloudAppSessionStatus(null);
-  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig, {
-    appSessionRefreshFallback: true,
-    appSessionLoading: appSessionStatus.status === "loading",
-    appSession: appSessionStatus.session,
-  });
-  useCloudAppSessionBridge(
-    authState,
-    appSessionStatus.session,
-    appSessionStatus.status === "loading",
-    appSessionStatus.refreshAppSessionStatus,
-  );
-  const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
-  const [formError, setFormError] = useState<string | null>(null);
-  const oidcConfigured = Boolean(authConfig.oidc);
-
-  useEffect(() => {
-    applyDocumentTheme(resolvedTheme);
-  }, [resolvedTheme]);
-
-  const beginOidcAuth = async () => {
-    if (!authConfig.oidc) {
-      setFormError("OIDC sign-in is not configured for this host.");
-      return;
-    }
-    try {
-      setAuthAction("starting");
-      prepareCloudOidcViewerLogin(window.localStorage);
-      const url = await beginOidcLogin(authConfig.oidc, {
-        currentUrl: window.location.href,
-        storage: window.localStorage,
-      });
-      window.location.assign(url.href);
-    } catch (error) {
-      setAuthAction("idle");
-      setFormError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const resetAuth = () => {
-    appSessionStatus.clearAppSessionStatus();
-    void clearCloudAppSession()
-      .catch((error: unknown) => {
-        console.warn("[notebook-cloud] app session clear failed", error);
-      })
-      .finally(appSessionStatus.refreshAppSessionStatus);
-    clearCloudPrototypeDevAuth(window.localStorage);
-    setFormError(null);
-    refreshAuthState();
-  };
-
-  const hasExplicitAuth = authState.mode === "oidc";
-  const hasAppSession = Boolean(appSessionStatus.session);
-  const signedIn = hasExplicitAuth || hasAppSession;
-  const homeStatusMode = signedIn ? "oidc" : authState.mode;
-  const homeStatusTitle = hasExplicitAuth
-    ? (authState.user ?? "Signed in")
-    : hasAppSession
-      ? "Signed in"
-      : "Open a notebook";
-  const homeStatusDescription = signedIn
-    ? hasExplicitAuth
-      ? "Open a notebook or sign out of this browser session."
-      : "Open and manage notebooks with this browser session."
-    : "Sign in to open private notebooks or request edit access.";
-
-  return (
-    <main className="cloud-home">
-      <section className="cloud-home-layout" aria-label="nteract notebook entry">
-        <div className="cloud-home-copy">
-          <h1>nteract</h1>
-          <span>realtime notebooks</span>
-        </div>
-
-        <section
-          className="cloud-home-panel"
-          data-mode={homeStatusMode}
-          aria-label="Notebook sign-in"
-        >
-          <div className="cloud-home-status" data-mode={homeStatusMode}>
-            {signedIn ? <UserRound aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
-            <div>
-              <h2>{homeStatusTitle}</h2>
-              <p>{homeStatusDescription}</p>
-            </div>
-          </div>
-
-          {formError ? (
-            <div className="cloud-auth-form-error" role="alert">
-              {formError}
-            </div>
-          ) : null}
-          {authRenewal.kind !== "idle" && !hasAppSession ? (
-            <div
-              className="cloud-auth-form-error"
-              data-kind={authRenewal.kind === "failed" ? "error" : "info"}
-              role={authRenewal.kind === "failed" ? "alert" : "status"}
-            >
-              {authRenewal.message}
-            </div>
-          ) : null}
-
-          <div className="cloud-home-actions">
-            <a href="/n">View notebooks</a>
-            {signedIn ? (
-              <button
-                type="button"
-                onClick={() => {
-                  appSessionStatus.clearAppSessionStatus();
-                  void clearCloudAppSession()
-                    .catch((error: unknown) => {
-                      console.warn("[notebook-cloud] app session clear failed", error);
-                    })
-                    .finally(appSessionStatus.refreshAppSessionStatus);
-                  clearCloudPrototypeDevAuth(window.localStorage);
-                  refreshAuthState();
-                }}
-              >
-                <LogOut aria-hidden="true" />
-                Sign out
-              </button>
-            ) : null}
-            {hasExplicitAuth ? null : (
-              <button
-                type="button"
-                disabled={authAction === "starting" || !oidcConfigured}
-                onClick={beginOidcAuth}
-              >
-                <LogIn aria-hidden="true" />
-                {authAction === "starting"
-                  ? "Starting sign-in"
-                  : !oidcConfigured
-                    ? "Sign-in unavailable"
-                    : hasAppSession
-                      ? "Renew sign-in"
-                      : "Sign in with Anaconda"}
-              </button>
-            )}
-            {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
-              <button type="button" onClick={resetAuth}>
-                <RotateCcw aria-hidden="true" />
-                Reset
-              </button>
-            ) : null}
-          </div>
-
-          {oidcConfigured ? null : (
-            <p className="cloud-home-note">
-              This host has no sign-in provider configured. Public notebooks can still be read.
-            </p>
-          )}
-        </section>
-      </section>
-    </main>
-  );
-}
-
-export function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
-  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const [status, setStatus] = useState<ViewerStatus>({
-    kind: "loading",
-    message: "Completing sign-in...",
-  });
-
-  useEffect(() => {
-    applyDocumentTheme(resolvedTheme);
-  }, [resolvedTheme]);
-
-  useEffect(() => {
-    const oidc = authConfig.oidc;
-    if (!oidc) {
-      setStatus({ kind: "error", message: "OIDC sign-in is not configured for this host." });
-      return;
-    }
-
-    const params = new URLSearchParams(window.location.search);
-    if (!params.has("code") || !params.has("state")) {
-      setStatus({ kind: "empty", message: "No sign-in callback is pending." });
-      return;
-    }
-
-    let cancelled = false;
-    void completeOidcRedirect(oidc, {
-      callbackUrl: window.location.href,
-      storage: window.localStorage,
-    })
-      .then(async ({ returnUrl, token }) => {
-        if (cancelled) return;
-        await establishCloudAppSessionFromOidcToken(token).catch((error: unknown) => {
-          console.warn("[notebook-cloud] app session exchange failed", error);
-        });
-        if (cancelled) return;
-        setStatus({ kind: "ready", message: "Signed in. Returning to the notebook..." });
-        window.location.replace(returnUrl);
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setStatus({
-          kind: "error",
-          message: error instanceof Error ? error.message : String(error),
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authConfig.oidc]);
-
-  const statusTitle =
-    status.kind === "ready"
-      ? "Signed in"
-      : status.kind === "error"
-        ? "Sign-in needs attention"
-        : status.kind === "empty"
-          ? "Nothing to finish"
-          : "Completing sign-in";
-  const statusIcon =
-    status.kind === "error" ? (
-      <AlertCircle aria-hidden="true" />
-    ) : status.kind === "ready" ? (
-      <UserRound aria-hidden="true" />
-    ) : status.kind === "empty" ? (
-      <KeyRound aria-hidden="true" />
-    ) : (
-      <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-    );
-
-  return (
-    <main className="cloud-home">
-      <section className="cloud-home-layout" aria-label="nteract sign-in callback">
-        <div className="cloud-home-copy">
-          <h1>nteract</h1>
-          <span>returning to the notebook</span>
-        </div>
-
-        <section
-          className="cloud-home-panel"
-          data-mode={status.kind}
-          aria-label="Cloud sign-in status"
-        >
-          <div className="cloud-home-status" data-mode={status.kind}>
-            {statusIcon}
-            <div>
-              <h2>{statusTitle}</h2>
-              <p>{status.message}</p>
-            </div>
-          </div>
-
-          {status.kind === "error" || status.kind === "empty" ? (
-            <div className="cloud-home-actions">
-              <a href="/">Back to nteract</a>
-            </div>
-          ) : null}
-        </section>
-      </section>
-    </main>
-  );
-}
-
-export function shouldBootstrapNotebookListRoute(): boolean {
-  return isNotebookListPath();
 }
