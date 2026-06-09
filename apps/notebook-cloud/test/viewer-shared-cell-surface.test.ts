@@ -282,9 +282,12 @@ test("cloud presence chrome renders as an isolated host avatar stack", () => {
 test("cloud edit mode chrome renders through the shared shell component", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const shellHookSourcePath = new URL("../viewer/use-cloud-shell-capabilities.ts", import.meta.url);
+  const shellHookSourceText = readFileSync(shellHookSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
 
+  assert.match(sourceText, /useCloudShellCapabilities/);
   assert.match(sourceText, /NotebookEditModeButton/);
   assert.match(
     sourceText,
@@ -297,12 +300,15 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /<NotebookEditModeButton[\s\S]*variant="segmented"/);
   assert.match(sourceText, /onModeChange=\{\(mode\) => \{/);
   assert.match(sourceText, /accessLevel=\{shellCapabilities\.access\.level\}/);
-  assert.match(sourceText, /projectCloudNotebookEditAccess/);
-  assert.match(sourceText, /selectedMode: selectedInteractionMode/);
-  assert.match(sourceText, /editAccessRequestPending/);
+  assert.doesNotMatch(sourceText, /projectCloudNotebookEditAccess/);
+  assert.doesNotMatch(sourceText, /cloudNotebookShellCapabilities/);
+  assert.match(shellHookSourceText, /projectCloudNotebookEditAccess/);
+  assert.match(shellHookSourceText, /cloudNotebookShellCapabilities/);
+  assert.match(shellHookSourceText, /selectedMode/);
+  assert.match(shellHookSourceText, /editAccessRequestPending/);
   assert.match(sourceText, /onModeChange=\{setSelectedInteractionMode\}/);
   assert.match(sourceText, /onRequestEditAccess=\{requestCloudEditAccess\}/);
-  assert.match(sourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
+  assert.match(shellHookSourceText, /const editAccessPending = roomEditAccess\.editAccessPending/);
   assert.doesNotMatch(sourceText, /appliedGrantedEditScopeRef/);
   assert.doesNotMatch(sourceText, /requestedEditAccess/);
   assert.doesNotMatch(
