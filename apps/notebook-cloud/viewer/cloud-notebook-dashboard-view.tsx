@@ -43,6 +43,7 @@ export function CloudNotebookDashboard({
   onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const continued = model.continueNotebook;
+  const sidebar = model.sidebar;
 
   return (
     <div className="cloud-dashboard">
@@ -99,19 +100,44 @@ export function CloudNotebookDashboard({
             />
           ))}
         </section>
-        <aside className="cloud-dashboard-aside" aria-label="Notebook workspace">
-          <section>
-            <p className="cloud-dashboard-aside-kicker">Compute</p>
-            <h2>Workstations</h2>
-            <p>
-              Workstation status appears inside each notebook room once a compute target is
-              selected.
-            </p>
-          </section>
-          <section>
+        <aside className="cloud-dashboard-aside" aria-label="Workspace summary">
+          <section className="cloud-dashboard-aside-panel">
             <p className="cloud-dashboard-aside-kicker">Sharing</p>
-            <h2>Public previews</h2>
-            <p>Published notebooks can expose safe metadata and revision-aware preview images.</p>
+            <h2>Published previews</h2>
+            {sidebar.published.length > 0 ? (
+              <ul className="cloud-dashboard-aside-list">
+                {sidebar.published.slice(0, 5).map((notebook) => (
+                  <li key={notebook.notebook_id}>
+                    <a href={notebook.viewer_url}>
+                      <Globe2 aria-hidden="true" />
+                      <span>{cloudNotebookDisplayTitle(notebook)}</span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="cloud-dashboard-aside-empty">
+                Publish a revision to expose safe metadata and revision-aware preview images.
+              </p>
+            )}
+          </section>
+          <section className="cloud-dashboard-aside-panel">
+            <p className="cloud-dashboard-aside-kicker">Access</p>
+            <h2>Your roles</h2>
+            <dl className="cloud-dashboard-access">
+              <div>
+                <dt>Owned</dt>
+                <dd>{sidebar.access.owned}</dd>
+              </div>
+              <div>
+                <dt>Editable</dt>
+                <dd>{sidebar.access.editable}</dd>
+              </div>
+              <div>
+                <dt>View-only</dt>
+                <dd>{sidebar.access.viewOnly}</dd>
+              </div>
+            </dl>
           </section>
         </aside>
       </section>

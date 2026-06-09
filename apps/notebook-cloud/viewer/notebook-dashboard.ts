@@ -26,6 +26,16 @@ export interface CloudNotebookDashboardModel {
   metrics: readonly CloudNotebookDashboardMetric[];
   notebooks: readonly CloudNotebookListItem[];
   sections: readonly CloudNotebookDashboardSection[];
+  sidebar: CloudNotebookDashboardSidebar;
+}
+
+export interface CloudNotebookDashboardSidebar {
+  published: readonly CloudNotebookListItem[];
+  access: {
+    owned: number;
+    editable: number;
+    viewOnly: number;
+  };
 }
 
 export interface CloudNotebookDashboardSection {
@@ -62,9 +72,10 @@ export function projectCloudNotebookDashboard(
     (notebook) => notebook.scope === "owner" || notebook.scope === "editor",
   ).length;
   const ownerCount = notebooks.filter((notebook) => notebook.scope === "owner").length;
-  const publishedCount = notebooks.filter((notebook) =>
-    Boolean(notebook.latest_revision_id),
-  ).length;
+  const editorCount = notebooks.filter((notebook) => notebook.scope === "editor").length;
+  const viewerCount = notebooks.filter((notebook) => notebook.scope === "viewer").length;
+  const published = sorted.filter((notebook) => Boolean(notebook.latest_revision_id));
+  const publishedCount = published.length;
 
   return {
     continueNotebook: titled[0] ?? sorted[0] ?? null,
@@ -90,6 +101,14 @@ export function projectCloudNotebookDashboard(
         icon: "published",
       },
     ],
+    sidebar: {
+      published,
+      access: {
+        owned: ownerCount,
+        editable: editorCount,
+        viewOnly: viewerCount,
+      },
+    },
   };
 }
 

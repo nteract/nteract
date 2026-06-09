@@ -130,6 +130,38 @@ describe("cloud notebook dashboard projection", () => {
 
     assert.equal(model.sections[0]?.action, null);
   });
+
+  it("projects published previews and an access-role breakdown for the sidebar", () => {
+    const ownerPublished = notebook({
+      id: "owner-pub",
+      title: "Owner Published",
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: "rev-1",
+    });
+    const editorDraft = notebook({
+      id: "editor-draft",
+      title: "Editor Draft",
+      scope: "editor",
+      updatedAt: "2026-06-05T12:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const viewerPublished = notebook({
+      id: "viewer-pub",
+      title: "Viewer Published",
+      scope: "viewer",
+      updatedAt: "2026-06-06T12:00:00.000Z",
+      latestRevisionId: "rev-2",
+    });
+
+    const model = projectCloudNotebookDashboard([editorDraft, viewerPublished, ownerPublished]);
+
+    assert.deepEqual(
+      model.sidebar.published.map((item) => item.notebook_id),
+      ["owner-pub", "viewer-pub"],
+    );
+    assert.deepEqual(model.sidebar.access, { owned: 1, editable: 1, viewOnly: 1 });
+  });
 });
 
 function notebook(input: {
