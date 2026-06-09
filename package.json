@@ -18,6 +18,9 @@
     "elements:dev:local": "pnpm --dir apps/elements dev:local",
     "elements:url": "pnpm --dir apps/elements url",
     "elements:build": "pnpm --dir apps/elements build",
+    "cloud-dashboard-designs:dev": "vp dev -c apps/cloud-dashboard-designs/vite.config.ts --host 127.0.0.1",
+    "cloud-dashboard-designs:check": "tsc -p apps/cloud-dashboard-designs/tsconfig.json --noEmit",
+    "cloud-dashboard-designs:build": "pnpm run cloud-dashboard-designs:check && vp build -c apps/cloud-dashboard-designs/vite.config.ts",
     "prototype:sidebar-toc": "RUNTIMED_VITE_PORT=5175 RUNT_NOTEBOOK_PROTOTYPE_ROUTE=/prototypes/sidebar-toc/ pnpm --dir apps/notebook dev -- --host 127.0.0.1"
   },
   "dependencies": {
