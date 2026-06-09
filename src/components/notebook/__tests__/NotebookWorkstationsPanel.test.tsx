@@ -71,12 +71,12 @@ describe("NotebookWorkstationsPanel", () => {
   it("renders a local executable runtime as a workstation target", () => {
     render(<NotebookWorkstationsPanel capabilities={localReadyCapabilities} />);
 
-    expect(screen.getByText("local-daemon")).toBeVisible();
+    expect(screen.queryByText("local-daemon")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "This machine" })).toBeVisible();
     expect(screen.getByText("Ready")).toBeVisible();
     expect(screen.queryByText("The local daemon is available for this notebook.")).toBeNull();
-    expect(screen.getAllByText("Local daemon")).toHaveLength(2);
-    expect(screen.getAllByText("Notebook runtime")).toHaveLength(2);
+    expect(screen.getByText("Local daemon")).toBeVisible();
+    expect(screen.getByText("Notebook runtime")).toBeVisible();
     expect(screen.getByText("Default env")).toBeVisible();
     expect(screen.getByText("Kernel")).toBeVisible();
     expect(screen.getByText("idle")).toBeVisible();
@@ -123,15 +123,15 @@ describe("NotebookWorkstationsPanel", () => {
 
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
 
-    expect(screen.getByText("workstation:none")).toBeVisible();
+    expect(screen.queryByText("workstation:none")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "No workstation attached" })).toBeVisible();
     expect(screen.getByText("Offline")).toBeVisible();
     expect(
       screen.getByText("Attach a user-owned workstation to run cells in this room."),
     ).toBeVisible();
-    expect(screen.getAllByText("Cloud room")).toHaveLength(2);
+    expect(screen.getByText("Cloud room")).toBeVisible();
     expect(screen.queryByText("Kyle")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Not attached")).toHaveLength(2);
+    expect(screen.getByText("Not attached")).toBeVisible();
     expect(screen.queryByText("Principal")).not.toBeInTheDocument();
     expect(screen.queryByText("Operator")).not.toBeInTheDocument();
     expect(screen.getByText("Not runnable")).toBeVisible();
@@ -176,9 +176,11 @@ describe("NotebookWorkstationsPanel", () => {
     render(<NotebookWorkstationsPanel capabilities={capabilities} selection={selection} />);
 
     expect(screen.getByTestId("workstation-registration-empty")).toBeVisible();
-    expect(screen.getByText("No workstations yet")).toBeVisible();
+    expect(screen.getByText("No workstation registered")).toBeVisible();
     expect(
-      screen.getByText("Register a workstation to make this notebook runnable from your compute."),
+      screen.getByText(
+        "Run the workstation agent on a machine you own, then attach it here to start compute.",
+      ),
     ).toBeVisible();
   });
 
@@ -236,9 +238,10 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByText("ws-lab2")).toBeVisible();
+    expect(screen.getByText("id ws-lab2")).toBeVisible();
     expect(screen.getByText("Lab2")).toBeVisible();
     expect(screen.getByText("Default")).toBeVisible();
+    expect(screen.getByText("Env")).toBeVisible();
     expect(screen.getByText("/home/ubuntu/project")).toBeVisible();
     const attachButtons = screen.getAllByRole("button", { name: "Attach" });
     fireEvent.click(attachButtons[0]!);
@@ -277,7 +280,7 @@ describe("NotebookWorkstationsPanel", () => {
 
     expect(screen.getByRole("heading", { name: "Remote devbox" })).toBeVisible();
     expect(screen.getByText("Default env")).toBeVisible();
-    expect(screen.getAllByText("Current Python")).toHaveLength(2);
+    expect(screen.getByText("Current Python")).toBeVisible();
     expect(screen.getByText("Resources")).toBeVisible();
     expect(screen.getByText("4 CPU / 16 GB RAM")).toBeVisible();
     expect(screen.getByText("Runtime peers")).toBeVisible();

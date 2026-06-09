@@ -246,6 +246,8 @@ export {
   projectNotebookWorkstationSelection,
   type NotebookRegisteredWorkstation,
   type NotebookRegisteredWorkstationEnvironment,
+  type NotebookRegisteredWorkstationFactKind,
+  type NotebookRegisteredWorkstationFactProjection,
   type NotebookRegisteredWorkstationProjection,
   type NotebookRegisteredWorkstationStatus,
   type NotebookWorkstationEnvironmentPolicy,

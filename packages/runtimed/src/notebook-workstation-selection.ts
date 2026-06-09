@@ -54,13 +54,28 @@ export interface NotebookWorkstationEnvironmentProjection {
   policy: NotebookWorkstationEnvironmentPolicy | string;
 }
 
+export type NotebookRegisteredWorkstationFactKind =
+  | "default_environment"
+  | "cpu"
+  | "memory"
+  | "working_directory";
+
+export interface NotebookRegisteredWorkstationFactProjection {
+  kind: NotebookRegisteredWorkstationFactKind;
+  label: string;
+  value: string;
+}
+
 export interface NotebookRegisteredWorkstationProjection {
+  canAttach: boolean;
   cpuCount: number | null;
   defaultEnvironmentLabel: string | null;
   displayName: string;
   environmentPolicy: NotebookWorkstationEnvironmentPolicy | string | null;
   environments: readonly NotebookWorkstationEnvironmentProjection[];
+  facts: readonly NotebookRegisteredWorkstationFactProjection[];
   id: string;
+  idLabel: string;
   isAttached: boolean;
   isDefault: boolean;
   isSelected: boolean;
@@ -203,6 +218,17 @@ function projectRegisteredWorkstation(
 ): NotebookRegisteredWorkstationProjection {
   const status = normalizeWorkstationStatus(workstation.status);
   const environments = normalizeWorkstationEnvironments(workstation.environments);
+  const cpuCount = normalizePositiveInteger(workstation.cpuCount);
+  const defaultEnvironmentLabel = trimToNull(workstation.defaultEnvironmentLabel);
+  const memoryBytes = normalizePositiveInteger(workstation.memoryBytes);
+  const workingDirectoryLabel = trimToNull(workstation.workingDirectory);
+  const facts = projectRegisteredWorkstationFacts({
+    cpuCount,
+    defaultEnvironmentLabel,
+    environments,
+    memoryBytes,
+    workingDirectoryLabel,
+  });
   const cacheKey = stableCacheKey([
     registeredWorkstationCacheKey(workstation),
     activeWorkstationId,
@@ -213,23 +239,30 @@ function projectRegisteredWorkstation(
   if (cached) return cached;
 
   const projection = Object.freeze({
-    cpuCount: normalizePositiveInteger(workstation.cpuCount),
-    defaultEnvironmentLabel: trimToNull(workstation.defaultEnvironmentLabel),
+    canAttach:
+      status === "online" &&
+      Boolean(workingDirectoryLabel) &&
+      (Boolean(defaultEnvironmentLabel) ||
+        environments.some((environment) => environment.available)),
+    cpuCount,
+    defaultEnvironmentLabel,
     displayName: trimToNull(workstation.displayName) ?? workstation.id,
     environmentPolicy: trimToNull(workstation.environmentPolicy),
     environments: Object.freeze(environments),
+    facts: Object.freeze(facts),
     id: workstation.id,
+    idLabel: `id ${workstation.id}`,
     isAttached: activeWorkstationId === workstation.id,
     isDefault: defaultWorkstationId === workstation.id,
     isSelected: selectedWorkstationId === workstation.id,
-    memoryBytes: normalizePositiveInteger(workstation.memoryBytes),
+    memoryBytes,
     provider: trimToNull(workstation.provider),
     providerLabel: trimToNull(workstation.providerLabel) ?? providerLabel(workstation.provider),
     status,
     statusLabel: workstationStatusLabel(status),
     statusMessage: trimToNull(workstation.statusMessage),
     updatedAt: trimToNull(workstation.updatedAt),
-    workingDirectoryLabel: trimToNull(workstation.workingDirectory),
+    workingDirectoryLabel,
   });
   setBoundedCacheValue(
     WORKSTATION_ENTRY_CACHE,
@@ -238,6 +271,49 @@ function projectRegisteredWorkstation(
     WORKSTATION_ENTRY_CACHE_LIMIT,
   );
   return projection;
+}
+
+function projectRegisteredWorkstationFacts({
+  cpuCount,
+  defaultEnvironmentLabel,
+  environments,
+  memoryBytes,
+  workingDirectoryLabel,
+}: {
+  cpuCount: number | null;
+  defaultEnvironmentLabel: string | null;
+  environments: readonly NotebookWorkstationEnvironmentProjection[];
+  memoryBytes: number | null;
+  workingDirectoryLabel: string | null;
+}): readonly NotebookRegisteredWorkstationFactProjection[] {
+  const facts: NotebookRegisteredWorkstationFactProjection[] = [];
+  const environmentLabel =
+    defaultEnvironmentLabel ??
+    environments.find((environment) => environment.isDefault)?.label ??
+    environments.find((environment) => environment.available)?.label ??
+    null;
+  if (environmentLabel) {
+    facts.push(registeredWorkstationFact("default_environment", "Env", environmentLabel));
+  }
+  if (cpuCount) {
+    facts.push(registeredWorkstationFact("cpu", "CPUs", `${cpuCount}`));
+  }
+  const memoryLabel = formatMemoryBytes(memoryBytes);
+  if (memoryLabel) {
+    facts.push(registeredWorkstationFact("memory", "RAM", memoryLabel));
+  }
+  if (workingDirectoryLabel) {
+    facts.push(registeredWorkstationFact("working_directory", "CWD", workingDirectoryLabel));
+  }
+  return Object.freeze(facts);
+}
+
+function registeredWorkstationFact(
+  kind: NotebookRegisteredWorkstationFactKind,
+  label: string,
+  value: string,
+): NotebookRegisteredWorkstationFactProjection {
+  return Object.freeze({ kind, label, value });
 }
 
 function normalizeRegisteredWorkstations(
@@ -404,4 +480,26 @@ function normalizePositiveInteger(value: number | null | undefined): number | nu
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : null;
+}
+
+function formatMemoryBytes(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const gib = value / 1024 ** 3;
+  if (gib >= 1) {
+    return `${formatNumber(gib)} GiB`;
+  }
+  const mib = value / 1024 ** 2;
+  if (mib >= 1) {
+    return `${formatNumber(mib)} MiB`;
+  }
+  return `${Math.round(value / 1024)} KiB`;
+}
+
+function formatNumber(value: number): string {
+  if (Number.isInteger(value)) {
+    return `${value}`;
+  }
+  return value >= 10 ? value.toFixed(1) : value.toFixed(2);
 }
