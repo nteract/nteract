@@ -17,9 +17,7 @@ import { cn } from "@/lib/utils";
 import { CrdtBridgeProvider, NotebookView } from "../../notebook/src/notebook-surface";
 import {
   flushCellUIState,
-  setExecutingCellIds,
   setFocusedCellId as setNotebookFocusedCellId,
-  setQueuedCellIds,
   setSearchCurrentMatch,
   setSearchQuery,
 } from "@/components/notebook/state/cell-ui-state";
@@ -31,6 +29,7 @@ import {
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,
+  setNotebookQueueProjection,
 } from "@/components/notebook/state/execution-store";
 import { resetNotebookOutputs } from "@/components/notebook/state/output-store";
 import type {
@@ -316,8 +315,7 @@ function seedOutlineNotebookFixtures(
   }
 
   focusOutlineFixtureCell(focusedCellId);
-  setExecutingCellIds(new Set());
-  setQueuedCellIds(new Set());
+  setNotebookQueueProjection({ executing_cell_id: null, queued_cell_ids: [] });
   setSearchQuery(undefined);
   setSearchCurrentMatch(null);
   flushCellUIState();
