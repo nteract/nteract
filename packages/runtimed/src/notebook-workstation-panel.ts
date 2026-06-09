@@ -173,16 +173,35 @@ function workstationStatus(
     };
   }
 
+  const isPreviousCloudAttachment = previousCloudAttachmentTarget(target);
+  const detail =
+    target.detail ??
+    (capabilities.runtime.source === "local"
+      ? "The local daemon is not exposing an executable runtime."
+      : "No runtime peer is attached to this room.");
+
   return {
-    title: capabilities.runtime.source === "local" ? `${target.label} unavailable` : target.label,
-    detail:
-      target.detail ??
-      (capabilities.runtime.source === "local"
-        ? "The local daemon is not exposing an executable runtime."
-        : "No runtime peer is attached to this room."),
+    title: isPreviousCloudAttachment
+      ? "Previous attachment"
+      : capabilities.runtime.source === "local"
+        ? `${target.label} unavailable`
+        : target.label,
+    detail: isPreviousCloudAttachment ? `${target.label}: ${detail}` : detail,
     statusLabel: target.statusLabel ?? "Offline",
     tone: "offline",
   };
+}
+
+function previousCloudAttachmentTarget(
+  target: ReturnType<typeof resolveNotebookShellRuntimeTarget>,
+): boolean {
+  return (
+    target.kind === "cloud_workstation" &&
+    target.id !== null &&
+    target.id !== undefined &&
+    target.id !== "workstation:none" &&
+    (target.status === "attention" || target.status === "offline")
+  );
 }
 
 function runtimeResourceLabel(

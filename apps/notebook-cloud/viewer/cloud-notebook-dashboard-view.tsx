@@ -109,12 +109,14 @@ export function CloudNotebookDashboard({
                   <button
                     key={filter.id}
                     type="button"
+                    aria-label={`${filter.label}: ${filter.count} notebook${
+                      filter.count === 1 ? "" : "s"
+                    }`}
                     aria-pressed={view.filterId === filter.id}
                     data-active={view.filterId === filter.id ? "true" : undefined}
                     onClick={() => setFilterId(filter.id)}
                   >
                     <span>{filter.label}</span>
-                    <strong>{filter.count}</strong>
                   </button>
                 ))}
               </div>
