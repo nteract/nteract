@@ -412,6 +412,84 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByText("id ws-gpu")).toBeVisible();
   });
 
+  it("keeps an online registered workstation actionable when a matching attachment is stale", () => {
+    const attached: string[] = [];
+    const capabilities: NotebookShellCapabilities = {
+      ...readOnlyNotebookShellCapabilities,
+      access: {
+        ...readOnlyNotebookShellCapabilities.access,
+        level: "owner",
+        source: "cloud",
+      },
+      runtime: {
+        ...readOnlyNotebookShellCapabilities.runtime,
+        source: "cloud",
+        target: {
+          id: "ws-lab2",
+          kind: "cloud_workstation",
+          status: "attention",
+          label: "Lab2",
+          statusLabel: "Needs attention",
+          detail:
+            "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
+          providerLabel: "Runtime peer",
+          defaultEnvironmentLabel: "Current Python",
+          environmentLabel: "Current Python",
+          workingDirectoryLabel: "/home/ubuntu/project",
+        },
+      },
+    };
+    const selection = projectNotebookWorkstationSelection({
+      activeAttachment: {
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "error",
+        status_message:
+          "runtime peer disconnected: runtime peer left the room and did not return within the grace window",
+        working_directory: "/home/ubuntu/project",
+      },
+      canRegisterWorkstation: true,
+      canSelectWorkstation: true,
+      canSetDefaultWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          id: "ws-lab2",
+          displayName: "Lab2",
+          defaultEnvironmentLabel: "Current Python",
+          environmentPolicy: "current_python",
+          provider: "runtime_peer",
+          status: "online",
+          workingDirectory: "/home/ubuntu/project",
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={capabilities}
+        selection={selection}
+        onAttachWorkstation={(workstationId) => attached.push(workstationId)}
+        onSetDefaultWorkstation={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(2);
+    expect(screen.getByText("Needs attention")).toBeVisible();
+    expect(screen.getByText(/runtime peer disconnected/)).toBeVisible();
+    expect(screen.getByTestId("registered-workstation")).toBeVisible();
+    expect(screen.getByText("Online")).toBeVisible();
+    expect(screen.getByText("Default")).toBeVisible();
+    expect(screen.queryByText("Attached")).not.toBeInTheDocument();
+    const attachButton = screen.getByRole("button", { name: "Attach" });
+    expect(attachButton).toBeEnabled();
+    fireEvent.click(attachButton);
+    expect(attached).toEqual(["ws-lab2"]);
+  });
+
   it("keeps legacy resource labels when structured resources are absent", () => {
     render(
       <NotebookWorkstationsPanel

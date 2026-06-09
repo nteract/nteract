@@ -141,6 +141,9 @@ export function projectNotebookWorkstationSelection({
   const defaultId = trimToNull(defaultWorkstationId);
   const activeTarget = projectNotebookRuntimeTargetFromWorkstationAttachment(activeAttachment);
   const activeWorkstationId = trimToNull(activeAttachment?.workstation_id);
+  const attachedWorkstationId = activeTargetCountsAsAttached(activeTarget)
+    ? activeWorkstationId
+    : null;
   const normalizedEntries = normalizeRegisteredWorkstations(registeredWorkstations);
   const cacheKey = stableCacheKey([
     activeWorkstationId,
@@ -157,7 +160,7 @@ export function projectNotebookWorkstationSelection({
 
   const entries = normalizedEntries.map((entry) =>
     projectRegisteredWorkstation(entry, {
-      activeWorkstationId,
+      activeWorkstationId: attachedWorkstationId,
       defaultWorkstationId: defaultId,
       selectedWorkstationId: selectedId,
     }),
@@ -202,6 +205,15 @@ export function clearNotebookWorkstationSelectionProjectionCacheForTests(): void
   WORKSTATION_SELECTION_CACHE.clear();
   WORKSTATION_ENTRY_CACHE.clear();
   WORKSTATION_ENVIRONMENT_CACHE.clear();
+}
+
+function activeTargetCountsAsAttached(
+  target: NotebookShellRuntimeTargetProjection | null,
+): boolean {
+  if (!target) return false;
+  return (
+    target.status === "ready" || target.status === "attached" || target.status === "connecting"
+  );
 }
 
 function projectRegisteredWorkstation(

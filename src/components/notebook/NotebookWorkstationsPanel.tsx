@@ -51,8 +51,8 @@ export function NotebookWorkstationsPanel({
   const compactDetachedTarget =
     projection.targetId === "workstation:none" && registeredWorkstations.length > 0;
   const activeRegisteredWorkstationId =
-    selection?.activeWorkstationId ??
-    (projection.targetId && projection.targetId !== "workstation:none"
+    registeredWorkstations.find((workstation) => workstation.isAttached)?.id ??
+    (!selection && projection.targetId && projection.targetId !== "workstation:none"
       ? projection.targetId
       : null);
   const hasVisibleRegisteredWorkstations = registeredWorkstations.some((workstation) =>
