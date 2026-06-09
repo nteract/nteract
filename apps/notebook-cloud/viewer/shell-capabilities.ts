@@ -183,7 +183,7 @@ function cloudRuntimeTarget({
       status: "attached",
       label: "Runtime peer",
       statusLabel: "Attached",
-      detail: "This connection can author runtime state for the room.",
+      detail: "This connection can report runtime state for the room.",
       providerLabel: "Cloud room",
       defaultEnvironmentLabel: "Runtime peer",
       environmentLabel: "Runtime peer",

@@ -26,7 +26,7 @@ function capabilities(
 }
 
 describe("NotebookToolbarIdentity", () => {
-  it("dedupes the same actor when document access and runtime authorship match", () => {
+  it("dedupes the same actor when document access and runtime reporting match", () => {
     const actor = {
       actorLabel: "user:anaconda:alice/runtime:jupyterhub",
       principal: {

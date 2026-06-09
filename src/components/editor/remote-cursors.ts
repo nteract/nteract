@@ -134,50 +134,32 @@ export function _remoteCursorFlagRect(
   };
 }
 
-export function _remoteCursorFlagOverlapsText(
+export function _remoteCursorFlagOverlapsRects(
   label: string,
   cursorViewportLeft: number,
   cursorViewportTop: number,
-  textRects: readonly RectLike[],
+  rects: readonly RectLike[],
 ): boolean {
   const flagRect = _remoteCursorFlagRect(label, cursorViewportLeft, cursorViewportTop);
   if (!flagRect) return false;
 
-  return textRects.some((textRect) =>
-    _remoteCursorRectsIntersect(flagRect, textRect, FLAG_COLLISION_PADDING_PX),
+  return rects.some((rect) =>
+    _remoteCursorRectsIntersect(flagRect, rect, FLAG_COLLISION_PADDING_PX),
   );
 }
 
-function visibleTextRects(view: EditorView): RectLike[] {
+function visibleLocalCursorRects(view: EditorView): RectLike[] {
   const rects: RectLike[] = [];
 
-  for (const { from, to } of view.visibleRanges) {
-    if (from >= to) continue;
-
-    const range = document.createRange();
-
-    try {
-      const start = view.domAtPos(from);
-      const end = view.domAtPos(to);
-
-      range.setStart(start.node, start.offset);
-      range.setEnd(end.node, end.offset);
-
-      for (const rect of Array.from(range.getClientRects())) {
-        if (rect.right <= rect.left || rect.bottom <= rect.top) continue;
-        rects.push({
-          left: rect.left,
-          right: rect.right,
-          top: rect.top,
-          bottom: rect.bottom,
-        });
-      }
-    } catch {
-      // CM's DOM mapping can briefly be unavailable while the view is
-      // reconciling. In that case, fall back to showing the label.
-    } finally {
-      range.detach?.();
-    }
+  for (const cursor of Array.from(view.dom.querySelectorAll(".cm-cursor, .cm-dropCursor"))) {
+    const rect = cursor.getBoundingClientRect();
+    if (rect.right <= rect.left || rect.bottom <= rect.top) continue;
+    rects.push({
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+    });
   }
 
   return rects;
@@ -310,7 +292,9 @@ const remoteCursorLayer = layer({
 
     const markers: CursorMarker[] = [];
     const scrollRect = view.scrollDOM.getBoundingClientRect();
-    const textRects = cursors.some((cursor) => cursor.peerLabel) ? visibleTextRects(view) : [];
+    const localCursorRects = cursors.some((cursor) => cursor.peerLabel)
+      ? visibleLocalCursorRects(view)
+      : [];
 
     for (const cursor of cursors) {
       const pos = resolvePos(view.state.doc, cursor);
@@ -322,11 +306,11 @@ const remoteCursorLayer = layer({
       const left = coords.left - scrollRect.left + view.scrollDOM.scrollLeft;
       const top = coords.top - scrollRect.top + view.scrollDOM.scrollTop;
       const height = coords.bottom - coords.top;
-      const showLabel = !_remoteCursorFlagOverlapsText(
+      const showLabel = !_remoteCursorFlagOverlapsRects(
         cursor.peerLabel,
         coords.left,
         coords.top,
-        textRects,
+        localCursorRects,
       );
 
       markers.push(

@@ -9,10 +9,12 @@ The notebook toolbar is workspace chrome, not generic button inventory. This
 page renders the shared `NotebookCommandToolbar` with static runtime,
 environment, package, identity, and update facts so the catalog can track the
 desktop and cloud contract without importing daemon hooks or notebook state.
+Presence, room population, and host view/edit mode are intentionally absent
+here; those belong to host/app chrome such as the cloud notebook shell.
 The hosted scenarios are shared with the
 [notebook shell capabilities](/docs/notebook-shell-capabilities) page so editor,
-owner, runtime peer, agent, and local desktop access do not drift from the
-shared capability model.
+owner, runtime peer, delegated operator, and local desktop access do not drift
+from the shared capability model.
 
 <NotebookToolbarSurfacesExample />
 
@@ -21,6 +23,6 @@ shared capability model.
 Toolbar previews own only props and callbacks. Kernel start, interrupt, restart,
 package toggles, update restarts, and cell insertion stay inert in the docs app
 until the host deliberately wires them. The rendered boundary map keeps shared
-command chrome, interaction mode, actor identity, runtime status projection,
+command chrome, actor identity, runtime status projection,
 package panel state, and host-owned actions named separately so future toolbar
 work can move one host-owned action at a time.

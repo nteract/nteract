@@ -21,15 +21,15 @@ type ExecutionState = {
 
 const executionStates: ExecutionState[] = [
   {
-    id: "ready",
-    label: "Ready",
-    detail: "Never-run cells keep the state lane quiet until hover, focus, or keyboard access.",
+    id: "idle",
+    label: "Idle",
+    detail: "Never-run cells stay quiet when an executable runtime is already attached.",
     count: null,
   },
   {
-    id: "focused-ready",
-    label: "Focused ready",
-    detail: "Notebook focus makes the run affordance available without adding status copy.",
+    id: "focused-idle",
+    label: "Focused idle",
+    detail: "Notebook focus can reveal run affordances only after compute is executable.",
     count: null,
   },
   {
@@ -109,7 +109,7 @@ export function CellExecutionLanguageExample() {
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
             The preview below is fixture code around production execution controls. The buttons,
             boundary lines, labels, animation hooks, and accessibility text come from shared
-            components.
+            components. Host runtime readiness is a precondition, not a cell execution state.
           </p>
         </div>
         <div className={cn("divide-y divide-border bg-background", notebookCellLayoutVars)}>
@@ -133,7 +133,9 @@ export function CellExecutionLanguageExample() {
           </div>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
             Each state is a production `CompactExecutionButton` paired with a production
-            `CodeCellCurrentLine`.
+            `CodeCellCurrentLine`. Idle means the cell has no active execution after the host has
+            attached a kernel or runtime that can run code; detached, attaching, or unavailable
+            compute should be handled outside this matrix.
           </p>
         </div>
         <div className="grid gap-3 bg-background p-4 md:grid-cols-2">
@@ -195,7 +197,7 @@ function PreviewCell({ state, source }: { state: ExecutionState; source: string 
 }
 
 function StateSample({ state }: { state: ExecutionState }) {
-  const focused = state.id === "focused-ready" || state.isExecuting || state.isQueued;
+  const focused = state.id === "focused-idle" || state.isExecuting || state.isQueued;
 
   return (
     <article className="group rounded-md border border-fd-border bg-fd-background p-3">

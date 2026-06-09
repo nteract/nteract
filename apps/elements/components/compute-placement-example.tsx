@@ -5,13 +5,11 @@ import {
   ChevronRight,
   CircleDot,
   Cloud,
-  Cpu,
   Layers3,
   Monitor,
   PackageCheck,
   PanelLeft,
   PlayCircle,
-  Radio,
   Server,
   TerminalSquare,
   WifiOff,
@@ -71,13 +69,13 @@ const computeSourceGroups = [
     security: "Owner only",
     protocol: "local daemon",
     detail:
-      "The desktop app can offer its own machine as compute, similar to a local agent surface. It should not be shared as remote compute for other room participants.",
+      "The desktop app can offer its own machine as compute, similar to a local runtime surface. It should not be shared as remote compute for other room participants.",
   },
   {
     title: "Workstations",
     icon: Cloud,
     security: "API registered",
-    protocol: "doc agent -> runtime_peer",
+    protocol: "host peer -> runtime_peer",
     detail:
       "Outerbounds and JupyterHub targets register with the hosted API, then attach to a room only after selection.",
   },
@@ -187,22 +185,9 @@ export function ComputePlacementExample() {
         <NotebookComputePreview placement={selected.id} />
       </section>
 
-      <section className="grid gap-3 lg:grid-cols-3">
-        {computeSourceGroups.map((group) => (
-          <ComputeSourceGroupCard key={group.title} group={group} />
-        ))}
-      </section>
+      <ComputeSourceBoundaryTable />
 
-      <section className="grid gap-3 lg:grid-cols-3">
-        {placements.map((placement) => (
-          <PlacementSummary
-            key={placement.id}
-            placement={placement}
-            selected={placement.id === selected.id}
-            onSelect={() => setSelectedId(placement.id)}
-          />
-        ))}
-      </section>
+      <PlacementComparison selectedId={selected.id} onSelect={setSelectedId} />
 
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
         <div className="border-b border-fd-border px-4 py-3">
@@ -240,27 +225,49 @@ function PlacementFact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ComputeSourceGroupCard({ group }: { group: (typeof computeSourceGroups)[number] }) {
-  const Icon = group.icon;
+function ComputeSourceBoundaryTable() {
   return (
-    <section className="grid gap-3 rounded-lg border border-fd-border bg-fd-card p-4">
-      <div className="flex items-center gap-2">
-        <Icon className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-        <h2 className="text-sm font-semibold">{group.title}</h2>
+    <section className="border-y border-fd-border" aria-label="Compute source boundaries">
+      <div className="grid gap-2 border-b border-fd-border py-3 md:grid-cols-[minmax(10rem,0.24fr)_minmax(0,1fr)_minmax(8rem,0.18fr)_minmax(10rem,0.22fr)]">
+        <h2 className="text-sm font-semibold">Compute source boundaries</h2>
+        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
+          Runtime boundary
+        </div>
+        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
+          Security
+        </div>
+        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
+          Protocol
+        </div>
       </div>
-      <p className="text-xs leading-5 text-fd-muted-foreground">{group.detail}</p>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <SourceFact label="Security" value={group.security} />
-        <SourceFact label="Protocol" value={group.protocol} />
+      <div className="divide-y divide-fd-border">
+        {computeSourceGroups.map((group) => (
+          <ComputeSourceBoundaryRow key={group.title} group={group} />
+        ))}
       </div>
     </section>
   );
 }
 
-function SourceFact({ label, value }: { label: string; value: string }) {
+function ComputeSourceBoundaryRow({ group }: { group: (typeof computeSourceGroups)[number] }) {
+  const Icon = group.icon;
   return (
-    <div className="min-w-0 rounded-md border border-fd-border bg-fd-background px-2 py-1.5">
-      <div className="truncate text-[10px] font-medium uppercase tracking-normal text-fd-muted-foreground">
+    <div className="grid gap-2 py-3 text-sm md:grid-cols-[minmax(10rem,0.24fr)_minmax(0,1fr)_minmax(8rem,0.18fr)_minmax(10rem,0.22fr)]">
+      <div className="flex min-w-0 items-center gap-2 font-semibold">
+        <Icon className="size-4 shrink-0 text-fd-muted-foreground" aria-hidden="true" />
+        <span className="truncate">{group.title}</span>
+      </div>
+      <p className="text-fd-muted-foreground">{group.detail}</p>
+      <BoundaryFact label="Security" value={group.security} />
+      <BoundaryFact label="Protocol" value={group.protocol} />
+    </div>
+  );
+}
+
+function BoundaryFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 text-xs">
+      <div className="font-semibold uppercase tracking-normal text-fd-muted-foreground md:hidden">
         {label}
       </div>
       <div className="truncate text-xs font-semibold">{value}</div>
@@ -268,7 +275,36 @@ function SourceFact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PlacementSummary({
+function PlacementComparison({
+  onSelect,
+  selectedId,
+}: {
+  onSelect: (placementId: ComputePlacementId) => void;
+  selectedId: ComputePlacementId;
+}) {
+  return (
+    <section className="border-y border-fd-border" aria-label="Placement comparison">
+      <div className="grid gap-2 border-b border-fd-border py-3 md:grid-cols-[minmax(10rem,0.26fr)_minmax(0,1fr)]">
+        <h2 className="text-sm font-semibold">Placement comparison</h2>
+        <div className="hidden text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground md:block">
+          Read
+        </div>
+      </div>
+      <div className="divide-y divide-fd-border">
+        {placements.map((placement) => (
+          <PlacementComparisonRow
+            key={placement.id}
+            placement={placement}
+            selected={placement.id === selectedId}
+            onSelect={() => onSelect(placement.id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PlacementComparisonRow({
   placement,
   onSelect,
   selected,
@@ -283,37 +319,50 @@ function PlacementSummary({
       type="button"
       onClick={onSelect}
       className={cn(
-        "grid min-w-0 gap-2 rounded-lg border p-4 text-left transition-colors",
-        selected
-          ? "border-emerald-500/40 bg-emerald-500/10"
-          : "border-fd-border bg-fd-card hover:bg-fd-muted/30",
+        "grid w-full min-w-0 gap-2 py-3 text-left text-sm transition-colors md:grid-cols-[minmax(10rem,0.26fr)_minmax(0,1fr)]",
+        selected ? "text-fd-foreground" : "text-fd-muted-foreground hover:text-fd-foreground",
       )}
+      aria-pressed={selected}
     >
-      <div className="flex items-center gap-2">
-        <Icon className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-        <h3 className="text-sm font-semibold">{placement.title}</h3>
-      </div>
-      <p className="text-xs leading-5 text-fd-muted-foreground">{placement.bestFor}</p>
+      <span className="flex min-w-0 items-center gap-2 font-semibold">
+        <Icon className="size-4 shrink-0 text-fd-muted-foreground" aria-hidden="true" />
+        <span className="truncate">{placement.title}</span>
+      </span>
+      <span className="text-fd-muted-foreground">{placement.bestFor}</span>
     </button>
   );
 }
 
 function NotebookComputePreview({ placement }: { placement: ComputePlacementId }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-      <div className="flex min-h-10 items-center gap-2 border-b border-fd-border px-3 text-xs">
-        <span className="font-semibold">MathNet topic visualization</span>
-        <span className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-emerald-500/10 px-2 py-1 font-medium text-emerald-700 dark:text-emerald-300">
-          <Radio className="size-3" aria-hidden="true" />
-          Forecast GPU
+    <section
+      className="overflow-hidden rounded-lg border border-fd-border bg-fd-card"
+      aria-label="Static compute placement design fixture"
+      data-elements-fixture="compute-placement-preview"
+    >
+      <div className="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 border-b border-fd-border bg-fd-muted/20 px-3 py-2 text-[11px] text-fd-muted-foreground">
+        <span className="font-semibold uppercase tracking-normal text-fd-foreground">
+          Elements fixture
         </span>
-        <button
-          type="button"
-          className="inline-flex h-7 items-center gap-1 rounded-md bg-fd-foreground px-2 text-fd-background"
+        <span className="min-w-0">
+          Static mock shell for placement review. The controls inside this frame are illustrative.
+        </span>
+      </div>
+      <div
+        className="flex min-h-10 items-center gap-2 border-b border-fd-border px-3 text-xs"
+        data-elements-fixture-part="mock-notebook-header"
+      >
+        <span className="rounded border border-fd-border bg-fd-background px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-normal text-fd-muted-foreground">
+          Fixture
+        </span>
+        <span className="font-semibold">MathNet topic visualization</span>
+        <span
+          className="ml-auto inline-flex h-7 items-center gap-1 rounded-md bg-fd-foreground px-2 text-fd-background"
+          data-elements-fixture-control="run"
         >
           <PlayCircle className="size-3.5" aria-hidden="true" />
           Run
-        </button>
+        </span>
       </div>
 
       <div className="grid min-h-[34rem] bg-fd-background text-fd-foreground lg:grid-cols-[3rem_minmax(15rem,0.42fr)_minmax(0,1fr)]">
@@ -329,7 +378,7 @@ function MockRail({ active }: { active: "outline" | "compute" }) {
   return (
     <nav className="flex flex-col items-center gap-2 border-r border-fd-border bg-fd-card px-2 py-4">
       <RailButton active={active === "outline"} icon={Layers3} label="Outline" />
-      <RailButton active={active === "compute"} icon={Cpu} label="Compute" />
+      <RailButton active={active === "compute"} icon={Server} label="Compute" />
       <RailButton active={false} icon={PackageCheck} label="Packages" />
     </nav>
   );
@@ -345,8 +394,7 @@ function RailButton({
   label: string;
 }) {
   return (
-    <button
-      type="button"
+    <div
       className={cn(
         "flex size-8 items-center justify-center rounded-md transition-colors",
         active
@@ -355,9 +403,10 @@ function RailButton({
       )}
       title={label}
       aria-label={label}
+      data-elements-fixture-control="rail-button"
     >
       <Icon className="size-4" aria-hidden="true" />
-    </button>
+    </div>
   );
 }
 
@@ -365,7 +414,7 @@ function MockPanel({ placement }: { placement: ComputePlacementId }) {
   if (placement === "rail") {
     return (
       <aside className="border-r border-fd-border bg-fd-card p-4">
-        <PanelHeader label="Compute" detail="Room target" icon={Cpu} />
+        <PanelHeader label="Compute" detail="Room target" icon={Server} />
         <div className="mt-4 grid gap-2">
           {computeSourceGroups.map((group) => (
             <ComputeTargetGroup key={group.title} group={group.title} />
@@ -380,7 +429,7 @@ function MockPanel({ placement }: { placement: ComputePlacementId }) {
       <aside className="border-r border-fd-border bg-fd-card p-4">
         <PanelHeader label="Environment" detail="Current notebook" icon={PackageCheck} />
         <div className="mt-4 grid gap-3">
-          <EnvironmentBlock title="Runtime target" icon={Cpu}>
+          <EnvironmentBlock title="Runtime target" icon={Server}>
             <ComputeTargetRow target={computeTargets[1]!} selected compact />
           </EnvironmentBlock>
           <EnvironmentBlock title="Packages" icon={PackageCheck}>
@@ -484,12 +533,12 @@ function ComputeTargetRow({
   const status = workstationTone(target.tone);
   const StatusIcon = status.icon;
   return (
-    <button
-      type="button"
+    <div
       className={cn(
         "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-md border p-2 text-left",
         selected ? "border-emerald-500/30 bg-emerald-500/10" : "border-fd-border bg-fd-background",
       )}
+      data-elements-fixture-control="compute-target"
     >
       <StatusIcon className={cn("mt-0.5 size-3.5", status.className)} aria-hidden="true" />
       <span className="min-w-0">
@@ -498,7 +547,7 @@ function ComputeTargetRow({
           {target.provider} · {compact ? target.runtime : target.runtime}
         </span>
       </span>
-    </button>
+    </div>
   );
 }
 
@@ -569,16 +618,16 @@ function ProviderButton({
   label: string;
 }) {
   return (
-    <button
-      type="button"
+    <div
       className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-md border border-fd-border bg-fd-background p-3 text-left hover:bg-fd-muted/40"
+      data-elements-fixture-control="provider"
     >
       <Icon className="mt-0.5 size-4 text-fd-muted-foreground" aria-hidden="true" />
       <span className="min-w-0">
         <span className="block truncate text-xs font-semibold">{label}</span>
         <span className="mt-0.5 block truncate text-[11px] text-fd-muted-foreground">{detail}</span>
       </span>
-    </button>
+    </div>
   );
 }
 

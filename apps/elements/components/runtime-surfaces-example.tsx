@@ -11,12 +11,13 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { asyncNoop, asyncTrue, noop } from "@/components/fixture-notebook-host";
+import { asyncTrue, noop } from "@/components/fixture-notebook-host";
 import {
   DaemonStatusBanner,
   DebugBanner,
   EnvBuildDecisionDialog,
   KernelLaunchErrorBanner,
+  NotebookPackageSummaryPanel,
   NotebookNotice,
   NotebookNoticeAction,
   PoolErrorBanner,
@@ -24,7 +25,7 @@ import {
   TrustDialog,
   UntrustedBanner,
 } from "@/components/notebook";
-import { UvDependencyPanel } from "@/components/environment";
+import { EnvironmentSummary } from "@/components/environment";
 import {
   getElementsNotebookScenario,
   type ElementsNotebookScenario,
@@ -56,9 +57,9 @@ const runtimePieces = [
     status: "rendered",
   },
   {
-    name: "UvDependencyPanel",
-    source: "src/components/environment/UvDependencyPanel.tsx",
-    role: "Notebook package panel for uv package details, pyproject state, and sync prompts.",
+    name: "NotebookPackageSummaryPanel",
+    source: "src/components/notebook/NotebookPackageSummaryPanel.tsx",
+    role: "Shared notebook rail package summary for declared packages, pyproject state, sync, and trust facts.",
     status: "rendered",
   },
   {
@@ -212,37 +213,33 @@ function RuntimeDialogs({ scenario }: { scenario: ElementsNotebookScenario }) {
   );
 }
 
-function DependencyHeaderFixture({ scenario }: { scenario: ElementsNotebookScenario }) {
+function PackageSummaryFixture({ scenario }: { scenario: ElementsNotebookScenario }) {
   return (
     <section
       className="overflow-hidden rounded-lg border border-fd-border bg-fd-card"
-      data-elements-slot="dependency-header-fixture"
+      data-elements-slot="package-summary-fixture"
     >
       <div className="border-b border-fd-border p-4">
-        <h2 className="text-sm font-semibold">UvDependencyPanel</h2>
+        <h2 className="text-sm font-semibold">NotebookPackageSummaryPanel</h2>
         <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-          Rendered from the notebook app in the same rail-sized package surface used by the notebook
-          shell.
+          Rendered from the notebook app in the same shared package summary surface used by the
+          notebook shell and outline rail.
         </p>
       </div>
       <div className="bg-fd-muted/20 p-4">
-        <div className="mx-auto w-[clamp(15rem,20vw,17rem)] max-w-full">
-          <UvDependencyPanel
-            dependencies={[...scenario.packageState.dependencies]}
-            requiresPython={scenario.packageState.requiresPython}
-            loading={false}
-            variant="rail"
-            onAdd={asyncNoop}
-            onRemove={asyncNoop}
-            onSetRequiresPython={asyncNoop}
-            syncState={scenario.packageState.syncState}
-            onSyncNow={asyncTrue}
-            pyprojectInfo={scenario.packageState.pyprojectInfo}
-            pyprojectDeps={scenario.packageState.pyprojectDeps}
-            onImportFromPyproject={asyncNoop}
-            onUseProjectEnv={asyncNoop}
-            isUsingProjectEnv={false}
-            justSynced={false}
+        <div className="mx-auto w-[clamp(16rem,28vw,22rem)] max-w-full">
+          <NotebookPackageSummaryPanel
+            packages={scenario.viewModel.packages}
+            readOnly={!scenario.capabilities.canManagePackages}
+            header={
+              <EnvironmentSummary
+                capabilities={scenario.capabilities}
+                packages={scenario.viewModel.packages}
+                environment={scenario.environment}
+                showPackageDetails={false}
+                className="shadow-none"
+              />
+            }
           />
         </div>
       </div>
@@ -415,7 +412,7 @@ export function RuntimeSurfacesExample() {
         </div>
       </section>
 
-      <DependencyHeaderFixture scenario={scenario} />
+      <PackageSummaryFixture scenario={scenario} />
 
       <RuntimeBanners />
 

@@ -1,29 +1,42 @@
 ---
 title: Cloud dashboard
-description: Hosted notebook home, continuation, workstation context, and share-preview states.
+description: Hosted notebook home, inventory precedence, workstation context, and safe sharing metadata.
 ---
 
 import { CloudDashboardExample } from "@/components/cloud-dashboard-example";
 
 The hosted dashboard is app-level product chrome. It should help a signed-in
-user continue recent notebook work, inspect visible notebooks, and understand
-whether compute is ready without becoming another notebook shell.
+user open the right room quickly without becoming another notebook shell,
+metrics board, or project-management surface.
 
-This fixture uses the current list endpoint shape plus deterministic workstation
-and sharing facts. It keeps the extra facts illustrative until the production
-API has stable projections for them.
+This fixture keeps the notebook list search-first. The surrounding controls are
+only there to make a large inventory readable: pin important rooms, find recent
+activity, expose cleanup work, and summarize host-owned context.
+
+The example below models three behaviors:
+
+- Search and filters refine the inventory by title, project, title-cleanup
+  state, and published state.
+- Pinned work and recent activity create precedence so real notebooks stay
+  ahead of smoke-test clutter.
+- Workstation and sharing summaries stay informational. Opening a notebook is
+  where execution, runtime state, and access management move into the notebook
+  shell.
 
 <CloudDashboardExample />
 
-## Current read
+## Surface contract
 
-- `/n` should become a notebook home, not only a file list.
-- The first action should be continuing recent work; the full notebook list
-  stays close behind it.
-- Workstation readiness is room/app context. It can summarize the selected
+- `/n` should feel like a notebook switcher first.
+- Search is the first action; filters refine inventory rather than becoming a
+  separate task queue.
+- Pinned and recently active notebooks stay above generated testing noise.
+- Untitled and smoke-test rooms remain visible for cleanup, but they should not
+  dominate the scan path.
+- Workstation readiness is host-owned context. It can summarize a selected
   default target without owning notebook execution controls.
-- Share previews should be revision-aware and safe by default. Private
-  notebooks should not leak content through metadata; public notebooks can use
-  explicit published data.
-- The dashboard can use host-owned app chrome while notebook pages continue to
-  use the shared document shell, rail, toolbar, and cell/output surfaces.
+- Sharing facts are safe host metadata. Private notebooks should not leak
+  content through previews; public previews require explicit published revision
+  data.
+- Opening a room hands off to the shared document shell, rail, toolbar, and
+  cell/output surfaces.

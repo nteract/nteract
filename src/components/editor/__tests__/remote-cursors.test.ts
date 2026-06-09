@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  _remoteCursorFlagOverlapsText,
+  _remoteCursorFlagOverlapsRects,
   _remoteCursorFlagRect,
   _remoteCursorRectsIntersect,
 } from "../remote-cursors";
@@ -16,17 +16,17 @@ describe("remote cursor flag geometry", () => {
     expect(rect?.bottom).toBe(49);
   });
 
-  it("detects when the projected flag overlaps visible text", () => {
+  it("detects when the projected flag overlaps the local user cursor", () => {
     expect(
-      _remoteCursorFlagOverlapsText("peer", 100, 50, [
+      _remoteCursorFlagOverlapsRects("peer", 100, 50, [
         { left: 96, right: 140, top: 35, bottom: 48 },
       ]),
     ).toBe(true);
   });
 
-  it("allows the flag when nearby text is outside the projected flag", () => {
+  it("allows the flag when the local user cursor is outside the projected flag", () => {
     expect(
-      _remoteCursorFlagOverlapsText("peer", 100, 50, [
+      _remoteCursorFlagOverlapsRects("peer", 100, 50, [
         { left: 96, right: 140, top: 55, bottom: 70 },
       ]),
     ).toBe(false);

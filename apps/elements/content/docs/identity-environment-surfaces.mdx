@@ -1,13 +1,13 @@
 ---
 title: Identity and environment surfaces
-description: Notebook identity, agency, access, runtime, and package summary composites.
+description: Notebook identity, access, runtime, and package summary composites.
 ---
 
 import { IdentityEnvironmentSurfacesExample } from "@/components/identity-environment-surfaces-example";
 
-Notebook UI needs product language for who is acting and what environment they
-are acting within. This page catalogs notebook-semantic composites, not raw
-primitive components.
+Notebook UI needs product language for who is authenticated, who submitted work,
+and what environment runs it. This page catalogs notebook-semantic composites,
+not raw primitive components.
 
 `NotebookIdentityBadge` and `NotebookIdentityGroup` wrap the shared Avatar
 primitive with notebook actor/access facts. `EnvironmentSummary` renders the
@@ -18,7 +18,7 @@ one canonical set.
 
 The fixtures come from `ElementsNotebookScenario`: desktop owner/read-only/
 remote-room, public viewer, cloud editor/owner, credential-attention,
-multi-operator, mixed-IdP, agent-on-behalf-of-user, runtime peer, system actor,
+multi-operator, mixed-IdP, delegated submitter, runtime peer, system actor,
 runtime-unavailable, and untrusted-dependency states. Desktop and cloud should
 feed the same production components from their host adapters.
 
@@ -31,6 +31,6 @@ feed the same production components from their host adapters.
   package, sync, and trust facts feed the shared environment projection.
 - Runtime and package-manager icons are shared environment primitives, not
   app-local notebook assets.
-- Agent attribution is represented as notebook identity, not as a generic model
-  selector.
+- Run attribution identifies the submitting actor or operator. It is not
+  AI model lineage, and runtime peers are compute participants.
 - Package info is notebook environment context, not an npm-style package profile.

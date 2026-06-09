@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Clock3,
   Cloud,
-  CloudOff,
   Copy,
   Eye,
   FilePenLine,
@@ -23,6 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { Avatar, AvatarBadge, AvatarFallback, AvatarGroup } from "@/components/ui/avatar";
 import {
   createNotebookInteractionModeProjection,
   NotebookCommandToolbar,
@@ -33,15 +33,15 @@ import {
   NotebookEditModeButton,
   NotebookIdentityBadge,
   NotebookPackageSummaryPanel,
-  NotebookPresenceStatus,
   NotebookWorkstationsPanel,
   notebookActorIdentityFromAccess,
-  notebookWorkstationsSummary,
+  projectNotebookWorkstationSelection,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarStatus,
   type NotebookActorIdentity,
   type NotebookInteractionMode,
   type NotebookInteractionModeProjection,
+  type NotebookRegisteredWorkstation,
   type NotebookShellCapabilities,
 } from "@/components/notebook";
 import { EnvironmentSummary } from "@/components/environment";
@@ -134,14 +134,15 @@ const cloudStateRows = [
   {
     surface: "Presence",
     owner: "Room session",
-    language: "2",
-    reason: "People are peers on the document; mode belongs to the view/edit control.",
+    language: "avatar stack",
+    reason:
+      "People are peers on the document; visible copy stays quiet and mode belongs to the view/edit control.",
   },
   {
     surface: "Connection",
     owner: "Document transport",
-    language: "icon in chrome, banner when blocked",
-    reason: "Sync health should not compete with the document title unless action is needed.",
+    language: "notice when blocked",
+    reason: "Sync health should stay quiet until the room needs attention.",
   },
   {
     surface: "Mode",
@@ -230,10 +231,54 @@ const workstationTargets = [
 const activeWorkstationTarget =
   workstationTargets.find((target) => target.selected) ?? workstationTargets[0]!;
 
+const shellRegisteredWorkstations = [
+  {
+    id: "outerbounds-forecast-gpu",
+    displayName: "Forecast GPU",
+    provider: "runtime_peer",
+    providerLabel: "Outerbounds",
+    status: "online",
+    defaultEnvironmentLabel: "Current Python",
+    environmentPolicy: "current_python",
+    workingDirectory: "~/work/mathnet",
+    cpuCount: 16,
+    memoryBytes: 64 * 1024 ** 3,
+  },
+  {
+    id: "hub-lab-kyle",
+    displayName: "JupyterLab server",
+    provider: "runtime_peer",
+    providerLabel: "JupyterHub",
+    status: "online",
+    defaultEnvironmentLabel: "Python 3 kernelspec",
+    environmentPolicy: "kernelspec",
+  },
+] satisfies readonly NotebookRegisteredWorkstation[];
+
+const shellWorkstationSelection = projectNotebookWorkstationSelection({
+  activeAttachment: {
+    workstation_id: "outerbounds-forecast-gpu",
+    display_name: "Forecast GPU",
+    provider: "outerbounds",
+    default_environment_label: "Current Python",
+    environment_policy: "current_python",
+    status: "ready",
+    cpu_count: 16,
+    memory_bytes: 64 * 1024 ** 3,
+    working_directory: "~/work/mathnet",
+  },
+  canRegisterWorkstation: true,
+  canSelectWorkstation: true,
+  canSetDefaultWorkstation: true,
+  defaultWorkstationId: "outerbounds-forecast-gpu",
+  registeredWorkstations: shellRegisteredWorkstations,
+  selectedWorkstationId: "outerbounds-forecast-gpu",
+});
+
 const workstationFlowRows = [
   {
     label: "Register",
-    owner: "Doc agent",
+    owner: "Host peer",
     state: "heartbeat",
     detail: "Provider process dials home and reports workstation capabilities.",
   },
@@ -247,7 +292,7 @@ const workstationFlowRows = [
     label: "Attach",
     owner: "Runtime peer",
     state: "scoped",
-    detail: "The doc agent opens a room WebSocket with runtime_peer authority.",
+    detail: "The selected workstation opens a room WebSocket with runtime_peer authority.",
   },
   {
     label: "Execute",
@@ -287,8 +332,13 @@ function CloudNotebookShellExampleContent() {
       viewModel={scenario.viewModel}
       activePanelId={railState.activePanelId}
       collapsed={railState.collapsed}
-      workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
-      workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
+      workstationsSummary={null}
+      workstationsPanel={
+        <NotebookWorkstationsPanel
+          capabilities={shellCapabilities}
+          selection={shellWorkstationSelection}
+        />
+      }
       packagesPanel={
         <NotebookPackageSummaryPanel
           packages={scenario.viewModel.packages}
@@ -475,9 +525,7 @@ function CloudAppToolbar({
       presence={<CloudDocumentTitle title="MathNet topic visualization" subtitle="by Kyle" />}
       utilityControls={
         <>
-          <CloudConnectionPill state={connection} compact />
-          <WorkstationTargetPill target={activeWorkstationTarget} compact />
-          <CloudPresence people={people} compact />
+          <CloudPresence connection={connection} people={people} />
         </>
       }
       sharingControls={<CloudShareMenu compact={false} />}
@@ -606,8 +654,7 @@ function CloudStatePreview({
         presence={<CloudDocumentTitle title={scenario.title} subtitle="by Kyle" />}
         utilityControls={
           <>
-            <CloudConnectionPill state={connection} compact />
-            <CloudPresence people={people} compact />
+            <CloudPresence connection={connection} people={people} />
           </>
         }
         sharingControls={<CloudShareMenu compact />}
@@ -622,104 +669,112 @@ function CloudStatePreview({
 }
 
 function CloudPresence({
-  compact,
+  connection,
   people,
 }: {
-  compact: boolean;
+  connection: CloudConnectionState;
   people: readonly NotebookActorIdentity[];
 }) {
-  const summary = presenceSummary(people, compact);
-  const hasPeers = people.length > 0;
+  const connected = connection === "live" && people.length > 0;
+  const state = connected ? "live" : connection === "reconnecting" ? "joining" : "waiting";
+  const title = connected
+    ? people.length === 1
+      ? "1 participant"
+      : `${people.length} participants`
+    : connection === "reconnecting"
+      ? "Joining room"
+      : "Room unavailable";
+  const label = connected
+    ? people.length === 1
+      ? "1 here now"
+      : `${people.length} here now`
+    : title;
+  const visiblePeople = people.slice(0, 3);
 
-  return (
-    <NotebookPresenceStatus
-      connected={hasPeers}
-      label={summary.label}
-      title={summary.title}
-      variant="inline"
-      className={cn(
-        "px-1",
-        compact ? "max-w-[min(8rem,24vw)]" : "max-w-[min(12rem,28vw)]",
-        !hasPeers && "text-muted-foreground",
-      )}
-    />
-  );
-}
-
-function presenceSummary(
-  people: readonly NotebookActorIdentity[],
-  compact: boolean,
-): { label: string; title: string } {
-  if (people.length === 0) {
-    return {
-      label: compact ? "No live peers" : "No one live here",
-      title: "No live collaborators are connected",
-    };
-  }
-
-  if (compact) {
-    return {
-      label: `${people.length} here`,
-      title: people.map((person) => `${person.label}: ${person.detail ?? "connected"}`).join(", "),
-    };
-  }
-
-  return {
-    label: `${people.length} here now`,
-    title: people.map((person) => `${person.label}: ${person.detail ?? "connected"}`).join(", "),
-  };
-}
-
-function CloudConnectionPill({
-  compact,
-  state,
-}: {
-  compact: boolean;
-  state: CloudConnectionState;
-}) {
-  const detail = connectionDetail(state);
-  const Icon = detail.icon;
   return (
     <span
       className={cn(
-        "inline-flex size-7 items-center justify-center rounded-md transition-colors hover:bg-muted/60",
-        compact && "max-[360px]:hidden",
-        detail.className,
+        "inline-flex h-8 min-w-7 items-center justify-center rounded-md px-0.5 transition-colors hover:bg-muted/70",
+        !connected && "opacity-65",
       )}
-      title={detail.title}
-      aria-label={detail.title}
+      data-slot="cloud-presence-stack"
+      data-state={state}
+      title={title}
+      aria-label={title}
     >
-      <Icon className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="sr-only">{detail.label}</span>
+      <AvatarGroup className="items-center px-1" aria-hidden="true">
+        {visiblePeople.length > 0 ? (
+          visiblePeople.map((person) => (
+            <CloudPresenceAvatar key={person.id} actor={person} connected={connected} />
+          ))
+        ) : (
+          <Avatar
+            size="sm"
+            className="border border-border bg-background"
+            data-status={connection === "offline" ? "offline" : "idle"}
+            title={title}
+          >
+            <AvatarFallback className="bg-muted/70 text-[10px] font-semibold text-muted-foreground">
+              ?
+            </AvatarFallback>
+            <AvatarBadge
+              className={connection === "offline" ? "bg-slate-300" : "bg-slate-400"}
+              data-status={connection === "offline" ? "offline" : "idle"}
+            />
+          </Avatar>
+        )}
+      </AvatarGroup>
+      <span className="sr-only">{label}</span>
     </span>
   );
 }
 
-function WorkstationTargetPill({
-  compact,
-  target,
+function CloudPresenceAvatar({
+  actor,
+  connected,
 }: {
-  compact: boolean;
-  target: WorkstationTarget;
+  actor: NotebookActorIdentity;
+  connected: boolean;
 }) {
-  const tone = workstationTargetTone(target.status);
+  const status = connected ? actor.status : "offline";
   return (
-    <span
-      className={cn(
-        "inline-flex h-7 max-w-[min(18rem,34vw)] items-center gap-1.5 rounded-md px-1.5 text-xs font-medium",
-        tone.className,
-        compact && "max-[560px]:max-w-[8.5rem]",
-      )}
-      title={`${target.name}: ${target.detail}, ${target.environment}, ${target.statusLabel}`}
-      aria-label={`Workstation target: ${target.name}, ${target.statusLabel}`}
+    <Avatar
+      size="sm"
+      className="border border-border bg-background"
+      data-kind={actor.kind}
+      data-status={status}
+      title={actor.label}
     >
-      <Radio className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="truncate">{target.name}</span>
-      <span className="hidden shrink-0 text-[11px] font-normal opacity-70 md:inline">
-        {target.environment}
-      </span>
-    </span>
+      <AvatarFallback
+        className={cn(
+          "bg-background text-[10px] font-semibold text-muted-foreground",
+          actor.status === "active" && connected && "text-emerald-700 dark:text-emerald-300",
+        )}
+      >
+        {cloudPresenceInitials(actor.label)}
+      </AvatarFallback>
+      <AvatarBadge
+        className={cn(
+          status === "active" && "bg-emerald-500",
+          status === "idle" && "bg-slate-400",
+          status === "offline" && "bg-slate-300",
+        )}
+        data-status={status}
+      />
+    </Avatar>
   );
+}
+
+function cloudPresenceInitials(label: string): string {
+  const words = label
+    .split(/[\s@._-]+/g)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  const initials = words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
+  return initials || "?";
 }
 
 function CloudShareMenu({ compact }: { compact: boolean }) {
@@ -1760,35 +1815,4 @@ function CloudNotebookDocument() {
       </article>
     </div>
   );
-}
-
-function connectionDetail(state: CloudConnectionState): {
-  icon: LucideIcon;
-  label: string;
-  title: string;
-  className: string;
-} {
-  switch (state) {
-    case "live":
-      return {
-        icon: Cloud,
-        label: "Live",
-        title: "Document sync is live",
-        className: "text-emerald-700 dark:text-emerald-300",
-      };
-    case "reconnecting":
-      return {
-        icon: CloudOff,
-        label: "Reconnecting",
-        title: "Trying to reconnect to the notebook room",
-        className: "text-amber-700 dark:text-amber-300",
-      };
-    case "offline":
-      return {
-        icon: WifiOff,
-        label: "Offline",
-        title: "Document edits are not connected",
-        className: "text-muted-foreground",
-      };
-  }
 }

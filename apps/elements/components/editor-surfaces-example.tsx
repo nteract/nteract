@@ -122,7 +122,7 @@ const renderedPieces = [
   {
     name: "textAttributionExtension",
     source: "src/components/editor/text-attribution.ts",
-    detail: "Imperative attribution marks for notebook source ownership and agent edits.",
+    detail: "Imperative attribution marks for notebook source ownership and delegated edits.",
   },
 ];
 

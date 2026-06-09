@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, CheckCircle2, Cloud, KeyRound, Package, UserRound } from "lucide-react";
+import { CheckCircle2, Cloud, KeyRound, Package, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
 import {
@@ -45,7 +45,7 @@ const identityScenarioIds: ElementsNotebookScenarioId[] = [
 const remainingNotebookSurfaces = [
   {
     surface: "Notebook activity feed",
-    why: "The shell knows access and current execution actors, but we do not yet have a reusable timeline for runs, saves, trust, and sharing events.",
+    why: "The shell knows access and current run submitters, but we do not yet have a reusable timeline for runs, saves, trust, and sharing events.",
   },
   {
     surface: "Variable rail panel",
@@ -53,7 +53,7 @@ const remainingNotebookSurfaces = [
   },
   {
     surface: "Sharing controls",
-    why: "Cloud has ACL actor labels, but the shared shell only reserves the slot; the notebook-semantic invite/list surface is still host-local.",
+    why: "Cloud has ACL identity labels, but the shared shell only reserves the slot; the notebook-semantic invite/list surface is still host-local.",
   },
 ];
 
@@ -95,12 +95,12 @@ export function IdentityEnvironmentSurfacesExample() {
   const desktopOwner = getElementsNotebookScenario("desktop-local-owner");
   const cloudOwner = getElementsNotebookScenario("cloud-owner");
   const cloudEditor = getElementsNotebookScenario("cloud-editor");
-  const agentScenario = getElementsNotebookScenario("agent-on-behalf");
+  const delegatedOperatorScenario = getElementsNotebookScenario("agent-on-behalf");
   const runtimePeer = getElementsNotebookScenario("runtime-peer");
   const activeActors = [
     scenarioActor(cloudOwner),
     scenarioActor(cloudEditor),
-    scenarioActor(agentScenario),
+    scenarioActor(delegatedOperatorScenario),
     scenarioActor(runtimePeer),
   ];
 
@@ -116,8 +116,8 @@ export function IdentityEnvironmentSurfacesExample() {
             <h2 className="text-sm font-semibold">Notebook-semantic composites</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               These examples wrap shared primitives in notebook concepts: current actor, access
-              source, agent delegation, runtime state, and package details. Raw Avatar, Badge,
-              Select, and Button primitives stay implementation details.
+              source, delegated submitters, runtime peer state, and package details. Raw Avatar,
+              Badge, Select, and Button primitives stay implementation details.
             </p>
           </div>
         </div>
@@ -197,12 +197,13 @@ export function IdentityEnvironmentSurfacesExample() {
         <div className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
           <div className="border-b border-fd-border p-4">
             <div className="flex items-center gap-2">
-              <Bot className="size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <h2 className="text-sm font-semibold">Execution attribution</h2>
+              <UserRound className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+              <h2 className="text-sm font-semibold">Submitted-by identity</h2>
             </div>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              Code cells already receive `submitted_by_actor_label`. The shared identity badge makes
-              the agent/user relationship visible without teaching cells about cloud auth.
+              Code cells receive `submitted_by_actor_label` for the client or operator that
+              submitted the run. This is execution provenance, not AI model lineage; runtime peers
+              remain compute participants.
             </p>
           </div>
           <div className="space-y-3 bg-background p-4 text-foreground">
@@ -213,7 +214,7 @@ export function IdentityEnvironmentSurfacesExample() {
               isFocused
               activityContent={
                 <NotebookIdentityBadge
-                  actor={scenarioActor(agentScenario)}
+                  actor={scenarioActor(delegatedOperatorScenario)}
                   size="sm"
                   showDetail={false}
                   className="max-w-28 border-transparent bg-transparent px-0 shadow-none"
@@ -221,7 +222,7 @@ export function IdentityEnvironmentSurfacesExample() {
               }
             />
             <div className="rounded-md border border-border bg-card p-3">
-              <NotebookIdentityBadge actor={scenarioActor(agentScenario)} />
+              <NotebookIdentityBadge actor={scenarioActor(delegatedOperatorScenario)} />
             </div>
           </div>
         </div>
@@ -235,9 +236,9 @@ export function IdentityEnvironmentSurfacesExample() {
 
       <section className="grid gap-4 lg:grid-cols-2">
         <EnvironmentSummary
-          capabilities={agentScenario.capabilities}
-          packages={agentScenario.viewModel.packages}
-          environment={agentScenario.environment}
+          capabilities={delegatedOperatorScenario.capabilities}
+          packages={delegatedOperatorScenario.viewModel.packages}
+          environment={delegatedOperatorScenario.environment}
         />
         <EnvironmentSummary
           capabilities={getElementsNotebookScenario("runtime-unavailable").capabilities}

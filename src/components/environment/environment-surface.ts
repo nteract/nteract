@@ -113,7 +113,7 @@ export function createEnvironmentSurface({
     runtimeLabel ?? (capabilities.canExecute ? "Runtime ready" : "No runtime");
   const runtimeActor = environmentRuntimeActorFromCapabilities(capabilities.runtime);
   const runtimeDetail = capabilities.runtime.canWriteRuntimeState
-    ? runtimeAuthorshipDetail(runtimeActor)
+    ? runtimeStateReporterDetail(runtimeActor)
     : capabilities.runtime.connected
       ? `Runtime connected through ${accessSourceLabel(capabilities.runtime.source)}`
       : null;
@@ -244,12 +244,12 @@ function friendlyActorSegment(segment: string | null | undefined, fallback: stri
     .join(" ");
 }
 
-function runtimeAuthorshipDetail(actor: EnvironmentRuntimeActor | null): string {
-  if (!actor) return "Connected runtime authors runtime state";
+function runtimeStateReporterDetail(actor: EnvironmentRuntimeActor | null): string {
+  if (!actor) return "Connected runtime reports runtime state";
   if (actor.operatorLabel && actor.principalLabel && actor.operatorLabel !== actor.principalLabel) {
-    return `${actor.operatorLabel} authors runtime state for ${actor.principalLabel}`;
+    return `${actor.operatorLabel} reports runtime state for ${actor.principalLabel}`;
   }
-  return `${actor.label} authors runtime state`;
+  return `${actor.label} reports runtime state`;
 }
 
 export type NotebookRuntimeStatus = EnvironmentRuntimeStatus;
