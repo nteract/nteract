@@ -32,9 +32,9 @@ describe("CellInsertionRibbon", () => {
     expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toHaveClass(
       "bg-sky-400",
     );
-    expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toHaveClass(
-      "opacity-100",
-    );
+    expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toBeNull();
+    expect(hitTarget).toHaveClass("bg-sky-500/8");
+    expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-full");
 
     fireEvent.click(hitTarget!);
 
@@ -47,7 +47,6 @@ describe("CellInsertionRibbon", () => {
     const adder = container.querySelector('[data-slot="cell-adder"]');
     const continuation = container.querySelector('[data-slot="cell-adder-ribbon-continuation"]');
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
-    const glyph = container.querySelector('[data-slot="cell-adder-primary-glyph"]');
 
     fireEvent.pointerEnter(adder!);
 
@@ -56,7 +55,7 @@ describe("CellInsertionRibbon", () => {
     expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toBeNull();
     expect(continuation).toHaveClass("bg-gray-300/70");
     expect(hitTarget).toHaveClass("bg-transparent");
-    expect(glyph).toHaveClass("opacity-0");
+    expect(container.querySelector('[data-slot="cell-adder-primary-glyph"]')).toBeNull();
   });
 
   it("keeps explicit actions out of the tab order until the row is awake", () => {
@@ -97,13 +96,14 @@ describe("CellInsertionRibbon", () => {
     expect(actions).toHaveClass("flex-1");
     expect(palette).toHaveClass("shrink-0");
     expect(palette).toHaveClass("pl-0.5");
+    expect(palette).toHaveClass("bg-emerald-500/8");
     expect(palette).not.toHaveClass("rounded-full");
     expect(palette).not.toHaveClass("shadow-sm");
-    expect(hitTarget).toHaveClass("bg-emerald-500/6");
-    expect(hitTarget).toHaveClass("text-emerald-700");
+    expect(hitTarget).toHaveClass("bg-emerald-500/8");
     expect(intent).toHaveClass("bg-emerald-400");
     expect(leadingRule).toHaveClass("w-2");
-    expect(leadingRule).toHaveClass("bg-emerald-400/50");
+    expect(leadingRule).toHaveClass("h-full");
+    expect(leadingRule).toHaveClass("bg-emerald-500/8");
     expect(trailingRule).toHaveClass("bg-gradient-to-r");
     expect(trailingRule).toHaveClass("from-emerald-400/35");
     expect(trailingRule).toHaveClass("flex-1");

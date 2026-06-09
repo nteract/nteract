@@ -1,4 +1,4 @@
-import { Code, LetterText, Plus } from "lucide-react";
+import { Code, LetterText } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { notebookCellLayoutVars } from "./cell-layout";
@@ -31,9 +31,9 @@ const actionButtonIntentClasses: Record<CellInsertionType, string> = {
     "bg-emerald-500/12 text-emerald-700 ring-emerald-500/20 hover:bg-emerald-500/16 dark:text-emerald-300",
 };
 
-const insertionRuleIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-400/50 dark:bg-sky-300/40",
-  markdown: "bg-emerald-400/50 dark:bg-emerald-300/40",
+const insertionBridgeIntentClasses: Record<CellInsertionType, string> = {
+  code: "bg-sky-500/8 dark:bg-sky-400/10",
+  markdown: "bg-emerald-500/8 dark:bg-emerald-400/10",
 };
 
 const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
@@ -43,8 +43,8 @@ const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
 };
 
 const insertionChannelIntentClasses: Record<CellInsertionType, string> = {
-  code: "bg-sky-500/6 text-sky-700 dark:text-sky-300",
-  markdown: "bg-emerald-500/6 text-emerald-700 dark:text-emerald-300",
+  code: "bg-sky-500/8 dark:bg-sky-400/10",
+  markdown: "bg-emerald-500/8 dark:bg-emerald-400/10",
 };
 
 export function CellInsertionRibbon({
@@ -86,8 +86,10 @@ export function CellInsertionRibbon({
     );
 
   const leadingInsertionRuleClass = cn(
-    "h-px rounded-full transition-colors duration-150",
-    visualActiveType ? insertionRuleIntentClasses[visualActiveType] : "bg-border/45",
+    "transition-colors duration-150",
+    visualActiveType
+      ? cn("h-full", insertionBridgeIntentClasses[visualActiveType])
+      : "h-px rounded-full bg-border/45",
   );
   const trailingInsertionRuleClass = cn(
     "h-px rounded-full transition-colors duration-150",
@@ -166,14 +168,6 @@ export function CellInsertionRibbon({
           terminal && "h-7",
         )}
       >
-        <Plus
-          data-slot="cell-adder-primary-glyph"
-          className={cn(
-            "size-3 transition-opacity duration-150",
-            visualActiveType ? "opacity-100" : "opacity-0",
-          )}
-          aria-hidden="true"
-        />
         <span className="sr-only">Add code cell here</span>
       </button>
       <div
@@ -196,7 +190,10 @@ export function CellInsertionRibbon({
         />
         <div
           data-slot="cell-adder-action-palette"
-          className="flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1"
+          className={cn(
+            "flex h-7 shrink-0 items-center gap-1 py-0 pl-0.5 pr-1 transition-colors duration-150",
+            visualActiveType && insertionBridgeIntentClasses[visualActiveType],
+          )}
         >
           <button
             type="button"
@@ -208,7 +205,6 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("code")}
             className={actionButtonClass("code")}
           >
-            <Plus className="h-2.5 w-2.5" aria-hidden="true" />
             <Code className="h-3 w-3" aria-hidden="true" />
             <span>Code</span>
           </button>
@@ -222,7 +218,6 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("markdown")}
             className={actionButtonClass("markdown")}
           >
-            <Plus className="h-2.5 w-2.5" aria-hidden="true" />
             <LetterText className="h-3 w-3" aria-hidden="true" />
             <span>Markdown</span>
           </button>
