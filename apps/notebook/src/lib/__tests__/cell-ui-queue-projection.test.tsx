@@ -19,6 +19,9 @@ describe("cell UI queue projection", () => {
       queued: useIsCellQueued("cell-2"),
       priority: useCellQueuePriority("cell-2"),
       groupRunning: useIsGroupExecuting(["cell-1", "cell-3"]),
+      // A group of only queued cells is not "executing": group chrome tracks the
+      // single running cell from the projection, not queue membership.
+      groupQueuedOnly: useIsGroupExecuting(["cell-2", "cell-3"]),
     }));
 
     expect(result.current).toEqual({
@@ -26,6 +29,7 @@ describe("cell UI queue projection", () => {
       queued: false,
       priority: 0,
       groupRunning: false,
+      groupQueuedOnly: false,
     });
 
     act(() => {
@@ -40,6 +44,7 @@ describe("cell UI queue projection", () => {
       queued: true,
       priority: 1,
       groupRunning: true,
+      groupQueuedOnly: false,
     });
 
     act(() => {
@@ -54,6 +59,7 @@ describe("cell UI queue projection", () => {
       queued: false,
       priority: 0,
       groupRunning: false,
+      groupQueuedOnly: false,
     });
   });
 });

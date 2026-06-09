@@ -122,16 +122,27 @@ test("cloud command toolbar inserts below the focused cell before falling back t
   );
 });
 
-test("cloud projects host focus through the shared cell UI state bridge", () => {
+test("cloud routes cell focus through the shared store, not a host React shadow", () => {
   const sourceText = viewerCorpus;
 
-  assert.match(sourceText, /useNotebookCellUIStateBridge/);
-  assert.match(
-    sourceText,
-    /const \[focusedCellId, setFocusedCellId\] = useState<string \| null>\(null\)/,
-  );
-  assert.match(sourceText, /useNotebookCellUIStateBridge\(\{ focusedCellId \}\)/);
-  assert.match(sourceText, /onFocusCell=\{setFocusedCellId\}/);
+  // Focus is read from the shared cell-ui-state store, and the host holds no
+  // React copy. Programmatic focus the controller drives (focus-after-add) is
+  // written through the shared setter with a synchronous flush.
+  assert.match(sourceText, /const focusedCellId = useFocusedCellId\(\)/);
+  assert.match(sourceText, /const focusCellInStore = useCallback/);
+  assert.match(sourceText, /setFocusedCellId\(id\);\s*flushCellUIState\(\);/);
+  assert.match(sourceText, /onFocusCell: focusCellInStore/);
+
+  // NotebookView owns the interaction-target write for user focus
+  // (publishInteractionTarget carries the real cell/editor/output kind), so the
+  // host passes it a no-op rather than double-writing a transient { kind: "cell" }.
+  assert.match(sourceText, /const handleNotebookViewFocus = useCallback\(\(\) => \{\}, \[\]\)/);
+  assert.match(sourceText, /onFocusCell=\{handleNotebookViewFocus\}/);
+  assert.doesNotMatch(sourceText, /onFocusCell=\{focusCellInStore\}/);
+
+  // No host React shadow of focus, and no per-host UI-state bridge double-buffer.
+  assert.doesNotMatch(sourceText, /\[focusedCellId, setFocusedCellId\] = useState/);
+  assert.doesNotMatch(sourceText, /useNotebookCellUIStateBridge/);
   assert.doesNotMatch(
     sourceText,
     /import \{[^}]*setFocusedCellId[^}]*\} from "\.\.\/\.\.\/notebook\/src\/lib\/cell-ui-state"/,
