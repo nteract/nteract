@@ -1483,6 +1483,84 @@ describe("RoomMaterializer", () => {
     assert.equal(resolved.state?.value, 2);
   });
 
+  it("fans out owner CommsDoc changes to already-open peers", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const runtimePeerConnection = { id: "peer-runtime", identity: runtimeIdentity };
+    const runtimePeer = new RuntimeStatePeerHandle(runtimeIdentity.actorLabel);
+    await syncMaterializerWithRuntimePeer(materializer, runtimePeerConnection, runtimePeer);
+    runtimePeer.put_comm_json(
+      "comm-widget",
+      "jupyter.widget",
+      "anywidget",
+      "AnyModel",
+      JSON.stringify({ value: 7 }),
+      0,
+    );
+    const topologyAccepted = await applyRuntimePeerChangesToMaterializer(
+      materializer,
+      runtimePeerConnection,
+      runtimePeer,
+    );
+    assert.equal(topologyAccepted.changed, true);
+    const initialStateAccepted = await applyCommsPeerChangesToMaterializer(
+      materializer,
+      runtimePeerConnection,
+      runtimePeer,
+    );
+    assert.equal(initialStateAccepted.changed, true);
+
+    const ownerAIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const ownerBIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:b&scope=owner"),
+    );
+    const ownerAConnection = { id: "peer-owner-a", identity: ownerAIdentity };
+    const ownerBConnection = { id: "peer-owner-b", identity: ownerBIdentity };
+    const ownerA = NotebookHandle.create_bootstrap(ownerAIdentity.actorLabel);
+    const ownerB = NotebookHandle.create_bootstrap(ownerBIdentity.actorLabel);
+    ownerA.set_blob_port(1234);
+    ownerB.set_blob_port(1234);
+    await syncMaterializerRuntimeStateWithClient(materializer, ownerAConnection, ownerA);
+    await syncMaterializerCommsDocWithClient(materializer, ownerAConnection, ownerA);
+    await syncMaterializerRuntimeStateWithClient(materializer, ownerBConnection, ownerB);
+    await syncMaterializerCommsDocWithClient(materializer, ownerBConnection, ownerB);
+    assert.equal(
+      (ownerB.resolve_comm_state("comm-widget") as { state?: Record<string, unknown> }).state
+        ?.value,
+      7,
+      "second open owner starts from the persisted widget value",
+    );
+
+    assert.equal(ownerA.set_comm_state_property("comm-widget", "value", JSON.stringify(8)), true);
+    const accepted = await applyCommsClientChangesToMaterializer(
+      materializer,
+      ownerAConnection,
+      ownerA,
+    );
+    assert.equal(accepted.changed, true);
+    assert.ok(
+      accepted.outbound.some(
+        (frame) =>
+          frame.peer_id === ownerBConnection.id && frame.frame_type === FrameType.COMMS_DOC_SYNC,
+      ),
+      "CommsDoc mutation from one open owner is fanned out to the other open owner",
+    );
+
+    applyCommsOutboundToClient(accepted.outbound, ownerBConnection.id, ownerB);
+    assert.equal(
+      (ownerB.resolve_comm_state("comm-widget") as { state?: Record<string, unknown> }).state
+        ?.value,
+      8,
+    );
+  });
+
   it("rejects owner-scoped RuntimeStateDoc execution changes", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);

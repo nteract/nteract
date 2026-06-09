@@ -220,6 +220,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isRuntimeStateSnapshot(value: unknown): value is RuntimeState {
+  return isRecord(value) && isRecord(value.comms);
+}
+
+function isCommsStateSnapshot(value: unknown): value is CommsState {
+  return isRecord(value) && isRecord(value.comms);
+}
+
+function containsContentRef(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return Array.isArray(value) ? value.some(containsContentRef) : false;
+  }
+  if (typeof value.blob === "string" || Object.prototype.hasOwnProperty.call(value, "inline")) {
+    return true;
+  }
+  return Object.values(value).some(containsContentRef);
+}
+
 // ── Options ──────────────────────────────────────────────────────────
 
 export interface SyncEngineOptions {
@@ -873,7 +891,20 @@ export class SyncEngine {
    */
   reProjectComms(): void {
     this.commDiffState = { comms: {}, json: {} };
+    this.refreshCommProjectionSnapshotsFromHandle();
     this.projectComms();
+  }
+
+  private refreshCommProjectionSnapshotsFromHandle(): void {
+    const handle = this.opts.getHandle();
+    const runtimeState = handle?.get_runtime_state?.();
+    if (isRuntimeStateSnapshot(runtimeState)) {
+      this.lastRuntimeState = runtimeState as RuntimeState;
+    }
+    const commsState = handle?.get_comms_state?.();
+    if (isCommsStateSnapshot(commsState)) {
+      this.lastCommsState = commsState as CommsState;
+    }
   }
 
   /**
@@ -898,20 +929,28 @@ export class SyncEngine {
     }
 
     const handle = this.opts.getHandle();
-    const resolve = (commId: string) =>
-      handle?.resolve_comm_state?.(commId) as
+    const resolve = (commId: string, entry: CommDocEntry) => {
+      const resolved = handle?.resolve_comm_state?.(commId) as
         | {
             state: Record<string, unknown>;
             buffer_paths: string[][];
             text_paths?: string[][];
           }
         | undefined;
+      if (resolved) return resolved;
+      if (containsContentRef(entry.state)) return undefined;
+      return {
+        state: isRecord(entry.state) ? entry.state : {},
+        buffer_paths: [] as string[][],
+        text_paths: [] as string[][],
+      };
+    };
 
     // Pending entries carry the raw resolved state plus the text paths that
     // still need to be fetched before emission.
     const opened: Array<{ comm: ResolvedComm; textPaths: string[][] }> = [];
     for (const { commId, entry } of result.opened) {
-      const resolved = resolve(commId);
+      const resolved = resolve(commId, entry);
       if (!resolved) {
         // blob_port not ready — defer by excluding from next state.
         // On the next runtimeState$ emission (after blob_port is set),
@@ -941,7 +980,7 @@ export class SyncEngine {
 
     const updated: Array<{ comm: ResolvedComm; textPaths: string[][] }> = [];
     for (const { commId, entry } of result.updated) {
-      const resolved = resolve(commId);
+      const resolved = resolve(commId, entry);
       if (!resolved) {
         // resolver not ready (e.g. blob_port transiently missing after
         // reconnect). Revert `next` to the previous state for this comm

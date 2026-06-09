@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import {
   notebookShellWorkstationAttachmentCacheKey,
   type BlobResolver,
+  type CommChanges,
   type WorkstationAttachmentState,
 } from "runtimed";
 import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
@@ -46,6 +47,7 @@ import { CloudViewerPresenceStore } from "./presence";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { subscribeSerializedCloudCellChanges } from "./serialized-cell-changes";
+import { applyCloudWidgetCommChanges } from "./widget-runtime";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
@@ -375,9 +377,18 @@ export function useCloudViewerSession({
     const installCloudWidgetCommWriter = (liveRuntime: CloudSyncRuntime) => {
       setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
         if (liveRuntimeRef.current !== liveRuntime) return;
-        const changed = liveRuntime.handle.set_comm_state_batch(commId, JSON.stringify(patch));
-        if (changed) {
-          liveRuntime.engine.scheduleFlush();
+        try {
+          const changed = liveRuntime.handle.set_comm_state_batch(commId, JSON.stringify(patch));
+          if (changed) {
+            liveRuntime.engine.scheduleFlush();
+          } else {
+            console.warn("[notebook-cloud] widget state update did not mutate CommsDoc", {
+              commId,
+              keys: Object.keys(patch),
+            });
+          }
+        } catch (error) {
+          console.warn("[notebook-cloud] widget state update failed", error);
         }
       });
     };
@@ -569,6 +580,8 @@ export function useCloudViewerSession({
         }
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
+        const stopWidgetLiveRuntimeDiagnostics =
+          installCloudWidgetLiveRuntimeDiagnostics(liveRuntime);
         setConnectionScope(liveRuntime.connectionScope);
         setConnectionActorLabel(liveRuntime.actorLabel);
         setConnectionPeerId(liveRuntime.peerId);
@@ -608,11 +621,28 @@ export function useCloudViewerSession({
               },
             );
           }),
+          liveRuntime.engine.commChanges$.subscribe((changes) => {
+            recordCloudWidgetCommChangesDiagnostic(liveRuntime, changes);
+            applyCloudWidgetCommChanges(widgetStore, changes);
+          }),
+          liveRuntime.engine.commBroadcasts$.subscribe((broadcast) => {
+            const content = broadcast.content as Record<string, unknown> | undefined;
+            const data = content?.data as Record<string, unknown> | undefined;
+            if (data?.method !== "custom") return;
+            const commId = content?.comm_id;
+            if (typeof commId !== "string") return;
+            const inner = (data.content as Record<string, unknown> | undefined) ?? {};
+            const buffers = (broadcast as { buffers?: number[][] }).buffers;
+            const arrayBuffers = buffers?.map((arr: number[]) => new Uint8Array(arr).buffer);
+            widgetStore.emitCustomMessage(commId, inner, arrayBuffers);
+          }),
           liveRuntime.engine.poolState$.subscribe((state) => {
             setPoolState(state);
           }),
           { unsubscribe: stopCursorDispatch },
+          { unsubscribe: stopWidgetLiveRuntimeDiagnostics },
         ];
+        liveRuntime.engine.reProjectComms();
         materializeLiveCellsSafely(liveRuntime);
       })
       .catch((error: unknown) => {
@@ -720,6 +750,160 @@ function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
   liveRuntime.engine.stop();
   liveRuntime.transport.disconnect();
   liveRuntime.handle.free();
+}
+
+function recordCloudWidgetCommChangesDiagnostic(
+  liveRuntime: CloudSyncRuntime,
+  changes: CommChanges,
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.localStorage?.getItem("nteract:notebook-cloud:widget-diagnostics") !== "1") {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  const target = window as unknown as {
+    __nteractCloudWidgetCommEvents?: unknown[];
+  };
+  const events = target.__nteractCloudWidgetCommEvents ?? [];
+  target.__nteractCloudWidgetCommEvents = events;
+
+  events.push({
+    at: Date.now(),
+    peerId: liveRuntime.peerId,
+    opened: changes.opened.map(summarizeResolvedCommDiagnostic),
+    updated: changes.updated.map(summarizeResolvedCommDiagnostic),
+    closed: changes.closed,
+    runtimeComms: summarizeRuntimeCommsDiagnostic(
+      readHandleSnapshot(liveRuntime, "get_runtime_state"),
+    ),
+    commsDoc: summarizeCommsDocDiagnostic(readHandleSnapshot(liveRuntime, "get_comms_state")),
+  });
+
+  if (events.length > 100) {
+    events.splice(0, events.length - 100);
+  }
+}
+
+function installCloudWidgetLiveRuntimeDiagnostics(liveRuntime: CloudSyncRuntime): () => void {
+  if (typeof window === "undefined") return () => {};
+  try {
+    if (window.localStorage?.getItem("nteract:notebook-cloud:widget-diagnostics") !== "1") {
+      return () => {};
+    }
+  } catch {
+    return () => {};
+  }
+
+  const target = window as unknown as {
+    __nteractCloudLiveRuntimeSnapshot?: () => unknown;
+  };
+  target.__nteractCloudLiveRuntimeSnapshot = () => ({
+    peerId: liveRuntime.peerId,
+    cellCount: safeCallNumber(() => liveRuntime.handle.cell_count()),
+    runtimeComms: summarizeRuntimeCommsDiagnostic(
+      readHandleSnapshot(liveRuntime, "get_runtime_state"),
+    ),
+    commsDoc: summarizeCommsDocDiagnostic(readHandleSnapshot(liveRuntime, "get_comms_state")),
+  });
+
+  return () => {
+    if (target.__nteractCloudLiveRuntimeSnapshot) {
+      delete target.__nteractCloudLiveRuntimeSnapshot;
+    }
+  };
+}
+
+function safeCallNumber(read: () => number): number | null {
+  try {
+    const value = read();
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function readHandleSnapshot(
+  liveRuntime: CloudSyncRuntime,
+  method: "get_runtime_state" | "get_comms_state",
+): unknown {
+  const maybeHandle = liveRuntime.handle as unknown as Record<string, unknown>;
+  const fn = maybeHandle[method];
+  if (typeof fn !== "function") return null;
+  try {
+    return fn.call(liveRuntime.handle);
+  } catch {
+    return null;
+  }
+}
+
+function summarizeResolvedCommDiagnostic(comm: CommChanges["opened"][number]): unknown {
+  return {
+    commId: comm.commId,
+    targetName: comm.targetName,
+    modelModule: comm.modelModule,
+    modelName: comm.modelName,
+    state: summarizeWidgetStateDiagnostic(comm.state),
+  };
+}
+
+function summarizeRuntimeCommsDiagnostic(snapshot: unknown): unknown {
+  if (!isRecord(snapshot) || !isRecord(snapshot.comms)) return null;
+  return Object.fromEntries(
+    Object.entries(snapshot.comms).map(([commId, entry]) => [
+      commId,
+      isRecord(entry)
+        ? {
+            modelModule: entry.model_module,
+            modelName: entry.model_name,
+            state: summarizeWidgetStateDiagnostic(entry.state),
+          }
+        : null,
+    ]),
+  );
+}
+
+function summarizeCommsDocDiagnostic(snapshot: unknown): unknown {
+  if (!isRecord(snapshot) || !isRecord(snapshot.comms)) return null;
+  return Object.fromEntries(
+    Object.entries(snapshot.comms).map(([commId, state]) => [
+      commId,
+      summarizeWidgetStateDiagnostic(state),
+    ]),
+  );
+}
+
+function summarizeWidgetStateDiagnostic(state: unknown): unknown {
+  if (!isRecord(state)) return state;
+  const summary: Record<string, unknown> = {};
+  for (const key of [
+    "_model_module",
+    "_model_name",
+    "value",
+    "description",
+    "min",
+    "max",
+    "step",
+  ]) {
+    const value = state[key];
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      summary[key] = value;
+    }
+  }
+  summary.__keys = Object.keys(state).sort();
+  return summary;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function isConfiguredBlobUrl(value: string, blobBasePath: string): boolean {

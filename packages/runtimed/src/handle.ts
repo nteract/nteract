@@ -195,6 +195,22 @@ export interface SyncableHandle {
   get_dependency_fingerprint(): string | undefined;
 
   /**
+   * Read the current RuntimeStateDoc snapshot from the handle.
+   *
+   * Optional: used by projection replays to recover from adapter bootstrap
+   * races where the handle has already applied sync frames before subscribers
+   * attach to the engine observables.
+   */
+  get_runtime_state?(): unknown;
+
+  /**
+   * Read the current CommsDoc snapshot from the handle.
+   *
+   * Optional for the same reason as `get_runtime_state`.
+   */
+  get_comms_state?(): unknown;
+
+  /**
    * Resolve ContentRef values in a comm's state.
    *
    * Returns `{ state, buffer_paths, text_paths }` where blob ContentRefs are

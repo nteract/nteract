@@ -83,11 +83,38 @@ async function main() {
       );
     }
 
-    const browserRun = await runBrowserSmoke({
-      browser,
-      tokenStorageJson,
-      viewerUrl: runtime.viewerUrl,
-    });
+    let browserRun;
+    try {
+      browserRun = await runBrowserSmoke({
+        browser,
+        tokenStorageJson,
+        viewerUrl: runtime.viewerUrl,
+      });
+    } catch (error) {
+      const browserFailure =
+        error && typeof error === "object" && "browserRun" in error ? error.browserRun : null;
+      await writeSmokeJsonReport(
+        {
+          ok: false,
+          viewerUrl: runtime.viewerUrl,
+          notebookId: runtime.notebookId,
+          source,
+          token: {
+            path: tokenPath,
+            secondsRemaining: tokenSecondsRemaining,
+          },
+          runtimePeer: {
+            pid: runtimePeerPid,
+            logPath: runtime.runtimePeer?.logPath ?? null,
+            stopped: false,
+          },
+          browser: browserFailure,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        reportPath,
+      );
+      throw error;
+    }
     await stopProcess(runtimePeerPid);
     runtimePeerPid = null;
 
@@ -109,8 +136,8 @@ async function main() {
         "primary_window_widget_rendered",
         "peer_window_widget_rendered",
         "widget_initial_value_synced",
-        "widget_drag_changed_primary_value",
-        "widget_drag_synced_to_peer_window",
+        "primary_widget_drag_synced_to_peer_window",
+        "peer_widget_drag_synced_to_primary_window",
         "widget_loading_message_absent",
       ],
       browser: browserRun,
@@ -143,9 +170,11 @@ async function runBrowserSmoke({ browser, tokenStorageJson, viewerUrl }) {
     scope: "owner",
     tokenStorageJson,
   });
+  let primary = null;
+  let peer = null;
   try {
-    const primary = await primaryContext.newPage();
-    const peer = await peerContext.newPage();
+    primary = await primaryContext.newPage();
+    peer = await peerContext.newPage();
     collectDiagnostics(primary, "primary", diagnostics);
     collectDiagnostics(peer, "peer", diagnostics);
 
@@ -164,6 +193,10 @@ async function runBrowserSmoke({ browser, tokenStorageJson, viewerUrl }) {
     await dragSliderToValue(primarySlider, 18);
     await expectSliderValue(primarySlider, "18", timeoutMs);
     await expectSliderValue(peerSlider, "18", timeoutMs);
+
+    await dragSliderToValue(peerSlider, 11);
+    await expectSliderValue(peerSlider, "11", timeoutMs);
+    await expectSliderValue(primarySlider, "11", timeoutMs);
     await expectNoWidgetLoading(primary, timeoutMs);
     await expectNoWidgetLoading(peer, timeoutMs);
 
@@ -177,6 +210,36 @@ async function runBrowserSmoke({ browser, tokenStorageJson, viewerUrl }) {
       diagnostics,
       screenshotPath: screenshotPath ?? null,
     };
+  } catch (error) {
+    if (screenshotPath) {
+      if (primary) {
+        await saveSmokeScreenshot(primary, siblingScreenshotPath(screenshotPath, "primary")).catch(
+          () => {},
+        );
+      }
+      if (peer) {
+        await saveSmokeScreenshot(peer, siblingScreenshotPath(screenshotPath, "peer")).catch(
+          () => {},
+        );
+      }
+    }
+    if (error && typeof error === "object") {
+      error.browserRun = {
+        primary: primary
+          ? await widgetPageSnapshot(primary).catch((snapshotError) => ({
+              error: String(snapshotError),
+            }))
+          : null,
+        peer: peer
+          ? await widgetPageSnapshot(peer).catch((snapshotError) => ({
+              error: String(snapshotError),
+            }))
+          : null,
+        diagnostics,
+        screenshotPath: screenshotPath ?? null,
+      };
+    }
+    throw error;
   } finally {
     await primaryContext.close().catch(() => {});
     await peerContext.close().catch(() => {});
@@ -191,6 +254,7 @@ async function authenticatedContext(browser, { origin, scope, tokenStorageJson }
         if (globalThis.location?.origin !== expectedOrigin) return;
         globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
         globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", requestedScope);
+        globalThis.localStorage?.setItem("nteract:notebook-cloud:widget-diagnostics", "1");
       } catch {
         // Output frames intentionally cannot read first-party localStorage.
       }
@@ -249,13 +313,37 @@ async function dragSliderToValue(slider, targetValue) {
   }
   const clamped = Math.min(max, Math.max(min, targetValue));
   const ratio = max === min ? 0 : (clamped - min) / (max - min);
-  await slider.dragTo(sliderRoot, {
-    force: true,
-    targetPosition: {
-      x: rootBox.width * ratio,
-      y: rootBox.height / 2,
-    },
+  const thumbBox = await slider.boundingBox();
+  if (!thumbBox) {
+    throw new Error("IntSlider did not expose the expected thumb geometry");
+  }
+  const page = slider.page();
+  await page.mouse.move(thumbBox.x + thumbBox.width / 2, thumbBox.y + thumbBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(rootBox.x + rootBox.width * ratio, rootBox.y + rootBox.height / 2, {
+    steps: 8,
   });
+  await page.mouse.up();
+  await slider.page().waitForTimeout(settleMs);
+  const currentValue = Number(await slider.getAttribute("aria-valuenow"));
+  if (currentValue === targetValue) {
+    return;
+  }
+
+  // Pointer geometry differs slightly between hosted iframe layouts and browser
+  // channels. Fall back to keyboard stepping so the smoke remains a reliable
+  // cross-window sync proof instead of a drag-mechanics test.
+  await slider.click();
+  const direction = targetValue > currentValue ? "ArrowRight" : "ArrowLeft";
+  for (let value = currentValue; value !== targetValue; ) {
+    await slider.press(direction);
+    await slider.page().waitForTimeout(25);
+    const nextValue = Number(await slider.getAttribute("aria-valuenow"));
+    if (!Number.isFinite(nextValue) || nextValue === value) {
+      break;
+    }
+    value = nextValue;
+  }
   await slider.page().waitForTimeout(settleMs);
 }
 
@@ -272,6 +360,21 @@ async function widgetPageSnapshot(page) {
     .catch(() => []);
   return {
     text: text.replace(/\s+/g, " ").slice(0, 1000),
+    parentWidgetStore: await page
+      .evaluate(() => {
+        const fn = globalThis.__nteractCloudWidgetStoreSnapshot;
+        return typeof fn === "function" ? fn() : null;
+      })
+      .catch(() => null),
+    commEvents: await page
+      .evaluate(() => globalThis.__nteractCloudWidgetCommEvents ?? null)
+      .catch(() => null),
+    liveRuntime: await page
+      .evaluate(() => {
+        const fn = globalThis.__nteractCloudLiveRuntimeSnapshot;
+        return typeof fn === "function" ? fn() : null;
+      })
+      .catch(() => null),
     widgetFrames: (await frameBodies.allInnerTexts()).map((bodyText, index) => ({
       bodyText: bodyText.replace(/\s+/g, " ").slice(0, 500),
       sliderValue: sliderValues[index] ?? null,
@@ -297,6 +400,9 @@ function collectDiagnostics(page, label, diagnostics) {
     }
   });
   page.on("requestfailed", (request) => {
+    if (isBenignRequestFailure(request.url(), request.failure()?.errorText ?? null)) {
+      return;
+    }
     diagnostics.requestFailures.push({
       label,
       url: safeDiagnosticUrl(request.url()),
@@ -309,8 +415,16 @@ function collectDiagnostics(page, label, diagnostics) {
       url: safeDiagnosticUrl(ws.url()),
       closed: false,
       errors: [],
+      framesSent: {},
+      framesReceived: {},
     };
     diagnostics.websockets.push(entry);
+    ws.on("framesent", (frame) => {
+      recordWebSocketFrame(entry.framesSent, frame.payload);
+    });
+    ws.on("framereceived", (frame) => {
+      recordWebSocketFrame(entry.framesReceived, frame.payload);
+    });
     ws.on("socketerror", (error) => {
       entry.errors.push(String(error));
     });
@@ -318,6 +432,64 @@ function collectDiagnostics(page, label, diagnostics) {
       entry.closed = true;
     });
   });
+}
+
+function isBenignRequestFailure(url, failure) {
+  if (failure !== "net::ERR_ABORTED") return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === "https://preview.runtusercontent.com" && parsed.pathname === "/frame/";
+  } catch {
+    return false;
+  }
+}
+
+function recordWebSocketFrame(target, payload) {
+  const label = webSocketFrameLabel(payload);
+  target[label] = (target[label] ?? 0) + 1;
+}
+
+function webSocketFrameLabel(payload) {
+  if (typeof payload === "string") {
+    return "text";
+  }
+  if (payload instanceof Buffer) {
+    return frameTypeName(payload[0]);
+  }
+  if (payload instanceof ArrayBuffer) {
+    return frameTypeName(new Uint8Array(payload)[0]);
+  }
+  if (ArrayBuffer.isView(payload)) {
+    return frameTypeName(new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)[0]);
+  }
+  return "unknown";
+}
+
+function frameTypeName(type) {
+  switch (type) {
+    case 0x00:
+      return "automerge_sync";
+    case 0x01:
+      return "request";
+    case 0x02:
+      return "response";
+    case 0x03:
+      return "presence";
+    case 0x04:
+      return "session_control";
+    case 0x05:
+      return "runtime_state_sync";
+    case 0x06:
+      return "pool_state_sync";
+    case 0x07:
+      return "put_blob";
+    case 0x08:
+      return "broadcast";
+    case 0x09:
+      return "comms_doc_sync";
+    default:
+      return `frame_${String(type)}`;
+  }
 }
 
 function assertCleanDiagnostics(diagnostics) {
@@ -455,6 +627,12 @@ function safeDiagnosticUrl(value) {
   } catch {
     return value;
   }
+}
+
+function siblingScreenshotPath(screenshotPath, label) {
+  const extension = path.extname(screenshotPath) || ".png";
+  const base = screenshotPath.slice(0, screenshotPath.length - extension.length);
+  return `${base}-${label}${extension}`;
 }
 
 function isBenignPageError(text) {
