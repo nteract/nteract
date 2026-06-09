@@ -469,13 +469,15 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
 test("cloud app-session bridge refreshes cookie-backed state after OIDC exchange", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
+  const authSourcePath = new URL("../viewer/use-cloud-auth.ts", import.meta.url);
+  const authSourceText = readFileSync(authSourcePath, "utf8");
 
   assert.match(
     sourceText,
     /useCloudAppSessionBridge\(\s*authState,\s*appSessionStatus\.session,\s*appSessionStatus\.status === "loading",\s*appSessionStatus\.refreshAppSessionStatus,\s*\)/,
   );
   assert.match(
-    sourceText,
+    authSourceText,
     /establishCloudAppSession\(authState\)[\s\S]*\.then\(\(\) => \{[\s\S]*onEstablished\?\.\(\)/,
   );
   assert.match(sourceText, /\[authState, bootstrap, hasAppSession, refreshIndex, signedIn\]/);

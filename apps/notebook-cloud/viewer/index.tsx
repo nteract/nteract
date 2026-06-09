@@ -66,11 +66,9 @@ import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import {
   clearCloudPrototypeDevAuth,
   cloudNotebookSignInCopy,
-  cloudPrototypeAuthFromWindow,
   fetchWithCloudPrototypeAuth,
   cloudSyncAuthFromAppSessionCookie,
   cloudSyncAuthFromPrototypeAuthState,
-  isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
   storeCloudRequestedScope,
   type CloudPrototypeAuthState,
@@ -90,14 +88,7 @@ import {
   useRuntimeState,
   type PresenceContextValue,
 } from "../../notebook/src/notebook-surface";
-import {
-  beginOidcLogin,
-  completeOidcRedirect,
-  normalizeOidcAuthConfig,
-  refreshStoredOidcToken,
-  storedOidcTokenNeedsRefresh,
-  type CloudOidcAuthConfig,
-} from "./oidc-auth";
+import { beginOidcLogin, completeOidcRedirect } from "./oidc-auth";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
@@ -117,13 +108,9 @@ import {
 } from "./presence";
 import type { ResolvedCell } from "./render-resolution";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
-import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
+import type { ViewerStatus } from "./notice-types";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
-import {
-  isCloudNotebookListItem,
-  projectCloudNotebookDashboard,
-  type CloudNotebookListItem,
-} from "./notebook-dashboard";
+import { projectCloudNotebookDashboard, type CloudNotebookListItem } from "./notebook-dashboard";
 import { CloudNotebookDashboard } from "./cloud-notebook-dashboard-view";
 import {
   clearCachedCloudNotebookList,
@@ -139,21 +126,40 @@ import { cloudSourceLanguage } from "./source-language";
 import { loadSupplementalViewerCss } from "./supplemental-css";
 import {
   clearCloudAppSession,
-  cloudAppSessionIsFresh,
-  cloudAppSessionNeedsRenewal,
-  establishCloudAppSession,
   establishCloudAppSessionFromOidcToken,
-  isCloudAppSession,
   readCloudAppSessionStatus,
-  type CloudAppSession,
 } from "./app-session";
-import { cloudOidcRenewalFailureMessage } from "./auth-renewal-copy";
 import {
   applyDocumentTheme,
   CLOUD_VIEWER_THEME_STORAGE_KEY,
   installDocumentThemeSync,
 } from "./theme";
 import { CLOUD_WIDGET_RENDERERS, CloudWidgetStoreProvider } from "./widget-runtime";
+import {
+  isHomePath,
+  isNotebookListPath,
+  isOidcCallbackPath,
+  loadAuthConfig,
+  loadCloudNotebookListBootstrap,
+  loadViewerRuntime,
+  requireElement,
+} from "./cloud-viewer-config";
+import type {
+  CloudNotebookCreateResponse,
+  CloudNotebookListBootstrap,
+  CloudNotebookListResponse,
+  CloudNotebookListState,
+  CloudNotebookRenameState,
+  CloudNotebookUpdateResponse,
+  CloudViewerAuthConfig,
+  ViewerRuntime,
+  ViewerRuntimeState,
+} from "./cloud-viewer-types";
+import {
+  useCloudAppSessionBridge,
+  useCloudAppSessionStatus,
+  useCloudPrototypeAuth,
+} from "./use-cloud-auth";
 import "./index.css";
 
 const CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN = "400px 0px";
@@ -175,443 +181,7 @@ setOpenUrlHost({
   },
 });
 
-interface CloudViewerAuthConfig {
-  oidc: CloudOidcAuthConfig | null;
-}
-
-interface ViewerRuntime {
-  config: CloudViewerConfig;
-}
-
-interface CloudNotebookListResponse {
-  ok: boolean;
-  notebooks: CloudNotebookListItem[];
-}
-
-interface CloudNotebookListBootstrap {
-  kind: "notebook-list";
-  notebooks: CloudNotebookListItem[];
-  saved_at: string;
-  session?: CloudAppSession | null;
-}
-
-interface CloudNotebookCreateResponse {
-  ok: boolean;
-  title?: string | null;
-  viewer_url?: string;
-}
-
-interface CloudNotebookUpdateResponse {
-  ok: boolean;
-  notebook_id?: string;
-  title?: string | null;
-  updated_at?: string;
-  viewer_url?: string;
-}
-
-type CloudNotebookListState =
-  | { kind: "loading" }
-  | { kind: "ready"; notebooks: CloudNotebookListItem[] }
-  | { kind: "signed_out" }
-  | { kind: "error"; message: string };
-
-interface CloudNotebookRenameState {
-  notebookId: string;
-  title: string;
-}
-
-type ViewerRuntimeState =
-  | { kind: "ready"; runtime: ViewerRuntime }
-  | { kind: "error"; message: string };
-
 installDocumentThemeSync();
-
-function requireElement<T extends Element = HTMLElement>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) {
-    throw new Error(`Missing cloud viewer element ${selector}`);
-  }
-  return element;
-}
-
-function loadConfig(): CloudViewerConfig {
-  const element = requireElement<HTMLScriptElement>("#nteract-cloud-viewer-config");
-  const parsed = JSON.parse(element.textContent ?? "{}") as Partial<CloudViewerConfig>;
-  if (
-    !parsed.notebookId ||
-    !parsed.catalogEndpoint ||
-    !parsed.snapshotBasePath ||
-    !parsed.runtimeSnapshotBasePath ||
-    !parsed.commsSnapshotBasePath ||
-    !parsed.aclEndpoint ||
-    !parsed.invitesEndpoint ||
-    !parsed.accessRequestsEndpoint ||
-    !parsed.workstationsEndpoint ||
-    !parsed.workstationDefaultEndpoint ||
-    !parsed.workstationAttachEndpoint ||
-    !parsed.syncEndpoint ||
-    !parsed.blobBasePath ||
-    !parsed.rendererAssetsBasePath ||
-    !parsed.runtimedWasmModulePath ||
-    !parsed.runtimedWasmPath
-  ) {
-    throw new Error("Cloud viewer config is incomplete");
-  }
-  return {
-    notebookId: parsed.notebookId,
-    headsHash: parsed.headsHash ?? null,
-    catalogEndpoint: parsed.catalogEndpoint,
-    snapshotBasePath: parsed.snapshotBasePath,
-    runtimeSnapshotBasePath: parsed.runtimeSnapshotBasePath,
-    commsSnapshotBasePath: parsed.commsSnapshotBasePath,
-    aclEndpoint: parsed.aclEndpoint,
-    invitesEndpoint: parsed.invitesEndpoint,
-    accessRequestsEndpoint: parsed.accessRequestsEndpoint,
-    workstationsEndpoint: parsed.workstationsEndpoint,
-    workstationDefaultEndpoint: parsed.workstationDefaultEndpoint,
-    workstationAttachEndpoint: parsed.workstationAttachEndpoint,
-    hostCapabilities: {
-      canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
-      canSubmitExecutionRequests: Boolean(parsed.hostCapabilities?.canSubmitExecutionRequests),
-    },
-    session: isCloudAppSession(parsed.session) ? parsed.session : null,
-    syncEndpoint: parsed.syncEndpoint,
-    blobBasePath: parsed.blobBasePath,
-    rendererAssetsBasePath: parsed.rendererAssetsBasePath,
-    outputDocumentBaseUrl: parsed.outputDocumentBaseUrl ?? null,
-    runtimedWasmModulePath: parsed.runtimedWasmModulePath,
-    runtimedWasmPath: parsed.runtimedWasmPath,
-  };
-}
-
-function loadViewerRuntime(): ViewerRuntimeState {
-  try {
-    const config = loadConfig();
-    return {
-      kind: "ready",
-      runtime: { config },
-    };
-  } catch (error) {
-    return {
-      kind: "error",
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function loadAuthConfig(): CloudViewerAuthConfig {
-  const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-auth-config");
-  if (!element) {
-    return { oidc: null };
-  }
-  try {
-    const parsed = JSON.parse(element.textContent ?? "{}") as {
-      oidc?: Partial<CloudOidcAuthConfig> | null;
-    };
-    return { oidc: normalizeOidcAuthConfig(parsed.oidc) };
-  } catch {
-    return { oidc: null };
-  }
-}
-
-function loadCloudNotebookListBootstrap(): CloudNotebookListBootstrap | null {
-  const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-bootstrap");
-  if (!element) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(element.textContent ?? "{}") as unknown;
-    if (isCloudNotebookListBootstrap(parsed)) {
-      return parsed;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function isOidcCallbackPath(): boolean {
-  return window.location.pathname.replace(/\/+$/, "") === "/oidc";
-}
-
-function isHomePath(): boolean {
-  const pathname = window.location.pathname.replace(/\/+$/, "");
-  return pathname === "" || pathname === "/index.html";
-}
-
-function isNotebookListPath(): boolean {
-  return window.location.pathname.replace(/\/+$/, "") === "/n";
-}
-
-interface CloudPrototypeAuthOptions {
-  appSessionRefreshFallback?: boolean;
-  appSessionLoading?: boolean;
-  appSession?: CloudAppSession | null;
-}
-
-interface CloudAppSessionViewState {
-  status: "loading" | "ready" | "error";
-  session: CloudAppSession | null;
-  error: string | null;
-}
-
-function useCloudPrototypeAuth(
-  authConfig: CloudViewerAuthConfig,
-  options?: CloudPrototypeAuthOptions,
-): {
-  authState: CloudPrototypeAuthState;
-  authRenewal: CloudAuthRenewalState;
-  refreshAuthState: () => void;
-} {
-  const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
-    cloudPrototypeAuthFromWindow(),
-  );
-  const appSession = options?.appSession ?? null;
-  const appSessionLoading = options?.appSessionLoading === true;
-  const [authRenewal, setAuthRenewal] = useState<CloudAuthRenewalState>(() =>
-    shouldRefreshStoredOidcToken() && !cloudAppSessionIsFresh(appSession) && !appSessionLoading
-      ? { kind: "refreshing", message: "Refreshing sign-in..." }
-      : { kind: "idle", message: null },
-  );
-  const refreshPromiseRef = useRef<Promise<void> | null>(null);
-  const appSessionRefreshFallbackRef = useRef<number | null>(null);
-  const appSessionRefreshFallback = options?.appSessionRefreshFallback === true;
-  const refreshAuthState = useCallback(() => {
-    setAuthState(cloudPrototypeAuthFromWindow());
-    if (!shouldRefreshStoredOidcToken() || cloudAppSessionIsFresh(appSession)) {
-      appSessionRefreshFallbackRef.current = appSession?.expires_at ?? null;
-      setAuthRenewal({ kind: "idle", message: null });
-    }
-  }, [appSession]);
-
-  const refreshOidcIfNeeded = useCallback(async () => {
-    const oidc = authConfig.oidc;
-    if (!oidc || !shouldRefreshStoredOidcToken()) {
-      return;
-    }
-    if (appSessionRefreshFallback) {
-      if (appSessionLoading && !appSession) {
-        setAuthRenewal({ kind: "idle", message: null });
-        return;
-      }
-      const appSessionExpiresAt = appSession?.expires_at ?? null;
-      if (appSessionExpiresAt && cloudAppSessionIsFresh(appSession)) {
-        appSessionRefreshFallbackRef.current = appSessionExpiresAt;
-        setAuthRenewal({ kind: "idle", message: null });
-      }
-    }
-    if (refreshPromiseRef.current) {
-      return refreshPromiseRef.current;
-    }
-
-    const refreshPromise = (async () => {
-      setAuthRenewal({ kind: "refreshing", message: "Refreshing sign-in..." });
-      try {
-        await refreshStoredOidcToken(oidc, { storage: window.localStorage });
-        appSessionRefreshFallbackRef.current = null;
-        refreshAuthState();
-        setAuthRenewal({ kind: "idle", message: null });
-      } catch (error) {
-        if (appSessionRefreshFallback) {
-          const appSession = await readCloudAppSessionStatus().catch(() => null);
-          const appSessionExpiresAt = appSession?.session?.expires_at ?? null;
-          if (cloudAppSessionIsFresh(appSession?.session)) {
-            appSessionRefreshFallbackRef.current = appSessionExpiresAt;
-            console.warn(
-              "[notebook-cloud] OIDC session refresh failed; continuing with app session cookie",
-              error,
-            );
-            refreshAuthState();
-            setAuthRenewal({ kind: "idle", message: null });
-            return;
-          }
-        }
-        console.warn("[notebook-cloud] OIDC session refresh failed", error);
-        refreshAuthState();
-        setAuthRenewal({ kind: "failed", message: cloudOidcRenewalFailureMessage(error) });
-      } finally {
-        refreshPromiseRef.current = null;
-      }
-    })();
-    refreshPromiseRef.current = refreshPromise;
-    return refreshPromise;
-  }, [appSession, appSessionLoading, appSessionRefreshFallback, authConfig.oidc, refreshAuthState]);
-
-  useEffect(() => {
-    void refreshOidcIfNeeded();
-
-    const interval = window.setInterval(() => {
-      void refreshOidcIfNeeded();
-    }, 60_000);
-    const refreshOnFocus = () => {
-      void refreshOidcIfNeeded();
-    };
-    const refreshOnVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void refreshOidcIfNeeded();
-      }
-    };
-    const refreshOnStorage = (event: StorageEvent) => {
-      if (event.storageArea && event.storageArea !== window.localStorage) {
-        return;
-      }
-      if (!isCloudPrototypeAuthStorageKey(event.key)) {
-        return;
-      }
-      appSessionRefreshFallbackRef.current = null;
-      refreshAuthState();
-      void refreshOidcIfNeeded();
-    };
-    window.addEventListener("focus", refreshOnFocus);
-    window.addEventListener("storage", refreshOnStorage);
-    document.addEventListener("visibilitychange", refreshOnVisibility);
-
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshOnFocus);
-      window.removeEventListener("storage", refreshOnStorage);
-      document.removeEventListener("visibilitychange", refreshOnVisibility);
-    };
-  }, [refreshAuthState, refreshOidcIfNeeded]);
-
-  return { authState, authRenewal, refreshAuthState };
-}
-
-function useCloudAppSessionStatus(
-  initialSession: CloudAppSession | null,
-): CloudAppSessionViewState & {
-  clearAppSessionStatus: () => void;
-  refreshAppSessionStatus: () => void;
-} {
-  const [refreshIndex, setRefreshIndex] = useState(0);
-  const [state, setState] = useState<CloudAppSessionViewState>(() => ({
-    status: initialSession ? "ready" : "loading",
-    session: initialSession,
-    error: null,
-  }));
-
-  useEffect(() => {
-    if (!initialSession) {
-      return;
-    }
-    setState({ status: "ready", session: initialSession, error: null });
-  }, [initialSession]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    if (!state.session) {
-      setState((current) =>
-        current.status === "loading" ? current : { ...current, status: "loading", error: null },
-      );
-    }
-    void readCloudAppSessionStatus({ signal: controller.signal })
-      .then((status) => {
-        if (controller.signal.aborted) return;
-        setState({ status: "ready", session: status.session, error: null });
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setState((current) => ({
-          status: "error",
-          session: current.session,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-      });
-
-    return () => {
-      controller.abort();
-    };
-  }, [refreshIndex]);
-
-  const clearAppSessionStatus = useCallback(() => {
-    setState({ status: "ready", session: null, error: null });
-  }, []);
-  const refreshAppSessionStatus = useCallback(() => {
-    setRefreshIndex((value) => value + 1);
-  }, []);
-
-  return {
-    ...state,
-    clearAppSessionStatus,
-    refreshAppSessionStatus,
-  };
-}
-
-function shouldRefreshStoredOidcToken(): boolean {
-  try {
-    return Boolean(window.localStorage && storedOidcTokenNeedsRefresh(window.localStorage));
-  } catch {
-    return false;
-  }
-}
-
-function currentEpochSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-function useCloudAppSessionBridge(
-  authState: CloudPrototypeAuthState,
-  appSession: CloudAppSession | null,
-  appSessionLoading: boolean,
-  onEstablished?: () => void,
-): void {
-  const establishedTokenRef = useRef<string | null>(null);
-  const lastAttemptAtRef = useRef(0);
-  const inFlightRef = useRef<Promise<void> | null>(null);
-  const renewIfNeeded = useCallback(() => {
-    if (authState.mode !== "oidc" || !authState.token) {
-      establishedTokenRef.current = null;
-      return;
-    }
-    if (appSessionLoading && !appSession) {
-      return;
-    }
-
-    const nowSeconds = currentEpochSeconds();
-    const tokenChanged = establishedTokenRef.current !== authState.token;
-    const sessionNeedsRenewal = cloudAppSessionNeedsRenewal(appSession, nowSeconds);
-    if (!tokenChanged && !sessionNeedsRenewal) {
-      return;
-    }
-    if (inFlightRef.current) {
-      return;
-    }
-    if (!tokenChanged && nowSeconds - lastAttemptAtRef.current < 5 * 60) {
-      return;
-    }
-
-    lastAttemptAtRef.current = nowSeconds;
-    inFlightRef.current = establishCloudAppSession(authState)
-      .then(() => {
-        establishedTokenRef.current = authState.token;
-        onEstablished?.();
-      })
-      .catch((error: unknown) => {
-        console.warn("[notebook-cloud] app session exchange failed", error);
-      })
-      .finally(() => {
-        inFlightRef.current = null;
-      });
-  }, [appSession, appSessionLoading, authState, onEstablished]);
-
-  useEffect(() => {
-    renewIfNeeded();
-    const interval = window.setInterval(renewIfNeeded, 60_000);
-    const renewOnFocus = () => renewIfNeeded();
-    const renewOnVisibility = () => {
-      if (document.visibilityState === "visible") {
-        renewIfNeeded();
-      }
-    };
-    window.addEventListener("focus", renewOnFocus);
-    document.addEventListener("visibilitychange", renewOnVisibility);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", renewOnFocus);
-      document.removeEventListener("visibilitychange", renewOnVisibility);
-    };
-  }, [renewIfNeeded]);
-}
 
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
@@ -1152,22 +722,6 @@ function isCloudNotebookListResponse(value: unknown): value is CloudNotebookList
   }
   const candidate = value as Record<string, unknown>;
   return candidate.ok === true && Array.isArray(candidate.notebooks);
-}
-
-function isCloudNotebookListBootstrap(value: unknown): value is CloudNotebookListBootstrap {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const candidate = value as Partial<CloudNotebookListBootstrap>;
-  return (
-    candidate.kind === "notebook-list" &&
-    typeof candidate.saved_at === "string" &&
-    Array.isArray(candidate.notebooks) &&
-    candidate.notebooks.every(isCloudNotebookListItem) &&
-    (candidate.session === undefined ||
-      candidate.session === null ||
-      isCloudAppSession(candidate.session))
-  );
 }
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
