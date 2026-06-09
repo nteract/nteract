@@ -1,27 +1,33 @@
 ---
 title: Cloud dashboard
-description: Hosted notebook home, continuation, workstation context, and share-preview states.
+description: Hosted notebook home direction, ranked dashboard alternatives, and cleanup notes.
 ---
 
 import { CloudDashboardExample } from "@/components/cloud-dashboard-example";
 
 The hosted dashboard is app-level product chrome. It should help a signed-in
-user continue recent notebook work, inspect visible notebooks, and understand
-whether compute is ready without becoming another notebook shell.
+user find the next notebook to open without becoming another notebook shell or a
+verbose metrics dashboard.
 
-This fixture uses the current list endpoint shape plus deterministic workstation
-and sharing facts. It keeps the extra facts illustrative until the production
-API has stable projections for them.
+This fixture captures the current product read from the design lab: direction
+`1` is the best base, and the useful parts of `5`, `8`, and `10` should become
+filtering and precedence around that search-first home. The lower-ranked but
+useful `2`, `9`, and `11` directions stay visible as constraints for cleanup,
+project grouping, and dense inventory legibility.
 
 <CloudDashboardExample />
 
 ## Current read
 
-- `/n` should become a notebook home, not only a file list.
-- The first action should be continuing recent work; the full notebook list
-  stays close behind it.
-- Workstation readiness is room/app context. It can summarize the selected
-  default target without owning notebook execution controls.
+- `/n` should feel like a notebook switcher first.
+- Filtering should borrow from the inbox direction without adopting an inbox
+  layout wholesale.
+- Activity grouping should make smoke-test clutter easier to scan.
+- Pinned or favored notebooks should stay above generated testing noise.
+- Triage, project grouping, and table density remain useful constraints, but
+  they should not become the primary surface.
+- Workstation readiness is room/app context. It can summarize a selected default
+  target without owning notebook execution controls.
 - Share previews should be revision-aware and safe by default. Private
   notebooks should not leak content through metadata; public notebooks can use
   explicit published data.
