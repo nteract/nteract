@@ -418,6 +418,73 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.deepEqual([...viewerSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 1, 2, 3]);
   });
 
+  it("publishes workstation attachment control updates through the room host", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    const viewerSocket = new FakeSocket();
+    const viewerPeer = {
+      id: "viewer",
+      socket: viewerSocket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=viewer&operator=desktop:v&scope=viewer"),
+      ),
+      connectedAt: "2026-06-07T00:00:00.000Z",
+    };
+    harness.peers.set(viewerPeer.id, viewerPeer);
+
+    const attachment = {
+      workstation_id: "ws-lab2",
+      display_name: "Lab2 workstation",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "connecting",
+      status_message: "Lab2 workstation accepted the request and is starting compute.",
+      cpu_count: 8,
+      memory_bytes: 16_000_000_000,
+      working_directory: "/home/ubuntu/project",
+      updated_at: "2026-06-07T00:00:01.000Z",
+    };
+    let checkpointed = 0;
+    let publishedAttachment: unknown;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => noopMaterializedResult(),
+      checkpoint: async () => {
+        checkpointed += 1;
+      },
+      setWorkstationAttachment: async (nextAttachment: unknown) => {
+        publishedAttachment = nextAttachment;
+        return {
+          ...noopMaterializedResult(),
+          changed: true,
+          runtime_state_changed: true,
+          outbound: [
+            {
+              peer_id: viewerPeer.id,
+              frame_type: FrameType.RUNTIME_STATE_SYNC,
+              payload: [4, 5, 6],
+            },
+          ],
+        };
+      },
+    } as never);
+
+    const response = await room.fetch(
+      new Request("https://room.internal/internal/n/demo/workstation-attachment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attachment }),
+      }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, changed: true });
+    assert.deepEqual(publishedAttachment, attachment);
+    assert.equal(checkpointed, 1, "changed control updates are checkpointed");
+    assert.deepEqual([...viewerSocket.sent[0]], [FrameType.RUNTIME_STATE_SYNC, 4, 5, 6]);
+  });
+
   it("projects runtime-peer workstation metadata into the attachment", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);

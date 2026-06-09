@@ -1840,7 +1840,21 @@ describe("Worker artifact routes", () => {
   });
 
   it("allows workstation owners to update attach job status", async () => {
-    const env = fakeEnv();
+    let runtimeStateRequest: Request | undefined;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            runtimeStateRequest = request;
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
     seedWorkstationAttachJob(env, {
       id: "job-1",
@@ -1884,6 +1898,77 @@ describe("Worker artifact routes", () => {
     });
     assert.equal(env.DB.workstationAttachJobs.get("job-1")?.status, "running");
     assert.ok(env.DB.workstationAttachJobs.get("job-1")?.accepted_at);
+    assert.ok(runtimeStateRequest);
+    assert.equal(runtimeStateRequest.method, "POST");
+    assert.equal(
+      new URL(runtimeStateRequest.url).pathname,
+      "/internal/n/nb-1/workstation-attachment",
+    );
+    const runtimeStatePayload = (await runtimeStateRequest.json()) as {
+      attachment?: { workstation_id?: string; display_name?: string; status?: string };
+    };
+    assert.deepEqual(runtimeStatePayload.attachment, {
+      workstation_id: "ws-lab2",
+      display_name: "Lab2",
+      provider: "runtime_peer",
+      default_environment_label: "Current Python",
+      environment_policy: "current_python",
+      status: "ready",
+      status_message: null,
+      cpu_count: 8,
+      memory_bytes: 16_000_000_000,
+      working_directory: "/home/ubuntu/project",
+      updated_at: env.DB.workstationAttachJobs.get("job-1")?.updated_at,
+    });
+  });
+
+  it("publishes workstation claim progress into RuntimeStateDoc", async () => {
+    let attachmentStatus: string | undefined;
+    let attachmentMessage: string | undefined | null;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            const payload = (await request.json()) as {
+              attachment?: { status?: string; status_message?: string | null };
+            };
+            attachmentStatus = payload.attachment?.status;
+            attachmentMessage = payload.attachment?.status_message;
+            return new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-claim",
+      notebookId: "nb-claim",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations/ws-lab2/attach-jobs/job-claim", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "accepted" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(attachmentStatus, "connecting");
+    assert.equal(attachmentMessage, "Lab2 accepted the request and is starting compute.");
   });
 
   it("does not let workstation owners update another principal's attach job", async () => {

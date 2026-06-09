@@ -1,5 +1,5 @@
 import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
-import type { BlobRef } from "runtimed";
+import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
   AuthError,
@@ -1211,6 +1211,10 @@ async function routeWorkstationAttachJob(
   if (!job) {
     return json({ error: "workstation attach job not found" }, 404);
   }
+  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  if (workstation) {
+    await publishWorkstationAttachJobRuntimeState(env, job, workstation);
+  }
   return json({
     ok: true,
     job: workstationAttachJobResponseRow(request, job),
@@ -1502,6 +1506,75 @@ function workstationAttachJobResponseRow(
       scope: "runtime_peer",
     },
   };
+}
+
+async function publishWorkstationAttachJobRuntimeState(
+  env: Env,
+  job: WorkstationAttachJobRow,
+  workstation: WorkstationRow,
+): Promise<void> {
+  const attachment = workstationAttachmentStateForJob(job, workstation);
+  const id = env.NOTEBOOK_ROOMS.idFromName(job.notebook_id);
+  const room = env.NOTEBOOK_ROOMS.get(id);
+  try {
+    const response = await room.fetch(
+      new Request(
+        `https://notebook-room.internal/internal/n/${encodeURIComponent(
+          job.notebook_id,
+        )}/workstation-attachment`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ attachment }),
+        },
+      ),
+    );
+    if (response.ok) {
+      return;
+    }
+    cloudLog("warn", "workstation.attach.runtime_state_publish_failed", {
+      notebook_id: job.notebook_id,
+      workstation_id: job.workstation_id,
+      job_id: job.id,
+      status: job.status,
+      response_status: response.status,
+      counter: "workstation_attach_runtime_state_publish_failed",
+      counter_delta: 1,
+    });
+  } catch (error) {
+    cloudLog("warn", "workstation.attach.runtime_state_publish_failed", {
+      notebook_id: job.notebook_id,
+      workstation_id: job.workstation_id,
+      job_id: job.id,
+      status: job.status,
+      error: error instanceof Error ? error.message : String(error),
+      counter: "workstation_attach_runtime_state_publish_failed",
+      counter_delta: 1,
+    });
+  }
+}
+
+function workstationAttachmentStateForJob(
+  job: WorkstationAttachJobRow,
+  workstation: WorkstationRow,
+): ReturnType<typeof projectNotebookWorkstationAttachmentFromClaim> {
+  return projectNotebookWorkstationAttachmentFromClaim({
+    workstation: {
+      workstationId: workstation.workstation_id,
+      displayName: workstation.display_name,
+      provider: workstation.provider,
+      defaultEnvironmentLabel: workstation.default_environment_label,
+      environmentPolicy: workstation.environment_policy,
+      cpuCount: workstation.cpu_count,
+      memoryBytes: workstation.memory_bytes,
+      workingDirectory: workstation.working_directory,
+    },
+    claim: {
+      status: job.status,
+      errorMessage: job.error_message,
+      updatedAt: job.updated_at,
+    },
+  });
 }
 
 function parseWorkstationAttachJobsLimit(request: Request): number | Response {

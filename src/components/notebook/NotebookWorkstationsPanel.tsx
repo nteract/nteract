@@ -210,13 +210,9 @@ function RegisteredWorkstationRow({
               {workstation.statusLabel}
             </span>
           </div>
-          <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs">
+          <div className="mt-1.5 grid min-w-0 gap-1 text-xs">
             {workstation.facts.map((fact) => (
-              <RegisteredWorkstationFact
-                key={fact.kind}
-                fact={fact}
-                icon={registeredWorkstationFactIcon(fact)}
-              />
+              <RegisteredWorkstationFact key={fact.kind} fact={fact} />
             ))}
           </div>
           {workstation.statusMessage ? (
@@ -282,15 +278,12 @@ function WorkstationFact({
 
 function RegisteredWorkstationFact({
   fact,
-  icon: Icon,
 }: {
   fact: NotebookRegisteredWorkstationFactProjection;
-  icon: LucideIcon;
 }) {
   return (
-    <span className="inline-flex min-w-0 items-center gap-1.5 text-muted-foreground">
-      <Icon className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="shrink-0">{fact.label}</span>
+    <span className="grid min-w-0 grid-cols-[2.25rem_minmax(0,1fr)] items-baseline gap-1 text-muted-foreground">
+      <span className="text-[11px]">{fact.label}</span>
       <span className="min-w-0 truncate font-medium text-foreground">{fact.value}</span>
     </span>
   );
@@ -407,20 +400,5 @@ function workstationFactIcon(
       return Cloud;
     default:
       return Server;
-  }
-}
-
-function registeredWorkstationFactIcon(
-  fact: NotebookRegisteredWorkstationFactProjection,
-): LucideIcon {
-  switch (fact.kind) {
-    case "cpu":
-      return Gauge;
-    case "memory":
-      return MemoryStick;
-    case "working_directory":
-      return FolderOpen;
-    default:
-      return ServerCog;
   }
 }
