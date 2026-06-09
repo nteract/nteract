@@ -2821,29 +2821,86 @@ fn ensure_dev_daemon_binaries() {
     ensure_nono_binary(false);
 }
 
-/// Install the vendored nono binary alongside the runtimed binary.
+/// Download the prebuilt nono binary alongside the runtimed binary.
 ///
-/// Strategy: **Option A** — `cargo install nono-cli` into a workspace-local
-/// staging directory, then copy the binary to the same directory as runtimed
-/// so `runtimed::nono::binary_path()` finds it via the bundled-path check.
+/// Downloads from `github.com/always-further/nono/releases` for the current
+/// host triple, verifies the SHA-256 checksum, and caches the result under
+/// `target/nono-cache/{version}/nono` so subsequent builds skip the download.
+/// The binary is then hard-linked (or copied) next to runtimed so
+/// `runtimed::nono::binary_path()` finds it via the bundled-path check.
 ///
-/// The pinned version comes from `runtimed::nono::NONO_VERSION` (currently
-/// 0.62.0). This is macOS and Linux only — nono has no Windows support.
+/// Supported triples (those with prebuilt assets on GitHub):
+///   aarch64-apple-darwin, x86_64-apple-darwin,
+///   aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu
 ///
-/// TODO (production path): For release builds, download prebuilt binaries from
-/// `github.com/always-further/nono/releases` for each target triple and bundle
-/// them in the Tauri app. Option A (cargo install) is used for development.
+/// nono has no Windows support; see the `#[cfg(target_os = "windows")]` stub
+/// below.
 #[cfg(not(target_os = "windows"))]
 fn ensure_nono_binary(release: bool) {
     const NONO_VERSION: &str = "0.62.0";
 
-    let profile = if release { "release" } else { "debug" };
-    let target_dir = cargo_profile_dir(profile);
-    let nono_dest = target_dir.join("nono");
+    // SHA-256 checksums from the upstream SHA256SUMS.txt for v0.62.0.
+    // Update these whenever NONO_VERSION is bumped.
+    const CHECKSUMS: &[(&str, &str)] = &[
+        (
+            "aarch64-apple-darwin",
+            "9dbb5a1e96340bff4c80acdede88d7e643805ab79fbec0d6e106b36d71b94105",
+        ),
+        (
+            "x86_64-apple-darwin",
+            "822b8d5af706bb95e51576fccead105b97e1a4265ff1baeef879352773bafba7",
+        ),
+        (
+            "aarch64-unknown-linux-gnu",
+            "142e30bfd8657a1c8e6e4f233da83bb103fec8859be49a03911971a7b66db9c6",
+        ),
+        (
+            "x86_64-unknown-linux-gnu",
+            "f1a66369df42b3054d20ef8db67e2ac1a28c7937c4e70d9dee56c8450c1752f9",
+        ),
+    ];
 
-    // Check if the installed binary already matches the pinned version.
-    if nono_dest.is_file() {
-        let version_ok = Command::new(&nono_dest)
+    // Detect the host triple via `rustc -vV`.
+    let rustc_out = Command::new("rustc")
+        .args(["-vV"])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run rustc -vV: {e}"));
+    let rustc_stdout = String::from_utf8_lossy(&rustc_out.stdout);
+    let host_triple = rustc_stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("host: ").map(str::trim))
+        .unwrap_or_else(|| panic!("could not parse host triple from `rustc -vV` output"))
+        .to_string();
+
+    let expected_sha256 = CHECKSUMS
+        .iter()
+        .find(|(triple, _)| *triple == host_triple)
+        .unwrap_or_else(|| {
+            panic!(
+                "nono has no prebuilt binary for host triple '{host_triple}'. \
+                 Supported triples: {}",
+                CHECKSUMS
+                    .iter()
+                    .map(|(t, _)| *t)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .1;
+
+    // Cache location: target/nono-cache/{version}/nono
+    // Survives incremental rebuilds; removed only by an explicit `cargo clean`.
+    let workspace = workspace_root_or_exit();
+    let cache_dir = workspace
+        .join("target")
+        .join("nono-cache")
+        .join(NONO_VERSION);
+    let cached_bin = cache_dir.join("nono");
+
+    // If the cache already holds a valid binary (version string matches),
+    // skip the download entirely.
+    if cached_bin.is_file() {
+        let version_ok = Command::new(&cached_bin)
             .arg("--version")
             .output()
             .ok()
@@ -2851,81 +2908,136 @@ fn ensure_nono_binary(release: bool) {
             .map(|s| s.contains(NONO_VERSION))
             .unwrap_or(false);
         if version_ok {
-            println!(
-                "nono {NONO_VERSION} already installed at {}",
-                nono_dest.display()
-            );
+            println!("nono {NONO_VERSION} found in cache at {}", cached_bin.display());
+            install_nono_from_cache(&cached_bin, release);
             return;
         }
+        // Stale or corrupt cache entry — remove and re-download.
+        let _ = fs::remove_file(&cached_bin);
     }
 
-    // Install nono-cli into a staging area to avoid polluting the user's
-    // ~/.cargo/bin. Use the workspace target directory as root.
-    let workspace = workspace_root_or_exit();
-    let staging_root = workspace.join("target").join("nono-install");
-    let staging_bin = staging_root.join("bin").join("nono");
+    // Download the tarball.
+    let tarball_name = format!("nono-v{NONO_VERSION}-{host_triple}.tar.gz");
+    let url = format!(
+        "https://github.com/always-further/nono/releases/download/v{NONO_VERSION}/{tarball_name}"
+    );
+    let tarball_path = cache_dir.join(&tarball_name);
 
-    println!("Installing nono-cli {NONO_VERSION} (this may take a while on first run)...");
-    let status = Command::new("cargo")
+    fs::create_dir_all(&cache_dir)
+        .unwrap_or_else(|e| panic!("failed to create nono cache dir {}: {e}", cache_dir.display()));
+
+    println!("Downloading nono {NONO_VERSION} for {host_triple}...");
+    let status = Command::new("curl")
         .args([
-            "install",
-            "nono-cli",
-            "--version",
-            NONO_VERSION,
-            "--root",
-            &staging_root.to_string_lossy(),
-            "--locked",
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--output",
+            &tarball_path.to_string_lossy(),
+            &url,
         ])
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!(
-                "Warning: cargo install nono-cli failed (exit {}). \
-                 Sandbox features will be unavailable.",
-                s.code().unwrap_or(-1)
-            );
-            return;
-        }
-        Err(e) => {
-            eprintln!(
-                "Warning: failed to run cargo install nono-cli: {e}. \
-                 Sandbox features will be unavailable."
-            );
-            return;
-        }
-    }
-
-    if !staging_bin.is_file() {
-        eprintln!(
-            "Warning: cargo install succeeded but nono binary not found at {}. \
-             Sandbox features will be unavailable.",
-            staging_bin.display()
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run curl: {e}"));
+    if !status.success() {
+        panic!(
+            "curl failed to download nono from {url} (exit {})",
+            status.code().unwrap_or(-1)
         );
-        return;
     }
 
-    // Copy the binary next to runtimed so bundled_path() can find it.
-    if let Err(e) = fs::copy(&staging_bin, &nono_dest) {
-        eprintln!(
-            "Warning: failed to copy nono binary to {}: {e}. \
-             Sandbox features will be unavailable.",
-            nono_dest.display()
+    // Verify SHA-256 checksum.
+    let shasum_out = Command::new("shasum")
+        .args(["-a", "256", &tarball_path.to_string_lossy()])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run shasum: {e}"));
+    let shasum_stdout = String::from_utf8_lossy(&shasum_out.stdout);
+    let actual_sha256 = shasum_stdout
+        .split_whitespace()
+        .next()
+        .unwrap_or_else(|| panic!("unexpected shasum output: {shasum_stdout}"));
+
+    if actual_sha256 != expected_sha256 {
+        // Remove the bad download so the next run retries from scratch.
+        let _ = fs::remove_file(&tarball_path);
+        panic!(
+            "SHA-256 mismatch for {tarball_name}:\n  expected {expected_sha256}\n  got      {actual_sha256}\n\
+             The downloaded file has been removed. Re-run to retry."
         );
-        return;
     }
 
-    // Make the copy executable (Unix only).
+    // Extract the `nono` binary from the tarball into the cache dir.
+    let status = Command::new("tar")
+        .args([
+            "-xzf",
+            &tarball_path.to_string_lossy(),
+            "-C",
+            &cache_dir.to_string_lossy(),
+            "--strip-components=0",
+            "nono",
+        ])
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run tar: {e}"));
+    if !status.success() {
+        panic!(
+            "tar failed to extract nono from {} (exit {})",
+            tarball_path.display(),
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    // Remove the tarball now that we have the binary.
+    let _ = fs::remove_file(&tarball_path);
+
+    if !cached_bin.is_file() {
+        panic!(
+            "extraction succeeded but nono binary not found at {}",
+            cached_bin.display()
+        );
+    }
+
+    // Ensure the cached binary is executable.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = fs::set_permissions(&nono_dest, fs::Permissions::from_mode(0o755)) {
-            eprintln!("Warning: failed to set nono binary permissions: {e}");
+        fs::set_permissions(&cached_bin, fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("failed to set nono permissions in cache: {e}"));
+    }
+
+    println!("nono {NONO_VERSION} downloaded and cached at {}", cached_bin.display());
+    install_nono_from_cache(&cached_bin, release);
+}
+
+/// Copy the cached nono binary next to runtimed so `binary_path()` finds it.
+#[cfg(not(target_os = "windows"))]
+fn install_nono_from_cache(cached_bin: &Path, release: bool) {
+    let profile = if release { "release" } else { "debug" };
+    let nono_dest = cargo_profile_dir(profile).join("nono");
+
+    // Skip the copy if the destination already points at the same content.
+    if nono_dest.is_file() {
+        let dest_meta = fs::metadata(&nono_dest).ok();
+        let src_meta = fs::metadata(cached_bin).ok();
+        let same = dest_meta
+            .zip(src_meta)
+            .map(|(d, s)| d.len() == s.len() && d.modified().ok() == s.modified().ok())
+            .unwrap_or(false);
+        if same {
+            return;
         }
     }
 
-    println!("nono {NONO_VERSION} installed at {}", nono_dest.display());
+    fs::copy(cached_bin, &nono_dest)
+        .unwrap_or_else(|e| panic!("failed to copy nono to {}: {e}", nono_dest.display()));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&nono_dest, fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("failed to set nono permissions: {e}"));
+    }
+
+    println!("nono installed at {}", nono_dest.display());
 }
 
 /// No-op on Windows: nono has no Windows support.
