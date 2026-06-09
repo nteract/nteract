@@ -4,6 +4,7 @@ import {
   type BlobResolver,
   type WorkstationAttachmentState,
 } from "runtimed";
+import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import type { WidgetStore } from "@/components/widgets/widget-store";
 import { diagnoseCloudConnectionAccess } from "./connection-diagnostics";
 import {
@@ -371,10 +372,20 @@ export function useCloudViewerSession({
     let livePresenceStore: CloudLivePresenceStore | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    const installCloudWidgetCommWriter = (liveRuntime: CloudSyncRuntime) => {
+      setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
+        if (liveRuntimeRef.current !== liveRuntime) return;
+        const changed = liveRuntime.handle.set_comm_state_batch(commId, JSON.stringify(patch));
+        if (changed) {
+          liveRuntime.engine.scheduleFlush();
+        }
+      });
+    };
     const disposeCurrentRuntime = () => {
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime) return;
       liveRuntimeRef.current = null;
+      setCrdtCommWriter(null);
       disposeCloudSyncRuntime(liveRuntime);
     };
     const scheduleReconnect = (reason: Error) => {
@@ -557,6 +568,7 @@ export function useCloudViewerSession({
           return;
         }
         liveRuntimeRef.current = liveRuntime;
+        installCloudWidgetCommWriter(liveRuntime);
         setConnectionScope(liveRuntime.connectionScope);
         setConnectionActorLabel(liveRuntime.actorLabel);
         setConnectionPeerId(liveRuntime.peerId);
@@ -648,6 +660,7 @@ export function useCloudViewerSession({
       }
       materializeLiveRuntimeRef.current = null;
       disposeCurrentRuntime();
+      setCrdtCommWriter(null);
       resetCloudViewStoreProjection();
       resetRuntimeState();
       resetRuntimeStoresProjection();

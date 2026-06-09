@@ -26,6 +26,7 @@
     "smoke:hosted:runtime-peer": "node scripts/hosted-runtime-peer-smoke.mjs",
     "smoke:hosted:workstation-agent": "node scripts/hosted-workstation-agent.mjs",
     "smoke:hosted:workstation-toolbar": "node scripts/hosted-workstation-toolbar-smoke.mjs",
+    "smoke:hosted:widget-cross-window": "node scripts/hosted-widget-cross-window-smoke.mjs",
     "smoke:hosted:browser-execute": "node scripts/hosted-browser-execute-smoke.mjs",
     "smoke:hosted:runtime-browser-execute": "node scripts/hosted-runtime-browser-execute-smoke.mjs",
     "smoke:hosted:collab": "node --import tsx scripts/hosted-collab-smoke.mjs",
