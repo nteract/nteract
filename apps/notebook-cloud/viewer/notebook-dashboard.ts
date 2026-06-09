@@ -14,13 +14,6 @@ export interface CloudNotebookListItem {
   };
 }
 
-export interface CloudNotebookDashboardMetric {
-  label: string;
-  value: string;
-  detail: string;
-  icon: "notebooks" | "owned" | "published";
-}
-
 export type CloudNotebookDashboardFilterId =
   | "all"
   | "owned"
@@ -49,7 +42,6 @@ export interface CloudNotebookDashboardModel {
   continueRow: CloudNotebookDashboardRow | null;
   filterGroups: readonly CloudNotebookDashboardFilterGroup[];
   filters: readonly CloudNotebookDashboardFilter[];
-  metrics: readonly CloudNotebookDashboardMetric[];
   notebooks: readonly CloudNotebookListItem[];
 }
 
@@ -117,9 +109,6 @@ export function projectCloudNotebookDashboard(
   const namedWork = titled.filter((notebook) => !cloudNotebookIsGeneratedRun(notebook));
   const generatedCount = sorted.filter(cloudNotebookIsGeneratedRun).length;
   const untitled = sorted.filter((notebook) => !cloudNotebookHasTitle(notebook));
-  const editableCount = notebooks.filter(
-    (notebook) => notebook.scope === "owner" || notebook.scope === "editor",
-  ).length;
   const ownerCount = notebooks.filter((notebook) => notebook.scope === "owner").length;
   const publishedCount = notebooks.filter((notebook) =>
     Boolean(notebook.latest_revision_id),
@@ -139,26 +128,6 @@ export function projectCloudNotebookDashboard(
     filterGroups: cloudNotebookDashboardFilterGroups(filters),
     filters,
     notebooks: sorted,
-    metrics: [
-      {
-        label: "Visible notebooks",
-        value: String(notebooks.length),
-        detail: `${titled.length} titled, ${editableCount} editable`,
-        icon: "notebooks",
-      },
-      {
-        label: "Owned",
-        value: String(ownerCount),
-        detail: "can manage access",
-        icon: "owned",
-      },
-      {
-        label: "Published",
-        value: String(publishedCount),
-        detail: "revision metadata",
-        icon: "published",
-      },
-    ],
   };
 }
 

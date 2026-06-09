@@ -46,14 +46,6 @@ describe("cloud notebook dashboard projection", () => {
       ["owner-new", "editor-mid", "viewer-old"],
     );
     assert.deepEqual(
-      model.metrics.map((metric) => [metric.label, metric.value, metric.detail]),
-      [
-        ["Visible notebooks", "3", "3 titled, 2 editable"],
-        ["Owned", "1", "can manage access"],
-        ["Published", "2", "revision metadata"],
-      ],
-    );
-    assert.deepEqual(
       model.filters.map((filter) => [filter.id, filter.label, filter.count, filter.group]),
       [
         ["all", "Recent", 3, "work"],
