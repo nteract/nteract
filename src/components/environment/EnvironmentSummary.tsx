@@ -68,7 +68,7 @@ export function EnvironmentSummary({
         </span>
       </div>
 
-      <div className="grid gap-2 p-4 sm:grid-cols-2">
+      <div className="divide-y divide-border px-4 py-2">
         <SummaryFact
           icon={<Server className="size-3.5" aria-hidden="true" />}
           label="Runtime"
@@ -159,16 +159,20 @@ function SummaryFact({
   return (
     <div
       className={cn(
-        "rounded-md border border-border bg-background p-3",
-        muted && "bg-muted/40 text-muted-foreground",
+        "grid grid-cols-[1rem_minmax(0,1fr)] gap-2 py-3",
+        muted && "text-muted-foreground",
       )}
     >
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+      <div className="mt-0.5 text-muted-foreground">
         {muted ? <Lock className="size-3.5" aria-hidden="true" /> : icon}
-        <span>{label}</span>
       </div>
-      <div className="text-sm font-semibold">{value}</div>
-      {detail ? <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div> : null}
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <div className="mt-0.5 text-sm font-semibold leading-5">{value}</div>
+        {detail ? (
+          <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{detail}</div>
+        ) : null}
+      </div>
     </div>
   );
 }
