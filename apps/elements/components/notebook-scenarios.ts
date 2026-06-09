@@ -1151,11 +1151,11 @@ export const elementsNotebookScenarios: Record<
   }),
   "agent-on-behalf": createScenario({
     id: "agent-on-behalf",
-    title: "Agent on behalf",
-    eyebrow: "agency fixture",
+    title: "Delegated submitter",
+    eyebrow: "operator fixture",
     summary:
-      "An authenticated agent actor working through the cloud shell on behalf of a notebook owner.",
-    runtimeLabel: "Cloud notebook - agent session active",
+      "A delegated Codex operator submits edits for Kyle through the cloud shell; the label records execution provenance, not model lineage.",
+    runtimeLabel: "Cloud notebook - delegated operator active",
     packageSummary: "visible - 8 packages",
     capabilities: {
       canRead: true,
@@ -1707,7 +1707,7 @@ function scenarioHostBoundaries(
     {
       surface: "Runtime and outputs",
       sharedSurface: "NotebookEnvironmentSurface, runtime actor projection, output frames",
-      hostAuthority: `${runtimeAuthority} owns runtime lifecycle, runtime-state authorship, and output/blob authority.`,
+      hostAuthority: `${runtimeAuthority} owns runtime lifecycle, runtime-state reporting, and output/blob authority.`,
     },
     {
       surface: "Identity display",

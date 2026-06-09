@@ -13,10 +13,11 @@ import type { ReactNode } from "react";
 import {
   CondaDependencyPanel,
   DenoDependencyPanel,
+  EnvironmentSummary,
   EnvironmentPackageSummaryPanel,
   PixiDependencyPanel,
-  UvDependencyPanel,
 } from "@/components/environment";
+import { NotebookPackageSummaryPanel } from "@/components/notebook";
 import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
 
 const asyncNoop = async () => {};
@@ -43,10 +44,10 @@ const packageSurfaces = [
     role: "Host-neutral package summary projection for rails, cloud views, and read-only embeds.",
   },
   {
-    name: "UvDependencyPanel",
-    source: "src/components/environment/UvDependencyPanel.tsx",
-    manager: "uv",
-    role: "Inline uv dependencies, project pyproject.toml details, and sync prompts.",
+    name: "NotebookPackageSummaryPanel",
+    source: "src/components/notebook/NotebookPackageSummaryPanel.tsx",
+    manager: "rail",
+    role: "Shared notebook rail wrapper for package summary and environment status.",
   },
   {
     name: "CondaDependencyPanel",
@@ -132,26 +133,24 @@ export function PackageManagerSurfacesExample() {
 
         <SurfaceFrame
           icon={<PackageCheck className="size-4 text-fuchsia-500" aria-hidden="true" />}
-          title="uv inline and project"
-          detail="Fixture package details plus detected pyproject.toml project-env state."
+          title="Notebook rail package summary"
+          detail="Shared package summary with the same environment header used by notebook shell fixtures."
         >
-          <UvDependencyPanel
-            dependencies={[...scenario.packageState.dependencies]}
-            requiresPython={scenario.packageState.requiresPython}
-            loading={false}
-            onAdd={asyncNoop}
-            onRemove={asyncNoop}
-            onSetRequiresPython={asyncNoop}
-            syncState={scenario.packageState.syncState}
-            onSyncNow={asyncTrue}
-            pyprojectInfo={scenario.packageState.pyprojectInfo}
-            pyprojectDeps={scenario.packageState.pyprojectDeps}
-            onImportFromPyproject={asyncNoop}
-            onUseProjectEnv={asyncNoop}
-            isUsingProjectEnv
-            justSynced={false}
-            variant="rail"
-          />
+          <div className="p-3">
+            <NotebookPackageSummaryPanel
+              packages={scenario.viewModel.packages}
+              readOnly
+              header={
+                <EnvironmentSummary
+                  capabilities={scenario.capabilities}
+                  packages={scenario.viewModel.packages}
+                  environment={scenario.environment}
+                  showPackageDetails={false}
+                  className="shadow-none"
+                />
+              }
+            />
+          </div>
         </SurfaceFrame>
 
         <SurfaceFrame

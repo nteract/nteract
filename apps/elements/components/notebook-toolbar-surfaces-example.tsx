@@ -4,9 +4,7 @@ import { BadgeCheck, CircleDot, PanelTop, PlayCircle, TimerReset } from "lucide-
 import {
   NotebookCommandToolbar,
   NotebookEditModeButton,
-  NotebookPresenceStatus,
   NotebookToolbarIdentity,
-  notebookToolbarActors,
   type NotebookCommandRuntimeState,
   type NotebookCommandToolbarProps,
 } from "@/components/notebook";
@@ -36,7 +34,6 @@ function toolbarProps(
 ): NotebookCommandToolbarProps {
   const firstRunnableCell = scenario.cells.find((cell) => cell.cellType === "code");
   const cellIds = scenario.viewModel.cellIds;
-  const interaction = scenario.capabilities.interaction;
 
   return {
     capabilities: scenario.capabilities,
@@ -53,23 +50,9 @@ function toolbarProps(
     onRunAllCells: noop,
     onRestartAndRunAll: noop,
     onTogglePackages: noop,
-    presenceControls: (
-      <NotebookPresenceStatus
-        connected={scenario.capabilities.runtime.connected || scenario.capabilities.canRead}
-        label={presenceLabel(scenario)}
-        modeLabel={interaction?.state === "editing" ? "editing" : "view only"}
-        title={`${scenario.title}: actor presence and interaction state`}
-        className="h-7 text-xs"
-      />
-    ),
     identityControls: <ToolbarIdentityControls scenario={scenario} />,
     ...overrides,
   };
-}
-
-function presenceLabel(scenario: ElementsNotebookScenario): string {
-  const actorCount = Math.max(1, notebookToolbarActors(scenario.capabilities).length);
-  return actorCount === 1 ? "1 participant here" : `${actorCount} participants here`;
 }
 
 function runtimeStatus(
@@ -162,7 +145,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
       title: "Codex or Claude operator",
       source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: agent,
-      role: "Desktop and cloud both have non-human operators. The toolbar uses actor-neutral presence and projected identity labels.",
+      role: "Desktop and cloud can both project delegated operators. The toolbar labels the submitter without implying model lineage.",
       props: toolbarProps(agent, {
         runtimeStatus: runtimeStatus("unknown", agent.runtimeLabel),
       }),
@@ -171,7 +154,7 @@ function createStatusSurfaces(): ToolbarSurface[] {
       title: "Runtime peer",
       source: "src/components/notebook/NotebookCommandToolbar.tsx",
       scenario: runtimePeer,
-      role: "Runtime authorship is present without notebook edit access, so execution authors do not become structure editors.",
+      role: "Runtime peers report execution state without notebook edit access, so compute participants do not become structure editors.",
       props: toolbarProps(runtimePeer, {
         runtimeStatus: runtimeStatus("busy", runtimePeer.runtimeLabel),
       }),
@@ -231,8 +214,8 @@ const contractItems = [
   },
   {
     icon: TimerReset,
-    title: "Actor-neutral chrome",
-    body: "Presence and mode copy works for humans, agents, runtime peers, and system operators.",
+    title: "Host chrome boundary",
+    body: "Presence, room population, and view/edit mode belong to host chrome; this page keeps NotebookCommandToolbar focused on notebook-local commands and identity slots.",
   },
 ];
 

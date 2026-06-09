@@ -49,7 +49,7 @@ describe("EnvironmentSummary", () => {
 
     expect(screen.getByRole("heading", { name: "Notebook environment" })).toBeVisible();
     expect(screen.getByText("Python - local runtime ready")).toBeVisible();
-    expect(screen.getByText("Python authors runtime state for Kyle")).toBeVisible();
+    expect(screen.getByText("Python reports runtime state for Kyle")).toBeVisible();
     expect(screen.getByText("uv + pixi - 3 packages")).toBeVisible();
     expect(screen.getByText("pyproject.toml")).toBeVisible();
     expect(screen.getByText("dirty - 1 pending change")).toBeVisible();

@@ -6,17 +6,18 @@ description: A fixture-backed preview of a left rail for notebook reading and na
 import { RailOutlineExample } from "@/components/rail-outline-example";
 
 The rail is notebook-level navigation and tools. It keeps reading context beside
-the document while the ribbon and code-cell chrome stay inside the notebook
-surface for per-cell focus and execution state.
+the document while cell chrome stays inside the shared notebook body.
 
 Outline rows navigate; they are not drag handles. The active row uses a quiet
 spine marker, and native drag previews are cancelled until outline-driven
 reordering becomes a real workflow.
 
-This fixture renders the shared `NotebookDocumentRail` and shared command
-toolbar with scenario state from the [notebook shell capabilities](/docs/notebook-shell-capabilities)
-fixtures. The package panel hosts the shared `UvDependencyPanel` in its rail
-variant instead of adding docs-only chrome inside the rail.
+This fixture renders the shared `NotebookDocumentRail`, production `NotebookView`,
+and command toolbar with scenario state from the
+[notebook shell capabilities](/docs/notebook-shell-capabilities) fixtures. The
+package panel uses the shared `NotebookPackageSummaryPanel`; this page does not
+fixture package-management controls or catalog-only cell badges inside the
+outline rail.
 
 <RailOutlineExample />
 
@@ -26,13 +27,20 @@ variant instead of adding docs-only chrome inside the rail.
   moving cells into the sidebar.
 - `NotebookCommandToolbar` is imported from `src/components/notebook` with inert
   fixture callbacks and runtime status props.
+- `NotebookView` renders the scenario cells from seeded notebook, execution,
+  and cell UI stores. The outline page does not add its own markdown,
+  queued, running, or run-count badges around cells.
+- Output renderer fixtures stay on output-specific catalog pages; this rail
+  page keeps code cells output-free so renderer adapter chrome does not read as
+  notebook design.
 - `NotebookDocumentRail` comes from `src/components/notebook`; its
   generic rail frame comes from `src/components/rail`, and its packages panel
-  uses `NotebookPackagesPanel` from `src/components/notebook-rail`.
+  uses `NotebookPackageSummaryPanel` from `src/components/notebook`.
   Docs own active panel, collapsed state, outline selection, and inert
   navigation callbacks.
-- The package panel imports `UvDependencyPanel` from `src/components/environment`
-  with fixture package and sync state.
+- Package management controls belong on the package-manager surface. This
+  outline fixture only checks package panel composition inside the shared rail,
+  without adding a package summary chip or environment card stack to the rail.
 - The outline starts from `createNotebookViewModel` over fixture cells, matching
   the production projection path from materialized markdown headings.
 - Contextual selection depends on `outlineCellIds`: a focused code cell inside a
