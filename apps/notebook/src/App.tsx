@@ -56,7 +56,9 @@ import {
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
+import { SandboxPanel } from "./components/SandboxPanel";
 import { SandboxStatusBadge } from "./components/SandboxStatusBadge";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { useNotebook } from "./hooks/useNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
@@ -425,6 +427,7 @@ function AppContent() {
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
+  const [sandboxPanelOpen, setSandboxPanelOpen] = useState(false);
   const [dismissedEnvBuildDetails, setDismissedEnvBuildDetails] = useState<string | null>(null);
   const [clearingDeps, setClearingDeps] = useState(false);
   // Per-error-instance dismissal for the kernel-launch error banner.
@@ -1618,7 +1621,19 @@ function AppContent() {
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
-          trailingControls={<SandboxStatusBadge />}
+          trailingControls={
+            <>
+              <SandboxStatusBadge onClick={() => setSandboxPanelOpen(true)} />
+              <Sheet open={sandboxPanelOpen} onOpenChange={setSandboxPanelOpen}>
+                <SheetContent side="right">
+                  <SheetHeader>
+                    <SheetTitle>Network sandbox</SheetTitle>
+                  </SheetHeader>
+                  <SandboxPanel />
+                </SheetContent>
+              </Sheet>
+            </>
+          }
         />
         {globalFind.isOpen && (
           <GlobalFindBar

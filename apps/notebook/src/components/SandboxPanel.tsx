@@ -1,19 +1,19 @@
 /**
- * SandboxPanel — per-notebook sandbox profile editor.
+ * SandboxPanel — per-notebook network sandbox editor.
  *
- * Shown as a dropdown sheet from the notebook toolbar. Lets the user:
- * - Enable/disable the sandbox
+ * Shown as a sheet from the notebook toolbar. Lets the user:
+ * - Enable/disable the network sandbox
  * - Manage CredentialRef entries (add, configure routes, remove)
  * - Manage allowed_domains
  *
- * Changes are written via `setSandboxProfile` which routes through
+ * Changes are auto-saved via `setSandboxProfile` which routes through
  * `setMetadataSnapshot` → WASM Automerge → daemon relay. All collaborators
  * editing the same notebook see updates live.
  *
- * Per D-10, there are no real-time accept/reject prompts. The profile is
- * pre-declared and the daemon picks it up on next kernel launch.
+ * Per D-10, there are no real-time accept/reject prompts. The settings are
+ * pre-declared and the daemon picks them up on next kernel launch.
  */
-import { AlertCircle, CheckCircle2, Plus, Shield, Trash2, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Plus, Trash2, X } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -275,6 +275,22 @@ function AddCredRefDialog({
   );
 }
 
+// ── Normalize helper ───────────────────────────────────────────────────────
+
+/**
+ * Coerce a potentially-malformed profile (e.g. from an older notebook doc
+ * that was saved before the schema was finalised) into a fully valid one.
+ * Ensures `credentials` and `allowed_domains` are always arrays.
+ */
+function normalizeProfile(raw: SandboxProfile | undefined): SandboxProfile {
+  if (!raw) return emptySandboxProfile();
+  return {
+    enabled: raw.enabled ?? false,
+    credentials: Array.isArray(raw.credentials) ? raw.credentials : [],
+    allowed_domains: Array.isArray(raw.allowed_domains) ? raw.allowed_domains : [],
+  };
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 export interface SandboxPanelProps {
@@ -285,13 +301,11 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
   const host = useNotebookHost();
   const savedProfile = useSandboxProfile();
 
-  // Local draft — only written back on explicit Save.
+  // Local draft — auto-saved 400 ms after the last change.
   const [draft, setDraft] = React.useState<SandboxProfile>(
-    () => savedProfile ?? emptySandboxProfile(),
+    () => normalizeProfile(savedProfile),
   );
-  const [saving, setSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState<string | null>(null);
-  const [saved, setSaved] = React.useState(false);
 
   // Keychain credentials for presence indicators and autocomplete
   const [keychainCreds, setKeychainCreds] = React.useState<CredentialMeta[]>([]);
@@ -299,10 +313,33 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
     host.credentials.list().then(setKeychainCreds).catch(() => {});
   }, [host]);
 
-  // Keep draft in sync when external writes arrive (e.g. from another peer)
+  // Keep draft in sync when external writes arrive (e.g. from another peer),
+  // but only when there is no pending local edit (debounce timer not running).
+  const pendingRef = React.useRef(false);
   React.useEffect(() => {
-    setDraft(savedProfile ?? emptySandboxProfile());
+    if (!pendingRef.current) {
+      setDraft(normalizeProfile(savedProfile));
+    }
   }, [savedProfile]);
+
+  // Auto-save: write to the document 400 ms after the last local change.
+  const draftRef = React.useRef(draft);
+  draftRef.current = draft;
+  React.useEffect(() => {
+    const validationErrors = validateSandboxProfile(draft);
+    if (validationErrors.length > 0) return;
+    pendingRef.current = true;
+    const timer = setTimeout(() => {
+      setSandboxProfile(draftRef.current)
+        .catch((err: unknown) =>
+          setSaveError(err instanceof Error ? err.message : String(err)),
+        )
+        .finally(() => {
+          pendingRef.current = false;
+        });
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [draft]);
 
   // Dialogs
   const [addCredRefOpen, setAddCredRefOpen] = React.useState(false);
@@ -314,7 +351,6 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
   const [missingCredForAdd, setMissingCredForAdd] = React.useState<string | undefined>();
 
   const validationErrors = validateSandboxProfile(draft);
-  const isValid = validationErrors.length === 0;
   const existingCredNames = new Set(draft.credentials.map((c) => c.name));
 
   function patchDraft(patch: Partial<SandboxProfile>) {
@@ -358,21 +394,6 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
     patchDraft({ credentials: updated });
   }
 
-  async function handleSave() {
-    if (!isValid) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      await setSandboxProfile(draft);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (err: unknown) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
   function credPresent(name: string): boolean {
     return keychainCreds.some((c) => c.name === name);
   }
@@ -387,15 +408,6 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
 
   return (
     <div className={cn("flex flex-col gap-6 p-4", className)}>
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <Shield className="h-4 w-4 text-muted-foreground" />
-        <h2 className="text-sm font-semibold">Network sandbox</h2>
-        <Badge variant={draft.enabled ? "default" : "secondary"} className="text-xs">
-          {draft.enabled ? "Enabled" : "Off"}
-        </Badge>
-      </div>
-
       {/* Enable toggle */}
       <div className="flex items-center justify-between">
         <div>
@@ -564,13 +576,12 @@ export function SandboxPanel({ className }: SandboxPanelProps) {
         </ul>
       )}
 
-      {/* Save */}
-      <div className="flex items-center gap-3">
-        <Button onClick={handleSave} disabled={saving || !isValid || saved}>
-          {saving ? "Saving…" : saved ? "Saved" : "Save profile"}
-        </Button>
-        {saveError && <p className="text-destructive text-sm">{saveError}</p>}
-      </div>
+      {/* Auto-save error */}
+      {saveError && (
+        <p className="text-destructive text-sm" role="alert">
+          Failed to save: {saveError}
+        </p>
+      )}
 
       {/* Dialogs */}
       <AddCredRefDialog
