@@ -151,6 +151,16 @@ kernels should continue to author runtime state under a local principal; when a
 local kernel is promoted into a hosted room, it should adopt the authenticated
 room principal/operator it uses for that connection.
 
+Blob upload authority is staged. The audit in
+`runtime-peer-and-blob-authority-audit.md` allows editor uploads only as
+precursors to authorized references; until server-side reference-path
+validation exists, hosted rooms deny editor uploads entirely. That is the
+shipped policy: `allowsBlobUpload` permits only `runtime_peer` and `owner`,
+enforced at both the `PUT_BLOB` frame prefilter and the HTTP upload route.
+Editor upload and reference-path validation ship together in one change set,
+or not at all. Tracked as `HCA-3` in
+[cleanup-punchlist.md](cleanup-punchlist.md).
+
 The provider gives a maximum capability set for the credential. The ACL gives
 one or more room grants. A connection also has a requested role. Anonymous
 browser viewers may omit the role and default to `viewer`. Authenticated native
@@ -282,15 +292,27 @@ materializes. Read-only viewers and editors consume the same live
 `NotebookDoc`/`RuntimeStateDoc`; scope only limits what each connection may
 author.
 
-### Documented implementation divergence, 2026-06-07
+### Checkpoint precedence
 
-One current cloud implementation detail diverges from the decisions above and
-should be cleaned up in follow-up PRs:
+The live-room materializer uses Durable Object checkpoint storage exactly as
+this decision requires: a recovery/hibernation cache, never the durable
+revision record. The precedence rules are part of the decision
+(`apps/notebook-cloud/src/room-materializer.ts`):
 
-1. The live-room materializer currently uses Durable Object checkpoint storage
-   as a recovery layer. That may remain as an internal cache, but the ADR source
-   of truth is R2/D1 for durable revisions and snapshots. Tracked in
-   [cleanup-punchlist.md](cleanup-punchlist.md) as `HCA-8`.
+1. A checkpoint is loaded only when its recorded `published_revision_id`
+   matches the latest published revision for the notebook.
+2. On revision mismatch, the checkpoint is kept only when its document heads
+   differ from the published baseline recorded in the checkpoint metadata,
+   meaning the cache carries unpublished live-room changes. Otherwise the room
+   loads from the published R2 snapshot pair.
+3. Failure recovery clears the checkpoint and reloads the published snapshot
+   pair, discarding cache state rather than serving a possibly corrupt cache.
+
+The checkpoint metadata stores the correlated
+`(notebook_heads, runtime_state_heads, comms_doc_heads)` triplet for both the
+current cache and its published baseline; that pairing is what makes rule 2
+decidable. How often the DO checkpoints remains an open tuning question
+(Open Questions, item 3); the authority question is settled.
 
 ## Decision 7: Editor collaboration is full cell editing behind a semantic gate
 
@@ -442,7 +464,9 @@ enforce equivalent access.
    OIDC/JupyterHub providers land.
 5. How private hosted blob reads should be enforced: Worker auth check on
    `/api/n/:id/blobs/:hash`, signed R2 URLs, or a separate output origin with
-   short-lived tokens.
+   short-lived tokens. This decision gets its own ADR ("Hosted Private Blob
+   Read Capabilities"), resolving `hosted-output-origin-isolation.md` open
+   question 2 before private sharing ships. Tracked as `HCA-6`.
 6. Whether ACL row deletion by an owner should evict live connections
    immediately through a `SESSION_CONTROL` close frame or only take effect on
    the next connection attempt. `identity-and-trust.md` defers general

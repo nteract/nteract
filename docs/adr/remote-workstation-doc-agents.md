@@ -226,10 +226,13 @@ split. `validate_runtime_peer_runtime_delta` in
 executions and the queue projection, but rejects attempts to create execution
 records, rewrite room-host-owned fields, or edit `NotebookDoc`.
 
-The hosted room dispatch side is still v1 build work for workstations. The room
-host must define how editor/owner requests become queued RuntimeStateDoc
-execution records for the active target, and how the active runtime peer is
-selected for those accepted executions.
+The room-host half of this contract is implemented in `runtimed-wasm`:
+`receive_request` validates owner-scoped `ExecuteCell` / `RunAllCells`
+requests and writes queued execution entries with cell source provenance into
+`RuntimeStateDoc`, which the runtime peer consumes through normal sync. What
+remains for workstations is target selection: how the active runtime peer is
+chosen for accepted executions, and how readiness/disconnect gates the
+dispatch (punchlist 3D-7).
 
 Kernel lifecycle requests should follow the same split. The room host accepts
 `LaunchKernel`, `RestartKernel`, `InterruptExecution`, and `ShutdownKernel`
