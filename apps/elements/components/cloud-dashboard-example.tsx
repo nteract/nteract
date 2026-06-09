@@ -1,18 +1,14 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import {
   ArrowRight,
-  BookOpen,
   Clock3,
-  Cpu,
-  Database,
   FilePlus2,
   Globe2,
-  HardDrive,
   LayoutDashboard,
   Link2,
   LockKeyhole,
-  MoreHorizontal,
   RefreshCw,
   Search,
   Share2,
@@ -20,113 +16,62 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  cloudNotebookDisplayTitle,
+  projectCloudNotebookDashboard,
+  projectCloudNotebookDashboardView,
+  type CloudNotebookDashboardFilterId,
+  type CloudNotebookDashboardRow,
+  type CloudNotebookDashboardRowFact,
+  type CloudNotebookListItem,
+} from "@/components/notebook/workspace/notebook-dashboard";
 
-type NotebookAccess = "owner" | "editor" | "viewer";
+// Deterministic notebooks in the real list-item shape. The catalog renders the
+// production projection over these, so it cannot drift from the hosted /n
+// dashboard. Summaries are catalog flavor; the list API does not carry them.
+const HOUR = 3_600_000;
+const BASE_TIME = Date.UTC(2026, 5, 9, 12);
 
-interface DashboardNotebook {
-  id: string;
-  title: string;
-  access: NotebookAccess;
-  updatedAt: string;
-  summary: string;
-  latestRevision: "published" | "draft";
-  public: boolean;
-}
+const notebooks: readonly CloudNotebookListItem[] = [
+  listItem("01KTFZYC", "Topic visualization", "owner", 0, "rev-topic"),
+  listItem("01KTHAZR", "Runtime peer smoke", "owner", 1, null),
+  listItem("01KTEYJH", "Lab dual peer", "editor", 24, "rev-lab"),
+  listItem("01KSQKEP", "Markdown harness", "viewer", 9 * 24, "rev-md"),
+  listItem("01KSA1B2", null, "owner", 30 * 24, null),
+] as const;
 
-interface DashboardMetric {
-  label: string;
-  value: string;
-  detail: string;
-  icon: LucideIcon;
-}
+const summaries: Record<string, string> = {
+  "01KTFZYC": "Embeddings, clustering, Plotly charts, and narrative markdown.",
+  "01KTHAZR": "Remote workstation lifecycle with queued execution probes.",
+  "01KTEYJH": "Shared cloud room, Python kernel, and browser editor checks.",
+  "01KSQKEP": "Long document outline, tables, callouts, and heading anchors.",
+};
 
-const notebooks = [
-  {
-    id: "01KTFZYC",
-    title: "Topic visualization",
-    access: "owner",
-    updatedAt: "18 minutes ago",
-    summary: "Embeddings, clustering, Plotly charts, and narrative markdown.",
-    latestRevision: "draft",
-    public: true,
-  },
-  {
-    id: "01KTHAZR",
-    title: "Runtime peer smoke",
-    access: "owner",
-    updatedAt: "42 minutes ago",
-    summary: "Remote workstation lifecycle with queued execution probes.",
-    latestRevision: "draft",
-    public: false,
-  },
-  {
-    id: "01KTEYJH",
-    title: "Lab dual peer",
-    access: "editor",
-    updatedAt: "Yesterday",
-    summary: "Shared cloud room, Python kernel, and browser editor checks.",
-    latestRevision: "published",
-    public: false,
-  },
-  {
-    id: "01KSQKEP",
-    title: "Markdown harness",
-    access: "viewer",
-    updatedAt: "May 31",
-    summary: "Long document outline, tables, callouts, and heading anchors.",
-    latestRevision: "published",
-    public: true,
-  },
-] satisfies readonly DashboardNotebook[];
+const model = projectCloudNotebookDashboard(notebooks);
 
-const dashboard = projectDashboard(notebooks);
-
-function projectDashboard(source: readonly DashboardNotebook[]) {
-  const sorted = [...source].sort((left, right) => {
-    const accessOrder = accessRank(right.access) - accessRank(left.access);
-    return accessOrder || left.title.localeCompare(right.title);
-  });
-  const editableCount = source.filter(
-    (notebook) => notebook.access === "owner" || notebook.access === "editor",
-  ).length;
-  const ownedCount = source.filter((notebook) => notebook.access === "owner").length;
-  const publicCount = source.filter((notebook) => notebook.public).length;
-
+function listItem(
+  id: string,
+  title: string | null,
+  scope: CloudNotebookListItem["scope"],
+  ageHours: number,
+  latestRevisionId: string | null,
+): CloudNotebookListItem {
+  const updatedAt = new Date(BASE_TIME - ageHours * HOUR).toISOString();
   return {
-    continueNotebook: source[0]!,
-    notebooks: sorted,
-    metrics: [
-      {
-        label: "Visible notebooks",
-        value: String(source.length),
-        detail: `${editableCount} editable`,
-        icon: BookOpen,
-      },
-      {
-        label: "Owned",
-        value: String(ownedCount),
-        detail: "can manage access",
-        icon: UserRound,
-      },
-      {
-        label: "Public links",
-        value: String(publicCount),
-        detail: "metadata safe to share",
-        icon: Globe2,
-      },
-    ] satisfies readonly DashboardMetric[],
+    notebook_id: id,
+    title,
+    owner_principal: "user:dev:kyle",
+    scope,
+    created_at: new Date(BASE_TIME - (ageHours + 240) * HOUR).toISOString(),
+    updated_at: updatedAt,
+    latest_revision_id: latestRevisionId,
+    viewer_url: "#cloud-dashboard-notebooks",
+    endpoints: {
+      catalog: `/api/n/${id}`,
+      acl: `/api/n/${id}/acl`,
+      access_requests: `/api/n/${id}/access-requests`,
+    },
   };
-}
-
-function accessRank(access: NotebookAccess): number {
-  switch (access) {
-    case "owner":
-      return 3;
-    case "editor":
-      return 2;
-    case "viewer":
-      return 1;
-  }
 }
 
 export function CloudDashboardExample() {
@@ -137,7 +82,7 @@ export function CloudDashboardExample() {
       </section>
 
       <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <SharePreview notebook={dashboard.continueNotebook} />
+        <SharePreview notebook={model.continueNotebook} />
         <DashboardPrinciples />
       </section>
     </div>
@@ -145,7 +90,9 @@ export function CloudDashboardExample() {
 }
 
 function CloudDashboardFrame() {
-  const continued = dashboard.continueNotebook;
+  const [filterId, setFilterId] = useState<CloudNotebookDashboardFilterId>("all");
+  const view = useMemo(() => projectCloudNotebookDashboardView(model, { filterId }), [filterId]);
+  const continued = model.continueNotebook;
 
   return (
     <div className="min-h-[44rem] bg-fd-background text-fd-foreground">
@@ -159,8 +106,7 @@ function CloudDashboardFrame() {
             Good morning, Kyle
           </h2>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-fd-muted-foreground">
-            Continue recent work, open shared notebooks, and choose compute when a notebook needs
-            it.
+            Continue recent work, filter the notebooks you can reach, and open shared rooms.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -170,8 +116,8 @@ function CloudDashboardFrame() {
         </div>
       </header>
 
-      <main className="grid gap-5 px-4 py-5 md:px-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
-        <section className="grid gap-5">
+      <main className="grid gap-5 px-4 py-5 md:px-6">
+        {continued ? (
           <section
             className="border-t border-emerald-500/30 bg-gradient-to-b from-emerald-500/[0.08] via-fd-background to-fd-background px-1 py-4"
             aria-labelledby="cloud-dashboard-continue"
@@ -185,10 +131,10 @@ function CloudDashboardFrame() {
                   id="cloud-dashboard-continue"
                   className="mt-1 truncate text-xl font-semibold tracking-normal"
                 >
-                  {continued.title}
+                  {cloudNotebookDisplayTitle(continued)}
                 </h3>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-fd-muted-foreground">
-                  {continued.summary}
+                  {summaries[continued.notebook_id] ?? "Hosted notebook room."}
                 </p>
               </div>
               <a
@@ -199,80 +145,61 @@ function CloudDashboardFrame() {
                 <ArrowRight className="size-4" aria-hidden="true" />
               </a>
             </div>
-            <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-fd-muted-foreground">
-              <InlineFact icon={Clock3} label={continued.updatedAt} />
-              <InlineFact icon={UserRound} label={continued.access} />
-              <InlineFact
-                icon={continued.public ? Globe2 : LockKeyhole}
-                label={shareLabel(continued)}
-              />
-            </div>
-          </section>
-
-          <section className="grid gap-3 sm:grid-cols-3" aria-label="Notebook summary">
-            {dashboard.metrics.map((metric) => (
-              <DashboardMetricCell key={metric.label} metric={metric} />
-            ))}
-          </section>
-
-          <section id="cloud-dashboard-notebooks" aria-label="Notebook list">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <h3 className="text-sm font-semibold">Notebooks</h3>
-              <button
-                type="button"
-                className="inline-flex size-8 items-center justify-center rounded-md text-fd-muted-foreground hover:bg-fd-muted hover:text-fd-foreground"
-                aria-label="Notebook list options"
-              >
-                <MoreHorizontal className="size-4" aria-hidden="true" />
-              </button>
-            </div>
-            <ol className="divide-y divide-fd-border border-y border-fd-border">
-              {dashboard.notebooks.map((notebook) => (
-                <NotebookDashboardRow key={notebook.id} notebook={notebook} />
-              ))}
-            </ol>
-          </section>
-        </section>
-
-        <aside className="grid content-start gap-5">
-          <section
-            className="border-t border-fd-border pt-4"
-            aria-labelledby="cloud-dashboard-account"
-          >
-            <div className="flex items-start gap-2">
-              <UserRound className="mt-0.5 size-4 text-fd-muted-foreground" aria-hidden="true" />
-              <div className="min-w-0">
-                <h3 id="cloud-dashboard-account" className="text-sm font-semibold">
-                  Signed in
-                </h3>
-                <p className="mt-1 text-sm leading-5 text-fd-muted-foreground">
-                  Owner and editor notebooks can manage access and request compute from a
-                  workstation.
-                </p>
+            {model.continueRow ? (
+              <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-fd-muted-foreground">
+                <InlineFact icon={Clock3} label="updated recently" />
+                {model.continueRow.facts.map((fact) => (
+                  <InlineFact
+                    key={fact.kind}
+                    icon={fact.kind === "published" ? Globe2 : UserRound}
+                    label={fact.label}
+                  />
+                ))}
               </div>
-            </div>
+            ) : null}
           </section>
+        ) : null}
 
-          <section
-            className="border-t border-emerald-500/30 pt-4"
-            aria-labelledby="cloud-dashboard-workstation"
-          >
-            <p className="font-mono text-[0.68rem] uppercase tracking-normal text-fd-muted-foreground">
-              ws-lab2
+        <nav className="flex flex-wrap items-center gap-2" aria-label="Notebook filters">
+          {view.filterGroups.map((group) =>
+            group.filters.map((filter) => (
+              <FilterChip
+                key={filter.id}
+                label={filter.label}
+                count={filter.count}
+                active={view.filterId === filter.id}
+                onSelect={() => setFilterId(filter.id)}
+              />
+            )),
+          )}
+        </nav>
+
+        <section id="cloud-dashboard-notebooks" aria-label="Notebook list" className="grid gap-5">
+          {view.showResultCount ? (
+            <p className="text-xs text-fd-muted-foreground">
+              {view.resultCount} {view.resultCount === 1 ? "notebook" : "notebooks"}
             </p>
-            <h3 id="cloud-dashboard-workstation" className="mt-1 text-base font-semibold">
-              Lab workstation
-            </h3>
-            <div className="mt-3 grid gap-2 text-sm text-fd-muted-foreground">
-              <WorkstationFact icon={Cpu} label="8 CPU" />
-              <WorkstationFact icon={HardDrive} label="31 GiB RAM" />
-              <WorkstationFact icon={Database} label="Current Python" />
-            </div>
-            <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-              Default workstation candidate
-            </div>
-          </section>
-        </aside>
+          ) : null}
+          {view.sections.length > 0 ? (
+            view.sections.map((section) => (
+              <div key={section.id}>
+                <div className="mb-2 flex items-baseline justify-between gap-3">
+                  <h3 className="text-sm font-semibold">{section.title}</h3>
+                  <span className="text-xs text-fd-muted-foreground">{section.detail}</span>
+                </div>
+                <ol className="divide-y divide-fd-border border-y border-fd-border">
+                  {section.rows.map((row) => (
+                    <NotebookDashboardRow key={row.notebook.notebook_id} row={row} />
+                  ))}
+                </ol>
+              </div>
+            ))
+          ) : (
+            <p className="rounded-md border border-fd-border px-3 py-6 text-center text-sm text-fd-muted-foreground">
+              {view.emptyMessage}
+            </p>
+          )}
+        </section>
       </main>
     </div>
   );
@@ -303,6 +230,35 @@ function DashboardButton({
   );
 }
 
+function FilterChip({
+  label,
+  count,
+  active,
+  onSelect,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onSelect}
+      className={cn(
+        "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium",
+        active
+          ? "border-fd-foreground bg-fd-foreground text-fd-background"
+          : "border-fd-border bg-fd-background text-fd-muted-foreground hover:text-fd-foreground",
+      )}
+    >
+      {label}
+      <span className={cn("tabular-nums", active ? "opacity-80" : "opacity-60")}>{count}</span>
+    </button>
+  );
+}
+
 function InlineFact({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -312,21 +268,8 @@ function InlineFact({ icon: Icon, label }: { icon: LucideIcon; label: string }) 
   );
 }
 
-function DashboardMetricCell({ metric }: { metric: DashboardMetric }) {
-  const Icon = metric.icon;
-  return (
-    <div className="border-t border-fd-border pt-3">
-      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-normal text-fd-muted-foreground">
-        <Icon className="size-3.5" aria-hidden="true" />
-        {metric.label}
-      </div>
-      <p className="mt-2 text-2xl font-semibold tracking-normal">{metric.value}</p>
-      <p className="mt-1 text-xs text-fd-muted-foreground">{metric.detail}</p>
-    </div>
-  );
-}
-
-function NotebookDashboardRow({ notebook }: { notebook: DashboardNotebook }) {
+function NotebookDashboardRow({ row }: { row: CloudNotebookDashboardRow }) {
+  const { notebook } = row;
   return (
     <li>
       <a
@@ -334,58 +277,59 @@ function NotebookDashboardRow({ notebook }: { notebook: DashboardNotebook }) {
         className="grid min-h-16 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 py-3 text-fd-foreground no-underline hover:bg-fd-muted/40"
       >
         <span className="min-w-0 px-2 md:px-3">
-          <span className="block truncate text-sm font-semibold">{notebook.title}</span>
+          <span className="block truncate text-sm font-semibold">
+            {cloudNotebookDisplayTitle(notebook)}
+          </span>
           <span className="mt-1 block truncate text-xs text-fd-muted-foreground">
-            {notebook.summary}
+            {summaries[notebook.notebook_id] ?? row.contextLabel ?? "Hosted notebook room."}
           </span>
           <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-            <NotebookScope access={notebook.access} />
-            <span className="inline-flex items-center gap-1.5 text-xs text-fd-muted-foreground">
-              {notebook.public ? (
-                <Globe2 className="size-3.5" aria-hidden="true" />
-              ) : (
-                <LockKeyhole className="size-3.5" aria-hidden="true" />
-              )}
-              {shareLabel(notebook)}
-            </span>
+            {row.facts.map((fact) => (
+              <RowFact key={fact.kind} fact={fact} />
+            ))}
           </span>
         </span>
         <span className="inline-flex items-center justify-end gap-1.5 pr-2 text-xs text-fd-muted-foreground md:pr-3">
-          <Clock3 className="size-3.5" aria-hidden="true" />
-          {notebook.updatedAt}
+          {row.identityLabel ? (
+            <>
+              <UserRound className="size-3.5" aria-hidden="true" />
+              {row.identityLabel}
+            </>
+          ) : null}
         </span>
       </a>
     </li>
   );
 }
 
-function NotebookScope({ access }: { access: NotebookAccess }) {
+function RowFact({ fact }: { fact: CloudNotebookDashboardRowFact }) {
+  if (fact.kind === "published") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-fd-muted-foreground">
+        <Globe2 className="size-3.5" aria-hidden="true" />
+        {fact.label}
+      </span>
+    );
+  }
   return (
     <span
       className={cn(
         "inline-flex h-6 items-center justify-center rounded-md border px-2 text-xs font-medium",
-        access === "owner"
+        fact.label === "owner"
           ? "border-emerald-500/30 bg-emerald-500/[0.07] text-emerald-700 dark:text-emerald-300"
-          : access === "editor"
+          : fact.label === "editor"
             ? "border-sky-500/30 bg-sky-500/[0.07] text-sky-700 dark:text-sky-300"
             : "border-fd-border bg-fd-muted/40 text-fd-muted-foreground",
       )}
     >
-      {access}
+      {fact.label}
     </span>
   );
 }
 
-function WorkstationFact({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-2">
-      <Icon className="size-3.5" aria-hidden="true" />
-      {label}
-    </span>
-  );
-}
-
-function SharePreview({ notebook }: { notebook: DashboardNotebook }) {
+function SharePreview({ notebook }: { notebook: CloudNotebookListItem | null }) {
+  if (!notebook) return null;
+  const published = Boolean(notebook.latest_revision_id);
   return (
     <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-background">
       <div className="border-b border-fd-border px-4 py-3">
@@ -401,21 +345,21 @@ function SharePreview({ notebook }: { notebook: DashboardNotebook }) {
               nteract notebook
             </p>
             <h3 className="mt-2 line-clamp-2 text-2xl font-semibold tracking-normal">
-              {notebook.title}
+              {cloudNotebookDisplayTitle(notebook)}
             </h3>
             <p className="mt-3 line-clamp-2 max-w-xl text-sm leading-6 text-fd-muted-foreground">
-              {notebook.summary}
+              {summaries[notebook.notebook_id] ?? "Hosted notebook room."}
             </p>
           </div>
           <div className="flex items-center justify-between gap-3 text-xs text-fd-muted-foreground">
-            <span>Published preview</span>
+            <span>{published ? "Published preview" : "Draft (no published revision)"}</span>
             <span className="inline-flex items-center gap-1.5">
-              {notebook.public ? (
+              {published ? (
                 <Globe2 className="size-3.5" aria-hidden="true" />
               ) : (
                 <LockKeyhole className="size-3.5" aria-hidden="true" />
               )}
-              {shareLabel(notebook)}
+              {published ? "revision" : "draft"}
             </span>
           </div>
         </div>
@@ -448,11 +392,4 @@ function DashboardPrinciples() {
       </ul>
     </section>
   );
-}
-
-function shareLabel(notebook: DashboardNotebook): string {
-  if (notebook.public) {
-    return notebook.latestRevision === "published" ? "public revision" : "public draft";
-  }
-  return notebook.latestRevision === "published" ? "private revision" : "private draft";
 }
