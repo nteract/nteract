@@ -221,6 +221,30 @@ test("cloud package rail stays package-only and leaves sync/env state to app chr
   assert.doesNotMatch(sourceText, /Live sync connected/);
 });
 
+test("cloud workstation registry state lives in the workstation manager hook", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const hookSourcePath = new URL("../viewer/use-cloud-workstations.ts", import.meta.url);
+  const hookSourceText = readFileSync(hookSourcePath, "utf8");
+
+  assert.match(sourceText, /useCloudWorkstationManager/);
+  assert.match(sourceText, /selection=\{workstationSelection\}/);
+  assert.match(sourceText, /busyWorkstationId=\{busyWorkstationId\}/);
+  assert.match(sourceText, /onAttachWorkstation=\{onAttachWorkstation\}/);
+  assert.match(sourceText, /onSetDefaultWorkstation=\{onSetDefaultWorkstation\}/);
+  assert.doesNotMatch(sourceText, /fetchCloudWorkstations/);
+  assert.doesNotMatch(sourceText, /setCloudDefaultWorkstation/);
+  assert.doesNotMatch(sourceText, /requestCloudWorkstationAttachment/);
+  assert.doesNotMatch(sourceText, /projectNotebookWorkstationSelection/);
+  assert.doesNotMatch(sourceText, /cloudWorkstationRefreshIntervalMs/);
+  assert.match(hookSourceText, /fetchCloudWorkstations/);
+  assert.match(hookSourceText, /setCloudDefaultWorkstation/);
+  assert.match(hookSourceText, /requestCloudWorkstationAttachment/);
+  assert.match(hookSourceText, /projectNotebookWorkstationSelection/);
+  assert.match(hookSourceText, /projectNotebookWorkstationLaunchReadiness/);
+  assert.match(hookSourceText, /cloudWorkstationRefreshIntervalMs/);
+});
+
 test("cloud identity chrome renders through the shared actor projection surface", () => {
   const sourcePath = new URL("../viewer/shell-capabilities.ts", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

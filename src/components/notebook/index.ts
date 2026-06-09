@@ -125,6 +125,7 @@ export {
   type NotebookCommandToolbarProps,
   type NotebookCommandToolbarStatus,
   type NotebookCommandToolbarUpdateAction,
+  type NotebookCommandToolbarWorkstationAction,
   type NotebookEnvironmentManager,
 } from "./NotebookCommandToolbar";
 export {
