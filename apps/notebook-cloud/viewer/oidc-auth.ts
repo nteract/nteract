@@ -19,6 +19,7 @@ export interface CloudOidcClaims {
   sub: string;
   email?: string;
   email_verified?: boolean;
+  given_name?: string;
   name?: string;
   picture?: string;
 }
@@ -344,7 +345,7 @@ export function oidcDiscoveryUrl(issuer: string): string {
 }
 
 export function oidcDisplayName(claims: CloudOidcClaims): string {
-  return claims.name?.trim() || claims.email?.trim() || claims.sub;
+  return claims.name?.trim() || claims.given_name?.trim() || claims.email?.trim() || claims.sub;
 }
 
 async function exchangeAuthorizationCode(
@@ -515,6 +516,7 @@ function normalizeClaims(value: unknown): CloudOidcClaims | null {
     ...(typeof claims.email_verified === "boolean"
       ? { email_verified: claims.email_verified }
       : {}),
+    ...(typeof claims.given_name === "string" ? { given_name: claims.given_name } : {}),
     ...(typeof claims.name === "string" ? { name: claims.name } : {}),
     ...(typeof claims.picture === "string" ? { picture: claims.picture } : {}),
   };

@@ -23,12 +23,11 @@ import {
   LogIn,
   LogOut,
   PencilLine,
-  Radio,
   RotateCcw,
+  Search,
   Share2,
   UserRound,
   X,
-  Zap,
 } from "lucide-react";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
@@ -131,7 +130,8 @@ import {
   cloudNotebookShortId,
   isCloudNotebookListItem,
   projectCloudNotebookDashboard,
-  type CloudNotebookDashboardMetric,
+  projectCloudNotebookDashboardView,
+  type CloudNotebookDashboardFilterId,
   type CloudNotebookDashboardModel,
   type CloudNotebookDashboardSection,
   type CloudNotebookListItem,
@@ -903,14 +903,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
     refreshAuthState();
   };
 
-  const headerDetail =
-    authState.mode === "oidc" || authState.mode === "dev"
-      ? "Signed in"
-      : hasAppSession
-        ? "Signed in"
-        : authState.mode === "oidc_expired"
-          ? "Session expired"
-          : "Signed out";
+  const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession);
 
   return (
     <main className="cloud-notebook-list-page">
@@ -919,7 +912,7 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
           <a className="cloud-notebook-list-brand" href="/">
             nteract
           </a>
-          <h1>Notebook home</h1>
+          <h1>Notebooks</h1>
           <p>{headerDetail}</p>
         </div>
         <div className="cloud-notebook-list-actions">
@@ -1044,6 +1037,29 @@ function CloudNotebookListView({ authConfig }: { authConfig: CloudViewerAuthConf
   );
 }
 
+function cloudNotebookListHeaderDetail(
+  authState: CloudPrototypeAuthState,
+  hasAppSession: boolean,
+): string {
+  if (authState.mode === "oidc_expired") {
+    return "Session expired";
+  }
+  if (authState.mode === "anonymous" && !hasAppSession) {
+    return "Signed out";
+  }
+  const firstName = cloudNotebookListFirstName(authState);
+  return firstName ? `by ${firstName}` : "Signed in";
+}
+
+function cloudNotebookListFirstName(authState: CloudPrototypeAuthState): string | null {
+  const claimName =
+    authState.oidcClaims?.given_name?.trim() || authState.oidcClaims?.name?.trim() || "";
+  if (!claimName || claimName.includes("@")) {
+    return null;
+  }
+  return claimName.split(/\s+/u)[0] ?? null;
+}
+
 function CloudNotebookDashboard({
   model,
   canRename,
@@ -1064,6 +1080,12 @@ function CloudNotebookDashboard({
   onSaveRename: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const continued = model.continueNotebook;
+  const [query, setQuery] = useState("");
+  const [filterId, setFilterId] = useState<CloudNotebookDashboardFilterId>("all");
+  const view = useMemo(
+    () => projectCloudNotebookDashboardView(model, { filterId, query }),
+    [filterId, model, query],
+  );
 
   return (
     <div className="cloud-dashboard">
@@ -1081,60 +1103,74 @@ function CloudNotebookDashboard({
                 <UserRound aria-hidden="true" />
                 {formatNotebookScope(continued.scope)}
               </span>
-              <span>
-                {continued.latest_revision_id ? (
+              {continued.latest_revision_id ? (
+                <span>
                   <Globe2 aria-hidden="true" />
-                ) : (
-                  <Radio aria-hidden="true" />
-                )}
-                {continued.latest_revision_id ? "published revision" : "not published"}
-              </span>
+                  Published
+                </span>
+              ) : null}
             </div>
           </div>
           <a className="cloud-dashboard-primary-link" href={continued.viewer_url}>
-            Open
+            Open notebook
             <ExternalLink aria-hidden="true" />
           </a>
         </section>
       ) : null}
-
-      <section className="cloud-dashboard-summary" aria-label="Notebook summary">
-        {model.metrics.map((metric) => (
-          <CloudNotebookDashboardMetric key={metric.label} metric={metric} />
-        ))}
-      </section>
-
-      <section className="cloud-dashboard-grid">
-        <section className="cloud-dashboard-notebooks" aria-label="Notebook rooms">
-          {model.sections.map((section) => (
-            <CloudNotebookDashboardSectionView
-              key={section.id}
-              section={section}
-              canRename={canRename}
-              renameState={renameState}
-              renameSavingId={renameSavingId}
-              onOpenRename={onOpenRename}
-              onCancelRename={onCancelRename}
-              onRenameTitleChange={onRenameTitleChange}
-              onSaveRename={onSaveRename}
-            />
-          ))}
+      <section className="cloud-dashboard-switcher" aria-label="Notebook home">
+        <section className="cloud-dashboard-main" aria-label="Notebook switcher">
+          <div className="cloud-dashboard-search-row">
+            <label className="cloud-dashboard-search">
+              <Search aria-hidden="true" />
+              <input
+                type="search"
+                value={query}
+                placeholder="Search notebooks"
+                aria-label="Search notebooks"
+                onChange={(event) => setQuery(event.currentTarget.value)}
+              />
+            </label>
+            <span className="cloud-dashboard-result-count" aria-live="polite">
+              {view.resultCount} notebook{view.resultCount === 1 ? "" : "s"}
+            </span>
+          </div>
+          <nav className="cloud-dashboard-filters" aria-label="Notebook filters">
+            {model.filters.map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                aria-pressed={view.filterId === filter.id}
+                data-active={view.filterId === filter.id ? "true" : undefined}
+                onClick={() => setFilterId(filter.id)}
+              >
+                <span>{filter.label}</span>
+                <strong>{filter.count}</strong>
+              </button>
+            ))}
+          </nav>
+          {view.sections.length > 0 ? (
+            <div className="cloud-dashboard-notebooks">
+              {view.sections.map((section) => (
+                <CloudNotebookDashboardSectionView
+                  key={section.id}
+                  section={section}
+                  canRename={canRename}
+                  renameState={renameState}
+                  renameSavingId={renameSavingId}
+                  onOpenRename={onOpenRename}
+                  onCancelRename={onCancelRename}
+                  onRenameTitleChange={onRenameTitleChange}
+                  onSaveRename={onSaveRename}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="cloud-notebook-list-state" data-kind="empty" role="status">
+              <BookOpen aria-hidden="true" />
+              <span>{view.emptyMessage}</span>
+            </div>
+          )}
         </section>
-        <aside className="cloud-dashboard-aside" aria-label="Notebook workspace">
-          <section>
-            <p className="cloud-dashboard-aside-kicker">Compute</p>
-            <h2>Workstations</h2>
-            <p>
-              Workstation status appears inside each notebook room once a compute target is
-              selected.
-            </p>
-          </section>
-          <section>
-            <p className="cloud-dashboard-aside-kicker">Sharing</p>
-            <h2>Public previews</h2>
-            <p>Published notebooks can expose safe metadata and revision-aware preview images.</p>
-          </section>
-        </aside>
       </section>
     </div>
   );
@@ -1200,26 +1236,6 @@ function CloudNotebookDashboardSectionView({
     </section>
   );
 }
-
-function CloudNotebookDashboardMetric({ metric }: { metric: CloudNotebookDashboardMetric }) {
-  const Icon = cloudNotebookDashboardMetricIcons[metric.icon];
-  return (
-    <div className="cloud-dashboard-summary-item">
-      <span>
-        <Icon aria-hidden="true" />
-        {metric.label}
-      </span>
-      <strong>{metric.value}</strong>
-      <p>{metric.detail}</p>
-    </div>
-  );
-}
-
-const cloudNotebookDashboardMetricIcons = {
-  notebooks: BookOpen,
-  owned: UserRound,
-  published: Zap,
-} satisfies Record<CloudNotebookDashboardMetric["icon"], typeof BookOpen>;
 
 function CloudNotebookDashboardRow({
   notebook,
@@ -1288,14 +1304,12 @@ function CloudNotebookDashboardRow({
             <UserRound aria-hidden="true" />
             {formatNotebookScope(notebook.scope)}
           </span>
-          <span data-state={notebook.latest_revision_id ? "published" : "unpublished"}>
-            {notebook.latest_revision_id ? (
+          {notebook.latest_revision_id ? (
+            <span data-state="published">
               <Share2 aria-hidden="true" />
-            ) : (
-              <Radio aria-hidden="true" />
-            )}
-            {notebook.latest_revision_id ? "published revision" : "not published"}
-          </span>
+              Published
+            </span>
+          ) : null}
         </span>
       </a>
       <span className="cloud-notebook-list-updated">

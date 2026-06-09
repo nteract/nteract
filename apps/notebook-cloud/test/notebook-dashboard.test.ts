@@ -4,6 +4,7 @@ import {
   cloudNotebookDisplayTitle,
   cloudNotebookShortId,
   projectCloudNotebookDashboard,
+  projectCloudNotebookDashboardView,
   type CloudNotebookListItem,
 } from "../viewer/notebook-dashboard";
 
@@ -46,6 +47,16 @@ describe("cloud notebook dashboard projection", () => {
         ["Published", "2", "revision metadata"],
       ],
     );
+    assert.deepEqual(
+      model.filters.map((filter) => [filter.id, filter.label, filter.count]),
+      [
+        ["all", "Recent", 3],
+        ["owned", "Owned", 1],
+        ["shared", "Shared", 2],
+        ["published", "Published", 2],
+        ["untitled", "Untitled", 0],
+      ],
+    );
   });
 
   it("keeps titled notebooks prominent while grouping untitled rooms", () => {
@@ -78,8 +89,9 @@ describe("cloud notebook dashboard projection", () => {
       model.notebooks.map((item) => item.notebook_id),
       ["01KTHB58DSJWERSEWHD3EJD74P", "topic-viz", "01KSQKEPFJVHV4T4ZDYS9V7T80"],
     );
+    const untitledView = projectCloudNotebookDashboardView(model, { filterId: "untitled" });
     assert.deepEqual(
-      model.sections.map((section) => ({
+      untitledView.sections.map((section) => ({
         action: section.action
           ? [section.action.kind, section.action.label, section.action.notebook.notebook_id]
           : null,
@@ -89,15 +101,9 @@ describe("cloud notebook dashboard projection", () => {
       })),
       [
         {
-          action: null,
-          id: "titled",
-          title: "Named notebooks",
-          notebooks: ["topic-viz"],
-        },
-        {
           action: ["rename", "Title next", "01KTHB58DSJWERSEWHD3EJD74P"],
           id: "untitled",
-          title: "Untitled notebooks",
+          title: "Needs title",
           notebooks: ["01KTHB58DSJWERSEWHD3EJD74P", "01KSQKEPFJVHV4T4ZDYS9V7T80"],
         },
       ],
@@ -128,7 +134,49 @@ describe("cloud notebook dashboard projection", () => {
 
     const model = projectCloudNotebookDashboard([viewer]);
 
-    assert.equal(model.sections[0]?.action, null);
+    const view = projectCloudNotebookDashboardView(model, { filterId: "untitled" });
+
+    assert.equal(view.sections[0]?.action, null);
+  });
+
+  it("projects search-first activity sections without mutating the dashboard model", () => {
+    const topic = notebook({
+      id: "topic-viz",
+      title: "Topic Visualization",
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: "published-topic",
+    });
+    const renderer = notebook({
+      id: "renderer-regression",
+      title: "Renderer Regression",
+      scope: "editor",
+      updatedAt: "2026-06-05T12:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const archive = notebook({
+      id: "archive",
+      title: "Archived Notes",
+      scope: "viewer",
+      updatedAt: "2026-05-01T12:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    const model = projectCloudNotebookDashboard([archive, renderer, topic]);
+    const searchView = projectCloudNotebookDashboardView(model, { query: "render" });
+    const sharedView = projectCloudNotebookDashboardView(model, { filterId: "shared" });
+
+    assert.deepEqual(
+      searchView.sections.flatMap((section) => section.notebooks.map((item) => item.notebook_id)),
+      ["renderer-regression"],
+    );
+    assert.deepEqual(
+      sharedView.sections.map((section) => [section.id, section.title, section.notebooks.length]),
+      [
+        ["latest", "Latest activity", 1],
+        ["earlier", "Earlier", 1],
+      ],
+    );
   });
 });
 

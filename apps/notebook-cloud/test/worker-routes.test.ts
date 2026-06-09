@@ -368,6 +368,19 @@ describe("Worker artifact routes", () => {
     assert.equal(response.headers.get("Set-Cookie"), null);
   });
 
+  it("temporarily redirects the hosted root to the notebook home", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/?source=bookmark"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("Location"), "https://cloud.test/n?source=bookmark");
+  });
+
   it("bootstraps the notebook home from a valid app session cookie", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "bootstrap-user",

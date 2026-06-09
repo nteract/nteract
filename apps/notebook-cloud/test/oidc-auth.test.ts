@@ -267,14 +267,20 @@ describe("cloud OIDC browser auth", () => {
     storage.setItem(
       NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
       JSON.stringify({
-        accessToken: jwt({ sub: "anaconda-user-123", email: "alice@example.com", name: "Alice" }),
+        accessToken: jwt({
+          sub: "anaconda-user-123",
+          email: "alice@example.com",
+          given_name: "Alice",
+          name: "Alice Example",
+        }),
         refreshToken: "refresh-secret",
         expiresAt: 100,
         claims: {
           sub: "anaconda-user-123",
           email: "alice@example.com",
           email_verified: true,
-          name: "Alice",
+          given_name: "Alice",
+          name: "Alice Example",
         },
       }),
     );
@@ -299,7 +305,8 @@ describe("cloud OIDC browser auth", () => {
 
     assert.equal(token.refreshToken, "refresh-secret");
     assert.equal(token.claims.email, "alice@example.com");
-    assert.equal(token.claims.name, "Alice");
+    assert.equal(token.claims.given_name, "Alice");
+    assert.equal(token.claims.name, "Alice Example");
   });
 
   it("rejects refresh responses for a different subject without replacing stored tokens", async () => {
