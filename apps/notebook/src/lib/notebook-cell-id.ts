@@ -1,12 +1,20 @@
 let fallbackCellIdCounter = 0;
 
-export interface CloudNotebookCellIdRandomSource {
+export interface NotebookCellIdRandomSource {
   randomUUID?: () => string;
   getRandomValues?: (bytes: Uint8Array) => Uint8Array;
 }
 
-export function createCloudNotebookCellId(
-  randomSource: CloudNotebookCellIdRandomSource | null = globalThis.crypto ?? null,
+/**
+ * Generate a new notebook cell id. Prefers `crypto.randomUUID`, falls back to
+ * random bytes (non-secure-context browsers), then to a monotonic counter.
+ *
+ * Shared by desktop and cloud: this is the single cell-id factory both
+ * `createNotebookController` consumers pass as `createCellId`, so the id
+ * format cannot drift between topologies.
+ */
+export function createNotebookCellId(
+  randomSource: NotebookCellIdRandomSource | null = globalThis.crypto ?? null,
 ): string {
   if (typeof randomSource?.randomUUID === "function") {
     return randomSource.randomUUID();

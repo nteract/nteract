@@ -5,6 +5,7 @@ export { RawCell } from "./components/RawCell";
 export { PresenceValueProvider, type PresenceContextValue } from "./contexts/PresenceContext";
 export { CrdtBridgeProvider } from "./hooks/useCrdtBridge";
 export { createNotebookController } from "./lib/notebook-controller";
+export { createNotebookCellId, type NotebookCellIdRandomSource } from "./lib/notebook-cell-id";
 export {
   applyExecutionViewChangeset,
   applyOutputChangeset,
