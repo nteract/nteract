@@ -390,10 +390,14 @@ export type BlobDurability = "durable" | "ephemeral";
     )
 }
 
+/// One generated capability predicate: TS function name, doc phrase, and the
+/// `ConnectionScope` method it mirrors.
+type ScopeCapabilityRow = (&'static str, &'static str, fn(ConnectionScope) -> bool);
+
 /// Capability predicates exported to TypeScript, each row generated from the
 /// corresponding `ConnectionScope` method so the hosted room and the daemon
 /// evaluate the same lattice (punchlist HCA-2 / BS-12).
-const SCOPE_CAPABILITIES: &[(&str, &str, fn(ConnectionScope) -> bool)] = &[
+const SCOPE_CAPABILITIES: &[ScopeCapabilityRow] = &[
     (
         "allowsNotebookWrite",
         "send NotebookDoc changes",

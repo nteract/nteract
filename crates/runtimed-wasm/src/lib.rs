@@ -1965,27 +1965,25 @@ fn walk_and_resolve_comm_state(
     match val {
         serde_json::Value::Object(obj) => {
             // Check for inline ContentRef: {"inline": ...}
-            if obj.len() == 1 && obj.contains_key("inline") {
-                let inner = obj.get("inline").expect("inline key exists");
-                return inner.clone();
+            if obj.len() == 1 {
+                if let Some(inner) = obj.get("inline") {
+                    return inner.clone();
+                }
             }
 
             // Check for blob ContentRef: {"blob": string, "size": number, "media_type"?: string}
-            let is_exact_blob_ref = matches!(
-                (obj.get("blob"), obj.get("size")),
-                (
-                    Some(serde_json::Value::String(_)),
-                    Some(serde_json::Value::Number(_))
-                )
-            ) && obj
-                .keys()
-                .all(|key| key == "blob" || key == "size" || key == "media_type");
+            let exact_blob_hash = match (obj.get("blob"), obj.get("size")) {
+                (Some(serde_json::Value::String(hash)), Some(serde_json::Value::Number(_)))
+                    if obj
+                        .keys()
+                        .all(|key| key == "blob" || key == "size" || key == "media_type") =>
+                {
+                    Some(hash)
+                }
+                _ => None,
+            };
 
-            if is_exact_blob_ref {
-                let hash = obj
-                    .get("blob")
-                    .and_then(|value| value.as_str())
-                    .expect("exact blob ref has string blob");
+            if let Some(hash) = exact_blob_hash {
                 // Anywidget reserves `_esm` and `_css` for URL-preferring
                 // loaders: `_esm` flows through `import(url)` and `_css`
                 // through `<link rel=stylesheet href=url>`, both of which
