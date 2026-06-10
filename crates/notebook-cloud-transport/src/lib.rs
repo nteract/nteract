@@ -269,6 +269,31 @@ fn classify_ready_control(payload: &[u8]) -> ReadyControl {
     }
 }
 
+fn cloud_frame_rejection_error(payload: &[u8]) -> Option<std::io::Error> {
+    let Ok(control) = serde_json::from_slice::<serde_json::Value>(payload) else {
+        return None;
+    };
+    if control.get("type").and_then(|t| t.as_str()) != Some("cloud_frame_rejected") {
+        return None;
+    }
+    let frame_type = match control.get("frame_type") {
+        Some(value) => value
+            .as_u64()
+            .map(|number| number.to_string())
+            .or_else(|| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| value.to_string()),
+        None => "unknown".to_string(),
+    };
+    let reason = control
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no reason given)");
+    Some(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        format!("cloud room rejected frame: frame_type={frame_type} reason={reason}"),
+    ))
+}
+
 /// Read frames from `source` until the room reaches a terminal ready state,
 /// returning the authenticated principal from `cloud_room_ready`.
 ///
@@ -350,7 +375,14 @@ impl FrameSource for CloudWsSource {
         loop {
             match self.stream.next().await {
                 Some(Ok(msg)) if msg.is_binary() => match decode_frame(&msg.into_data()) {
-                    Some(frame) => return Some(Ok(frame)),
+                    Some(frame) => {
+                        if frame.frame_type == NotebookFrameType::SessionControl {
+                            if let Some(error) = cloud_frame_rejection_error(&frame.payload) {
+                                return Some(Err(error));
+                            }
+                        }
+                        return Some(Ok(frame));
+                    }
                     // Empty / unknown frame: skip, keep reading.
                     None => continue,
                 },
@@ -647,6 +679,10 @@ impl FrameTransport for CloudWsFrameTransport {
         true
     }
 
+    fn stream_error_is_recoverable(&self, error: &std::io::Error) -> bool {
+        error.kind() != std::io::ErrorKind::PermissionDenied
+    }
+
     async fn connect(&self) -> std::io::Result<(Self::Source, Self::Sink)> {
         let (source, sink, principal) = self.connect_cloud().await?;
         // Cache the principal for `Self::principal`. Reconnects to the same room
@@ -779,6 +815,41 @@ mod tests {
     }
 
     #[test]
+    fn cloud_frame_rejection_error_is_non_recoverable_shape() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "cloud_frame_rejected",
+            "frame_type": 5,
+            "reason": "actor label must be '<principal>/<operator>'",
+        }))
+        .unwrap();
+        let error = cloud_frame_rejection_error(&payload).expect("rejection becomes an error");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(error
+            .to_string()
+            .contains("actor label must be '<principal>/<operator>'"));
+
+        let accepted = serde_json::to_vec(&serde_json::json!({
+            "type": "cloud_frame_accepted",
+        }))
+        .unwrap();
+        assert!(cloud_frame_rejection_error(&accepted).is_none());
+    }
+
+    #[test]
+    fn cloud_frame_rejection_error_formats_string_frame_type_without_json_quotes() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "cloud_frame_rejected",
+            "frame_type": "runtime_state_sync",
+            "reason": "rejected",
+        }))
+        .unwrap();
+        let error = cloud_frame_rejection_error(&payload).expect("rejection becomes an error");
+        assert!(error
+            .to_string()
+            .contains("frame_type=runtime_state_sync reason=rejected"));
+    }
+
+    #[test]
     fn classify_treats_accepted_and_garbage_as_other() {
         let accepted = serde_json::to_vec(&serde_json::json!({
             "type": "cloud_frame_accepted",
@@ -847,6 +918,23 @@ mod tests {
             workstation: None,
         });
         assert!(t.clean_eof_is_recoverable());
+    }
+
+    #[test]
+    fn cloud_permission_denied_stream_error_is_terminal() {
+        let t = CloudWsFrameTransport::new(CloudWsConfig {
+            cloud_url: "https://preview.runt.run".into(),
+            notebook_id: "abc".into(),
+            scope: "runtime_peer".into(),
+            auth: CloudAuth::OidcBearer {
+                token: "tok".into(),
+            },
+            workstation: None,
+        });
+        let fatal = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "room rejected");
+        let transient = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        assert!(!t.stream_error_is_recoverable(&fatal));
+        assert!(t.stream_error_is_recoverable(&transient));
     }
 
     // -- token-refresher tests --------------------------------------------
