@@ -345,6 +345,10 @@ mod tests {
         let state = runtime_state();
         create_execution(&state);
 
+        // Subscribe after the setup write so the only expected change
+        // notification is the committer's stream upsert transaction.
+        let mut state_changes = state.subscribe();
+
         let terminals = Arc::new(Mutex::new(StreamTerminals::new()));
         {
             let mut terminals = terminals.lock().await;
@@ -372,6 +376,19 @@ mod tests {
             .expect("signal timeout")
             .expect("signal");
         assert!(matches!(received, LifecycleSignal::ExecutionDone { .. }));
+
+        // Durable change order, not just signal arrival order (EP-1). The
+        // handle broadcasts a change notification synchronously inside the
+        // upsert transaction, and the committer sends the lifecycle signal
+        // afterward from the same task, so a correct implementation
+        // guarantees the notification is observable wherever the signal is.
+        // A refactor that routes ExecutionDone past the priority commit path
+        // delivers the signal with no preceding document change and fails
+        // here.
+        assert!(
+            state_changes.try_recv().is_ok(),
+            "stream upsert must be durable in RuntimeStateDoc before ExecutionDone is signaled"
+        );
 
         let outputs = state
             .read(|sd| sd.get_outputs("exec-1"))

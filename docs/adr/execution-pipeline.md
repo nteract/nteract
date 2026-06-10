@@ -331,7 +331,6 @@ These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
 retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
 to implement; **Design** = needs a decision in this ADR before code moves.
 
-- **EP-1** (Targeted PR; `crates/runtimed/src/stream_committer.rs` test): `flush_then_signal_commits_stream_before_lifecycle_signal` test verifies signal arrival order, not durable Automerge change order. A refactor that re-routes `ExecutionDone` past the priority path would still pass.
 - **EP-3** (Design; memo `docs/adr/execution-liveness.md`): **Reframed.** Daemon view of execution state can diverge from kernel reality. A wall-clock watchdog is the wrong fix - multi-hour training jobs are legitimate Jupyter usage and nteract's resume-by-reconnect is a feature. The real signal is divergence between `RuntimeStateDoc.status` and live IOPub / heartbeat / committer state. See design memo `docs/adr/execution-liveness.md`. Code is a follow-up after the memo is reviewed.
 - **EP-5** (Design; telemetry + tuning pass): Capacity constants (`STREAM_COMMITTER_QUEUE_CAPACITY = 32`, `MAX_PENDING_DISPLAY_IDS = 128`, `DEFAULT_OUTPUT_SYNC_GRACE = 500ms`) picked by judgment. No benchmark, no drop-rate metric, no measured upper bound under load.
 - **EP-6** (Design; request handling): `required_heads` is `NotebookDoc`-only. No causal gate exists for requests that depend on recent `RuntimeStateDoc` writes.
