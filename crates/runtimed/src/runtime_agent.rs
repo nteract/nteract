@@ -45,8 +45,8 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::blob_store::BlobStore;
-use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
+use crate::kernel_dispatch::Kernel;
 use crate::kernel_state::KernelState;
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::{LifecycleSignal, QueueCommandReceivers, WorkCommand};
@@ -417,7 +417,7 @@ where
 
     // -- Local variables owned by the select! loop (no mutex) ---------------
 
-    let mut kernel: Option<JupyterKernel> = None;
+    let mut kernel: Option<Kernel> = None;
     let mut interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle> = None;
     let mut kernel_state = KernelState::new(state.clone());
     let mut seen_execution_ids = HashSet::new();
@@ -1487,7 +1487,7 @@ async fn queue_synced_executions<K: KernelConnection>(
 async fn handle_runtime_agent_request(
     request: RuntimeAgentRequest,
     ctx: &RuntimeAgentContext,
-    kernel: &mut Option<JupyterKernel>,
+    kernel: &mut Option<Kernel>,
     state: &mut KernelState,
     seen_execution_ids: &mut HashSet<String>,
 ) -> (RuntimeAgentResponse, Option<QueueCommandReceivers>) {
@@ -1558,7 +1558,7 @@ async fn handle_runtime_agent_request(
             }
 
             let launch_started = std::time::Instant::now();
-            match JupyterKernel::launch(config, shared).await {
+            match Kernel::launch(config, shared).await {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
@@ -1722,7 +1722,7 @@ async fn handle_runtime_agent_request(
             }
 
             let launch_started = std::time::Instant::now();
-            match JupyterKernel::launch(config, shared).await {
+            match Kernel::launch(config, shared).await {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
@@ -2064,7 +2064,7 @@ async fn run_sync_environment(
 async fn handle_lifecycle_signal(
     signal: LifecycleSignal,
     ctx: &RuntimeAgentContext,
-    kernel: &mut Option<JupyterKernel>,
+    kernel: &mut Option<Kernel>,
     state: &mut KernelState,
 ) -> anyhow::Result<()> {
     match signal {
@@ -2137,7 +2137,7 @@ async fn handle_lifecycle_signal(
 /// `execution-pipeline.md` Decision 4.
 async fn handle_work_command(
     command: WorkCommand,
-    kernel: &mut Option<JupyterKernel>,
+    kernel: &mut Option<Kernel>,
 ) -> anyhow::Result<()> {
     match command {
         WorkCommand::SendCommUpdate {
@@ -2163,7 +2163,7 @@ async fn handle_work_command(
 async fn drain_lifecycle_commands(
     rx: &mut mpsc::UnboundedReceiver<LifecycleSignal>,
     ctx: &RuntimeAgentContext,
-    kernel: &mut Option<JupyterKernel>,
+    kernel: &mut Option<Kernel>,
     state: &mut KernelState,
 ) -> anyhow::Result<usize> {
     let mut drained = 0;
