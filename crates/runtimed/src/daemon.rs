@@ -4094,15 +4094,19 @@ impl Daemon {
                         "[runtimed] GC: 0 active rooms and no room has loaded since startup; skipping blob sweep this cycle"
                     );
                 } else {
-                    let mut referenced_hashes = Self::collect_blob_refs_for_gc(
+                    let mut mark = Self::collect_blob_refs_for_gc(
                         &room_arcs,
                         &self.config.notebook_docs_dir,
                         &self.blob_store,
                     )
                     .await;
-                    referenced_hashes.extend(execution_store_refs);
-                    Self::sweep_orphaned_blobs(&self.blob_store, &referenced_hashes, blob_max_age)
-                        .await;
+                    mark.extend_with_source(
+                        "execution-store",
+                        "execution-store",
+                        execution_store_refs,
+                    );
+                    debug!("[runtimed] GC: mark sources: {}", mark.summary());
+                    Self::sweep_orphaned_blobs(&self.blob_store, mark.hashes(), blob_max_age).await;
                 }
             }
 
@@ -4522,6 +4526,71 @@ fn collect_blob_hashes_recursive(
     }
 }
 
+/// Mark set for blob GC with per-ref provenance (BS-7).
+///
+/// The sweep deletes every blob the mark phase did not reach, so a mark-miss
+/// is silent data loss with nothing to audit after the fact. This set records
+/// which source category contributed each hash and how many unique hashes
+/// each category marked. The GC loop logs the per-category counts after every
+/// mark walk — a category that should have refs reporting zero is the
+/// inventory bug made visible — and `first_marker` answers "what protected
+/// this hash" for a specific blob.
+///
+/// Counts are of first marks: a hash reachable from two sources is attributed
+/// to whichever marked it first, so later categories report only their unique
+/// contributions.
+#[derive(Default)]
+pub(crate) struct GcMarkSet {
+    hashes: std::collections::HashSet<String>,
+    first_marker: std::collections::HashMap<String, String>,
+    marks_by_category: std::collections::BTreeMap<&'static str, usize>,
+}
+
+impl GcMarkSet {
+    /// Fold `hashes` into the set. `category` is a stable label for counting
+    /// ("execution-outputs", "persisted-doc", ...); `detail` identifies the
+    /// concrete container for per-hash provenance ("room:abc", a file name).
+    pub(crate) fn extend_with_source(
+        &mut self,
+        category: &'static str,
+        detail: &str,
+        hashes: impl IntoIterator<Item = String>,
+    ) {
+        for hash in hashes {
+            if self.hashes.insert(hash.clone()) {
+                *self.marks_by_category.entry(category).or_default() += 1;
+                self.first_marker
+                    .insert(hash, format!("{category} {detail}"));
+            }
+        }
+    }
+
+    pub(crate) fn hashes(&self) -> &std::collections::HashSet<String> {
+        &self.hashes
+    }
+
+    /// Per-hash audit accessor. No production caller yet: the GC loop logs
+    /// the category summary, and a swept blob is by definition unmarked. This
+    /// exists for tests and for a future diagnostics surface that wants to
+    /// answer "what protected this hash" for a live blob.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn first_marker(&self, hash: &str) -> Option<&str> {
+        self.first_marker.get(hash).map(String::as_str)
+    }
+
+    /// One-line per-category mark counts for the GC debug log.
+    pub(crate) fn summary(&self) -> String {
+        if self.marks_by_category.is_empty() {
+            return "no refs marked".to_string();
+        }
+        self.marks_by_category
+            .iter()
+            .map(|(category, count)| format!("{category}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// Default grace period before an unreferenced blob is swept (30 days).
 ///
 /// Rationale: after `.ipynb` save switches to external blob refs, a
@@ -4642,24 +4711,30 @@ impl Daemon {
         rooms: &[(String, Arc<crate::notebook_sync_server::NotebookRoom>)],
         notebook_docs_dir: &Path,
         blob_store: &BlobStore,
-    ) -> std::collections::HashSet<String> {
+    ) -> GcMarkSet {
         /// Rooms are scanned in batches so the sweep yields back to other
         /// daemon tasks; keeping the constant local keeps it near the loop.
         const ROOM_BATCH_SIZE: usize = 10;
         /// Reading `.automerge` files is I/O-bound; yield between batches.
         const DOC_BATCH_SIZE: usize = 10;
 
-        let mut referenced_hashes = std::collections::HashSet::new();
+        let mut mark = GcMarkSet::default();
 
         // 1. In-memory: active rooms (RuntimeStateDoc + notebook doc).
+        // Each ref shape lands in the mark set under its own category so the
+        // GC log shows which walks contributed (BS-7).
         for batch in rooms.chunks(ROOM_BATCH_SIZE) {
-            for (_id, room) in batch {
+            for (id, room) in batch {
+                let detail = format!("room:{id}");
+                let mut execution_output_hashes = std::collections::HashSet::new();
+                let mut comm_output_hashes = std::collections::HashSet::new();
+                let mut comm_state_hashes = std::collections::HashSet::new();
                 let mut arrow_manifest_blob_hashes = Vec::new();
                 let _ = room.state.read(|sd| {
                     let state = sd.read_state();
                     for exec in state.executions.values() {
                         for output in &exec.outputs {
-                            collect_blob_hashes(output, &mut referenced_hashes);
+                            collect_blob_hashes(output, &mut execution_output_hashes);
                             if let Some(hash) = arrow_manifest_blob_hash(output) {
                                 arrow_manifest_blob_hashes.push(hash);
                             }
@@ -4667,30 +4742,41 @@ impl Daemon {
                     }
                     for comm in state.comms.values() {
                         for output in &comm.outputs {
-                            collect_blob_hashes(output, &mut referenced_hashes);
+                            collect_blob_hashes(output, &mut comm_output_hashes);
                             if let Some(hash) = arrow_manifest_blob_hash(output) {
                                 arrow_manifest_blob_hashes.push(hash);
                             }
                         }
-                        collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
+                        collect_blob_hashes_recursive(&comm.state, &mut comm_state_hashes);
                     }
                 });
+                mark.extend_with_source("execution-outputs", &detail, execution_output_hashes);
+                mark.extend_with_source("comm-outputs", &detail, comm_output_hashes);
+                mark.extend_with_source("comm-state", &detail, comm_state_hashes);
+
+                let mut arrow_child_hashes = std::collections::HashSet::new();
                 for hash in arrow_manifest_blob_hashes {
-                    collect_arrow_manifest_blob_hashes(&hash, &mut referenced_hashes, blob_store)
+                    collect_arrow_manifest_blob_hashes(&hash, &mut arrow_child_hashes, blob_store)
                         .await;
                 }
+                mark.extend_with_source("arrow-manifest-children", &detail, arrow_child_hashes);
+
                 {
+                    let mut resolved_asset_hashes = std::collections::HashSet::new();
+                    let mut attachment_hashes = std::collections::HashSet::new();
                     let doc = room.doc.read().await;
                     for cell in doc.get_cells() {
                         for hash in cell.resolved_assets.values() {
-                            referenced_hashes.insert(hash.clone());
+                            resolved_asset_hashes.insert(hash.clone());
                         }
                         for bundle in cell.attachments.values() {
                             for attachment_ref in bundle.values() {
-                                referenced_hashes.insert(attachment_ref.blob_hash.clone());
+                                attachment_hashes.insert(attachment_ref.blob_hash.clone());
                             }
                         }
                     }
+                    mark.extend_with_source("resolved-assets", &detail, resolved_asset_hashes);
+                    mark.extend_with_source("attachments", &detail, attachment_hashes);
                 }
             }
             tokio::task::yield_now().await;
@@ -4734,14 +4820,21 @@ impl Daemon {
                 );
                 for batch in persisted_paths.chunks(DOC_BATCH_SIZE) {
                     for path in batch {
-                        collect_hashes_from_persisted_doc(path, &mut referenced_hashes).await;
+                        let mut doc_hashes = std::collections::HashSet::new();
+                        if collect_hashes_from_persisted_doc(path, &mut doc_hashes).await {
+                            let detail = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| path.display().to_string());
+                            mark.extend_with_source("persisted-doc", &detail, doc_hashes);
+                        }
                     }
                     tokio::task::yield_now().await;
                 }
             }
         }
 
-        referenced_hashes
+        mark
     }
 
     /// Prune expired durable execution records, then return blob hashes
@@ -4795,6 +4888,11 @@ impl Daemon {
                                     age_secs > 0 && age_secs as u64 > blob_max_age.as_secs()
                                 });
                         if is_stale && blob_store.delete(hash).await.unwrap_or(false) {
+                            // Per-deletion audit line: when a sweep turns out
+                            // to have eaten a live blob, this is the record of
+                            // what was deleted and that no mark source
+                            // protected it.
+                            debug!("[runtimed] GC: swept unreferenced blob {hash}");
                             blobs_deleted += 1;
                         }
                     }
@@ -7905,17 +8003,54 @@ mod tests {
 
         let rooms: Vec<(String, Arc<crate::notebook_sync_server::NotebookRoom>)> = vec![];
         let blob_store = BlobStore::new(tmp.path().join("blobs"));
-        let refs = Daemon::collect_blob_refs_for_gc(&rooms, &docs_dir, &blob_store).await;
+        let mark = Daemon::collect_blob_refs_for_gc(&rooms, &docs_dir, &blob_store).await;
         assert!(
-            refs.contains("cafebabe"),
+            mark.hashes().contains("cafebabe"),
             "persisted-doc blob ref should be collected, got {:?}",
-            refs
+            mark.hashes()
         );
         assert!(
-            refs.contains("facefeed"),
+            mark.hashes().contains("facefeed"),
             "persisted-doc attachment ref should be collected, got {:?}",
-            refs
+            mark.hashes()
         );
+        let marker = mark
+            .first_marker("cafebabe")
+            .expect("marked hash should carry provenance");
+        assert!(
+            marker.starts_with("persisted-doc "),
+            "provenance should attribute the persisted-doc walk, got {marker:?}"
+        );
+        assert_eq!(mark.summary(), "persisted-doc=2");
+    }
+
+    #[test]
+    fn gc_mark_set_attributes_first_marker_and_counts_unique_contributions() {
+        let mut mark = GcMarkSet::default();
+        mark.extend_with_source(
+            "execution-outputs",
+            "room:a",
+            ["blob-1".to_string(), "blob-2".to_string()],
+        );
+        // blob-2 is also reachable from a persisted doc; the first marker
+        // wins and the second source counts only its unique contribution.
+        mark.extend_with_source(
+            "persisted-doc",
+            "untitled.automerge",
+            ["blob-2".to_string(), "blob-3".to_string()],
+        );
+
+        assert_eq!(mark.hashes().len(), 3);
+        assert_eq!(
+            mark.first_marker("blob-2"),
+            Some("execution-outputs room:a")
+        );
+        assert_eq!(
+            mark.first_marker("blob-3"),
+            Some("persisted-doc untitled.automerge")
+        );
+        assert_eq!(mark.summary(), "execution-outputs=2 persisted-doc=1");
+        assert_eq!(mark.first_marker("blob-unmarked"), None);
     }
 
     #[tokio::test]
