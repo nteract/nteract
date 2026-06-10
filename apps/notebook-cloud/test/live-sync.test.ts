@@ -259,6 +259,52 @@ describe("cloud live sync", () => {
     }
   });
 
+  it("emits offline when the socket closes before room readiness", async () => {
+    const fake = installFakeWebSocket();
+    const statuses: string[] = [];
+    const disconnects: string[] = [];
+    try {
+      const transport = new CloudWebSocketTransport(
+        new URL("wss://example.test/n/room/sync"),
+        [],
+        undefined,
+        (reason) => disconnects.push(reason.message),
+      );
+      const subscription = transport.connectionStatus$.subscribe((status) => statuses.push(status));
+      const ready = assert.rejects(transport.ready, /cloud sync socket closed before ready/);
+
+      fake.socket.close({ code: 1006 });
+      await ready;
+      subscription.unsubscribe();
+
+      assert.deepEqual(statuses, ["connecting", "offline"]);
+      assert.deepEqual(disconnects, []);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("emits offline when manually disconnected after readiness", async () => {
+    const fake = installFakeWebSocket();
+    const statuses: string[] = [];
+    try {
+      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
+      const subscription = transport.connectionStatus$.subscribe((status) => statuses.push(status));
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      transport.disconnect();
+      subscription.unsubscribe();
+
+      assert.equal(transport.connected, false);
+      assert.deepEqual(statuses, ["connecting", "online", "offline"]);
+    } finally {
+      fake.restore();
+    }
+  });
+
   it("sends notebook requests as cloud request frames and resolves on room-host ack", async () => {
     const fake = installFakeWebSocket();
     try {

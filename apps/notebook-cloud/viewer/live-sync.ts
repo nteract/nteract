@@ -241,6 +241,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   ) => void;
   private readyReject!: (error: Error) => void;
   readonly ready: Promise<Extract<SessionControlMessage, { type: "cloud_room_ready" }>>;
+  private status: ConnectionStatus = "connecting";
   private readonly _status$ = new BehaviorSubject<ConnectionStatus>("connecting");
   readonly connectionStatus$: Observable<ConnectionStatus> = this._status$.asObservable();
 
@@ -254,7 +255,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
       this.readyResolve = (message) => {
         this.readySettled = true;
         this.readyResolved = true;
-        this._status$.next("online");
+        this.setStatus("online");
         resolve(message);
       };
       this.readyReject = (error) => {
@@ -367,9 +368,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
 
   disconnect(): void {
     this.manualDisconnect = true;
-    this.closed = true;
-    this.listeners.clear();
-    this.queuedFrames = [];
+    this.markClosed(new Error("cloud sync socket disconnected"));
     this.socket.close();
   }
 
@@ -435,13 +434,19 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private markClosed(reason: Error): void {
     if (this.closed) return;
     this.closed = true;
+    this.setStatus("offline");
     this.listeners.clear();
     this.queuedFrames = [];
     this.rejectPendingFrameAcks(reason);
     if (this.readyResolved && !this.manualDisconnect) {
-      this._status$.next("offline");
       this.onDisconnect?.(reason);
     }
+  }
+
+  private setStatus(status: ConnectionStatus): void {
+    if (this.status === status) return;
+    this.status = status;
+    this._status$.next(status);
   }
 
   private registerFrameAck(
