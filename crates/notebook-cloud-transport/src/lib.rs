@@ -276,10 +276,14 @@ fn cloud_frame_rejection_error(payload: &[u8]) -> Option<std::io::Error> {
     if control.get("type").and_then(|t| t.as_str()) != Some("cloud_frame_rejected") {
         return None;
     }
-    let frame_type = control
-        .get("frame_type")
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let frame_type = match control.get("frame_type") {
+        Some(value) => value
+            .as_u64()
+            .map(|number| number.to_string())
+            .or_else(|| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| value.to_string()),
+        None => "unknown".to_string(),
+    };
     let reason = control
         .get("reason")
         .and_then(|v| v.as_str())
@@ -829,6 +833,20 @@ mod tests {
         }))
         .unwrap();
         assert!(cloud_frame_rejection_error(&accepted).is_none());
+    }
+
+    #[test]
+    fn cloud_frame_rejection_error_formats_string_frame_type_without_json_quotes() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "cloud_frame_rejected",
+            "frame_type": "runtime_state_sync",
+            "reason": "rejected",
+        }))
+        .unwrap();
+        let error = cloud_frame_rejection_error(&payload).expect("rejection becomes an error");
+        assert!(error
+            .to_string()
+            .contains("frame_type=runtime_state_sync reason=rejected"));
     }
 
     #[test]

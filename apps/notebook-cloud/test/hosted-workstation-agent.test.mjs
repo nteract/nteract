@@ -194,6 +194,14 @@ describe("hosted workstation agent launch contract", () => {
       retryAfterMs(new Response("slow down", { status: 429, headers: { "Retry-After": "7" } })),
       7_000,
     );
+    const retryDate = new Date(Date.now() + 8_000).toUTCString();
+    const retryDateDelay = retryAfterMs(
+      new Response("slow down", { status: 429, headers: { "Retry-After": retryDate } }),
+    );
+    assert.ok(
+      retryDateDelay >= 1_000 && retryDateDelay <= 8_500,
+      `date retry delay should be bounded, got ${retryDateDelay}`,
+    );
     assert.equal(retryAfterMs(new Response("no hint", { status: 503 }), 12_345), 12_345);
   });
 });
