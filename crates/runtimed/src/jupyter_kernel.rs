@@ -213,7 +213,7 @@ enum IoPubStateUpdate {
 }
 
 fn try_send_comm_update(
-    work_tx: &mpsc::Sender<WorkCommand>,
+    work_tx: &crate::output_prep::NonBlockingSender<WorkCommand>,
     comm_id: String,
     state: serde_json::Value,
 ) {
@@ -371,7 +371,7 @@ pub struct JupyterKernel {
     /// With msg_id = execution_id, parent_header.msg_id IS the execution_id.
     registered_execution_ids: Arc<StdMutex<HashSet<String>>>,
     /// Work command sender for iopub/shell tasks.
-    work_cmd_tx: Option<mpsc::Sender<WorkCommand>>,
+    work_cmd_tx: Option<crate::output_prep::NonBlockingSender<WorkCommand>>,
     /// Lifecycle command sender for iopub/shell tasks.
     lifecycle_cmd_tx: Option<mpsc::UnboundedSender<LifecycleSignal>>,
     /// Monotonic counter for comm insertion order (written to RuntimeStateDoc).
@@ -3476,7 +3476,7 @@ mod tests {
 
     #[test]
     fn comm_update_replay_is_best_effort_when_work_queue_is_full() {
-        let (tx, mut rx) = mpsc::channel(1);
+        let (_lifecycle_tx, tx, mut receivers) = crate::output_prep::queue_command_channels(1);
 
         try_send_comm_update(
             &tx,
@@ -3489,13 +3489,16 @@ mod tests {
             serde_json::json!({ "outputs": ["dropped"] }),
         );
 
-        let queued = rx.try_recv().expect("first comm update should be queued");
+        let queued = receivers
+            .work_rx
+            .try_recv()
+            .expect("first comm update should be queued");
         assert!(matches!(
             queued,
             WorkCommand::SendCommUpdate { comm_id, .. } if comm_id == "comm-a"
         ));
         assert!(
-            rx.try_recv().is_err(),
+            receivers.work_rx.try_recv().is_err(),
             "full work queue should drop comm output replay"
         );
     }

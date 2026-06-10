@@ -75,8 +75,12 @@ pub fn queue_command_channels(work_capacity: usize) -> (
 
 The old `QueueCommand::is_lifecycle()` runtime discipline was replaced by this
 type split, so non-lifecycle work cannot compile on the lifecycle channel. The
-remaining ordering questions are about when lifecycle signals are drained, not
-about accidentally routing widget replay work onto the lifecycle path.
+work sender side is structural too (EP-8): `queue_command_channels` returns a
+`NonBlockingSender<WorkCommand>` that exposes only `try_send`, so an IOPub
+handler arm cannot await queue capacity on the bounded work channel — a
+blocking `.send().await` does not compile. The remaining ordering questions
+are about when lifecycle signals are drained, not about accidentally routing
+widget replay work onto the lifecycle path or blocking the reader on it.
 
 The runtime agent's `select!` loop has two arms for these channels (`crates/runtimed/src/runtime_agent.rs:592-639`):
 
@@ -334,5 +338,4 @@ to implement; **Design** = needs a decision in this ADR before code moves.
 - **EP-3** (Design; memo `docs/adr/execution-liveness.md`): **Reframed.** Daemon view of execution state can diverge from kernel reality. A wall-clock watchdog is the wrong fix - multi-hour training jobs are legitimate Jupyter usage and nteract's resume-by-reconnect is a feature. The real signal is divergence between `RuntimeStateDoc.status` and live IOPub / heartbeat / committer state. See design memo `docs/adr/execution-liveness.md`. Code is a follow-up after the memo is reviewed.
 - **EP-5** (Design; telemetry + tuning pass): Capacity constants (`STREAM_COMMITTER_QUEUE_CAPACITY = 32`, `MAX_PENDING_DISPLAY_IDS = 128`, `DEFAULT_OUTPUT_SYNC_GRACE = 500ms`) picked by judgment. No benchmark, no drop-rate metric, no measured upper bound under load.
 - **EP-6** (Design; request handling): `required_heads` is `NotebookDoc`-only. No causal gate exists for requests that depend on recent `RuntimeStateDoc` writes.
-- **EP-8** (Targeted PR; IOPub handlers, lint or type-level enforcement): "IOPub reader cannot block on bounded queues" is discipline, not a check. Adding `.await` on a bounded send in any IOPub handler arm would silently reintroduce the backpressure failure.
 - **EP-9** (Design; run-all path): Run-all timeouts are shared across the batch; a long first cell starves the budget for later cells. No fairness mechanism.
