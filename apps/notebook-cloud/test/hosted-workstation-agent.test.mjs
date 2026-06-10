@@ -7,7 +7,9 @@ import {
   buildRuntimeAgentEnv,
   buildWorkstationRegistrationPayload,
   normalizeWorkstationAuthKind,
+  parseHttpResponseBody,
   parsePositiveInteger,
+  retryAfterMs,
   stableWorkstationId,
 } from "../scripts/hosted-workstation-agent-core.mjs";
 
@@ -163,5 +165,35 @@ describe("hosted workstation agent launch contract", () => {
     assert.equal(parsePositiveInteger(undefined, "TEST_INTERVAL", 2000), 2000);
     assert.equal(parsePositiveInteger("15", "TEST_INTERVAL", 2000), 15);
     assert.throws(() => parsePositiveInteger("0", "TEST_INTERVAL", 2000), /positive integer/);
+  });
+
+  it("parses response bodies once and preserves non-json error pages", async () => {
+    assert.deepEqual(await parseHttpResponseBody(new Response(null, { status: 204 })), {});
+    assert.deepEqual(
+      await parseHttpResponseBody(
+        new Response(JSON.stringify({ jobs: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+      { jobs: [] },
+    );
+
+    const body = await parseHttpResponseBody(
+      new Response("<html><title>Error 1027</title>Please check back later</html>", {
+        status: 429,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    assert.match(body.error, /Error 1027/);
+  });
+
+  it("backs off workstation polling when the cloud asks for retry", () => {
+    assert.equal(retryAfterMs(new Response("ok", { status: 200 })), 0);
+    assert.equal(
+      retryAfterMs(new Response("slow down", { status: 429, headers: { "Retry-After": "7" } })),
+      7_000,
+    );
+    assert.equal(retryAfterMs(new Response("no hint", { status: 503 }), 12_345), 12_345);
   });
 });

@@ -12,7 +12,9 @@ import {
   buildWorkstationRegistrationPayload,
   DEFAULT_WORKSTATION_AUTH_KIND,
   normalizeWorkstationAuthKind,
+  parseHttpResponseBody,
   parsePositiveInteger,
+  retryAfterMs,
   stableWorkstationId,
 } from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
@@ -57,6 +59,7 @@ const agentRoot = path.resolve(
 
 const activeJobs = new Map();
 let lastHeartbeatAt = 0;
+let cooldownUntil = 0;
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -83,7 +86,15 @@ async function main() {
   );
 
   while (true) {
+    const cooldownRemainingMs = cooldownUntil - Date.now();
+    if (cooldownRemainingMs > 0) {
+      await sleep(Math.min(cooldownRemainingMs, pollIntervalMs));
+      continue;
+    }
     await runAgentStep("heartbeat", () => heartbeatIfNeeded(pythonPath));
+    if (cooldownUntil > Date.now()) {
+      continue;
+    }
     await runAgentStep("poll_attach_jobs", () => pollAttachJobs(pythonPath));
     await sleep(pollIntervalMs);
   }
@@ -93,6 +104,17 @@ async function runAgentStep(step, fn) {
   try {
     await fn();
   } catch (error) {
+    const stepRetryAfterMs = Number(error?.retryAfterMs ?? 0);
+    if (Number.isFinite(stepRetryAfterMs) && stepRetryAfterMs > 0) {
+      cooldownUntil = Math.max(cooldownUntil, Date.now() + stepRetryAfterMs);
+      console.error(
+        JSON.stringify({
+          event: "workstation_agent_cooling_down",
+          step,
+          retryAfterMs: stepRetryAfterMs,
+        }),
+      );
+    }
     console.error(
       JSON.stringify({
         event: "workstation_agent_step_failed",
@@ -128,7 +150,7 @@ async function registerWorkstation(pythonPath) {
       }),
     ),
   });
-  const body = await responseJson(response);
+  const body = await parseHttpResponseBody(response);
   assertResponse(response, body, "register workstation", [200, 201]);
 }
 
@@ -139,7 +161,7 @@ async function pollAttachJobs(pythonPath) {
       headers: cloudAuthHeaders(),
     },
   );
-  const body = await responseJson(response);
+  const body = await parseHttpResponseBody(response);
   assertResponse(response, body, "poll attach jobs", [200]);
   for (const job of normalizeJobs(body)) {
     if (activeJobs.has(job.job_id)) continue;
@@ -266,7 +288,7 @@ async function patchAttachJob(jobId, patch) {
       body: JSON.stringify(patch),
     },
   );
-  const body = await responseJson(response);
+  const body = await parseHttpResponseBody(response);
   assertResponse(response, body, `patch attach job ${jobId}`, [200, 204]);
 }
 
@@ -394,14 +416,13 @@ async function assertBinaryExists(binaryPath, name) {
   }
 }
 
-async function responseJson(response) {
-  if (response.status === 204) return {};
-  return response.json().catch(async () => ({ error: await response.text() }));
-}
-
 function assertResponse(response, body, label, expectedStatuses) {
   if (expectedStatuses.includes(response.status)) return;
-  throw new Error(`${label} failed: HTTP ${response.status} ${JSON.stringify(body).slice(0, 500)}`);
+  const error = new Error(
+    `${label} failed: HTTP ${response.status} ${JSON.stringify(body).slice(0, 500)}`,
+  );
+  error.retryAfterMs = retryAfterMs(response);
+  throw error;
 }
 
 function normalizeJobs(body) {

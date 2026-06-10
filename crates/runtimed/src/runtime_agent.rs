@@ -431,6 +431,7 @@ where
     let mut last_recoverable_reconnect: Option<tokio::time::Instant> = None;
     let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>> = None;
     let mut work_rx: Option<mpsc::Receiver<WorkCommand>> = None;
+    let mut terminal_error: Option<anyhow::Error> = None;
 
     // Async responses from spawned tasks (currently: SyncEnvironment).
     // Keeping these off the request handler's await frees the main loop to
@@ -996,6 +997,17 @@ where
                         }
                     }
                     Some(Err(e)) => {
+                        if !transport.stream_error_is_recoverable(&e) {
+                            error!(
+                                "[runtime-agent] Non-recoverable sync stream error: {}; \
+                                 shutting down instead of reconnecting",
+                                e
+                            );
+                            terminal_error = Some(anyhow::anyhow!(
+                                "runtime agent sync stream rejected by room: {e}"
+                            ));
+                            break;
+                        }
                         // A framing error here means one of two things:
                         //   - the daemon half-closed the sync stream (clean),
                         //     which we treat as a disconnect,
@@ -1350,7 +1362,10 @@ where
         k.shutdown().await.ok();
     }
 
-    Ok(())
+    match terminal_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn send_runtime_agent_response<S: FrameSink>(

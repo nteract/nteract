@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 export const DEFAULT_WORKSTATION_AUTH_KIND = "anaconda-key";
+export const DEFAULT_WORKSTATION_RETRY_AFTER_MS = 60_000;
 export const WORKSTATION_AUTH_KINDS = new Set([DEFAULT_WORKSTATION_AUTH_KIND, "oidc"]);
 
 export function buildWorkstationRegistrationPayload({
@@ -158,6 +159,35 @@ export function parsePositiveInteger(value, name, fallback) {
     throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+export async function parseHttpResponseBody(response) {
+  if (response.status === 204) return {};
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text.slice(0, 500) };
+  }
+}
+
+export function retryAfterMs(response, fallbackMs = DEFAULT_WORKSTATION_RETRY_AFTER_MS) {
+  if (response.status !== 429 && response.status !== 503) return 0;
+  const header = response.headers?.get?.("Retry-After");
+  if (!header) return fallbackMs;
+
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.max(1_000, Math.ceil(seconds * 1_000));
+  }
+
+  const dateMs = Date.parse(header);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(1_000, dateMs - Date.now());
+  }
+
+  return fallbackMs;
 }
 
 function assert(condition, message) {

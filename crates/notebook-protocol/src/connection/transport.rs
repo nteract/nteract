@@ -100,6 +100,15 @@ pub trait FrameTransport: Send + Sync {
     fn clean_eof_is_recoverable(&self) -> bool {
         false
     }
+
+    /// Whether a read-side stream error should be handled through the reconnect
+    /// path. Most transport errors are transient wire failures, so the default
+    /// remains recoverable. Cloud transports can mark server-authored protocol
+    /// rejections as terminal: reconnecting with the same local document state
+    /// would just replay the same forbidden frame.
+    fn stream_error_is_recoverable(&self, _error: &std::io::Error) -> bool {
+        true
+    }
 }
 
 // -- UDS implementation -----------------------------------------------------
@@ -291,5 +300,17 @@ mod tests {
             "/tmp/blobs",
         );
         assert!(!transport.clean_eof_is_recoverable());
+    }
+
+    #[test]
+    fn uds_stream_errors_remain_recoverable_by_default() {
+        let transport = UdsFrameTransport::new(
+            "/tmp/does-not-need-to-exist.sock",
+            "nb",
+            "runtime-agent:test",
+            "/tmp/blobs",
+        );
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock");
+        assert!(transport.stream_error_is_recoverable(&error));
     }
 }
