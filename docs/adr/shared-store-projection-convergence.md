@@ -53,14 +53,13 @@ Each item removes a second source of truth. None is unit-testable for its
 runtime timing; each needs a hosted/desktop browser smoke (focus, run-all,
 output focus, reconnect) before merge.
 
-1. **NotebookView output-focus → shared store.** `outputFocusedCellId` `useState`
-   + three effects (focus-follows-selection, cell-removal cleanup, Esc) +
-   iframe-blur + click-outside live in the shared `NotebookView`, so this is
-   cross-host today. Highest value (benefits both hosts, ~55 lines collapse).
-   Hazard: the focus-follows-selection effect has a load-bearing deferred-flush
-   race guard (`NotebookView.tsx`, the `focusedCellId !== null` comment) and the
-   Esc/iframe focus paths are not reproducible in unit tests. New
-   `src/components/notebook/state/output-focus-store.ts`.
+1. ~~**NotebookView output-focus → shared store.**~~ **Done** in #3533. The
+   `outputFocusedCellId` `useState` moved to
+   `src/components/notebook/state/output-focus-store.ts` (direct-emit
+   pattern; `setOutputFocusedCellId` / `clearOutputFocusedCellId` with the
+   conditional-clear preserving the old functional-updater race guard). The
+   dismissal policy (focus-follows-selection, Esc, click-outside,
+   removed-cell cleanup) stays in `NotebookView`.
 
 2. ~~**Cloud `workstationAttachment` → shared runtime-state store.**~~ **Done**
    in the runtime-state RxJS projection pass. The shared store is now
