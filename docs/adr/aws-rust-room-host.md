@@ -339,7 +339,68 @@ The stable split:
 - revision/checkpoint metadata in Postgres;
 - room coordination in the Rust room actor, not S3.
 
-## Decision 7: One Big Room Host First, Leases Later
+## Decision 7: Cloud Notebooks Use Native Document Set Identity
+
+Hosted notebooks are not persisted as `.ipynb` files with a cloud sync wrapper.
+The cloud-native source of truth is a durable document set:
+
+- `NotebookDoc` for cells, metadata, order, and notebook-level authoring state;
+- `RuntimeStateDoc` for execution records, queue state, kernel/session facts,
+  output manifests, workstation attachment state, and other runtime-visible
+  notebook state;
+- `CommsDoc` for widget/comm state needed to render interactive outputs;
+- content-addressed blobs for output bytes and renderer assets referenced by
+  those documents.
+
+`.ipynb`, HTML, and other file formats are import/export projections from that
+document set. They are not the hosted persistence boundary.
+
+Keep identifiers boring and single-purpose:
+
+- `notebook_id` is the stable opaque room/catalog id. It drives routes, ACLs,
+  room placement, leases, workstations, and live sync.
+- document ids identify the individual Automerge documents whose immutable
+  published snapshots live under `docs/{docId}`.
+- `revision_id` identifies an immutable published snapshot bundle for one
+  notebook, including the exact `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`,
+  and blob references needed to render it.
+- `checkpoint_id` identifies an operational recovery point for a live room.
+  Checkpoints may include runtime state, but they are not the default public
+  sharing surface.
+- titles and slugs are mutable display/navigation metadata. They are never
+  authorization, placement, publication, or checkpoint authority.
+
+The canonical hosted routes should be identity-first with optional decorative
+slugs:
+
+```text
+/n/:notebook_id/:slug?                 live room
+/n/:notebook_id/r/:revision_id/:slug?  immutable published revision
+```
+
+The router trusts only `notebook_id`, the reserved control segment `r`, and
+`revision_id`. The slug exists so copied links remain recognizable to humans;
+it may be stale, missing, or regenerated after a title change. By default,
+shareable links include the slug. If title sensitivity becomes a product
+requirement, add an explicit "copy link without title" affordance later rather
+than making all links opaque now.
+
+Reserve control segments after `notebook_id` for route modes. At minimum, `r`
+is reserved for revisions. If checkpoint links become a user-facing or admin
+feature, use another reserved control segment rather than overloading vanity
+slug parsing. Vanity slugs should be single path segments and generated to
+avoid reserved control words.
+
+Persist `RuntimeStateDoc` and `CommsDoc` in both live checkpoints and published
+revisions so outputs, execution history, widgets, and workstation attachment
+context do not disappear when a room reloads or when a notebook is viewed
+without an active runtime peer. Persistence should compact these documents
+before storage: keep durable execution/output/widget facts, but reconcile
+process-local claims such as "kernel is running on host X" when the room loads.
+If the runtime peer does not reconnect and reclaim ownership, mark process
+state stale while preserving the user-visible execution and output history.
+
+## Decision 8: One Big Room Host First, Leases Later
 
 The first AWS service should be one vertically scaled room-host process behind
 an ALB. One active process owns all live room actors.
@@ -406,7 +467,7 @@ architectural requirements for the native service. A long-running room host can
 keep active rooms in memory and should rely on document sync plus checkpoints
 for recovery rather than porting hibernation behavior mechanically.
 
-## Decision 8: Room Checkpointing Is Debounced But Durable
+## Decision 9: Room Checkpointing Is Debounced But Durable
 
 On room load, port the current Cloudflare materializer's checkpoint precedence
 logic rather than replacing it with a simpler "checkpoint else snapshot" rule:
@@ -463,7 +524,7 @@ becomes an in-process Tokio timer in the single-host service. Because that timer
 dies with the process, room load must also reconcile stale runtime-peer state so
 phantom running executions and kernels do not survive a host crash.
 
-## Decision 9: Authority Boundaries Stay The Same
+## Decision 10: Authority Boundaries Stay The Same
 
 Moving from Durable Objects to Rust/AWS must not weaken hosted authorization:
 
@@ -493,7 +554,7 @@ transport. `KernelIdle`, `ExecutionDone`, `CellError`, and `KernelDied` cannot
 be backpressured by stdout floods, display churn, manifest commits, or blob
 writes.
 
-## Decision 10: Hosted Origins Stay Split
+## Decision 11: Hosted Origins Stay Split
 
 The AWS deployment keeps the three-origin security model from
 `hosted-output-origin-isolation.md`:
@@ -599,11 +660,12 @@ without AWS.
 6. Implement `HostedObjectStore` and `HostedCheckpointStore`; port checkpoint
    precedence logic with shared test vectors for deterministic actor label,
    starter cell id, and keep/discard decisions. Include holder/generation
-   fields in checkpoint pointer metadata from the start.
+   fields in checkpoint pointer metadata from the start. Persist compacted
+   `RuntimeStateDoc` and `CommsDoc` with checkpoints.
 7. Implement Postgres migrations and a `sqlx` `HostedCatalogStore` /
    `HostedAuthz` for catalog, ACL, sharing, workstations, and attach jobs.
    Preserve never-zero-owner ACL protection, partial unique active attach jobs,
-   and transactional revision publication.
+   document-set ids, and transactional revision publication.
 8. Implement the app-session/OIDC credential layer and key-management contract
    needed by the Rust service.
 9. Add integration tests covering:
