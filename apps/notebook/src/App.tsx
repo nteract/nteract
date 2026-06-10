@@ -44,8 +44,6 @@ import {
   KernelLaunchErrorBanner,
   NotebookDocumentRail,
   NotebookDocumentShell,
-  NotebookWorkstationsPanel,
-  notebookWorkstationsSummary,
   PoolErrorBanner,
   shouldShowKernelLaunchErrorBanner,
   TrustDialog,
@@ -94,7 +92,7 @@ import {
 import { getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
 import { useNotebookQueueProjection } from "@/components/notebook/state/execution-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
-import { useDetectRuntime, useNotebookMetadata, usePixiDeps } from "./lib/notebook-metadata";
+import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput } from "./types";
@@ -108,7 +106,7 @@ export type MimeBundle = Record<string, unknown>;
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
 
-function focusRailCollapseButtonWhenStageIsHidden(
+function focusActiveRailButtonWhenStageIsHidden(
   railCollapsed: boolean,
   stageHadFocusBeforeTakeover: boolean,
 ): void {
@@ -126,10 +124,10 @@ function focusRailCollapseButtonWhenStageIsHidden(
     stageHadFocusBeforeTakeover && activeElement === document.body;
   if (!focusWasInStage && !focusWasClearedFromHiddenStage) return;
 
-  const collapseButton = document.querySelector<HTMLButtonElement>(
-    '[data-slot="notebook-rail-collapse-button"]',
+  const activeRailButton = document.querySelector<HTMLButtonElement>(
+    '[data-testid="notebook-rail"] button[aria-pressed="true"]',
   );
-  requestAnimationFrame(() => collapseButton?.focus());
+  requestAnimationFrame(() => activeRailButton?.focus());
 }
 
 /**
@@ -459,7 +457,7 @@ function AppContent() {
     if (!takeoverQuery) return;
 
     const handleTakeoverChange = () => {
-      focusRailCollapseButtonWhenStageIsHidden(
+      focusActiveRailButtonWhenStageIsHidden(
         railCollapsed,
         stageHadFocusBeforeRailTakeoverRef.current,
       );
@@ -548,7 +546,6 @@ function AppContent() {
 
   // Pixi project detection
   const { pixiInfo } = usePixiDetection();
-  const pixiDeps = usePixiDeps();
 
   // Deno config detection and settings
   const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } = useDenoConfig();
@@ -919,46 +916,6 @@ function AppContent() {
   }, [envSource, envSyncState]);
 
   const packagesRailOpen = !railCollapsed && activeRailPanel === "packages";
-  const railPackageSummary = useMemo(() => {
-    if (runtime === "deno") {
-      return denoConfigInfo ? "Deno config" : "Deno imports";
-    }
-    if (runtime !== "python") return null;
-    if (envType === "conda") {
-      if (environmentYmlInfo) {
-        const count = environmentYmlPackageCount(environmentYmlDeps, environmentYmlInfo);
-        return packageCountLabel(count);
-      }
-      return `conda · ${packageCountLabel(condaDependencies?.dependencies.length ?? 0)}`;
-    }
-    if (envType === "pixi") {
-      if (pixiInfo) {
-        const pixiCount = pixiPackageCount(pixiInfo);
-        return packageCountLabel(pixiCount);
-      }
-      const pixiCount = pixiInlinePackageCount(pixiDeps);
-      return `pixi · ${packageCountLabel(pixiCount)}`;
-    }
-    if (envSource === "uv:pyproject" || pyprojectInfo?.has_dependencies) {
-      const count = pyprojectPackageCount(pyprojectDeps, pyprojectInfo?.dependency_count);
-      return count === null ? "Project env" : packageCountLabel(count);
-    }
-    return `uv · ${packageCountLabel(dependencies?.dependencies.length ?? 0)}`;
-  }, [
-    condaDependencies?.dependencies.length,
-    denoConfigInfo,
-    dependencies?.dependencies.length,
-    envType,
-    envSource,
-    environmentYmlDeps,
-    environmentYmlInfo,
-    pyprojectDeps,
-    pyprojectInfo?.dependency_count,
-    pyprojectInfo?.has_dependencies,
-    pixiDeps,
-    pixiInfo,
-    runtime,
-  ]);
 
   useEffect(() => {
     if (!selectedOutlineItemId) return;
@@ -1608,13 +1565,10 @@ function AppContent() {
               activeOutlineItemId={activeOutlineItemId}
               selectedOutlineItemId={selectedOutlineItemId}
               selectedOutlineCellId={focusedCellId}
-              packagesSummary={railPackageSummary}
-              workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
               onActivePanelChange={handleRailPanelChange}
               onCollapsedChange={setRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
-              workstationsPanel={<NotebookWorkstationsPanel capabilities={shellCapabilities} />}
               packagesPanel={
                 <NotebookPackagesPanel readOnly={!shellCapabilities.canManagePackages}>
                   {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
@@ -1775,72 +1729,6 @@ function AppContent() {
       </div>
     </PresenceProvider>
   );
-}
-
-function packageCountLabel(count: number): string {
-  return count === 1 ? "1 package" : `${count} packages`;
-}
-
-function pyprojectPackageCount(
-  pyprojectDeps:
-    | {
-        dependencies: readonly string[];
-        dev_dependencies: readonly string[];
-      }
-    | null
-    | undefined,
-  fallbackCount: number | null | undefined,
-): number | null {
-  if (pyprojectDeps) {
-    return pyprojectDeps.dependencies.length + pyprojectDeps.dev_dependencies.length;
-  }
-  return typeof fallbackCount === "number" ? fallbackCount : null;
-}
-
-function environmentYmlPackageCount(
-  environmentYmlDeps:
-    | {
-        dependencies: readonly string[];
-        pip_dependencies: readonly string[];
-      }
-    | null
-    | undefined,
-  environmentYmlInfo:
-    | {
-        dependency_count: number;
-        pip_dependency_count: number;
-      }
-    | null
-    | undefined,
-): number {
-  if (environmentYmlDeps) {
-    return environmentYmlDeps.dependencies.length + environmentYmlDeps.pip_dependencies.length;
-  }
-  return (
-    (environmentYmlInfo?.dependency_count ?? 0) + (environmentYmlInfo?.pip_dependency_count ?? 0)
-  );
-}
-
-function pixiPackageCount(pixiInfo: {
-  dependencies: readonly string[];
-  pypi_dependencies: readonly string[];
-  dependency_count: number;
-  pypi_dependency_count: number;
-}): number {
-  const listedCount = pixiInfo.dependencies.length + pixiInfo.pypi_dependencies.length;
-  return listedCount || pixiInfo.dependency_count + pixiInfo.pypi_dependency_count;
-}
-
-function pixiInlinePackageCount(
-  pixiDeps:
-    | {
-        dependencies: readonly string[];
-        pypiDependencies: readonly string[];
-      }
-    | null
-    | undefined,
-): number {
-  return (pixiDeps?.dependencies.length ?? 0) + (pixiDeps?.pypiDependencies.length ?? 0);
 }
 
 function AppErrorFallback(_error: Error, resetErrorBoundary: () => void) {

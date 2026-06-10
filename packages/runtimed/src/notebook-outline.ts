@@ -36,6 +36,7 @@ export interface NotebookOutlineMarkdownAnchor {
 export interface NotebookOutlineItem {
   id: string;
   cellId: string;
+  cellType?: string | null;
   title: string;
   level: number;
   kind: NotebookOutlineItemKind;
@@ -81,6 +82,7 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
   const headings: NotebookOutlineItem[] = [];
 
   for (const cell of cells) {
+    if (isSourceHiddenForOutline(cell)) continue;
     if (cellKind(cell) !== "markdown") continue;
     const parsed = markdownHeadingAnchorsForOutline(cell, options);
     parsed.forEach((heading, index) => {
@@ -110,25 +112,33 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
     return { items: [], source: "empty" };
   }
 
-  return {
-    source: cells.length > 0 ? "cells" : "empty",
-    items: cells.map((cell, index) => {
-      const kind = cellKind(cell);
-      const cellAnchorId = notebookCellAnchorId(cell.id);
-      return {
+  const fallbackItems = cells.flatMap((cell, index) => {
+    const kind = cellKind(cell);
+    if (!shouldIncludeFallbackCell(cell, kind)) return [];
+
+    const cellAnchorId = notebookCellAnchorId(cell.id);
+    const detail = fallbackDetailLabel(kind);
+    return [
+      {
         id: `${cell.id}:cell`,
         cellId: cell.id,
+        cellType: kind,
         title: summarizeCell(cell, index),
         level: 1,
-        kind: "cell",
+        kind: "cell" as const,
         cellAnchorId,
         headingAnchorId: null,
         href: notebookCellAnchorHref(cell.id),
         anchor: null,
-        detail: detailLabel(kind),
+        ...(detail ? { detail } : {}),
         statusLabel: options.getStatusLabel?.(cell) ?? null,
-      };
-    }),
+      },
+    ];
+  });
+
+  return {
+    source: fallbackItems.length > 0 ? "cells" : "empty",
+    items: fallbackItems,
   };
 }
 
@@ -320,6 +330,23 @@ function summarizeCell(cell: NotebookOutlineSourceCell, index: number): string {
   return summarizeMarkdownProseLine(firstLine);
 }
 
+function shouldIncludeFallbackCell(cell: NotebookOutlineSourceCell, kind: string): boolean {
+  if (isSourceHiddenForOutline(cell)) return false;
+  if (kind !== "code") return true;
+  if (metadataOutlineTitle(cell.metadata)) return true;
+  return (cell.source ?? "").trim().length > 0;
+}
+
+function isSourceHiddenForOutline(cell: NotebookOutlineSourceCell): boolean {
+  const jupyter = cell.metadata?.jupyter;
+  if (!isRecord(jupyter)) return false;
+  return jupyter.source_hidden === true;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 function metadataOutlineTitle(
   metadata: NotebookOutlineSourceMetadata | null | undefined,
 ): string | null {
@@ -394,4 +421,9 @@ function detailLabel(kind: string): string {
   if (kind === "markdown") return "Markdown";
   if (kind === "raw") return "Raw";
   return "Cell";
+}
+
+function fallbackDetailLabel(kind: string): string | null {
+  if (kind === "code") return null;
+  return detailLabel(kind);
 }

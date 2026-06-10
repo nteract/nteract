@@ -210,6 +210,30 @@ describe("notebook shell view model", () => {
     });
   });
 
+  it("omits empty code cells from outline fallbacks without code badges", () => {
+    const outline = notebookViewCellsToOutlineItems([
+      codeViewCell("empty-code", " \n\t"),
+      codeViewCell("hidden-input", "secret = 1", { jupyter: { source_hidden: true } }),
+      codeViewCell("code-1", "print('ok')"),
+      codeViewCell("hidden-output", "print('visible input')", {
+        jupyter: { outputs_hidden: true },
+      }),
+    ]);
+
+    expect(outline.map((item) => item.cellId)).toEqual(["code-1", "hidden-output"]);
+    expect(outline[0]).toMatchObject({
+      cellType: "code",
+      title: "print('ok')",
+      kind: "cell",
+    });
+    expect("detail" in outline[0]).toBe(false);
+    expect(outline[1]).toMatchObject({
+      cellType: "code",
+      title: "print('visible input')",
+      kind: "cell",
+    });
+  });
+
   it("builds a normalized view model for host adapters", () => {
     const cells: NotebookViewCell[] = [
       {
@@ -387,6 +411,23 @@ function markdownViewCell(
     outputs: [],
     metadata: {},
     markdownProjection: testMarkdownProjection(source, anchors),
+  };
+}
+
+function codeViewCell(
+  id: string,
+  source: string,
+  metadata: Record<string, unknown> = {},
+): NotebookViewCell {
+  return {
+    id,
+    cellType: "code",
+    source,
+    language: "python",
+    executionId: null,
+    executionCount: null,
+    outputs: [],
+    metadata,
   };
 }
 

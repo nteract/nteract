@@ -31,7 +31,6 @@ describe("NotebookDocumentRail", () => {
         viewModel={viewModel}
         activePanelId="packages"
         collapsed={false}
-        packagesSummary="Runtime packages"
         packagesPanel={<p>Package details</p>}
         onActivePanelChange={() => {}}
         onCollapsedChange={() => {}}
@@ -39,17 +38,16 @@ describe("NotebookDocumentRail", () => {
     );
 
     expect(screen.getByTestId("notebook-rail")).toHaveAttribute("data-collapsed", "false");
-    expect(screen.getByText("Runtime packages")).toBeVisible();
+    expect(screen.queryByText("Runtime packages")).not.toBeInTheDocument();
     expect(screen.getByText("Package details")).toBeVisible();
   });
 
-  it("can suppress the package title summary when the host renders it in the panel", () => {
+  it("keeps the package title row free of view-model summaries", () => {
     render(
       <NotebookDocumentRail
         viewModel={viewModel}
         activePanelId="packages"
         collapsed={false}
-        packagesSummary={null}
         packagesPanel={<p>Package details</p>}
         onActivePanelChange={() => {}}
         onCollapsedChange={() => {}}
@@ -85,7 +83,6 @@ describe("NotebookDocumentRail", () => {
         activePanelId="workstations"
         collapsed={false}
         packagesPanel={<p>Package details</p>}
-        workstationsSummary="Ready"
         workstationsPanel={<p>Runtime target</p>}
         onActivePanelChange={() => {}}
         onCollapsedChange={() => {}}
@@ -93,7 +90,7 @@ describe("NotebookDocumentRail", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Workstations" })).toBeVisible();
-    expect(screen.getByText("Ready")).toBeVisible();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
     expect(screen.getByText("Runtime target")).toBeVisible();
   });
 });

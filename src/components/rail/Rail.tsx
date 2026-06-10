@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, type LucideIcon } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -23,11 +23,9 @@ export interface RailProps<PanelId extends string = string> {
   onActivePanelChange: (panelId: PanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   panelEyebrow?: string;
-  panelSummary?: string | null;
   panelClassName?: string;
   className?: string;
   dataTestId?: string;
-  collapseButtonSlot?: string;
   panelSlot?: string;
   panelTitleRowSlot?: string;
 }
@@ -38,14 +36,12 @@ export function Rail<PanelId extends string = string>({
   items,
   panelTitle,
   panelEyebrow,
-  panelSummary = null,
   panelClassName,
   children,
   onActivePanelChange,
   onCollapsedChange,
   className,
   dataTestId = "rail",
-  collapseButtonSlot = "rail-collapse-button",
   panelSlot = "rail-panel",
   panelTitleRowSlot = "rail-panel-title-row",
 }: RailProps<PanelId>) {
@@ -56,13 +52,6 @@ export function Rail<PanelId extends string = string>({
       data-collapsed={collapsed ? "true" : "false"}
     >
       <div className="flex w-12 shrink-0 flex-col items-center gap-2 border-r bg-muted/40 px-2 py-3">
-        <RailButton
-          label={collapsed ? "Expand rail" : "Collapse rail"}
-          icon={collapsed ? ChevronRight : ChevronLeft}
-          active={false}
-          dataSlot={collapseButtonSlot}
-          onClick={() => onCollapsedChange(!collapsed)}
-        />
         {items.map((item) => (
           <RailButton
             key={item.id}
@@ -106,11 +95,6 @@ export function Rail<PanelId extends string = string>({
                 data-slot={panelTitleRowSlot}
               >
                 <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
-                {panelSummary && (
-                  <span className="w-fit max-w-full truncate rounded-full border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                    {panelSummary}
-                  </span>
-                )}
               </div>
             </div>
           </div>

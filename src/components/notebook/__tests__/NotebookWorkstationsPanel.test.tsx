@@ -5,10 +5,7 @@ import {
   projectNotebookWorkstationSelection,
   readOnlyNotebookShellCapabilities,
 } from "../capabilities";
-import {
-  notebookWorkstationsSummary,
-  NotebookWorkstationsPanel,
-} from "../NotebookWorkstationsPanel";
+import { NotebookWorkstationsPanel } from "../NotebookWorkstationsPanel";
 
 const localReadyCapabilities: NotebookShellCapabilities = {
   ...readOnlyNotebookShellCapabilities,
@@ -527,39 +524,5 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByText("1")).toBeVisible();
     expect(screen.queryByText("CPUs")).not.toBeInTheDocument();
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();
-  });
-
-  it("summarizes the active workstation by display name for the rail title row", () => {
-    expect(notebookWorkstationsSummary(localReadyCapabilities)).toBe("This machine");
-
-    const cloudOffline: NotebookShellCapabilities = {
-      ...readOnlyNotebookShellCapabilities,
-      runtime: {
-        ...readOnlyNotebookShellCapabilities.runtime,
-        source: "cloud",
-        target: {
-          id: "workstation:none",
-          kind: "cloud_workstation",
-          status: "offline",
-          label: "No workstation attached",
-          statusLabel: "Offline",
-        },
-      },
-    };
-    expect(notebookWorkstationsSummary(cloudOffline)).toBe("No workstation attached");
-
-    const remoteReady: NotebookShellCapabilities = {
-      ...localReadyCapabilities,
-      runtime: {
-        ...localReadyCapabilities.runtime,
-        target: {
-          id: "outerbounds-forecast-gpu",
-          kind: "cloud_workstation",
-          status: "ready",
-          label: "Forecast GPU",
-        },
-      },
-    };
-    expect(notebookWorkstationsSummary(remoteReady)).toBe("Forecast GPU");
   });
 });

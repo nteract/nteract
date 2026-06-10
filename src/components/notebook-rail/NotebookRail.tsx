@@ -30,9 +30,7 @@ export interface NotebookRailProps {
   activeOutlineItemId?: string | null;
   selectedOutlineItemId?: string | null;
   selectedOutlineCellId?: string | null;
-  packagesSummary?: string | null;
   packagesPanel: ReactNode;
-  workstationsSummary?: string | null;
   workstationsPanel?: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
@@ -55,9 +53,7 @@ export function NotebookRail({
   activeOutlineItemId = null,
   selectedOutlineItemId = null,
   selectedOutlineCellId = null,
-  packagesSummary = null,
   packagesPanel,
-  workstationsSummary = null,
   workstationsPanel,
   onActivePanelChange,
   onCollapsedChange,
@@ -75,12 +71,6 @@ export function NotebookRail({
       : activePanelId === "workstations"
         ? "Workstations"
         : "Outline";
-  const summary =
-    activePanelId === "packages"
-      ? packagesSummary
-      : activePanelId === "workstations"
-        ? workstationsSummary
-        : null;
   return (
     <Rail
       activePanelId={activePanelId}
@@ -88,11 +78,9 @@ export function NotebookRail({
       items={railButtons}
       panelEyebrow="Notebook"
       panelTitle={title}
-      panelSummary={summary}
       panelClassName={NOTEBOOK_RAIL_PANEL_CLASS_NAME}
       className={className}
       dataTestId="notebook-rail"
-      collapseButtonSlot="notebook-rail-collapse-button"
       panelSlot="notebook-rail-panel"
       panelTitleRowSlot="notebook-rail-panel-title-row"
       onActivePanelChange={onActivePanelChange}
@@ -205,6 +193,8 @@ function NotebookOutlineNode({
   const item = node.item;
   const selected = selectedItemId === item.id;
   const itemHref = getItemHref?.(item) ?? item.href ?? null;
+  const isCodeCellOutlineItem = item.kind === "cell" && item.cellType === "code";
+  const metaLabel = isCodeCellOutlineItem ? null : (item.statusLabel ?? item.detail ?? null);
   const className = cn(
     "relative flex min-h-8 w-full items-start gap-2 rounded-md py-1.5 pl-3 pr-2 text-left text-sm transition-colors",
     "cursor-pointer select-none touch-manipulation [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
@@ -217,11 +207,16 @@ function NotebookOutlineNode({
     <>
       <span
         data-slot="notebook-outline-item-title"
-        className="line-clamp-2 min-w-0 flex-1 break-words leading-snug [overflow-wrap:anywhere]"
+        className={cn(
+          "min-w-0 flex-1 leading-snug",
+          isCodeCellOutlineItem
+            ? "truncate font-mono text-[13px] tracking-normal"
+            : "line-clamp-2 break-words [overflow-wrap:anywhere]",
+        )}
       >
         {item.title}
       </span>
-      {item.statusLabel ? (
+      {metaLabel ? (
         <span
           data-slot="notebook-outline-item-meta"
           className={cn(
@@ -229,17 +224,7 @@ function NotebookOutlineNode({
             selected ? "bg-muted text-foreground/70" : "bg-muted text-muted-foreground",
           )}
         >
-          {item.statusLabel}
-        </span>
-      ) : item.detail ? (
-        <span
-          data-slot="notebook-outline-item-meta"
-          className={cn(
-            "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors",
-            selected ? "bg-muted text-foreground/70" : "bg-muted text-muted-foreground",
-          )}
-        >
-          {item.detail}
+          {metaLabel}
         </span>
       ) : null}
     </>

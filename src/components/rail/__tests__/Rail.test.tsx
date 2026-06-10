@@ -24,7 +24,6 @@ describe("Rail", () => {
         items={items}
         panelEyebrow="Notebook"
         panelTitle="Packages"
-        panelSummary="uv · 2 packages"
         panelClassName="w-64"
         dataTestId="example-rail"
         panelSlot="example-rail-panel"
@@ -39,7 +38,7 @@ describe("Rail", () => {
     expect(screen.getByTestId("example-rail")).toHaveAttribute("data-collapsed", "false");
     expect(screen.getByText("Notebook")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
-    expect(screen.getByText("uv · 2 packages")).toHaveClass("w-fit", "max-w-full");
+    expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByTestId("panel-content")).toHaveTextContent("Dependencies");
     expect(container.querySelector('[data-slot="example-rail-panel"]')).toHaveClass(
       "w-64",
@@ -70,6 +69,23 @@ describe("Rail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Outline" }));
     expect(onCollapsedChange).toHaveBeenCalledWith(true);
     expect(onActivePanelChange).not.toHaveBeenCalled();
+  });
+
+  it("does not render a separate collapse control", () => {
+    render(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        panelTitle="Outline"
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        Outline
+      </Rail>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Collapse rail" })).not.toBeInTheDocument();
   });
 
   it("expands and selects a panel while collapsed", () => {

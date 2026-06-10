@@ -59,6 +59,22 @@ describe("projectNotebookOutline", () => {
     ]);
   });
 
+  it("omits source-hidden markdown headings from the outline", () => {
+    const projection = projectNotebookOutline([
+      {
+        ...markdownCell("hidden", "# Hidden setup", [
+          { title: "Hidden setup", level: 1, slug: "hidden-setup" },
+        ]),
+        metadata: { jupyter: { source_hidden: true } },
+      },
+      markdownCell("visible", "# Visible notes", [
+        { title: "Visible notes", level: 1, slug: "visible-notes" },
+      ]),
+    ]);
+
+    expect(projection.items.map((item) => item.id)).toEqual(["visible:heading:0"]);
+  });
+
   it("does not parse markdown source when no projection anchors are available", () => {
     const projection = projectNotebookOutline([
       { id: "a", cell_type: "markdown", source: "# Intro" },
@@ -90,6 +106,7 @@ describe("projectNotebookOutline", () => {
         {
           id: "a:cell",
           cellId: "a",
+          cellType: "markdown",
           title: "Notebook intro",
           level: 1,
           kind: "cell",
@@ -103,6 +120,7 @@ describe("projectNotebookOutline", () => {
         {
           id: "b:cell",
           cellId: "b",
+          cellType: "code",
           title: "df = pandas.read_csv(path)",
           level: 1,
           kind: "cell",
@@ -110,12 +128,12 @@ describe("projectNotebookOutline", () => {
           headingAnchorId: null,
           href: "#notebook-cell-b",
           anchor: null,
-          detail: "Code",
           statusLabel: "Running",
         },
         {
           id: "c:cell",
           cellId: "c",
+          cellType: "raw",
           title: "Raw 3",
           level: 1,
           kind: "cell",
@@ -128,6 +146,60 @@ describe("projectNotebookOutline", () => {
         },
       ],
     });
+  });
+
+  it("omits empty code cells from fallback summaries", () => {
+    const projection = projectNotebookOutline([
+      { id: "empty", cell_type: "code", source: " \n\t" },
+      {
+        id: "hidden-input",
+        cell_type: "code",
+        source: "secret = 1",
+        metadata: { jupyter: { source_hidden: true } },
+      },
+      { id: "titled", cell_type: "code", source: "", metadata: { title: "Manual setup" } },
+      { id: "non-empty", cell_type: "code", source: "print('ok')" },
+      {
+        id: "hidden-output",
+        cell_type: "code",
+        source: "print('visible input')",
+        metadata: { jupyter: { outputs_hidden: true } },
+      },
+    ]);
+
+    expect(projection.source).toBe("cells");
+    expect(projection.items.map((item) => item.id)).toEqual([
+      "titled:cell",
+      "non-empty:cell",
+      "hidden-output:cell",
+    ]);
+    expect(projection.items).toMatchObject([
+      {
+        cellId: "titled",
+        cellType: "code",
+        title: "Manual setup",
+        kind: "cell",
+      },
+      {
+        cellId: "non-empty",
+        cellType: "code",
+        title: "print('ok')",
+        kind: "cell",
+      },
+      {
+        cellId: "hidden-output",
+        cellType: "code",
+        title: "print('visible input')",
+        kind: "cell",
+      },
+    ]);
+    expect(projection.items.map((item) => item.detail)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("treats notebooks with only empty code cells as outline-empty", () => {
+    const projection = projectNotebookOutline([{ id: "empty", cell_type: "code", source: "" }]);
+
+    expect(projection).toEqual({ source: "empty", items: [] });
   });
 
   it("prefers explicit metadata and leading section comments for code fallback titles", () => {

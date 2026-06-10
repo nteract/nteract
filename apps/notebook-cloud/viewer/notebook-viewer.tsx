@@ -15,7 +15,6 @@ import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   NotebookDocumentToolbar,
   navigateNotebookOutlineItem,
-  notebookWorkstationsSummary,
   NotebookDocumentRail,
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
@@ -771,8 +770,6 @@ export function NotebookViewer({
       activePanelId={activeRailPanel}
       collapsed={railCollapsed}
       selectedOutlineItemId={selectedOutlineItemId}
-      packagesSummary={null}
-      workstationsSummary={notebookWorkstationsSummary(shellCapabilities)}
       workstationsPanel={
         <NotebookWorkstationsPanel
           capabilities={shellCapabilities}

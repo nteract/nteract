@@ -168,7 +168,6 @@ export function RailOutlineExample() {
             activeOutlineItemId={activeOutlineItemId}
             selectedOutlineItemId={selectedOutlineItemId}
             selectedOutlineCellId={focusedCellId}
-            packagesSummary={null}
             packagesPanel={
               <NotebookPackageSummaryPanel
                 packages={viewModel.packages}
