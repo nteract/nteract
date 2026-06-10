@@ -45,8 +45,11 @@ use crate::task_supervisor::spawn_best_effort;
 /// filesystem watcher on the detected project file. External edits to
 /// that file will re-enter this routine via the watcher.
 ///
-/// Untitled notebooks (no path) leave the field at `Pending`; a sentinel
-/// write would be misleading because there's nothing to refresh against.
+/// Untitled notebooks with no filesystem anchor leave the field at
+/// `Pending`; a sentinel write would be misleading because there's
+/// nothing to refresh against. Auto-launch may still call this with the
+/// room working directory as an anchor, so project-backed untitled
+/// notebooks can expose parsed package details to clients.
 ///
 /// Re-runnable: the caller may invoke this whenever the room's on-disk
 /// path changes (untitled promotion, save-as rename). The setter clears
@@ -205,8 +208,12 @@ fn spawn_project_file_watcher(
                             // path: the notebook may have been moved such
                             // that a closer project file now wins, or the
                             // detected file may have been deleted.
-                            let notebook_path = room.file_binding.path().await;
-                            refresh_project_context_async(&room, notebook_path.as_deref()).await;
+                            let refresh_anchor = room
+                                .file_binding
+                                .path()
+                                .await
+                                .or_else(|| project_file_path.parent().map(Path::to_path_buf));
+                            refresh_project_context_async(&room, refresh_anchor.as_deref()).await;
                         }
                         Err(e) => {
                             warn!(
@@ -291,7 +298,11 @@ fn translate_kind(kind: &daemon_project_file::ProjectFileKind) -> ProjectFileKin
 /// be cheaply derived. Purely display-oriented; consumers compare by
 /// kind and absolute_path, not by this.
 fn relative_to_notebook(notebook_path: &Path, project_file: &Path) -> String {
-    let notebook_dir = notebook_path.parent().unwrap_or(notebook_path);
+    let notebook_dir = if notebook_path.is_dir() {
+        notebook_path
+    } else {
+        notebook_path.parent().unwrap_or(notebook_path)
+    };
     // For the common case (notebook's directory contains or is the
     // ancestor of the project file), strip_prefix is all we need.
     if let Ok(rel) = project_file.strip_prefix(notebook_dir) {
@@ -705,6 +716,29 @@ mod tests {
     }
 
     #[test]
+    fn build_context_pyproject_from_directory_anchor() {
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n",
+        );
+
+        let (ctx, _) = build_context(temp.path());
+        let ProjectContext::Detected {
+            project_file,
+            parsed,
+            ..
+        } = ctx
+        else {
+            panic!("expected Detected");
+        };
+        assert_eq!(project_file.kind, ProjectFileKind::PyprojectToml);
+        assert_eq!(project_file.relative_to_notebook, "pyproject.toml");
+        assert_eq!(parsed.dependencies, vec!["pandas"]);
+    }
+
+    #[test]
     fn build_context_pyproject_captures_tool_uv_dev_dependencies() {
         let temp = TempDir::new().unwrap();
         write(
@@ -915,6 +949,11 @@ mod tests {
                 Path::new("/foo/pyproject.toml"),
             ),
             "../pyproject.toml"
+        );
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            relative_to_notebook(temp.path(), &temp.path().join("pyproject.toml")),
+            "pyproject.toml"
         );
     }
 

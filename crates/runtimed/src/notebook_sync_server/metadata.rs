@@ -2781,7 +2781,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
 /// Resolves the metadata snapshot from the Automerge doc (if the first client has
 /// already synced) or falls back to reading the .ipynb from disk.
 pub(crate) async fn auto_launch_kernel(
-    room: &NotebookRoom,
+    room: &std::sync::Arc<NotebookRoom>,
     notebook_id: &str,
     default_runtime: crate::runtime::Runtime,
     default_python_env: crate::settings_doc::PythonEnvType,
@@ -2988,6 +2988,13 @@ pub(crate) async fn auto_launch_kernel(
             detected.path,
             detected.to_env_source().as_str()
         );
+    }
+    if bound_path.is_none() && is_untitled_notebook(notebook_id) && detected_project_file.is_some()
+    {
+        if let Some(anchor) = detection_path {
+            super::project_context::refresh_project_context_async(room, Some(anchor.as_path()))
+                .await;
+        }
     }
     let project_source: Option<notebook_protocol::connection::EnvSource> =
         detected_project_file.as_ref().map(|d| d.to_env_source());
