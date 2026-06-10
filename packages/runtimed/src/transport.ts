@@ -3,10 +3,12 @@
  *
  * The transport is the pluggable boundary between the SyncEngine and the
  * underlying connection to the daemon. Implementations:
- *   - TauriTransport (desktop app, lives in apps/notebook)
+ *   - TauriTransport (desktop app, lives in packages/notebook-host)
+ *   - CloudWebSocketTransport (cloud viewer, lives in apps/notebook-cloud)
  *   - DirectTransport (testing, lives in this package)
- *   - WebSocketTransport (future web app)
  */
+
+import type { Observable } from "rxjs";
 
 import type { NotebookResponse } from "./request-types";
 
@@ -38,6 +40,16 @@ export function sendPresenceFrame(
 
 /** Callback for receiving inbound frames from the daemon. */
 export type FrameListener = (payload: number[]) => void;
+
+/**
+ * Connection lifecycle state emitted by `NotebookTransport.connectionStatus$`.
+ *
+ * - `"connecting"` — initial state before the first successful connection.
+ * - `"online"` — transport is connected and operational.
+ * - `"offline"` — transport has lost its connection (non-manual close).
+ * - `"reconnecting"` — reconnect attempt in progress (reserved for transports with retry logic).
+ */
+export type ConnectionStatus = "connecting" | "online" | "offline" | "reconnecting";
 
 export interface NotebookRequestOptions {
   /** Causal precondition: daemon must have these notebook heads before handling. */
@@ -97,6 +109,17 @@ export interface NotebookTransport {
 
   /** Whether the transport is currently connected. */
   readonly connected: boolean;
+
+  /**
+   * Observable that emits the current connection state whenever it changes.
+   *
+   * Reflects the physical transport connection: whether the underlying socket
+   * or IPC channel is open. This is not a sync-readiness signal — consumers
+   * that need to know when the notebook doc is ready to read should use
+   * `SyncEngine.initialSyncComplete$`; those that want to persist on each
+   * change should debounce `SyncEngine.notebookDocChanged$`.
+   */
+  readonly connectionStatus$: Observable<ConnectionStatus>;
 
   /** Tear down the transport (unlisten, close connections). */
   disconnect(): void;

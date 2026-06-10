@@ -135,12 +135,14 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
   }),
 }));
 
+import { EMPTY } from "rxjs";
 import type { NotebookTransport } from "runtimed";
 import { createTauriHost } from "../src/tauri";
 
 /** Minimal NotebookTransport double — just enough to satisfy the type. */
 const stubTransport: NotebookTransport = {
   connected: true,
+  connectionStatus$: EMPTY,
   sendFrame: vi.fn(),
   onFrame: vi.fn(() => () => {}),
   sendRequest: vi.fn(),

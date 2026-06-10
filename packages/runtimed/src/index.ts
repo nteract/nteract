@@ -10,7 +10,12 @@ export { SyncEngine } from "./sync-engine";
 export type { PresenceHeartbeatOptions, SyncEngineOptions, SyncEngineLogger } from "./sync-engine";
 
 // Transport
-export type { FrameListener, NotebookRequestOptions, NotebookTransport } from "./transport";
+export type {
+  ConnectionStatus,
+  FrameListener,
+  NotebookRequestOptions,
+  NotebookTransport,
+} from "./transport";
 export {
   FrameType,
   MAX_CONTROL_FRAME_SIZE,

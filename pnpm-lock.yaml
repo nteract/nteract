@@ -368,6 +368,9 @@ importers:
       runtimed:
         specifier: workspace:*
         version: link:../../packages/runtimed
+      rxjs:
+        specifier: ^7.8.2
+        version: 7.8.2
       tailwindcss:
         specifier: ^4.3.0
         version: 4.3.0

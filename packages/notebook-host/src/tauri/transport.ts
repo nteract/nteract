@@ -14,8 +14,10 @@
  */
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { BehaviorSubject, type Observable } from "rxjs";
 import {
   FrameType,
+  type ConnectionStatus,
   type FrameTypeValue,
   type FrameListener,
   type NotebookRequest,
@@ -64,6 +66,8 @@ export class TauriTransport implements NotebookTransport {
   private frameChannelSubscription: Promise<void> | null = null;
   /** In-flight requests keyed by correlation id. */
   private pending = new Map<string, PendingEntry>();
+  private readonly _status$ = new BehaviorSubject<ConnectionStatus>("online");
+  readonly connectionStatus$: Observable<ConnectionStatus> = this._status$.asObservable();
 
   get connected(): boolean {
     return this._connected;
@@ -145,6 +149,7 @@ export class TauriTransport implements NotebookTransport {
 
   disconnect(): void {
     this._connected = false;
+    this._status$.next("offline");
     this.subscribers.clear();
     // Reject any still-pending requests so callers don't hang.
     for (const [id, entry] of this.pending) {

@@ -393,6 +393,18 @@ export class SyncEngine {
    */
   readonly initialSyncComplete$: Observable<void>;
 
+  /**
+   * Fires whenever the notebook CRDT document changes due to an incoming sync.
+   *
+   * Each emission corresponds to a `sync_applied` event with `changed=true`.
+   * Persistence consumers should debounce this and call `handle.save()` to
+   * snapshot the `NotebookDoc` bytes for local storage.
+   *
+   * Note: only `NotebookDoc` bytes should be persisted — `RuntimeStateDoc` is
+   * daemon-authoritative and must not be stored locally.
+   */
+  readonly notebookDocChanged$: Observable<void>;
+
   // Backing subjects for public observables
   private readonly _cellChanges$ = new Subject<CellChangeset | null>();
   private readonly _broadcasts$ = new Subject<unknown>();
@@ -408,6 +420,7 @@ export class SyncEngine {
     removed_ids: string[];
   }>();
   private readonly _executionViewChanges$ = new Subject<ExecutionViewChangeset>();
+  private readonly _notebookDocChanged$ = new Subject<void>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -429,6 +442,7 @@ export class SyncEngine {
     this.commChanges$ = this._commChanges$.asObservable();
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
     this.executionViewChanges$ = this._executionViewChanges$.asObservable();
+    this.notebookDocChanged$ = this._notebookDocChanged$.asObservable();
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
@@ -576,6 +590,7 @@ export class SyncEngine {
                 );
               }
               materialize$.next(cs ?? null);
+              this._notebookDocChanged$.next();
             }
             this.emitExecutionViewChanges(e.execution_view_changeset);
             return EMPTY;

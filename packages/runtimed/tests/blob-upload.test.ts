@@ -1,3 +1,4 @@
+import { EMPTY } from "rxjs";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -33,6 +34,7 @@ function createTransport(
     sendRequest: vi.fn(),
     sendTypedRequest: vi.fn(handler),
     connected: true,
+    connectionStatus$: EMPTY,
     disconnect: vi.fn(),
   };
 }
