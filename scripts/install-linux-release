@@ -16,6 +16,7 @@ Usage:
   scripts/install-linux-release [--tag v2.4.1-stable.YYYYMMDDHHMM]
   scripts/install-linux-release --channel nightly --tag v2.4.1-nightly.YYYYMMDDHHMM
   scripts/install-linux-release --from-dir /path/to/release-assets
+  scripts/install-linux-release --headless   # remote workstations, JupyterHub
 
 Options:
   --tag <tag>          Download artifacts from a GitHub release tag.
@@ -26,17 +27,21 @@ Options:
   --prefix <dir>       Install root (default: $XDG_DATA_HOME/nteract/<channel>,
                        or ~/.local/share/nteract/<channel>).
   --bin-dir <dir>      Symlink directory (default: ~/.local/bin).
+  --headless           Skip the desktop AppImage: install only runt, runtimed,
+                       and nteract-mcp. For remote workstations (Outerbounds,
+                       JupyterHub) that offer compute to hosted notebooks.
+                       See docs/remote-workstation.md.
   --no-start           Install/repair the daemon service but do not start it.
   -h, --help           Show this help.
 
 Installs, for stable:
-  nteract-stable-linux-x64.AppImage -> <prefix>/nteract.AppImage
+  nteract-stable-linux-x64.AppImage -> <prefix>/nteract.AppImage   (unless --headless)
   runt-linux-x64                    -> <prefix>/bin/runt
   runtimed-linux-x64                -> <prefix>/bin/runtimed
   nteract-mcp-linux-x64             -> <prefix>/bin/nteract-mcp
 
 Then links:
-  ~/.local/bin/nteract
+  ~/.local/bin/nteract   (unless --headless)
   ~/.local/bin/runt
   ~/.local/bin/runtimed
   ~/.local/bin/nteract-mcp
@@ -79,6 +84,7 @@ CHANNEL="$DEFAULT_CHANNEL"
 TAG=""
 FROM_DIR=""
 NO_START=0
+HEADLESS=0
 XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX=""
 BIN_DIR="$HOME/.local/bin"
@@ -114,6 +120,10 @@ while [[ $# -gt 0 ]]; do
       require_option_value "$1" "${2:-}"
       BIN_DIR="${2:-}"
       shift 2
+      ;;
+    --headless)
+      HEADLESS=1
+      shift
       ;;
     --no-start)
       NO_START=1
@@ -219,24 +229,30 @@ atomic_install() {
 
 mkdir -p "$PREFIX" "$SIDE_BIN_DIR" "$BIN_DIR"
 
-fetch_asset "$APPIMAGE_ASSET" "$TMP_DIR/$APPIMAGE_ASSET"
+if [[ "$HEADLESS" == "0" ]]; then
+  fetch_asset "$APPIMAGE_ASSET" "$TMP_DIR/$APPIMAGE_ASSET"
+fi
 fetch_asset "$CLI_ASSET" "$TMP_DIR/$CLI_NAME"
 fetch_asset "$DAEMON_ASSET" "$TMP_DIR/$DAEMON_NAME"
 fetch_asset "$MCP_ASSET" "$TMP_DIR/$MCP_NAME"
 
-atomic_install "$TMP_DIR/$APPIMAGE_ASSET" "$APPIMAGE_DEST"
+if [[ "$HEADLESS" == "0" ]]; then
+  atomic_install "$TMP_DIR/$APPIMAGE_ASSET" "$APPIMAGE_DEST"
+fi
 atomic_install "$TMP_DIR/$CLI_NAME" "$SIDE_BIN_DIR/$CLI_NAME"
 atomic_install "$TMP_DIR/$DAEMON_NAME" "$SIDE_BIN_DIR/$DAEMON_NAME"
 atomic_install "$TMP_DIR/$MCP_NAME" "$SIDE_BIN_DIR/$MCP_NAME"
 
 # Public command links. Stable owns `nteract`; nightly owns `nteract-nightly`
 # so the two channels can be installed side-by-side without clobbering launchers.
-ln -sfn "$APPIMAGE_DEST" "$BIN_DIR/$APPIMAGE_NAME"
+if [[ "$HEADLESS" == "0" ]]; then
+  ln -sfn "$APPIMAGE_DEST" "$BIN_DIR/$APPIMAGE_NAME"
+  echo "Linked $BIN_DIR/$APPIMAGE_NAME -> $APPIMAGE_DEST"
+fi
 ln -sfn "$SIDE_BIN_DIR/$CLI_NAME" "$BIN_DIR/$CLI_NAME"
 ln -sfn "$SIDE_BIN_DIR/$DAEMON_NAME" "$BIN_DIR/$DAEMON_NAME"
 ln -sfn "$SIDE_BIN_DIR/$MCP_NAME" "$BIN_DIR/$MCP_NAME"
 
-echo "Linked $BIN_DIR/$APPIMAGE_NAME -> $APPIMAGE_DEST"
 echo "Linked $BIN_DIR/$CLI_NAME -> $SIDE_BIN_DIR/$CLI_NAME"
 echo "Linked $BIN_DIR/$DAEMON_NAME -> $SIDE_BIN_DIR/$DAEMON_NAME"
 echo "Linked $BIN_DIR/$MCP_NAME -> $SIDE_BIN_DIR/$MCP_NAME"
@@ -258,8 +274,10 @@ env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$SIDE_BIN_DIR:$BIN_DIR:$PAT
 
 echo
 echo "nteract $CHANNEL install complete."
-echo "AppImage: $APPIMAGE_DEST"
-echo "Launcher: $BIN_DIR/$APPIMAGE_NAME"
+if [[ "$HEADLESS" == "0" ]]; then
+  echo "AppImage: $APPIMAGE_DEST"
+  echo "Launcher: $BIN_DIR/$APPIMAGE_NAME"
+fi
 echo "CLI:      $BIN_DIR/$CLI_NAME"
 echo "Daemon:   $BIN_DIR/$DAEMON_NAME"
 echo "MCP:      $BIN_DIR/$MCP_NAME"
@@ -268,4 +286,11 @@ if [[ "$NO_START" == "1" ]]; then
 else
   env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$SIDE_BIN_DIR:$BIN_DIR:$PATH" \
     "$SIDE_BIN_DIR/$CLI_NAME" daemon status || true
+fi
+if [[ "$HEADLESS" == "1" ]]; then
+  echo
+  echo "Headless workstation install. To offer this machine's compute to a hosted"
+  echo "notebook, see docs/remote-workstation.md, or run:"
+  echo "  RUNT_CLOUD_TOKEN=... $DAEMON_NAME cloud-runtime-agent \\"
+  echo "    --cloud-url https://app.runt.run --notebook-id <id> --python-path \$(command -v python3)"
 fi

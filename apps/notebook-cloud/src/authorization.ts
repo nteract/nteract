@@ -141,7 +141,11 @@ export function capabilityMask(scope: ConnectionScope): number {
     case "viewer":
       return CAP_READ;
     case "editor":
-      return CAP_READ | CAP_NOTEBOOK_WRITE | CAP_RUNTIME_WRITE;
+      // No CAP_RUNTIME_WRITE: "can edit notebook" must never read as "can
+      // author runtime state". Runtime-doc policy rejects editor
+      // RuntimeStateDoc writes; the lattice now says the same (HCA-2). An
+      // editor row covers exactly {viewer, editor}.
+      return CAP_READ | CAP_NOTEBOOK_WRITE;
     case "runtime_peer":
       return CAP_READ | CAP_RUNTIME_WRITE;
     case "owner":

@@ -1,5 +1,6 @@
 import type { SyncEngine } from "runtimed";
 import { logger } from "./logger";
+import { createNotebookCellId } from "./notebook-cell-id";
 import { getNotebookCellsSnapshot, updateCellSourceById } from "./notebook-cells";
 import type { NotebookCell } from "../types";
 
@@ -64,7 +65,7 @@ export function createNotebookController<THandle extends NotebookControllerHandl
   canEditOutputs = canEditStructure,
   canEditVisibility = canEditStructure,
   canAcceptStructure = (handle) => handle.has_cells_map?.() ?? true,
-  createCellId = () => crypto.randomUUID(),
+  createCellId = createNotebookCellId,
   syncMode = {},
   afterMutation,
   refreshCanAcceptCellMutations,

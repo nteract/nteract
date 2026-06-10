@@ -672,6 +672,15 @@ pluggable):**
   It becomes the cloud `FrameTransport` impl the daemon's `runtime_agent` writes
   to. `kernel_host.rs` retires.
 
+**Status (2026-06-10):** done. The WS transport lives in
+`crates/notebook-cloud-transport` (`CloudWsFrameTransport`), the daemon's
+`cloud-runtime-agent` subcommand drives the real `runtime_agent` over it, and
+the standalone `crates/runt-cloud-peer` binary is retired. Its remaining
+diagnostic role (attach as owner, add a cell, request execution, observe
+RuntimeStateDoc) moved onto the same transport as the hidden
+`runtimed cloud-peer` subcommand (`crates/runtimed/src/cloud_peer.rs`), which
+the hosted runtime-peer smoke uses.
+
 This refactor touches the daemon (and therefore desktop), so it is a deliberate
 change, not a drop-in. The runtime_peer ACL requirement holds either way: an
 explicit `runtime_peer` ACL row via `POST /api/n/:id/acl` (owner alone is 403;

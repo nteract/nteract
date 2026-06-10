@@ -20,7 +20,6 @@ members = [
     "crates/xtask",
     "crates/runtimed",
     "crates/runt-publish",
-    "crates/runt-cloud-peer",
     "crates/runtimed-client",
     "crates/runtimed-outputs",
     "crates/runtimed-service",

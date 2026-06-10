@@ -4861,6 +4861,7 @@ dependencies = [
  "anyhow",
  "log",
  "notebook-wire",
+ "nteract-identity",
  "serde",
  "serde_json",
  "tokio",
@@ -7441,25 +7442,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
-]
-
-[[package]]
-name = "runt-cloud-peer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "automerge",
- "clap",
- "futures-util",
- "notebook-doc",
- "notebook-wire",
- "runtime-doc",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

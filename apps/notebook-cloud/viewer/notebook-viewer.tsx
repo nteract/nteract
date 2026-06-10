@@ -46,10 +46,11 @@ import {
   storeCloudRequestedScope,
   shouldShowCloudHeaderSignIn,
 } from "./collaborator-auth";
-import { createCloudNotebookCellId } from "./cloud-cell-id";
+
 import { useCloudViewerSession } from "./cloud-viewer-session";
 import {
   CrdtBridgeProvider,
+  createNotebookCellId,
   createNotebookController,
   NotebookView,
   PresenceValueProvider,
@@ -384,7 +385,7 @@ export function NotebookViewer({
         canWriteCellSource,
         canEditStructure: () => shellCapabilities.canEditStructure,
         canAcceptStructure: (handle) => handle.cell_count() > 0,
-        createCellId: createCloudNotebookCellId,
+        createCellId: createNotebookCellId,
         syncMode: {
           structure: "scheduleFlush",
           outputs: "scheduleFlush",

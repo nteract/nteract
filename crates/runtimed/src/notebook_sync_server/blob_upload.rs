@@ -177,7 +177,25 @@ pub(super) fn enqueue_put_blob(
     payload: Vec<u8>,
     notebook_id: &str,
     peer_id: &str,
+    connection_scope: nteract_identity::ConnectionScope,
 ) -> anyhow::Result<()> {
+    // Local counterpart of the hosted room's PUT_BLOB prefilter
+    // (`identity.ts::allowsBlobUpload`): viewers are denied on both
+    // topologies; editors keep local document-scoped uploads (BS-12, HCA-3).
+    if !connection_scope.allows_local_blob_upload() {
+        warn!(
+            "[notebook-sync] Rejecting PutBlob from peer {} with scope {} for {}",
+            peer_id,
+            connection_scope.as_str(),
+            notebook_id
+        );
+        return send_blob_upload_error(
+            peer_writer,
+            put_blob_request_id(&payload),
+            BlobUploadErrorKind::Forbidden,
+        );
+    }
+
     if worker.in_flight.swap(true, Ordering::AcqRel) {
         send_blob_upload_error(
             peer_writer,
@@ -1280,8 +1298,15 @@ mod tests {
         let request_payload = payload("blob-busy", "text/plain", body.len() as u64, &sha256, body);
 
         let start = std::time::Instant::now();
-        enqueue_put_blob(&worker, &peer_writer, request_payload, "notebook", "peer")
-            .expect("busy worker should report a structured response");
+        enqueue_put_blob(
+            &worker,
+            &peer_writer,
+            request_payload,
+            "notebook",
+            "peer",
+            nteract_identity::ConnectionScope::Owner,
+        )
+        .expect("busy worker should report a structured response");
         assert!(
             start.elapsed() < std::time::Duration::from_millis(50),
             "busy worker should not block the peer loop"
@@ -1302,6 +1327,95 @@ mod tests {
         ));
     }
 
+    /// The daemon's PUT_BLOB ingress applies the local counterpart of the
+    /// hosted room's scope prefilter
+    /// (`ConnectionScope::allows_local_blob_upload`): viewer uploads are
+    /// rejected before reaching the worker (BS-12).
+    #[tokio::test]
+    async fn put_blob_rejected_for_viewer_scope() {
+        let (worker_tx, mut worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
+        let worker = PutBlobWorker {
+            tx: worker_tx,
+            in_flight: Arc::new(AtomicBool::new(false)),
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (mut reader, writer) = tokio::io::duplex(1024 * 1024);
+        let (peer_writer, _writer_task) =
+            super::super::peer_writer::spawn_peer_writer(writer, "notebook".into(), "peer".into());
+        let body = b"abc";
+        let sha256 = hex::encode(Sha256::digest(body));
+        let request_payload = payload("blob-scope", "text/plain", body.len() as u64, &sha256, body);
+
+        enqueue_put_blob(
+            &worker,
+            &peer_writer,
+            request_payload,
+            "notebook",
+            "peer",
+            nteract_identity::ConnectionScope::Viewer,
+        )
+        .expect("scope rejection should report a structured response");
+
+        let frame = connection::recv_typed_frame(&mut reader)
+            .await
+            .unwrap()
+            .unwrap();
+        let envelope: NotebookResponseEnvelope = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(envelope.id.as_deref(), Some("blob-scope"));
+        assert!(matches!(
+            envelope.response,
+            NotebookResponse::BlobUploadError {
+                reason: BlobUploadErrorKind::Forbidden
+            }
+        ));
+        assert!(
+            worker_rx.try_recv().is_err(),
+            "rejected upload must not reach the worker"
+        );
+    }
+
+    /// Runtime peers upload output blobs without notebook write scope, and
+    /// local editors keep document-scoped uploads; the gate must let both
+    /// through to the worker.
+    #[tokio::test]
+    async fn put_blob_allowed_for_runtime_peer_and_editor_scopes() {
+        for scope in [
+            nteract_identity::ConnectionScope::RuntimePeer,
+            nteract_identity::ConnectionScope::Editor,
+        ] {
+            let (worker_tx, mut worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
+            let worker = PutBlobWorker {
+                tx: worker_tx,
+                in_flight: Arc::new(AtomicBool::new(false)),
+                handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+            };
+            let (_reader, writer) = tokio::io::duplex(1024 * 1024);
+            let (peer_writer, _writer_task) = super::super::peer_writer::spawn_peer_writer(
+                writer,
+                "notebook".into(),
+                "peer".into(),
+            );
+            let body = b"abc";
+            let sha256 = hex::encode(Sha256::digest(body));
+            let request_payload =
+                payload("blob-ok", "text/plain", body.len() as u64, &sha256, body);
+
+            enqueue_put_blob(
+                &worker,
+                &peer_writer,
+                request_payload,
+                "notebook",
+                "peer",
+                scope,
+            )
+            .expect("allowed upload should enqueue");
+            assert!(
+                worker_rx.try_recv().is_ok(),
+                "{scope} upload should reach the worker"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn put_blob_busy_worker_replies_to_multipart_part_without_blocking_peer_loop() {
         let (worker_tx, _worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
@@ -1313,8 +1427,15 @@ mod tests {
         let request_payload = part_payload("part-busy", "upload-busy", 1, &sha256, b"abc");
 
         let start = std::time::Instant::now();
-        enqueue_put_blob(&worker, &peer_writer, request_payload, "notebook", "peer")
-            .expect("busy worker should report a structured response");
+        enqueue_put_blob(
+            &worker,
+            &peer_writer,
+            request_payload,
+            "notebook",
+            "peer",
+            nteract_identity::ConnectionScope::Owner,
+        )
+        .expect("busy worker should report a structured response");
         assert!(
             start.elapsed() < std::time::Duration::from_millis(50),
             "busy multipart worker should not block the peer loop"

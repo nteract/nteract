@@ -40,6 +40,20 @@ export {
   type SessionControlMessage,
 } from "./protocol-contract";
 
+// Scope capabilities (generated from nteract_identity::ConnectionScope)
+export {
+  CONNECTION_SCOPES,
+  allowsAclMutation,
+  allowsBlobUpload,
+  allowsExecutionRequestSubmit,
+  allowsNotebookWrite,
+  allowsPublish,
+  allowsRuntimeStateWrite,
+  isConnectionScope,
+  parseConnectionScope,
+  type ConnectionScope,
+} from "./scope-capabilities";
+
 // Handle
 export type {
   ExecutionQueueProjection,

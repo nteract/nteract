@@ -178,11 +178,6 @@ struct Publisher {
     blob_store_path: Option<PathBuf>,
 }
 
-pub async fn run_from_env_args() -> Result<()> {
-    let raw_args = std::env::args_os().collect::<Vec<_>>();
-    run_from_args(raw_args).await
-}
-
 pub async fn run_from_args(raw_args: Vec<OsString>) -> Result<()> {
     if !is_clap_short_circuit(&raw_args) {
         load_publish_env_files(&raw_args)?;
