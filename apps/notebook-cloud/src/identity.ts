@@ -598,21 +598,16 @@ export function parseScope(value: string): ConnectionScope {
   throw new Error(`unknown connection scope: ${value}`);
 }
 
-export function allowsNotebookWrite(scope: ConnectionScope): boolean {
-  return scope === "editor" || scope === "owner";
-}
-
-export function allowsExecutionRequestSubmit(scope: ConnectionScope): boolean {
-  return scope === "owner";
-}
-
-export function allowsBlobUpload(scope: ConnectionScope): boolean {
-  return scope === "runtime_peer" || scope === "owner";
-}
-
-export function allowsPublish(scope: ConnectionScope): boolean {
-  return scope === "owner";
-}
+// Capability predicates re-exported from the generated lattice
+// (`packages/runtimed/src/scope-capabilities.ts`); the daemon enforces the
+// same predicates from `nteract_identity::ConnectionScope`, so the hosted
+// room and the daemon cannot drift (punchlist HCA-2 / BS-12).
+export {
+  allowsBlobUpload,
+  allowsExecutionRequestSubmit,
+  allowsNotebookWrite,
+  allowsPublish,
+} from "runtimed";
 
 export function parseActorLabel(value: string): ActorLabel {
   const delimiter = value.indexOf("/");

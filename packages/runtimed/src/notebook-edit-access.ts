@@ -1,4 +1,5 @@
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
+import { isConnectionScope, type ConnectionScope } from "./scope-capabilities";
 
 export type NotebookEditMode = "view" | "edit";
 export type NotebookEditState = "viewing" | "requested" | "editing";
@@ -30,7 +31,7 @@ export interface ProjectNotebookEditAccessOptions {
 }
 
 export type NotebookRoomAccessLevel = "none" | "viewer" | "editor" | "owner";
-export type NotebookRoomConnectionScope = "viewer" | "editor" | "runtime_peer" | "owner";
+export type NotebookRoomConnectionScope = ConnectionScope;
 export type NotebookRoomRequestedScope = NotebookRoomConnectionScope | "none";
 
 export interface NotebookRoomEditAccessProjection extends NotebookEditAccessProjection {
@@ -187,7 +188,7 @@ export function isNotebookRoomAccessLevel(
 export function isNotebookRoomConnectionScope(
   value: string | null | undefined,
 ): value is NotebookRoomConnectionScope {
-  return value === "viewer" || value === "editor" || value === "runtime_peer" || value === "owner";
+  return isConnectionScope(value);
 }
 
 export function notebookRoomAccessLevelFromConnectionScope(

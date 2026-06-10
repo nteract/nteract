@@ -4861,6 +4861,7 @@ dependencies = [
  "anyhow",
  "log",
  "notebook-wire",
+ "nteract-identity",
  "serde",
  "serde_json",
  "tokio",

@@ -376,6 +376,7 @@ where
                                     frame.payload,
                                     &notebook_id,
                                     peer_id,
+                                    connection_identity.scope(),
                                 )?;
                             }
                         }

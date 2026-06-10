@@ -222,6 +222,7 @@ export type BlobUploadErrorKind =
   | { kind: "final_hash_mismatch" }
   | { kind: "over_peer_budget" }
   | { kind: "session_expired" }
+  | { kind: "forbidden" }
   | { kind: "io"; message: string };
 
 export type BlobDurability = "durable" | "ephemeral";

@@ -449,12 +449,18 @@ fn request_allowed_for_scope(
         notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
     ) || match request_required_scope(request) {
         RequestRequiredScope::NotebookWrite => connection_scope.allows_notebook_write(),
+        RequestRequiredScope::BlobUpload => connection_scope.allows_blob_upload(),
         RequestRequiredScope::Owner => matches!(connection_scope, ConnectionScope::Owner),
     }
 }
 
 enum RequestRequiredScope {
     NotebookWrite,
+    /// Multipart blob upload requests share the `PUT_BLOB` frame's gate
+    /// (`ConnectionScope::allows_blob_upload`): runtime peers upload outputs
+    /// without notebook write access, and editors stay excluded until
+    /// reference-path validation lands (HCA-3 / BS-12).
+    BlobUpload,
     Owner,
 }
 
@@ -479,10 +485,10 @@ fn request_required_scope(
         | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
         NotebookRequest::SendComm { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
-        | NotebookRequest::GetDocBytes {}
-        | NotebookRequest::CreateBlobUpload { .. }
+        | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,
+        NotebookRequest::CreateBlobUpload { .. }
         | NotebookRequest::CompleteBlobUpload { .. }
-        | NotebookRequest::AbortBlobUpload { .. } => RequestRequiredScope::NotebookWrite,
+        | NotebookRequest::AbortBlobUpload { .. } => RequestRequiredScope::BlobUpload,
     }
 }
 

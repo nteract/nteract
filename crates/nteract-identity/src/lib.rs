@@ -364,6 +364,12 @@ pub enum ConnectionScope {
 }
 
 impl ConnectionScope {
+    /// Every scope, in privilege order. The TypeScript mirror in
+    /// `packages/runtimed/src/scope-capabilities.ts` is generated from this
+    /// list (see `notebook-protocol/src/typescript.rs`); both hosts must see
+    /// the same lattice.
+    pub const ALL: [Self; 4] = [Self::Viewer, Self::Editor, Self::RuntimePeer, Self::Owner];
+
     /// Stable lowercase scope name.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -382,6 +388,26 @@ impl ConnectionScope {
     /// Whether this scope can send RuntimeStateDoc frames.
     pub const fn allows_runtime_state_write(self) -> bool {
         matches!(self, Self::Editor | Self::RuntimePeer | Self::Owner)
+    }
+
+    /// Whether this scope can upload blobs (`PUT_BLOB` frames and the
+    /// multipart Create/Complete/Abort requests).
+    ///
+    /// Editors stay excluded until server-side reference-path validation
+    /// lands; the two ship together (`hosted-room-authorization.md`
+    /// Decision 3, punchlist HCA-3). Both the hosted room prefilter and the
+    /// daemon peer ingress must use this predicate so the two topologies
+    /// cannot drift (punchlist BS-12).
+    pub const fn allows_blob_upload(self) -> bool {
+        matches!(self, Self::RuntimePeer | Self::Owner)
+    }
+
+    /// Whether this scope can submit execution requests (ExecuteCell,
+    /// RunAllCells, kernel lifecycle). Owner-only until an explicit execute
+    /// capability exists (`hosted-room-authorization.md` Decision 3 /
+    /// punchlist HCA-7): editing a notebook must not imply spending compute.
+    pub const fn allows_execution_request(self) -> bool {
+        matches!(self, Self::Owner)
     }
 
     /// Whether this scope can publish revisions.
