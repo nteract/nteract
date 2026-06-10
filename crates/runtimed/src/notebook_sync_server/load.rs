@@ -673,6 +673,10 @@ where
         // disk-source baseline before exposing batches so an unchanged initial
         // watch event cannot roll back immediate live edits.
         *room.persistence.last_save_sources.write().await = loaded_sources;
+        // Also seed the disk-hash staleness baseline: these bytes are what this
+        // daemon read; autosave refuses to overwrite anything else until the
+        // watcher reconciles it.
+        room.persistence.note_disk_content(&bytes);
     }
     let notebook_path = room
         .file_binding
