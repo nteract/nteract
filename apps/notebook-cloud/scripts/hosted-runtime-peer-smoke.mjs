@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  runtimeAgentBinaryFromEnv,
+  runtimeAgentBinaryLabel,
+} from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -39,15 +43,18 @@ const smokeRoot = path.resolve(
 const blobRoot = path.join(smokeRoot, "blobs");
 const computeLogPath = path.join(smokeRoot, "runtime-peer.log");
 const ownerLogPath = path.join(smokeRoot, "owner-peer.log");
-const runtimedBin = path.resolve(
+const runtimeAgentBin = runtimeAgentBinaryFromEnv(process.env, workspaceRoot);
+// The diagnostic cloud peer is a hidden subcommand on the same runtime-agent
+// binary family (the standalone runt-cloud-peer binary was absorbed).
+const cloudPeerBin = runtimeAgentBinaryFromEnv(
+  {
+    ...process.env,
+    NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN:
+      process.env.NOTEBOOK_CLOUD_CLOUD_PEER_BIN ??
+      process.env.NOTEBOOK_CLOUD_RUNT_CLOUD_PEER_BIN ??
+      process.env.NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN,
+  },
   workspaceRoot,
-  process.env.NOTEBOOK_CLOUD_RUNTIMED_BIN ?? "target/release/runtimed",
-);
-// The diagnostic cloud peer is the hidden `runtimed cloud-peer` subcommand
-// (the standalone runt-cloud-peer binary was absorbed into runtimed).
-const cloudPeerBin = path.resolve(
-  workspaceRoot,
-  process.env.NOTEBOOK_CLOUD_RUNT_CLOUD_PEER_BIN ?? "target/release/runtimed",
 );
 
 const timingsMs = {};
@@ -64,8 +71,11 @@ main().catch((error) => {
 async function main() {
   try {
     requireApiKey();
-    await assertBinaryExists(runtimedBin, "runtimed");
-    await assertBinaryExists(cloudPeerBin, "runtimed cloud-peer");
+    await assertBinaryExists(
+      runtimeAgentBin,
+      `${runtimeAgentBinaryLabel(runtimeAgentBin)} cloud-runtime-agent`,
+    );
+    await assertBinaryExists(cloudPeerBin, `${runtimeAgentBinaryLabel(cloudPeerBin)} cloud-peer`);
     const pythonPath = await resolvePythonPath();
     await mkdir(blobRoot, { recursive: true });
     tempDir = await mkdtemp(path.join(os.tmpdir(), "nteract-runtime-peer-smoke-"));
@@ -179,13 +189,21 @@ function requireApiKey() {
 }
 
 async function assertBinaryExists(binaryPath, name) {
+  if (!isPathLike(binaryPath)) {
+    if (await which(binaryPath)) return;
+    throw new Error(`Missing ${name} command ${binaryPath} on PATH.`);
+  }
   try {
     await access(binaryPath);
   } catch {
     throw new Error(
-      `Missing ${name} binary at ${binaryPath}. Run \`cargo xtask artifacts ensure sift,renderer && cargo build --release -p runtimed\` first, or set NOTEBOOK_CLOUD_${name.toUpperCase().replaceAll("-", "_")}_BIN.`,
+      `Missing ${name} at ${binaryPath}. Run \`cargo xtask artifacts ensure sift,renderer && cargo build --release -p runtimed\` first, or set NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN.`,
     );
   }
+}
+
+function isPathLike(value) {
+  return path.isAbsolute(value) || value.includes("/") || value.includes("\\");
 }
 
 async function resolvePythonPath() {
@@ -341,7 +359,7 @@ function startRuntimePeer({ notebookId, pythonPath }) {
     let child;
     try {
       child = spawn(
-        runtimedBin,
+        runtimeAgentBin,
         [
           "cloud-runtime-agent",
           "--auth-kind",
@@ -484,8 +502,8 @@ async function runOwnerPeer({ notebookId }) {
       timeoutMs: seconds * 1000 + 20_000,
       env: {
         ...process.env,
-        // `runtimed cloud-peer` reads the credential from the environment,
-        // never argv, so it cannot leak into the process command line.
+        // `cloud-peer` reads the credential from the environment, never argv,
+        // so it cannot leak into the process command line.
         RUNT_CLOUD_TOKEN: apiKey,
         RUST_LOG: process.env.RUST_LOG ?? "info",
       },

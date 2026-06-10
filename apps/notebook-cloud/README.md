@@ -681,13 +681,16 @@ pnpm --dir apps/notebook-cloud smoke:hosted:runtime-peer
 The smoke script reads `NTERACT_API_KEY` from the environment. On lab2 it also
 loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
 creates a private room, grants `runtime_peer` to the owner principal, starts the
-real `runtimed cloud-runtime-agent`, then runs `runtimed cloud-peer` as an owner
-that adds a cell and sends hosted `execute_cell`. The JSON result includes the
+real runtime-agent binary with `cloud-runtime-agent`, then runs the same binary
+family's `cloud-peer` diagnostic command as an owner that adds a cell and sends
+hosted `execute_cell`. Use `NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN` when the installed
+command is `runt`; the older `NOTEBOOK_CLOUD_RUNTIMED_BIN` override still works
+for channels where the command is `runtimed`. The JSON result includes the
 viewer URL, timings, and log paths under `.context/smokes/`. A healthy run
 observes `queued` and `done`, and the runtime log shows a kernel launch plus an
 `execute_request`. The artifact ensure step rebuilds the gitignored sift
-WASM/renderer outputs that `runtimed` embeds and catches unhydrated stable
-renderer LFS bundles before `cargo build` fails. Set
+WASM/renderer outputs that the runtime binary embeds and catches unhydrated
+stable renderer LFS bundles before `cargo build` fails. Set
 `NOTEBOOK_CLOUD_RUNTIME_PEER_PYTHON` when you need a specific interpreter;
 otherwise the script prefers lab2's `~/k/bin/python` before falling back to a
 system Python that can import `ipykernel`.
@@ -696,11 +699,11 @@ Set `NOTEBOOK_CLOUD_KEEP_RUNTIME_PEER=1` to leave the runtime peer alive after
 the smoke for manual browser/OIDC inspection. For truly long-lived manual peers,
 run the command inside tmux; short-lived shells or agent command runners may
 clean up background children after the command exits, which makes later
-execution requests look like room/runtime failures. `runtimed cloud-peer` uses
-`--seconds` to control how long the owner peer remains attached. Do not use the
-old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
-private; anonymous hosted render smokes may return a catalog 404 unless the
-browser context has a credential for the owning principal.
+execution requests look like room/runtime failures. The `cloud-peer` diagnostic
+command uses `--seconds` to control how long the owner peer remains attached. Do
+not use the old `--timeout` flag in smoke scripts. Rooms created with the API-key
+path are private; anonymous hosted render smokes may return a catalog 404 unless
+the browser context has a credential for the owning principal.
 
 Hosted workstation agent smoke:
 
@@ -717,14 +720,17 @@ The workstation agent reads `NTERACT_API_KEY` from the environment and also
 loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
 registers and heartbeats the current machine through `POST /api/workstations`,
 polls `GET /api/workstations/:workstationId/attach-jobs`, and spawns
-`runtimed cloud-runtime-agent` for pending attach jobs. API-key auth is the
-default (`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`); set
+the configured runtime-agent binary for pending attach jobs. Set
+`NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN=/path/to/runt` for installs where `runt` is the
+deployed command surface; use `NOTEBOOK_CLOUD_RUNTIMED_BIN` only for legacy
+scripts that still point directly at `runtimed`. API-key auth is the default
+(`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`); set
 `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc` when `NTERACT_API_KEY` carries a
 short-lived OIDC bearer token. The credential is passed to the runtime peer
-through `RUNT_CLOUD_TOKEN`, not through argv; `runtimed` removes cloud
+through `RUNT_CLOUD_TOKEN`, not through argv; the runtime agent removes cloud
 environment variables again before launching the Python kernel. Run this helper
-inside tmux for preview/manual testing so the polling agent stays alive while
-the browser attaches workstations. The first registered workstation becomes the
+inside tmux for preview/manual testing so the polling agent stays alive while the
+browser attaches workstations. The first registered workstation becomes the
 account default automatically; use the Workstations rail or
 `PATCH /api/workstations/default` only when switching to another machine. In a
 private owner room, the toolbar can then request attachment directly.

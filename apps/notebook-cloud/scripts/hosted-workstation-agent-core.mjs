@@ -3,6 +3,7 @@ import path from "node:path";
 
 export const DEFAULT_WORKSTATION_AUTH_KIND = "anaconda-key";
 export const DEFAULT_WORKSTATION_RETRY_AFTER_MS = 60_000;
+export const DEFAULT_RUNTIME_AGENT_BINARY = "target/release/runtimed";
 export const WORKSTATION_AUTH_KINDS = new Set([DEFAULT_WORKSTATION_AUTH_KIND, "oidc"]);
 
 export function buildWorkstationRegistrationPayload({
@@ -10,6 +11,7 @@ export function buildWorkstationRegistrationPayload({
   displayName,
   workingDirectory,
   pythonPath,
+  runtimeBinary = "runtimed",
   cpuCount = os.cpus().length,
   memoryBytes = os.totalmem(),
 }) {
@@ -26,7 +28,7 @@ export function buildWorkstationRegistrationPayload({
       launch_current_python: true,
     },
     runtime: {
-      binary: "runtimed",
+      binary: runtimeBinary,
       python_path: pythonPath,
     },
   };
@@ -40,6 +42,7 @@ export function buildAttachJobSpawnPlan({
   workingDirectory,
   workstationId,
   displayName,
+  runtimeAgentBin = "runtimed",
   authKind = DEFAULT_WORKSTATION_AUTH_KIND,
 }) {
   assert(typeof job.job_id === "string" && job.job_id.length > 0, "attach job missing id");
@@ -83,6 +86,7 @@ export function buildAttachJobSpawnPlan({
     args,
     blobRoot,
     cwd: launchDirectory,
+    executable: runtimeAgentBin,
     logPath,
     runRoot,
   };
@@ -139,6 +143,22 @@ export function compactEnv(entries) {
   return Object.fromEntries(
     Object.entries(entries).filter(([, value]) => typeof value === "string" && value.length > 0),
   );
+}
+
+export function runtimeAgentBinaryFromEnv(env, workspaceRoot) {
+  const configured =
+    env.NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN ??
+    env.NOTEBOOK_CLOUD_RUNT_BIN ??
+    env.NOTEBOOK_CLOUD_RUNTIMED_BIN;
+  const value = configured?.trim() || DEFAULT_RUNTIME_AGENT_BINARY;
+  if (path.isAbsolute(value) || value.includes("/") || value.includes("\\")) {
+    return path.resolve(workspaceRoot, value);
+  }
+  return value;
+}
+
+export function runtimeAgentBinaryLabel(binaryPath) {
+  return path.basename(binaryPath) || binaryPath;
 }
 
 export function stableWorkstationId(hostname) {

@@ -10,6 +10,8 @@ import {
   parseHttpResponseBody,
   parsePositiveInteger,
   retryAfterMs,
+  runtimeAgentBinaryFromEnv,
+  runtimeAgentBinaryLabel,
   stableWorkstationId,
 } from "../scripts/hosted-workstation-agent-core.mjs";
 
@@ -29,6 +31,7 @@ describe("hosted workstation agent launch contract", () => {
     });
 
     assert.equal(plan.cwd, "/home/ubuntu/project");
+    assert.equal(plan.executable, "runtimed");
     assert.equal(plan.blobRoot, "/tmp/agent/job-123/blobs");
     assert.equal(plan.logPath, "/tmp/agent/job-123/runtime-peer.log");
     assert.deepEqual(plan.args, [
@@ -66,9 +69,11 @@ describe("hosted workstation agent launch contract", () => {
       workingDirectory: "/home/ubuntu/project",
       workstationId: "ws-lab2",
       displayName: "lab2 workstation",
+      runtimeAgentBin: "/home/ubuntu/.local/bin/runt",
       authKind: "oidc",
     });
 
+    assert.equal(plan.executable, "/home/ubuntu/.local/bin/runt");
     assert.deepEqual(plan.args.slice(0, 3), ["cloud-runtime-agent", "--auth-kind", "oidc"]);
     assert.equal(plan.args.includes("oidc-token"), false);
   });
@@ -136,6 +141,7 @@ describe("hosted workstation agent launch contract", () => {
         displayName: "lab2 workstation",
         workingDirectory: "/home/ubuntu/project",
         pythonPath: "/opt/k/bin/python",
+        runtimeBinary: "runt",
         cpuCount: 8,
         memoryBytes: 16_000_000_000,
       }),
@@ -152,11 +158,30 @@ describe("hosted workstation agent launch contract", () => {
           launch_current_python: true,
         },
         runtime: {
-          binary: "runtimed",
+          binary: "runt",
           python_path: "/opt/k/bin/python",
         },
       },
     );
+  });
+
+  it("resolves runtime agent binaries from neutral and compatibility env vars", () => {
+    assert.equal(
+      runtimeAgentBinaryFromEnv(
+        {
+          NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN: "/opt/nteract/bin/runt",
+          NOTEBOOK_CLOUD_RUNTIMED_BIN: "/opt/nteract/bin/runtimed",
+        },
+        "/repo",
+      ),
+      "/opt/nteract/bin/runt",
+    );
+    assert.equal(runtimeAgentBinaryFromEnv({ NOTEBOOK_CLOUD_RUNT_BIN: "runt" }, "/repo"), "runt");
+    assert.equal(
+      runtimeAgentBinaryFromEnv({ NOTEBOOK_CLOUD_RUNTIMED_BIN: "target/debug/runtimed" }, "/repo"),
+      "/repo/target/debug/runtimed",
+    );
+    assert.equal(runtimeAgentBinaryLabel("/opt/nteract/bin/runt"), "runt");
   });
 
   it("keeps generated workstation ids and polling intervals bounded", () => {

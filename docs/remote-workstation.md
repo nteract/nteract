@@ -39,15 +39,19 @@ For air-gapped installs, download the release assets yourself and use
 2. On the workstation:
 
 ```bash
-RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
+RUNTIME_AGENT_BIN=${RUNTIME_AGENT_BIN:-runtimed}
+RUNT_CLOUD_TOKEN=<token> "$RUNTIME_AGENT_BIN" cloud-runtime-agent \
   --cloud-url https://app.runt.run \
   --notebook-id <id> \
   --python-path "$(command -v python3)"
 ```
 
-The credential always rides the environment, never argv. Defaults: scope
-`runtime_peer`, auth kind `oidc` (use `--auth-kind anaconda-key` for Anaconda
-API keys), blob root under the daemon's standard cache. `--python-path`
+Use the installed binary that exposes `cloud-runtime-agent`; current channels
+may package that as `runtimed`, while workstation deployments can point
+`RUNTIME_AGENT_BIN` at `runt` when that is the installed command surface. The
+credential always rides the environment, never argv. Defaults: scope
+`runtime_peer`, auth kind `oidc` (use `--auth-kind anaconda-key` for Anaconda API
+keys), blob root under the daemon's standard cache. `--python-path`
 launches a kernel in that interpreter immediately on attach
 (launch-on-attach); omit it to attach idle and wait for the room to dispatch
 work. `--workstation-id` / `--workstation-display-name` set the non-secret

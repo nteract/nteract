@@ -15,6 +15,8 @@ import {
   parseHttpResponseBody,
   parsePositiveInteger,
   retryAfterMs,
+  runtimeAgentBinaryFromEnv,
+  runtimeAgentBinaryLabel,
   stableWorkstationId,
 } from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
@@ -47,10 +49,7 @@ const heartbeatIntervalMs = parsePositiveInteger(
   "NOTEBOOK_CLOUD_WORKSTATION_HEARTBEAT_MS",
   20_000,
 );
-const runtimedBin = path.resolve(
-  workspaceRoot,
-  process.env.NOTEBOOK_CLOUD_RUNTIMED_BIN ?? "target/release/runtimed",
-);
+const runtimeAgentBin = runtimeAgentBinaryFromEnv(process.env, workspaceRoot);
 const agentRoot = path.resolve(
   workspaceRoot,
   process.env.NOTEBOOK_CLOUD_WORKSTATION_AGENT_ROOT ??
@@ -68,7 +67,7 @@ main().catch((error) => {
 
 async function main() {
   requireCloudCredential();
-  await assertBinaryExists(runtimedBin, "runtimed");
+  await assertBinaryExists(runtimeAgentBin, "runtime agent binary");
   const pythonPath = await resolvePythonPath();
   await mkdir(agentRoot, { recursive: true });
 
@@ -81,6 +80,7 @@ async function main() {
       workingDirectory,
       pythonPath,
       authKind,
+      runtimeAgentBin: runtimeAgentBinaryLabel(runtimeAgentBin),
       pollIntervalMs,
     }),
   );
@@ -147,6 +147,7 @@ async function registerWorkstation(pythonPath) {
         displayName,
         workingDirectory,
         pythonPath,
+        runtimeBinary: runtimeAgentBinaryLabel(runtimeAgentBin),
       }),
     ),
   });
@@ -179,6 +180,7 @@ async function startAttachJob(job, pythonPath) {
     workstationId,
     displayName,
     authKind,
+    runtimeAgentBin,
   });
   await mkdir(plan.blobRoot, { recursive: true });
   await patchAttachJob(job.job_id, {
@@ -186,7 +188,7 @@ async function startAttachJob(job, pythonPath) {
   });
 
   const logFd = openSync(plan.logPath, "a");
-  const child = spawn(runtimedBin, plan.args, {
+  const child = spawn(plan.executable, plan.args, {
     cwd: plan.cwd,
     env: runtimeAgentEnv(),
     stdio: ["ignore", logFd, logFd],
@@ -407,13 +409,21 @@ function which(command) {
 }
 
 async function assertBinaryExists(binaryPath, name) {
+  if (!isPathLike(binaryPath)) {
+    if (await which(binaryPath)) return;
+    throw new Error(`Missing ${name} command ${binaryPath} on PATH.`);
+  }
   try {
     await access(binaryPath);
   } catch {
     throw new Error(
-      `Missing ${name} binary at ${binaryPath}. Run \`cargo build --release -p runtimed\` first, or set NOTEBOOK_CLOUD_${name.toUpperCase().replaceAll("-", "_")}_BIN.`,
+      `Missing ${name} at ${binaryPath}. Run \`cargo build --release -p runtimed\` first, or set NOTEBOOK_CLOUD_RUNTIME_AGENT_BIN.`,
     );
   }
+}
+
+function isPathLike(value) {
+  return path.isAbsolute(value) || value.includes("/") || value.includes("\\");
 }
 
 function assertResponse(response, body, label, expectedStatuses) {
