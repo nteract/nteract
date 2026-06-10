@@ -9,8 +9,10 @@ import { getOutputById } from "../notebook-outputs";
 import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
+  getOutputProjectionFailures,
   resetRuntimeStoresProjection,
   seedOutputStoresFromHandle,
+  subscribeOutputProjectionFailures,
 } from "../project-runtime-stores";
 
 afterEach(() => {
@@ -162,5 +164,205 @@ describe("applyOutputChangeset", () => {
       name: "stdout",
       text: "hello from cloud",
     });
+  });
+
+  // FSB-1: failed resolutions are retried, then surfaced — never silently
+  // stale.
+  it("retries transient resolution failures before storing the output", async () => {
+    let calls = 0;
+    const blobResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("blob server blip");
+        return new Response("recovered");
+      }),
+    };
+
+    await applyOutputChangeset(
+      [
+        [
+          "out-retry",
+          {
+            output_id: "out-retry",
+            output_type: "stream",
+            name: "stdout",
+            text: { blob: "blob-r", size: 9 },
+          },
+        ],
+      ],
+      [],
+      { blobResolver, retryDelaysMs: [0] },
+    );
+
+    expect(blobResolver.fetch).toHaveBeenCalledTimes(2);
+    expect(getOutputById("out-retry")).toMatchObject({ text: "recovered" });
+    expect(getOutputProjectionFailures()).toEqual([]);
+  });
+
+  it("records a projection failure after retries are exhausted, and clears it on later success", async () => {
+    const failing = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        throw new Error("persistent failure");
+      }),
+    };
+    const manifest = {
+      output_id: "out-fail",
+      output_type: "stream",
+      name: "stdout",
+      text: { blob: "blob-f", size: 5 },
+    };
+
+    const failureEvents: number[] = [];
+    const unsubscribe = subscribeOutputProjectionFailures(() => {
+      failureEvents.push(getOutputProjectionFailures().length);
+    });
+
+    await applyOutputChangeset([["out-fail", manifest]], [], {
+      blobResolver: failing,
+      retryDelaysMs: [0],
+    });
+
+    expect(failing.fetch).toHaveBeenCalledTimes(2);
+    expect(getOutputProjectionFailures()).toEqual(["out-fail"]);
+    expect(getOutputById("out-fail")).toBeUndefined();
+
+    // A later changeset tick that resolves the same output clears the entry.
+    const recovering = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => new Response("late success")),
+    };
+    await applyOutputChangeset([["out-fail", manifest]], [], {
+      blobResolver: recovering,
+      retryDelaysMs: [0],
+    });
+
+    expect(getOutputProjectionFailures()).toEqual([]);
+    expect(getOutputById("out-fail")).toMatchObject({ text: "late success" });
+    expect(failureEvents).toEqual([1, 0]);
+    unsubscribe();
+  });
+
+  // P1 regression: applyOutputChangeset calls are not serialized — an older
+  // tick's retry can resume after a newer tick removed or replaced the same
+  // output. The per-output generation guard must make the stale write a
+  // no-op.
+  it("a suspended retry cannot resurrect an output removed by a newer tick", async () => {
+    let releaseFirstAttempt: (() => void) | undefined;
+    const firstAttemptStarted = new Promise<void>((resolve) => {
+      releaseFirstAttempt = () => resolve();
+    });
+    let failFirst = true;
+    const blobResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        if (failFirst) {
+          failFirst = false;
+          releaseFirstAttempt?.();
+          throw new Error("transient");
+        }
+        return new Response("stale payload");
+      }),
+    };
+
+    const olderTick = applyOutputChangeset(
+      [
+        [
+          "out-race",
+          {
+            output_id: "out-race",
+            output_type: "stream",
+            name: "stdout",
+            text: { blob: "blob-x", size: 5 },
+          },
+        ],
+      ],
+      [],
+      { blobResolver, retryDelaysMs: [20] },
+    );
+
+    // While the older tick sleeps before its retry, a newer tick removes
+    // the output.
+    await firstAttemptStarted;
+    await applyOutputChangeset([], ["out-race"], { blobResolver });
+
+    await olderTick;
+    expect(getOutputById("out-race")).toBeUndefined();
+    expect(getOutputProjectionFailures()).toEqual([]);
+  });
+
+  it("a suspended retry cannot downgrade a newer manifest for the same output", async () => {
+    let releaseFirstAttempt: (() => void) | undefined;
+    const firstAttemptStarted = new Promise<void>((resolve) => {
+      releaseFirstAttempt = () => resolve();
+    });
+    let failFirst = true;
+    const slowResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        if (failFirst) {
+          failFirst = false;
+          releaseFirstAttempt?.();
+          throw new Error("transient");
+        }
+        return new Response("old payload");
+      }),
+    };
+    const fastResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => new Response("new payload")),
+    };
+    const manifestFor = (blob: string) => ({
+      output_id: "out-race2",
+      output_type: "stream",
+      name: "stdout",
+      text: { blob, size: 11 },
+    });
+
+    const olderTick = applyOutputChangeset([["out-race2", manifestFor("blob-old")]], [], {
+      blobResolver: slowResolver,
+      retryDelaysMs: [20],
+    });
+
+    await firstAttemptStarted;
+    await applyOutputChangeset([["out-race2", manifestFor("blob-new")]], [], {
+      blobResolver: fastResolver,
+      retryDelaysMs: [],
+    });
+    expect(getOutputById("out-race2")).toMatchObject({ text: "new payload" });
+
+    await olderTick;
+    // The older tick's late resolution must not downgrade the newer write.
+    expect(getOutputById("out-race2")).toMatchObject({ text: "new payload" });
+    expect(getOutputProjectionFailures()).toEqual([]);
+  });
+
+  it("drops failure entries when the output is removed", async () => {
+    const failing = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        throw new Error("persistent failure");
+      }),
+    };
+    await applyOutputChangeset(
+      [
+        [
+          "out-gone",
+          {
+            output_id: "out-gone",
+            output_type: "stream",
+            name: "stdout",
+            text: { blob: "blob-g", size: 5 },
+          },
+        ],
+      ],
+      [],
+      { blobResolver: failing, retryDelaysMs: [] },
+    );
+    expect(getOutputProjectionFailures()).toEqual(["out-gone"]);
+
+    await applyOutputChangeset([], ["out-gone"], { blobResolver: failing });
+    expect(getOutputProjectionFailures()).toEqual([]);
   });
 });

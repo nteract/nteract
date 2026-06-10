@@ -9,7 +9,10 @@ export { createNotebookCellId, type NotebookCellIdRandomSource } from "./lib/not
 export {
   applyExecutionViewChangeset,
   applyOutputChangeset,
+  getOutputProjectionFailures,
   resetRuntimeStoresProjection,
+  subscribeOutputProjectionFailures,
+  useOutputProjectionFailures,
 } from "./lib/project-runtime-stores";
 export {
   materializeChangeset,
