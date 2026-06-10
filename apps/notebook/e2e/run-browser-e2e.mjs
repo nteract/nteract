@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
-import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -23,6 +22,8 @@ const POLL_MS = 250;
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(appRoot, "../..");
+const exeSuffix = process.platform === "win32" ? ".exe" : "";
+const runtBinary = path.join(repoRoot, "target", "debug", `runt${exeSuffix}`);
 const port = Number(
   process.env.RUNTIMED_VITE_PORT ?? process.env.CONDUCTOR_PORT ?? vitePort(repoRoot),
 );
@@ -73,15 +74,6 @@ function normalizePortlessUrl(url) {
   return parsed.toString().replace(/\/$/, "");
 }
 
-function cacheDir() {
-  if (process.env.XDG_CACHE_HOME) return process.env.XDG_CACHE_HOME;
-  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Caches");
-  if (process.platform === "win32") {
-    return process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
-  }
-  return path.join(os.homedir(), ".cache");
-}
-
 function worktreeHash(workspace) {
   return crypto.createHash("sha256").update(workspace).digest("hex").slice(0, 12);
 }
@@ -91,42 +83,42 @@ function vitePort(workspace) {
   return 5100 + (Number.parseInt(hash.slice(0, 4), 16) % 4900);
 }
 
-function daemonJsonPath(workspace) {
-  const namespace = process.env.RUNTIMED_CACHE_NAMESPACE ?? "runt-nightly";
-  return path.join(cacheDir(), namespace, "worktrees", worktreeHash(workspace), "daemon.json");
+function managedEnv(extraEnv = {}) {
+  return {
+    ...process.env,
+    ...extraEnv,
+    RUNTIMED_DEV: "1",
+    RUNTIMED_WORKSPACE_PATH: repoRoot,
+    RUNTIMED_VITE_PORT: String(port),
+    NTERACT_BROWSER_E2E_BASE_URL: baseURL,
+    ...(ignoreHTTPSErrors ? { NTERACT_BROWSER_E2E_IGNORE_HTTPS_ERRORS: "1" } : {}),
+    VITE_E2E: "1",
+  };
 }
 
-function processIsRunning(pid) {
+async function ensureRuntBinary() {
+  if (fs.existsSync(runtBinary)) return;
+  const build = spawnManaged("cargo", ["build", "-p", "runt"]);
+  const code = await waitForExit(build);
+  if (code !== 0) throw new Error(`cargo build -p runt failed with exit code ${code}`);
+  if (!fs.existsSync(runtBinary))
+    throw new Error(`cargo build -p runt did not produce ${runtBinary}`);
+}
+
+function daemonRunning() {
+  if (!fs.existsSync(runtBinary)) return false;
+  const result = spawnSync(runtBinary, ["daemon", "status", "--json"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: managedEnv(),
+  });
+  if (result.status !== 0) return false;
   try {
-    process.kill(pid, 0);
-    return true;
+    const status = JSON.parse(result.stdout);
+    return status?.running === true && status?.socket_path !== undefined;
   } catch {
     return false;
   }
-}
-
-function readDaemonState(workspace) {
-  try {
-    return JSON.parse(fs.readFileSync(daemonJsonPath(workspace), "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function socketExists(state) {
-  const socketPath = state?.socket_path ?? state?.endpoint;
-  if (!socketPath) return false;
-  try {
-    return fs.statSync(socketPath).isSocket();
-  } catch {
-    return false;
-  }
-}
-
-function daemonRunning(workspace) {
-  const state = readDaemonState(workspace);
-  if (!socketExists(state)) return false;
-  return state?.pid === undefined || processIsRunning(state.pid);
 }
 
 function delay(ms) {
@@ -203,16 +195,7 @@ function spawnManaged(command, args, options = {}) {
   return spawn(command, args, {
     cwd: repoRoot,
     stdio: "inherit",
-    env: {
-      ...process.env,
-      ...extraEnv,
-      RUNTIMED_DEV: "1",
-      RUNTIMED_WORKSPACE_PATH: repoRoot,
-      RUNTIMED_VITE_PORT: String(port),
-      NTERACT_BROWSER_E2E_BASE_URL: baseURL,
-      ...(ignoreHTTPSErrors ? { NTERACT_BROWSER_E2E_IGNORE_HTTPS_ERRORS: "1" } : {}),
-      VITE_E2E: "1",
-    },
+    env: managedEnv(extraEnv),
     ...spawnOptions,
   });
 }
@@ -284,9 +267,11 @@ async function main() {
       return;
     }
 
-    if (!daemonRunning(repoRoot)) {
+    await ensureRuntBinary();
+
+    if (!daemonRunning()) {
       daemon = spawnManaged("cargo", ["xtask", "dev-daemon"]);
-      await waitUntil("dev daemon", () => daemonRunning(repoRoot), READY_TIMEOUT_MS, daemon);
+      await waitUntil("dev daemon", daemonRunning, READY_TIMEOUT_MS, daemon);
     }
 
     if (!(await relayHealthy())) {
