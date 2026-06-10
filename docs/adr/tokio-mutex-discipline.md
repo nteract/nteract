@@ -154,9 +154,7 @@ What it does **not** check:
 
 The lint reached zero violations on 2026-04-08 (`runtimed/tests/tokio_mutex_lint.rs:8-12`) and CI keeps it there. New violations fail the test.
 
-**Scope caveat: the lint does not recurse into subdirectories.** It uses `std::fs::read_dir(&src_dir)` with no recursion, where `src_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src")`. So only top-level files in `crates/runtimed/src/*.rs` are scanned. Subdirectory files including the entire `notebook_sync_server/` tree (`peer_loop.rs`, `peer_runtime_agent.rs`, `metadata.rs`, `room.rs`, `registry.rs`, `peer_writer.rs`, ~24 files), `runtime_agent/echo_suppression.rs`, and `requests/*.rs` are silently invisible to the lint. The "zero violations" claim is scoped to top-level files only. Several files cited elsewhere in this ADR — `room.rs`, `metadata.rs`, `registry.rs`, `peer_loop.rs`, `peer_runtime_agent.rs` — sit in subdirectories the lint never visits.
-
-Fixing the scope is a one-line `walkdir` change to `tokio_mutex_lint.rs`. It is on the cleanup punchlist as a Targeted PR.
+**Scope.** The lint recurses through all of `crates/runtimed/src/` (TMD-1), so the `notebook_sync_server/` tree, `runtime_agent/`, and `requests/` are covered. It also scans `crates/runtimed-py/src/` as a sibling source root (TMD-2): `runtimed-py` builds on a post-merge-only CI lane, so hosting that scan in runtimed's test target is what keeps the discipline on the pre-merge lane. The scan is source-level only; no compilation of `runtimed-py` is involved.
 
 Alternatives we considered:
 
@@ -184,15 +182,14 @@ The runtime agent's loop is the model. Local state, channel-published deltas, ca
 
 ## Limitations
 
-The tokio mutex lint scans only the top-level files of `crates/runtimed/src/`. It does not scan:
+The tokio mutex lint scans `crates/runtimed/src/` and `crates/runtimed-py/src/` recursively. It does not scan:
 
-- Subdirectories of `crates/runtimed/src/` (see the scope caveat in Decision 5). This is the most consequential gap because much of the daemon's async-lock surface lives there.
-- `crates/runtimed-client/`, `crates/runtimed-service/`, `crates/runtimed-py/`. **`runtimed-py`'s `session_core.rs` does hold `tokio::sync::Mutex<SessionState>` across awaited connection calls** outside the pyo3 wrapper (`crates/runtimed-py/src/session_core.rs:59-63, :214-240`); the lint does not see it.
+- `crates/runtimed-client/`, `crates/runtimed-service/`. No known violations, but the discipline there is held by review, not by the lint.
 - `crates/notebook-sync/`. `DocHandle` uses `std::sync::Mutex` so the lint has no work to do there, but a future `tokio::sync::Mutex` in `sync_task.rs` would not be checked.
 - `crates/notebook-protocol/`, `crates/notebook-wire/`, `crates/notebook-doc/`. No async-lock usage today; nothing to scan.
 - The runtime agent uses `Arc<RwLock<PresenceState>>` (`runtime_agent.rs:110`). This is the one async RwLock in the agent's main file. The lint covers it.
 
-Extending the lint to subdirectories (`walkdir` instead of `read_dir`) and to additional crates (multiple source roots) is mechanical. It has not been done because the discipline has held under review; the lint-scope gap was surfaced while writing this ADR.
+Adding further crates is a one-line `scan_crate_src` call per source root in `tokio_mutex_lint.rs`.
 
 Open gaps:
 
@@ -236,11 +233,3 @@ These follow-ups are tracked but not decided here:
 - `crates/notebook-protocol/src/connection/framing.rs:245-297` - `FramedReader`, the cancel-safe read primitive.
 - `crates/runtimed/src/notebook_sync_server/metadata.rs:2249-2267` - a use-site comment documenting mixed-lock ordering.
 - `docs/adr/execution-pipeline.md` Decision 2 - the sibling rule for control-plane signal priority at the IOPub boundary.
-
-## Tracked follow-ups (from the retired cleanup punchlist)
-
-These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
-retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
-to implement; **Design** = needs a decision in this ADR before code moves.
-
-- **TMD-2** (Targeted PR; `crates/runtimed-py/src/session_core.rs`): `crates/runtimed-py/src/session_core.rs:59-63, :214-240` holds `Arc<tokio::sync::Mutex<SessionState>>` live across `connect_with_socket` awaits. The lint does not scan `runtimed-py`. Discipline violation, but the cure (restructure or extend lint) is non-trivial.
