@@ -260,7 +260,6 @@ export function UvDependencyPanel({
               <div>
                 Using <code className="rounded bg-muted px-1">{pyprojectPath}</code>
               </div>
-              <div>Re-initialize after dependency changes.</div>
               {isRail && pyprojectDependencyValues.length > 0 && (
                 <PackageSpecList
                   values={pyprojectDependencyValues}

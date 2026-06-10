@@ -226,7 +226,7 @@ describe("DependencyHeader rail package copy", () => {
     expect(actions).toHaveTextContent("Copy to notebook");
   });
 
-  it("splits project environment copy into fact and action lines", () => {
+  it("shows the project file without redundant status copy", () => {
     render(
       <DependencyHeader
         variant="rail"
@@ -252,7 +252,8 @@ describe("DependencyHeader rail package copy", () => {
 
     expect(screen.getByText("Using")).toBeVisible();
     expect(screen.getAllByText("pyproject.toml").length).toBeGreaterThan(0);
-    expect(screen.getByText("Re-initialize after dependency changes.")).toBeVisible();
+    expect(screen.queryByText("Kernel uses this file.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Re-initialize after dependency changes.")).not.toBeInTheDocument();
     expect(screen.queryByText("Project env")).not.toBeInTheDocument();
   });
 

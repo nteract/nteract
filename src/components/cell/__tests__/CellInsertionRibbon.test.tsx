@@ -82,30 +82,33 @@ describe("CellInsertionRibbon", () => {
 
     expect(actions).not.toHaveAttribute("aria-hidden");
     expect(actions).toHaveClass("pointer-events-auto");
-    expect(actions).toHaveClass("translate-x-0");
+    expect(actions).not.toHaveClass("-translate-x-1");
+    expect(actions).not.toHaveClass("translate-x-0");
     expect(actions).not.toHaveClass("delay-75");
     expect(addCodeButton).toHaveAttribute("tabindex", "0");
     expect(addMarkdownButton).toHaveAttribute("tabindex", "0");
   });
 
-  it("reveals the insertion rule and action buttons on the same timeline", () => {
+  it("reveals the insertion rule and action buttons without translating the row", () => {
     const { container } = render(<CellInsertionRibbon onInsert={() => undefined} />);
 
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
     const actions = container.querySelector('[data-slot="cell-adder-actions"]');
 
-    expect(actions).toHaveClass("-translate-x-1");
+    expect(actions).not.toHaveClass("-translate-x-1");
 
     fireEvent.pointerEnter(hitTarget!);
 
     expect(container.querySelector('[data-slot="cell-adder-primary-bridge"]')).toBeInTheDocument();
-    expect(actions).toHaveClass("transition-[opacity,transform]");
+    expect(actions).toHaveClass("transition-opacity");
     expect(actions).toHaveClass("pointer-events-auto");
-    expect(actions).toHaveClass("translate-x-0");
+    expect(actions).not.toHaveClass("translate-x-0");
     expect(actions).toHaveClass("opacity-100");
     expect(actions).not.toHaveClass("delay-75");
     expect(screen.getByTitle("Add code cell")).toHaveAttribute("tabindex", "0");
     expect(screen.getByTitle("Add markdown cell")).toHaveAttribute("tabindex", "0");
+    expect(screen.getByTitle("Add markdown cell")).toHaveClass("ml-1");
+    expect(container.querySelector('[data-slot="cell-adder-action-bridge-gap"]')).toBeNull();
   });
 
   it("uses the controlled active type for catalog fixtures", () => {
@@ -117,6 +120,7 @@ describe("CellInsertionRibbon", () => {
     const palette = container.querySelector('[data-slot="cell-adder-action-palette"]');
     const hitTarget = container.querySelector('[data-slot="cell-adder-primary-hit-target"]');
     const primaryBridge = container.querySelector('[data-slot="cell-adder-primary-bridge"]');
+    const actionBridgeGap = container.querySelector('[data-slot="cell-adder-action-bridge-gap"]');
     const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
     const leadingRule = container.querySelector('[data-slot="cell-adder-leading-rule"]');
     const trailingRule = container.querySelector('[data-slot="cell-adder-trailing-rule"]');
@@ -144,11 +148,17 @@ describe("CellInsertionRibbon", () => {
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("text-emerald-700");
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("rounded-l-none");
     expect(screen.getByTitle("Add markdown cell")).toHaveClass("border-emerald-500/20");
+    expect(screen.getByTitle("Add markdown cell")).toHaveClass("ml-1");
     expect(screen.getByTitle("Add code cell")).toHaveClass("bg-emerald-500/12");
     expect(screen.getByTitle("Add code cell")).toHaveClass("border-emerald-500/20");
     expect(screen.getByTitle("Add code cell")).toHaveClass("border-x-0");
     expect(screen.getByTitle("Add code cell")).toHaveClass("text-muted-foreground/45");
     expect(screen.getByTitle("Add code cell")).not.toHaveClass("text-emerald-700");
+    expect(actionBridgeGap).toHaveClass("absolute");
+    expect(actionBridgeGap).toHaveClass("left-full");
+    expect(actionBridgeGap).toHaveClass("w-1");
+    expect(actionBridgeGap).toHaveClass("bg-emerald-500/12");
+    expect(actionBridgeGap).toHaveClass("border-emerald-500/20");
   });
 
   it("softens the terminal row into a document tail", () => {
