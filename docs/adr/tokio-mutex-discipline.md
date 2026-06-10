@@ -15,7 +15,6 @@ Neighbors:
 - `docs/adr/execution-pipeline.md` - Decision 2 (control-plane vs output-plane separation) is the same problem family at the IOPub boundary. Same goal, different boundary.
 - `docs/adr/blob-storage-and-content-addressing.md` - the blob store keeps large writes out of the document apply path; concurrency discipline keeps them out of the lifecycle path.
 - `docs/adr/identity-and-trust.md` - connection-time authentication keeps the validator's hot path mutex-free.
-- `docs/adr/cleanup-punchlist.md` - open gaps in invariant coverage.
 
 Three things shaped the rules:
 
@@ -237,3 +236,11 @@ These follow-ups are tracked but not decided here:
 - `crates/notebook-protocol/src/connection/framing.rs:245-297` - `FramedReader`, the cancel-safe read primitive.
 - `crates/runtimed/src/notebook_sync_server/metadata.rs:2249-2267` - a use-site comment documenting mixed-lock ordering.
 - `docs/adr/execution-pipeline.md` Decision 2 - the sibling rule for control-plane signal priority at the IOPub boundary.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **TMD-2** (Targeted PR; `crates/runtimed-py/src/session_core.rs`): `crates/runtimed-py/src/session_core.rs:59-63, :214-240` holds `Arc<tokio::sync::Mutex<SessionState>>` live across `connect_with_socket` awaits. The lint does not scan `runtimed-py`. Discipline violation, but the cure (restructure or extend lint) is non-trivial.

@@ -296,3 +296,11 @@ depending on `srcDoc` as the security boundary.
   frame shell with output-specific response headers.
 - `src/components/isolated/AGENTS.md`, which documents the current desktop and
   browser output-frame security invariants.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **HCA-6** (Design; new ADR; `apps/notebook-cloud/src/index.ts`, `docs/adr/hosted-output-origin-isolation.md`): Private hosted blob reads still ride viewer-authenticated app-origin routes with `Access-Control-Allow-Origin: *` (`http-responses.ts::withCors`). The remaining decision is the capability mechanism (path tokens vs signed query vs Worker-mediated check), its interaction with the public CORS wrapper, and which rooms keep plain content-addressed routes (public-ACL only). Needs its own ADR, "Hosted Private Blob Read Capabilities", resolving `hosted-output-origin-isolation.md` open question 2 before private sharing ships.

@@ -6,8 +6,8 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use super::handshake::PROTOCOL_VERSION;
 pub use notebook_wire::{
-    frame_size_limits, NotebookFrameType, TypedNotebookFrame, MAGIC, MAX_CONTROL_FRAME_SIZE,
-    MAX_FRAME_SIZE, MIN_PROTOCOL_VERSION, PREAMBLE_LEN,
+    frame_size_limits, typed_frame_size_limits, NotebookFrameType, TypedNotebookFrame, MAGIC,
+    MAX_CONTROL_FRAME_SIZE, MAX_FRAME_SIZE, MIN_PROTOCOL_VERSION, PREAMBLE_LEN,
 };
 
 /// Send the connection preamble (magic bytes + protocol version).
@@ -15,13 +15,10 @@ pub use notebook_wire::{
 /// Must be called once at the start of every connection, before
 /// the handshake frame.
 pub async fn send_preamble<W: AsyncWrite + Unpin>(writer: &mut W) -> std::io::Result<()> {
-    const _: () = assert!(
-        PROTOCOL_VERSION <= u8::MAX as u32,
-        "PROTOCOL_VERSION must fit in a single byte for the wire preamble"
-    );
     let mut buf = [0u8; PREAMBLE_LEN];
     buf[..4].copy_from_slice(&MAGIC);
-    buf[4] = PROTOCOL_VERSION as u8;
+    // PROTOCOL_VERSION is u8 — the wire width — so no narrowing here (WP-7).
+    buf[4] = PROTOCOL_VERSION;
     writer.write_all(&buf).await?;
     writer.flush().await?;
     Ok(())
@@ -56,8 +53,8 @@ pub async fn recv_preamble<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Res
     }
 
     let version = buf[4];
-    if version != PROTOCOL_VERSION as u8 {
-        let direction = if (version as u32) > PROTOCOL_VERSION {
+    if version != PROTOCOL_VERSION {
+        let direction = if version > PROTOCOL_VERSION {
             "The daemon is newer than this client. Please update the CLI (or reinstall the app)."
         } else {
             "The daemon is older than this client. Please update the daemon: runt daemon doctor --fix"
@@ -170,12 +167,29 @@ pub async fn recv_typed_frame<R: AsyncRead + Unpin>(
         let type_byte = type_buf[0];
         let body_len = len - 1;
 
+        // Classify the type byte BEFORE allocating (WP-11). Unknown
+        // forward-compat frames are skipped via bounded discard reads —
+        // never a body-sized allocation, which for unknown types would
+        // fall back to the 100 MiB outer ceiling.
+        let frame_type = match NotebookFrameType::try_from(type_byte) {
+            Ok(frame_type) => frame_type,
+            Err(_) => {
+                log::warn!(
+                    "Skipping unknown notebook frame type 0x{:02x} ({} bytes payload)",
+                    type_byte,
+                    body_len,
+                );
+                discard_exact(reader, body_len).await?;
+                continue;
+            }
+        };
+
         // Per-type ceiling. The hard cap rejects oversized payloads —
         // a corrupted length prefix on a narrow-purpose channel trips
         // this check before the allocator honors the bogus length. The
         // soft warn threshold logs growth so we see drift in production
         // before it ever rejects.
-        let limits = frame_size_limits(type_byte);
+        let limits = typed_frame_size_limits(frame_type);
         if body_len > limits.cap {
             log::error!(
                 "[notebook-protocol] frame type 0x{:02x} exceeds cap: {} bytes (cap {}); dropping connection",
@@ -205,23 +219,26 @@ pub async fn recv_typed_frame<R: AsyncRead + Unpin>(
         let mut payload = vec![0u8; body_len];
         reader.read_exact(&mut payload).await?;
 
-        match NotebookFrameType::try_from(type_byte) {
-            Ok(frame_type) => {
-                return Ok(Some(TypedNotebookFrame {
-                    frame_type,
-                    payload,
-                }));
-            }
-            Err(_) => {
-                log::warn!(
-                    "Skipping unknown notebook frame type 0x{:02x} ({} bytes payload)",
-                    type_byte,
-                    body_len,
-                );
-                continue;
-            }
-        }
+        return Ok(Some(TypedNotebookFrame {
+            frame_type,
+            payload,
+        }));
     }
+}
+
+/// Discard exactly `len` bytes from the reader using a small bounded
+/// buffer. Used for unknown forward-compat frames so skipping never
+/// allocates the (potentially attacker-controlled) body length.
+async fn discard_exact<R: AsyncRead + Unpin>(reader: &mut R, len: usize) -> std::io::Result<()> {
+    const DISCARD_CHUNK: usize = 8 * 1024;
+    let mut buf = [0u8; DISCARD_CHUNK];
+    let mut remaining = len;
+    while remaining > 0 {
+        let take = remaining.min(DISCARD_CHUNK);
+        reader.read_exact(&mut buf[..take]).await?;
+        remaining -= take;
+    }
+    Ok(())
 }
 
 /// Cancel-safe wrapper around `recv_typed_frame`.

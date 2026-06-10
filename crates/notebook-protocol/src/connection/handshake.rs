@@ -120,9 +120,14 @@ pub const PROTOCOL_V4: &str = "v4";
 /// Numeric protocol version for version negotiation.
 /// Increment this when making breaking protocol changes.
 ///
+/// `u8` because that is the wire width: the connection preamble carries the
+/// version in a single byte (WP-7). JSON surfaces that want a wider integer
+/// widen with `u32::from(PROTOCOL_VERSION)` at the call site — the constant
+/// itself cannot silently exceed what the preamble can express.
+///
 /// Protocol v4 removes legacy environment-sync request/response variants and
 /// is not wire-compatible with v3 clients.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u8 = 4;
 
 /// Server response indicating protocol capabilities.
 ///
@@ -160,7 +165,7 @@ impl ProtocolCapabilities {
 
         Self {
             protocol: PROTOCOL_V4.to_string(),
-            protocol_version: Some(PROTOCOL_VERSION),
+            protocol_version: Some(PROTOCOL_VERSION.into()),
             daemon_version,
             put_blob: Some(PutBlobCapability {
                 version: 1,

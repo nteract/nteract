@@ -41,7 +41,6 @@ These entries define the center of gravity for the system:
 | Execution ordering | [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md) | Draft |
 | Blob storage | [Blob Storage and Content Addressing](blob-storage-and-content-addressing.md) | Draft |
 | Sharing product requirements | [Hosted Notebook Sharing and Invites](hosted-sharing-invites.md) | PRD draft |
-| Follow-up tracking | [Architecture Cleanup Punchlist](cleanup-punchlist.md) | Living |
 
 ## Register
 
@@ -130,7 +129,8 @@ These entries define the center of gravity for the system:
    alternatives, invariants, and compatibility boundaries.
 4. Keep runbooks, measurements, and audits in this directory only when they
    directly support ADR or PRD decisions, and mark their status accordingly.
-5. Add architectural smells to [cleanup-punchlist.md](cleanup-punchlist.md)
+5. Record architectural smells in the owning ADR's "Tracked follow-ups" section
    instead of hiding them in prose-only open questions.
-6. When a punchlist item lands, strike through the row, explain the evidence,
-   and update the triage summary in the same patch.
+6. When a tracked follow-up lands, remove its bullet from the ADR's
+   "Tracked follow-ups" section in the same patch, recording the evidence in
+   the relevant decision text if it changed one.

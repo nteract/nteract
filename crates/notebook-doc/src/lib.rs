@@ -4587,7 +4587,7 @@ mod tests {
     /// read-side: the CRDT still records the LWW pick (no write-back, no op
     /// growth), but every reader sees the newest version.
     ///
-    /// See SE-1 in `docs/adr/cleanup-punchlist.md`.
+    /// See SE-1 in `docs/adr/schema-evolution-and-genesis.md`.
     #[test]
     fn test_cross_version_schema_version_resolves_to_max_not_lww() {
         let mut old = NotebookDoc::new_with_actor("room-nb", "peer-old");

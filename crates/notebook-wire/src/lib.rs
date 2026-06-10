@@ -59,21 +59,40 @@ pub struct FrameSizeLimits {
 }
 
 /// Per-type body limits for typed frames.
+///
+/// Unknown type bytes get the outer [`MAX_FRAME_SIZE`] ceiling for forward
+/// compatibility — but readers must not allocate for unknown frames; they
+/// skip via bounded discard (see `recv_typed_frame`, WP-11). Known types
+/// dispatch to the exhaustive [`typed_frame_size_limits`].
 pub fn frame_size_limits(type_byte: u8) -> FrameSizeLimits {
-    match type_byte {
-        frame_types::AUTOMERGE_SYNC => FrameSizeLimits {
+    match NotebookFrameType::try_from(type_byte) {
+        Ok(frame_type) => typed_frame_size_limits(frame_type),
+        Err(_) => FrameSizeLimits {
+            cap: MAX_FRAME_SIZE,
+            warn: MAX_FRAME_SIZE / 2,
+        },
+    }
+}
+
+/// Exhaustive per-variant limits. No wildcard arm (WP-6): adding a
+/// [`NotebookFrameType`] variant fails to compile here until it gets an
+/// explicit cap, so a forgotten clause can no longer silently land on the
+/// 100 MiB outer ceiling.
+pub fn typed_frame_size_limits(frame_type: NotebookFrameType) -> FrameSizeLimits {
+    match frame_type {
+        NotebookFrameType::AutomergeSync => FrameSizeLimits {
             cap: 64 * MIB,
             warn: 16 * MIB,
         },
-        frame_types::REQUEST => FrameSizeLimits {
+        NotebookFrameType::Request => FrameSizeLimits {
             cap: 16 * MIB,
             warn: 256 * KIB,
         },
-        frame_types::RESPONSE => FrameSizeLimits {
+        NotebookFrameType::Response => FrameSizeLimits {
             cap: 64 * MIB,
             warn: 16 * MIB,
         },
-        frame_types::BROADCAST => FrameSizeLimits {
+        NotebookFrameType::Broadcast => FrameSizeLimits {
             cap: 16 * MIB,
             warn: 4 * MIB,
         },
@@ -82,39 +101,38 @@ pub fn frame_size_limits(type_byte: u8) -> FrameSizeLimits {
         // matches `notebook-doc::presence::MAX_PRESENCE_FRAME_SIZE`, which
         // is the semantic-layer ceiling enforced by `decode_message`. Both
         // values must stay in sync; the WP-3 contract test guards drift.
-        frame_types::PRESENCE => FrameSizeLimits {
+        NotebookFrameType::Presence => FrameSizeLimits {
             cap: 4 * KIB,
             warn: KIB,
         },
-        frame_types::RUNTIME_STATE_SYNC => FrameSizeLimits {
+        NotebookFrameType::RuntimeStateSync => FrameSizeLimits {
             cap: 64 * MIB,
             warn: 16 * MIB,
         },
-        frame_types::COMMS_DOC_SYNC => FrameSizeLimits {
+        NotebookFrameType::CommsDocSync => FrameSizeLimits {
             cap: 64 * MIB,
             warn: 16 * MIB,
         },
-        frame_types::POOL_STATE_SYNC => FrameSizeLimits {
+        NotebookFrameType::PoolStateSync => FrameSizeLimits {
             cap: MIB,
             warn: 256 * KIB,
         },
-        frame_types::SESSION_CONTROL => FrameSizeLimits {
+        NotebookFrameType::SessionControl => FrameSizeLimits {
             cap: MIB,
             warn: 256 * KIB,
         },
-        frame_types::PUT_BLOB => FrameSizeLimits {
+        NotebookFrameType::PutBlob => FrameSizeLimits {
             cap: 32 * MIB,
             warn: 8 * MIB,
-        },
-        _ => FrameSizeLimits {
-            cap: MAX_FRAME_SIZE,
-            warn: MAX_FRAME_SIZE / 2,
         },
     }
 }
 
 /// Minimum protocol version accepted by v4 daemons.
-pub const MIN_PROTOCOL_VERSION: u32 = 4;
+///
+/// `u8` because that is the wire width: the preamble carries the version in
+/// one byte (WP-7). Widen with `u32::from(...)` where a JSON field wants it.
+pub const MIN_PROTOCOL_VERSION: u8 = 4;
 
 /// Magic bytes identifying the runtimed protocol.
 pub const MAGIC: [u8; 4] = [0xC0, 0xDE, 0x01, 0xAC];

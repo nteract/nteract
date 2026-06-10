@@ -492,6 +492,14 @@ where
 
     loop {
         tokio::select! {
+            // `biased;` makes polling order deterministic (EP-10): the
+            // lifecycle arm is declared before the bounded work arm, so when
+            // both are ready, idle/done/error/death is always handled before
+            // output transport. Without it, random polling could pick work
+            // first; the drain inside the work arm covers already-pending
+            // signals but not ones arriving during work selection.
+            biased;
+
             // Read frames from daemon socket (cancel-safe via FramedReader actor)
             maybe_frame = frame_source.recv_frame() => {
                 match maybe_frame {
