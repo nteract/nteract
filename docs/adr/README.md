@@ -97,6 +97,7 @@ These entries define the center of gravity for the system:
 | Entry | Status | Notes |
 |-------|--------|-------|
 | [Deployment Topology](deployment-topology.md) | Draft | Hosted room topology, compute attachment, and durable state split. |
+| [AWS Rust Room Host](aws-rust-room-host.md) | Draft | Proposed native Rust room host on AWS with Postgres/RDS and S3. |
 | [Hosted Room Authorization and Cloud Room Host](hosted-room-authorization.md) | Draft | D1 ACLs, scope derivation, and DO room host. |
 | [Runtime Principal Promotion](runtime-principal-promotion.md) | Draft | Local runtime principals, hosted promotion, and execution authority split. |
 | [Remote Workstation Doc Agents](remote-workstation-doc-agents.md) | Draft | Provider-neutral workstation/doc-agent registration and runtime-peer attachment model. |
