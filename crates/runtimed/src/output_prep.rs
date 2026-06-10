@@ -508,18 +508,44 @@ pub struct QueueCommandReceivers {
     pub work_rx: mpsc::Receiver<WorkCommand>,
 }
 
+/// Bounded sender that cannot block: only `try_send` is exposed.
+///
+/// The IOPub reader routes work onto the bounded work queue but must never
+/// await queue capacity — a full work queue backpressuring the reader would
+/// delay later lifecycle status such as `idle` after an interrupt (EP-8,
+/// execution-pipeline.md Decision 2). Wrapping the sender makes that
+/// discipline structural: a blocking `.send().await` on the work channel
+/// does not compile. If a sender outside the IOPub hot path ever needs a
+/// blocking send, add it as a separately named method so the IOPub usage
+/// stays auditable.
+pub struct NonBlockingSender<T>(mpsc::Sender<T>);
+
+// Manual impl: `mpsc::Sender<T>` is Clone for any T, and a derive would
+// needlessly require `T: Clone`.
+impl<T> Clone for NonBlockingSender<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> NonBlockingSender<T> {
+    pub fn try_send(&self, value: T) -> Result<(), mpsc::error::TrySendError<T>> {
+        self.0.try_send(value)
+    }
+}
+
 pub fn queue_command_channels(
     work_capacity: usize,
 ) -> (
     mpsc::UnboundedSender<LifecycleSignal>,
-    mpsc::Sender<WorkCommand>,
+    NonBlockingSender<WorkCommand>,
     QueueCommandReceivers,
 ) {
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
     let (work_tx, work_rx) = mpsc::channel(work_capacity);
     (
         lifecycle_tx,
-        work_tx,
+        NonBlockingSender(work_tx),
         QueueCommandReceivers {
             lifecycle_rx,
             work_rx,
