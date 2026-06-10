@@ -50,8 +50,10 @@
 //! | `credential.name` (per route) | `network.credentials[]` | One entry per route |
 //! | `credential.effective_keystore_name()` | `network.custom_credentials.<key>.credential_key` | Shared across all routes |
 //! | `route.host` + `route.scheme` | `network.custom_credentials.<key>.upstream` | `<scheme>://<host>` per route |
+//! | `route.inject_as` | `network.custom_credentials.<key>.inject_mode` | `"header"`, `"basic_auth"`, or `"query_param"` |
 //! | Route `inject_as = Header`, `header` | `network.custom_credentials.<key>.inject_header` | Header name (e.g. "Authorization") |
-//! | Route `template` | `network.custom_credentials.<key>.credential_format` | `{credential}` → `{}` substituted |
+//! | Route `inject_as = Header`, `template` | `network.custom_credentials.<key>.credential_format` | `{credential}` → `{}` substituted; Header mode only |
+//! | Route `inject_as = Query`, `template` | `network.custom_credentials.<key>.query_param_name` | `{credential}` → `{}` substituted; Query mode only |
 //! | All route hosts + `allowed_domains` | `network.allow_domain` | Merged, sorted, deduped; always emitted |
 //!
 //! ### `allow_domain` is always emitted (block-by-default)
@@ -436,8 +438,13 @@ fn build_nono_json(profile: &SandboxProfile) -> Result<serde_json::Value, serde_
 /// - `credential_key` — the macOS Keychain account name (shared across all
 ///   per-route entries that belong to the same `CredentialRef`)
 /// - `upstream` — `<scheme>://<host>` from the route
-/// - `inject_header` — set when `inject_as = Header`
-/// - `credential_format` — template with `{credential}` → `{}`
+/// - `inject_mode` — always emitted; `"header"`, `"basic_auth"`, or
+///   `"query_param"` (nono 0.62+ feature, see always-further/nono#165)
+/// - `inject_header` — set when `inject_as = Header`; nono uses this as the
+///   target header name
+/// - `credential_format` — set when `inject_as = Header`; template with
+///   `{credential}` → `{}`. Not emitted for `BasicAuth` (nono handles
+///   base64-encoding internally) or `Query` (nono uses `query_param_name`).
 fn build_route_entry(
     credential_key: &str,
     route: &notebook_doc::sandbox::RouteRule,
@@ -447,14 +454,24 @@ fn build_route_entry(
     entry.insert("credential_key".to_string(), json!(credential_key));
     entry.insert("upstream".to_string(), json!(upstream));
 
-    if route.inject_as == InjectionKind::Header {
-        if let Some(header_name) = &route.header {
-            entry.insert("inject_header".to_string(), json!(header_name));
+    match route.inject_as {
+        InjectionKind::Header => {
+            entry.insert("inject_mode".to_string(), json!("header"));
+            if let Some(header_name) = &route.header {
+                entry.insert("inject_header".to_string(), json!(header_name));
+            }
+            let format_str = route.template.replace("{credential}", "{}");
+            entry.insert("credential_format".to_string(), json!(format_str));
+        }
+        InjectionKind::BasicAuth => {
+            entry.insert("inject_mode".to_string(), json!("basic_auth"));
+        }
+        InjectionKind::Query => {
+            entry.insert("inject_mode".to_string(), json!("query_param"));
+            let format_str = route.template.replace("{credential}", "{}");
+            entry.insert("query_param_name".to_string(), json!(format_str));
         }
     }
-
-    let format_str = route.template.replace("{credential}", "{}");
-    entry.insert("credential_format".to_string(), json!(format_str));
 
     serde_json::Value::Object(entry)
 }
@@ -600,10 +617,42 @@ mod tests {
 
         let custom = &parsed["network"]["custom_credentials"]["analytics_api"];
         assert_eq!(custom["credential_key"], "analytics_api");
+        assert_eq!(custom["inject_mode"], "header");
         assert_eq!(custom["inject_header"], "Authorization");
         // Template {credential} → {} conversion
         assert_eq!(custom["credential_format"], "Bearer {}");
         assert_eq!(custom["upstream"], "https://api.analytics.example.com");
+    }
+
+    #[test]
+    fn basic_auth_route_emits_inject_mode_not_inject_header() {
+        let profile = SandboxProfile {
+            enabled: true,
+            credentials: vec![CredentialRef {
+                name: "jira_creds".to_string(),
+                description: None,
+                env_var: None,
+                keystore_name: None,
+                routes: vec![RouteRule {
+                    host: "mycompany.atlassian.net".to_string(),
+                    inject_as: InjectionKind::BasicAuth,
+                    header: None,
+                    template: "{credential}".to_string(),
+                    scheme: notebook_doc::sandbox::RouteScheme::Https,
+                }],
+            }],
+            allowed_domains: vec![],
+        };
+        let result = translate(&profile).expect("translate");
+        let contents = fs::read_to_string(&result.profile_json_path).expect("read");
+        let parsed: serde_json::Value = serde_json::from_str(&contents).expect("parse");
+
+        let custom = &parsed["network"]["custom_credentials"]["jira_creds"];
+        assert_eq!(custom["inject_mode"], "basic_auth");
+        assert_eq!(custom["upstream"], "https://mycompany.atlassian.net");
+        // No inject_header or credential_format for basic_auth
+        assert!(custom.get("inject_header").is_none());
+        assert!(custom.get("credential_format").is_none());
     }
 
     #[test]
