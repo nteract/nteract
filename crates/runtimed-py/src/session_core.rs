@@ -216,15 +216,18 @@ pub(crate) async fn connect_with_socket(
     notebook_id: &str,
     socket_path: PathBuf,
 ) -> PyResult<()> {
-    let mut st = state.lock().await;
-    if st.handle.is_some() {
-        return Ok(());
-    }
-
-    let actor_label = st
-        .actor_label
-        .clone()
-        .unwrap_or_else(|| make_actor_label(DEFAULT_ACTOR_LABEL));
+    // Prepare without the lock held across the connection awaits. Two
+    // concurrent connects may both pass this check and both dial; the
+    // apply block below resolves the race by keeping the first handle.
+    let actor_label = {
+        let st = state.lock().await;
+        if st.handle.is_some() {
+            return Ok(());
+        }
+        st.actor_label
+            .clone()
+            .unwrap_or_else(|| make_actor_label(DEFAULT_ACTOR_LABEL))
+    };
 
     let result =
         notebook_sync::connect::connect(socket_path.clone(), notebook_id.to_string(), &actor_label)
@@ -238,6 +241,13 @@ pub(crate) async fn connect_with_socket(
 
     // Resolve blob paths from daemon info
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
+
+    // Apply synchronously. If another connect won the race while we were
+    // dialing, keep its session and drop ours on scope exit.
+    let mut st = state.lock().await;
+    if st.handle.is_some() {
+        return Ok(());
+    }
 
     st.handle = Some(result.handle);
     st.broadcast_rx = Some(result.broadcast_rx);
@@ -268,6 +278,19 @@ pub(crate) async fn announce_presence(state: &SessionState) {
         None => return,
     };
     notebook_sync::presence::announce(handle, state.peer_label.as_deref()).await;
+}
+
+/// Announce presence through shared state. Locks only to clone the handle
+/// and label so no guard is held across the network await.
+pub(crate) async fn announce_presence_shared(state: &Arc<Mutex<SessionState>>) {
+    let (handle, peer_label) = {
+        let st = state.lock().await;
+        let Some(handle) = st.handle.clone() else {
+            return;
+        };
+        (handle, st.peer_label.clone())
+    };
+    notebook_sync::presence::announce(&handle, peer_label.as_deref()).await;
 }
 
 /// Populate `kernel_started`, `kernel_type`, and `env_source` from the
@@ -608,12 +631,12 @@ pub(crate) async fn start_kernel(
 
 /// Shutdown the kernel.
 pub(crate) async fn shutdown_kernel(state: &Arc<Mutex<SessionState>>) -> PyResult<()> {
-    let mut st = state.lock().await;
-
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?
+    };
 
     let response = handle
         .send_request(NotebookRequest::ShutdownKernel {})
@@ -622,6 +645,7 @@ pub(crate) async fn shutdown_kernel(state: &Arc<Mutex<SessionState>>) -> PyResul
 
     match response {
         NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => {
+            let mut st = state.lock().await;
             st.kernel_started = false;
             st.kernel_type = None;
             st.env_source = None;
@@ -649,11 +673,12 @@ pub(crate) async fn restart_kernel(
 
     // Shutdown
     {
-        let mut st = state.lock().await;
-        let handle = st
-            .handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
+        let handle = {
+            let st = state.lock().await;
+            st.handle
+                .clone()
+                .ok_or_else(|| to_py_err("Not connected"))?
+        };
 
         let response = handle
             .send_request(NotebookRequest::ShutdownKernel {})
@@ -662,6 +687,7 @@ pub(crate) async fn restart_kernel(
 
         match response {
             NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => {
+                let mut st = state.lock().await;
                 st.kernel_started = false;
                 st.kernel_type = None;
                 st.env_source = None;
@@ -817,12 +843,12 @@ pub(crate) async fn restart_kernel(
 
 /// Interrupt the currently executing cell.
 pub(crate) async fn interrupt(state: &Arc<Mutex<SessionState>>) -> PyResult<()> {
-    let st = state.lock().await;
-
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?
+    };
 
     let response = handle
         .send_request(NotebookRequest::InterruptExecution {})
@@ -2097,11 +2123,12 @@ pub(crate) async fn complete(
     code: &str,
     cursor_pos: usize,
 ) -> PyResult<CompletionResult> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?
+    };
 
     let response = handle
         .send_request(NotebookRequest::Complete {
@@ -2137,11 +2164,12 @@ pub(crate) async fn get_history(
     n: i32,
     unique: bool,
 ) -> PyResult<Vec<HistoryEntry>> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?
+    };
 
     let response = handle
         .send_request(NotebookRequest::GetHistory {

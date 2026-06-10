@@ -323,10 +323,7 @@ impl AsyncSession {
         future_into_py(py, async move {
             session_core::connect(&state, &effective_id).await?;
             // Announce presence so the daemon registers this peer immediately
-            {
-                let st = state.lock().await;
-                session_core::announce_presence(&st).await;
-            }
+            session_core::announce_presence_shared(&state).await;
             Ok(())
         })
     }

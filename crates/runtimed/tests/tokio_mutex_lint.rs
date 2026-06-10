@@ -28,12 +28,9 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-#[test]
-fn runtimed_has_no_tokio_mutex_across_await() {
-    let src_dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
-
+fn scan_crate_src(src_dir: &std::path::Path, crate_label: &str) {
     let mut rs_files: Vec<std::path::PathBuf> = Vec::new();
-    collect_rs_files(&src_dir, &mut rs_files);
+    collect_rs_files(src_dir, &mut rs_files);
 
     assert!(
         !rs_files.is_empty(),
@@ -50,7 +47,7 @@ fn runtimed_has_no_tokio_mutex_across_await() {
         let diagnostics =
             async_rust_lsp::rules::mutex_across_await::check_mutex_across_await(&source);
 
-        let display_path = path.strip_prefix(&src_dir).unwrap_or(path).display();
+        let display_path = path.strip_prefix(src_dir).unwrap_or(path).display();
 
         for d in diagnostics {
             violations.push(format!(
@@ -64,7 +61,7 @@ fn runtimed_has_no_tokio_mutex_across_await() {
 
     if !violations.is_empty() {
         let mut msg = format!(
-            "Found {} tokio Mutex guard(s) held across .await in runtimed sources:\n\n",
+            "Found {} tokio Mutex guard(s) held across .await in {crate_label} sources:\n\n",
             violations.len()
         );
         for v in &violations {
@@ -77,4 +74,21 @@ fn runtimed_has_no_tokio_mutex_across_await() {
         );
         panic!("{msg}");
     }
+}
+
+#[test]
+fn runtimed_has_no_tokio_mutex_across_await() {
+    let src_dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    scan_crate_src(&src_dir, "runtimed");
+}
+
+/// runtimed-py builds on the post-merge-only Anaconda lane, so its own cargo
+/// tests do not gate PRs. Scanning its sources from here keeps the mutex
+/// discipline on the pre-merge lane (TMD-2). Source-level scan only — no
+/// compilation of runtimed-py is involved.
+#[test]
+fn runtimed_py_has_no_tokio_mutex_across_await() {
+    let src_dir =
+        std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../runtimed-py/src"));
+    scan_crate_src(&src_dir, "runtimed-py");
 }
