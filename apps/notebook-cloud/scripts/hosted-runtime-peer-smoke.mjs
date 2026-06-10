@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseHttpResponseBody } from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -274,7 +275,7 @@ async function createNotebookRoom() {
     },
     body: JSON.stringify({ vanity_name: vanityName }),
   });
-  const body = await response.json().catch(async () => ({ error: await response.text() }));
+  const body = await parseHttpResponseBody(response);
   assertResponse(response, body, "create notebook room", 201);
   const notebookId = body.notebook_id;
   assert(
@@ -303,7 +304,7 @@ async function grantRuntimePeer(notebookId) {
       scope: "runtime_peer",
     }),
   });
-  const body = await response.json().catch(async () => ({ error: await response.text() }));
+  const body = await parseHttpResponseBody(response);
   assertResponse(response, body, "grant runtime_peer", 201);
 }
 
@@ -311,7 +312,7 @@ async function fetchJson(pathname) {
   const response = await fetch(new URL(pathname, baseUrl), {
     headers: apiKeyHeaders("owner"),
   });
-  const body = await response.json().catch(async () => ({ error: await response.text() }));
+  const body = await parseHttpResponseBody(response);
   assertResponse(response, body, `GET ${pathname}`, 200);
   return body;
 }

@@ -10,6 +10,7 @@ import {
   parseHttpResponseBody,
   parsePositiveInteger,
   retryAfterMs,
+  retryCooldownMs,
   stableWorkstationId,
 } from "../scripts/hosted-workstation-agent-core.mjs";
 
@@ -203,5 +204,41 @@ describe("hosted workstation agent launch contract", () => {
       `date retry delay should be bounded, got ${retryDateDelay}`,
     );
     assert.equal(retryAfterMs(new Response("no hint", { status: 503 }), 12_345), 12_345);
+  });
+
+  it("expands retry cooldowns for repeated rate-limit responses", () => {
+    assert.equal(
+      retryCooldownMs({
+        retryAfterMs: 60_000,
+        failureCount: 1,
+        random: () => 0,
+      }),
+      60_000,
+    );
+    assert.equal(
+      retryCooldownMs({
+        retryAfterMs: 60_000,
+        failureCount: 2,
+        random: () => 0,
+      }),
+      120_000,
+    );
+    assert.equal(
+      retryCooldownMs({
+        retryAfterMs: 60_000,
+        failureCount: 8,
+        random: () => 0,
+      }),
+      900_000,
+    );
+    assert.equal(
+      retryCooldownMs({
+        retryAfterMs: 10_000,
+        failureCount: 1,
+        jitterRatio: 0.2,
+        random: () => 0.5,
+      }),
+      11_000,
+    );
   });
 });

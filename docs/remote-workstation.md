@@ -47,7 +47,9 @@ RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
 
 The credential always rides the environment, never argv. Defaults: scope
 `runtime_peer`, auth kind `oidc` (use `--auth-kind anaconda-key` for Anaconda
-API keys), blob root under the daemon's standard cache. `--python-path`
+API keys). Prefer API-key auth for long-lived headless workstations; OIDC
+bearers are best for browser-coupled sessions where refresh is active. Blob
+root defaults under the daemon's standard cache. `--python-path`
 launches a kernel in that interpreter immediately on attach
 (launch-on-attach); omit it to attach idle and wait for the room to dispatch
 work. `--workstation-id` / `--workstation-display-name` set the non-secret
@@ -69,10 +71,10 @@ Description=nteract workstation agent for notebook %i
 After=network-online.target
 
 [Service]
-Environment=RUNT_CLOUD_AUTH_KIND=oidc
+Environment=RUNT_CLOUD_AUTH_KIND=anaconda-key
 EnvironmentFile=%h/.config/nteract/workstation.env
 ExecStart=%h/.local/bin/runtimed cloud-runtime-agent \
-  --cloud-url https://app.runt.run --notebook-id %i \
+  --auth-kind anaconda-key --cloud-url https://app.runt.run --notebook-id %i \
   --workstation-id %H
 Restart=on-failure
 RestartSec=5
@@ -88,7 +90,7 @@ then:
 systemctl --user enable --now nteract-workstation@<notebook-id>
 ```
 
-For long-lived peers whose OIDC token expires, mint fresh tokens via a
+For browser-coupled OIDC peers whose token expires, mint fresh tokens via a
 refresher (the transport supports per-connect refresh; see
 `notebook-cloud-transport`'s `TokenRefresher`).
 

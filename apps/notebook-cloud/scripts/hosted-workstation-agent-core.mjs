@@ -3,6 +3,7 @@ import path from "node:path";
 
 export const DEFAULT_WORKSTATION_AUTH_KIND = "anaconda-key";
 export const DEFAULT_WORKSTATION_RETRY_AFTER_MS = 60_000;
+export const MAX_WORKSTATION_RETRY_AFTER_MS = 15 * 60_000;
 export const WORKSTATION_AUTH_KINDS = new Set([DEFAULT_WORKSTATION_AUTH_KIND, "oidc"]);
 
 export function buildWorkstationRegistrationPayload({
@@ -188,6 +189,22 @@ export function retryAfterMs(response, fallbackMs = DEFAULT_WORKSTATION_RETRY_AF
   }
 
   return fallbackMs;
+}
+
+export function retryCooldownMs({
+  retryAfterMs,
+  failureCount,
+  maxMs = MAX_WORKSTATION_RETRY_AFTER_MS,
+  jitterRatio = 0.2,
+  random = Math.random,
+}) {
+  const retryAfter = Math.max(1_000, Number(retryAfterMs) || DEFAULT_WORKSTATION_RETRY_AFTER_MS);
+  const failures = Math.max(1, Number(failureCount) || 1);
+  const maxDelay = Math.max(retryAfter, Number(maxMs) || MAX_WORKSTATION_RETRY_AFTER_MS);
+  const exponent = Math.min(failures - 1, 6);
+  const baseDelay = Math.min(maxDelay, retryAfter * 2 ** exponent);
+  const jitter = Math.max(0, baseDelay * jitterRatio * random());
+  return Math.min(maxDelay, Math.ceil(baseDelay + jitter));
 }
 
 function assert(condition, message) {

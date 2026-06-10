@@ -14,6 +14,7 @@ import {
   normalizeWorkstationAuthKind,
   parseHttpResponseBody,
   parsePositiveInteger,
+  retryCooldownMs,
   retryAfterMs,
   stableWorkstationId,
 } from "./hosted-workstation-agent-core.mjs";
@@ -60,6 +61,7 @@ const agentRoot = path.resolve(
 const activeJobs = new Map();
 let lastHeartbeatAt = 0;
 let cooldownUntil = 0;
+const retryableFailureCounts = new Map();
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -102,16 +104,27 @@ async function main() {
 
 async function runAgentStep(step, fn) {
   try {
-    await fn();
+    const madeCloudRequest = await fn();
+    if (madeCloudRequest) {
+      retryableFailureCounts.delete(step);
+    }
   } catch (error) {
-    const stepRetryAfterMs = Number(error?.retryAfterMs ?? 0);
-    if (Number.isFinite(stepRetryAfterMs) && stepRetryAfterMs > 0) {
-      cooldownUntil = Math.max(cooldownUntil, Date.now() + stepRetryAfterMs);
+    const retryAfterMs = Number(error?.retryAfterMs ?? 0);
+    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      const retryableFailureCount = (retryableFailureCounts.get(step) ?? 0) + 1;
+      retryableFailureCounts.set(step, retryableFailureCount);
+      const cooldownMs = retryCooldownMs({
+        retryAfterMs,
+        failureCount: retryableFailureCount,
+      });
+      cooldownUntil = Math.max(cooldownUntil, Date.now() + cooldownMs);
       console.error(
         JSON.stringify({
           event: "workstation_agent_cooling_down",
           step,
-          retryAfterMs: stepRetryAfterMs,
+          retryAfterMs,
+          cooldownMs,
+          retryableFailureCount,
         }),
       );
     }
@@ -128,10 +141,11 @@ async function runAgentStep(step, fn) {
 async function heartbeatIfNeeded(pythonPath) {
   const now = Date.now();
   if (now - lastHeartbeatAt < heartbeatIntervalMs) {
-    return;
+    return false;
   }
   await registerWorkstation(pythonPath);
   lastHeartbeatAt = now;
+  return true;
 }
 
 async function registerWorkstation(pythonPath) {
@@ -167,6 +181,7 @@ async function pollAttachJobs(pythonPath) {
     if (activeJobs.has(job.job_id)) continue;
     await startAttachJob(job, pythonPath);
   }
+  return true;
 }
 
 async function startAttachJob(job, pythonPath) {
