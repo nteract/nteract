@@ -2882,78 +2882,89 @@ fn dev_daemon_running() -> bool {
         .stderr(Stdio::null());
     apply_worktree_env(&mut command, true);
 
-    let output = command.output();
-
-    let output = match output {
-        Ok(output) if output.status.success() => output,
-        _ => return false,
-    };
-
-    let status_json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-        Ok(json) => json,
-        Err(_) => return false,
-    };
-
-    status_json
-        .get("running")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-        || fallback_dev_daemon_running()
-}
-
-fn fallback_dev_daemon_running() -> bool {
-    let Some(workspace) = runt_workspace::get_workspace_path() else {
-        return false;
-    };
-
-    let daemon_json = dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(runt_workspace::cache_namespace())
-        .join("worktrees")
-        .join(runt_workspace::worktree_hash(&workspace))
-        .join("daemon.json");
-
-    daemon_state_is_running(&daemon_json)
-}
-
-fn daemon_state_is_running(path: &Path) -> bool {
-    let Ok(contents) = fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents) else {
-        return false;
-    };
-
-    let pid_running = info
-        .get("pid")
-        .and_then(serde_json::Value::as_u64)
-        .map(process_is_running)
+    let status_reports_running = command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
+        .and_then(|status_json| {
+            status_json
+                .get("running")
+                .and_then(serde_json::Value::as_bool)
+        })
         .unwrap_or(false);
-    if pid_running {
-        return true;
-    }
 
-    info.get("endpoint")
-        .and_then(serde_json::Value::as_str)
-        .map(Path::new)
-        .is_some_and(Path::exists)
+    status_reports_running || dev_daemon_socket_reports_running()
 }
 
-fn process_is_running(pid: u64) -> bool {
-    #[cfg(unix)]
-    {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
+#[cfg(unix)]
+fn dev_daemon_socket_reports_running() -> bool {
+    use std::io::Write as _;
+    use std::os::unix::net::UnixStream;
 
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
+    let Ok(mut stream) = UnixStream::connect(dev_socket_path()) else {
+        return false;
+    };
+    let timeout = Some(Duration::from_millis(500));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+
+    // Lightweight socket-source-of-truth probe. Keep this local to xtask so
+    // `cargo xtask notebook` can detect an already-running dev daemon before
+    // `target/debug/runt` has been built.
+    if stream.write_all(&[0xC0, 0xDE, 0x01, 0xAC, 4]).is_err() {
+        return false;
     }
+    if send_json_frame_sync(&mut stream, &serde_json::json!({ "channel": "pool" })).is_err() {
+        return false;
+    }
+    if send_json_frame_sync(
+        &mut stream,
+        &serde_json::json!({ "type": "get_daemon_info" }),
+    )
+    .is_err()
+    {
+        return false;
+    }
+    let Ok(response) = recv_json_frame_sync(&mut stream) else {
+        return false;
+    };
+    response
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind == "daemon_info")
+}
+
+#[cfg(not(unix))]
+fn dev_daemon_socket_reports_running() -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn send_json_frame_sync(
+    stream: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
+    let payload = serde_json::to_vec(value).map_err(std::io::Error::other)?;
+    stream.write_all(&(payload.len() as u32).to_be_bytes())?;
+    stream.write_all(&payload)?;
+    stream.flush()
+}
+
+#[cfg(unix)]
+fn recv_json_frame_sync(stream: &mut impl std::io::Read) -> std::io::Result<serde_json::Value> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf)?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > 64 * 1024 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("daemon info response too large: {len} bytes"),
+        ));
+    }
+    let mut payload = vec![0u8; len];
+    stream.read_exact(&mut payload)?;
+    serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }
 
 fn dev_daemon_binary(release: bool) -> PathBuf {

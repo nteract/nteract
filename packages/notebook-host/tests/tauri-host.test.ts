@@ -373,6 +373,23 @@ describe("createTauriHost()", () => {
     ).toBeUndefined();
   });
 
+  it("relay.prepareSync registers the frame channel before sync ready", async () => {
+    const subscribeNotebookFrames = vi.fn(async () => {});
+    const host = createTauriHost({
+      transport: {
+        ...stubTransport,
+        subscribeNotebookFrames,
+      } as NotebookTransport & {
+        subscribeNotebookFrames(generation?: number): Promise<void>;
+      },
+    });
+
+    await host.relay.prepareSync?.(7);
+
+    expect(subscribeNotebookFrames).toHaveBeenCalledWith(7);
+    expect(capturedInvokes.at(-1)?.cmd).not.toBe("notify_sync_ready");
+  });
+
   it("relay.notifySyncReady still notifies Rust when frame channel registration fails", async () => {
     const frameChannelError = new Error("stale generation");
     const subscribeNotebookFrames = vi.fn(async () => {
