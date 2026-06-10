@@ -591,6 +591,12 @@ pnpm --workspace-root exec wrangler tail nteract-notebook-cloud \
   --format pretty
 ```
 
+If `preview.runt.run` is unavailable or rate-limited, use
+[`docs/notebook-cloud-ec2-fallback.md`](../../docs/notebook-cloud-ec2-fallback.md)
+to run this same Worker bundle on one EC2 instance through
+`wrangler dev --local --persist-to`. That fallback is intended for demos and
+recovery drills, not as a production replacement for the hosted topology.
+
 Useful events while debugging collaboration:
 
 - `room.connection.accepted` / `room.connection.closed` - peer lifecycle and

@@ -18,6 +18,7 @@
     "test:renderer-parity": "playwright test -c playwright.render-parity.config.ts",
     "test:renderer-parity:update": "playwright test -c playwright.render-parity.config.ts --update-snapshots",
     "dev": "node scripts/dev.mjs",
+    "dev:ec2": "node scripts/ec2-local-worker.mjs",
     "smoke": "node --import tsx scripts/smoke.mjs",
     "smoke:hosted": "node scripts/hosted-render-smoke.mjs",
     "smoke:hosted:live": "node scripts/hosted-live-smoke.mjs",
