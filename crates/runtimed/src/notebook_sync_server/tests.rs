@@ -4428,6 +4428,129 @@ async fn path_collision_does_not_overwrite_existing_file() {
     );
 }
 
+/// Staleness guard (#2285 stopgap): a primary-path save refuses to overwrite
+/// a file that changed on disk since this daemon last read or wrote it (a
+/// second daemon, `git pull`, an external editor). The refusal is retryable;
+/// once the file watcher observes the external bytes (`note_disk_content` is
+/// exactly what the watcher calls after reading the file), the next save
+/// writes the room's state.
+#[tokio::test]
+async fn autosave_refuses_to_overwrite_externally_changed_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "stale.ipynb");
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "x = 1").unwrap();
+    }
+
+    // First save establishes the disk baseline.
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    // Another writer replaces the file behind our back.
+    let external_content = r#"{"cells":[{"cell_type":"code","id":"other","source":"y = 2","metadata":{},"outputs":[],"execution_count":null}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+    tokio::fs::write(&notebook_path, external_content)
+        .await
+        .unwrap();
+
+    // Local edit so the no-op content-hash guard doesn't short-circuit.
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("cell1", "x = 3").unwrap();
+    }
+
+    let err = save_notebook_to_disk(&room, None).await.unwrap_err();
+    assert!(
+        matches!(err, SaveError::Retryable(_)),
+        "staleness refusal must be retryable, got {err:?}"
+    );
+
+    // The external writer's bytes are untouched.
+    let on_disk = tokio::fs::read_to_string(&notebook_path).await.unwrap();
+    assert_eq!(
+        on_disk, external_content,
+        "refused save must not touch the file"
+    );
+
+    // Watcher reconciliation refreshes the baseline; the retry writes.
+    room.persistence
+        .note_disk_content(external_content.as_bytes());
+    save_notebook_to_disk(&room, None).await.unwrap();
+    let merged = tokio::fs::read_to_string(&notebook_path).await.unwrap();
+    assert!(
+        merged.contains("x = 3"),
+        "post-reconcile save must write the room's state"
+    );
+}
+
+/// Saves to a non-primary path (Save As) are not staleness-guarded:
+/// overwriting the chosen target is the user's intent, and the room's disk
+/// baseline belongs to its bound path.
+#[tokio::test]
+async fn save_as_to_foreign_path_is_not_staleness_guarded() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _primary_path) = test_room_with_path(&tmp, "primary.ipynb");
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "z = 9").unwrap();
+    }
+    // Establish the primary baseline.
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    // Save As onto an existing file with foreign content must overwrite.
+    let other_path = tmp.path().join("other.ipynb");
+    tokio::fs::write(
+        &other_path,
+        r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+    )
+    .await
+    .unwrap();
+    save_notebook_to_disk(&room, Some(other_path.to_str().unwrap()))
+        .await
+        .unwrap();
+    let written = tokio::fs::read_to_string(&other_path).await.unwrap();
+    assert!(
+        written.contains("z = 9"),
+        "Save As must overwrite the target"
+    );
+}
+
+/// `.ipynb` and `.automerge` writes go through tempfile + rename: the final
+/// content lands and no temp siblings survive.
+#[tokio::test]
+async fn atomic_writes_leave_no_temp_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "atomic.ipynb");
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "a = 1").unwrap();
+    }
+    save_notebook_to_disk(&room, None).await.unwrap();
+    assert!(notebook_path.exists());
+
+    let automerge_path = tmp.path().join("docs").join("atomic.automerge");
+    assert!(persist_notebook_bytes(b"snapshot-bytes", &automerge_path));
+    assert_eq!(
+        std::fs::read(&automerge_path).unwrap(),
+        b"snapshot-bytes".to_vec()
+    );
+
+    for dir in [tmp.path().to_path_buf(), tmp.path().join("docs")] {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.ends_with(".tmp"),
+                "temp file left behind in {dir:?}: {name}"
+            );
+        }
+    }
+}
+
 /// Verify the full lifecycle: create untitled room → save to disk →
 /// promote via `promote_untitled_to_file_backed` → edit → autosave flushes
 /// the edit to the .ipynb file.
@@ -9630,9 +9753,19 @@ async fn save_based_recovery_clears_failed_flag() {
         "a successful write clears the failed-load flag"
     );
 
-    // Put content on disk and autosave the still-empty (but recovered) room: it
-    // must write through, proving the flag was cleared by the save.
+    // Put content on disk and autosave the still-empty (but recovered) room.
+    // The external write trips the staleness guard first (the disk no longer
+    // matches the save-time baseline), so the autosave defers; once the file
+    // watcher observes the new bytes (note_disk_content is what the watcher
+    // calls), the autosave writes through — proving the load-failed flag was
+    // cleared by the save, which is this test's subject.
     write_two_cell_notebook(&notebook_path).await;
+    let err = save_notebook_to_disk(&room, None)
+        .await
+        .expect_err("externally changed file defers the autosave");
+    assert!(matches!(err, SaveError::Retryable(_)));
+    room.persistence
+        .note_disk_content(&tokio::fs::read(&notebook_path).await.unwrap());
     save_notebook_to_disk(&room, None)
         .await
         .expect("recovered room must autosave through");

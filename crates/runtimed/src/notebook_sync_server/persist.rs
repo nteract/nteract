@@ -69,9 +69,19 @@ pub(crate) async fn save_notebook_to_disk(
         },
     };
 
-    // Read existing .ipynb as raw bytes. Used for two things: the
-    // content-hash guard further down (skip no-op writes), and the
-    // `nbformat_minor` floor (not carried in the doc today).
+    // Whether this save targets the room's bound path. Baseline bookkeeping
+    // (last_save_sources, the disk-hash staleness guard) applies only to the
+    // primary path — saving to an alternate path (Save As) must not corrupt
+    // the baselines for the file watcher.
+    let is_primary_path = target_path.is_none()
+        || room
+            .file_binding
+            .path_matches(notebook_path.as_path())
+            .await;
+
+    // Read existing .ipynb as raw bytes. Used for three things: the staleness
+    // guard below, the content-hash guard further down (skip no-op writes),
+    // and the `nbformat_minor` floor (not carried in the doc today).
     // We no longer read metadata from disk — the doc carries unknown
     // top-level keys as extras, so everything round-trips through
     // the snapshot.
@@ -87,6 +97,34 @@ pub(crate) async fn save_notebook_to_disk(
             None
         }
     };
+
+    // Staleness guard: refuse to overwrite a file that changed since this
+    // daemon last read or wrote it. Another writer (a second daemon on the
+    // same path, `git pull`, an external editor) owns the bytes on disk and
+    // the file watcher has not reconciled them into the doc yet — writing now
+    // would silently discard that writer's content (#2285). `Retryable` keeps
+    // the autosave debouncer armed: the watcher merges the external content
+    // and refreshes the baseline, and the next tick saves the merged state.
+    // A missing file with a recorded baseline falls through and is recreated
+    // (deletion is not a merge conflict). The read above and the write below
+    // are not atomic, so a writer landing inside this call can still race us;
+    // this guard shrinks the window from "since our last save" to one call.
+    if is_primary_path {
+        if let Some(ref raw) = existing_raw {
+            if room.persistence.disk_content_diverged(raw) {
+                warn!(
+                    "[notebook-sync] Refusing to save {:?}: on-disk content changed \
+                     since this daemon last read it (external writer?). Will retry \
+                     after the file watcher reconciles.",
+                    notebook_path
+                );
+                return Err(SaveError::Retryable(format!(
+                    "on-disk content of '{}' changed externally; deferring save",
+                    notebook_path.display()
+                )));
+            }
+        }
+    }
 
     // Read cells, metadata, and per-cell execution_ids from the doc.
     let (cells, metadata_snapshot, cell_execution_ids) = {
@@ -347,17 +385,13 @@ pub(crate) async fn save_notebook_to_disk(
                 notebook_path
             );
             // Still update save baselines so the file watcher stays consistent.
-            let is_primary_path = target_path.is_none()
-                || room
-                    .file_binding
-                    .path_matches(notebook_path.as_path())
-                    .await;
             if is_primary_path {
                 let mut saved = HashMap::with_capacity(cells.len());
                 for cell in &cells {
                     saved.insert(cell.id.clone(), cell.source.clone());
                 }
                 *room.persistence.last_save_sources.write().await = saved;
+                room.persistence.note_disk_content(raw);
             }
             // Disk already matches the room, so any failed-load hazard is
             // resolved — clear the flag so a later legitimate empty save writes.
@@ -376,8 +410,9 @@ pub(crate) async fn save_notebook_to_disk(
         })?;
     }
 
-    // Write to disk (async to avoid blocking the runtime)
-    tokio::fs::write(&notebook_path, &content_with_newline)
+    // Write to disk via tempfile + atomic rename so concurrent readers (other
+    // daemons, editors, git) never observe a torn .ipynb.
+    write_file_atomic(&notebook_path, content_with_newline.as_bytes())
         .await
         .map_err(|e| {
             let msg = format!("Failed to write notebook: {e}");
@@ -412,17 +447,14 @@ pub(crate) async fn save_notebook_to_disk(
     // our own writes from genuine external changes. Only update when saving
     // to the primary path - saving to an alternate path (Save As) must not
     // corrupt the baseline for the file watcher.
-    let is_primary_path = target_path.is_none()
-        || room
-            .file_binding
-            .path_matches(notebook_path.as_path())
-            .await;
     if is_primary_path {
         let mut saved = HashMap::with_capacity(cells.len());
         for cell in &cells {
             saved.insert(cell.id.clone(), cell.source.clone());
         }
         *room.persistence.last_save_sources.write().await = saved;
+        room.persistence
+            .note_disk_content(content_with_newline.as_bytes());
     }
 
     info!(
@@ -1290,11 +1322,51 @@ pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) -> bool {
             return false;
         }
     }
-    if let Err(e) = std::fs::write(path, data) {
+    let tmp = sibling_temp_path(path);
+    if let Err(e) = std::fs::write(&tmp, data) {
         warn!("[notebook-sync] Failed to save notebook doc: {}", e);
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        warn!("[notebook-sync] Failed to save notebook doc: {}", e);
+        let _ = std::fs::remove_file(&tmp);
         return false;
     }
     true
+}
+
+/// A unique same-directory temp path for atomically replacing `path`.
+/// Same-directory keeps the final `rename` on one filesystem (cross-device
+/// renames fail), and the pid + counter make concurrent saves from this
+/// process collision-free.
+fn sibling_temp_path(path: &Path) -> PathBuf {
+    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "notebook".to_string());
+    path.with_file_name(format!(".{file_name}.{}-{n}.tmp", std::process::id()))
+}
+
+/// Write `bytes` to `path` through a same-directory temp file + rename so a
+/// reader never observes a torn/partial file: the path always holds either
+/// the previous complete content or the new complete content. Preserves the
+/// destination's permissions when it already exists.
+async fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = sibling_temp_path(path);
+    tokio::fs::write(&tmp, bytes).await?;
+    if let Ok(meta) = tokio::fs::metadata(path).await {
+        let _ = tokio::fs::set_permissions(&tmp, meta.permissions()).await;
+    }
+    match tokio::fs::rename(&tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(e)
+        }
+    }
 }
 
 // =============================================================================
@@ -1314,25 +1386,20 @@ pub(crate) fn spawn_notebook_file_watcher(
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     spawn_best_effort("notebook-file-watcher", async move {
-        // Determine what path to watch
-        let watch_path = if notebook_path.exists() {
-            notebook_path.clone()
-        } else if let Some(parent) = notebook_path.parent() {
-            // Watch parent directory if file doesn't exist yet
-            if !parent.exists() {
+        // Watch the parent directory, not the file itself. Saves replace the
+        // file via tempfile + rename (ours and most editors'), and an inotify
+        // watch on the file follows the old inode — it goes silent after the
+        // first rename-over. A directory watch survives replacement; the
+        // event loop below filters to `notebook_path`.
+        let watch_path = match notebook_path.parent() {
+            Some(parent) if parent.exists() => parent.to_path_buf(),
+            _ => {
                 warn!(
                     "[notebook-watch] Parent dir doesn't exist for {:?}",
                     notebook_path
                 );
                 return;
             }
-            parent.to_path_buf()
-        } else {
-            warn!(
-                "[notebook-watch] Cannot determine watch path for {:?}",
-                notebook_path
-            );
-            return;
         };
 
         // Create tokio mpsc channel to bridge from notify callback thread
@@ -1437,6 +1504,13 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 }
                             };
                             let external_metadata = parse_metadata_from_ipynb(&json);
+
+                            // The watcher has now observed this disk content and
+                            // is about to reconcile it into the doc. Refresh the
+                            // staleness baseline so autosave (which refuses to
+                            // overwrite unobserved external content) can write
+                            // the merged state on its next tick.
+                            room.persistence.note_disk_content(contents.as_bytes());
 
                             // Check if kernel is running (to preserve outputs)
                             let has_kernel = room.has_kernel().await;

@@ -1,5 +1,6 @@
 use super::*;
 use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
+use sha2::Digest as _;
 
 /// Per-room identity.
 ///
@@ -362,6 +363,17 @@ pub struct RoomPersistence {
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: AtomicU64,
+    /// SHA-256 of the `.ipynb` bytes as this daemon last saw them on disk:
+    /// seeded at load, refreshed after every self-write and every file-watcher
+    /// read. `save_notebook_to_disk` refuses a primary-path save when the
+    /// on-disk bytes no longer match this baseline — another writer (a second
+    /// daemon, `git pull`) changed the file and the watcher has not reconciled
+    /// it into the doc yet. The refusal is `Retryable`: the watcher merges the
+    /// external content and refreshes this baseline, and the autosave
+    /// debouncer's next tick writes the merged state. `None` means "no disk
+    /// content observed yet" (untitled rooms, Save As targets) and disables
+    /// the check.
+    last_known_disk_hash: std::sync::Mutex<Option<[u8; 32]>>,
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     is_loading: AtomicBool,
@@ -398,6 +410,7 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
+            last_known_disk_hash: std::sync::Mutex::new(None),
             is_loading: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
         }
@@ -416,8 +429,36 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
+            last_known_disk_hash: std::sync::Mutex::new(None),
             is_loading: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
+        }
+    }
+
+    /// Record the `.ipynb` bytes this daemon just observed on disk (loaded,
+    /// wrote, or ingested via the file watcher). Future primary-path saves
+    /// compare the on-disk file against this baseline.
+    pub fn note_disk_content(&self, bytes: &[u8]) {
+        let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+        if let Ok(mut hash) = self.last_known_disk_hash.lock() {
+            *hash = Some(digest);
+        }
+    }
+
+    /// The baseline recorded by [`Self::note_disk_content`], if any.
+    pub fn known_disk_hash(&self) -> Option<[u8; 32]> {
+        self.last_known_disk_hash.lock().ok().and_then(|h| *h)
+    }
+
+    /// True when `bytes` differ from the recorded disk baseline. `false` when
+    /// no baseline exists (nothing observed yet — the check is disabled).
+    pub fn disk_content_diverged(&self, bytes: &[u8]) -> bool {
+        match self.known_disk_hash() {
+            Some(baseline) => {
+                let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+                digest != baseline
+            }
+            None => false,
         }
     }
 
