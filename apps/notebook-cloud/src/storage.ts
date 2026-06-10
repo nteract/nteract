@@ -1419,6 +1419,8 @@ export async function recordBlob(
   }
 
   await ensureCatalogSchema(env);
+  // First-writer-wins: blobs are content-addressed, so a duplicate put carries
+  // identical bytes and must not rewrite the recorded content_type.
   await env.DB.prepare(
     `INSERT INTO notebook_blobs (
        notebook_id,
@@ -1427,11 +1429,7 @@ export async function recordBlob(
        content_type,
        r2_key
      ) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(notebook_id, hash) DO UPDATE SET
-       size = excluded.size,
-       content_type = excluded.content_type,
-       r2_key = excluded.r2_key,
-       uploaded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+     ON CONFLICT(notebook_id, hash) DO NOTHING`,
   )
     .bind(blob.notebookId, blob.hash, blob.size, blob.contentType, blob.r2Key)
     .run();

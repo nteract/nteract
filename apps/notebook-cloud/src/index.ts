@@ -3027,6 +3027,31 @@ async function routeBlob(
   }
 
   const contentType = request.headers.get("content-type");
+  // Content-addressed first-writer-wins: an existing object already holds
+  // these exact bytes (the hash was verified above), and its stored metadata
+  // (Content-Type) must not be rewritable by later writers. Skip the R2 write;
+  // recordBlob is idempotent and heals a missing catalog row.
+  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
+  if (existing) {
+    await recordBlob(env, {
+      notebookId,
+      hash,
+      size: body.byteLength,
+      contentType,
+      r2Key: key,
+    });
+    cloudLog("info", "blob.upload.deduplicated", {
+      notebook_id: notebookId,
+      hash,
+      byte_length: body.byteLength,
+      principal: authorizedIdentity.principal,
+      scope: authorizedIdentity.scope,
+      counter: "blob_upload_dedups",
+      counter_delta: 1,
+    });
+    return json({ ok: true, key, size: body.byteLength, deduplicated: true }, 200);
+  }
+
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: contentType ?? "application/octet-stream",

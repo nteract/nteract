@@ -2371,6 +2371,76 @@ describe("Worker artifact routes", () => {
     });
   });
 
+  it("keeps blob metadata first-writer-wins on duplicate put", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-demo");
+    seedAcl(env, {
+      notebookId: "runtime-demo",
+      subject: "user:dev:runtime-service",
+      scope: "runtime_peer",
+    });
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const hash = await sha256Hex(body);
+    const key = blobKey("runtime-demo", hash);
+    const headers = {
+      "X-Scope": "runtime_peer",
+      "X-User": "runtime-service",
+      "X-Operator": "runtime:py-3.12",
+    };
+
+    const first = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
+      ...headers,
+      "Content-Type": "application/vnd.apache.arrow.stream",
+    });
+    assert.equal(first.status, 201);
+
+    const second = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
+      ...headers,
+      "Content-Type": "text/plain",
+    });
+    assert.equal(second.status, 200);
+    assert.deepEqual(await second.json(), {
+      ok: true,
+      key,
+      size: body.byteLength,
+      deduplicated: true,
+    });
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.get(key)?.httpMetadata?.contentType,
+      "application/vnd.apache.arrow.stream",
+    );
+    assert.equal(
+      env.DB.blobs.get(`runtime-demo:${hash}`)?.content_type,
+      "application/vnd.apache.arrow.stream",
+    );
+  });
+
+  it("heals a missing catalog row on duplicate blob put", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-demo");
+    seedAcl(env, {
+      notebookId: "runtime-demo",
+      subject: "user:dev:runtime-service",
+      scope: "runtime_peer",
+    });
+    const body = new Uint8Array([5, 6, 7, 8]);
+    const hash = await sha256Hex(body);
+    const key = blobKey("runtime-demo", hash);
+    await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+      httpMetadata: { contentType: "image/png" },
+    });
+    assert.equal(env.DB.blobs.has(`runtime-demo:${hash}`), false);
+
+    const response = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
+      "Content-Type": "image/png",
+      "X-Scope": "runtime_peer",
+      "X-User": "runtime-service",
+      "X-Operator": "runtime:py-3.12",
+    });
+    assert.equal(response.status, 200);
+    assert.equal(env.DB.blobs.get(`runtime-demo:${hash}`)?.content_type, "image/png");
+  });
+
   it("caches authorized immutable blob reads at the Worker edge", async () => {
     const env = fakeEnv();
     seedNotebook(env, "blob-cache-demo");
@@ -5307,14 +5377,17 @@ class FakeD1Statement implements D1PreparedStatement {
         string | null,
         string,
       ];
-      this.db.blobs.set(`${notebookId}:${hash}`, {
-        notebook_id: notebookId,
-        hash,
-        size,
-        content_type: contentType,
-        r2_key: r2Key,
-        uploaded_at: new Date().toISOString(),
-      });
+      // Mirrors the real ON CONFLICT DO NOTHING: first writer wins.
+      if (!this.db.blobs.has(`${notebookId}:${hash}`)) {
+        this.db.blobs.set(`${notebookId}:${hash}`, {
+          notebook_id: notebookId,
+          hash,
+          size,
+          content_type: contentType,
+          r2_key: r2Key,
+          uploaded_at: new Date().toISOString(),
+        });
+      }
     } else if (this.query.includes("INSERT INTO principal_profiles")) {
       const [
         principal,
