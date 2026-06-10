@@ -358,7 +358,11 @@ document set. They are not the hosted persistence boundary.
 Keep identifiers boring and single-purpose:
 
 - `notebook_id` is the stable opaque room/catalog id. It drives routes, ACLs,
-  room placement, leases, workstations, and live sync.
+  room placement, leases, workstations, and live sync. New hosted notebook ids
+  are uniformly random 26-character Crockford base32 strings, giving 130 bits
+  of randomness while preserving the current URL-safe shape. Nothing may infer
+  time, order, tenancy, or placement from id structure; creation time lives in
+  `created_at`, and placement comes from hashing the full id.
 - document ids identify the individual Automerge documents whose immutable
   published snapshots live under `docs/{docId}`.
 - `revision_id` identifies an immutable published snapshot bundle for one
@@ -369,6 +373,10 @@ Keep identifiers boring and single-purpose:
   sharing surface.
 - titles and slugs are mutable display/navigation metadata. They are never
   authorization, placement, publication, or checkpoint authority.
+
+Existing prototype ULID-shaped notebook ids remain valid as opaque strings.
+They do not require migration and should not receive special routing or
+ordering behavior.
 
 The canonical hosted routes should be identity-first with optional decorative
 slugs:
@@ -444,8 +452,8 @@ seams without adding multi-host machinery yet:
   `RuntimeStateDoc`, and `CommsDoc` co-locate under that notebook id and are
   never placed independently, even though published snapshots use per-document
   `docs/{docId}` namespaces. Vanity names, document ids, and revision ids do
-  not route rooms. Notebook ids are ULID-like and time-prefixed, so any future
-  placement must hash; it must not range-partition by id.
+  not route rooms. Future placement still hashes the full id; it must not
+  range-partition, sort, or otherwise infer meaning from the id.
 - `RoomRegistry` resolution is the single admission gate after authentication
   and authorization. The v1 implementation can always return local ownership,
   but the shape should allow `resolve(notebook_id) -> Owned(handle) |
@@ -665,7 +673,8 @@ without AWS.
 7. Implement Postgres migrations and a `sqlx` `HostedCatalogStore` /
    `HostedAuthz` for catalog, ACL, sharing, workstations, and attach jobs.
    Preserve never-zero-owner ACL protection, partial unique active attach jobs,
-   document-set ids, and transactional revision publication.
+   document-set ids, a uniformly random hosted notebook id generator, and
+   transactional revision publication.
 8. Implement the app-session/OIDC credential layer and key-management contract
    needed by the Rust service.
 9. Add integration tests covering:
