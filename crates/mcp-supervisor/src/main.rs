@@ -3155,6 +3155,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server_name: "nteract-dev".to_string(),
                 cache_dir: Some(project_root.join(".context")),
                 monitor_poll_interval_ms: 500,
+                recovery_hint: "Relaunch the worktree dev daemon with the nteract-dev \
+                                `up` tool (rebuild=true if the binary is stale) or \
+                                `cargo xtask dev-daemon`."
+                    .to_string(),
             },
             tool_list_changed_tx,
         );

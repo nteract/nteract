@@ -68,6 +68,12 @@ pub struct ProxyConfig {
     /// Child monitor polling interval in milliseconds (default: 500ms).
     /// Lower values detect child exit faster but use more CPU.
     pub monitor_poll_interval_ms: u64,
+    /// Recovery action appended to terminal failure messages (circuit-breaker
+    /// trip, incompatible tool-list divergence). The launcher knows how its
+    /// child is installed and what restores it; the proxy does not. The MCPB
+    /// bundle points at reinstalling the extension, the dev supervisor at
+    /// relaunching the worktree daemon.
+    pub recovery_hint: String,
 }
 
 /// Shared mutable state for the proxy.
@@ -254,14 +260,16 @@ impl McpProxy {
 
             // Skip circuit breaker if child exited on its own (daemon upgrade)
             if !was_dead && !state.circuit_breaker.record_crash() {
-                let msg = "The nteract MCP server failed after repeated restarts. \
-                           Try restarting the nteract app, or restart your Claude session \
-                           so a fresh MCP connection is established. You may also need to \
-                           reinstall the nteract extension.";
-                state.reconnection_message = Some(msg.to_string());
+                let msg = format!(
+                    "The nteract MCP server failed after repeated restarts. \
+                     Restart your Claude session so a fresh MCP connection \
+                     is established. {}",
+                    self.config.recovery_hint
+                );
+                state.reconnection_message = Some(msg.clone());
                 drop(state);
                 self.clear_restart_in_progress().await;
-                return Err(msg.to_string());
+                return Err(msg);
             }
 
             (was_dead, old_child)
@@ -542,9 +550,12 @@ impl McpProxy {
             let state = self.state.read().await;
             if state.should_exit {
                 return Err(McpError::internal_error(
-                    "Tool list changed incompatibly after daemon upgrade. \
-                     The MCP server will exit so your client can reconnect with the updated tools. \
-                     You may need to reinstall the nteract extension.",
+                    format!(
+                        "Tool list changed incompatibly after daemon upgrade. \
+                         The MCP server will exit so your client can reconnect \
+                         with the updated tools. {}",
+                        self.config.recovery_hint
+                    ),
                     None,
                 ));
             }
@@ -1118,6 +1129,7 @@ mod tests {
             server_name: "test-proxy".to_string(),
             cache_dir: None,
             monitor_poll_interval_ms: 500,
+            recovery_hint: "Test recovery hint.".to_string(),
         }
     }
 
@@ -1129,6 +1141,7 @@ mod tests {
             server_name: "test-proxy".to_string(),
             cache_dir: Some(dir.to_path_buf()),
             monitor_poll_interval_ms: 500,
+            recovery_hint: "Test recovery hint.".to_string(),
         }
     }
 
@@ -1566,6 +1579,7 @@ mod tests {
             server_name: "nteract".to_string(),
             cache_dir: None,
             monitor_poll_interval_ms: 500,
+            recovery_hint: "Test recovery hint.".to_string(),
         };
 
         assert_eq!(config.child_env.len(), 2);
