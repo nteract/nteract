@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import {
-  notebookShellWorkstationAttachmentCacheKey,
-  type BlobResolver,
-  type CommChanges,
-  type WorkstationAttachmentState,
-} from "runtimed";
+import { type BlobResolver, type CommChanges } from "runtimed";
 import {
   applyWidgetCommBroadcastToStore,
   applyWidgetCommChangesToStore,
@@ -96,7 +91,6 @@ export interface CloudViewerSession {
   retryLiveConnection: () => void;
   snapshotResolvedRef: MutableRefObject<boolean>;
   status: ViewerStatus;
-  workstationAttachment: WorkstationAttachmentState | null;
 }
 
 interface UseCloudViewerSessionOptions {
@@ -139,10 +133,7 @@ export function useCloudViewerSession({
   });
   const [, setCells] = useState<ResolvedCell[]>([]);
   const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
-  const [workstationAttachment, setWorkstationAttachment] =
-    useState<WorkstationAttachmentState | null>(null);
   const notebookLanguageRef = useRef("python");
-  const workstationAttachmentKeyRef = useRef(notebookShellWorkstationAttachmentCacheKey(null));
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const materializeLiveRuntimeRef = useRef<((runtime: CloudSyncRuntime) => void) | null>(null);
   const liveMaterializedRef = useRef(false);
@@ -403,8 +394,10 @@ export function useCloudViewerSession({
       setConnectionScope(null);
       setConnectionActorLabel(null);
       setConnectionError(reason.message);
-      setWorkstationAttachment(null);
-      workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
+      // Workstation attachment lives in the shared runtime-state store;
+      // resetRuntimeState() below (via disposeCurrentRuntime/reconnect)
+      // clears it through the workstation$ projection.
+      resetRuntimeState();
       disposeCurrentRuntime();
       if (reconnectTimer) return;
       reconnectTimer = setTimeout(() => {
@@ -526,8 +519,7 @@ export function useCloudViewerSession({
     materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
     presenceStore.reset();
-    setWorkstationAttachment(null);
-    workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
+    resetRuntimeState();
     setConnectionError(null);
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
@@ -599,14 +591,11 @@ export function useCloudViewerSession({
               console.warn("[notebook-cloud] live changeset materialization failed", error);
             },
           }),
+          // Workstation attachment is consumed via the shared store's
+          // deduplicated workstation$ projection (useWorkstationAttachment);
+          // no per-host shadow state.
           liveRuntime.engine.runtimeState$.subscribe((state) => {
             setRuntimeState(state);
-            const nextAttachment = state.workstation ?? null;
-            const nextKey = notebookShellWorkstationAttachmentCacheKey(nextAttachment);
-            if (nextKey !== workstationAttachmentKeyRef.current) {
-              workstationAttachmentKeyRef.current = nextKey;
-              setWorkstationAttachment(nextAttachment);
-            }
           }),
           liveRuntime.engine.executionViewChanges$.subscribe((changeset) => {
             applyExecutionViewChangeset(changeset);
@@ -651,8 +640,7 @@ export function useCloudViewerSession({
         setConnectionScope(null);
         setConnectionActorLabel(null);
         setConnectionPeerId(null);
-        setWorkstationAttachment(null);
-        workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
+        resetRuntimeState();
         setConnectionError(message);
         void diagnoseCloudConnectionAccess({
           accessRequestsEndpoint: config.accessRequestsEndpoint,
@@ -691,8 +679,6 @@ export function useCloudViewerSession({
       livePresenceStore = null;
       presenceStore.reduceConnection("disconnected");
       setConnectionPeerId(null);
-      setWorkstationAttachment(null);
-      workstationAttachmentKeyRef.current = notebookShellWorkstationAttachmentCacheKey(null);
     };
   }, [
     authRenewalKind,
@@ -735,7 +721,6 @@ export function useCloudViewerSession({
     retryLiveConnection,
     snapshotResolvedRef,
     status,
-    workstationAttachment,
   };
 }
 

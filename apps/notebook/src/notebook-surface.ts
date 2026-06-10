@@ -26,9 +26,13 @@ export type { JupyterOutput } from "./types";
 export { resetPoolState, setPoolState } from "./lib/pool-state";
 export {
   resetRuntimeState,
+  runtimeStateStore,
   setRuntimeState,
+  useRuntimeProjection,
   useRuntimeState,
   useRuntimeStateLoaded,
+  useThrottledStatusKey,
+  useWorkstationAttachment,
 } from "./lib/runtime-state";
 export { startCursorDispatch } from "./lib/cursor-registry";
 export { setLoggerHost } from "./lib/logger";

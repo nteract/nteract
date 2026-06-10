@@ -40,6 +40,9 @@ export {
   type SessionControlMessage,
 } from "./protocol-contract";
 
+// Reactive runtime-state store (framework-agnostic RxJS projections)
+export { BUSY_THROTTLE_MS, RuntimeStateStore, throttleBusyStatus } from "./runtime-state-store";
+
 // Scope capabilities (generated from nteract_identity::ConnectionScope)
 export {
   CONNECTION_SCOPES,
