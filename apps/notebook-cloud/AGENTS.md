@@ -69,8 +69,22 @@ Use the narrowest relevant command:
 pnpm --dir apps/notebook-cloud typecheck
 pnpm --dir apps/notebook-cloud test
 pnpm --dir apps/notebook-cloud build:viewer
+
+# Core room smoke
 pnpm --dir apps/notebook-cloud smoke:hosted:live-room
+pnpm --dir apps/notebook-cloud smoke:hosted:collab
+
+# Runtime peer / workstation attach
 pnpm --dir apps/notebook-cloud smoke:hosted:runtime-peer
+pnpm --dir apps/notebook-cloud smoke:hosted:workstation-agent
+pnpm --dir apps/notebook-cloud smoke:hosted:workstation-toolbar
+
+# Browser-side execution
+pnpm --dir apps/notebook-cloud smoke:hosted:browser-execute
+pnpm --dir apps/notebook-cloud smoke:hosted:runtime-browser-execute
+
+# Widget cross-window sync
+pnpm --dir apps/notebook-cloud smoke:hosted:widget-cross-window
 ```
 
 Before committing any repo change, still run the root-required formatter/lint:

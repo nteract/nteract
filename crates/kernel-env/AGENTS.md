@@ -141,17 +141,15 @@ Kernel is dead at this point so rename is safe.
 
 ## Project file discovery
 
-Unified detection in `crates/runtimed/src/project_file.rs`:
+Unified detection in `crates/runtimed/src/`:
 
 | Module | Purpose |
 |--------|---------|
-| `project_file.rs` | `find_nearest_project_file()` — single walk-up, closest wins |
-| `pyproject.rs` | Parsing, Tauri commands, `find_pyproject()` |
-| `pixi.rs` | Parsing, Tauri commands, `find_pixi_toml()` |
-| `environment_yml.rs` | Parsing, Tauri commands, `find_environment_yml()` |
-| `deno_env.rs` | `find_deno_config()` |
+| `project_file.rs` | `find_nearest_project_file()` — single walk-up, closest wins; handles pyproject.toml, pixi.toml, environment.yml |
+| `pixi_project.rs` | Pixi project launch helpers; offline-tolerant `pixi shell-hook` probe with frozen retry |
+| `uv_project.rs` | UV project launch helpers; `uv run` command construction for pyproject-backed kernels |
 
-All walk-up functions stop at `.git` boundaries and user's home directory.
+Walk-up stops at `.git` boundaries and the user's home directory. Tiebreaker order within a directory: pyproject.toml > pixi.toml > environment.yml.
 
 ## Notebook metadata schema
 

@@ -1,6 +1,6 @@
 # Runtime daemon (runtimed)
 
-Scope: `crates/runtimed/**`, `crates/runtimed-client/**`, `crates/runtimed-outputs/**`, `crates/runtimed-service/**`, `crates/runtimed-settings-sync/**`, `crates/runtimed-py/**`, `crates/runtime-doc/**`, `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`, `packages/runtimed/**`.
+Scope: `crates/runtimed/**`, `crates/runt/**`, `crates/runtimed-client/**`, `crates/runtimed-outputs/**`, `crates/runtimed-service/**`, `crates/runtimed-settings-sync/**`, `crates/runtimed-py/**`, `crates/runtime-doc/**`, `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`, `packages/runtimed/**`.
 
 ## Core principles
 
@@ -187,24 +187,46 @@ runt ps                     # List all kernels
 runt notebooks              # List open notebooks
 ```
 
+### Cloud workstation attach
+
+Remote machines offer compute to hosted notebook rooms via `runtimed cloud-runtime-agent`. The agent dials out over WebSocket — no inbound ports required. See `docs/remote-workstation.md` for the operator path and `docs/adr/remote-workstation-doc-agents.md` for design context.
+
+```bash
+RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
+  --cloud-url https://app.runt.run \
+  --notebook-id <id>
+```
+
+The workstation module lives in `crates/runtimed/src/workstation/`. It handles the cloud agent CLI, launch-on-attach, environment allocation, and reconnect logic.
+
 ## Code structure
 
 ```
 crates/runtimed/src/
-├── main.rs                   # CLI entry point
+├── main.rs                   # CLI entry point (runtimed and cloud-runtime-agent subcommands)
 ├── daemon.rs                 # State, pool management, connection routing
 ├── notebook_sync_server/     # Room lifecycle, peer sync, persistence, metadata/trust
 ├── runtime_agent.rs          # Runtime agent subprocess: peer, CRDT queue, kernel ownership
 ├── runtime_agent_handle.rs   # Coordinator-side agent spawn + monitor
 ├── jupyter_kernel.rs         # Process spawn, ZMQ sockets, IOPub routing
 ├── output_prep.rs            # IOPub → nbformat conversion, widget buffers, blob offload
+├── output_committer.rs       # Output commit pipeline with priority path for control signals
+├── output_blob_publisher.rs  # Blob upload coordination for output manifests
+├── stream_committer.rs       # Stream output (stdout/stderr) batched commit path
+├── stream_terminal.rs        # Terminal emulator for carriage-return/ANSI in stream output
 ├── output_store.rs           # Manifest creation, blob inlining threshold
 ├── blob_store.rs             # Content-addressed storage with metadata sidecars
 ├── blob_server.rs            # HTTP read server (hyper 1.x)
 ├── inline_env.rs             # Inline dependency env caching
-├── project_file.rs           # Project file detection
+├── project_file.rs           # Unified project file detection (closest-wins walk-up)
+├── pixi_project.rs           # Pixi project launch helpers (offline-tolerant shell-hook probe)
+├── uv_project.rs             # UV project launch helpers
+├── workstation/              # Cloud workstation: agent CLI, launch-on-attach, env allocation
+├── cloud_peer.rs             # Hosted cloud peer session (outbound WebSocket runtime_peer)
+├── embedded_plugins.rs       # Renderer plugin bytes embedded at build time
 ├── singleton.rs              # Daemon locking/singleton
-└── sync_server.rs            # Settings Automerge sync
+├── sync_server.rs            # Settings Automerge sync
+└── task_supervisor.rs        # Background task supervision
 ```
 
 ## Shipped app behavior
