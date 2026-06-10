@@ -9,8 +9,10 @@ import { getOutputById } from "../notebook-outputs";
 import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
+  getOutputProjectionFailures,
   resetRuntimeStoresProjection,
   seedOutputStoresFromHandle,
+  subscribeOutputProjectionFailures,
 } from "../project-runtime-stores";
 
 afterEach(() => {
@@ -162,5 +164,111 @@ describe("applyOutputChangeset", () => {
       name: "stdout",
       text: "hello from cloud",
     });
+  });
+
+  // FSB-1: failed resolutions are retried, then surfaced — never silently
+  // stale.
+  it("retries transient resolution failures before storing the output", async () => {
+    let calls = 0;
+    const blobResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("blob server blip");
+        return new Response("recovered");
+      }),
+    };
+
+    await applyOutputChangeset(
+      [
+        [
+          "out-retry",
+          {
+            output_id: "out-retry",
+            output_type: "stream",
+            name: "stdout",
+            text: { blob: "blob-r", size: 9 },
+          },
+        ],
+      ],
+      [],
+      { blobResolver, retryDelaysMs: [0] },
+    );
+
+    expect(blobResolver.fetch).toHaveBeenCalledTimes(2);
+    expect(getOutputById("out-retry")).toMatchObject({ text: "recovered" });
+    expect(getOutputProjectionFailures()).toEqual([]);
+  });
+
+  it("records a projection failure after retries are exhausted, and clears it on later success", async () => {
+    const failing = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        throw new Error("persistent failure");
+      }),
+    };
+    const manifest = {
+      output_id: "out-fail",
+      output_type: "stream",
+      name: "stdout",
+      text: { blob: "blob-f", size: 5 },
+    };
+
+    const failureEvents: number[] = [];
+    const unsubscribe = subscribeOutputProjectionFailures(() => {
+      failureEvents.push(getOutputProjectionFailures().length);
+    });
+
+    await applyOutputChangeset([["out-fail", manifest]], [], {
+      blobResolver: failing,
+      retryDelaysMs: [0],
+    });
+
+    expect(failing.fetch).toHaveBeenCalledTimes(2);
+    expect(getOutputProjectionFailures()).toEqual(["out-fail"]);
+    expect(getOutputById("out-fail")).toBeUndefined();
+
+    // A later changeset tick that resolves the same output clears the entry.
+    const recovering = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => new Response("late success")),
+    };
+    await applyOutputChangeset([["out-fail", manifest]], [], {
+      blobResolver: recovering,
+      retryDelaysMs: [0],
+    });
+
+    expect(getOutputProjectionFailures()).toEqual([]);
+    expect(getOutputById("out-fail")).toMatchObject({ text: "late success" });
+    expect(failureEvents).toEqual([1, 0]);
+    unsubscribe();
+  });
+
+  it("drops failure entries when the output is removed", async () => {
+    const failing = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        throw new Error("persistent failure");
+      }),
+    };
+    await applyOutputChangeset(
+      [
+        [
+          "out-gone",
+          {
+            output_id: "out-gone",
+            output_type: "stream",
+            name: "stdout",
+            text: { blob: "blob-g", size: 5 },
+          },
+        ],
+      ],
+      [],
+      { blobResolver: failing, retryDelaysMs: [] },
+    );
+    expect(getOutputProjectionFailures()).toEqual(["out-gone"]);
+
+    await applyOutputChangeset([], ["out-gone"], { blobResolver: failing });
+    expect(getOutputProjectionFailures()).toEqual([]);
   });
 });

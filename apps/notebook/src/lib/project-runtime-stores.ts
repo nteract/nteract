@@ -50,6 +50,62 @@ export interface ApplyOutputChangesetOptions {
    */
   blobResolver?: HostBlobResolver | null;
   refreshBlobResolver?: () => Promise<HostBlobResolver | null>;
+  /** Test hook: per-attempt retry delay override (default 250ms, 1s). */
+  retryDelaysMs?: readonly number[];
+}
+
+// ── Output projection failure surface (FSB-1) ────────────────────────
+//
+// A failed manifest resolution used to be swallowed at `warn`, leaving the
+// output store silently stale. Failures are now retried with bounded
+// backoff, and outputs that still fail are recorded here so UI and
+// diagnostics can see "N outputs failed to load" instead of nothing.
+// A later successful resolution (next changeset tick, reconnect) clears
+// the entry.
+
+const OUTPUT_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
+
+const failedOutputIds = new Set<string>();
+const failureSubscribers = new Set<() => void>();
+let failureSnapshot: readonly string[] = [];
+
+function notifyFailureSubscribers(): void {
+  failureSnapshot = [...failedOutputIds];
+  for (const cb of failureSubscribers) {
+    try {
+      cb();
+    } catch {
+      // Subscriber errors must not break the dispatch loop.
+    }
+  }
+}
+
+function recordOutputProjectionFailure(output_id: string): void {
+  if (failedOutputIds.has(output_id)) return;
+  failedOutputIds.add(output_id);
+  notifyFailureSubscribers();
+}
+
+function clearOutputProjectionFailure(output_id: string): void {
+  if (!failedOutputIds.delete(output_id)) return;
+  notifyFailureSubscribers();
+}
+
+/** Output ids whose projection failed after retries (stale in the store). */
+export function getOutputProjectionFailures(): readonly string[] {
+  return failureSnapshot;
+}
+
+/** Subscribe to projection-failure changes. Returns an unsubscribe fn. */
+export function subscribeOutputProjectionFailures(cb: () => void): () => void {
+  failureSubscribers.add(cb);
+  return () => {
+    failureSubscribers.delete(cb);
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -162,6 +218,11 @@ export async function applyOutputChangeset(
 ): Promise<void> {
   if (removed_ids.length > 0) {
     deleteOutputs(removed_ids);
+    let droppedFailure = false;
+    for (const output_id of removed_ids) {
+      droppedFailure = failedOutputIds.delete(output_id) || droppedFailure;
+    }
+    if (droppedFailure) notifyFailureSubscribers();
   }
   if (changed.length === 0) return;
 
@@ -176,10 +237,12 @@ export async function applyOutputChangeset(
       : await refreshBlobResolver();
   }
 
+  const retryDelays = options.retryDelaysMs ?? OUTPUT_RETRY_DELAYS_MS;
   for (const [output_id, raw] of changed) {
     const sync = tryResolveSync(raw, blobResolver);
     if (sync) {
       setOutput(output_id, sync);
+      clearOutputProjectionFailure(output_id);
       markExecutionPerformance("runtime.output.applied", { outputId: output_id });
       continue;
     }
@@ -187,18 +250,38 @@ export async function applyOutputChangeset(
       logger.warn(
         `[outputs-store] blob resolver unavailable; deferring output ${output_id}`,
       );
+      recordOutputProjectionFailure(output_id);
       continue;
     }
     if (!isOutputManifest(raw)) continue;
-    try {
-      const resolved = await resolveManifest(raw, blobResolver);
-      setOutput(output_id, resolved);
-      markExecutionPerformance("runtime.output.applied", { outputId: output_id });
-    } catch (err) {
-      logger.warn(
-        `[outputs-store] Failed to resolve output ${output_id}:`,
-        err,
-      );
+    // Retry transient resolution failures (blob HTTP blips) with bounded
+    // backoff before declaring the output stale (FSB-1). Only the final
+    // outcome is logged; per-attempt noise stays at debug.
+    let resolvedOk = false;
+    for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      try {
+        const resolved = await resolveManifest(raw, blobResolver);
+        setOutput(output_id, resolved);
+        clearOutputProjectionFailure(output_id);
+        markExecutionPerformance("runtime.output.applied", { outputId: output_id });
+        resolvedOk = true;
+        break;
+      } catch (err) {
+        if (attempt < retryDelays.length) {
+          logger.debug(
+            `[outputs-store] resolve attempt ${attempt + 1} failed for ${output_id}; retrying`,
+          );
+          await sleep(retryDelays[attempt]);
+        } else {
+          logger.warn(
+            `[outputs-store] Failed to resolve output ${output_id} after ${attempt + 1} attempts:`,
+            err,
+          );
+        }
+      }
+    }
+    if (!resolvedOk) {
+      recordOutputProjectionFailure(output_id);
     }
   }
 }
@@ -228,6 +311,10 @@ function tryResolveSync(
 export function resetRuntimeStoresProjection(): void {
   resetNotebookExecutions();
   resetNotebookOutputs();
+  if (failedOutputIds.size > 0) {
+    failedOutputIds.clear();
+    notifyFailureSubscribers();
+  }
 }
 
 function collectOutputIds(outputs: readonly unknown[] | undefined): string[] {
