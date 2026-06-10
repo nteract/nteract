@@ -20,8 +20,8 @@ use crate::protocol::{CompletionItem, HistoryEntry};
 use crate::test_kernel::TestKernel;
 
 pub enum Kernel {
-    Jupyter(JupyterKernel),
-    Test(TestKernel),
+    Jupyter(Box<JupyterKernel>),
+    Test(Box<TestKernel>),
 }
 
 impl Kernel {
@@ -45,10 +45,10 @@ impl KernelConnection for Kernel {
     ) -> Result<(Self, QueueCommandReceivers)> {
         if config.kernel_type == "test" {
             let (k, rx) = TestKernel::launch(config, shared).await?;
-            Ok((Kernel::Test(k), rx))
+            Ok((Kernel::Test(Box::new(k)), rx))
         } else {
             let (k, rx) = JupyterKernel::launch(config, shared).await?;
-            Ok((Kernel::Jupyter(k), rx))
+            Ok((Kernel::Jupyter(Box::new(k)), rx))
         }
     }
 
