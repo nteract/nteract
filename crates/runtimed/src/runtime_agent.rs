@@ -3191,7 +3191,7 @@ mod tests {
         handle_lifecycle_signal(
             LifecycleSignal::KernelDied,
             &ctx,
-            &mut None::<JupyterKernel>,
+            &mut None::<Kernel>,
             &mut state,
         )
         .await
@@ -3224,7 +3224,7 @@ mod tests {
         handle_lifecycle_signal(
             LifecycleSignal::KernelDied,
             &ctx,
-            &mut None::<JupyterKernel>,
+            &mut None::<Kernel>,
             &mut state,
         )
         .await
@@ -3257,7 +3257,7 @@ mod tests {
         let drained = drain_lifecycle_commands(
             &mut receivers.lifecycle_rx,
             &ctx,
-            &mut None::<JupyterKernel>,
+            &mut None::<Kernel>,
             &mut state,
         )
         .await
@@ -3361,7 +3361,7 @@ mod tests {
                 execution_id: "eA".to_string(),
             },
             &ctx,
-            &mut None::<JupyterKernel>,
+            &mut None::<Kernel>,
             &mut state,
         )
         .await

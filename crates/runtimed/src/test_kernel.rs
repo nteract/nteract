@@ -142,3 +142,150 @@ impl KernelConnection for TestKernel {
 
     fn update_launched_uv_deps(&mut self, _: Vec<String>) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use notebook_doc::presence::PresenceState;
+    use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig};
+    use runtime_doc::{
+        CommsDoc, CommsDocHandle, KernelActivity, RuntimeLifecycle, RuntimeStateDoc,
+    };
+    use tokio::sync::{broadcast, RwLock};
+
+    use super::*;
+    use crate::blob_store::BlobStore;
+    use crate::kernel_connection::{KernelLaunchConfig, KernelSharedRefs};
+    use crate::output_blob_publisher::OutputBlobPublisher;
+
+    fn test_launch_config(kernel_type: &str) -> KernelLaunchConfig {
+        KernelLaunchConfig {
+            kernel_type: kernel_type.to_string(),
+            env_source: "test".to_string(),
+            notebook_path: None,
+            launched_config: LaunchedEnvConfig::default(),
+            kernel_ports: KernelPorts {
+                stdin: 0,
+                control: 0,
+                hb: 0,
+                shell: 0,
+                iopub: 0,
+            },
+            env_vars: vec![],
+            redact_env_values_in_outputs: false,
+            pooled_env: None,
+            direct_python_path: None,
+        }
+    }
+
+    fn test_shared_refs() -> (KernelSharedRefs, RuntimeStateHandle) {
+        let (state_tx, _) = broadcast::channel(64);
+        let handle = RuntimeStateHandle::new(RuntimeStateDoc::new(), state_tx);
+        let (comms_tx, _) = broadcast::channel(64);
+        let comms = CommsDocHandle::new(CommsDoc::new(), comms_tx);
+        let (broadcast_tx, _) = broadcast::channel(16);
+        let (presence_tx, _) = broadcast::channel(16);
+        let blob_store = Arc::new(BlobStore::new(
+            std::env::temp_dir().join("test-kernel-blobs"),
+        ));
+        let presence = Arc::new(RwLock::new(PresenceState::new()));
+        let shared = KernelSharedRefs {
+            state: handle.clone(),
+            comms,
+            blob_store,
+            output_blob_publisher: OutputBlobPublisher::none(),
+            broadcast_tx,
+            presence,
+            presence_tx,
+            kernel_actor_principal: None,
+        };
+        (shared, handle)
+    }
+
+    /// Scaffold a queued execution entry so the kernel has something to run.
+    fn scaffold_queued_execution(handle: &RuntimeStateHandle, execution_id: &str, source: &str) {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        handle
+            .with_doc(|sd| sd.create_execution_with_source(execution_id, source, seq))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn launch_sets_kernel_idle() {
+        let (shared, handle) = test_shared_refs();
+        let (_kernel, _rx) = TestKernel::launch(test_launch_config("test"), shared)
+            .await
+            .unwrap();
+
+        let state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle),
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_marks_execution_done_with_output() {
+        let (shared, handle) = test_shared_refs();
+        let (mut kernel, mut receivers) = TestKernel::launch(test_launch_config("test"), shared)
+            .await
+            .unwrap();
+
+        scaffold_queued_execution(&handle, "exec-1", "1 + 1");
+        kernel.execute("exec-1", None, "1 + 1").await.unwrap();
+
+        // Execution entry should be marked done with success.
+        let exec = handle
+            .read(|sd| sd.get_execution("exec-1"))
+            .unwrap()
+            .expect("execution entry present");
+        assert_eq!(exec.status, "done");
+        assert_eq!(exec.success, Some(true));
+
+        // One stdout output echoing the source should be present.
+        let outputs = handle.read(|sd| sd.get_outputs("exec-1")).unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["output_type"], "stream");
+        assert_eq!(outputs[0]["name"], "stdout");
+        assert_eq!(outputs[0]["text"]["inline"], "1 + 1");
+
+        // ExecutionDone lifecycle signal should have been sent.
+        let signal = receivers
+            .lifecycle_rx
+            .recv()
+            .await
+            .expect("lifecycle signal");
+        assert!(matches!(
+            signal,
+            crate::output_prep::LifecycleSignal::ExecutionDone { execution_id }
+            if execution_id == "exec-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_increments_execution_count() {
+        let (shared, handle) = test_shared_refs();
+        let (mut kernel, _rx) = TestKernel::launch(test_launch_config("test"), shared)
+            .await
+            .unwrap();
+
+        scaffold_queued_execution(&handle, "exec-a", "x = 1");
+        scaffold_queued_execution(&handle, "exec-b", "x = 2");
+        kernel.execute("exec-a", None, "x = 1").await.unwrap();
+        kernel.execute("exec-b", None, "x = 2").await.unwrap();
+
+        let a = handle
+            .read(|sd| sd.get_execution("exec-a"))
+            .unwrap()
+            .unwrap();
+        let b = handle
+            .read(|sd| sd.get_execution("exec-b"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(a.execution_count, Some(1));
+        assert_eq!(b.execution_count, Some(2));
+    }
+}
