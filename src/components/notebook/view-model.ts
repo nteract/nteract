@@ -140,30 +140,13 @@ export function notebookViewCellsToOutlineItems(
 }
 
 function notebookViewCellMarkdownAnchors(cell: NotebookViewCell) {
-  // Live adapters attach markdownProjection during materialization/source edits.
-  // Treat a fresh attached projection as authoritative, including an empty
-  // anchor list for headingless markdown, so outline projection stays O(cells)
-  // in the common path. If the source has moved ahead of the projection, fall
-  // back to the source-keyed projector so outline headings update before a full
-  // rematerialization/reload.
-  if (
-    cell.markdownProjection &&
-    markdownProjectionMatchesSource(cell.markdownProjection, cell.source)
-  ) {
-    return cell.markdownProjection.anchors;
-  }
+  if (!cell.source.trim()) return [];
 
-  // This Rust/WASM fallback keeps older host adapters correct without reviving
-  // a second heading parser; projectMarkdownPlan is source-key cached.
-  return projectMarkdownPlan(cell.source)?.anchors ?? null;
-}
-
-function markdownProjectionMatchesSource(plan: MarkdownProjectionPlan, source: string): boolean {
-  return plan.utf16Length === source.length && plan.byteLength === markdownSourceByteLength(source);
-}
-
-function markdownSourceByteLength(source: string): number {
-  return new TextEncoder().encode(source).byteLength;
+  // Outline should track the current source, not merely an attached projection
+  // snapshot. The projector is source-key cached, so materialized cells reuse
+  // the existing plan while edited cells get a fresh heading list before a full
+  // rematerialization/reload catches up.
+  return projectMarkdownPlan(cell.source)?.anchors ?? cell.markdownProjection?.anchors ?? null;
 }
 
 export function notebookViewCellsToTracebackTargets(

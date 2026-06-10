@@ -113,7 +113,7 @@ describe("notebook shell view model", () => {
     }
   });
 
-  it("treats attached empty markdownProjection anchors as authoritative", () => {
+  it("prefers current source projection over attached empty markdownProjection anchors", () => {
     let calls = 0;
     const restore = setMarkdownProjectionProjector((source) => {
       calls += 1;
@@ -125,39 +125,59 @@ describe("notebook shell view model", () => {
     try {
       const outline = notebookViewCellsToOutlineItems([markdownViewCell("intro", "# Intro", [])]);
 
-      expect(calls).toBe(0);
-      expect(outline).toHaveLength(1);
-      expect(outline[0]).toMatchObject({
-        id: "intro:cell",
-        kind: "cell",
-        headingAnchorId: null,
-      });
+      expect(calls).toBe(1);
+      expect(outline.map((item) => [item.id, item.title, item.anchor])).toEqual([
+        ["intro:heading:0", "Intro", "intro"],
+      ]);
     } finally {
       restore();
     }
   });
 
-  it("reprojects stale attached markdownProjection anchors from current source", () => {
+  it("reprojects same-length stale markdownProjection anchors from current source", () => {
     let calls = 0;
     const restore = setMarkdownProjectionProjector((source) => {
       calls += 1;
       return JSON.stringify(
-        testMarkdownProjection(source, [{ title: "More fun", level: 1, slug: "more-fun" }]),
+        testMarkdownProjection(
+          source,
+          source.includes("Deep in the emoji train")
+            ? [
+                { title: "Later section", level: 2, slug: "later-section" },
+                { title: "Deep in the emoji train", level: 3, slug: "deep-in-the-emoji-train" },
+                { title: "Deeper note", level: 3, slug: "deeper-note" },
+              ]
+            : [
+                { title: "Later section", level: 2, slug: "later-section" },
+                { title: "Deeper note", level: 3, slug: "deeper-note" },
+              ],
+        ),
       );
     });
 
     try {
-      const staleCell = markdownViewCell("intro", "Markdown body row", []);
+      const currentSource = "## Later section\n\n### Deep in the emoji train\n\n### Deeper note";
+      const staleSource = "## Later section\n\n### Deeper note\n\n".padEnd(
+        currentSource.length,
+        "X",
+      );
+      expect(currentSource.length).toBe(staleSource.length);
+      const staleCell = markdownViewCell("later", staleSource, [
+        { title: "Later section", level: 2, slug: "later-section" },
+        { title: "Deeper note", level: 3, slug: "deeper-note" },
+      ]);
       const outline = notebookViewCellsToOutlineItems([
         {
           ...staleCell,
-          source: "# More fun\n\nMarkdown body row",
+          source: currentSource,
         },
       ]);
 
       expect(calls).toBe(1);
       expect(outline.map((item) => [item.id, item.title, item.anchor])).toEqual([
-        ["intro:heading:0", "More fun", "more-fun"],
+        ["later:heading:0", "Later section", "later-section"],
+        ["later:heading:1", "Deep in the emoji train", "deep-in-the-emoji-train"],
+        ["later:heading:2", "Deeper note", "deeper-note"],
       ]);
     } finally {
       restore();
