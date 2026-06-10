@@ -1,9 +1,9 @@
 //! In-memory test kernel for deterministic E2E tests.
 //!
 //! `TestKernel` implements `KernelConnection` without ZMQ, real kernel processes,
-//! or environment resolution. It writes directly to `RuntimeStateDoc` and signals
-//! `ExecutionDone` over the lifecycle channel so the runtime agent's queue loop
-//! advances exactly as it would with a real kernel.
+//! or environment resolution. It writes running/output state directly to
+//! `RuntimeStateDoc` and signals `ExecutionDone` over the lifecycle channel so
+//! the runtime agent's queue loop owns terminal state and queue release.
 //!
 //! Activated when `kernel_type == "test"` in a `LaunchKernel` request.
 
@@ -74,7 +74,6 @@ impl KernelConnection for TestKernel {
             sd.set_execution_running(&eid)?;
             sd.set_execution_count(&eid, self.execution_counter as i64)?;
             sd.append_output(&eid, &manifest)?;
-            sd.set_execution_done(&eid, true)?;
             Ok(())
         }) {
             debug!(
@@ -157,6 +156,7 @@ mod tests {
     use super::*;
     use crate::blob_store::BlobStore;
     use crate::kernel_connection::{KernelLaunchConfig, KernelSharedRefs};
+    use crate::kernel_state::KernelState;
     use crate::output_blob_publisher::OutputBlobPublisher;
 
     fn test_launch_config(kernel_type: &str) -> KernelLaunchConfig {
@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_marks_execution_done_with_output() {
+    async fn execute_marks_running_with_output_and_signals_done() {
         let (shared, handle) = test_shared_refs();
         let (mut kernel, mut receivers) = TestKernel::launch(test_launch_config("test"), shared)
             .await
@@ -236,13 +236,14 @@ mod tests {
         scaffold_queued_execution(&handle, "exec-1", "1 + 1");
         kernel.execute("exec-1", None, "1 + 1").await.unwrap();
 
-        // Execution entry should be marked done with success.
+        // The kernel writes running/output state. Terminal status is owned by
+        // KernelState::execution_done after the lifecycle signal is processed.
         let exec = handle
             .read(|sd| sd.get_execution("exec-1"))
             .unwrap()
             .expect("execution entry present");
-        assert_eq!(exec.status, "done");
-        assert_eq!(exec.success, Some(true));
+        assert_eq!(exec.status, "running");
+        assert_eq!(exec.success, None);
 
         // One stdout output echoing the source should be present.
         let outputs = handle.read(|sd| sd.get_outputs("exec-1")).unwrap();
@@ -262,6 +263,60 @@ mod tests {
             crate::output_prep::LifecycleSignal::ExecutionDone { execution_id }
             if execution_id == "exec-1"
         ));
+    }
+
+    #[tokio::test]
+    async fn kernel_state_marks_done_and_releases_queue_after_lifecycle_signal() {
+        let (shared, handle) = test_shared_refs();
+        let (mut kernel, mut receivers) = TestKernel::launch(test_launch_config("test"), shared)
+            .await
+            .unwrap();
+        let mut state = KernelState::new(handle.clone());
+        state.set_idle();
+
+        state
+            .queue_cell("exec-1".into(), None, "1 + 1".into(), &mut kernel)
+            .await
+            .unwrap();
+
+        let before = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            before
+                .queue
+                .executing
+                .as_ref()
+                .map(|e| e.execution_id.as_str()),
+            Some("exec-1")
+        );
+        let exec = handle
+            .read(|sd| sd.get_execution("exec-1"))
+            .unwrap()
+            .expect("execution entry present");
+        assert_eq!(exec.status, "running");
+        assert_eq!(exec.success, None);
+
+        let signal = receivers
+            .lifecycle_rx
+            .recv()
+            .await
+            .expect("lifecycle signal");
+        let crate::output_prep::LifecycleSignal::ExecutionDone { execution_id } = signal else {
+            panic!("expected ExecutionDone");
+        };
+        state
+            .execution_done(&execution_id, &mut kernel)
+            .await
+            .unwrap();
+
+        let after = handle.read(|sd| sd.read_state()).unwrap();
+        assert!(after.queue.executing.is_none());
+        assert!(after.queue.queued.is_empty());
+        let exec = handle
+            .read(|sd| sd.get_execution("exec-1"))
+            .unwrap()
+            .expect("execution entry present");
+        assert_eq!(exec.status, "done");
+        assert_eq!(exec.success, Some(true));
     }
 
     #[tokio::test]
