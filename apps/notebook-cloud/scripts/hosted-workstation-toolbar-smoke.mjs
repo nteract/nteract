@@ -9,6 +9,7 @@ import {
   buildWorkstationAuthHeaders,
   DEFAULT_WORKSTATION_AUTH_KIND,
   normalizeWorkstationAuthKind,
+  parseHttpResponseBody,
 } from "./hosted-workstation-agent-core.mjs";
 import {
   saveSmokeScreenshot,
@@ -857,7 +858,7 @@ async function fetchJson({
   }
 
   const response = await fetch(new URL(pathname, baseUrl), requestInit);
-  const payload = await response.json().catch(async () => ({ error: await response.text() }));
+  const payload = await parseHttpResponseBody(response);
   if (!expectedStatuses.includes(response.status)) {
     throw new Error(`${label} failed: ${response.status} ${JSON.stringify(payload)}`);
   }

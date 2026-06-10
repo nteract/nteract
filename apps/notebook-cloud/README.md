@@ -720,12 +720,17 @@ polls `GET /api/workstations/:workstationId/attach-jobs`, and spawns
 `runtimed cloud-runtime-agent` for pending attach jobs. API-key auth is the
 default (`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`); set
 `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc` when `NTERACT_API_KEY` carries a
-short-lived OIDC bearer token. The credential is passed to the runtime peer
-through `RUNT_CLOUD_TOKEN`, not through argv; `runtimed` removes cloud
-environment variables again before launching the Python kernel. Run this helper
-inside tmux for preview/manual testing so the polling agent stays alive while
-the browser attaches workstations. The first registered workstation becomes the
-account default automatically; use the Workstations rail or
+short-lived OIDC bearer token. Prefer API-key auth for long-lived tmux/systemd
+workstations; browser OIDC token refresh depends on an active browser session.
+The credential is passed to the runtime peer through `RUNT_CLOUD_TOKEN`, not
+through argv; `runtimed` removes cloud environment variables again before
+launching the Python kernel. When the hosted service returns a rate-limit or
+maintenance response (`429`/`503`), the runner honors `Retry-After` when
+present and otherwise backs off with a capped exponential cooldown before
+heartbeating or polling again. Run this helper inside tmux for preview/manual
+testing so the polling agent stays alive while the browser attaches
+workstations. The first registered workstation becomes the account default
+automatically; use the Workstations rail or
 `PATCH /api/workstations/default` only when switching to another machine. In a
 private owner room, the toolbar can then request attachment directly.
 
