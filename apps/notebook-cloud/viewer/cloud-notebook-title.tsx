@@ -1,10 +1,22 @@
+import { House } from "lucide-react";
+
 export function CloudNotebookTitle() {
   const title = cloudNotebookRouteTitle();
 
   return (
-    <div className="cloud-notebook-title" title={title.title}>
-      <span>{title.label}</span>
-      {title.detail ? <small>{title.detail}</small> : null}
+    <div className="cloud-notebook-title-group">
+      <a
+        className="cloud-notebook-home-link"
+        href="/n"
+        aria-label="Open notebooks dashboard"
+        title="Notebooks"
+      >
+        <House aria-hidden="true" />
+      </a>
+      <div className="cloud-notebook-title" title={title.title}>
+        <span>{title.label}</span>
+        {title.detail ? <small>{title.detail}</small> : null}
+      </div>
     </div>
   );
 }

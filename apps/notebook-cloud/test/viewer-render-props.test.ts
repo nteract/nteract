@@ -115,6 +115,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const sharingSourcePath = new URL("../viewer/sharing-controls.tsx", import.meta.url);
   const sharingSourceText = readFileSync(sharingSourcePath, "utf8");
+  const titleSourcePath = new URL("../viewer/cloud-notebook-title.tsx", import.meta.url);
+  const titleSourceText = readFileSync(titleSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
   const cssText = readFileSync(cssPath, "utf8");
 
@@ -131,6 +133,9 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /<NotebookDocumentToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(sourceText, /presence=\{<CloudNotebookTitle \/>/);
   assert.match(sourceText, /import \{ CloudNotebookTitle \} from "\.\/cloud-notebook-title";/);
+  assert.match(titleSourceText, /className="cloud-notebook-home-link"/);
+  assert.match(titleSourceText, /<House aria-hidden="true" \/>/);
+  assert.doesNotMatch(titleSourceText, /cloud-notebook-logo/);
   assert.doesNotMatch(sourceText, /function shouldShowCloudNotebookCommandToolbar/);
   assert.doesNotMatch(sourceText, /toolbarClassName="cloud-report-toolbar"/);
   assert.match(sourceText, /sharingControls=\{[\s\S]*<CloudSharingControls/);
@@ -228,7 +233,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     cssText,
-    /@media \(max-width: 900px\) \{[\s\S]*cloud-room-toolbar[\s\S]*flex-wrap: wrap;[\s\S]*cloud-room-toolbar \[data-slot="notebook-document-header-controls"\] \{[\s\S]*min-width: 0;/,
+    /@media \(max-width: 900px\) \{[\s\S]*cloud-room-toolbar[\s\S]*flex-wrap: nowrap;[\s\S]*cloud-room-toolbar \[data-slot="notebook-document-header-controls"\] \{[\s\S]*min-width: 0;[\s\S]*justify-content: flex-end;/,
   );
   assert.match(
     cssText,

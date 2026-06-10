@@ -74,6 +74,10 @@ import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
+import {
+  cloudNotebookModeFromSearch,
+  replaceCloudNotebookModeInCurrentUrl,
+} from "./cloud-notebook-mode";
 import type { CloudViewerAuthConfig, ViewerRuntime } from "./cloud-viewer-types";
 import {
   useCloudAppSessionBridge,
@@ -144,8 +148,9 @@ export function NotebookViewer({
     null,
   );
   const [accessRequestError, setAccessRequestError] = useState<string | null>(null);
-  const [selectedInteractionMode, setSelectedInteractionMode] =
-    useState<NotebookInteractionMode>("view");
+  const [selectedInteractionMode, setSelectedInteractionMode] = useState<NotebookInteractionMode>(
+    () => cloudNotebookModeFromSearch(window.location.search),
+  );
   const [emptyRoomGraceElapsed, setEmptyRoomGraceElapsed] = useState(false);
   const blobResolver = useMemo(
     () =>
@@ -247,6 +252,9 @@ export function NotebookViewer({
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
+  useEffect(() => {
+    replaceCloudNotebookModeInCurrentUrl(selectedInteractionMode);
+  }, [selectedInteractionMode]);
 
   const notebookViewModel = useNotebookViewModel({
     metadata: notebookMetadata,

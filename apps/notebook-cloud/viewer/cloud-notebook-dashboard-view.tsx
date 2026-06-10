@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  cloudNotebookDashboardOpenUrl,
   cloudNotebookDisplayTitle,
   cloudNotebookShortId,
   projectCloudNotebookDashboardView,
@@ -72,7 +73,10 @@ export function CloudNotebookDashboard({
               ))}
             </div>
           </div>
-          <a className="cloud-dashboard-primary-link" href={continued.notebook.viewer_url}>
+          <a
+            className="cloud-dashboard-primary-link"
+            href={cloudNotebookDashboardOpenUrl(continued.notebook)}
+          >
             Open notebook
             <ExternalLink aria-hidden="true" />
           </a>
@@ -294,6 +298,7 @@ function CloudNotebookDashboardRow({
   }
 
   const { notebook } = row;
+  const openUrl = cloudNotebookDashboardOpenUrl(notebook);
   const hasTitle = Boolean(notebook.title?.trim());
   const detail = hasTitle
     ? row.contextLabel
@@ -303,7 +308,7 @@ function CloudNotebookDashboardRow({
 
   return (
     <div className="cloud-notebook-list-row">
-      <a className="cloud-notebook-list-main" href={notebook.viewer_url}>
+      <a className="cloud-notebook-list-main" href={openUrl}>
         <span className="cloud-notebook-list-title">{cloudNotebookDisplayTitle(notebook)}</span>
         {detail ? <span className="cloud-notebook-list-detail">{detail}</span> : null}
         {row.facts.length > 0 ? (
@@ -332,7 +337,7 @@ function CloudNotebookDashboardRow({
         ) : null}
         <a
           className="cloud-notebook-list-icon-button"
-          href={notebook.viewer_url}
+          href={openUrl}
           title="Open notebook"
           aria-label={`Open ${cloudNotebookDisplayTitle(notebook)}`}
         >

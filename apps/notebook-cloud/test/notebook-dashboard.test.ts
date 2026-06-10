@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  cloudNotebookDashboardOpenUrl,
   cloudNotebookDisplayTitle,
   cloudNotebookShortId,
   projectCloudNotebookDashboard,
@@ -119,6 +120,50 @@ describe("cloud notebook dashboard projection", () => {
           notebooks: ["01KTHB58DSJWERSEWHD3EJD74P", "01KSQKEPFJVHV4T4ZDYS9V7T80"],
         },
       ],
+    );
+  });
+
+  it("opens owned notebooks in edit mode while preserving shared notebooks in view mode", () => {
+    const owned = notebook({
+      id: "owned-notebook",
+      title: "Owned notebook",
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const editor = notebook({
+      id: "editor-notebook",
+      title: "Editor notebook",
+      scope: "editor",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+    const viewer = notebook({
+      id: "viewer-notebook",
+      title: "Viewer notebook",
+      scope: "viewer",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+
+    assert.equal(cloudNotebookDashboardOpenUrl(owned), "/n/owned-notebook/notebook?mode=edit");
+    assert.equal(cloudNotebookDashboardOpenUrl(editor), "/n/editor-notebook/notebook?mode=view");
+    assert.equal(cloudNotebookDashboardOpenUrl(viewer), "/n/viewer-notebook/notebook?mode=view");
+  });
+
+  it("replaces any stale dashboard mode parameter without losing hash anchors", () => {
+    const owned = notebook({
+      id: "owned-notebook",
+      title: "Owned notebook",
+      scope: "owner",
+      updatedAt: "2026-06-07T15:00:00.000Z",
+      latestRevisionId: null,
+    });
+    owned.viewer_url = "http://localhost/n/owned-notebook/Owned%20notebook?mode=view#section-a";
+
+    assert.equal(
+      cloudNotebookDashboardOpenUrl(owned),
+      "http://localhost/n/owned-notebook/Owned%20notebook?mode=edit#section-a",
     );
   });
 
