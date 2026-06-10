@@ -503,30 +503,16 @@ where
                                 if let Ok(envelope) = serde_json::from_slice::<
                                     notebook_protocol::protocol::RuntimeAgentRequestEnvelope,
                                 >(&typed_frame.payload) {
-                                    // Interrupt bypasses &mut kernel via InterruptHandle
-                                    if matches!(envelope.request, RuntimeAgentRequest::InterruptExecution) {
-                                        if let Some(ref handle) = interrupt_handle {
-                                            let handle = handle.clone();
-                                            let (interrupted, cleared) = kernel_state.interrupt();
-                                            // Write cleared entries AND sweep any CRDT-synced
-                                            // executions that haven't reached the local queue yet.
-                                            // Only the agent does this sweep - the coordinator
-                                            // intentionally does NOT, so that final state is
-                                            // determined by the agent regardless of timing.
-                                            mark_interrupted_executions_failed(
-                                                &state,
-                                                interrupted.as_ref(),
-                                                &cleared,
-                                            );
-                                            // Interrupt kernel in background — don't block the loop
-                                            tokio::spawn(async move {
-                                                if let Err(e) = handle.interrupt().await {
-                                                    warn!("[runtime-agent] Interrupt failed: {}", e);
-                                                }
-                                            });
-                                        } else {
-                                            warn!("[runtime-agent] Interrupt requested but no kernel running");
-                                        }
+                                    // Jupyter interrupts bypass &mut kernel via InterruptHandle.
+                                    // Kernels without an out-of-band handle fall through to the
+                                    // generic request handler below.
+                                    if matches!(envelope.request, RuntimeAgentRequest::InterruptExecution)
+                                        && interrupt_via_handle_if_available(
+                                            interrupt_handle.as_ref(),
+                                            &state,
+                                            &mut kernel_state,
+                                        )
+                                    {
                                         continue;
                                     }
 
@@ -2310,6 +2296,33 @@ async fn free_superseded_ephemeral_blobs(blob_store: &BlobStore, comm_id: &str, 
     }
 }
 
+fn interrupt_via_handle_if_available(
+    interrupt_handle: Option<&crate::jupyter_kernel::InterruptHandle>,
+    state: &RuntimeStateHandle,
+    kernel_state: &mut KernelState,
+) -> bool {
+    let Some(handle) = interrupt_handle else {
+        return false;
+    };
+
+    let handle = handle.clone();
+    let (interrupted, cleared) = kernel_state.interrupt();
+    // Write cleared entries AND sweep any CRDT-synced executions that haven't
+    // reached the local queue yet. Only the agent does this sweep - the
+    // coordinator intentionally does NOT, so final state is determined by the
+    // agent regardless of timing.
+    mark_interrupted_executions_failed(state, interrupted.as_ref(), &cleared);
+
+    // Interrupt kernel in background — don't block the loop.
+    tokio::spawn(async move {
+        if let Err(e) = handle.interrupt().await {
+            warn!("[runtime-agent] Interrupt failed: {}", e);
+        }
+    });
+
+    true
+}
+
 struct RehydratedCommUpdate {
     state: serde_json::Value,
     buffer_paths: Vec<Vec<String>>,
@@ -2955,6 +2968,39 @@ mod tests {
         (ctx, state, handle)
     }
 
+    fn test_kernel_launch_config() -> KernelLaunchConfig {
+        KernelLaunchConfig {
+            kernel_type: "test".to_string(),
+            env_source: "test".to_string(),
+            notebook_path: None,
+            launched_config: LaunchedEnvConfig::default(),
+            kernel_ports: notebook_protocol::protocol::KernelPorts {
+                stdin: 0,
+                control: 0,
+                hb: 0,
+                shell: 0,
+                iopub: 0,
+            },
+            env_vars: vec![],
+            redact_env_values_in_outputs: false,
+            pooled_env: None,
+            direct_python_path: None,
+        }
+    }
+
+    fn kernel_shared_refs(ctx: &RuntimeAgentContext) -> KernelSharedRefs {
+        KernelSharedRefs {
+            state: ctx.state.clone(),
+            comms: ctx.comms.clone(),
+            blob_store: ctx.blob_store.clone(),
+            output_blob_publisher: ctx.output_blob_publisher.clone(),
+            broadcast_tx: ctx.broadcast_tx.clone(),
+            presence: ctx.presence.clone(),
+            presence_tx: ctx.presence_tx.clone(),
+            kernel_actor_principal: ctx.kernel_actor_principal.clone(),
+        }
+    }
+
     #[test]
     fn record_kernel_launched_state_publishes_running_kernel_projection() {
         let (ctx, _state, handle) = test_fixtures();
@@ -2972,6 +3018,54 @@ mod tests {
         assert_eq!(runtime_state.kernel.env_source, "uv:current_python");
         assert_eq!(runtime_state.kernel.runtime_agent_id, "test-runtime-agent");
         assert!(runtime_state.env.prewarmed_packages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn interrupt_without_out_of_band_handle_uses_generic_kernel_path() {
+        let (ctx, mut state, handle) = test_fixtures();
+        let (kernel, _rx) = Kernel::launch(test_kernel_launch_config(), kernel_shared_refs(&ctx))
+            .await
+            .unwrap();
+        assert!(kernel.interrupt_handle().is_none());
+
+        let mut kernel = Some(kernel);
+        state.set_idle();
+        state
+            .queue_cell(
+                "exec-1".into(),
+                None,
+                "while True: pass".into(),
+                kernel.as_mut().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.executing_cell().map(String::as_str), Some("exec-1"));
+        assert!(!interrupt_via_handle_if_available(
+            None, &handle, &mut state
+        ));
+        assert_eq!(state.executing_cell().map(String::as_str), Some("exec-1"));
+
+        let (response, rx) = handle_runtime_agent_request(
+            RuntimeAgentRequest::InterruptExecution,
+            &ctx,
+            &mut kernel,
+            &mut state,
+            &mut HashSet::new(),
+        )
+        .await;
+
+        assert!(rx.is_none());
+        assert!(matches!(
+            response,
+            RuntimeAgentResponse::InterruptAcknowledged { .. }
+        ));
+        assert!(state.executing_cell().is_none());
+        let exec = handle
+            .read(|sd| sd.get_execution("exec-1"))
+            .unwrap()
+            .expect("execution entry present");
+        assert_eq!(exec.status, "error");
+        assert_eq!(exec.success, Some(false));
     }
 
     #[test]
