@@ -46,7 +46,7 @@ export type FrameListener = (payload: number[]) => void;
  *
  * - `"connecting"` — initial state before the first successful connection.
  * - `"online"` — transport is connected and operational.
- * - `"offline"` — transport has lost its connection (non-manual close).
+ * - `"offline"` — transport is closed or otherwise unavailable.
  * - `"reconnecting"` — reconnect attempt in progress (reserved for transports with retry logic).
  */
 export type ConnectionStatus = "connecting" | "online" | "offline" | "reconnecting";
