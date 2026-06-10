@@ -244,6 +244,100 @@ describe("applyOutputChangeset", () => {
     unsubscribe();
   });
 
+  // P1 regression: applyOutputChangeset calls are not serialized — an older
+  // tick's retry can resume after a newer tick removed or replaced the same
+  // output. The per-output generation guard must make the stale write a
+  // no-op.
+  it("a suspended retry cannot resurrect an output removed by a newer tick", async () => {
+    let releaseFirstAttempt: (() => void) | undefined;
+    const firstAttemptStarted = new Promise<void>((resolve) => {
+      releaseFirstAttempt = () => resolve();
+    });
+    let failFirst = true;
+    const blobResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        if (failFirst) {
+          failFirst = false;
+          releaseFirstAttempt?.();
+          throw new Error("transient");
+        }
+        return new Response("stale payload");
+      }),
+    };
+
+    const olderTick = applyOutputChangeset(
+      [
+        [
+          "out-race",
+          {
+            output_id: "out-race",
+            output_type: "stream",
+            name: "stdout",
+            text: { blob: "blob-x", size: 5 },
+          },
+        ],
+      ],
+      [],
+      { blobResolver, retryDelaysMs: [20] },
+    );
+
+    // While the older tick sleeps before its retry, a newer tick removes
+    // the output.
+    await firstAttemptStarted;
+    await applyOutputChangeset([], ["out-race"], { blobResolver });
+
+    await olderTick;
+    expect(getOutputById("out-race")).toBeUndefined();
+    expect(getOutputProjectionFailures()).toEqual([]);
+  });
+
+  it("a suspended retry cannot downgrade a newer manifest for the same output", async () => {
+    let releaseFirstAttempt: (() => void) | undefined;
+    const firstAttemptStarted = new Promise<void>((resolve) => {
+      releaseFirstAttempt = () => resolve();
+    });
+    let failFirst = true;
+    const slowResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => {
+        if (failFirst) {
+          failFirst = false;
+          releaseFirstAttempt?.();
+          throw new Error("transient");
+        }
+        return new Response("old payload");
+      }),
+    };
+    const fastResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(async () => new Response("new payload")),
+    };
+    const manifestFor = (blob: string) => ({
+      output_id: "out-race2",
+      output_type: "stream",
+      name: "stdout",
+      text: { blob, size: 11 },
+    });
+
+    const olderTick = applyOutputChangeset([["out-race2", manifestFor("blob-old")]], [], {
+      blobResolver: slowResolver,
+      retryDelaysMs: [20],
+    });
+
+    await firstAttemptStarted;
+    await applyOutputChangeset([["out-race2", manifestFor("blob-new")]], [], {
+      blobResolver: fastResolver,
+      retryDelaysMs: [],
+    });
+    expect(getOutputById("out-race2")).toMatchObject({ text: "new payload" });
+
+    await olderTick;
+    // The older tick's late resolution must not downgrade the newer write.
+    expect(getOutputById("out-race2")).toMatchObject({ text: "new payload" });
+    expect(getOutputProjectionFailures()).toEqual([]);
+  });
+
   it("drops failure entries when the output is removed", async () => {
     const failing = {
       url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,

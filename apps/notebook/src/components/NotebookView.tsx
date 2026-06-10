@@ -43,6 +43,7 @@ import {
   useOutputFocusedCellId,
 } from "@/components/notebook/state/output-focus-store";
 import { logger } from "../lib/logger";
+import { useOutputProjectionFailures } from "../lib/project-runtime-stores";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 import {
   getCellById,
@@ -376,6 +377,8 @@ function NotebookViewContent({
   const focusedCellId = useFocusedCellId();
   const searchCurrentMatch = useSearchCurrentMatch();
   const outputFocusedCellId = useOutputFocusedCellId();
+  // FSB-1 failure surface: outputs whose projection failed after retries.
+  const outputProjectionFailures = useOutputProjectionFailures();
 
   // Output-focus follows cell selection: when the user moves the caret to a
   // different cell (arrow keys, click, programmatic focus), the previously
@@ -1040,6 +1043,17 @@ function NotebookViewContent({
       {loadError ? (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           Notebook failed to finish loading: {loadError}
+        </div>
+      ) : null}
+      {outputProjectionFailures.length > 0 ? (
+        <div
+          className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
+          data-testid="output-projection-failures"
+        >
+          {outputProjectionFailures.length === 1
+            ? "1 output failed to load"
+            : `${outputProjectionFailures.length} outputs failed to load`}{" "}
+          and may be stale. They will refresh on the next change or reconnect.
         </div>
       ) : null}
       {cellIds.length === 0 ? (

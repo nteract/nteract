@@ -12,6 +12,7 @@
  * there is no synthetic `legacy:<eid>:<idx>` key in these stores.
  */
 
+import { useSyncExternalStore } from "react";
 import type { ExecutionViewChangeset } from "runtimed";
 import type { HostBlobResolver } from "@nteract/notebook-host";
 import type { JupyterOutput } from "../types";
@@ -65,6 +66,30 @@ export interface ApplyOutputChangesetOptions {
 
 const OUTPUT_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
 
+// ── Per-output write generations ─────────────────────────────────────
+//
+// `applyOutputChangeset` calls are NOT serialized (desktop bridge and the
+// cloud session both fire-and-forget each outputIdChanges$ tick), and the
+// retry backoff suspends mid-loop. Without a guard, an older tick's retry
+// can resume after a newer tick removed or replaced the same output id and
+// unconditionally write — resurrecting a deleted output or downgrading a
+// newer manifest to an older one. Each tick stamps a fresh generation per
+// output id it touches; a write only lands if its generation is still
+// current when the async work completes.
+
+const outputGenerations = new Map<string, number>();
+let nextOutputGeneration = 0;
+
+function stampOutputGeneration(output_id: string): number {
+  const generation = ++nextOutputGeneration;
+  outputGenerations.set(output_id, generation);
+  return generation;
+}
+
+function outputGenerationIsCurrent(output_id: string, generation: number): boolean {
+  return outputGenerations.get(output_id) === generation;
+}
+
 const failedOutputIds = new Set<string>();
 const failureSubscribers = new Set<() => void>();
 let failureSnapshot: readonly string[] = [];
@@ -102,6 +127,19 @@ export function subscribeOutputProjectionFailures(cb: () => void): () => void {
   return () => {
     failureSubscribers.delete(cb);
   };
+}
+
+/**
+ * Subscribe to the projection-failure list. NotebookView renders the
+ * "N outputs failed to load" banner from this; both hosts project through
+ * `applyOutputChangeset`, so the surface is cross-host by construction.
+ */
+export function useOutputProjectionFailures(): readonly string[] {
+  return useSyncExternalStore(
+    subscribeOutputProjectionFailures,
+    getOutputProjectionFailures,
+    getOutputProjectionFailures,
+  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -218,6 +256,11 @@ export async function applyOutputChangeset(
 ): Promise<void> {
   if (removed_ids.length > 0) {
     deleteOutputs(removed_ids);
+    // Removal supersedes any in-flight resolution for these ids: bump the
+    // generation so a suspended older tick cannot resurrect them.
+    for (const output_id of removed_ids) {
+      stampOutputGeneration(output_id);
+    }
     let droppedFailure = false;
     for (const output_id of removed_ids) {
       droppedFailure = failedOutputIds.delete(output_id) || droppedFailure;
@@ -225,6 +268,16 @@ export async function applyOutputChangeset(
     if (droppedFailure) notifyFailureSubscribers();
   }
   if (changed.length === 0) return;
+
+  // Stamp this tick's generation for every output it will write — before
+  // the first await, so a later tick that touches the same ids invalidates
+  // this one even while it is suspended in resolver discovery or retry.
+  const generations = new Map<string, number>();
+  for (const [output_id] of changed) {
+    generations.set(output_id, stampOutputGeneration(output_id));
+  }
+  const writeIsCurrent = (output_id: string) =>
+    outputGenerationIsCurrent(output_id, generations.get(output_id) ?? -1);
 
   // Stream/display-update manifests with text blob refs need host blob access.
   // Fetch it on demand so a race between the first manifest and resolver
@@ -239,6 +292,7 @@ export async function applyOutputChangeset(
 
   const retryDelays = options.retryDelaysMs ?? OUTPUT_RETRY_DELAYS_MS;
   for (const [output_id, raw] of changed) {
+    if (!writeIsCurrent(output_id)) continue;
     const sync = tryResolveSync(raw, blobResolver);
     if (sync) {
       setOutput(output_id, sync);
@@ -256,11 +310,17 @@ export async function applyOutputChangeset(
     if (!isOutputManifest(raw)) continue;
     // Retry transient resolution failures (blob HTTP blips) with bounded
     // backoff before declaring the output stale (FSB-1). Only the final
-    // outcome is logged; per-attempt noise stays at debug.
+    // outcome is logged; per-attempt noise stays at debug. Every resume
+    // from an await re-checks the generation: a newer tick that wrote or
+    // removed this output id makes this older attempt a silent no-op.
     let resolvedOk = false;
     for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
       try {
         const resolved = await resolveManifest(raw, blobResolver);
+        if (!writeIsCurrent(output_id)) {
+          resolvedOk = true; // superseded, not failed
+          break;
+        }
         setOutput(output_id, resolved);
         clearOutputProjectionFailure(output_id);
         markExecutionPerformance("runtime.output.applied", { outputId: output_id });
@@ -272,6 +332,10 @@ export async function applyOutputChangeset(
             `[outputs-store] resolve attempt ${attempt + 1} failed for ${output_id}; retrying`,
           );
           await sleep(retryDelays[attempt]);
+          if (!writeIsCurrent(output_id)) {
+            resolvedOk = true; // superseded while sleeping
+            break;
+          }
         } else {
           logger.warn(
             `[outputs-store] Failed to resolve output ${output_id} after ${attempt + 1} attempts:`,
@@ -280,7 +344,7 @@ export async function applyOutputChangeset(
         }
       }
     }
-    if (!resolvedOk) {
+    if (!resolvedOk && writeIsCurrent(output_id)) {
       recordOutputProjectionFailure(output_id);
     }
   }
