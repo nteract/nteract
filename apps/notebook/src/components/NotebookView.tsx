@@ -37,6 +37,11 @@ import {
   useFocusedCellId,
   useSearchCurrentMatch,
 } from "@/components/notebook/state/cell-ui-state";
+import {
+  clearOutputFocusedCellId,
+  setOutputFocusedCellId,
+  useOutputFocusedCellId,
+} from "@/components/notebook/state/output-focus-store";
 import { logger } from "../lib/logger";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
 import {
@@ -370,33 +375,32 @@ function NotebookViewContent({
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
   const searchCurrentMatch = useSearchCurrentMatch();
-  const [outputFocusedCellId, setOutputFocusedCellId] = useState<string | null>(null);
+  const outputFocusedCellId = useOutputFocusedCellId();
 
   // Output-focus follows cell selection: when the user moves the caret to a
   // different cell (arrow keys, click, programmatic focus), the previously
   // output-focused cell exits focus. This keeps the "wheel ownership" cell
   // and the "keyboard target" cell aligned without separate handlers.
   //
-  // The `focusedCellId !== null` guard is load-bearing: cell-ui-state uses a
-  // deferred-flush subscriber pattern, so when a click on the focus button
-  // calls onFocusCell + setOutputFocusedCellId in the same tick, the local
-  // useState update lands first and `focusedCellId` is briefly stale (null
-  // or the previous cell) until the cell-ui-state flush propagates. Without
-  // this guard the effect races and clears output focus before it sticks.
-  // Treat null as "no current selection," not "user moved selection away."
+  // The `focusedCellId !== null` guard was needed when outputFocusedCellId
+  // lived in useState (which committed before the deferred cell-ui-state
+  // flush resolved focusedCellId). Both values are now in stores that emit
+  // via React's batching, so the guard is no longer load-bearing — but it
+  // is kept as a safety net: treat null as "no current selection," not
+  // "user moved selection away."
   useEffect(() => {
     if (
       outputFocusedCellId !== null &&
       focusedCellId !== null &&
       focusedCellId !== outputFocusedCellId
     ) {
-      setOutputFocusedCellId(null);
+      clearOutputFocusedCellId();
     }
   }, [focusedCellId, outputFocusedCellId]);
 
   useEffect(() => {
     if (outputFocusedCellId !== null && !cellIds.includes(outputFocusedCellId)) {
-      setOutputFocusedCellId(null);
+      clearOutputFocusedCellId();
     }
   }, [cellIds, outputFocusedCellId]);
 
@@ -425,7 +429,7 @@ function NotebookViewContent({
     if (outputFocusedCellId === null) return;
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setOutputFocusedCellId(null);
+        clearOutputFocusedCellId();
         publishInteractionTarget({ kind: "cell", cellId: outputFocusedCellId });
       }
     };
@@ -448,7 +452,7 @@ function NotebookViewContent({
         `[data-slot="cell-container"][data-cell-id="${outputFocusedCellId}"]`,
       );
       if (focusedCellEl && !focusedCellEl.contains(target)) {
-        setOutputFocusedCellId(null);
+        clearOutputFocusedCellId();
         publishInteractionTarget({ kind: "cell", cellId: outputFocusedCellId });
       }
     };
@@ -463,7 +467,7 @@ function NotebookViewContent({
         setOutputFocusedCellId(cellId);
         return;
       }
-      setOutputFocusedCellId((current) => (current === cellId ? null : current));
+      clearOutputFocusedCellId(cellId);
       publishInteractionTarget({ kind: "cell", cellId });
     },
     [focusInteractionTarget, publishInteractionTarget],
