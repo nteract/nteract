@@ -1,3 +1,5 @@
+import { cloudNotebookUrlWithMode, type CloudNotebookUrlMode } from "./cloud-notebook-mode";
+
 export interface CloudNotebookListItem {
   notebook_id: string;
   title: string | null;
@@ -163,12 +165,20 @@ export function cloudNotebookDisplayTitle(notebook: CloudNotebookListItem): stri
   return notebook.title?.trim() || "Untitled notebook";
 }
 
+export function cloudNotebookDashboardOpenUrl(notebook: CloudNotebookListItem): string {
+  return cloudNotebookUrlWithMode(notebook.viewer_url, cloudNotebookDefaultOpenMode(notebook));
+}
+
 export function cloudNotebookShortId(notebookId: string): string {
   const trimmed = notebookId.trim();
   if (trimmed.length <= 12) {
     return trimmed;
   }
   return `${trimmed.slice(0, 8)}...${trimmed.slice(-4)}`;
+}
+
+function cloudNotebookDefaultOpenMode(notebook: CloudNotebookListItem): CloudNotebookUrlMode {
+  return notebook.scope === "owner" ? "edit" : "view";
 }
 
 export function isCloudNotebookListItem(value: unknown): value is CloudNotebookListItem {

@@ -393,7 +393,15 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   assert.match(cssText, /\.cloud-notebook-notices \{[\s\S]*top: var\(--cloud-notice-top\);/);
   assert.match(
     cssText,
-    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: 4\.75rem;[\s\S]*\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-top: calc\(4\.75rem \+ 2\.5rem\);/,
+    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-notebook-shell \{[\s\S]*--cloud-notice-top: 3\.75rem;[\s\S]*\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-top: calc\(3\.75rem \+ 2\.5rem\);/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-room-toolbar \{[\s\S]*flex-wrap: nowrap;/,
+  );
+  assert.match(
+    cssText,
+    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-room-toolbar \[data-slot="notebook-document-header-controls"\] \{[\s\S]*justify-content: flex-end;/,
   );
   assert.match(
     shellText,
