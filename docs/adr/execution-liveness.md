@@ -9,7 +9,7 @@ Neighbors:
 - `docs/adr/execution-pipeline.md` — the seven invariants behind cell execution.
 - `docs/adr/document-split.md` — `RuntimeStateDoc` as the durable record.
 - `docs/adr/identity-and-trust.md` — who is allowed to interrupt or restart.
-- `docs/adr/cleanup-punchlist.md` — EP-3 row links here.
+- `docs/adr/execution-pipeline.md` — EP-3 in its tracked follow-ups links here.
 
 ## Context
 

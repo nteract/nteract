@@ -576,10 +576,11 @@ async fn test_file_backed_room_discards_legacy_persisted_history_before_ipynb_im
     );
 
     {
-        let mut doc = room.doc.write().await;
-        load_notebook_from_disk(&mut doc, &notebook_path, &room.blob_store)
+        let prepared = prepare_notebook_load(&notebook_path, &room.blob_store, None)
             .await
             .unwrap();
+        let mut doc = room.doc.write().await;
+        apply_notebook_load(&mut doc, None, None, prepared).unwrap();
         assert_eq!(doc.cell_count(), 1);
         let cells = doc.get_cells();
         assert_eq!(cells[0].id, "ipynb-cell");
@@ -1380,14 +1381,15 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
     // save path no longer reads the on-disk file to rescue unknown
     // keys, so they must be in the doc.
     {
-        let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::load_notebook_from_disk(
-            &mut doc,
+        let prepared = crate::notebook_sync_server::prepare_notebook_load(
             &notebook_path,
             &room.blob_store,
+            None,
         )
         .await
         .unwrap();
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
         doc.add_cell(1, "cell1", "code").unwrap();
         doc.update_source("cell1", "x = 1").unwrap();
     }
@@ -1497,10 +1499,11 @@ async fn test_save_persists_real_ids_for_legacy_notebook() {
 
     let blob_store = room.blob_store.clone();
     {
-        let mut doc = room.doc.write().await;
-        load_notebook_from_disk(&mut doc, &notebook_path, &blob_store)
+        let prepared = prepare_notebook_load(&notebook_path, &blob_store, None)
             .await
             .unwrap();
+        let mut doc = room.doc.write().await;
+        apply_notebook_load(&mut doc, None, None, prepared).unwrap();
     }
 
     save_notebook_to_disk(&room, None).await.unwrap();
@@ -8290,14 +8293,15 @@ async fn test_save_round_trips_unknown_top_level_metadata() {
     .unwrap();
 
     {
-        let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::load_notebook_from_disk(
-            &mut doc,
+        let prepared = crate::notebook_sync_server::prepare_notebook_load(
             &notebook_path,
             &room.blob_store,
+            None,
         )
         .await
         .unwrap();
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
     }
 
     save_notebook_to_disk(&room, None).await.unwrap();
@@ -8340,14 +8344,15 @@ async fn test_save_does_not_stamp_synthetic_runt_on_vanilla_notebook() {
     .unwrap();
 
     {
-        let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::load_notebook_from_disk(
-            &mut doc,
+        let prepared = crate::notebook_sync_server::prepare_notebook_load(
             &notebook_path,
             &room.blob_store,
+            None,
         )
         .await
         .unwrap();
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
     }
 
     save_notebook_to_disk(&room, None).await.unwrap();
@@ -8473,14 +8478,15 @@ async fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
     )
     .unwrap();
     {
-        let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::load_notebook_from_disk(
-            &mut doc,
+        let prepared = crate::notebook_sync_server::prepare_notebook_load(
             &notebook_path,
             &room.blob_store,
+            None,
         )
         .await
         .unwrap();
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
     }
 
     let first = {

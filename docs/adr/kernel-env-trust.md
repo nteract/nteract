@@ -10,7 +10,6 @@
 - `docs/adr/blob-storage-and-content-addressing.md` - parallel content-addressed scheme for environments lives alongside the blob CAS.
 - `docs/adr/captured-environment-lifecycle.md` - captured env identity, cache repair, launch retry, and manual reset. This ADR decides whether dependency installation is allowed; the lifecycle ADR decides how an allowed captured env is materialized and repaired.
 - `docs/adr/identity-and-trust.md` - room-level identity and ACLs. This ADR sits underneath it: env trust decides whether a kernel can launch with a given dependency list, regardless of who is in the room.
-- `docs/adr/cleanup-punchlist.md` - tracked follow-ups.
 
 ## Context
 
@@ -287,3 +286,11 @@ If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level
 6. **Lockfile-based trust.** A `uv.lock` or `conda-lock.yml` is a stronger statement than a raw dep list: every transitive package and version is pinned. Trust against a lockfile hash (rather than dep names) would close the "approved pandas but pandas pulled a malicious transitive" gap. Open question how to surface that in the dialog without overwhelming the user.
 7. **Pre-resolution preview.** The user approves names, but the daemon resolves and installs full transitive trees. Showing the resolved tree before install (so the dialog can warn about surprise transitives) is a UX direction that needs solver cooperation.
 8. **Channel ordering.** `conda_channels` is treated as a set today: approving `[conda-forge, defaults]` is the same as `[defaults, conda-forge]`. Channel order affects which copy of a package wins, which is a separate supply-chain decision the current model does not capture.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **MSL-2** (Design; `crates/runtimed/src/daemon.rs:1436-1450`): `seed_defaults` seeds startup base packages into `pypi` and `conda` only — not into the channel ecosystems (`conda-channel`, `pixi-channel`). A user with a notebook on a non-default channel will see all channel approvals as fresh prompts even after several uses.

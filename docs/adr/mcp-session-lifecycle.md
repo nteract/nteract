@@ -8,7 +8,6 @@
 - `docs/adr/execution-pipeline.md` - why a stale `DocHandle` is so painful for the agent: `required_heads`, output sync, and broadcast replay all run through it.
 - `docs/adr/blob-storage-and-content-addressing.md` - the blob HTTP port lives on the same `Daemon` the MCP proxy supervises.
 - `docs/adr/identity-and-trust.md` - the principal/operator model the proxy/child will eventually enforce per connection; today the MCP child connects as `local:<uid>` via peer creds.
-- `docs/adr/cleanup-punchlist.md` - parking lot for smells uncovered while drafting this ADR.
 
 ## Context
 
@@ -305,3 +304,12 @@ These are the architectural gaps surfaced while writing this ADR. None block the
 - `crates/runtimed-client/src/daemon_connection.rs` - `DaemonConnection`, heartbeat interval, `DaemonEvent` shape.
 - `crates/mcp-supervisor/src/main.rs` - `DevMode` enum and `NTERACT_DEV_MODE` parsing.
 - `.agents/skills/mcp-session-lifecycle/SKILL.md` - the operating rules; this ADR is the why.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **MSL-3** (Targeted PR; `crates/runt-mcp-proxy/src/proxy.rs` `should_exit` text): `tool_list_changed` divergence reports `Incompatible` with a single "reinstall the nteract extension" error string, hard-coded for the MCPB bundle install path. The `nteract-dev` supervisor-managed path gets the same message even though the recovery action is different (relaunch the dev daemon, not reinstall an extension).
+- **MSL-4** (Design; `crates/runt-mcp-proxy/src/proxy.rs`): When a dev worktree daemon's socket path changes (worktree switch in isolated mode, manual relocation), `mcp-supervisor` compares daemon versions across child restart but not socket paths. The `McpProxy.last_notebook_id` from the old daemon is meaningless in the new daemon's room space; rejoin fails with `SessionDropReason::Evicted` and the agent sees a confusing trail.

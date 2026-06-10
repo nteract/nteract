@@ -127,7 +127,7 @@ host. Three behaviors then matter, demonstrated by tests in
    over the full conflict set (`get_all`) and take the max, so the observed
    version is monotonic. The fix is read-side: the CRDT still records the LWW
    pick, so there is no write-back and no op-history growth. This was **SE-1**;
-   see [cleanup-punchlist.md](cleanup-punchlist.md).
+   resolved as SE-1 in the retired cleanup punchlist (fix/se1-schema-version-monotonic-read).
 
 3. **Divergent genesis breaks sync.** The original incident, at the sync layer.
    Guarded by #3134 (build-time drift) and #3192 (host hash-pinning). Any future

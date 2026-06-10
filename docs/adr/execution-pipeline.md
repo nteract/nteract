@@ -20,7 +20,6 @@ Neighbors:
 - `docs/adr/typed-frame-v4-wire-protocol.md` — the framing the pipeline rides on; `Request`/`Response` correlation, `SessionControl` readiness phases.
 - `docs/adr/blob-storage-and-content-addressing.md` — where stream and display outputs actually land once a manifest is committed.
 - `docs/adr/identity-and-trust.md` — who can `ExecuteCell`, who can read outputs.
-- `docs/adr/cleanup-punchlist.md` — open gaps in pipeline invariants.
 
 Three projects shaped the design:
 
@@ -325,3 +324,16 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 - `crates/runt-mcp/src/execution.rs` - MCP consumer pattern.
 - `.agents/skills/execution-pipeline/SKILL.md` - the agent-facing summary that this ADR expands.
 - `AGENTS.md` / `CLAUDE.md` "Runtime control-plane signals are not output transport" - the load-bearing paragraph this ADR is the long-form of.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **EP-1** (Targeted PR; `crates/runtimed/src/stream_committer.rs` test): `flush_then_signal_commits_stream_before_lifecycle_signal` test verifies signal arrival order, not durable Automerge change order. A refactor that re-routes `ExecutionDone` past the priority path would still pass.
+- **EP-3** (Design; memo `docs/adr/execution-liveness.md`): **Reframed.** Daemon view of execution state can diverge from kernel reality. A wall-clock watchdog is the wrong fix - multi-hour training jobs are legitimate Jupyter usage and nteract's resume-by-reconnect is a feature. The real signal is divergence between `RuntimeStateDoc.status` and live IOPub / heartbeat / committer state. See design memo `docs/adr/execution-liveness.md`. Code is a follow-up after the memo is reviewed.
+- **EP-5** (Design; telemetry + tuning pass): Capacity constants (`STREAM_COMMITTER_QUEUE_CAPACITY = 32`, `MAX_PENDING_DISPLAY_IDS = 128`, `DEFAULT_OUTPUT_SYNC_GRACE = 500ms`) picked by judgment. No benchmark, no drop-rate metric, no measured upper bound under load.
+- **EP-6** (Design; request handling): `required_heads` is `NotebookDoc`-only. No causal gate exists for requests that depend on recent `RuntimeStateDoc` writes.
+- **EP-8** (Targeted PR; IOPub handlers, lint or type-level enforcement): "IOPub reader cannot block on bounded queues" is discipline, not a check. Adding `.await` on a bounded send in any IOPub handler arm would silently reintroduce the backpressure failure.
+- **EP-9** (Design; run-all path): Run-all timeouts are shared across the batch; a long first cell starves the budget for later cells. No fairness mechanism.

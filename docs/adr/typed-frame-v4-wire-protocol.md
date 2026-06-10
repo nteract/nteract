@@ -14,7 +14,6 @@ This ADR pins down what every peer must agree on so the format does not silently
 - `docs/adr/document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
 - `docs/adr/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
 - `docs/adr/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
-- `docs/adr/cleanup-punchlist.md` — open gaps surfaced while writing this.
 
 This document is the framing layer underneath all of them.
 
@@ -347,3 +346,13 @@ The phase fields are deliberately ordered so a later snapshot never represents l
 9. **No wire-level signature or MAC.** The identity ADR mandates server-side per-frame actor validation against `AuthenticatedConnection.principal`, but the bytes themselves carry no cryptographic binding. A trusted intermediary (Tauri relay) could rewrite an outbound frame's payload before forwarding. v1 inherits the same-UID trust model from the Unix socket; hosted rooms will inherit the TLS trust model from the WebSocket. Change-level signed authorship (Keyhive direction) is the eventual fix.
 
 10. **Runtime-agent reuses Request/Response type bytes.** `0x01`/`0x02` carry either `NotebookRequestEnvelope`/`NotebookResponseEnvelope` or `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope` depending on which connection it is. There is no way to tell them apart from the type byte alone; the handshake variant determines the payload shape. A misrouted frame (e.g., a buggy proxy that crosses the streams) would deserialize incorrectly. Worth either a distinct type-byte block for runtime-agent traffic or an explicit `kind` field in the envelope.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **WP-4** (Design; `crates/notebook-protocol/`, `crates/runtimed/`): `0x01`/`0x02` frame IDs are reused with different envelopes between `RuntimeAgent` and `NotebookSync` channels. Distinguishable only by handshake variant; a misrouted frame deserializes incorrectly with no protocol-level detection.
+- **WP-8** (Design; `crates/notebook-protocol/`): `ProtocolCapabilities.protocol_version: Option<u32>` is set, defaults to `Some(PROTOCOL_VERSION)`, but no client reads it differently from the preamble byte. Possibly vestigial.
+- **WP-10** (Design; `crates/runtimed/src/notebook_sync_server/peer_loop.rs`): No application-layer heartbeat for typed-frame connections. Presence has room-level heartbeats; the connection itself only has `daemon.idle_peer_timeout()`.

@@ -42,7 +42,6 @@ Neighbors:
 - `docs/adr/identity-and-trust.md` — the room-level auth gate that
   blob HTTP currently leans on; how a connected peer earns the right to
   upload at all.
-- `docs/adr/cleanup-punchlist.md` — open gaps in blob handling.
 
 ## Decision 1: SHA-256 hex, content-addressed, two-level shard
 
@@ -568,3 +567,15 @@ elsewhere, some are surfaced here for the first time.
   socket the `PUT_BLOB` frame rides on.
 - `docs/adr/runtime-peer-and-blob-authority-audit.md` - hosted
   scope-gating and reference-authority audit for `PutBlob` and runtime peers.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **BS-7** (Targeted PR; GC instrumentation): GC mark walks rooms and persisted docs producing one combined hash set with no per-ref provenance. Any mark-miss is a silent data-loss bug at sweep time, with no debug surface to audit.
+- **BS-9** (Design; `crates/runtimed/src/blob_upload.rs` finalize path): `MAX_BLOB_SIZE = 100 MiB` only gates the in-process `BlobStore::put()` API. The multipart finalize path validates against the caller's `expected_size` and the per-peer 256 MiB staging budget but does not enforce a 100 MiB ceiling on the completed blob. A peer can multipart-upload a 200 MiB blob today.
+- **BS-10** (Design; `output_store.rs:62-89`): Save-to-`.ipynb` externalizes Arrow IPC and Parquet only via `BLOB_REF_MIME`; every other binary MIME is base64-inlined in the saved file. A user opening the saved `.ipynb` outside nteract gets self-contained binary for non-Arrow/Parquet but broken refs for the rest unless they keep the colocated blob store.
+- **BS-13** (Targeted PR; `apps/notebook-cloud/src/index.ts`, `docs/adr/blob-storage-and-content-addressing.md`): **Reframed, Design → Targeted PR; absorbs BS-2.** Blob media type is mutable on duplicate put on both hosts: desktop `put_disk` rewrites the sidecar (intentional, documented exception for anywidget `_esm`), and the cloud blob PUT rewrites R2 `httpMetadata.contentType` on every put (`apps/notebook-cloud/src/index.ts:3029-3032`), mitigated only by the owner/runtime_peer upload gate. Make hosted metadata first-writer-wins (short-circuit the put when the object already exists) and prefer serving `Content-Type` from the reference layer's `media_type`.
+- **BS-14** (Targeted PR; `apps/notebook-cloud/src/index.ts`, `crates/runtimed/src/daemon.rs`, `crates/runtimed-wasm/`): The hosted publish validator (TS, walks the materialized render projection via `collectSnapshotBlobRefs`) and the daemon GC mark (Rust, `collect_blob_refs_for_gc`) are two independent blob-ref inventories. A ref shape added to one and not the other is either a broken publish or a silent GC data-loss bug. Converge on one ref-walk exported from `runtimed-wasm`, or pin both walks against shared fixtures covering every ref shape (outputs, comms, attachments, resolved_assets, Arrow manifest children).

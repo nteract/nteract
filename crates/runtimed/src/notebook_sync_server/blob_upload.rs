@@ -76,11 +76,13 @@ impl Drop for MultipartUploadRegistry {
 
 impl MultipartUploadState {
     pub(super) fn new(blob_store: &BlobStore) -> Self {
-        Self::with_options(
+        let state = Self::with_options(
             blob_store.root().join("uploads"),
             MAX_PEER_STAGED_BYTES,
             MULTIPART_UPLOAD_TTL,
-        )
+        );
+        state.spawn_periodic_sweep();
+        state
     }
 
     fn with_options(uploads_root: PathBuf, budget_bytes: u64, ttl: Duration) -> Self {
@@ -93,6 +95,33 @@ impl MultipartUploadState {
                 ttl,
             })),
         }
+    }
+
+    /// Sweep expired staging dirs on an interval (BS-3): without this, an
+    /// idle peer that abandoned a multipart upload retains its staging dir
+    /// until the next Create/Complete/Abort — potentially forever. The task
+    /// holds only a `Weak`, so it exits when the peer's state drops.
+    fn spawn_periodic_sweep(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        let period = self.lock().ttl.max(Duration::from_secs(60));
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let Some(inner) = weak.upgrade() else {
+                    return; // peer state dropped; Drop cleans the dirs
+                };
+                let dirs = MultipartUploadState { inner }.sweep_expired();
+                for dir in dirs {
+                    debug!(
+                        "[notebook-sync] Sweeping expired multipart staging dir {}",
+                        dir.display()
+                    );
+                    tokio::fs::remove_dir_all(dir).await.ok();
+                }
+            }
+        });
     }
 
     fn lock(&self) -> MutexGuard<'_, MultipartUploadRegistry> {

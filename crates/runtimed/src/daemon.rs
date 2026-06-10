@@ -1530,7 +1530,7 @@ impl Daemon {
             (None, None)
         };
         Response::DaemonInfo {
-            protocol_version: notebook_protocol::connection::PROTOCOL_VERSION,
+            protocol_version: notebook_protocol::connection::PROTOCOL_VERSION.into(),
             daemon_version: crate::daemon_version().to_string(),
             pid: std::process::id(),
             started_at: self.started_at,
@@ -2474,14 +2474,11 @@ impl Daemon {
         const SETTINGS_SYNC_MIN_PROTOCOL_VERSION: u8 = 1;
         let protocol_supported = match handshake {
             Handshake::Pool => true,
-            Handshake::SettingsSync => {
-                client_protocol_version >= SETTINGS_SYNC_MIN_PROTOCOL_VERSION
-                    && client_protocol_version <= connection::PROTOCOL_VERSION as u8
-            }
-            _ => {
-                client_protocol_version >= connection::MIN_PROTOCOL_VERSION as u8
-                    && client_protocol_version <= connection::PROTOCOL_VERSION as u8
-            }
+            Handshake::SettingsSync => (SETTINGS_SYNC_MIN_PROTOCOL_VERSION
+                ..=connection::PROTOCOL_VERSION)
+                .contains(&client_protocol_version),
+            _ => (connection::MIN_PROTOCOL_VERSION..=connection::PROTOCOL_VERSION)
+                .contains(&client_protocol_version),
         };
 
         if !protocol_supported {
@@ -2490,7 +2487,7 @@ impl Daemon {
                 handshake,
                 client_protocol_version,
                 if matches!(handshake, Handshake::SettingsSync) {
-                    SETTINGS_SYNC_MIN_PROTOCOL_VERSION as u32
+                    SETTINGS_SYNC_MIN_PROTOCOL_VERSION
                 } else {
                     connection::MIN_PROTOCOL_VERSION
                 },
@@ -3682,7 +3679,7 @@ impl Daemon {
             }
 
             Request::Ping => Response::Pong {
-                protocol_version: Some(notebook_protocol::connection::PROTOCOL_VERSION),
+                protocol_version: Some(notebook_protocol::connection::PROTOCOL_VERSION.into()),
                 daemon_version: Some(crate::daemon_version().to_string()),
             },
 

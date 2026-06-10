@@ -21,7 +21,6 @@ Neighbors:
 - `docs/adr/execution-pipeline.md` - the `flushSync` -> `get_heads_hex()` -> required-heads handshake that this layer is responsible for honoring.
 - `docs/adr/blob-storage-and-content-addressing.md` - manifests that resolve through `blob-port.ts` before a cell can finish materializing.
 - `docs/adr/identity-and-trust.md` - actor labels live in the WASM handle the bridge subscribes to.
-- `docs/adr/cleanup-punchlist.md` - gaps surfaced by writing this ADR are tracked there.
 
 Three constraints shape every decision below:
 
@@ -235,7 +234,7 @@ This is the one place where editor input bypasses the React render path entirely
 
 ## Open Questions
 
-1. **Bridge introspection.** Stores publish version counters but the bridge itself doesn't expose how many in-flight materializations or output-changeset applies are pending. Adding bridge-level diagnostics (count, last-error) would help debug `cellChanges$` stalls under high-churn. Tracked in `cleanup-punchlist.md` follow-ups.
+1. **Bridge introspection.** Stores publish version counters but the bridge itself doesn't expose how many in-flight materializations or output-changeset applies are pending. Adding bridge-level diagnostics (count, last-error) would help debug `cellChanges$` stalls under high-churn. Open follow-up; no owner yet.
 
 2. **`outputIdChanges$` error handling.** Failed `applyOutputChangeset` is logged at warn and swallowed. A partially-applied output projection can leave the cell's iframe rendering a stale manifest until the next change. Open: do we retry, raise a load-error banner, or accept the inconsistency until the next sync?
 

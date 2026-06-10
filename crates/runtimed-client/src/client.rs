@@ -104,7 +104,7 @@ impl PongInfo {
     /// (old daemon), this logs a warning but does not error — backward
     /// compatibility is preserved.
     pub fn check_protocol_version(&self) -> Result<(), String> {
-        let expected = notebook_protocol::connection::PROTOCOL_VERSION;
+        let expected = u32::from(notebook_protocol::connection::PROTOCOL_VERSION);
 
         match self.protocol_version {
             Some(remote) if remote == expected => Ok(()),

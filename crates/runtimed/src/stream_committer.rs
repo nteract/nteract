@@ -101,11 +101,13 @@ impl StreamCommitterHandle {
         // runtime debug_assert!(signal.is_lifecycle()); the split into
         // LifecycleSignal vs WorkCommand makes that assertion structural.
         // See output_prep.rs and execution-pipeline.md Decision 2.
-
-        if flushes.is_empty() {
-            let _ = self.lifecycle_tx.send(signal);
-            return;
-        }
+        //
+        // Empty flushes still ride the priority committer (EP-11): sending
+        // the signal directly on lifecycle_tx would let a no-output
+        // execution's ExecutionDone jump ahead of an earlier execution's
+        // still-queued priority commit, breaking "terminal runtime state is
+        // causally after the final stream manifest". The empty-vec loop in
+        // commit_priority_streams costs nothing.
 
         let request = PriorityStreamCommit {
             flushes,
@@ -437,10 +439,15 @@ mod tests {
         assert!(outputs.is_empty());
     }
 
+    /// EP-11: a no-output execution's signal must still ride the priority
+    /// committer queue — a direct lifecycle_tx send would let its
+    /// ExecutionDone jump ahead of an earlier execution's queued stream
+    /// commit, putting terminal runtime state causally before the final
+    /// stream manifest.
     #[test]
-    fn flush_then_signal_without_flushes_sends_lifecycle_immediately() {
+    fn flush_then_signal_without_flushes_rides_priority_queue() {
         let (periodic_tx, _periodic_rx) = mpsc::channel(1);
-        let (priority_tx, _priority_rx) = mpsc::unbounded_channel();
+        let (priority_tx, mut priority_rx) = mpsc::unbounded_channel();
         let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
         let handle = StreamCommitterHandle {
             periodic_tx,
@@ -455,12 +462,15 @@ mod tests {
             },
         );
 
-        let received = lifecycle_rx.try_recv().expect("lifecycle signal");
+        assert!(
+            lifecycle_rx.try_recv().is_err(),
+            "signal must not bypass the priority committer"
+        );
+        let request = priority_rx.try_recv().expect("priority commit request");
+        assert!(request.flushes.is_empty());
         assert!(matches!(
-            received,
-            LifecycleSignal::ExecutionDone {
-                execution_id
-            } if execution_id == "exec-1"
+            request.signal,
+            Some(LifecycleSignal::ExecutionDone { ref execution_id }) if execution_id == "exec-1"
         ));
     }
 

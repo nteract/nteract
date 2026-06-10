@@ -543,6 +543,13 @@ function NotebookViewContent({
   // existing DOM nodes. Visual ordering uses CSS `order` on each cell wrapper.
   // Without this, moving a cell causes browsers to reload iframes (destroying
   // content, widgets, and theme state). See CLAUDE.md § "Cell List Stable DOM Order".
+  //
+  // Default JS string sort (code-unit order, not locale-aware) is correct
+  // here because the sort only needs to be *stable and deterministic*, not
+  // human-meaningful — cell ids are UUIDs today (FSB-3). If a non-UUID id
+  // scheme ever lands, any total order still satisfies the invariant; what
+  // matters is every client sorts identically, which `Array.prototype.sort`'s
+  // UTF-16 code-unit comparison guarantees and locale-aware collation would not.
   const stableDomOrder = useMemo(() => [...cellIds].sort(), [cellIds]);
 
   // Map cell ID → visual index for O(1) lookup

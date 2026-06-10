@@ -60,7 +60,7 @@ subscription helper and passes each `CellChangeset` into the shared
 live-cell materialization remains for bootstrap and fallback cases, while
 routine source, metadata, execution, and output updates flow through the same
 narrow stores as desktop. The cleanup item is marked complete in
-[cleanup-punchlist.md](cleanup-punchlist.md) as `LNP-1`.
+the retired cleanup punchlist as `LNP-1` (done in #3491).
 
 ## Consequences
 

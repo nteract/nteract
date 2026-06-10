@@ -114,16 +114,16 @@ mod tests {
         send_preamble(&mut buf).await.unwrap();
         assert_eq!(buf.len(), PREAMBLE_LEN);
         assert_eq!(&buf[..4], &MAGIC);
-        assert_eq!(buf[4], PROTOCOL_VERSION as u8);
+        assert_eq!(buf[4], PROTOCOL_VERSION);
 
         let mut cursor = std::io::Cursor::new(buf);
         let version = recv_preamble(&mut cursor).await.unwrap();
-        assert_eq!(version, PROTOCOL_VERSION as u8);
+        assert_eq!(version, PROTOCOL_VERSION);
     }
 
     #[tokio::test]
     async fn test_preamble_bad_magic() {
-        let buf = [0xFF, 0xFF, 0xFF, 0xFF, PROTOCOL_VERSION as u8];
+        let buf = [0xFF, 0xFF, 0xFF, 0xFF, PROTOCOL_VERSION];
         let mut cursor = std::io::Cursor::new(buf.to_vec());
         let result = recv_preamble(&mut cursor).await;
         assert!(result.is_err());
@@ -346,7 +346,7 @@ mod tests {
 
         // With version info
         let info = NotebookConnectionInfo {
-            capabilities: capabilities(Some(PROTOCOL_VERSION), Some("0.1.0+abc123".into())),
+            capabilities: capabilities(Some(PROTOCOL_VERSION.into()), Some("0.1.0+abc123".into())),
             notebook_id: "/home/user/notebook.ipynb".into(),
             cell_count: 5,
             needs_trust_approval: false,

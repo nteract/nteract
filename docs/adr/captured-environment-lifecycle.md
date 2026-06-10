@@ -9,7 +9,6 @@ lifecycle shape; parts of the current daemon still use the older boolean
 - `docs/adr/kernel-env-trust.md` - dependency trust decides whether the daemon may install or launch declared packages. This ADR starts after that gate: how a captured environment is identified, reused, repaired, and manually reset.
 - `docs/adr/execution-pipeline.md` - launch retry must preserve the lifecycle ordering guarantees around kernel startup and terminal error publication.
 - `docs/adr/document-split.md` - NotebookDoc carries dependency declarations; RuntimeStateDoc carries launch/progress/error state.
-- `docs/adr/cleanup-punchlist.md` - follow-up lifecycle/API work.
 
 ## Context
 
@@ -219,3 +218,11 @@ The #1969 implementation plan should be updated before coding:
 - classify launch failures in `runtime_agent.rs` before wrapping;
 - keep retry lifecycle in a progressing state until final success/error;
 - add focused tests for UV and Conda disk states, including broken symlink behavior when feasible.
+
+## Tracked follow-ups (from the retired cleanup punchlist)
+
+These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
+retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
+to implement; **Design** = needs a decision in this ADR before code moves.
+
+- **KE-1** (RefreshDefaults }` request for manual recovery and defaults refresh.; Design): Captured env has no user-initiated rebuild/reset surface. Daemon lifecycle owns automatic repair, but lacks a `ResetNotebookEnvironment { RebuildSame

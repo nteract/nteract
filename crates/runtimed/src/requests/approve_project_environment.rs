@@ -6,7 +6,9 @@
 
 use std::path::PathBuf;
 
-use crate::notebook_sync_server::{environment_yml_trust_info, NotebookRoom};
+use crate::notebook_sync_server::{
+    check_and_update_trust_state, environment_yml_trust_info, NotebookRoom,
+};
 use crate::protocol::NotebookResponse;
 use tracing::warn;
 
@@ -47,6 +49,13 @@ pub(crate) async fn handle(
             error: format!("Failed to approve project environment: {}", error),
         };
     }
+
+    // Re-evaluate and broadcast trust immediately (MSL-1), like the other
+    // approval entry points (`ApproveTrust`, `seed_trust_from_doc_metadata`).
+    // Without this the verdict only updates after the next sync-driving
+    // action, so the dialog appears stuck on the stale Untrusted state.
+    let _ = room.broadcasts.changed_tx.send(());
+    check_and_update_trust_state(room).await;
 
     NotebookResponse::Ok {}
 }

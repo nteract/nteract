@@ -910,21 +910,39 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
     .await
 }
 
+/// Everything [`apply_notebook_load`] needs to mutate the docs, prepared by
+/// [`prepare_notebook_load`] with no doc reference in scope. The split keeps
+/// the async blob-store work outside any doc lock (tokio-mutex discipline).
 #[cfg(test)]
-async fn load_notebook_from_disk_with_runtime_docs_and_execution_store(
-    doc: &mut NotebookDoc,
-    mut state_doc: Option<&mut RuntimeStateDoc>,
-    mut comms_doc: Option<&mut runtime_doc::CommsDoc>,
+pub(crate) struct PreparedNotebookLoad {
+    cells: Vec<PreparedNotebookCell>,
+    widget_comms: Vec<LoadedWidgetComm>,
+    metadata: Option<NotebookMetadataSnapshot>,
+}
+
+#[cfg(test)]
+struct PreparedNotebookCell {
+    cell: CellSnapshot,
+    attachment_refs: AttachmentRefs,
+    parsed_ec: Option<i64>,
+    /// `Some` when the cell has outputs or an execution count; carries the
+    /// durable-or-synthetic execution and its manifest refs.
+    execution: Option<(LoadedExecution, Vec<serde_json::Value>)>,
+    resolved_assets: Option<ResolvedAssets>,
+}
+
+/// Async half of the test loader: file read, JSON parse, blob-store
+/// manifest/attachment/widget ingestion. Takes no doc reference, so callers
+/// holding a room `RwLock` run this *before* taking the lock.
+#[cfg(test)]
+pub(crate) async fn prepare_notebook_load(
     path: &std::path::Path,
     blob_store: &BlobStore,
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
-) -> Result<usize, String> {
-    // Read the file
+) -> Result<PreparedNotebookLoad, String> {
     let content = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| format!("Failed to read notebook: {}", e))?;
-
-    // Parse JSON
     let json: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("Invalid notebook JSON: {}", e))?;
 
@@ -942,37 +960,17 @@ async fn load_notebook_from_disk_with_runtime_docs_and_execution_store(
     let durable_records = durable_execution_records(execution_store, &context_id).await;
     let mut claimed_execution_ids = HashSet::new();
 
-    if let Some(ref mut sd) = state_doc {
-        write_widget_comm_topology_to_state_doc(sd, &widget_comms)
-            .map_err(|e| format!("Failed to load widget metadata into state doc: {}", e))?;
-    }
-    if let Some(ref mut cd) = comms_doc {
-        write_widget_comm_state_to_comms_doc(cd, &widget_comms)
-            .map_err(|e| format!("Failed to load widget metadata into comms doc: {}", e))?;
-    }
-
-    // Populate cells in the doc
-    for (i, cell) in cells.iter().enumerate() {
-        doc.add_cell(i, &cell.id, &cell.cell_type)
-            .map_err(|e| format!("Failed to add cell: {}", e))?;
-        doc.update_source(&cell.id, &cell.source)
-            .map_err(|e| format!("Failed to update source: {}", e))?;
+    let mut prepared_cells = Vec::with_capacity(cells.len());
+    for cell in cells {
         let attachment_refs =
             nbformat_attachments_to_blob_refs(nbformat_attachments.get(&cell.id), blob_store)
                 .await
                 .map_err(|e| format!("Failed to ingest attachments for {}: {e}", cell.id))?;
-        doc.set_cell_attachments(&cell.id, &attachment_refs)
-            .map_err(|e| format!("Failed to set attachments: {}", e))?;
-        // Parse execution_count from the .ipynb cell snapshot
         let parsed_ec: Option<i64> = cell.execution_count.parse::<i64>().ok();
         let cell_outputs = outputs_by_cell.get(&cell.id);
         let has_outputs = cell_outputs.map(|o| !o.is_empty()).unwrap_or(false);
-        let has_ec = parsed_ec.is_some();
 
-        // Create a synthetic execution entry in RuntimeStateDoc if the cell
-        // has outputs or an execution_count. The execution_id links the cell
-        // to its outputs and execution_count in RuntimeStateDoc.
-        if has_outputs || has_ec {
+        let execution = if has_outputs || parsed_ec.is_some() {
             let output_refs = if let Some(outs) = cell_outputs.filter(|o| !o.is_empty()) {
                 outputs_to_manifest_refs(outs, blob_store).await
             } else {
@@ -990,9 +988,74 @@ async fn load_notebook_from_disk_with_runtime_docs_and_execution_store(
                     outputs: &output_refs,
                 },
             );
+            Some((execution, output_refs))
+        } else {
+            None
+        };
+
+        let resolved_assets = if should_resolve_markdown_assets(&cell.cell_type) {
+            let mut resolved_assets =
+                resolve_markdown_assets(&cell.source, Some(path), None, blob_store).await;
+            resolved_assets.extend(resolved_attachment_assets(&cell.source, &attachment_refs));
+            Some(resolved_assets)
+        } else {
+            None
+        };
+
+        prepared_cells.push(PreparedNotebookCell {
+            cell,
+            attachment_refs,
+            parsed_ec,
+            execution,
+            resolved_assets,
+        });
+    }
+
+    Ok(PreparedNotebookLoad {
+        cells: prepared_cells,
+        widget_comms,
+        metadata: parse_metadata_from_ipynb(&json),
+    })
+}
+
+/// Synchronous half of the test loader: apply a [`PreparedNotebookLoad`] to
+/// the docs. No `.await` — safe to call while holding a room lock.
+#[cfg(test)]
+pub(crate) fn apply_notebook_load(
+    doc: &mut NotebookDoc,
+    mut state_doc: Option<&mut RuntimeStateDoc>,
+    comms_doc: Option<&mut runtime_doc::CommsDoc>,
+    prepared: PreparedNotebookLoad,
+) -> Result<usize, String> {
+    if let Some(ref mut sd) = state_doc {
+        write_widget_comm_topology_to_state_doc(sd, &prepared.widget_comms)
+            .map_err(|e| format!("Failed to load widget metadata into state doc: {}", e))?;
+    }
+    if let Some(cd) = comms_doc {
+        write_widget_comm_state_to_comms_doc(cd, &prepared.widget_comms)
+            .map_err(|e| format!("Failed to load widget metadata into comms doc: {}", e))?;
+    }
+
+    let cell_count = prepared.cells.len();
+    for (i, prepared_cell) in prepared.cells.into_iter().enumerate() {
+        let PreparedNotebookCell {
+            cell,
+            attachment_refs,
+            parsed_ec,
+            execution,
+            resolved_assets,
+        } = prepared_cell;
+        doc.add_cell(i, &cell.id, &cell.cell_type)
+            .map_err(|e| format!("Failed to add cell: {}", e))?;
+        doc.update_source(&cell.id, &cell.source)
+            .map_err(|e| format!("Failed to update source: {}", e))?;
+        doc.set_cell_attachments(&cell.id, &attachment_refs)
+            .map_err(|e| format!("Failed to set attachments: {}", e))?;
+
+        if let Some((execution, output_refs)) = execution {
             if let Some(ref mut sd) = state_doc {
                 let _ = sd.create_execution(&execution.execution_id);
-                if has_outputs {
+                if !output_refs.is_empty() {
                     sd.set_outputs(&execution.execution_id, &output_refs)
                         .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
                 }
@@ -1004,22 +1067,31 @@ async fn load_notebook_from_disk_with_runtime_docs_and_execution_store(
             doc.set_execution_id(&cell.id, Some(&execution.execution_id))
                 .map_err(|e| format!("Failed to set execution_id: {}", e))?;
         }
-        if should_resolve_markdown_assets(&cell.cell_type) {
-            let mut resolved_assets =
-                resolve_markdown_assets(&cell.source, Some(path), None, blob_store).await;
-            resolved_assets.extend(resolved_attachment_assets(&cell.source, &attachment_refs));
+        if let Some(resolved_assets) = resolved_assets {
             doc.set_cell_resolved_assets(&cell.id, &resolved_assets)
                 .map_err(|e| format!("Failed to set resolved assets: {}", e))?;
         }
     }
 
-    // Parse and set metadata
-    if let Some(metadata_snapshot) = parse_metadata_from_ipynb(&json) {
+    if let Some(metadata_snapshot) = prepared.metadata {
         doc.set_metadata_snapshot(&metadata_snapshot)
             .map_err(|e| format!("Failed to set metadata: {}", e))?;
     }
 
-    Ok(cells.len())
+    Ok(cell_count)
+}
+
+#[cfg(test)]
+async fn load_notebook_from_disk_with_runtime_docs_and_execution_store(
+    doc: &mut NotebookDoc,
+    state_doc: Option<&mut RuntimeStateDoc>,
+    comms_doc: Option<&mut runtime_doc::CommsDoc>,
+    path: &std::path::Path,
+    blob_store: &BlobStore,
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
+) -> Result<usize, String> {
+    let prepared = prepare_notebook_load(path, blob_store, execution_store).await?;
+    apply_notebook_load(doc, state_doc, comms_doc, prepared)
 }
 
 #[derive(Debug, Clone)]

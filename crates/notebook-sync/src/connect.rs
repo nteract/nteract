@@ -782,7 +782,7 @@ fn parse_typed_bootstrap_payload(payload: &[u8]) -> Result<ConnectionBootstrap, 
 /// version differences for debugging (e.g., a daemon rebuilt from a
 /// different commit).
 fn check_daemon_protocol_version(caps: &ProtocolCapabilities) {
-    let expected = notebook_protocol::connection::PROTOCOL_VERSION;
+    let expected = u32::from(notebook_protocol::connection::PROTOCOL_VERSION);
 
     if let Some(remote) = caps.protocol_version {
         if remote != expected {
