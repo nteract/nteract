@@ -84,8 +84,8 @@ responses are cached for 60 seconds with a bounded in-isolate cache; token
 revocation can therefore take up to 60 seconds to be observed by a hot Worker
 isolate.
 
-For `runt-publish`, store the publish bearer token in the environment or a
-local `.env` file:
+For publishing (`runt publish`, backed by the `runt-publish` library crate),
+store the publish bearer token in the environment or a local `.env` file:
 
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run
@@ -95,7 +95,7 @@ NTERACT_API_KEY=...
 Then use:
 
 ```bash
-cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
+cargo run -p runt -- publish --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
 ```
 
 The publisher defaults to the current hosted staging URL, `https://preview.runt.run`,
