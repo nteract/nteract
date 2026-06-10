@@ -444,6 +444,36 @@ describe("NotebookRail", () => {
     );
   });
 
+  it("renders markdown fallback outline items without redundant type badges", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          {
+            id: "markdown-1:cell",
+            cellId: "markdown-1",
+            cellType: "markdown",
+            title: "Body row",
+            level: 1,
+            kind: "cell" as const,
+            cellAnchorId: "notebook-cell-markdown-1",
+            headingAnchorId: null,
+            href: "#notebook-cell-markdown-1",
+            anchor: null,
+            detail: "Markdown",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Body row" })).toBeInTheDocument();
+    expect(container.querySelector('[data-slot="notebook-outline-item-meta"]')).toBeNull();
+  });
+
   it("marks only the first outline item for a focused cell when no item is pinned", () => {
     render(
       <NotebookRail

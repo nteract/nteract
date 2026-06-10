@@ -194,7 +194,11 @@ function NotebookOutlineNode({
   const selected = selectedItemId === item.id;
   const itemHref = getItemHref?.(item) ?? item.href ?? null;
   const isCodeCellOutlineItem = item.kind === "cell" && item.cellType === "code";
-  const metaLabel = isCodeCellOutlineItem ? null : (item.statusLabel ?? item.detail ?? null);
+  const isMarkdownCellOutlineItem = item.kind === "cell" && item.cellType === "markdown";
+  const metaLabel =
+    isCodeCellOutlineItem || isMarkdownCellOutlineItem
+      ? null
+      : (item.statusLabel ?? item.detail ?? null);
   const className = cn(
     "relative flex min-h-8 w-full items-start gap-2 rounded-md py-1.5 pl-3 pr-2 text-left text-sm transition-colors",
     "cursor-pointer select-none touch-manipulation [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
