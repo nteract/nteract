@@ -987,6 +987,8 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             env: vec![(OsString::from("MY_VAR"), OsString::from("hello"))],
             name: Some("test-kernel".to_string()),
+            extra_allow_paths: vec![],
+            open_ports: vec![],
         };
         assert_eq!(cfg.kernel_argv.len(), 3);
         assert!(cfg.name.is_some());
@@ -1115,6 +1117,8 @@ mod tests {
             cwd: std::env::temp_dir(),
             env: vec![],
             name: None,
+            extra_allow_paths: vec![],
+            open_ports: vec![],
         };
         let result = Supervisor::spawn(Path::new("/nonexistent/nono"), cfg).await;
         assert!(

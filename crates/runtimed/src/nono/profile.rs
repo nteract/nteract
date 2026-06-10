@@ -41,14 +41,32 @@
 //!
 //! ## Field mapping (`SandboxProfile` → nono JSON)
 //!
+//! A `CredentialRef` with N routes expands into N `custom_credentials` entries.
+//! The entry key is `<cred_name>` for single-route credentials and
+//! `<cred_name>__<index>` for multi-route credentials.
+//!
 //! | SandboxProfile field | nono JSON path | Notes |
 //! |---|---|---|
-//! | `credential.name` | `network.credentials[]` | Used as the credential ID |
-//! | `credential.effective_keystore_name()` | `network.custom_credentials.<name>.credential_key` | The Keychain account name |
-//! | First route host | `network.custom_credentials.<name>.upstream` | Constructed as `https://<host>` |
-//! | Route `inject_as = Header`, `header` | `network.custom_credentials.<name>.inject_header` | Header name (e.g. "Authorization") |
-//! | Route `template` | `network.custom_credentials.<name>.credential_format` | `{credential}` → `{}` substituted |
-//! | `allowed_domains` | `network.allow_domain` | Passed through verbatim |
+//! | `credential.name` (per route) | `network.credentials[]` | One entry per route |
+//! | `credential.effective_keystore_name()` | `network.custom_credentials.<key>.credential_key` | Shared across all routes |
+//! | `route.host` + `route.scheme` | `network.custom_credentials.<key>.upstream` | `<scheme>://<host>` per route |
+//! | Route `inject_as = Header`, `header` | `network.custom_credentials.<key>.inject_header` | Header name (e.g. "Authorization") |
+//! | Route `template` | `network.custom_credentials.<key>.credential_format` | `{credential}` → `{}` substituted |
+//! | All route hosts + `allowed_domains` | `network.allow_domain` | Merged, sorted, deduped; always emitted |
+//!
+//! ### `allow_domain` is always emitted (block-by-default)
+//!
+//! `allow_domain` is **always** written to the nono JSON, even as an empty
+//! array.  An absent `allow_domain` key causes nono to allow all outbound
+//! connections, defeating the sandbox.  An empty `[]` enforces
+//! block-by-default: only the ZMQ ports opened via `--open-port` and the
+//! hosts in the list are reachable.
+//!
+//! Credential route hosts are **auto-included** in `allow_domain`.  For nono
+//! to activate `connect_intercept` mode (TLS interception + header injection),
+//! the target domain must be in `allow_domain`.  Without it nono falls back to
+//! plain `connect` tunnel mode (raw TLS relay, no credential injection).
+//! Users should not need to duplicate route hosts in `allowed_domains`.
 //!
 //! ## CLI flags produced
 //!
@@ -260,6 +278,14 @@ pub fn translate(profile: &SandboxProfile) -> Result<TranslatedProfile, ProfileT
 
     let profile_json_path = temp.into_temp_path();
 
+    // Debug: log the full profile JSON so operators can inspect it.
+    // Visible at RUST_LOG=debug or via `runt daemon logs`.
+    tracing::info!(
+        profile_path = %profile_json_path.display(),
+        profile_json = %String::from_utf8_lossy(&json_bytes),
+        "[nono::profile] generated nono profile",
+    );
+
     // Step 5: Build --env-credential flags (sorted by keystore name for determinism).
     let mut sorted_creds = profile.credentials.clone();
     sorted_creds.sort_by(|a, b| a.name.cmp(&b.name));
@@ -308,32 +334,55 @@ pub fn translate(profile: &SandboxProfile) -> Result<TranslatedProfile, ProfileT
 /// The nono JSON schema (confirmed against nono 0.62.0):
 /// - `meta.name` / `meta.version` — profile identity
 /// - `workdir.access` — always `"readwrite"` for kernel CWD access
-/// - `network.credentials` — list of credential names to activate
-/// - `network.custom_credentials` — per-credential routing map
-/// - `network.allow_domain` — domain allowlist (omitted if empty)
+/// - `network.credentials` — list of credential entry names to activate
+/// - `network.custom_credentials` — per-route routing map (one entry per route)
+/// - `network.allow_domain` — domain allowlist; always emitted for block-by-default
+///
+/// ## One entry per route
+///
+/// nono's `custom_credentials` map has exactly one `upstream` per entry.  A
+/// `CredentialRef` with multiple `RouteRule`s is expanded into one entry per
+/// route, keyed `<cred_name>__<route_index>` (0-based).  All per-route entries
+/// share the same `credential_key` (the macOS Keychain account name) so nono
+/// only loads the secret once.
+///
+/// Example: `my_demo_token` with two routes produces:
+/// ```json
+/// "credentials": ["my_demo_token__0", "my_demo_token__1"],
+/// "custom_credentials": {
+///   "my_demo_token__0": { "credential_key": "my_demo_token", "upstream": "http://localhost:8877", ... },
+///   "my_demo_token__1": { "credential_key": "my_demo_token", "upstream": "https://5a52-….ngrok-free.app", ... }
+/// }
+/// ```
 fn build_nono_json(profile: &SandboxProfile) -> Result<serde_json::Value, serde_json::Error> {
     // Sort credentials by name for determinism.
     let mut sorted_creds = profile.credentials.clone();
     sorted_creds.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // Only include credentials that have at least one route — nono 0.62.x
-    // requires `upstream` in every `custom_credentials` entry, so credentials
-    // with no routes cannot appear in the profile JSON.  They are still passed
-    // via `--env-credential` for plain env-var injection (see `translate`).
-    let routed_creds: Vec<_> = sorted_creds
-        .iter()
-        .filter(|c| !c.routes.is_empty())
-        .collect();
-
-    // Build the credentials list (just names).
-    let credentials_list: Vec<serde_json::Value> =
-        routed_creds.iter().map(|c| json!(c.name)).collect();
-
-    // Build the custom_credentials map.
+    // Expand each credential into one entry per route.  Credentials with no
+    // routes are excluded from the profile JSON (nono requires `upstream` in
+    // every `custom_credentials` entry); they are handled via `--env-credential`.
+    //
+    // Entry key: `<cred_name>__<route_index>` for multi-route credentials,
+    // plain `<cred_name>` when there is exactly one route (preserves the
+    // simple case and matches what pre-existing notebooks may expect).
+    let mut credentials_list: Vec<serde_json::Value> = Vec::new();
     let mut custom_credentials = serde_json::Map::new();
-    for cred in &routed_creds {
-        let entry = build_custom_credential_entry(cred);
-        custom_credentials.insert(cred.name.clone(), entry);
+
+    for cred in &sorted_creds {
+        if cred.routes.is_empty() {
+            continue;
+        }
+        for (idx, route) in cred.routes.iter().enumerate() {
+            let entry_key = if cred.routes.len() == 1 {
+                cred.name.clone()
+            } else {
+                format!("{}__{}", cred.name, idx)
+            };
+            credentials_list.push(json!(entry_key));
+            let entry = build_route_entry(cred.effective_keystore_name(), route);
+            custom_credentials.insert(entry_key, entry);
+        }
     }
 
     // Build the network section.
@@ -347,12 +396,27 @@ fn build_nono_json(profile: &SandboxProfile) -> Result<serde_json::Value, serde_
         );
     }
 
-    // Add allow_domain if non-empty (sorted for determinism).
-    if !profile.allowed_domains.is_empty() {
-        let mut sorted_domains = profile.allowed_domains.clone();
-        sorted_domains.sort();
-        network.insert("allow_domain".to_string(), json!(sorted_domains));
-    }
+    // Build the effective allow_domain list and always emit it.
+    //
+    // We always emit `allow_domain` — even as an empty list — so nono
+    // enforces block-by-default network access.  Without this field nono
+    // allows all outbound connections, defeating the sandbox (the kernel
+    // could reach arbitrary hosts without restriction).
+    //
+    // Credential route hosts are auto-included: CONNECT-intercept credential
+    // injection only activates when the target host is in `allow_domain`.
+    // Without it nono falls back to plain `connect` tunnel mode (raw TLS
+    // relay, no header injection), so the credential is silently not applied.
+    // The user should not need to duplicate route hosts in `allowed_domains`.
+    let mut effective_allow_domains: Vec<String> = profile
+        .credentials
+        .iter()
+        .flat_map(|c| c.routes.iter().map(|r| r.host.clone()))
+        .chain(profile.allowed_domains.iter().cloned())
+        .collect();
+    effective_allow_domains.sort();
+    effective_allow_domains.dedup();
+    network.insert("allow_domain".to_string(), json!(effective_allow_domains));
 
     Ok(json!({
         "meta": {
@@ -367,47 +431,30 @@ fn build_nono_json(profile: &SandboxProfile) -> Result<serde_json::Value, serde_
     }))
 }
 
-/// Build the `custom_credentials.<name>` entry for a single credential.
+/// Build one `custom_credentials` entry for a single route.
 ///
-/// Mapping:
-/// - `credential_key` ← `effective_keystore_name()` (the macOS Keychain account name)
-/// - `upstream` ← derived from the first route's `host` (if any routes exist)
-/// - `inject_header` ← first Header-injection route's `header` field (if any)
-/// - `credential_format` ← first Header-injection route's `template` with
-///   `{credential}` replaced by `{}` (the nono format token)
-///
-/// Only called for credentials that have at least one route; credentials with no
-/// routes are excluded from the profile JSON entirely (nono 0.62.x requires
-/// `upstream` in every entry) and are handled via `--env-credential` only.
-fn build_custom_credential_entry(cred: &notebook_doc::sandbox::CredentialRef) -> serde_json::Value {
-    let credential_key = cred.effective_keystore_name().to_string();
-
-    // Find the first route that has header injection, if any.
-    let header_route = cred
-        .routes
-        .iter()
-        .find(|r| r.inject_as == InjectionKind::Header);
-
+/// - `credential_key` — the macOS Keychain account name (shared across all
+///   per-route entries that belong to the same `CredentialRef`)
+/// - `upstream` — `<scheme>://<host>` from the route
+/// - `inject_header` — set when `inject_as = Header`
+/// - `credential_format` — template with `{credential}` → `{}`
+fn build_route_entry(
+    credential_key: &str,
+    route: &notebook_doc::sandbox::RouteRule,
+) -> serde_json::Value {
+    let upstream = format!("{}://{}", route.scheme.as_str(), route.host);
     let mut entry = serde_json::Map::new();
     entry.insert("credential_key".to_string(), json!(credential_key));
+    entry.insert("upstream".to_string(), json!(upstream));
 
-    if let Some(route) = header_route {
-        // Build the upstream URL from the route host and scheme.
-        let upstream = format!("{}://{}", route.scheme.as_str(), route.host);
-        entry.insert("upstream".to_string(), json!(upstream));
-
+    if route.inject_as == InjectionKind::Header {
         if let Some(header_name) = &route.header {
             entry.insert("inject_header".to_string(), json!(header_name));
         }
-
-        // Convert our {credential} placeholder to nono's {} placeholder.
-        let format_str = route.template.replace("{credential}", "{}");
-        entry.insert("credential_format".to_string(), json!(format_str));
-    } else if let Some(route) = cred.routes.first() {
-        // Non-header route: still emit upstream so nono knows where to proxy.
-        let upstream = format!("{}://{}", route.scheme.as_str(), route.host);
-        entry.insert("upstream".to_string(), json!(upstream));
     }
+
+    let format_str = route.template.replace("{credential}", "{}");
+    entry.insert("credential_format".to_string(), json!(format_str));
 
     serde_json::Value::Object(entry)
 }
@@ -437,6 +484,7 @@ mod tests {
                     inject_as: InjectionKind::Header,
                     header: Some("Authorization".to_string()),
                     template: "Bearer {credential}".to_string(),
+                    scheme: notebook_doc::sandbox::RouteScheme::Https,
                 }],
             }],
             allowed_domains: vec!["api.analytics.example.com".to_string()],
@@ -677,10 +725,13 @@ mod tests {
             parsed["network"]["credentials"].is_null(),
             "empty credentials should omit the credentials field"
         );
-        // No allowed_domains → no allow_domain in network
+        // allow_domain is ALWAYS present, even when empty — enforces block-by-default.
+        let domains = parsed["network"]["allow_domain"]
+            .as_array()
+            .expect("allow_domain must always be present (block-by-default)");
         assert!(
-            parsed["network"]["allow_domain"].is_null(),
-            "empty allowed_domains should omit the allow_domain field"
+            domains.is_empty(),
+            "empty profile should produce an empty allow_domain list"
         );
 
         assert!(result.env_credential_flags.is_empty());
@@ -711,7 +762,39 @@ mod tests {
 
     #[test]
     fn multi_credential_json_sorted_by_name() {
-        let profile = make_multi_cred_profile();
+        // Give both credentials routes so they appear in the credentials JSON array.
+        let profile = SandboxProfile {
+            enabled: true,
+            credentials: vec![
+                CredentialRef {
+                    name: "zz_last".to_string(),
+                    description: None,
+                    env_var: None,
+                    keystore_name: None,
+                    routes: vec![RouteRule {
+                        host: "zz.example.com".to_string(),
+                        inject_as: InjectionKind::Header,
+                        header: Some("Authorization".to_string()),
+                        template: "Bearer {credential}".to_string(),
+                        scheme: notebook_doc::sandbox::RouteScheme::Https,
+                    }],
+                },
+                CredentialRef {
+                    name: "aa_first".to_string(),
+                    description: None,
+                    env_var: None,
+                    keystore_name: None,
+                    routes: vec![RouteRule {
+                        host: "aa.example.com".to_string(),
+                        inject_as: InjectionKind::Header,
+                        header: Some("Authorization".to_string()),
+                        template: "Bearer {credential}".to_string(),
+                        scheme: notebook_doc::sandbox::RouteScheme::Https,
+                    }],
+                },
+            ],
+            allowed_domains: vec![],
+        };
         let result = translate(&profile).expect("translate");
 
         let contents = fs::read_to_string(&result.profile_json_path).expect("read");
@@ -738,10 +821,13 @@ mod tests {
         assert_eq!(parsed["workdir"]["access"], "readwrite");
     }
 
-    // ── Profile with no routes still produces a credential entry ──────
+    // ── Credentials without routes are excluded from custom_credentials ──
 
+    /// Credentials with no routes cannot appear in `custom_credentials`
+    /// because nono 0.62.x requires `upstream` in every entry.  They are
+    /// still passed via `--env-credential` for plain env-var injection.
     #[test]
-    fn credential_without_routes_still_emits_credential_key() {
+    fn credential_without_routes_not_in_custom_credentials() {
         let profile = SandboxProfile {
             enabled: true,
             credentials: vec![CredentialRef {
@@ -758,10 +844,114 @@ mod tests {
         let contents = fs::read_to_string(&result.profile_json_path).expect("read");
         let parsed: serde_json::Value = serde_json::from_str(&contents).expect("parse");
 
-        let custom = &parsed["network"]["custom_credentials"]["my_token"];
-        assert_eq!(
-            custom["credential_key"], "custom_keychain_key",
-            "keystore name should be used as credential_key"
+        // No routes → no custom_credentials entry (nono requires upstream).
+        assert!(
+            parsed["network"]["custom_credentials"].is_null(),
+            "credential with no routes must not appear in custom_credentials"
         );
+        // Still passed via --env-credential for plain env-var injection.
+        assert_eq!(result.env_credential_flags.len(), 2);
+        assert_eq!(result.env_credential_flags[1], "custom_keychain_key");
+    }
+
+    // ── block-by-default: allow_domain always present ─────────────────
+
+    /// A sandbox with no allowed domains and no credential routes should emit
+    /// `allow_domain: []`.  The empty list tells nono to block all outbound
+    /// connections except the ZMQ ports opened via `--open-port`.  Without
+    /// this field nono would allow all connections, defeating the sandbox.
+    #[test]
+    fn allow_domain_always_present_even_when_empty() {
+        let profile = SandboxProfile {
+            enabled: true,
+            credentials: vec![],
+            allowed_domains: vec![],
+        };
+        let result = translate(&profile).expect("translate");
+        let contents = fs::read_to_string(&result.profile_json_path).expect("read");
+        let parsed: serde_json::Value = serde_json::from_str(&contents).expect("parse");
+
+        let domains = parsed["network"]["allow_domain"]
+            .as_array()
+            .expect("allow_domain must always be present");
+        assert!(domains.is_empty(), "no routes/domains → empty allow_domain");
+    }
+
+    // ── credential route hosts auto-included in allow_domain ──────────
+
+    /// Route hosts are automatically added to `allow_domain` so that nono
+    /// can activate `connect_intercept` mode for those hosts.  Without the
+    /// host in `allow_domain` nono falls back to plain CONNECT tunnel (no
+    /// header injection), silently skipping credential injection.
+    #[test]
+    fn credential_route_host_auto_included_in_allow_domain() {
+        let profile = SandboxProfile {
+            enabled: true,
+            credentials: vec![CredentialRef {
+                name: "ngrok_cred".to_string(),
+                description: None,
+                env_var: None,
+                keystore_name: None,
+                routes: vec![RouteRule {
+                    host: "5a52-8-29-230-88.ngrok-free.app".to_string(),
+                    inject_as: InjectionKind::Header,
+                    header: Some("Authorization".to_string()),
+                    template: "Bearer {credential}".to_string(),
+                    scheme: notebook_doc::sandbox::RouteScheme::Https,
+                }],
+            }],
+            allowed_domains: vec![],
+        };
+        let result = translate(&profile).expect("translate");
+        let contents = fs::read_to_string(&result.profile_json_path).expect("read");
+        let parsed: serde_json::Value = serde_json::from_str(&contents).expect("parse");
+
+        let domains = parsed["network"]["allow_domain"]
+            .as_array()
+            .expect("allow_domain must be present");
+        assert_eq!(domains.len(), 1);
+        assert_eq!(
+            domains[0], "5a52-8-29-230-88.ngrok-free.app",
+            "route host must be auto-included in allow_domain"
+        );
+    }
+
+    /// Route hosts and user-specified allowed_domains are merged and
+    /// deduplicated.  A domain that appears both as a route host and in
+    /// allowed_domains should appear only once.
+    #[test]
+    fn route_hosts_and_allowed_domains_are_merged_and_deduped() {
+        let profile = SandboxProfile {
+            enabled: true,
+            credentials: vec![CredentialRef {
+                name: "api_cred".to_string(),
+                description: None,
+                env_var: None,
+                keystore_name: None,
+                routes: vec![RouteRule {
+                    host: "api.example.com".to_string(),
+                    inject_as: InjectionKind::Header,
+                    header: Some("Authorization".to_string()),
+                    template: "Bearer {credential}".to_string(),
+                    scheme: notebook_doc::sandbox::RouteScheme::Https,
+                }],
+            }],
+            // api.example.com also in allowed_domains — should appear once.
+            allowed_domains: vec![
+                "api.example.com".to_string(),
+                "cdn.example.com".to_string(),
+            ],
+        };
+        let result = translate(&profile).expect("translate");
+        let contents = fs::read_to_string(&result.profile_json_path).expect("read");
+        let parsed: serde_json::Value = serde_json::from_str(&contents).expect("parse");
+
+        let domains = parsed["network"]["allow_domain"]
+            .as_array()
+            .expect("allow_domain must be present");
+        // sorted + deduped: ["api.example.com", "cdn.example.com"]
+        assert_eq!(domains.len(), 2, "duplicate should be removed");
+        assert_eq!(domains[0], "api.example.com");
+        assert_eq!(domains[1], "cdn.example.com");
     }
 }
