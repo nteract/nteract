@@ -3053,9 +3053,9 @@ fn cmd_lint(fix: bool) {
     // JavaScript/TypeScript with Vite Plus
     println!("=== JavaScript/TypeScript (vp check) ===");
     let vp_ok = if fix {
-        run_cmd_ok("vp", &["check", "--fix"])
+        run_cmd_ok(pnpm_bin(), &["exec", "vp", "check", "--fix"])
     } else {
-        run_cmd_ok("vp", &["check"])
+        run_cmd_ok(pnpm_bin(), &["exec", "vp", "check"])
     };
     if !vp_ok {
         failed = true;
@@ -4170,7 +4170,7 @@ fn build_mcp_widget() {
         println!("Building MCP Apps widget ({reason})...");
         require_pnpm();
         ensure_pnpm_install();
-        run_cmd("vp", &["run", "nteract-mcp-app#build"]);
+        run_cmd(pnpm_bin(), &["exec", "vp", "run", "nteract-mcp-app#build"]);
         let dest = Path::new("python/nteract/src/nteract/_widget.html");
         if !dest.exists() {
             eprintln!("Error: MCP widget build did not produce _widget.html");
