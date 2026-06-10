@@ -202,6 +202,9 @@ fn proxy_config_for_channel(channel: String) -> ProxyConfig {
         server_name: runt_workspace::desktop_product_name().to_string(),
         cache_dir: proxy_cache_dir(),
         monitor_poll_interval_ms: 500,
+        recovery_hint: "Try restarting the nteract app; if that does not recover, \
+                        reinstall the nteract extension."
+            .to_string(),
     }
 }
 

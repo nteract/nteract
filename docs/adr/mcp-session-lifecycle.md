@@ -311,5 +311,4 @@ These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
 retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
 to implement; **Design** = needs a decision in this ADR before code moves.
 
-- **MSL-3** (Targeted PR; `crates/runt-mcp-proxy/src/proxy.rs` `should_exit` text): `tool_list_changed` divergence reports `Incompatible` with a single "reinstall the nteract extension" error string, hard-coded for the MCPB bundle install path. The `nteract-dev` supervisor-managed path gets the same message even though the recovery action is different (relaunch the dev daemon, not reinstall an extension).
 - **MSL-4** (Design; `crates/runt-mcp-proxy/src/proxy.rs`): When a dev worktree daemon's socket path changes (worktree switch in isolated mode, manual relocation), `mcp-supervisor` compares daemon versions across child restart but not socket paths. The `McpProxy.last_notebook_id` from the old daemon is meaningless in the new daemon's room space; rejoin fails with `SessionDropReason::Evicted` and the agent sees a confusing trail.
