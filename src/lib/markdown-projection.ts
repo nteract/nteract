@@ -72,6 +72,15 @@ export interface MarkdownProjectionPlan {
   readonly byteLength: number;
   readonly utf16Length: number;
   readonly error?: string;
+  /**
+   * Exact source this plan was projected from. Stamped by
+   * `projectMarkdownPlan`; absent on plans that arrive as MIME payloads
+   * (`markdownProjectionPlanFromMimeData`), which are output data and never
+   * validated against a cell source. This is the freshness key: consumers
+   * holding an attached plan check `source` identity instead of inferring
+   * freshness from lengths, which falsely matches same-length edits.
+   */
+  readonly source?: string;
   readonly measurement: MarkdownProjectionMeasurement;
   readonly anchors: readonly MarkdownProjectionAnchor[];
   readonly blocks: readonly MarkdownProjectionBlock[];
@@ -122,6 +131,42 @@ export function projectMarkdownPlan(source: string): MarkdownProjectionPlan | nu
   }
 }
 
+/** Exact freshness check: the plan was projected from precisely this source. */
+export function markdownProjectionMatchesSource(
+  plan: MarkdownProjectionPlan,
+  source: string,
+): boolean {
+  return plan.source === source;
+}
+
+/**
+ * Resolve the projection for a cell's current source. The single resolution
+ * rule every React surface (outline rail, markdown preview) shares, so they
+ * all consume the same frozen plan object for a given source:
+ *
+ * 1. An attached plan whose `source` matches exactly wins. Attach sites
+ *    produce plans through `projectMarkdownPlan`, so a matching record IS the
+ *    projector's output for this source — same object the cache would return,
+ *    without cache pressure when a notebook outgrows the LRU limit.
+ * 2. Otherwise project from the current source (source-key cached), so
+ *    surfaces update while typing, before rematerialization re-attaches.
+ * 3. A stale attached plan is returned only when no projector is registered
+ *    in this host — stale headings beat dropping the projection entirely.
+ *
+ * Blank source resolves to null: the projector has nothing to parse, and
+ * falling back to a stale plan would resurrect content the user deleted.
+ */
+export function resolveMarkdownProjection(
+  attached: MarkdownProjectionPlan | null | undefined,
+  source: string,
+): MarkdownProjectionPlan | null {
+  if (!source.trim()) return null;
+  if (attached && markdownProjectionMatchesSource(attached, source)) {
+    return attached;
+  }
+  return projectMarkdownPlan(source) ?? attached ?? null;
+}
+
 function warnMissingMarkdownProjectionProjector(): void {
   if (warnedMissingMarkdownProjectionProjector) return;
   warnedMissingMarkdownProjectionProjector = true;
@@ -138,7 +183,7 @@ function cacheMarkdownProjectionPlan(
   source: string,
   plan: MarkdownProjectionPlan,
 ): MarkdownProjectionPlan {
-  const cachedPlan = freezeMarkdownProjectionPlan(plan);
+  const cachedPlan = freezeMarkdownProjectionPlan({ ...plan, source });
   markdownProjectionCache.set(source, cachedPlan);
   if (markdownProjectionCache.size <= MARKDOWN_PROJECTION_CACHE_LIMIT) return cachedPlan;
 

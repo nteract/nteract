@@ -1,7 +1,10 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { ReadOnlyNotebookCellData } from "@/components/cell/ReadOnlyNotebook";
 import type { SupportedLanguage } from "@/components/editor/languages";
-import { projectMarkdownPlan, type MarkdownProjectionPlan } from "../../lib/markdown-projection";
+import {
+  resolveMarkdownProjection,
+  type MarkdownProjectionPlan,
+} from "../../lib/markdown-projection";
 import {
   notebookMetadataToPackageViewModel as projectNotebookPackageViewModel,
   type NotebookPackageViewModel,
@@ -140,30 +143,16 @@ export function notebookViewCellsToOutlineItems(
 }
 
 function notebookViewCellMarkdownAnchors(cell: NotebookViewCell) {
-  // Live adapters attach markdownProjection during materialization/source edits.
-  // Treat a fresh attached projection as authoritative, including an empty
-  // anchor list for headingless markdown, so outline projection stays O(cells)
-  // in the common path. If the source has moved ahead of the projection, fall
-  // back to the source-keyed projector so outline headings update before a full
-  // rematerialization/reload.
-  if (
-    cell.markdownProjection &&
-    markdownProjectionMatchesSource(cell.markdownProjection, cell.source)
-  ) {
-    return cell.markdownProjection.anchors;
-  }
+  // Blank markdown has authoritatively no headings — `[]`, not `null`, so the
+  // outline does not treat the cell as "projection unavailable".
+  if (!cell.source.trim()) return [];
 
-  // This Rust/WASM fallback keeps older host adapters correct without reviving
-  // a second heading parser; projectMarkdownPlan is source-key cached.
-  return projectMarkdownPlan(cell.source)?.anchors ?? null;
-}
-
-function markdownProjectionMatchesSource(plan: MarkdownProjectionPlan, source: string): boolean {
-  return plan.utf16Length === source.length && plan.byteLength === markdownSourceByteLength(source);
-}
-
-function markdownSourceByteLength(source: string): number {
-  return new TextEncoder().encode(source).byteLength;
+  // resolveMarkdownProjection keys freshness on the plan's exact source: a
+  // matching attached plan keeps outline projection O(cells) without cache
+  // pressure, an edited cell reprojects from current source before
+  // rematerialization catches up, and a stale plan survives only in hosts
+  // with no registered projector.
+  return resolveMarkdownProjection(cell.markdownProjection, cell.source)?.anchors ?? null;
 }
 
 export function notebookViewCellsToTracebackTargets(

@@ -7,7 +7,9 @@ import { beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   canRenderMarkdownProjectionInHost,
   findMarkdownProjectionAtSourcePosition,
+  markdownProjectionMatchesSource,
   projectMarkdownPlan,
+  resolveMarkdownProjection,
   setMarkdownProjectionProjector,
 } from "../markdown-projection";
 
@@ -118,6 +120,56 @@ describe("markdown projection", () => {
       expect(Object.isFrozen(first?.runs)).toBe(true);
       expect(Object.isFrozen(first?.measurement)).toBe(true);
       expect(Object.isFrozen(first?.anchors[0])).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("stamps plans with their exact source for freshness checks", () => {
+    const source = "# Stamped";
+    const plan = projectMarkdownPlan(source);
+
+    expect(plan?.source).toBe(source);
+    expect(plan && markdownProjectionMatchesSource(plan, source)).toBe(true);
+    // Length-equal but different content must not match — this is the
+    // distinction the retired utf16/byte-length heuristic could not make.
+    expect("# Stamped".length).toBe("# Stampsd".length);
+    expect(plan && markdownProjectionMatchesSource(plan, "# Stampsd")).toBe(false);
+  });
+
+  it("resolves a source-matching attached plan by identity", () => {
+    const attached = projectMarkdownPlan("# Attached heading");
+
+    expect(attached).not.toBeNull();
+    expect(resolveMarkdownProjection(attached, "# Attached heading")).toBe(attached);
+  });
+
+  it("reprojects when the attached plan is stale, including same-length edits", () => {
+    const stale = projectMarkdownPlan("# Alpha title");
+    expect("# Alpha title".length).toBe("# Alpha titlE".length);
+
+    const resolved = resolveMarkdownProjection(stale, "# Alpha titlE");
+
+    expect(resolved).not.toBe(stale);
+    expect(resolved?.source).toBe("# Alpha titlE");
+    expect(resolved?.anchors.map((anchor) => anchor.title)).toEqual(["Alpha titlE"]);
+  });
+
+  it("resolves blank source to null rather than a stale attached plan", () => {
+    const stale = projectMarkdownPlan("# Ghost");
+
+    expect(stale).not.toBeNull();
+    expect(resolveMarkdownProjection(stale, "   \n")).toBeNull();
+  });
+
+  it("falls back to the stale attached plan when projection is unavailable", () => {
+    const stale = projectMarkdownPlan("# Keep me");
+    const restore = setMarkdownProjectionProjector(() => {
+      throw new Error("projector offline");
+    });
+
+    try {
+      expect(resolveMarkdownProjection(stale, "# Newer content")).toBe(stale);
     } finally {
       restore();
     }
