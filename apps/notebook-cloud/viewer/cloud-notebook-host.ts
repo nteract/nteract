@@ -1,6 +1,8 @@
 import { createCommandRegistry, type NotebookHost, type Unlisten } from "@nteract/notebook-host";
+import { EMPTY, type Observable } from "rxjs";
 import type {
   BlobResolver,
+  ConnectionStatus,
   FrameListener,
   FrameTypeValue,
   HistoryEntry,
@@ -62,6 +64,12 @@ class CloudNotebookHostTransport implements NotebookTransport {
 
   onFrame(callback: FrameListener): Unlisten {
     return this.getRuntime()?.transport.onFrame(callback) ?? unlisten;
+  }
+
+  // Delegates to the underlying transport's observable. EMPTY when no runtime
+  // is active — the facade is a request router, not a lifecycle owner.
+  get connectionStatus$(): Observable<ConnectionStatus> {
+    return this.getRuntime()?.transport.connectionStatus$ ?? EMPTY;
   }
 
   disconnect(): void {

@@ -6,9 +6,11 @@
  * the Tauri host receives through its frame channel.
  */
 
+import { BehaviorSubject, type Observable } from "rxjs";
 import {
   FrameType,
   createHttpBlobResolver,
+  type ConnectionStatus,
   type FrameListener,
   type FrameTypeValue,
   type NotebookRequest,
@@ -144,6 +146,8 @@ class BrowserDevTransport implements NotebookTransport {
   private queuedFrames: number[][] = [];
   private framesReleased = false;
   private _connected = false;
+  private readonly _status$ = new BehaviorSubject<ConnectionStatus>("connecting");
+  readonly connectionStatus$: Observable<ConnectionStatus> = this._status$.asObservable();
 
   constructor(
     config: BrowserRelayConfig,
@@ -171,6 +175,7 @@ class BrowserDevTransport implements NotebookTransport {
 
     this.framesReleased = false;
     this.queuedFrames = [];
+    this._status$.next("connecting");
     this.connectPromise = new Promise((resolve, reject) => {
       const ws = new this.WebSocketImpl(this.url);
       ws.binaryType = "arraybuffer";
@@ -178,6 +183,7 @@ class BrowserDevTransport implements NotebookTransport {
 
       ws.onopen = () => {
         this._connected = true;
+        this._status$.next("online");
         resolve();
       };
       ws.onerror = () => {
@@ -189,6 +195,7 @@ class BrowserDevTransport implements NotebookTransport {
         const wasConnected = this._connected;
         this._connected = false;
         this.connectPromise = null;
+        this._status$.next("offline");
         this.rejectPending(new Error("browser relay disconnected"));
         if (wasConnected) this.onControl({ type: "disconnected" });
       };
@@ -260,6 +267,7 @@ class BrowserDevTransport implements NotebookTransport {
 
   disconnect(): void {
     this._connected = false;
+    this._status$.next("offline");
     this.ws?.close();
     this.ws = null;
     this.subscribers.clear();

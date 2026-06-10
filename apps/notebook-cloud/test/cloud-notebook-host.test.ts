@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { EMPTY } from "rxjs";
 import type { BlobResolver, NotebookTransport } from "runtimed";
 import { createCloudNotebookHost } from "../viewer/cloud-notebook-host.ts";
 import type { CloudSyncRuntime } from "../viewer/live-sync.ts";
@@ -163,6 +164,7 @@ function createRuntime(
       return { result: label };
     },
     sendTypedRequest: async () => ({ result: "ok" }),
+    connectionStatus$: EMPTY,
   };
 
   return {

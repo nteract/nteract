@@ -1,5 +1,7 @@
+import { BehaviorSubject, type Observable } from "rxjs";
 import {
   SyncEngine,
+  type ConnectionStatus,
   type FrameTypeValue,
   type NotebookRequest,
   type NotebookRequestOptions,
@@ -239,6 +241,8 @@ export class CloudWebSocketTransport implements NotebookTransport {
   ) => void;
   private readyReject!: (error: Error) => void;
   readonly ready: Promise<Extract<SessionControlMessage, { type: "cloud_room_ready" }>>;
+  private readonly _status$ = new BehaviorSubject<ConnectionStatus>("connecting");
+  readonly connectionStatus$: Observable<ConnectionStatus> = this._status$.asObservable();
 
   constructor(
     url: URL,
@@ -250,6 +254,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
       this.readyResolve = (message) => {
         this.readySettled = true;
         this.readyResolved = true;
+        this._status$.next("online");
         resolve(message);
       };
       this.readyReject = (error) => {
@@ -434,6 +439,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.queuedFrames = [];
     this.rejectPendingFrameAcks(reason);
     if (this.readyResolved && !this.manualDisconnect) {
+      this._status$.next("offline");
       this.onDisconnect?.(reason);
     }
   }

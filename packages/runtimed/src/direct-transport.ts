@@ -21,8 +21,11 @@
  * ```
  */
 
+import { BehaviorSubject, type Observable } from "rxjs";
+
 import { FrameType } from "./transport";
 import type {
+  ConnectionStatus,
   FrameListener,
   FrameTypeValue,
   NotebookRequestOptions,
@@ -64,6 +67,8 @@ export class DirectTransport implements NotebookTransport {
   private readonly server: ServerHandle;
   private subscribers = new Set<FrameListener>();
   private _connected = true;
+  private readonly _status$ = new BehaviorSubject<ConnectionStatus>("online");
+  readonly connectionStatus$: Observable<ConnectionStatus> = this._status$.asObservable();
 
   /** Track sent frames for test assertions. */
   readonly sentFrames: Array<{ frameType: number; payload: Uint8Array }> = [];
@@ -182,6 +187,7 @@ export class DirectTransport implements NotebookTransport {
 
   disconnect(): void {
     this._connected = false;
+    this._status$.next("offline");
     this.subscribers.clear();
   }
 
@@ -282,5 +288,6 @@ export class DirectTransport implements NotebookTransport {
   /** Reconnect after a disconnect. */
   reconnect(): void {
     this._connected = true;
+    this._status$.next("online");
   }
 }
