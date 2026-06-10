@@ -921,6 +921,57 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("executionQueue$ dedups queue membership across changeset ticks", () => {
+      const state = makeRuntimeState({
+        "exec-1": { status: "running", execution_count: 1, success: null },
+      });
+      const queue = {
+        executing_execution_id: "exec-1",
+        queued_execution_ids: ["exec-2"],
+        notebook: { executing_cell_id: "cell-1", queued_cell_ids: ["cell-2"] },
+      };
+      const engine = createEngine();
+      engine.start();
+
+      const received: unknown[] = [];
+      engine.executionQueue$.subscribe((projection) => received.push(projection));
+
+      // Tick 1: queue appears.
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(state, { queue }),
+      ]);
+      transport.deliver(Array.from([0x05, 1]));
+
+      // Tick 2: output churn during the same execution — same queue content
+      // in a fresh object. Queue-only subscribers must not be re-notified.
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(state, {
+          execution_upserts: [
+            [
+              "exec-1",
+              { execution_count: 1, status: "running", success: null, output_ids: ["out-1"] },
+            ],
+          ],
+          queue: { ...queue, notebook: { ...queue.notebook } },
+        }),
+      ]);
+      transport.deliver(Array.from([0x05, 2]));
+
+      // Tick 3: queue drains.
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(state, {
+          queue: { executing_execution_id: null, queued_execution_ids: [], notebook: null },
+        }),
+      ]);
+      transport.deliver(Array.from([0x05, 3]));
+
+      expect(received).toEqual([
+        queue,
+        { executing_execution_id: null, queued_execution_ids: [], notebook: null },
+      ]);
+      engine.stop();
+    });
+
     it("emits output payload changes before runtime execution view changes", () => {
       const state = makeRuntimeState({
         "exec-1": { status: "running", execution_count: 1, success: null },

@@ -20,10 +20,12 @@ import {
   bufferTime,
   concatMap,
   debounceTime,
+  distinctUntilChanged,
   EMPTY,
   filter,
   from,
   interval,
+  map,
   mergeMap,
   Observable,
   ReplaySubject,
@@ -43,6 +45,7 @@ import {
 } from "./comm-diff";
 import type {
   CommsState,
+  ExecutionQueueProjection,
   ExecutionViewChangeset,
   FrameEvent,
   InitialLoadPhase,
@@ -363,6 +366,18 @@ export class SyncEngine {
   /** Cross-document execution materialized-view changes emitted by WASM. */
   readonly executionViewChanges$: Observable<ExecutionViewChangeset>;
 
+  /**
+   * Execution queue projection, deduplicated.
+   *
+   * The fluent surface for queue-only consumers (toolbar run indicators,
+   * queue badges): emits the `queue` field of [`executionViewChanges$`]
+   * only when queue membership actually changes, so per-output upserts and
+   * pointer churn during a long execution never reach subscribers. Derived
+   * from the same WASM-computed projection both hosts already receive —
+   * no second diff.
+   */
+  readonly executionQueue$: Observable<ExecutionQueueProjection>;
+
   // ── Typed broadcast observables ──────────────────────────────────
 
   /** Custom comm messages (buttons, model.send()). */
@@ -393,18 +408,6 @@ export class SyncEngine {
    */
   readonly initialSyncComplete$: Observable<void>;
 
-  /**
-   * Fires whenever the notebook CRDT document changes due to an incoming sync.
-   *
-   * Each emission corresponds to a `sync_applied` event with `changed=true`.
-   * Persistence consumers should debounce this and call `handle.save()` to
-   * snapshot the `NotebookDoc` bytes for local storage.
-   *
-   * Note: only `NotebookDoc` bytes should be persisted — `RuntimeStateDoc` is
-   * daemon-authoritative and must not be stored locally.
-   */
-  readonly notebookDocChanged$: Observable<void>;
-
   // Backing subjects for public observables
   private readonly _cellChanges$ = new Subject<CellChangeset | null>();
   private readonly _broadcasts$ = new Subject<unknown>();
@@ -420,7 +423,6 @@ export class SyncEngine {
     removed_ids: string[];
   }>();
   private readonly _executionViewChanges$ = new Subject<ExecutionViewChangeset>();
-  private readonly _notebookDocChanged$ = new Subject<void>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -442,10 +444,16 @@ export class SyncEngine {
     this.commChanges$ = this._commChanges$.asObservable();
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
     this.executionViewChanges$ = this._executionViewChanges$.asObservable();
-    this.notebookDocChanged$ = this._notebookDocChanged$.asObservable();
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
+
+    // Queue-only projection derived from the execution view changeset.
+    this.executionQueue$ = this.executionViewChanges$.pipe(
+      map((changeset) => changeset.queue),
+      filter((queue): queue is ExecutionQueueProjection => queue != null),
+      distinctUntilChanged(executionQueueEquals),
+    );
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────
@@ -590,7 +598,6 @@ export class SyncEngine {
                 );
               }
               materialize$.next(cs ?? null);
-              this._notebookDocChanged$.next();
             }
             this.emitExecutionViewChanges(e.execution_view_changeset);
             return EMPTY;
@@ -1336,4 +1343,21 @@ export class SyncEngine {
       initial_load: { phase: "not_needed" },
     });
   }
+}
+
+/** Queue membership equality for the deduplicated `executionQueue$`. */
+function executionQueueEquals(a: ExecutionQueueProjection, b: ExecutionQueueProjection): boolean {
+  if ((a.executing_execution_id ?? null) !== (b.executing_execution_id ?? null)) return false;
+  if (!stringArrayEquals(a.queued_execution_ids, b.queued_execution_ids)) return false;
+  const an = a.notebook ?? null;
+  const bn = b.notebook ?? null;
+  if (an === null || bn === null) return an === bn;
+  return (
+    (an.executing_cell_id ?? null) === (bn.executing_cell_id ?? null) &&
+    stringArrayEquals(an.queued_cell_ids, bn.queued_cell_ids)
+  );
+}
+
+function stringArrayEquals(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
 }
