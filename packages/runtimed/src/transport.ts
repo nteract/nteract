@@ -113,8 +113,11 @@ export interface NotebookTransport {
   /**
    * Observable that emits the current connection state whenever it changes.
    *
-   * Consumers should subscribe to persist `NotebookDoc` bytes on `"online"`
-   * (sync complete) and display UI feedback on `"offline"` or `"reconnecting"`.
+   * Reflects the physical transport connection: whether the underlying socket
+   * or IPC channel is open. This is not a sync-readiness signal — consumers
+   * that need to know when the notebook doc is ready to read should use
+   * `SyncEngine.initialSyncComplete$`; those that want to persist on each
+   * change should debounce `SyncEngine.notebookDocChanged$`.
    */
   readonly connectionStatus$: Observable<ConnectionStatus>;
 

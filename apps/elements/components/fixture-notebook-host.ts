@@ -1,3 +1,4 @@
+import { EMPTY } from "rxjs";
 import type { NotebookHost } from "@nteract/notebook-host";
 
 export const noop = () => {};
@@ -27,6 +28,7 @@ export function createFixtureNotebookHost({
     connected: true,
     disconnect: noop,
     ...transportOverrides,
+    connectionStatus$: transportOverrides.connectionStatus$ ?? EMPTY,
   };
 
   return {

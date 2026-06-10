@@ -1,3 +1,4 @@
+import { EMPTY } from "rxjs";
 import { NotebookClient, type NotebookTransport } from "runtimed";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -9,6 +10,7 @@ function stubClient() {
     sendRequest,
     sendTypedRequest: vi.fn(),
     connected: true,
+    connectionStatus$: EMPTY,
     disconnect: () => {},
   } satisfies NotebookTransport;
 
@@ -24,6 +26,7 @@ function stubClientWithHeads(heads: string[]) {
     sendRequest,
     sendTypedRequest: vi.fn(),
     connected: true,
+    connectionStatus$: EMPTY,
     disconnect: () => {},
   } satisfies NotebookTransport;
 
