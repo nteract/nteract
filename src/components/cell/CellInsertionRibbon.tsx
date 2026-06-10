@@ -96,11 +96,11 @@ export function CellInsertionRibbon({
       : null;
 
     return cn(
-      "inline-flex h-6 items-center justify-center gap-1 border border-transparent px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors",
+      "relative inline-flex h-6 items-center justify-center gap-1 border border-transparent px-2.5 text-xs font-medium text-muted-foreground/55 transition-colors",
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
       isBridged ? "rounded-none" : "rounded-full",
       bridgeActiveType === type && "rounded-l-none rounded-r-full",
-      bridgeActiveType === "code" && type === "markdown" && "ml-1",
+      bridgeActiveType && type === "markdown" && "ml-1",
       isActive
         ? actionButtonIntentClasses[type]
         : isBridgeLead && bridgeClasses
@@ -217,13 +217,13 @@ export function CellInsertionRibbon({
         data-slot="cell-adder-actions"
         aria-hidden={isOpen ? undefined : true}
         className={cn(
-          "flex min-w-0 flex-1 items-center transition-[opacity,transform] duration-150 ease-out",
+          "flex min-w-0 flex-1 items-center transition-opacity duration-150 ease-out",
           terminal && "pt-0.5",
           forceActionsVisible
-            ? "translate-x-0 opacity-100"
+            ? "opacity-100"
             : isOpen
-              ? "pointer-events-auto translate-x-0 opacity-100"
-              : "pointer-events-none -translate-x-1 opacity-0 transition-none",
+              ? "pointer-events-auto opacity-100"
+              : "pointer-events-none opacity-0 transition-none",
         )}
       >
         <span
@@ -248,6 +248,17 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("code")}
             className={actionButtonClass("code")}
           >
+            {bridgeActiveType === "markdown" ? (
+              <span
+                data-slot="cell-adder-action-bridge-gap"
+                className={cn(
+                  "pointer-events-none absolute left-full top-1/2 h-6 w-1 -translate-y-1/2 border-y",
+                  insertionBridgeSurfaceClasses.markdown,
+                  insertionBridgeBorderClasses.markdown,
+                )}
+                aria-hidden="true"
+              />
+            ) : null}
             <Code className="h-3 w-3" aria-hidden="true" />
             <span>Code</span>
           </button>

@@ -16,7 +16,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
-import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { Eye, EyeOff, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId, type NotebookInteractionTarget } from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
@@ -841,7 +841,11 @@ function NotebookViewContent({
               )}
               title={isSourceHidden ? "Show input" : "Hide input"}
             >
-              <Code2 className="h-3.5 w-3.5" />
+              {isSourceHidden ? (
+                <Eye className="h-3.5 w-3.5" />
+              ) : (
+                <EyeOff className="h-3.5 w-3.5" />
+              )}
             </button>
           ) : null;
         const visibleDeleteButton = !isSourceHidden ? deleteButton : null;
