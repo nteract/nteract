@@ -56,6 +56,7 @@ import {
   PresenceValueProvider,
   getCellById,
   useRuntimeState,
+  useWorkstationAttachment,
   type PresenceContextValue,
 } from "../../notebook/src/notebook-surface";
 import { beginOidcLogin } from "./oidc-auth";
@@ -197,7 +198,6 @@ export function NotebookViewer({
     retryLiveConnection,
     snapshotResolvedRef,
     status,
-    workstationAttachment,
   } = useCloudViewerSession({
     authRenewalKind: authRenewal.kind,
     authState,
@@ -223,6 +223,9 @@ export function NotebookViewer({
     presenceStore.getSnapshot,
   );
   const runtimeState = useRuntimeState();
+  // Deduplicated shared projection — re-renders only when attachment facts
+  // change, not on every runtime tick (was per-host shadow state).
+  const workstationAttachment = useWorkstationAttachment();
   const runtimePeerCount = cloudPresenceRuntimePeerCount(presenceSnapshot);
   const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(

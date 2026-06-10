@@ -1,8 +1,10 @@
 /**
  * Runtime state store — reactive state from the daemon's RuntimeStateDoc.
  *
- * Types and diffing logic live in the `runtimed` package (pure, no React).
- * This module adds the React-specific store (useSyncExternalStore) on top.
+ * The reactive store and its projections live in the `runtimed` package
+ * (`RuntimeStateStore`, pure RxJS, no React). This module instantiates the
+ * app-wide store and adds the React bindings (useSyncExternalStore) on top,
+ * so both desktop and cloud consume the same projection pipeline.
  */
 
 import { useSyncExternalStore } from "react";
@@ -18,6 +20,7 @@ export type {
   QueueState,
   RuntimeState,
   TrustState,
+  WorkstationAttachmentState,
 } from "runtimed";
 
 export {
@@ -25,45 +28,37 @@ export {
   diffExecutions,
 } from "runtimed";
 
-import { DEFAULT_RUNTIME_STATE, type RuntimeState } from "runtimed";
+import {
+  RuntimeStateStore,
+  type RuntimeState,
+  type RuntimeStatusKey,
+  type WorkstationAttachmentState,
+} from "runtimed";
+import type { Observable } from "rxjs";
 
 // ── Store ────────────────────────────────────────────────────────────
 
-let currentState: RuntimeState = DEFAULT_RUNTIME_STATE;
-// Tracks whether the daemon has pushed at least one RuntimeStateDoc frame
-// since connect/reset. While false, `currentState` is the static default,
-// and fields like `trust.status` must NOT be used as authoritative signals
-// (the default "no_dependencies" would fail-open a trust gate).
-let loaded = false;
-const subscribers = new Set<() => void>();
-
-function notifySubscribers(): void {
-  for (const cb of subscribers) {
-    try {
-      cb();
-    } catch {
-      // Subscriber errors must not break the dispatch loop
-    }
-  }
-}
+/**
+ * App-wide runtime-state store. Both the desktop sync bridge and the cloud
+ * viewer session push daemon snapshots here; all projections
+ * (kernelInfo$, queueState$, workstation$, throttledStatusKey$, …) hang
+ * off this instance.
+ */
+export const runtimeStateStore = new RuntimeStateStore();
 
 /** Update the runtime state snapshot. Called by the frame pipeline. */
 export function setRuntimeState(state: RuntimeState): void {
-  currentState = state;
-  loaded = true;
-  notifySubscribers();
+  runtimeStateStore.set(state);
 }
 
 /** Reset to default state (e.g., on disconnect). */
 export function resetRuntimeState(): void {
-  currentState = DEFAULT_RUNTIME_STATE;
-  loaded = false;
-  notifySubscribers();
+  runtimeStateStore.reset();
 }
 
 /** Read the current snapshot (non-reactive). */
 export function getRuntimeState(): RuntimeState {
-  return currentState;
+  return runtimeStateStore.snapshot;
 }
 
 /**
@@ -73,20 +68,56 @@ export function getRuntimeState(): RuntimeState {
  * means the current snapshot is `DEFAULT_RUNTIME_STATE`, not a real read.
  */
 export function isRuntimeStateLoaded(): boolean {
-  return loaded;
+  return runtimeStateStore.isLoaded;
 }
 
-// ── React hook ───────────────────────────────────────────────────────
+// ── React bindings ───────────────────────────────────────────────────
 
-function subscribe(cb: () => void): () => void {
-  subscribers.add(cb);
-  return () => {
-    subscribers.delete(cb);
-  };
+/**
+ * Per-observable binding cache so `getSnapshot` returns the same value
+ * between emissions — `useSyncExternalStore` requires snapshot stability
+ * to avoid render loops. Projections derive from a BehaviorSubject, so the
+ * first subscription seeds the cached value synchronously.
+ */
+const projectionCache = new WeakMap<
+  Observable<unknown>,
+  { subscribe: (cb: () => void) => () => void; getSnapshot: () => unknown }
+>();
+
+function bindingFor<T>(observable: Observable<T>): {
+  subscribe: (cb: () => void) => () => void;
+  getSnapshot: () => T;
+} {
+  let binding = projectionCache.get(observable as Observable<unknown>);
+  if (!binding) {
+    let current: unknown;
+    const seed = observable.subscribe((value) => {
+      current = value;
+    });
+    seed.unsubscribe();
+    binding = {
+      subscribe: (cb: () => void) => {
+        const sub = observable.subscribe((value) => {
+          current = value;
+          cb();
+        });
+        return () => sub.unsubscribe();
+      },
+      getSnapshot: () => current,
+    };
+    projectionCache.set(observable as Observable<unknown>, binding);
+  }
+  return binding as { subscribe: (cb: () => void) => () => void; getSnapshot: () => T };
 }
 
-function getSnapshot(): RuntimeState {
-  return currentState;
+/**
+ * Subscribe a React component to a projection observable from the shared
+ * store. The observable must emit synchronously on subscribe (all
+ * `RuntimeStateStore` projections do).
+ */
+export function useRuntimeProjection<T>(observable: Observable<T>): T {
+  const binding = bindingFor(observable);
+  return useSyncExternalStore(binding.subscribe, binding.getSnapshot, binding.getSnapshot);
 }
 
 /**
@@ -96,7 +127,7 @@ function getSnapshot(): RuntimeState {
  * Automerge sync. The frontend never writes to this state.
  */
 export function useRuntimeState(): RuntimeState {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return useRuntimeProjection(runtimeStateStore.state$);
 }
 
 /**
@@ -104,5 +135,24 @@ export function useRuntimeState(): RuntimeState {
  * "no snapshot yet" to "first snapshot applied" (and back on reset).
  */
 export function useRuntimeStateLoaded(): boolean {
-  return useSyncExternalStore(subscribe, () => loaded, () => loaded);
+  return useRuntimeProjection(runtimeStateStore.loaded$);
+}
+
+/**
+ * Workstation attachment, deduplicated by the attachment cache key —
+ * re-renders only when attachment facts change, not on every daemon tick.
+ * Shared by desktop and cloud (replaces cloud's shadow state; see
+ * `shared-store-projection-convergence.md` item 2).
+ */
+export function useWorkstationAttachment(): WorkstationAttachmentState | null {
+  return useRuntimeProjection(runtimeStateStore.workstation$);
+}
+
+/**
+ * Lifecycle status key with the busy flash suppressed (the shared
+ * `throttleBusyStatus` pipeline). This is the stream UI status chips
+ * should render.
+ */
+export function useThrottledStatusKey(): RuntimeStatusKey {
+  return useRuntimeProjection(runtimeStateStore.throttledStatusKey$);
 }

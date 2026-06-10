@@ -7,21 +7,15 @@
  */
 
 import { useNotebookHost } from "@nteract/notebook-host";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   type DaemonQueueState,
   type DependencyGuard,
-  deriveEnvSyncState,
-  deriveKernelInfo,
-  deriveQueueState,
   type ExecuteCellOptions,
   type GuardedNotebookProvenance,
   type KernelStatus,
   type NotebookClient,
   type NotebookResponse,
-  RUNTIME_STATUS,
-  runtimeStatusKey,
-  type RuntimeStatusKey,
   statusKeyToLegacyStatus,
 } from "runtimed";
 import { refreshBlobPort, resetBlobPort } from "../lib/blob-port";
@@ -35,7 +29,10 @@ import {
   diffExecutions,
   type ExecutionState,
   resetRuntimeState,
+  runtimeStateStore,
+  useRuntimeProjection,
   useRuntimeState,
+  useThrottledStatusKey,
 } from "../lib/runtime-state";
 import { markExecutionPerformance } from "../lib/execution-performance";
 
@@ -67,68 +64,18 @@ export function useDaemonKernel({
 }: UseDaemonKernelOptions) {
   const host = useNotebookHost();
   // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
+  // Each projection is deduplicated in the shared store, so a daemon tick
+  // that doesn't change the slice doesn't re-render this hook's host.
   const runtimeState = useRuntimeState();
+  const kernelInfo = useRuntimeProjection(runtimeStateStore.kernelInfo$);
+  const queueState = useRuntimeProjection(runtimeStateStore.queueState$);
+  const envSyncState = useRuntimeProjection(runtimeStateStore.envSyncState$);
 
-  const kernelInfo = useMemo(() => deriveKernelInfo(runtimeState), [runtimeState]);
-
-  const queueState = useMemo(() => deriveQueueState(runtimeState), [runtimeState]);
-
-  const envSyncState = useMemo(() => deriveEnvSyncState(runtimeState), [runtimeState]);
-
-  // ── Busy throttle ────────────────────────────────────────────────
-  // Project the typed lifecycle into the flat `RuntimeStatusKey`
-  // vocabulary and throttle the `RUNNING_BUSY` ↔ `RUNNING_IDLE`
-  // transition so quick execute/idle cycles don't flash "busy" at the
-  // user. Non-Running keys (starting sub-phases, error, shutdown) pass
-  // through untouched — they carry richer sub-state the toolbar wants
-  // to render verbatim.
-  const rawStatusKey = runtimeStatusKey(runtimeState.kernel.lifecycle);
-  const [throttledStatusKey, setThrottledStatusKey] = useState<RuntimeStatusKey>(rawStatusKey);
-  const busyTimerRef = useRef<number | null>(null);
-  const prevRawStatusKeyRef = useRef(rawStatusKey);
-
-  useEffect(() => {
-    const prev = prevRawStatusKeyRef.current;
-    prevRawStatusKeyRef.current = rawStatusKey;
-    if (rawStatusKey === prev) return;
-
-    if (rawStatusKey === RUNTIME_STATUS.RUNNING_BUSY) {
-      // Delay committing BUSY by 60ms — if IDLE arrives first, the
-      // pending commit is cancelled below and the user never sees a
-      // busy flash.
-      if (busyTimerRef.current === null) {
-        busyTimerRef.current = window.setTimeout(() => {
-          busyTimerRef.current = null;
-          setThrottledStatusKey(RUNTIME_STATUS.RUNNING_BUSY);
-        }, 60);
-      }
-    } else if (
-      rawStatusKey === RUNTIME_STATUS.RUNNING_IDLE ||
-      rawStatusKey === RUNTIME_STATUS.RUNNING_UNKNOWN
-    ) {
-      if (busyTimerRef.current !== null) {
-        clearTimeout(busyTimerRef.current);
-        busyTimerRef.current = null;
-      } else {
-        setThrottledStatusKey(rawStatusKey);
-      }
-    } else {
-      if (busyTimerRef.current !== null) {
-        clearTimeout(busyTimerRef.current);
-        busyTimerRef.current = null;
-      }
-      setThrottledStatusKey(rawStatusKey);
-    }
-
-    return () => {
-      if (busyTimerRef.current !== null) {
-        clearTimeout(busyTimerRef.current);
-        busyTimerRef.current = null;
-      }
-    };
-  }, [rawStatusKey]);
-
-  const statusKey = throttledStatusKey;
+  // Status key with the busy flash suppressed — the shared
+  // `throttleBusyStatus` pipeline holds RUNNING_BUSY back 60ms so quick
+  // execute/idle cycles never flash "busy". Non-Running keys (starting
+  // sub-phases, error, shutdown) pass through untouched.
+  const statusKey = useThrottledStatusKey();
   const kernelStatus: KernelStatus = statusKeyToLegacyStatus(statusKey);
 
   // ── Callbacks in refs (avoid effect re-runs) ──────────────────────
@@ -269,10 +216,6 @@ export function useDaemonKernel({
 
     return () => {
       cancelled = true;
-      if (busyTimerRef.current !== null) {
-        clearTimeout(busyTimerRef.current);
-        busyTimerRef.current = null;
-      }
       unsubscribeBroadcast();
       unlistenDisconnect();
       unlistenReady();

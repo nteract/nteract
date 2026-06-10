@@ -36,6 +36,16 @@ the flush strands the update (marked dirty, never emitted).
   `useState` shadow. It reads `useFocusedCellId()` and routes programmatic focus
   through `setFocusedCellId` + `flushCellUIState` (the NotebookView set+flush
   pattern), dropping the host bridge double-buffer.
+- **Runtime-state projections → `RuntimeStateStore`** (runtime-state RxJS
+  projection pass). The runtime-state store itself moved out of the desktop app
+  into `packages/runtimed/src/runtime-state-store.ts`: a BehaviorSubject-backed
+  store with fluent `select()` and deduplicated projections (`kernelInfo$`,
+  `queueState$`, `envSyncState$`, `workstation$`, `statusKey$`,
+  `throttledStatusKey$`). The busy-flash throttle that lived as an imperative
+  `setTimeout` effect in `useDaemonKernel` is now the shared, virtual-time-
+  testable `throttleBusyStatus` pipeline. Desktop's
+  `apps/notebook/src/lib/runtime-state.ts` is a thin React adapter
+  (`useRuntimeProjection`) over the package store; item 2 below rode this.
 
 ## Remaining work (ranked)
 
@@ -52,21 +62,16 @@ output focus, reconnect) before merge.
    Esc/iframe focus paths are not reproducible in unit tests. New
    `src/components/notebook/state/output-focus-store.ts`.
 
-2. **Cloud `workstationAttachment` → shared runtime-state store.**
-   `cloud-viewer-session.ts` holds a `workstationAttachment` `useState` that is a
-   copy of `useRuntimeState().workstation` (the same subscription pushes the full
-   state via `setRuntimeState`). #3515 strengthens this: the worker now publishes
-   workstation claim progress into RuntimeStateDoc
-   (`publishWorkstationAttachJobRuntimeState` -> room `setWorkstationAttachment`,
-   via the pure `projectNotebookWorkstationAttachmentFromClaim`), so the
-   attachment is a RuntimeStateDoc-owned fact end to end and the session's
-   `useState` is clearly a shadow of the projected runtime state. Hazard: it is
-   deduped by `workstationAttachmentKeyRef` to avoid re-renders on unchanged
-   attachments, and reset in four disconnect/room-change sites. A naive
-   `useRuntimeState().workstation` re-renders on every runtime tick and changes
-   reset timing. Converge by consuming the projected attachment through an
-   equality-aware selector (e.g. `useRuntimeStateWorkstation()`) on the
-   runtime-state store, preserving the reset sites' clear-on-disconnect behavior.
+2. ~~**Cloud `workstationAttachment` → shared runtime-state store.**~~ **Done**
+   in the runtime-state RxJS projection pass. The shared store is now
+   `RuntimeStateStore` (`packages/runtimed/src/runtime-state-store.ts`), whose
+   `workstation$` projection dedups by
+   `notebookShellWorkstationAttachmentCacheKey` — the same equality the old
+   `workstationAttachmentKeyRef` enforced, but shared by every subscriber.
+   The session's `useState` shadow, its key ref, and all per-site clears are
+   deleted; disconnect/room-change sites call `resetRuntimeState()` and the
+   projection emits null through the same pipeline. Both hosts consume
+   `useWorkstationAttachment()` from the shared runtime-state module.
 
 3. **Rail/outline chrome (`activeRailPanel`, `railCollapsed`,
    `selectedOutlineItemId`) → shared `rail-ui-state` store.** Declared identically
