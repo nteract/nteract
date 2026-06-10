@@ -9,7 +9,7 @@ locally, and syncs outputs back through the room.
 This doc is the operator path. The architecture lives in
 `docs/adr/remote-workstation-doc-agents.md` and
 `docs/adr/deployment-topology.md`; the daemon-side surface in
-`docs/handoffs/16-workstation-endpoint.md`.
+`crates/runtimed/src/workstation/`.
 
 ## Install (one-liner)
 
@@ -118,7 +118,7 @@ per-notebook environments. The workstation endpoint projects these as the
 environments it can offer (`list_environments`), and the hosted room's
 workstation panel surfaces attachment state. Inbound kernel lifecycle dispatch
 (interrupt/restart over the room) is tracked in
-`docs/handoffs/16-workstation-endpoint.md`.
+[#3381](https://github.com/nteract/nteract/issues/3381).
 
 ## Diagnostics
 

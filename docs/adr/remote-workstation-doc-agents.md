@@ -686,6 +686,41 @@ change, not a drop-in. The runtime_peer ACL requirement holds either way: an
 explicit `runtime_peer` ACL row via `POST /api/n/:id/acl` (owner alone is 403;
 `aclRowsCoverScope` special-cases the scope).
 
+## Implementation status (2026-06-10): the system as built
+
+The end-to-end path is live. What exists, mapped to the implementation
+sequence:
+
+- **Registry (step 3).** D1 tables `workstations`, `workstation_defaults`, and
+  `workstation_attach_jobs` (`apps/notebook-cloud/src/storage.ts`), with Worker
+  routes `/api/workstations`, `/api/workstations/default`, and the attach-job
+  endpoints. Registration upserts and refreshes `last_seen_at`.
+- **Connector (step 4).** `apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`
+  registers the workstation, polls attach jobs over HTTP, and spawns
+  `runtimed cloud-runtime-agent` per job. This diverges from the sketch above:
+  attach commands arrive by polling `workstation_attach_jobs`, not a
+  `WS /api/workstations/:id/control` channel. A Rust `runt workstation` service
+  mode is still open.
+- **Target selection + attachment (steps 8–9).** The viewer's workstation panel
+  (`use-cloud-workstations.ts`) drives `/api/n/:id/workstation-attachments`;
+  attach jobs command the connector, which attaches as `runtime_peer` over
+  `CloudWsFrameTransport`.
+- **Execution (steps 10–11).** The room host queues executions from editor
+  REQUESTs (#3399); viewer requests resolve via `cloud_frame_accepted` /
+  `cloud_frame_rejected` acks. Launch-on-attach starts a `current_python`
+  kernel through the daemon's launcher (`crates/runtimed/src/workstation/`).
+  Verified live: browser submits, workstation executes, output lands in the
+  viewer.
+
+Operator instructions: `docs/remote-workstation.md`.
+
+Still open: inbound kernel lifecycle over cloud (interrupt/restart/shutdown —
+the "req 5" channel; launch-on-attach covers only the first launch), the
+attachment-ticket contract (step 6; dev path today is API key / dev token plus
+an explicit `runtime_peer` ACL row), catalog projection (step 5), and the
+provider-specific Outerbounds/JupyterHub smokes (step 12). Tracked in
+[#3381](https://github.com/nteract/nteract/issues/3381).
+
 ## Open questions
 
 1. Is a workstation target personal to the API-key principal, shareable within a
