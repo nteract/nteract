@@ -18,8 +18,8 @@
 //!
 //! ## Two phases
 //!
-//! 1. **Terminal wait.** Poll until `executions[eid].status` is `"done"` or
-//!    `"error"`.
+//! 1. **Terminal wait.** Poll until `executions[eid].status` is `"done"`,
+//!    `"error"`, or `"cancelled"`.
 //! 2. **Output-sync grace.** If the terminal status is reached but the
 //!    output list is still empty, or the terminal output includes a stream
 //!    manifest that may still be updating in place, poll briefly (capped at
@@ -34,9 +34,14 @@ use crate::handle::DocHandle;
 /// Outcome of awaiting a single execution.
 #[derive(Debug, Clone)]
 pub struct ExecutionTerminalState {
-    /// `"done"` | `"error"` | `"timed_out"`.
+    /// `"done"` | `"error"` | `"cancelled"` | `"timed_out"`.
+    ///
+    /// `"cancelled"` means the execution was dropped from the queue without
+    /// running (an earlier cell errored, an interrupt, or kernel
+    /// death/restart).
     pub status: String,
-    /// `true` when the kernel reported success. `false` on error or timeout.
+    /// `true` when the kernel reported success. `false` on error, cancel, or
+    /// timeout.
     pub success: bool,
     /// Raw output manifest values from `RuntimeStateDoc::executions[eid].outputs`.
     /// Empty when the execution produced no outputs or timed out before
@@ -111,7 +116,7 @@ pub async fn await_execution_terminal(
             // execution's real status/outputs rather than being handed a
             // generic `KernelFailed`.
             if let Some(exec) = state.executions.get(execution_id) {
-                if exec.status == "done" || exec.status == "error" {
+                if exec.status == "done" || exec.status == "error" || exec.status == "cancelled" {
                     break ExecutionTerminalState {
                         status: exec.status.clone(),
                         success: exec.success.unwrap_or(false),

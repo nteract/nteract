@@ -45,4 +45,23 @@ describe("CompactExecutionButton", () => {
     expect(screen.getByRole("status", { name: "Last execution 7" })).toBeTruthy();
     expect(screen.getByTestId("execution-readout")).toHaveAttribute("data-execution-state", "ran");
   });
+
+  it("renders cancelled executions as neutral, not failed", () => {
+    render(<CompactExecutionButton count={null} isCancelled />);
+
+    const button = screen.getByRole("button", {
+      name: "Run cell; last execution was cancelled before it ran",
+    });
+    expect(button).toHaveAttribute("data-execution-state", "cancelled");
+    expect(button.className).not.toContain("text-destructive");
+  });
+
+  it("keeps errored executions distinct from cancelled ones", () => {
+    render(<CompactExecutionButton count={3} isErrored />);
+
+    const button = screen.getByRole("button", {
+      name: "Run cell again; last execution 3 failed",
+    });
+    expect(button).toHaveAttribute("data-execution-state", "error");
+  });
 });

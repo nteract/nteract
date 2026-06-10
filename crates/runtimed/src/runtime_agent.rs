@@ -1694,23 +1694,25 @@ async fn handle_runtime_agent_request(
                 direct_python_path,
             };
 
-            // Mark stale executions as failed in RuntimeStateDoc.
-            // The old kernel is gone after shutdown, so these executions
-            // can never complete — do this before launching the new kernel.
+            // Resolve stale executions in RuntimeStateDoc: the interrupted
+            // one was running when the old kernel went away (error), queued
+            // ones never ran (cancelled). The old kernel is gone after
+            // shutdown, so these executions can never complete — do this
+            // before launching the new kernel.
             if let Err(e) = ctx.state.with_doc(|sd| {
                 if let Some(ref eid) = interrupted_eid {
                     sd.set_execution_done(eid, false)?;
                 }
                 for eid in &stale_queue {
-                    sd.set_execution_done(eid, false)?;
+                    sd.set_execution_cancelled(eid)?;
                 }
-                // Defensive sweep: mark any execution entries stuck in
+                // Defensive sweep: resolve any execution entries stuck in
                 // "running" or "queued" that the local KernelState missed
                 // (e.g., entries from CRDT sync not yet processed locally).
-                match sd.mark_inflight_executions_failed() {
+                match sd.abort_inflight_executions() {
                     Ok(orphans) if orphans > 0 => {
                         info!(
-                            "[runtime-agent] Marked {orphans} orphaned execution(s) as failed on restart"
+                            "[runtime-agent] Resolved {orphans} orphaned execution(s) on restart"
                         );
                     }
                     Err(e) => {
@@ -1782,11 +1784,7 @@ async fn handle_runtime_agent_request(
                         let (interrupted, cleared) = state.interrupt();
                         // Write cleared entries AND sweep CRDT-synced executions
                         // that haven't reached the local queue yet.
-                        mark_interrupted_executions_failed(
-                            &ctx.state,
-                            interrupted.as_ref(),
-                            &cleared,
-                        );
+                        resolve_interrupted_executions(&ctx.state, interrupted.as_ref(), &cleared);
                         (
                             RuntimeAgentResponse::InterruptAcknowledged { cleared },
                             None,
@@ -2097,10 +2095,13 @@ async fn handle_lifecycle_signal(
         LifecycleSignal::CellError { execution_id } => {
             debug!("[runtime-agent] CellError: execution={}", execution_id);
             if state.mark_execution_error(&execution_id) {
+                // The erroring cell itself reports "error" via execution_done;
+                // queued cells behind it never ran, so they are cancelled, not
+                // failed.
                 let cleared = state.clear_queue();
                 if let Err(e) = ctx.state.with_doc(|sd| {
                     for entry in &cleared {
-                        sd.set_execution_done(&entry.execution_id, false)?;
+                        sd.set_execution_cancelled(&entry.execution_id)?;
                     }
                     sd.set_queue(None, &[])?;
                     Ok(())
@@ -2118,11 +2119,13 @@ async fn handle_lifecycle_signal(
             *kernel = None;
             let (interrupted, cleared) = state.kernel_died();
             if let Err(e) = ctx.state.with_doc(|sd| {
+                // The executing cell died mid-run: error. Queued cells never
+                // ran: cancelled.
                 if let Some(ref eid) = interrupted {
                     sd.set_execution_done(eid, false)?;
                 }
                 for entry in &cleared {
-                    sd.set_execution_done(&entry.execution_id, false)?;
+                    sd.set_execution_cancelled(&entry.execution_id)?;
                 }
                 // Generic kernel-died path — no specific typed reason. Clear
                 // any stale error_reason from a prior failure so the frontend
@@ -2185,19 +2188,23 @@ async fn drain_lifecycle_commands(
     Ok(drained)
 }
 
-fn mark_interrupted_executions_failed(
+fn resolve_interrupted_executions(
     state: &RuntimeStateHandle,
     interrupted: Option<&QueueEntry>,
     cleared: &[QueueEntry],
 ) {
     if let Err(e) = state.with_doc(|sd| {
+        // The interrupted cell was running and gets the kernel's
+        // KeyboardInterrupt error output: "error". Queued cells behind it
+        // never ran: "cancelled". The sweep applies the same split to any
+        // entries the local KernelState missed.
         if let Some(entry) = interrupted {
             sd.set_execution_done(&entry.execution_id, false)?;
         }
         for entry in cleared {
-            sd.set_execution_done(&entry.execution_id, false)?;
+            sd.set_execution_cancelled(&entry.execution_id)?;
         }
-        sd.mark_inflight_executions_failed()?;
+        sd.abort_inflight_executions()?;
         sd.set_queue(None, &[])?;
         sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
         Ok(())
@@ -2334,7 +2341,7 @@ fn interrupt_via_handle_if_available(
     // reached the local queue yet. Only the agent does this sweep - the
     // coordinator intentionally does NOT, so final state is determined by the
     // agent regardless of timing.
-    mark_interrupted_executions_failed(state, interrupted.as_ref(), &cleared);
+    resolve_interrupted_executions(state, interrupted.as_ref(), &cleared);
 
     // Interrupt kernel in background — don't block the loop.
     tokio::spawn(async move {
@@ -3281,7 +3288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kernel_died_marks_inflight_executions_as_failed_in_state_doc() {
+    async fn kernel_died_resolves_inflight_executions_in_state_doc() {
         let (ctx, mut state, handle) = test_fixtures();
         let mut mock = MockKernel;
         state.set_idle();
@@ -3314,14 +3321,15 @@ mod tests {
         .await
         .unwrap();
 
-        // Both executions should now be marked as error in RuntimeStateDoc
+        // The executing cell died mid-run: error. The queued cell never ran:
+        // cancelled, with success absent.
         let e1 = handle.read(|sd| sd.get_execution("e1").unwrap()).unwrap();
         assert_eq!(e1.status, "error");
         assert_eq!(e1.success, Some(false));
 
         let e2 = handle.read(|sd| sd.get_execution("e2").unwrap()).unwrap();
-        assert_eq!(e2.status, "error");
-        assert_eq!(e2.success, Some(false));
+        assert_eq!(e2.status, "cancelled");
+        assert_eq!(e2.success, None);
 
         // Queue should be cleared
         let queue = handle.read(|sd| sd.read_state()).unwrap();
@@ -3388,8 +3396,9 @@ mod tests {
 
     /// Simulate the interrupt+execute race: a concurrent execute_cell creates
     /// an execution entry in RuntimeStateDoc that the runtime agent's local
-    /// queue doesn't know about yet. The interrupt handler must mark ALL
-    /// in-flight entries as failed, not just the ones in the local queue.
+    /// queue doesn't know about yet. The interrupt handler must resolve ALL
+    /// in-flight entries (running → error, queued → cancelled), not just the
+    /// ones in the local queue.
     #[tokio::test]
     async fn interrupt_marks_crdt_synced_executions_not_in_local_queue() {
         let (_ctx, mut state, handle) = test_fixtures();
@@ -3423,17 +3432,17 @@ mod tests {
             Some("eA")
         );
         assert!(cleared.is_empty());
-        mark_interrupted_executions_failed(&handle, interrupted.as_ref(), &cleared);
+        resolve_interrupted_executions(&handle, interrupted.as_ref(), &cleared);
 
-        // eA (executing) should be marked failed by mark_inflight
+        // eA (executing) should be marked failed by the inflight sweep
         let ea = handle.read(|sd| sd.get_execution("eA").unwrap()).unwrap();
         assert_eq!(ea.status, "error");
         assert_eq!(ea.success, Some(false));
 
-        // eB (CRDT-only, not in local queue) should ALSO be marked failed
+        // eB (CRDT-only, queued, not in local queue) never ran: cancelled
         let eb = handle.read(|sd| sd.get_execution("eB").unwrap()).unwrap();
-        assert_eq!(eb.status, "error");
-        assert_eq!(eb.success, Some(false));
+        assert_eq!(eb.status, "cancelled");
+        assert_eq!(eb.success, None);
 
         let rs = handle.read(|sd| sd.read_state()).unwrap();
         assert!(rs.queue.executing.is_none());
@@ -3442,6 +3451,65 @@ mod tests {
             rs.kernel.lifecycle,
             RuntimeLifecycle::Running(KernelActivity::Idle)
         );
+    }
+
+    /// Run-all where a middle cell errors: the erroring cell reports
+    /// "error", and the queued cells behind it report "cancelled" — they
+    /// never ran, so showing them as failed misattributes the error.
+    #[tokio::test]
+    async fn cell_error_cancels_queued_cells_behind_it() {
+        let (ctx, mut state, handle) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+
+        // eA executes; eB and eC wait in the queue behind it.
+        state
+            .queue_cell("eA".into(), None, "raise Exception".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("eB".into(), None, "print('unreached')".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell(
+                "eC".into(),
+                None,
+                "print('also unreached')".into(),
+                &mut mock,
+            )
+            .await
+            .unwrap();
+
+        // The kernel reports the error, then terminal status, mirroring the
+        // IOPub order: CellError clears the queue, ExecutionDone closes eA.
+        handle_lifecycle_signal(
+            LifecycleSignal::CellError {
+                execution_id: "eA".to_string(),
+            },
+            &ctx,
+            &mut None::<Kernel>,
+            &mut state,
+        )
+        .await
+        .unwrap();
+        // ExecutionDone closes eA through the same path the lifecycle arm
+        // takes (the arm needs a live kernel handle; tests use MockKernel).
+        state.execution_done("eA", &mut mock).await.unwrap();
+
+        let ea = handle.read(|sd| sd.get_execution("eA").unwrap()).unwrap();
+        assert_eq!(ea.status, "error");
+        assert_eq!(ea.success, Some(false));
+
+        for eid in ["eB", "eC"] {
+            let exec = handle.read(|sd| sd.get_execution(eid).unwrap()).unwrap();
+            assert_eq!(exec.status, "cancelled", "{eid} never ran");
+            assert_eq!(exec.success, None, "{eid} neither succeeded nor failed");
+        }
+
+        let rs = handle.read(|sd| sd.read_state()).unwrap();
+        assert!(rs.queue.executing.is_none());
+        assert!(rs.queue.queued.is_empty());
     }
 
     /// After interrupt, CellError from the interrupted cell should be a
@@ -3470,7 +3538,7 @@ mod tests {
         );
         assert_eq!(cleared.len(), 1); // cB
         assert_eq!(cleared[0].execution_id, "eB");
-        mark_interrupted_executions_failed(&handle, interrupted.as_ref(), &cleared);
+        resolve_interrupted_executions(&handle, interrupted.as_ref(), &cleared);
 
         // Now simulate CellError from the interrupted cell A
         handle_lifecycle_signal(
@@ -3484,11 +3552,11 @@ mod tests {
         .await
         .unwrap();
 
-        // Both should be error
+        // The interrupted cell errored; the queued cell behind it cancelled.
         let ea = handle.read(|sd| sd.get_execution("eA").unwrap()).unwrap();
         assert_eq!(ea.status, "error");
         let eb = handle.read(|sd| sd.get_execution("eB").unwrap()).unwrap();
-        assert_eq!(eb.status, "error");
+        assert_eq!(eb.status, "cancelled");
 
         // A stale CellError from eA must not poison the next execution.
         let mut mock = MockKernel;

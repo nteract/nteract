@@ -18,6 +18,9 @@ const TERMINAL_BLOB_STREAM_OUTPUT_MAX_GRACE: Duration = Duration::from_secs(3);
 pub enum ExecutionTerminalReason {
     Done,
     Error,
+    /// Dropped from the queue without running (an earlier cell errored, an
+    /// interrupt, or kernel death/restart).
+    Cancelled,
     KernelFailed,
     Interrupted,
     Timeout,
@@ -29,6 +32,7 @@ impl ExecutionTerminalReason {
         match self {
             Self::Done => "done",
             Self::Error => "error",
+            Self::Cancelled => "cancelled",
             Self::KernelFailed => "kernel_failed",
             Self::Interrupted => "interrupted",
             Self::Timeout => "timeout",
@@ -227,6 +231,10 @@ impl ExecutionWatcher {
 fn terminal_reason_for(entry: &ExecutionState) -> Option<ExecutionTerminalReason> {
     match entry.status.as_str() {
         "done" => Some(ExecutionTerminalReason::Done),
+        "cancelled" => Some(ExecutionTerminalReason::Cancelled),
+        // The error-without-outputs arm predates the first-class "cancelled"
+        // status; it still covers a force-failed interrupted execution and
+        // older daemons that marked never-ran queue entries "error".
         "error" if entry.outputs.is_empty() => Some(ExecutionTerminalReason::Interrupted),
         "error" => Some(ExecutionTerminalReason::Error),
         _ => None,

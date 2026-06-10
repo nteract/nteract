@@ -499,7 +499,7 @@ fn get_cell_status(handle: &notebook_sync::handle::DocHandle, cell_id: &str) -> 
             return Some("queued".to_string());
         }
         if let Some(exec) = state.executions.get(&execution_id) {
-            if exec.status == "done" || exec.status == "error" {
+            if exec.status == "done" || exec.status == "error" || exec.status == "cancelled" {
                 return Some(exec.status.clone());
             }
         }
@@ -573,7 +573,7 @@ pub fn build_cell_status_map(
                 continue;
             }
             if let Some(exec) = state.executions.get(&execution_id) {
-                if exec.status == "done" || exec.status == "error" {
+                if exec.status == "done" || exec.status == "error" || exec.status == "cancelled" {
                     map.entry(cell.id).or_insert_with(|| exec.status.clone());
                 }
             }

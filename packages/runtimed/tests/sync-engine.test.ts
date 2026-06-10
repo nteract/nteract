@@ -2673,6 +2673,18 @@ describe("diffExecutions", () => {
     expect(transitions[0].kind).toBe("error");
   });
 
+  it("detects cancelled transition for queued cells dropped behind an error", () => {
+    const prev = {
+      e1: { status: "queued" as const, execution_count: null, success: null },
+    };
+    const curr = {
+      e1: { status: "cancelled" as const, execution_count: null, success: null },
+    };
+    const transitions = diffExecutions(prev, curr);
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0].kind).toBe("cancelled");
+  });
+
   it("returns empty for no change", () => {
     const state = {
       e1: { status: "running" as const, execution_count: 1, success: null },

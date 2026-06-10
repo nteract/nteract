@@ -371,6 +371,10 @@ export const CodeCell = memo(function CodeCell({
   const executionCount = execution?.execution_count ?? null;
   const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
   const isExecutionErrored = execution?.success === false || execution?.status === "error";
+  // Cancelled executions never ran (queue dropped behind an earlier error,
+  // interrupt, or kernel death); success stays null on them, so the errored
+  // check above cannot match.
+  const isExecutionCancelled = execution?.status === "cancelled";
   const languageLabel =
     language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
   // Check cell metadata for visibility (JupyterLab convention)
@@ -647,6 +651,7 @@ export const CodeCell = memo(function CodeCell({
       isQueued={isQueued}
       queuePriority={queuePriority}
       isErrored={isExecutionErrored}
+      isCancelled={isExecutionCancelled}
       isFocused={isFocused}
       compactIdle={isSourceEmpty}
       activityContent={<CellPresenceIndicators cellId={cell.id} variant="inline" prefixSeparator />}
@@ -675,6 +680,7 @@ export const CodeCell = memo(function CodeCell({
               isExecuting={isExecuting || isGroupExecuting}
               isQueued={isQueued}
               isErrored={isExecutionErrored}
+              isCancelled={isExecutionCancelled}
               submittedByActorLabel={submittedByActorLabel}
               isCellFocused={isFocused}
               canExecute={canExecute}
