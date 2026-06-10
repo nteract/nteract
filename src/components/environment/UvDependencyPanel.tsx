@@ -120,11 +120,6 @@ export function UvDependencyPanel({
               <span className="whitespace-nowrap text-xs text-muted-foreground">Python</span>
             )}
           </div>
-          {isRail && isUsingProjectEnv && (
-            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              Project env
-            </span>
-          )}
         </div>
 
         {/* Success feedback after sync completed */}

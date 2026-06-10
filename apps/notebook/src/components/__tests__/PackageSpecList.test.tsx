@@ -253,6 +253,46 @@ describe("DependencyHeader rail package copy", () => {
     expect(screen.getByText("Using")).toBeVisible();
     expect(screen.getAllByText("pyproject.toml").length).toBeGreaterThan(0);
     expect(screen.getByText("Re-initialize after dependency changes.")).toBeVisible();
+    expect(screen.queryByText("Project env")).not.toBeInTheDocument();
+  });
+
+  it("shows pyproject dependencies while using the project environment", () => {
+    render(
+      <DependencyHeader
+        variant="rail"
+        dependencies={[]}
+        requiresPython={null}
+        loading={false}
+        onAdd={async () => undefined}
+        onRemove={async () => undefined}
+        onSetRequiresPython={async () => undefined}
+        pyprojectInfo={{
+          path: "/work/pyproject.toml",
+          relative_path: "pyproject.toml",
+          has_dependencies: true,
+          has_dev_dependencies: true,
+          dependency_count: 2,
+          project_name: "analysis",
+          requires_python: ">=3.12",
+          has_venv: false,
+        }}
+        pyprojectDeps={{
+          path: "/work/pyproject.toml",
+          relative_path: "pyproject.toml",
+          dependencies: ["pandas>=2", "polars"],
+          dev_dependencies: ["pytest"],
+          project_name: "analysis",
+          requires_python: ">=3.12",
+          index_url: null,
+        }}
+        isUsingProjectEnv
+      />,
+    );
+
+    expect(screen.getByText("pandas")).toBeVisible();
+    expect(screen.getByText(">=2")).toBeVisible();
+    expect(screen.getByText("polars")).toBeVisible();
+    expect(screen.getByText("pytest")).toBeVisible();
   });
 
   it("keeps uv package details visible while read-only", () => {

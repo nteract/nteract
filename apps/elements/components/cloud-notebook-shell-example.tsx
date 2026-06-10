@@ -332,7 +332,6 @@ function CloudNotebookShellExampleContent() {
       viewModel={scenario.viewModel}
       activePanelId={railState.activePanelId}
       collapsed={railState.collapsed}
-      workstationsSummary={null}
       workstationsPanel={
         <NotebookWorkstationsPanel
           capabilities={shellCapabilities}

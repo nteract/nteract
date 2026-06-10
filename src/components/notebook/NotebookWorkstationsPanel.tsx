@@ -253,10 +253,6 @@ function RegisteredWorkstationRow({
   );
 }
 
-export function notebookWorkstationsSummary(capabilities: NotebookShellCapabilities): string {
-  return projectNotebookWorkstationPanel(capabilities).summary;
-}
-
 function WorkstationFact({
   fact,
   icon: Icon,

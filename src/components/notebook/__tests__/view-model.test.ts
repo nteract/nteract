@@ -137,6 +137,33 @@ describe("notebook shell view model", () => {
     }
   });
 
+  it("reprojects stale attached markdownProjection anchors from current source", () => {
+    let calls = 0;
+    const restore = setMarkdownProjectionProjector((source) => {
+      calls += 1;
+      return JSON.stringify(
+        testMarkdownProjection(source, [{ title: "More fun", level: 1, slug: "more-fun" }]),
+      );
+    });
+
+    try {
+      const staleCell = markdownViewCell("intro", "Markdown body row", []);
+      const outline = notebookViewCellsToOutlineItems([
+        {
+          ...staleCell,
+          source: "# More fun\n\nMarkdown body row",
+        },
+      ]);
+
+      expect(calls).toBe(1);
+      expect(outline.map((item) => [item.id, item.title, item.anchor])).toEqual([
+        ["intro:heading:0", "More fun", "more-fun"],
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
   it("projects Jupyter hidden metadata into read-only render cells", () => {
     const cells: NotebookViewCell[] = [
       {
@@ -207,6 +234,30 @@ describe("notebook shell view model", () => {
     expect(outline[0]).toMatchObject({
       cellId: "code-1",
       statusLabel: "Running",
+    });
+  });
+
+  it("omits empty code cells from outline fallbacks without code badges", () => {
+    const outline = notebookViewCellsToOutlineItems([
+      codeViewCell("empty-code", " \n\t"),
+      codeViewCell("hidden-input", "secret = 1", { jupyter: { source_hidden: true } }),
+      codeViewCell("code-1", "print('ok')"),
+      codeViewCell("hidden-output", "print('visible input')", {
+        jupyter: { outputs_hidden: true },
+      }),
+    ]);
+
+    expect(outline.map((item) => item.cellId)).toEqual(["code-1", "hidden-output"]);
+    expect(outline[0]).toMatchObject({
+      cellType: "code",
+      title: "print('ok')",
+      kind: "cell",
+    });
+    expect("detail" in outline[0]).toBe(false);
+    expect(outline[1]).toMatchObject({
+      cellType: "code",
+      title: "print('visible input')",
+      kind: "cell",
     });
   });
 
@@ -387,6 +438,23 @@ function markdownViewCell(
     outputs: [],
     metadata: {},
     markdownProjection: testMarkdownProjection(source, anchors),
+  };
+}
+
+function codeViewCell(
+  id: string,
+  source: string,
+  metadata: Record<string, unknown> = {},
+): NotebookViewCell {
+  return {
+    id,
+    cellType: "code",
+    source,
+    language: "python",
+    executionId: null,
+    executionCount: null,
+    outputs: [],
+    metadata,
   };
 }
 

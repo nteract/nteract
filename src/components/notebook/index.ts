@@ -182,7 +182,6 @@ export {
   type NotebookPackageSummaryPanelProps,
 } from "./NotebookPackageSummaryPanel";
 export {
-  notebookWorkstationsSummary,
   NotebookWorkstationsPanel,
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";

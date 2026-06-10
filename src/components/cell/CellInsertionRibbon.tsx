@@ -217,13 +217,13 @@ export function CellInsertionRibbon({
         data-slot="cell-adder-actions"
         aria-hidden={isOpen ? undefined : true}
         className={cn(
-          "flex min-w-0 flex-1 items-center transition-opacity duration-150",
+          "flex min-w-0 flex-1 items-center transition-[opacity,transform] duration-150 ease-out",
           terminal && "pt-0.5",
           forceActionsVisible
-            ? "opacity-100"
+            ? "translate-x-0 opacity-100"
             : isOpen
-              ? "pointer-events-auto opacity-100 delay-75"
-              : "pointer-events-none opacity-0 transition-none",
+              ? "pointer-events-auto translate-x-0 opacity-100"
+              : "pointer-events-none -translate-x-1 opacity-0 transition-none",
         )}
       >
         <span

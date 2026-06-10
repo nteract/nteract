@@ -34,6 +34,24 @@ const outlineItems = [
 ];
 
 describe("NotebookRail", () => {
+  it("explains how to populate an empty outline", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("Add Markdown headings to structure your notebook. They will appear here."),
+    ).toBeVisible();
+    expect(screen.queryByText("No headings yet.")).not.toBeInTheDocument();
+  });
+
   it("renders outline items and reports selection through the adapter callback", () => {
     const onSelectOutlineItem = vi.fn();
 
@@ -78,7 +96,6 @@ describe("NotebookRail", () => {
         activePanelId="outline"
         collapsed={false}
         outlineItems={outlineItems}
-        packagesSummary="uv · 2 packages"
         packagesPanel={
           <NotebookPackagesPanel>
             <div data-testid="host-package-content">real deps panel</div>
@@ -119,7 +136,6 @@ describe("NotebookRail", () => {
         collapsed={false}
         outlineItems={outlineItems}
         packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
-        workstationsSummary="Ready"
         workstationsPanel={<div data-testid="host-workstations-content">runtime target</div>}
         onActivePanelChange={onActivePanelChange}
         onCollapsedChange={onCollapsedChange}
@@ -131,14 +147,13 @@ describe("NotebookRail", () => {
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });
 
-  it("renders the active workstations panel summary and host content", () => {
+  it("renders the active workstations panel title and host content", () => {
     const { container } = render(
       <NotebookRail
         activePanelId="workstations"
         collapsed={false}
         outlineItems={outlineItems}
         packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
-        workstationsSummary="Attached"
         workstationsPanel={<div data-testid="host-workstations-content">runtime target</div>}
         onActivePanelChange={vi.fn()}
         onCollapsedChange={vi.fn()}
@@ -146,7 +161,7 @@ describe("NotebookRail", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Workstations" })).toBeVisible();
-    expect(screen.getByText("Attached")).toBeVisible();
+    expect(screen.queryByText("Attached")).not.toBeInTheDocument();
     expect(screen.getByTestId("host-workstations-content")).toHaveTextContent("runtime target");
     expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
       "w-[clamp(16rem,20vw,18rem)]",
@@ -154,13 +169,12 @@ describe("NotebookRail", () => {
     );
   });
 
-  it("keeps the active panel title primary when package metadata is present", () => {
+  it("keeps package metadata out of the title row", () => {
     render(
       <NotebookRail
         activePanelId="packages"
         collapsed={false}
         outlineItems={outlineItems}
-        packagesSummary="../pyproject.toml · 25 packages"
         packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
         onActivePanelChange={vi.fn()}
         onCollapsedChange={vi.fn()}
@@ -168,12 +182,7 @@ describe("NotebookRail", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
-    expect(
-      screen
-        .getByText("../pyproject.toml · 25 packages")
-        .closest('[data-slot="notebook-rail-panel-title-row"]'),
-    ).toHaveClass("flex-wrap", "justify-between");
-    expect(screen.getByText("../pyproject.toml · 25 packages")).toHaveClass("w-fit", "max-w-full");
+    expect(screen.queryByText("../pyproject.toml · 25 packages")).not.toBeInTheDocument();
   });
 
   it("collapses the rail when clicking the active expanded panel button", () => {
@@ -196,7 +205,7 @@ describe("NotebookRail", () => {
     expect(onActivePanelChange).not.toHaveBeenCalled();
   });
 
-  it("exposes the collapse control for narrow takeover focus recovery", () => {
+  it("does not render a standalone collapse control", () => {
     const { container } = render(
       <NotebookRail
         activePanelId="outline"
@@ -210,7 +219,8 @@ describe("NotebookRail", () => {
 
     expect(
       container.querySelector('[data-slot="notebook-rail-collapse-button"]'),
-    ).toHaveAccessibleName("Collapse rail");
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Collapse rail" })).not.toBeInTheDocument();
   });
 
   it("collapses the expanded packages panel from its rail button", () => {
@@ -396,6 +406,74 @@ describe("NotebookRail", () => {
     expect(outlineTitle).not.toHaveClass("truncate");
   });
 
+  it("renders code cell fallback outline items as single-line code without status badges", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          {
+            id: "code-1:cell",
+            cellId: "code-1",
+            cellType: "code",
+            title: "print('ok')",
+            level: 1,
+            kind: "cell" as const,
+            cellAnchorId: "notebook-cell-code-1",
+            headingAnchorId: null,
+            href: "#notebook-cell-code-1",
+            anchor: null,
+            statusLabel: "run 1",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "print('ok')" })).toBeInTheDocument();
+    expect(screen.queryByText("run 1")).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="notebook-outline-item-title"]')).toHaveClass(
+      "font-mono",
+      "truncate",
+      "tracking-normal",
+    );
+    expect(container.querySelector('[data-slot="notebook-outline-item-title"]')).not.toHaveClass(
+      "line-clamp-2",
+    );
+  });
+
+  it("renders markdown fallback outline items without redundant type badges", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          {
+            id: "markdown-1:cell",
+            cellId: "markdown-1",
+            cellType: "markdown",
+            title: "Body row",
+            level: 1,
+            kind: "cell" as const,
+            cellAnchorId: "notebook-cell-markdown-1",
+            headingAnchorId: null,
+            href: "#notebook-cell-markdown-1",
+            anchor: null,
+            detail: "Markdown",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Body row" })).toBeInTheDocument();
+    expect(container.querySelector('[data-slot="notebook-outline-item-meta"]')).toBeNull();
+  });
+
   it("marks only the first outline item for a focused cell when no item is pinned", () => {
     render(
       <NotebookRail
@@ -552,7 +630,6 @@ describe("NotebookRail", () => {
         activePanelId="packages"
         collapsed={false}
         outlineItems={outlineItems}
-        packagesSummary="uv · 2 packages"
         packagesPanel={
           <NotebookPackagesPanel>
             <div data-testid="host-package-content">real deps panel</div>
