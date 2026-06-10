@@ -1,7 +1,10 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { ReadOnlyNotebookCellData } from "@/components/cell/ReadOnlyNotebook";
 import type { SupportedLanguage } from "@/components/editor/languages";
-import { projectMarkdownPlan, type MarkdownProjectionPlan } from "../../lib/markdown-projection";
+import {
+  resolveMarkdownProjection,
+  type MarkdownProjectionPlan,
+} from "../../lib/markdown-projection";
 import {
   notebookMetadataToPackageViewModel as projectNotebookPackageViewModel,
   type NotebookPackageViewModel,
@@ -140,13 +143,16 @@ export function notebookViewCellsToOutlineItems(
 }
 
 function notebookViewCellMarkdownAnchors(cell: NotebookViewCell) {
+  // Blank markdown has authoritatively no headings — `[]`, not `null`, so the
+  // outline does not treat the cell as "projection unavailable".
   if (!cell.source.trim()) return [];
 
-  // Outline should track the current source, not merely an attached projection
-  // snapshot. The projector is source-key cached, so materialized cells reuse
-  // the existing plan while edited cells get a fresh heading list before a full
-  // rematerialization/reload catches up.
-  return projectMarkdownPlan(cell.source)?.anchors ?? cell.markdownProjection?.anchors ?? null;
+  // resolveMarkdownProjection keys freshness on the plan's exact source: a
+  // matching attached plan keeps outline projection O(cells) without cache
+  // pressure, an edited cell reprojects from current source before
+  // rematerialization catches up, and a stale plan survives only in hosts
+  // with no registered projector.
+  return resolveMarkdownProjection(cell.markdownProjection, cell.source)?.anchors ?? null;
 }
 
 export function notebookViewCellsToTracebackTargets(

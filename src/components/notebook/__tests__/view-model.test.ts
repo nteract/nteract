@@ -113,7 +113,7 @@ describe("notebook shell view model", () => {
     }
   });
 
-  it("prefers current source projection over attached empty markdownProjection anchors", () => {
+  it("uses a source-matching attached projection without reprojecting", () => {
     let calls = 0;
     const restore = setMarkdownProjectionProjector((source) => {
       calls += 1;
@@ -123,15 +123,78 @@ describe("notebook shell view model", () => {
     });
 
     try {
-      const outline = notebookViewCellsToOutlineItems([markdownViewCell("intro", "# Intro", [])]);
+      const outline = notebookViewCellsToOutlineItems([
+        markdownViewCell("intro", "# Intro", [{ title: "Intro", level: 1, slug: "intro" }]),
+      ]);
 
-      expect(calls).toBe(1);
+      expect(calls).toBe(0);
       expect(outline.map((item) => [item.id, item.title, item.anchor])).toEqual([
         ["intro:heading:0", "Intro", "intro"],
       ]);
     } finally {
       restore();
     }
+  });
+
+  it("treats a source-matching attached empty projection as authoritative", () => {
+    let calls = 0;
+    const restore = setMarkdownProjectionProjector((source) => {
+      calls += 1;
+      return JSON.stringify(
+        testMarkdownProjection(source, [{ title: "Intro", level: 1, slug: "intro" }]),
+      );
+    });
+
+    try {
+      // The attached plan is keyed to this exact source, so it is the
+      // projector's own (headingless) answer — trusted without a reproject.
+      const outline = notebookViewCellsToOutlineItems([markdownViewCell("intro", "# Intro", [])]);
+
+      expect(calls).toBe(0);
+      expect(outline).toHaveLength(1);
+      expect(outline[0]).toMatchObject({
+        id: "intro:cell",
+        kind: "cell",
+        headingAnchorId: null,
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("drops headings when markdown source is emptied past a stale projection", () => {
+    let calls = 0;
+    const restore = setMarkdownProjectionProjector((source) => {
+      calls += 1;
+      return JSON.stringify(
+        testMarkdownProjection(source, [{ title: "Ghost", level: 1, slug: "ghost" }]),
+      );
+    });
+
+    try {
+      const staleCell = markdownViewCell("ghost", "# Ghost", [
+        { title: "Ghost", level: 1, slug: "ghost" },
+      ]);
+      const outline = notebookViewCellsToOutlineItems([{ ...staleCell, source: "  \n" }]);
+
+      expect(calls).toBe(0);
+      expect(outline.filter((item) => item.kind === "heading")).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("falls back to a stale attached projection when no projector is registered", () => {
+    // No setMarkdownProjectionProjector override: the module-level projector
+    // is unset in this suite, modeling a host without WASM markdown.
+    const staleCell = markdownViewCell("legacy", "# Old title", [
+      { title: "Old title", level: 1, slug: "old-title" },
+    ]);
+    const outline = notebookViewCellsToOutlineItems([{ ...staleCell, source: "# Renamed title" }]);
+
+    expect(outline.map((item) => [item.id, item.title, item.anchor])).toEqual([
+      ["legacy:heading:0", "Old title", "old-title"],
+    ]);
   });
 
   it("reprojects same-length stale markdownProjection anchors from current source", () => {
@@ -485,6 +548,7 @@ function testMarkdownProjection(
   return {
     version: 1 as const,
     engine: "test",
+    source,
     byteLength: source.length,
     utf16Length: source.length,
     measurement: {

@@ -28,6 +28,7 @@ import {
   type MarkdownProjectionRun,
   projectedMarkdownPreviewHeight,
   projectMarkdownPlan,
+  resolveMarkdownProjection,
 } from "../lib/markdown-projection";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
@@ -239,11 +240,15 @@ export const MarkdownCell = memo(function MarkdownCell({
     }
   }, [cell.source, draftPreviewSource]);
 
+  // Same resolution rule as the outline rail: a source-matching attached plan
+  // wins, an edited source reprojects, never render a plan for source the
+  // cell no longer holds. Keeps the preview and the rail on the same frozen
+  // plan object for a given source.
   const markdownProjection = useMemo(
     () =>
       draftPreviewSource !== null
         ? projectMarkdownPlan(draftPreviewSource)
-        : (cell.markdownProjection ?? projectMarkdownPlan(cell.source)),
+        : resolveMarkdownProjection(cell.markdownProjection, cell.source),
     [cell.markdownProjection, cell.source, draftPreviewSource],
   );
   const canRenderProjectionInHost = canRenderMarkdownProjectionInHost(markdownProjection);
