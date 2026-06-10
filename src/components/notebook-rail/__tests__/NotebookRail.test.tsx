@@ -34,6 +34,24 @@ const outlineItems = [
 ];
 
 describe("NotebookRail", () => {
+  it("explains how to populate an empty outline", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("Add Markdown headings to structure your notebook. They will appear here."),
+    ).toBeVisible();
+    expect(screen.queryByText("No headings yet.")).not.toBeInTheDocument();
+  });
+
   it("renders outline items and reports selection through the adapter callback", () => {
     const onSelectOutlineItem = vi.fn();
 

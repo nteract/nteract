@@ -137,7 +137,7 @@ export function NotebookOutlinePanel({
   if (items.length === 0) {
     return (
       <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-        No headings yet.
+        Add Markdown headings to structure your notebook. They will appear here.
       </div>
     );
   }
