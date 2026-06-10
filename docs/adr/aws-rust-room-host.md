@@ -370,6 +370,37 @@ A host may own a live room only while it holds the lease. Room movement resets
 per-peer `automerge::sync::State`; document truth comes from the latest
 checkpoint/snapshot.
 
+Consistent hashing is a future placement optimization, not a correctness
+mechanism. Leases are authority; hashing only answers which host should first
+try to acquire a lease. If different hosts have different ring views, the lease
+still decides who owns the room. Treating the hash as authority would recreate
+sticky-session split brain.
+
+Keep the single-host implementation ready for that future by preserving these
+seams without adding multi-host machinery yet:
+
+- The placement unit is `notebook_id`. The room's `NotebookDoc`,
+  `RuntimeStateDoc`, and `CommsDoc` co-locate under that notebook id and are
+  never placed independently, even though published snapshots use per-document
+  `docs/{docId}` namespaces. Vanity names, document ids, and revision ids do
+  not route rooms. Notebook ids are ULID-like and time-prefixed, so any future
+  placement must hash; it must not range-partition by id.
+- `RoomRegistry` resolution is the single admission gate after authentication
+  and authorization. The v1 implementation can always return local ownership,
+  but the shape should allow `resolve(notebook_id) -> Owned(handle) |
+  OwnedElsewhere(holder)`. The WebSocket upgrade path is authn, authz,
+  resolve, attach.
+- Room eviction exists on day one. Eviction flushes a checkpoint, drops
+  per-peer sync state, and closes peers. This is needed for idle-memory
+  management in the single-host service and becomes the handoff primitive for
+  later room movement.
+- Clients treat WebSocket close as "reconnect and re-resolve" with backoff.
+  Do not add redirect frames, handoff frames, or cross-host forwarding in v1.
+
+Do not add ring membership, virtual-node configuration, hash-algorithm
+selection, cross-host forwarding, a routing tier, or the `room_leases` table in
+the first single-host implementation.
+
 Durable Object hibernation and the current frame replay buffer are not
 architectural requirements for the native service. A long-running room host can
 keep active rooms in memory and should rely on document sync plus checkpoints
@@ -404,6 +435,12 @@ writes. Write immutable `{checkpoint_id}/*.am` objects first, then write
 `checkpoints/latest.json` last as the single commit point. A crash before the
 pointer update leaves the previous checkpoint active; a crash after the pointer
 update points at a complete immutable object set.
+
+`latest.json` should record the checkpoint id, room-holder identity, and lease
+generation, with holder/generation nullable or sentinel-valued in the v1
+single-host service. Later leased writers can combine S3 conditional writes on
+the pointer object with the recorded generation to fence a stale host from
+clobbering the latest checkpoint after losing ownership.
 
 Room-owned bootstrap actors are load-bearing. Use deterministic labels derived
 from notebook id, following the current Cloudflare room-host pattern:
@@ -549,7 +586,8 @@ without AWS.
 4. Build `HostedRoom` / `RoomActor` after `RoomHostHandle`'s structure, reusing
    shared document crates and peer-loop mechanics. The actor owns documents and
    per-peer sync states in one task; it does not include file binding, local
-   trust state, local kernel handles, or local autosave.
+   trust state, local kernel handles, or local autosave. Add `RoomRegistry`
+   resolution and room eviction as single-host seams, not multi-host behavior.
 5. Define fresh native hosted room traits:
    - `HostedCatalogStore`;
    - `HostedObjectStore`;
@@ -560,7 +598,8 @@ without AWS.
    layer. Provide filesystem/MinIO and dockerized-Postgres test adapters.
 6. Implement `HostedObjectStore` and `HostedCheckpointStore`; port checkpoint
    precedence logic with shared test vectors for deterministic actor label,
-   starter cell id, and keep/discard decisions.
+   starter cell id, and keep/discard decisions. Include holder/generation
+   fields in checkpoint pointer metadata from the start.
 7. Implement Postgres migrations and a `sqlx` `HostedCatalogStore` /
    `HostedAuthz` for catalog, ACL, sharing, workstations, and attach jobs.
    Preserve never-zero-owner ACL protection, partial unique active attach jobs,
