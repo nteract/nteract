@@ -169,15 +169,7 @@ pub async fn run_all_cells(
             match exec.status.as_str() {
                 "done" => succeeded += 1,
                 "cancelled" => cancelled += 1,
-                "error" => {
-                    // Error-without-count means cancelled on older daemons
-                    // that predate the first-class status.
-                    if exec.execution_count.is_none() {
-                        cancelled += 1;
-                    } else {
-                        errored += 1;
-                    }
-                }
+                "error" => errored += 1,
                 "running" => running += 1,
                 "queued" => queued += 1,
                 _ => {}
@@ -237,13 +229,7 @@ pub async fn run_all_cells(
             None => continue,
         };
 
-        // "cancelled" is first-class in RuntimeStateDoc and passes through.
-        // The error-without-count arm is a fallback for older daemons that
-        // marked never-ran queue entries "error".
-        let display_status = match exec.status.as_str() {
-            "error" if exec.execution_count.is_none() => "cancelled",
-            other => other,
-        };
+        let display_status = exec.status.as_str();
         let ec_str = exec.execution_count.map(|c| c.to_string());
 
         // Resolve outputs from the execution's output manifests.
@@ -433,14 +419,10 @@ async fn render_execution_result(
     execution_cell_map: Option<std::collections::HashMap<String, String>>,
     full_output: bool,
 ) -> Result<CallToolResult, McpError> {
-    // Determine display status with clear indication of completeness.
-    // "cancelled" is first-class in RuntimeStateDoc; the error-without-count
-    // arm is a fallback for older daemons that marked never-ran queue
-    // entries "error".
+    // Determine display status with clear indication of completeness
     let (display_status, is_terminal) = match exec.status.as_str() {
         "done" => ("done", true),
         "cancelled" => ("cancelled", true),
-        "error" if exec.execution_count.is_none() => ("cancelled", true),
         "error" => ("error", true),
         "running" => ("running (partial — outputs may be incomplete)", false),
         "queued" => ("queued (no outputs yet)", false),
