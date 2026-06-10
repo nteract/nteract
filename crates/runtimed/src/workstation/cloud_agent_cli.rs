@@ -1,18 +1,18 @@
 //! Argument/environment → cloud-agent config mapping for the
 //! `runtimed cloud-runtime-agent` subcommand.
 //!
-//! `run_cloud_runtime_agent` had no non-test caller (decision 31). This module
-//! is the invocable entry: it maps CLI flags plus environment variables to a
-//! [`CloudWsConfig`] + [`CloudAuth`] that the subcommand hands to
+//! This module is the invocable entry for the workstation runtime peer: it
+//! maps CLI flags plus environment variables to a [`CloudWsConfig`] +
+//! [`CloudAuth`] that the subcommand hands to
 //! [`run_cloud_runtime_agent`](crate::runtime_agent::run_cloud_runtime_agent).
+//! The hosted connector (`apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`)
+//! spawns this subcommand per attach job; operators can also run it directly
+//! (`docs/remote-workstation.md`).
 //!
 //! Security (ADR "Security constraints"): the credential is read from the
 //! environment, never from argv, so it can't leak into a long-running process's
 //! command line / `ps` output. The flags carry only non-secret routing
 //! (URL, notebook id, scope, operator, auth *kind*).
-//!
-//! The mapping is pure and unit-tested; the actual dial is deferred to a live
-//! preview room (see `docs/handoffs/16-workstation-endpoint.md`).
 
 use anyhow::{anyhow, Context, Result};
 use notebook_cloud_transport::{CloudAuth, CloudWsConfig};

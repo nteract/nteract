@@ -525,7 +525,9 @@ half (`last_seen`), and 3f req 6 (writer-error recovery) are done. Remaining:
 The first half (transport-agnostic `runtime_agent` + `run_cloud_runtime_agent`)
 is merged (#3426). This is the daemon-side **workstation endpoint**: list the
 environments it has, and allocate/start a runtime in env X for room Y, driving
-`run_cloud_runtime_agent`. Full scope: `docs/handoffs/16-workstation-endpoint.md`.
+`run_cloud_runtime_agent`. Full scope was in the (since-retired)
+`16-workstation-endpoint.md` handoff; current state lives in
+`docs/adr/remote-workstation-doc-agents.md` and `docs/remote-workstation.md`.
 
 38. **Endpoint "start a runtime" is designed as launch-on-attach (option A), not
     wait-for-req-5 (option B).** The cloud agent attaches as a `runtime_peer` and

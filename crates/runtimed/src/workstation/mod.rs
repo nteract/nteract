@@ -13,10 +13,9 @@
 //!    as the attach mechanism.
 //!
 //! This module is the daemon-side half. It is additive and gated behind the
-//! cloud transport; the desktop/UDS path is unaffected.
-//!
-//! See `docs/handoffs/16-workstation-endpoint.md` for the full scope and which
-//! pieces are headless-buildable vs. deferred to a live preview deploy.
+//! cloud transport; the desktop/UDS path is unaffected. The hosted half
+//! (workstation registry, attach jobs) lives in `apps/notebook-cloud`; the
+//! operator path is `docs/remote-workstation.md`.
 
 pub mod allocate;
 pub mod cloud_agent_cli;
