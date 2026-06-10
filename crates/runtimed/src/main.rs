@@ -161,9 +161,10 @@ enum Commands {
         /// Operator suffix for the doc actor label (`<principal>/<operator>`).
         #[arg(long, default_value = "agent:runt")]
         operator: String,
-        /// Blob store root path.
+        /// Blob store root path. Defaults to the daemon's standard blob store
+        /// so a workstation one-liner needs no path flags.
         #[arg(long)]
-        blob_root: PathBuf,
+        blob_root: Option<PathBuf>,
         /// Launch-on-attach: start a kernel in this explicit Python interpreter
         /// right after attaching (the `current_python` environment policy), so
         /// the runtime *starts* without waiting for an inbound LaunchKernel RPC
@@ -530,6 +531,7 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("[cloud-runtime-agent] Config error: {}", e);
                         e
                     })?;
+            let blob_root = blob_root.unwrap_or_else(runtimed::default_blob_store_dir);
             let resolved_working_dir = working_dir.or_else(|| std::env::current_dir().ok());
             if python_path.is_none()
                 && (workstation_id.is_some()
