@@ -122,6 +122,51 @@ export function isOutputManifest(value: unknown): value is OutputManifest {
   }
 }
 
+// In-flight text-blob fetches, coalesced so concurrent resolutions of the same
+// content-addressed ref share one request. The browser HTTP cache (blob routes
+// send immutable cache headers) covers repeat fetches over time but does not
+// coalesce concurrent requests to the same URL. Entries are removed on settle:
+// successes belong to the HTTP cache, and failures must retry fresh because
+// callers (e.g. applyOutputChangeset) run their own retry loops.
+//
+// Object resolvers key a WeakMap by identity, since two resolver instances may
+// carry different fetch policy (auth headers) for the same URL. Port-number
+// inputs produce a fresh resolver per normalizeBlobResolver call, so they
+// coalesce through a shared map keyed by port - the localhost URL for a given
+// (port, hash) is deterministic and unauthenticated.
+const inflightByResolver = new WeakMap<OutputBlobResolver, Map<string, Promise<string>>>();
+const inflightByPort = new Map<string, Promise<string>>();
+
+function inflightBlobText(blobResolver: OutputBlobResolver, ref: OutputBlobRef): Promise<string> {
+  let map: Map<string, Promise<string>>;
+  let key: string;
+  if (blobResolver.port != null) {
+    map = inflightByPort;
+    key = `${blobResolver.port}:${ref.blob}`;
+  } else {
+    const existing = inflightByResolver.get(blobResolver);
+    map = existing ?? new Map();
+    if (!existing) inflightByResolver.set(blobResolver, map);
+    key = ref.blob;
+  }
+
+  const inflight = map.get(key);
+  if (inflight) return inflight;
+
+  const fetched = (async () => {
+    const response = await blobResolver.fetch(ref);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
+    }
+    return response.text();
+  })();
+  const tracked = fetched.finally(() => {
+    if (map.get(key) === tracked) map.delete(key);
+  });
+  map.set(key, tracked);
+  return tracked;
+}
+
 export async function resolveContentRef(
   ref: ContentRef,
   blobResolverInput: BlobResolverInput,
@@ -136,11 +181,7 @@ export async function resolveContentRef(
       : blobResolver.url(ref);
   }
 
-  const response = await blobResolver.fetch(ref);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
-  }
-  return response.text();
+  return inflightBlobText(blobResolver, ref);
 }
 
 function resolveContentRefSync(
