@@ -14,6 +14,8 @@ interface CompactExecutionButtonProps {
   isQueued?: boolean;
   /** Whether the latest execution finished with an error */
   isErrored?: boolean;
+  /** Whether the latest execution was cancelled without running */
+  isCancelled?: boolean;
   /** Authenticated actor label for the client that submitted the active execution */
   submittedByActorLabel?: string | null;
   /** Whether the owning cell currently has notebook focus */
@@ -50,6 +52,7 @@ export function CompactExecutionButton({
   isExecuting = false,
   isQueued = false,
   isErrored = false,
+  isCancelled = false,
   submittedByActorLabel = null,
   isCellFocused = false,
   canExecute = true,
@@ -64,9 +67,11 @@ export function CompactExecutionButton({
       ? "queued"
       : isErrored
         ? "error"
-        : count !== null
-          ? "ran"
-          : "idle";
+        : isCancelled
+          ? "cancelled"
+          : count !== null
+            ? "ran"
+            : "idle";
   const displayCount = count === null ? null : formatExecutionCount(count);
   const submittedByLabel = submittedByDisplayLabel(submittedByActorLabel);
   const handleClick = () => {
@@ -87,11 +92,13 @@ export function CompactExecutionButton({
       ? submittedByLabel
         ? `Queued for execution by ${submittedByLabel}`
         : "Queued for execution"
-      : count !== null
-        ? isErrored
-          ? `Last execution ${count} failed`
-          : `Last execution ${count}`
-        : "Execution unavailable";
+      : state === "cancelled"
+        ? "Last execution was cancelled before it ran"
+        : count !== null
+          ? isErrored
+            ? `Last execution ${count} failed`
+            : `Last execution ${count}`
+          : "Execution unavailable";
   const title = canExecute
     ? isExecuting
       ? submittedByLabel
@@ -101,11 +108,13 @@ export function CompactExecutionButton({
         ? submittedByLabel
           ? `Queued for execution by ${submittedByLabel}`
           : "Queued for execution"
-        : count !== null
-          ? isErrored
-            ? `Run cell again; last execution ${count} failed`
-            : `Run cell again; last execution ${count}`
-          : "Run cell"
+        : state === "cancelled"
+          ? "Run cell; last execution was cancelled before it ran"
+          : count !== null
+            ? isErrored
+              ? `Run cell again; last execution ${count} failed`
+              : `Run cell again; last execution ${count}`
+            : "Run cell"
     : readoutTitle;
   const classNameValue = cn(
     "group/exec inline-flex size-5 items-center justify-center rounded-full",
@@ -118,11 +127,13 @@ export function CompactExecutionButton({
     state === "queued" && "text-sky-600 dark:text-sky-400",
     state === "running" && "text-destructive hover:bg-destructive/10",
     state === "error" && "text-destructive/70 hover:bg-destructive/10 hover:text-destructive",
+    state === "cancelled" && "text-muted-foreground/45 hover:bg-muted hover:text-foreground",
     isQueued || !canExecute ? "cursor-default" : "cursor-pointer",
     !canExecute && "opacity-65 hover:bg-transparent hover:text-muted-foreground/45",
     className,
   );
-  const disabledHistoricalState = !canExecute && (state === "ran" || state === "error");
+  const disabledHistoricalState =
+    !canExecute && (state === "ran" || state === "error" || state === "cancelled");
   const content =
     disabledHistoricalState && showReadoutWhenDisabled && displayCount !== null ? (
       <span className="text-[10px] font-medium tabular-nums" aria-hidden="true">

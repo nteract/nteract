@@ -853,7 +853,8 @@ pub struct ExecutionProgress {
     pub cell_id: String,
     /// Execution ID for this run.
     pub execution_id: String,
-    /// Current status: "queued", "running", "done", "error", or synthetic terminal status.
+    /// Current status: "queued", "running", "done", "error", "cancelled", or
+    /// synthetic terminal status.
     pub status: String,
     /// Whether execution succeeded, once known.
     pub success: Option<bool>,
@@ -863,7 +864,8 @@ pub struct ExecutionProgress {
     pub outputs: Vec<Output>,
     /// Whether this snapshot ends the stream.
     pub terminal: bool,
-    /// Terminal reason: "done", "error", "kernel_failed", "interrupted", "timeout", or "closed".
+    /// Terminal reason: "done", "error", "cancelled", "kernel_failed",
+    /// "interrupted", "timeout", or "closed".
     pub terminal_reason: Option<String>,
 }
 
@@ -1046,11 +1048,12 @@ impl PyEnvState {
 #[pyclass(name = "ExecutionState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyExecutionState {
-    /// Current status: "queued", "running", "done", "error".
+    /// Current status: "queued", "running", "done", "error", "cancelled".
     pub status: String,
     /// Kernel execution count (set when execution starts).
     pub execution_count: Option<i64>,
-    /// Whether the execution succeeded (set on completion).
+    /// Whether the execution succeeded (set on completion). Absent on
+    /// "cancelled" executions, which never ran.
     pub success: Option<bool>,
     /// Authenticated actor label for the client that submitted this execution.
     pub submitted_by_actor_label: Option<String>,

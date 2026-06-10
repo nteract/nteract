@@ -43,7 +43,7 @@ export interface TextAttribution {
 
 export interface ExecutionViewSnapshot {
   execution_count: number | null;
-  status: "queued" | "running" | "done" | "error" | (string & {});
+  status: "queued" | "running" | "done" | "error" | "cancelled" | (string & {});
   success: boolean | null;
   output_ids: string[];
   submitted_by_actor_label?: string | null;

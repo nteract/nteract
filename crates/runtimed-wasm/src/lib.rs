@@ -1509,12 +1509,13 @@ impl RoomHostHandle {
     ) -> Result<RoomHostFrameResult, JsError> {
         let heads_before = self.state_doc.get_heads();
 
-        // 1. Terminalize in-flight executions (running + queued) and clear the
-        //    queue, so viewers stop seeing perpetually-spinning cells and the
-        //    idempotency guard in handle_execute_cell no longer suppresses
-        //    re-runs of the orphaned work.
+        // 1. Resolve in-flight executions (running → error, queued →
+        //    cancelled) and clear the queue, so viewers stop seeing
+        //    perpetually-spinning cells and the idempotency guard in
+        //    handle_execute_cell no longer suppresses re-runs of the
+        //    orphaned work.
         self.state_doc
-            .mark_inflight_executions_failed()
+            .abort_inflight_executions()
             .map_err(|e| JsError::new(&format!("reconcile executions: {e}")))?;
         self.state_doc
             .set_queue(None, &[])
@@ -4201,9 +4202,10 @@ mod tests {
         assert!(result.runtime_state_changed);
 
         let state = host.state_doc.read_state();
-        // Both in-flight executions are now terminal (error), not spinning.
+        // Both in-flight executions are now terminal, not spinning: the
+        // running one errored mid-run, the queued one never ran.
         assert_eq!(state.executions["exec-running"].status, "error");
-        assert_eq!(state.executions["exec-queued"].status, "error");
+        assert_eq!(state.executions["exec-queued"].status, "cancelled");
         // Queue drained so the idempotency guard can't suppress re-runs.
         assert!(state.queue.executing.is_none());
         assert!(state.queue.queued.is_empty());

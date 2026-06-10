@@ -20,7 +20,7 @@
 //!     queued_execution_ids: List[Str]  (execution_ids waiting)
 //!   executions/             Map (keyed by execution_id)
 //!     {execution_id}/       Map
-//!       status: Str         ("queued" | "running" | "done" | "error")
+//!       status: Str         ("queued" | "running" | "done" | "error" | "cancelled")
 //!       execution_count: Int|null
 //!       success: Bool|null
 //!       outputs: Map  (keyed by output_id)
@@ -208,12 +208,18 @@ pub struct QueueState {
 /// Stored in `executions/{execution_id}/` in the RuntimeStateDoc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionState {
-    /// Current status: "queued", "running", "done", "error".
+    /// Current status: "queued", "running", "done", "error", "cancelled".
+    ///
+    /// "cancelled" is terminal and means the execution never ran: it was
+    /// dropped from the queue because an earlier cell errored, the user
+    /// interrupted, or the kernel died/restarted before it started.
     pub status: String,
     /// Kernel execution count (set when execution starts).
     #[serde(default)]
     pub execution_count: Option<i64>,
-    /// Whether the execution succeeded (set on completion).
+    /// Whether the execution succeeded (set on completion). Absent on
+    /// "cancelled" executions: they neither succeeded nor failed, so
+    /// `success == Some(false)` always means "ran and errored".
     #[serde(default)]
     pub success: Option<bool>,
     /// Output manifests for this execution (inline Automerge Maps with blob refs).
@@ -1445,17 +1451,35 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
-    /// Mark all in-flight executions (status "running" or "queued") as failed.
-    /// Returns the number of executions marked. Used during kernel restart or
-    /// interrupt to catch any entries that the local KernelState doesn't know
-    /// about (e.g., entries created by CRDT sync that haven't been processed
-    /// locally yet).
-    pub fn mark_inflight_executions_failed(&mut self) -> Result<usize, RuntimeStateError> {
+    /// Mark an execution as cancelled: it was dropped from the queue without
+    /// ever running (earlier cell errored, interrupt, kernel death/restart).
+    ///
+    /// Terminal like "done"/"error", but `success` stays absent — the
+    /// execution neither succeeded nor failed, and consumers rely on
+    /// `success == false` meaning "ran and errored".
+    pub fn set_execution_cancelled(&mut self, execution_id: &str) -> Result<(), RuntimeStateError> {
+        let executions = self.scaffold_map("executions")?;
+
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return Ok(());
+        };
+
+        self.doc.put(&entry, "status", "cancelled")?;
+        Ok(())
+    }
+
+    /// Resolve all in-flight executions to a terminal status: "running"
+    /// entries become "error" (the kernel went away mid-run), "queued"
+    /// entries become "cancelled" (they never started). Returns the number of
+    /// executions resolved. Used during kernel restart or interrupt to catch
+    /// any entries that the local KernelState doesn't know about (e.g.,
+    /// entries created by CRDT sync that haven't been processed locally yet).
+    pub fn abort_inflight_executions(&mut self) -> Result<usize, RuntimeStateError> {
         let Some(executions) = self.get_map("executions") else {
             return Ok(0);
         };
 
-        let inflight: Vec<automerge::ObjId> =
+        let inflight: Vec<(automerge::ObjId, bool)> =
             self.doc
                 .map_range(&executions, ..)
                 .filter_map(|item| {
@@ -1469,16 +1493,21 @@ impl RuntimeStateDoc {
                         },
                     );
                     match status.as_deref() {
-                        Some("running") | Some("queued") => Some(item.id()),
+                        Some("running") => Some((item.id(), true)),
+                        Some("queued") => Some((item.id(), false)),
                         _ => None,
                     }
                 })
                 .collect();
 
         let count = inflight.len();
-        for entry_id in inflight {
-            self.doc.put(&entry_id, "status", "error")?;
-            self.doc.put(&entry_id, "success", false)?;
+        for (entry_id, was_running) in inflight {
+            if was_running {
+                self.doc.put(&entry_id, "status", "error")?;
+                self.doc.put(&entry_id, "success", false)?;
+            } else {
+                self.doc.put(&entry_id, "status", "cancelled")?;
+            }
         }
         Ok(count)
     }
@@ -4812,7 +4841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_inflight_executions_failed() {
+    fn test_abort_inflight_executions() {
         let mut doc = RuntimeStateDoc::new();
         // One running, one queued, one already done
         doc.create_execution("exec-running").unwrap();
@@ -4828,32 +4857,49 @@ mod tests {
         assert_eq!(doc.get_execution("exec-queued").unwrap().status, "queued");
         assert_eq!(doc.get_execution("exec-done").unwrap().status, "done");
 
-        let marked = doc.mark_inflight_executions_failed().unwrap();
-        assert_eq!(marked, 2);
+        let resolved = doc.abort_inflight_executions().unwrap();
+        assert_eq!(resolved, 2);
 
+        // Running entry was killed mid-run: error with explicit failure.
         assert_eq!(doc.get_execution("exec-running").unwrap().status, "error");
         assert_eq!(
             doc.get_execution("exec-running").unwrap().success,
             Some(false)
         );
-        assert_eq!(doc.get_execution("exec-queued").unwrap().status, "error");
+        // Queued entry never ran: cancelled, success absent.
         assert_eq!(
-            doc.get_execution("exec-queued").unwrap().success,
-            Some(false)
+            doc.get_execution("exec-queued").unwrap().status,
+            "cancelled"
         );
+        assert_eq!(doc.get_execution("exec-queued").unwrap().success, None);
         // Done execution should be untouched
         assert_eq!(doc.get_execution("exec-done").unwrap().status, "done");
         assert_eq!(doc.get_execution("exec-done").unwrap().success, Some(true));
     }
 
     #[test]
-    fn test_mark_inflight_noop_when_all_done() {
+    fn test_abort_inflight_noop_when_all_done() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1").unwrap();
         doc.set_execution_running("exec-1").unwrap();
         doc.set_execution_done("exec-1", true).unwrap();
 
-        assert_eq!(doc.mark_inflight_executions_failed().unwrap(), 0);
+        assert_eq!(doc.abort_inflight_executions().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_set_execution_cancelled() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1").unwrap();
+
+        doc.set_execution_cancelled("exec-1").unwrap();
+
+        let exec = doc.get_execution("exec-1").unwrap();
+        assert_eq!(exec.status, "cancelled");
+        assert_eq!(exec.success, None);
+
+        // Unknown execution id is a no-op, matching set_execution_done.
+        doc.set_execution_cancelled("nope").unwrap();
     }
 
     #[test]

@@ -17,13 +17,15 @@ export interface CodeCellCurrentLineProps {
   isQueued?: boolean;
   queuePriority?: number;
   isErrored?: boolean;
+  /** The execution was dropped from the queue without running. */
+  isCancelled?: boolean;
   isFocused?: boolean;
   compactIdle?: boolean;
   activityContent?: ReactNode;
   className?: string;
 }
 
-type ExecutionBoundaryState = "idle" | "ran" | "queued" | "running" | "error";
+type ExecutionBoundaryState = "idle" | "ran" | "queued" | "running" | "error" | "cancelled";
 type RunningSignalPhase = "resting" | "building" | "active" | "settling";
 
 const RUNNING_SIGNAL_DELAY_MS = 120;
@@ -112,16 +114,19 @@ function visualExecutionDetail({
   isExecuting,
   isQueued,
   isErrored,
+  isCancelled,
 }: {
   count: number | null;
   elapsedMs: number | null;
   isExecuting: boolean;
   isQueued: boolean;
   isErrored: boolean;
+  isCancelled: boolean;
 }): string {
   if (isExecuting) return "running";
   if (isQueued) return "queued";
   if (isErrored) return "failed";
+  if (isCancelled) return "cancelled";
   if (count !== null) {
     const runPrefix = `run ${formatExecutionCount(count)}`;
     return elapsedMs === null ? runPrefix : `${runPrefix} · ${formatElapsedMs(elapsedMs)}`;
@@ -136,18 +141,21 @@ function accessibleExecutionDetail({
   isExecuting,
   isQueued,
   isErrored,
+  isCancelled,
 }: {
   count: number | null;
   elapsedMs: number | null;
   isExecuting: boolean;
   isQueued: boolean;
   isErrored: boolean;
+  isCancelled: boolean;
 }): string {
   const runPrefix = count === null ? null : `Run ${formatExecutionCount(count)}`;
 
   if (isExecuting) return "Running";
   if (isQueued) return "Queued";
   if (isErrored) return runPrefix === null ? "Execution failed" : `${runPrefix} failed`;
+  if (isCancelled) return "Execution cancelled";
   if (count !== null) {
     return elapsedMs === null
       ? `${runPrefix} completed`
@@ -351,6 +359,22 @@ function ExecutionBoundaryRule({
     );
   }
 
+  if (state === "cancelled") {
+    // Same dashed boundary shape as error, but muted and without the origin
+    // dot: this cell never ran, it is not where the failure happened.
+    return (
+      <div
+        data-slot="code-cell-current-line-rule"
+        className="relative h-3 min-w-12 flex-1 overflow-hidden text-muted-foreground/45"
+      >
+        <span
+          className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-[repeating-linear-gradient(to_right,currentColor_0_0.375rem,transparent_0.375rem_0.625rem)]"
+          aria-hidden="true"
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       data-slot="code-cell-current-line-rule"
@@ -370,6 +394,7 @@ export function CodeCellCurrentLine({
   isQueued = false,
   queuePriority = 0,
   isErrored = false,
+  isCancelled = false,
   isFocused = false,
   compactIdle = false,
   activityContent,
@@ -382,11 +407,14 @@ export function CodeCellCurrentLine({
       ? "queued"
       : isErrored
         ? "error"
-        : count !== null
-          ? "ran"
-          : "idle";
+        : isCancelled
+          ? "cancelled"
+          : count !== null
+            ? "ran"
+            : "idle";
   const hasRunningSignal =
     !isErrored &&
+    !isCancelled &&
     !isQueued &&
     ((state === "running" && runningSignalPhase === "active") || runningSignalPhase === "settling");
   const boundaryState =
@@ -404,6 +432,7 @@ export function CodeCellCurrentLine({
     isExecuting: visualIsExecuting,
     isQueued,
     isErrored,
+    isCancelled,
   });
   const isIdleReadyDetail = boundaryState === "idle" && detailLabel === "ready";
   const isCompletedRunDetail = boundaryState === "ran" && count !== null;
@@ -414,6 +443,7 @@ export function CodeCellCurrentLine({
     isExecuting,
     isQueued,
     isErrored,
+    isCancelled,
   });
   const countLabel = executionCountLabel(count);
   return (
@@ -440,7 +470,7 @@ export function CodeCellCurrentLine({
       <span
         data-slot="code-cell-current-line-status"
         aria-label={`${languageLabel}: ${accessibleDetailLabel}`}
-        aria-live={isExecuting || isQueued || isErrored ? "polite" : undefined}
+        aria-live={isExecuting || isQueued || isErrored || isCancelled ? "polite" : undefined}
         className={cn(
           "flex min-w-0 shrink-0 items-center whitespace-nowrap font-medium transition-[color,opacity,max-width,gap] duration-150",
           isCompactIdle ? "max-w-0 overflow-hidden opacity-0" : "max-w-64 opacity-100",

@@ -177,7 +177,13 @@ export interface TrustState {
 }
 
 export interface ExecutionState {
-  status: "queued" | "running" | "done" | "error";
+  /**
+   * "cancelled" is terminal and means the execution never ran: dropped from
+   * the queue because an earlier cell errored, an interrupt, or kernel
+   * death/restart. `success` stays null on cancelled executions, so
+   * `success === false` always means "ran and errored".
+   */
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   execution_count: number | null;
   success: boolean | null;
   /** Notebook cell that submitted this execution, when available. */
@@ -209,7 +215,7 @@ export interface CommDocEntry {
 /** A detected status transition for a single execution. */
 export interface ExecutionTransition {
   execution_id: string;
-  kind: "started" | "done" | "error";
+  kind: "started" | "done" | "error" | "cancelled";
   execution_count: number | null;
 }
 
@@ -405,7 +411,7 @@ export function diffExecutions(
       continue;
     }
 
-    // Terminal states: done or error
+    // Terminal states: done, error, or cancelled
     if (currStatus === "done") {
       transitions.push({
         execution_id: eid,
@@ -416,6 +422,12 @@ export function diffExecutions(
       transitions.push({
         execution_id: eid,
         kind: "error",
+        execution_count: entry.execution_count,
+      });
+    } else if (currStatus === "cancelled") {
+      transitions.push({
+        execution_id: eid,
+        kind: "cancelled",
         execution_count: entry.execution_count,
       });
     } else if (currStatus === "running" && prevStatus !== "done" && prevStatus !== "error") {

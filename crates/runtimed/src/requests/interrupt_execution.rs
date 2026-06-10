@@ -10,7 +10,7 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
         // The coordinator's CRDT copy may contain entries from a concurrent
         // ExecuteCell whose final state should be determined by the runtime
         // agent, not pre-empted by a blanket sweep.  The runtime agent's
-        // interrupt handler calls mark_inflight_executions_failed() on its
+        // interrupt handler calls abort_inflight_executions() on its
         // own CRDT copy - only entries that have actually synced to the
         // agent are affected, so final state is correct regardless of
         // timing between ExecuteCell and InterruptExecution.

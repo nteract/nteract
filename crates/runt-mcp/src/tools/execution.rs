@@ -168,13 +168,8 @@ pub async fn run_all_cells(
         if let Some(exec) = run_exec(&cell.id) {
             match exec.status.as_str() {
                 "done" => succeeded += 1,
-                "error" => {
-                    if exec.execution_count.is_none() {
-                        cancelled += 1;
-                    } else {
-                        errored += 1;
-                    }
-                }
+                "cancelled" => cancelled += 1,
+                "error" => errored += 1,
                 "running" => running += 1,
                 "queued" => queued += 1,
                 _ => {}
@@ -234,10 +229,7 @@ pub async fn run_all_cells(
             None => continue,
         };
 
-        let display_status = match exec.status.as_str() {
-            "error" if exec.execution_count.is_none() => "cancelled",
-            other => other,
-        };
+        let display_status = exec.status.as_str();
         let ec_str = exec.execution_count.map(|c| c.to_string());
 
         // Resolve outputs from the execution's output manifests.
@@ -430,7 +422,7 @@ async fn render_execution_result(
     // Determine display status with clear indication of completeness
     let (display_status, is_terminal) = match exec.status.as_str() {
         "done" => ("done", true),
-        "error" if exec.execution_count.is_none() => ("cancelled", true),
+        "cancelled" => ("cancelled", true),
         "error" => ("error", true),
         "running" => ("running (partial — outputs may be incomplete)", false),
         "queued" => ("queued (no outputs yet)", false),

@@ -292,10 +292,9 @@ pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllRe
 
         if let Ok(state) = handle.get_runtime_state() {
             all_terminal = execution_ids.iter().all(|eid| {
-                state
-                    .executions
-                    .get(*eid)
-                    .is_some_and(|exec| exec.status == "done" || exec.status == "error")
+                state.executions.get(*eid).is_some_and(|exec| {
+                    exec.status == "done" || exec.status == "error" || exec.status == "cancelled"
+                })
             });
             if all_terminal {
                 break;
