@@ -319,8 +319,13 @@ Garbage collection is a daemon-level mark-and-sweep that runs every 30 minutes
    retention window via `collect_execution_store_refs_for_gc`
    (`crates/runtimed/src/daemon.rs:3935-3939`). Arrow stream manifests get a
    second-pass walk that pulls referenced data blobs out of the manifest body
-   (`daemon.rs:4227, 4531-4532`). The mark produces one combined hash set
-   with no per-ref provenance; the punchlist tracks this opacity (BS-7).
+   (`daemon.rs:4227, 4531-4532`). The mark produces a `GcMarkSet` with
+   per-ref provenance (BS-7): each ref shape lands under its own category
+   (execution-outputs, comm-outputs, comm-state, arrow-manifest-children,
+   resolved-assets, attachments, persisted-doc, execution-store), the GC
+   loop logs per-category counts after every walk — a category that should
+   have refs reporting zero is the inventory bug made visible — and each
+   sweep deletion is logged at debug with its hash.
 2. **Skip guard.** If there are zero rooms loaded **and** no room has ever
    been loaded since daemon start, the sweep skips. That guard exists because
    "zero refs" is ambiguous in the post-restart window (we genuinely don't
@@ -577,7 +582,6 @@ These items were migrated from `docs/adr/cleanup-punchlist.md` when it was
 retired (2026-06-10). Severity: **Targeted PR** = one-or-two-file fix ready
 to implement; **Design** = needs a decision in this ADR before code moves.
 
-- **BS-7** (Targeted PR; GC instrumentation): GC mark walks rooms and persisted docs producing one combined hash set with no per-ref provenance. Any mark-miss is a silent data-loss bug at sweep time, with no debug surface to audit.
 - **BS-9** (Design; `crates/runtimed/src/blob_upload.rs` finalize path): `MAX_BLOB_SIZE = 100 MiB` only gates the in-process `BlobStore::put()` API. The multipart finalize path validates against the caller's `expected_size` and the per-peer 256 MiB staging budget but does not enforce a 100 MiB ceiling on the completed blob. A peer can multipart-upload a 200 MiB blob today.
 - **BS-10** (Design; `output_store.rs:62-89`): Save-to-`.ipynb` externalizes Arrow IPC and Parquet only via `BLOB_REF_MIME`; every other binary MIME is base64-inlined in the saved file. A user opening the saved `.ipynb` outside nteract gets self-contained binary for non-Arrow/Parquet but broken refs for the rest unless they keep the colocated blob store.
 - **BS-14** (Targeted PR; `apps/notebook-cloud/src/index.ts`, `crates/runtimed/src/daemon.rs`, `crates/runtimed-wasm/`): The hosted publish validator (TS, walks the materialized render projection via `collectSnapshotBlobRefs`) and the daemon GC mark (Rust, `collect_blob_refs_for_gc`) are two independent blob-ref inventories. A ref shape added to one and not the other is either a broken publish or a silent GC data-loss bug. Converge on one ref-walk exported from `runtimed-wasm`, or pin both walks against shared fixtures covering every ref shape (outputs, comms, attachments, resolved_assets, Arrow manifest children).
