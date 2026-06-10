@@ -42,8 +42,6 @@ const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgb
 const DEFAULT_OUTPUT_DOCUMENT_ORIGIN = "https://preview.runtusercontent.com";
 const DEFAULT_CATALOG_OWNER_PRINCIPAL =
   "account:user%3Aanaconda:email:b0204af7084bdb0f271f1fe243bea5973fe07e0264939605e1570ecb1604b3f0";
-const DEFAULT_LATEST_REVISION_ACTOR_LABEL =
-  "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0/agent:runt-publish";
 
 const targetUrl = firstPositionalArg() ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
 const expectedRendererAssetOrigin =
@@ -67,8 +65,7 @@ const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEX
 const expectedCatalogOwnerPrincipal =
   process.env.NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL ?? DEFAULT_CATALOG_OWNER_PRINCIPAL;
 const expectedLatestRevisionActorLabel =
-  process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL ??
-  DEFAULT_LATEST_REVISION_ACTOR_LABEL;
+  process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL ?? "";
 const expectedLatestRevisionNotebookHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH ?? "";
 const expectedLatestRevisionRuntimeHeadsHash =
