@@ -134,6 +134,12 @@ References:
 
 ## Decision 1: Cloudflare is the hosted document engine
 
+This decision records the current Cloudflare prototype and remains useful for
+understanding the shipped `preview.runt.run` path. For the next
+production-oriented hosted target, it is partially superseded by
+`aws-rust-room-host.md`, which moves live room authority to a native Rust room
+host on AWS while preserving the typed-frame protocol and document model.
+
 The primary hosted topology is a Cloudflare Worker routing room requests to one
 Durable Object per notebook room. The Durable Object is the live room host:
 
