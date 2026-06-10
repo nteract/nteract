@@ -376,6 +376,16 @@ pub struct CloudWsSink {
     sink: SplitSink<WsStream, WsMessage>,
 }
 
+impl CloudWsSink {
+    /// Send a WebSocket close frame so the room records a normal disconnect
+    /// rather than a dropped connection. Best-effort: the server may have
+    /// closed first.
+    pub async fn close(mut self) {
+        let _ = self.sink.send(WsMessage::Close(None)).await;
+        let _ = self.sink.flush().await;
+    }
+}
+
 impl FrameSink for CloudWsSink {
     async fn send_frame(
         &mut self,

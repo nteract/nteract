@@ -139,11 +139,6 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
-        path: "crates/runt-cloud-peer/Cargo.toml",
-        format: Format::Toml,
-        matches: 1,
-    },
-    Target {
         path: "crates/notebook-cloud-transport/Cargo.toml",
         format: Format::Toml,
         matches: 1,

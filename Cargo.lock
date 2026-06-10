@@ -7445,25 +7445,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runt-cloud-peer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "automerge",
- "clap",
- "futures-util",
- "notebook-doc",
- "notebook-wire",
- "runtime-doc",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "runt-mcp"
 version = "0.4.2"
 dependencies = [

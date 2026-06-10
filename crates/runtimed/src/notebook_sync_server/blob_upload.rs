@@ -179,10 +179,10 @@ pub(super) fn enqueue_put_blob(
     peer_id: &str,
     connection_scope: nteract_identity::ConnectionScope,
 ) -> anyhow::Result<()> {
-    // Same gate the hosted room applies at its PUT_BLOB prefilter
-    // (`identity.ts::allowsBlobUpload`); local desktop peers are owner-scoped,
-    // so this only bites once the daemon accepts remote peers (BS-12).
-    if !connection_scope.allows_blob_upload() {
+    // Local counterpart of the hosted room's PUT_BLOB prefilter
+    // (`identity.ts::allowsBlobUpload`): viewers are denied on both
+    // topologies; editors keep local document-scoped uploads (BS-12, HCA-3).
+    if !connection_scope.allows_local_blob_upload() {
         warn!(
             "[notebook-sync] Rejecting PutBlob from peer {} with scope {} for {}",
             peer_id,
@@ -1327,13 +1327,60 @@ mod tests {
         ));
     }
 
-    /// The daemon's PUT_BLOB ingress applies the same scope gate as the hosted
-    /// room's prefilter (`ConnectionScope::allows_blob_upload`): viewer and
-    /// editor uploads are rejected before reaching the worker (BS-12 parity).
+    /// The daemon's PUT_BLOB ingress applies the local counterpart of the
+    /// hosted room's scope prefilter
+    /// (`ConnectionScope::allows_local_blob_upload`): viewer uploads are
+    /// rejected before reaching the worker (BS-12).
     #[tokio::test]
-    async fn put_blob_rejected_for_scopes_without_blob_upload() {
-        for scope in [
+    async fn put_blob_rejected_for_viewer_scope() {
+        let (worker_tx, mut worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
+        let worker = PutBlobWorker {
+            tx: worker_tx,
+            in_flight: Arc::new(AtomicBool::new(false)),
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (mut reader, writer) = tokio::io::duplex(1024 * 1024);
+        let (peer_writer, _writer_task) =
+            super::super::peer_writer::spawn_peer_writer(writer, "notebook".into(), "peer".into());
+        let body = b"abc";
+        let sha256 = hex::encode(Sha256::digest(body));
+        let request_payload = payload("blob-scope", "text/plain", body.len() as u64, &sha256, body);
+
+        enqueue_put_blob(
+            &worker,
+            &peer_writer,
+            request_payload,
+            "notebook",
+            "peer",
             nteract_identity::ConnectionScope::Viewer,
+        )
+        .expect("scope rejection should report a structured response");
+
+        let frame = connection::recv_typed_frame(&mut reader)
+            .await
+            .unwrap()
+            .unwrap();
+        let envelope: NotebookResponseEnvelope = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(envelope.id.as_deref(), Some("blob-scope"));
+        assert!(matches!(
+            envelope.response,
+            NotebookResponse::BlobUploadError {
+                reason: BlobUploadErrorKind::Forbidden
+            }
+        ));
+        assert!(
+            worker_rx.try_recv().is_err(),
+            "rejected upload must not reach the worker"
+        );
+    }
+
+    /// Runtime peers upload output blobs without notebook write scope, and
+    /// local editors keep document-scoped uploads; the gate must let both
+    /// through to the worker.
+    #[tokio::test]
+    async fn put_blob_allowed_for_runtime_peer_and_editor_scopes() {
+        for scope in [
+            nteract_identity::ConnectionScope::RuntimePeer,
             nteract_identity::ConnectionScope::Editor,
         ] {
             let (worker_tx, mut worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
@@ -1342,7 +1389,7 @@ mod tests {
                 in_flight: Arc::new(AtomicBool::new(false)),
                 handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
             };
-            let (mut reader, writer) = tokio::io::duplex(1024 * 1024);
+            let (_reader, writer) = tokio::io::duplex(1024 * 1024);
             let (peer_writer, _writer_task) = super::super::peer_writer::spawn_peer_writer(
                 writer,
                 "notebook".into(),
@@ -1351,7 +1398,7 @@ mod tests {
             let body = b"abc";
             let sha256 = hex::encode(Sha256::digest(body));
             let request_payload =
-                payload("blob-scope", "text/plain", body.len() as u64, &sha256, body);
+                payload("blob-ok", "text/plain", body.len() as u64, &sha256, body);
 
             enqueue_put_blob(
                 &worker,
@@ -1361,61 +1408,12 @@ mod tests {
                 "peer",
                 scope,
             )
-            .expect("scope rejection should report a structured response");
-
-            let frame = connection::recv_typed_frame(&mut reader)
-                .await
-                .unwrap()
-                .unwrap();
-            let envelope: NotebookResponseEnvelope =
-                serde_json::from_slice(&frame.payload).unwrap();
-            assert_eq!(envelope.id.as_deref(), Some("blob-scope"));
+            .expect("allowed upload should enqueue");
             assert!(
-                matches!(
-                    envelope.response,
-                    NotebookResponse::BlobUploadError {
-                        reason: BlobUploadErrorKind::Forbidden
-                    }
-                ),
-                "scope {scope} should be forbidden"
-            );
-            assert!(
-                worker_rx.try_recv().is_err(),
-                "rejected upload must not reach the worker"
+                worker_rx.try_recv().is_ok(),
+                "{scope} upload should reach the worker"
             );
         }
-    }
-
-    /// Runtime peers upload output blobs without notebook write scope; the
-    /// gate must let them through to the worker.
-    #[tokio::test]
-    async fn put_blob_allowed_for_runtime_peer_scope() {
-        let (worker_tx, mut worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
-        let worker = PutBlobWorker {
-            tx: worker_tx,
-            in_flight: Arc::new(AtomicBool::new(false)),
-            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
-        };
-        let (_reader, writer) = tokio::io::duplex(1024 * 1024);
-        let (peer_writer, _writer_task) =
-            super::super::peer_writer::spawn_peer_writer(writer, "notebook".into(), "peer".into());
-        let body = b"abc";
-        let sha256 = hex::encode(Sha256::digest(body));
-        let request_payload = payload("blob-rp", "text/plain", body.len() as u64, &sha256, body);
-
-        enqueue_put_blob(
-            &worker,
-            &peer_writer,
-            request_payload,
-            "notebook",
-            "peer",
-            nteract_identity::ConnectionScope::RuntimePeer,
-        )
-        .expect("runtime_peer upload should enqueue");
-        assert!(
-            worker_rx.try_recv().is_ok(),
-            "runtime_peer upload should reach the worker"
-        );
     }
 
     #[tokio::test]

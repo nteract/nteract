@@ -391,15 +391,25 @@ impl ConnectionScope {
     }
 
     /// Whether this scope can upload blobs (`PUT_BLOB` frames and the
-    /// multipart Create/Complete/Abort requests).
+    /// multipart Create/Complete/Abort requests) on a **hosted** room.
     ///
     /// Editors stay excluded until server-side reference-path validation
     /// lands; the two ship together (`hosted-room-authorization.md`
-    /// Decision 3, punchlist HCA-3). Both the hosted room prefilter and the
-    /// daemon peer ingress must use this predicate so the two topologies
-    /// cannot drift (punchlist BS-12).
+    /// Decision 3, punchlist HCA-3).
     pub const fn allows_blob_upload(self) -> bool {
         matches!(self, Self::RuntimePeer | Self::Owner)
+    }
+
+    /// Whether this scope can upload blobs on a **local daemon** connection.
+    ///
+    /// Differs from [`Self::allows_blob_upload`] by allowing editors: local
+    /// same-UID editor peers upload document-scoped attachments today, and the
+    /// hosted editor exclusion exists only until reference-path validation
+    /// lands (HCA-3). Viewers are denied on both topologies (punchlist BS-12).
+    /// When HCA-3 stage 2 ships, hosted converges on this predicate and the
+    /// two collapse into one.
+    pub const fn allows_local_blob_upload(self) -> bool {
+        !matches!(self, Self::Viewer)
     }
 
     /// Whether this scope can submit execution requests (ExecuteCell,

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, createWriteStream, openSync, readFileSync } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,9 +43,11 @@ const runtimedBin = path.resolve(
   workspaceRoot,
   process.env.NOTEBOOK_CLOUD_RUNTIMED_BIN ?? "target/release/runtimed",
 );
+// The diagnostic cloud peer is the hidden `runtimed cloud-peer` subcommand
+// (the standalone runt-cloud-peer binary was absorbed into runtimed).
 const cloudPeerBin = path.resolve(
   workspaceRoot,
-  process.env.NOTEBOOK_CLOUD_RUNT_CLOUD_PEER_BIN ?? "target/release/runt-cloud-peer",
+  process.env.NOTEBOOK_CLOUD_RUNT_CLOUD_PEER_BIN ?? "target/release/runtimed",
 );
 
 const timingsMs = {};
@@ -53,7 +55,6 @@ const startedAt = performance.now();
 let runtimePeer;
 let runtimeKeptAlive = false;
 let tempDir;
-let tokenFile;
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -64,12 +65,10 @@ async function main() {
   try {
     requireApiKey();
     await assertBinaryExists(runtimedBin, "runtimed");
-    await assertBinaryExists(cloudPeerBin, "runt-cloud-peer");
+    await assertBinaryExists(cloudPeerBin, "runtimed cloud-peer");
     const pythonPath = await resolvePythonPath();
     await mkdir(blobRoot, { recursive: true });
     tempDir = await mkdtemp(path.join(os.tmpdir(), "nteract-runtime-peer-smoke-"));
-    tokenFile = path.join(tempDir, "api-key");
-    await writeFile(tokenFile, apiKey, { mode: 0o600 });
 
     const room = await timed("create_room_and_grant_runtime_peer", async () => {
       const created = await createNotebookRoom();
@@ -184,7 +183,7 @@ async function assertBinaryExists(binaryPath, name) {
     await access(binaryPath);
   } catch {
     throw new Error(
-      `Missing ${name} binary at ${binaryPath}. Run \`cargo xtask artifacts ensure sift,renderer && cargo build --release -p runtimed -p runt-cloud-peer\` first, or set NOTEBOOK_CLOUD_${name.toUpperCase().replaceAll("-", "_")}_BIN.`,
+      `Missing ${name} binary at ${binaryPath}. Run \`cargo xtask artifacts ensure sift,renderer && cargo build --release -p runtimed\` first, or set NOTEBOOK_CLOUD_${name.toUpperCase().replaceAll("-", "_")}_BIN.`,
     );
   }
 }
@@ -463,10 +462,9 @@ async function runOwnerPeer({ notebookId }) {
   return runCommand(
     cloudPeerBin,
     [
-      "--auth-mode",
-      "anaconda-api-key",
-      "--token-file",
-      tokenFile,
+      "cloud-peer",
+      "--auth-kind",
+      "anaconda-key",
       "--cloud-url",
       baseUrl,
       "--notebook-id",
@@ -486,6 +484,9 @@ async function runOwnerPeer({ notebookId }) {
       timeoutMs: seconds * 1000 + 20_000,
       env: {
         ...process.env,
+        // `runtimed cloud-peer` reads the credential from the environment,
+        // never argv, so it cannot leak into the process command line.
+        RUNT_CLOUD_TOKEN: apiKey,
         RUST_LOG: process.env.RUST_LOG ?? "info",
       },
     },

@@ -40,7 +40,7 @@ For a direct runtime smoke build from a fresh worktree, the minimal sequence is:
 
 ```bash
 cargo xtask artifacts ensure sift,renderer
-cargo build --release -p runtimed -p runt-cloud-peer
+cargo build --release -p runtimed
 ```
 
 ## Decision 2: Rust build scripts verify, but do not generate, JS/WASM assets

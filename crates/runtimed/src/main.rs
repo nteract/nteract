@@ -191,6 +191,41 @@ enum Commands {
     /// Reads JSON config from stdin, writes JSON events to stdout.
     #[command(hide = true, name = "warm-env")]
     WarmEnv,
+
+    /// Dial a hosted notebook room over WebSocket and sync both documents as a
+    /// diagnostic peer (internal/automation; absorbed the standalone
+    /// `runt-cloud-peer` spike). Unlike `cloud-runtime-agent`, this peer does
+    /// not own a kernel — it can add a cell, request execution, and observe the
+    /// room's RuntimeStateDoc, which is what the hosted smoke tests need. The
+    /// credential is read from RUNT_CLOUD_TOKEN, never argv.
+    #[command(hide = true, name = "cloud-peer")]
+    CloudPeer {
+        /// Base URL of the notebook cloud (https/http; swapped to wss/ws).
+        #[arg(long, default_value = "https://preview.runt.run")]
+        cloud_url: String,
+        /// Notebook id to attach to (room is `/n/<id>/sync`).
+        #[arg(long)]
+        notebook_id: String,
+        /// Connection scope: viewer | editor | runtime_peer | owner.
+        #[arg(long, default_value = "owner")]
+        scope: String,
+        /// Auth kind; the token itself comes from RUNT_CLOUD_TOKEN.
+        #[arg(long, value_enum, default_value_t = runtimed::workstation::CloudAuthKind::Oidc)]
+        auth_kind: runtimed::workstation::CloudAuthKind,
+        /// Operator suffix for the doc actor label (`<principal>/<operator>`).
+        #[arg(long, default_value = "agent:cloud-peer")]
+        operator: String,
+        /// After sync converges, add a code cell with this source.
+        #[arg(long)]
+        add_cell: Option<String>,
+        /// After the added cell converges, send ExecuteCell for it and log the
+        /// executions that appear in RuntimeStateDoc. Requires --add-cell.
+        #[arg(long)]
+        run_cell: bool,
+        /// Auto-close after this many seconds (0 = run until disconnected).
+        #[arg(long, default_value_t = 20)]
+        seconds: u64,
+    },
 }
 
 /// Get a log path that works even when HOME is not set.
@@ -559,6 +594,43 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::WarmEnv) => {
             runtimed::warm_env::run().await;
             Ok(())
+        }
+        Some(Commands::CloudPeer {
+            cloud_url,
+            notebook_id,
+            scope,
+            auth_kind,
+            operator,
+            add_cell,
+            run_cell,
+            seconds,
+        }) => {
+            let cli_args = runtimed::workstation::CloudAgentArgs {
+                cloud_url,
+                notebook_id,
+                scope,
+                auth_kind,
+            };
+            let config =
+                runtimed::workstation::build_cloud_config(&cli_args, |k| std::env::var(k).ok())
+                    .map_err(|e| {
+                        eprintln!("[cloud-peer] Config error: {}", e);
+                        e
+                    })?;
+            runtimed::cloud_peer::run_cloud_peer(
+                config,
+                operator,
+                runtimed::cloud_peer::CloudPeerActions {
+                    add_cell,
+                    run_cell,
+                    seconds,
+                },
+            )
+            .await
+            .map_err(|e| {
+                eprintln!("[cloud-peer] Fatal: {}", e);
+                e
+            })
         }
     }
 }
