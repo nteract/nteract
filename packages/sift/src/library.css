@@ -432,6 +432,9 @@
   color: var(--sift-muted);
   text-transform: none;
   letter-spacing: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sift-tz-default {
@@ -1113,12 +1116,16 @@
   align-items: center;
   gap: 6px;
   margin-left: 12px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .sift-filter-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 2px 6px 2px 8px;
   background: color-mix(in srgb, var(--sift-accent) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--sift-accent) 20%, transparent);
@@ -1130,13 +1137,25 @@
   overflow: hidden;
 }
 
+.sift-filter-pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sift-filter-pill-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
   background: none;
   border: none;
   color: var(--sift-accent);
   font: 14px/1 var(--sift-font);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0;
   opacity: 0.6;
   transition: opacity 100ms ease;
 }

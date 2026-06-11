@@ -474,6 +474,8 @@ describe("createTable", () => {
       const pills = container.querySelectorAll(".sift-filter-pill");
       expect(pills.length).toBe(1);
       expect(pills[0].textContent).toContain("Score");
+      expect(pills[0].querySelector(".sift-filter-pill-label")?.textContent).toContain("Score");
+      expect(pills[0].querySelector(".sift-filter-pill-x")).not.toBeNull();
     });
 
     it("clearFilter removes the pill", async () => {

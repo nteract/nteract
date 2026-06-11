@@ -710,9 +710,9 @@ function OutputAreaSingle({
   const interactionFrameStyle = hasWheelOwningOutputs
     ? ({
         "--notebook-sift-focus": frameFocusAccent,
-        "--notebook-sift-focus-hover": `${frameFocusAccent}66`,
+        "--notebook-sift-focus-hover": `${frameFocusAccent}38`,
         boxShadow: staticFrameInteractionActive
-          ? `0 0 0 2px ${frameFocusAccent}cc, 0 12px 30px ${frameFocusAccent}24`
+          ? `0 0 0 1.5px ${frameFocusAccent}cc, 0 0 0 3px ${frameFocusAccent}14`
           : undefined,
       } as React.CSSProperties)
     : undefined;
