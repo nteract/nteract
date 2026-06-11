@@ -282,6 +282,7 @@ describe("NotebookRoom peer lifecycle", () => {
       socket: socket.asCloudflareWebSocket(),
       identity,
       connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
     };
     const harness = roomHarness(room);
     harness.peers.set(peer.id, peer);
@@ -305,11 +306,99 @@ describe("NotebookRoom peer lifecycle", () => {
     await harness.handleMessage("demo", peer, "not-a-binary-frame");
 
     assert.equal(socket.closed, true);
+    assert.equal(socket.closeCode, 1008);
+    assert.equal(socket.closeReason, "too many rejected frames");
     assert.equal(harness.peers.has(peer.id), false);
     assert.equal(
       socket.sent.length,
       7,
       "the close-triggering rejection should not echo another control frame",
+    );
+  });
+
+  it("does not count server-side room host failures toward peer close", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        throw new Error("room host storage temporarily unavailable");
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+    });
+
+    for (let i = 0; i < 10; i += 1) {
+      await harness.handleMessage(
+        "demo",
+        peer,
+        encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([1])),
+      );
+    }
+
+    assert.equal(socket.closed, false);
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 10);
+    assert(
+      socket.sent.every(
+        (frame) =>
+          frame[0] === FrameType.SESSION_CONTROL &&
+          decodeJsonPayload<Record<string, unknown>>(frame.slice(1)).type ===
+            "cloud_frame_rejected",
+      ),
+    );
+  });
+
+  it("does not count server-side frame persistence failures toward peer close", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:a&scope=runtime_peer",
+      ),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "runtime-peer",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+    harness.persistFrame = async () => {
+      throw new Error("storage temporarily unavailable");
+    };
+
+    for (let i = 0; i < 10; i += 1) {
+      await harness.handleMessage(
+        "demo",
+        peer,
+        encodeTypedFrame(FrameType.PUT_BLOB, new Uint8Array([1])),
+      );
+    }
+
+    assert.equal(socket.closed, false);
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 10);
+    assert(
+      socket.sent.every(
+        (frame) =>
+          frame[0] === FrameType.SESSION_CONTROL &&
+          decodeJsonPayload<Record<string, unknown>>(frame.slice(1)).type ===
+            "cloud_frame_rejected",
+      ),
     );
   });
 
@@ -1201,6 +1290,8 @@ function fakeMaterializer(result: RoomHostFrameResult): {
 class FakeSocket {
   readonly sent: Uint8Array[] = [];
   closed = false;
+  closeCode: number | undefined;
+  closeReason: string | undefined;
   private attachment: unknown;
 
   constructor(private readonly options: { throwOnSend?: boolean } = {}) {}
@@ -1223,8 +1314,10 @@ class FakeSocket {
     }
   }
 
-  close(): void {
+  close(code?: number, reason?: string): void {
     this.closed = true;
+    this.closeCode = code;
+    this.closeReason = reason;
   }
 
   serializeAttachment(value: unknown): void {

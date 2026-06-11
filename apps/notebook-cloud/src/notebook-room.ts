@@ -69,6 +69,15 @@ interface RuntimePeerWorkstationMetadata {
   workingDirectory?: string;
 }
 
+interface RejectFrameOptions {
+  countsTowardStreak?: boolean;
+}
+
+interface PeerCloseOptions {
+  code?: number;
+  reason?: string;
+}
+
 const MAX_STORED_FRAMES = 500;
 
 /// Grace window after the last `runtime_peer` leaves before the room reconciles
@@ -78,6 +87,8 @@ const MAX_STORED_FRAMES = 500;
 /// window the alarm is disarmed.
 const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
 const MAX_CONSECUTIVE_REJECTED_FRAMES = 8;
+const REJECTED_FRAME_POLICY_CLOSE_CODE = 1008;
+const REJECTED_FRAME_POLICY_CLOSE_REASON = "too many rejected frames";
 
 /// Storage key holding the notebook id whose `runtime_peer` departure armed the
 /// reconciliation alarm. Persisted so a DO that hibernates between the alarm
@@ -86,7 +97,10 @@ const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
 
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
-  private readonly pendingRemovals = new Map<string, { notebookId: string; peer: Peer }>();
+  private readonly pendingRemovals = new Map<
+    string,
+    { notebookId: string; peer: Peer; closeOptions: PeerCloseOptions }
+  >();
   private nextFrameSequence = 0;
   private frameSequenceReady: Promise<void> | undefined;
   private framePersistQueue: Promise<void> = Promise.resolve();
@@ -480,6 +494,7 @@ export class NotebookRoom {
           peer,
           normalizedFrame.type,
           `room host rejected ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
+          { countsTowardStreak: false },
         );
         return;
       }
@@ -530,6 +545,7 @@ export class NotebookRoom {
         peer,
         normalizedFrame.type,
         `failed to persist ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
+        { countsTowardStreak: false },
       );
       return;
     }
@@ -709,9 +725,19 @@ export class NotebookRoom {
     peer: Peer,
     frameType: number | undefined,
     reason: string,
+    options: RejectFrameOptions = {},
   ): void {
-    const policy = rejectedFramePolicy(peer.consecutiveRejectedFrames);
-    peer.consecutiveRejectedFrames = policy.consecutiveRejectedFrames;
+    const countsTowardStreak = options.countsTowardStreak ?? true;
+    const policy = countsTowardStreak
+      ? rejectedFramePolicy(peer.consecutiveRejectedFrames)
+      : {
+          consecutiveRejectedFrames: peer.consecutiveRejectedFrames,
+          limit: MAX_CONSECUTIVE_REJECTED_FRAMES,
+          shouldClose: false,
+        };
+    if (countsTowardStreak) {
+      peer.consecutiveRejectedFrames = policy.consecutiveRejectedFrames;
+    }
 
     if (policy.shouldClose) {
       cloudLog("warn", "room.peer.closed_for_rejected_frames", {
@@ -727,7 +753,10 @@ export class NotebookRoom {
         counter: "peers_closed_for_rejected_frames",
         counter_delta: 1,
       });
-      this.removePeer(notebookId, peer);
+      this.removePeer(notebookId, peer, {
+        code: REJECTED_FRAME_POLICY_CLOSE_CODE,
+        reason: REJECTED_FRAME_POLICY_CLOSE_REASON,
+      });
       return;
     }
 
@@ -738,6 +767,7 @@ export class NotebookRoom {
       scope: peer.identity.scope,
       frame_type: frameType === undefined ? "unknown" : frameTypeName(frameType),
       reason,
+      counts_toward_rejected_frame_streak: countsTowardStreak,
       consecutive_rejected_frame_count: policy.consecutiveRejectedFrames,
       consecutive_rejected_frame_limit: policy.limit,
       room_peer_count: this.peers.size,
@@ -819,27 +849,31 @@ export class NotebookRoom {
     }
   }
 
-  private queuePeerRemoval(notebookId: string, peer: Peer): void {
+  private queuePeerRemoval(
+    notebookId: string,
+    peer: Peer,
+    closeOptions: PeerCloseOptions = {},
+  ): void {
     if (!this.peers.has(peer.id)) {
       return;
     }
 
-    this.pendingRemovals.set(peer.id, { notebookId, peer });
+    this.pendingRemovals.set(peer.id, { notebookId, peer, closeOptions });
   }
 
   private flushPendingRemovals(): void {
     while (this.pendingRemovals.size > 0) {
       const removals = Array.from(this.pendingRemovals.values());
       this.pendingRemovals.clear();
-      for (const { notebookId, peer } of removals) {
-        this.removePeer(notebookId, peer);
+      for (const { notebookId, peer, closeOptions } of removals) {
+        this.removePeer(notebookId, peer, closeOptions);
       }
     }
   }
 
-  private removePeer(notebookId: string, peer: Peer): void {
+  private removePeer(notebookId: string, peer: Peer, closeOptions: PeerCloseOptions = {}): void {
     if (this.broadcastDepth > 0) {
-      this.queuePeerRemoval(notebookId, peer);
+      this.queuePeerRemoval(notebookId, peer, closeOptions);
       return;
     }
 
@@ -853,7 +887,7 @@ export class NotebookRoom {
     );
 
     try {
-      peer.socket.close();
+      peer.socket.close(closeOptions.code, closeOptions.reason);
     } catch {
       // Socket is already gone; the peer has still been removed from room state.
     }
