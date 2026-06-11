@@ -9,6 +9,7 @@ import {
   type NotebookRequestOptions,
   type NotebookResponse,
   type NotebookTransport,
+  type NotebookDocPersistenceMeta,
   type PersistedNotebookDoc,
   type SyncableHandle,
   type NotebookInteractionTarget,
@@ -56,6 +57,12 @@ export interface CloudSyncRuntime {
   seededFromPersistence: boolean;
   /** How the persisted-seed attempt resolved; "read_failed" must not arm saves. */
   persistenceSeedOutcome: CloudPersistenceSeedOutcome;
+  /**
+   * Meta of the seeded record (outcome `"seeded"` only) — its `headsHex`
+   * initializes the save loop's heads-dedupe against the record already in
+   * storage, gated on its `principal` still matching the armed principal.
+   */
+  persistenceSeedMeta?: NotebookDocPersistenceMeta;
   /**
    * Adopt a reconnect handshake on the PRESERVED runtime: update identity,
    * `set_actor` with the fresh label, reset engine caches and sync state.
@@ -123,6 +130,12 @@ export type CloudPersistenceSeedOutcome = "seeded" | "bootstrap" | "cleared" | "
 export interface ResolvedCloudNotebookHandle<Handle> {
   handle: Handle;
   outcome: CloudPersistenceSeedOutcome;
+  /**
+   * Meta of the record the handle was seeded from (outcome `"seeded"`
+   * only). Its `headsHex` initializes the save loop's heads-dedupe so an
+   * unchanged notebook never re-writes the identical envelope it loaded.
+   */
+  seedMeta?: NotebookDocPersistenceMeta;
 }
 
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
@@ -206,7 +219,11 @@ export async function connectCloudSyncRuntime({
     const ready = await transport.ready;
     const wasmModuleUrl = new URL(runtimedWasmModulePath, location.href);
     const wasmUrl = new URL(runtimedWasmPath, location.href);
-    const { handle, outcome: persistenceSeedOutcome } = await resolveCloudNotebookHandle({
+    const {
+      handle,
+      outcome: persistenceSeedOutcome,
+      seedMeta,
+    } = await resolveCloudNotebookHandle({
       actorLabel: ready.actor_label,
       persistence,
       createBootstrap: () =>
@@ -257,6 +274,7 @@ export async function connectCloudSyncRuntime({
       transport,
       seededFromPersistence: persistenceSeedOutcome === "seeded",
       persistenceSeedOutcome,
+      persistenceSeedMeta: seedMeta,
       applyRoomReady: (nextReady) =>
         applyCloudRoomReady(identity, nextReady, () =>
           reestablishCloudConnection(handle, engine, nextReady.actor_label),
@@ -536,7 +554,11 @@ export async function resolveCloudNotebookHandle<Handle>({
   }
 
   try {
-    return { handle: await loadFromBytes(persisted.bytes), outcome: "seeded" };
+    return {
+      handle: await loadFromBytes(persisted.bytes),
+      outcome: "seeded",
+      seedMeta: persisted.meta,
+    };
   } catch (error) {
     // A WASM client/asset failure does not incriminate the persisted bytes:
     // clearing here destroyed a healthy record in the field when an

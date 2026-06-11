@@ -70,7 +70,12 @@ export {
   type NotebookDocPersistenceOptions,
   type PersistedNotebookDoc,
 } from "./persistence/notebook-doc-persistence";
-export type { StorageAdapter, StorageChunk, StorageKey } from "./persistence/storage-adapter";
+export {
+  saveBatch,
+  type StorageAdapter,
+  type StorageChunk,
+  type StorageKey,
+} from "./persistence/storage-adapter";
 
 // Scope capabilities (generated from nteract_identity::ConnectionScope)
 export {

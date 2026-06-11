@@ -20,4 +20,43 @@ export interface StorageAdapter {
   remove(key: StorageKey): Promise<void>;
   loadRange(prefix: StorageKey): Promise<StorageChunk[]>;
   removeRange(prefix: StorageKey): Promise<void>;
+
+  /**
+   * Save multiple key-value pairs as a staged batch (upstream
+   * automerge-repo's `StorageAdapterInterface.saveBatch` extension, kept
+   * optional here so plain adapters keep working via {@link saveBatch}'s
+   * sequential fallback).
+   *
+   * Implementations SHOULD apply the batch in two phases — stage every
+   * entry durably, then commit — so a failure before commit leaves no
+   * entry observable. At minimum each entry must be atomic on its own.
+   *
+   * The contract is per-batch, not cross-batch: callers that need
+   * crash-ordering across record kinds must issue separate sequential
+   * `saveBatch` calls in dependency order (payload chunks first, metadata
+   * second, the visibility marker last), so a crash between batches
+   * leaves invisible orphans rather than a visible-but-incomplete record.
+   */
+  saveBatch?(entries: Array<[StorageKey, Uint8Array]>): Promise<void>;
+}
+
+/**
+ * Save a batch through the adapter's `saveBatch` when it has one,
+ * falling back to sequential `save` calls (upstream's default-impl
+ * shape). The fallback is per-entry-atomic only — callers that need the
+ * stronger staged semantics get them exactly when the adapter provides
+ * them.
+ */
+export async function saveBatch(
+  adapter: StorageAdapter,
+  entries: Array<[StorageKey, Uint8Array]>,
+): Promise<void> {
+  if (entries.length === 0) return;
+  if (adapter.saveBatch) {
+    await adapter.saveBatch(entries);
+    return;
+  }
+  for (const [key, data] of entries) {
+    await adapter.save(key, data);
+  }
 }

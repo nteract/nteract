@@ -627,7 +627,18 @@ describe("cloud persisted-seed handle resolution", () => {
     const harness = createHarness(persistedRecord("user:dev:alice"));
     const resolved = await resolveCloudNotebookHandle(harness.options);
 
-    assert.deepEqual(resolved, { handle: "seeded-handle", outcome: "seeded" });
+    assert.deepEqual(resolved, {
+      handle: "seeded-handle",
+      outcome: "seeded",
+      // The seeded record's meta rides along so the save loop can dedupe
+      // its first save against the record it loaded from.
+      seedMeta: {
+        headsHex: ["aa"],
+        savedAt: 123,
+        principal: "user:dev:alice",
+        schemaVersion: 1,
+      },
+    });
     assert.deepEqual(harness.calls, ["loadPersisted", "loadFromBytes"]);
     assert.deepEqual(harness.loadedBytes, [new Uint8Array([7, 8, 9])]);
   });

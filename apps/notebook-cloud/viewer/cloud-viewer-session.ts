@@ -532,6 +532,10 @@ export function useCloudViewerSession({
     const persistenceAdapter = IndexedDbStorageAdapter.create();
     let notebookPersistence: CloudNotebookPersistenceController | null = null;
     let notebookPersistencePrincipal: string | null = null;
+    // True once any controller has been armed this session: a previous
+    // controller may have overwritten the seeded record, so only the very
+    // first arm may trust the seed's heads to describe what is in storage.
+    let notebookPersistenceEverArmed = false;
     const persistenceSeed = persistenceAdapter
       ? {
           loadPersisted: () => loadPersistedNotebookDoc(persistenceAdapter, config.notebookId),
@@ -616,14 +620,29 @@ export function useCloudViewerSession({
         // paint cache (instant first paint's outputs). The controllers
         // throttle, self-disable after repeated failures, and never throw
         // into the session.
+        // Seed-initialized heads-dedupe: when this runtime loaded from the
+        // record still sitting in storage (and no earlier controller has
+        // overwritten it), the first protocol-only change signal must not
+        // re-write the identical envelope. Gated on the seeded principal
+        // matching the armed one — a mismatched record would be re-stamped,
+        // which dedupe must not suppress.
+        const seedMeta = liveRuntime.persistenceSeedMeta;
+        const seedSavedHeadsHex =
+          !notebookPersistenceEverArmed && seedMeta?.principal === principal
+            ? seedMeta.headsHex
+            : undefined;
         notebookPersistence = createCloudNotebookPersistence({
           adapter: persistenceAdapter,
           notebookId: config.notebookId,
           principal,
           engine: liveRuntime.engine,
           handle: liveRuntime.handle,
+          seedSavedHeadsHex,
           onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
         });
+        if (notebookPersistence !== null) {
+          notebookPersistenceEverArmed = true;
+        }
         notebookPersistencePrincipal = notebookPersistence ? principal : null;
       });
     };
