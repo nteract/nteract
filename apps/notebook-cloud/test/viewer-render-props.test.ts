@@ -349,3 +349,23 @@ test("cloud rail takes over constrained widths instead of pushing the stage offs
     /\.cloud-notebook-rail\[data-collapsed="false"\] \+ \[data-slot="notebook-document-stage"\]\s*\{/,
   );
 });
+
+test("cloud viewer uses shared outline interaction hooks", () => {
+  const sourceText = viewerCorpus;
+
+  assert.match(sourceText, /useActiveOutlineItemId,/);
+  assert.match(sourceText, /useOutlineSelection,/);
+  assert.match(sourceText, /useOutlineStatusLabel,/);
+  assert.match(sourceText, /useActiveOutlineItemId\(/);
+  assert.match(sourceText, /useOutlineSelection\(/);
+  assert.match(sourceText, /const getOutlineStatusLabel = useOutlineStatusLabel\(\);/);
+  assert.match(sourceText, /outlineCellIds=\{notebookCellIds\}/);
+  assert.doesNotMatch(
+    sourceText,
+    /const \[selectedOutlineItemId, setSelectedOutlineItemId\] = useState/,
+  );
+  assert.doesNotMatch(
+    sourceText,
+    /const handleSelectOutlineItem = useCallback\(\(item[\s\S]*setSelectedOutlineItemId\(item\.id\)/,
+  );
+});

@@ -21,6 +21,9 @@ import {
   NotebookWorkstationsPanel,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   shouldShowNotebookDocumentCommandToolbar,
+  useActiveOutlineItemId,
+  useOutlineSelection,
+  useOutlineStatusLabel,
   type NotebookCommandToolbarStatus,
   type NotebookEnvironmentManager,
   type NotebookInteractionMode,
@@ -141,7 +144,6 @@ export function NotebookViewer({
   const handleNotebookViewFocus = useCallback(() => {}, []);
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(initialCloudRailCollapsed);
-  const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const handledHeadingHashRef = useRef<string | null>(null);
   const [latestAccessRequest, setLatestAccessRequest] = useState<CloudNotebookAccessRequest | null>(
     null,
@@ -255,17 +257,24 @@ export function NotebookViewer({
     replaceCloudNotebookModeInCurrentUrl(selectedInteractionMode);
   }, [selectedInteractionMode]);
 
+  const getOutlineStatusLabel = useOutlineStatusLabel();
   const notebookViewModel = useNotebookViewModel({
     metadata: notebookMetadata,
     resolveLanguage: cloudSourceLanguage,
+    getOutlineStatusLabel,
   });
   const { codeCellCount, outlineItems } = notebookViewModel;
-  useEffect(() => {
-    if (!selectedOutlineItemId) return;
-    if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {
-      setSelectedOutlineItemId(null);
-    }
-  }, [outlineItems, selectedOutlineItemId]);
+  const notebookCellIds = notebookViewModel.cellIds;
+  const activeOutlineItemId = useActiveOutlineItemId(
+    outlineItems,
+    notebookCellIds,
+    !railCollapsed && activeRailPanel === "outline",
+  );
+  const { selectedOutlineItemId, handleSelectOutlineItem } = useOutlineSelection({
+    outlineItems,
+    focusedCellId,
+    setFocusedCellId,
+  });
   useEffect(() => {
     const hash = window.location.hash;
     if (!hash || handledHeadingHashRef.current === hash) return;
@@ -278,19 +287,19 @@ export function NotebookViewer({
     if (!item) return;
 
     handledHeadingHashRef.current = hash;
-    setSelectedOutlineItemId(item.id);
+    handleSelectOutlineItem(item);
     navigateNotebookOutlineItem(item, hash, {
       behavior: "auto",
       headingHashTarget: "cell",
     });
-  }, [outlineItems]);
-  const handleSelectOutlineItem = useCallback((item: NotebookOutlineItem) => {
-    setSelectedOutlineItemId(item.id);
-  }, []);
-  const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
-    setSelectedOutlineItemId(item.id);
-    return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
-  }, []);
+  }, [handleSelectOutlineItem, outlineItems]);
+  const handleNavigateOutlineItem = useCallback(
+    (item: NotebookOutlineItem, href: string) => {
+      handleSelectOutlineItem(item);
+      return navigateNotebookOutlineItem(item, href, { headingHashTarget: "cell" });
+    },
+    [handleSelectOutlineItem],
+  );
   const handleTogglePackagesRail = useCallback(() => {
     if (activeRailPanel === "packages" && !railCollapsed) {
       setActiveRailPanel("outline");
@@ -366,7 +375,6 @@ export function NotebookViewer({
     },
     [shellCapabilities],
   );
-  const notebookCellIds = notebookViewModel.cellIds;
   const packageEnvironmentManager = cloudNotebookEnvironmentManager(
     notebookViewModel.packages.sections,
   );
@@ -769,7 +777,10 @@ export function NotebookViewer({
       viewModel={notebookViewModel}
       activePanelId={activeRailPanel}
       collapsed={railCollapsed}
+      outlineCellIds={notebookCellIds}
+      activeOutlineItemId={activeOutlineItemId}
       selectedOutlineItemId={selectedOutlineItemId}
+      selectedOutlineCellId={focusedCellId}
       workstationsPanel={
         <NotebookWorkstationsPanel
           capabilities={shellCapabilities}
