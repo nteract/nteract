@@ -190,12 +190,7 @@ export async function connectCloudSyncRuntime({
     // Mutable connection identity: presence encoders and the runtime's
     // identity getters always read the LATEST handshake's values, so a
     // reconnect never sends presence under a dead peer id.
-    const identity = {
-      actorLabel: ready.actor_label,
-      peerId: ready.peer_id,
-      peerLabel: cloudRoomReadyPeerLabel(ready),
-      connectionScope: normalizeConnectionScope(ready.connection_scope),
-    };
+    const identity = cloudConnectionIdentityFromReady(ready);
     const engine = new SyncEngine({
       getHandle: () => syncHandle,
       transport,
@@ -234,19 +229,10 @@ export async function connectCloudSyncRuntime({
       transport,
       seededFromPersistence: persistenceSeedOutcome === "seeded",
       persistenceSeedOutcome,
-      applyRoomReady: (nextReady) => {
-        if (nextReady.peer_id === identity.peerId) {
-          // The connection already adopted (roomReady$ replays the latest
-          // handshake to new subscribers).
-          return false;
-        }
-        identity.actorLabel = nextReady.actor_label;
-        identity.peerId = nextReady.peer_id;
-        identity.peerLabel = cloudRoomReadyPeerLabel(nextReady);
-        identity.connectionScope = normalizeConnectionScope(nextReady.connection_scope);
-        reestablishCloudConnection(handle, engine, nextReady.actor_label);
-        return true;
-      },
+      applyRoomReady: (nextReady) =>
+        applyCloudRoomReady(identity, nextReady, () =>
+          reestablishCloudConnection(handle, engine, nextReady.actor_label),
+        ),
       sendCursorPresence: (cellId, line, column) => {
         sendPresence(
           encodeCursorPresenceAfterInit(
@@ -319,6 +305,45 @@ export function reestablishCloudConnection(
   handle.set_actor(actorLabel);
   engine.resetForBootstrap();
   engine.resetAndResync();
+}
+
+/** Mutable per-runtime connection identity (latest handshake's values). */
+export interface CloudConnectionIdentity {
+  actorLabel: string;
+  peerId: string;
+  peerLabel: string;
+  connectionScope: ConnectionScope;
+}
+
+export function cloudConnectionIdentityFromReady(ready: CloudRoomReady): CloudConnectionIdentity {
+  return {
+    actorLabel: ready.actor_label,
+    peerId: ready.peer_id,
+    peerLabel: cloudRoomReadyPeerLabel(ready),
+    connectionScope: normalizeConnectionScope(ready.connection_scope),
+  };
+}
+
+/**
+ * Adopt a handshake on a preserved runtime's identity: dedup against the
+ * connection already adopted (`roomReady$` replays the latest handshake to
+ * new subscribers), update the mutable identity so presence encoders stamp
+ * the fresh peer id, then run the synchronous re-establish.
+ */
+export function applyCloudRoomReady(
+  identity: CloudConnectionIdentity,
+  ready: CloudRoomReady,
+  reestablish: () => void,
+): boolean {
+  if (ready.peer_id === identity.peerId) {
+    return false;
+  }
+  identity.actorLabel = ready.actor_label;
+  identity.peerId = ready.peer_id;
+  identity.peerLabel = cloudRoomReadyPeerLabel(ready);
+  identity.connectionScope = normalizeConnectionScope(ready.connection_scope);
+  reestablish();
+  return true;
 }
 
 /**
@@ -521,21 +546,79 @@ export function shouldDiscardPersistedSeedOnRejection(
   return seededFromPersistence && isRecoverableCloudFrameRejection(message);
 }
 
-export type CloudRejectionDisposition = "resync_in_place" | "escalate";
+export type CloudRejectionDisposition = "absorb" | "resync_in_place" | "escalate";
 
 /**
+ * Per-connection strike tracker for recoverable sync rejections.
+ *
  * First recoverable sync rejection on a connection: recover in place —
  * `resetAndResync()` on the live connection, no teardown. A repeat within
  * the same connection means in-place recovery cannot converge (the resync
  * regenerated the same refused content), so escalate to the full teardown
  * path, where the poison-pill seed discard applies. A rejection before the
  * runtime exists escalates directly — there is nothing to resync in place.
+ *
+ * Pipelining guard: the hosted-room ack protocol carries only frame_type
+ * (no id), and the engine routinely has several AUTOMERGE_SYNC frames in
+ * flight (debounced flushes, inline replies). A rejection that arrives
+ * before the strike-1 resync's outbound flush has been DELIVERED cannot
+ * have observed the resync — it is the same divergence event, not evidence
+ * that recovery failed. Such rejections `"absorb"` into strike 1; callers
+ * mark delivery via `resyncSettled()` (e.g. after `engine.flushAndWait()`),
+ * and only post-delivery rejections escalate. The poison-pill seed discard
+ * therefore never fires from a pipelined rejection.
  */
-export function classifyRecoverableRejection(
-  rejectionsThisConnection: number,
-  hasLiveRuntime: boolean,
-): CloudRejectionDisposition {
-  return rejectionsThisConnection <= 1 && hasLiveRuntime ? "resync_in_place" : "escalate";
+export class CloudRecoverableRejectionTracker {
+  private strikes = 0;
+  private resyncPending = false;
+
+  /** Reset on each cloud_room_ready (fresh connection, fresh strike count). */
+  reset(): void {
+    this.strikes = 0;
+    this.resyncPending = false;
+  }
+
+  /**
+   * Record a recoverable rejection and return its disposition. For
+   * `"resync_in_place"` the caller must run the resync and call
+   * `resyncSettled()` once its outbound flush has been delivered.
+   */
+  record(hasLiveRuntime: boolean): CloudRejectionDisposition {
+    if (this.resyncPending) {
+      return "absorb";
+    }
+    this.strikes += 1;
+    if (this.strikes <= 1 && hasLiveRuntime) {
+      this.resyncPending = true;
+      return "resync_in_place";
+    }
+    return "escalate";
+  }
+
+  /** The strike-1 resync's outbound flush was delivered (or failed terminally). */
+  resyncSettled(): void {
+    this.resyncPending = false;
+  }
+}
+
+/**
+ * Poison-pill discard chain for an escalated rejection on a seeded session:
+ * dispose FIRST — the teardown's `flushNow` re-writes the record with the
+ * rejected changes — then clear once that write has settled. The returned
+ * promise never rejects; callers must gate the next attempt's persistence
+ * arming on it (clear-then-arm), or a straggling clear could delete the
+ * next attempt's first persisted record.
+ */
+export function discardPersistedSeedAfterTeardown(
+  disposeRuntime: () => Promise<void>,
+  clearSeed: () => Promise<void>,
+): Promise<void> {
+  return disposeRuntime()
+    .catch(() => undefined)
+    .then(() => clearSeed())
+    .catch((error: unknown) => {
+      console.warn("[notebook-cloud] failed to clear rejected persisted NotebookDoc record", error);
+    });
 }
 
 export async function withReadyTimeout<T>(
@@ -599,6 +682,8 @@ export class CloudWebSocketTransport implements NotebookTransport {
 
   private socket: WebSocket | null = null;
   private detachSocket: (() => void) | null = null;
+  /** True once the CURRENT connection's cloud_room_ready was handled. */
+  private connectionReady = false;
   /** Bumped per connect attempt and on disconnect to invalidate stale async work. */
   private connectEpoch = 0;
   /** Consecutive attempts without a cloud_room_ready ack (backoff input). */
@@ -638,9 +723,19 @@ export class CloudWebSocketTransport implements NotebookTransport {
   readonly connectionStatus$: Observable<ConnectionStatus> = this._status$.asObservable();
   /** navigator 'online': skip the rest of the current backoff wait. */
   private readonly handleBrowserOnline = () => {
-    if (this.manualDisconnect || this.retryTimer === null) return;
-    this.clearRetryTimer();
-    void this.connect();
+    if (this.manualDisconnect) return;
+    if (this.retryTimer !== null) {
+      this.clearRetryTimer();
+      void this.connect();
+      return;
+    }
+    // No retry timer and no socket means an attempt is parked awaiting
+    // connectTarget() (auth resolution can outlive the outage that caused
+    // the reconnect). Connectivity returning supersedes it: connect() bumps
+    // the epoch, so the late-settling target is discarded harmlessly.
+    if (this.socket === null) {
+      void this.connect();
+    }
   };
 
   constructor(options: CloudWebSocketTransportOptions) {
@@ -673,7 +768,14 @@ export class CloudWebSocketTransport implements NotebookTransport {
 
     let target: CloudConnectTarget;
     try {
-      target = await this.options.connectTarget();
+      // Bounded by the per-attempt budget: a hung auth fetch must become a
+      // normal failed attempt riding connectionLost → backoff, not a wedge
+      // with no socket, no handshake timer, and no retry timer.
+      target = await withReadyTimeout(
+        this.options.connectTarget(),
+        this.handshakeTimeoutMs,
+        `cloud sync connect target did not settle within ${this.handshakeTimeoutMs}ms`,
+      );
     } catch (error) {
       if (epoch !== this.connectEpoch || this.manualDisconnect) return;
       this.connectionLost(
@@ -704,6 +806,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     }
     socket.binaryType = "arraybuffer";
     this.socket = socket;
+    this.connectionReady = false;
     const onMessage = (event: MessageEvent) => {
       if (socket !== this.socket) return; // superseded connection
       void this.handleMessage(event.data, socket).catch((error: unknown) => {
@@ -736,6 +839,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private connectionLost(reason: Error, socket: WebSocket | null): void {
     if (socket !== null && socket !== this.socket) return; // superseded connection
     this.teardownSocket();
+    this.connectionReady = false;
     this.clearHandshakeTimer();
     // Pending FIFO frame ACKs cannot span sockets.
     this.rejectPendingFrameAcks(reason);
@@ -824,6 +928,13 @@ export class CloudWebSocketTransport implements NotebookTransport {
       // Drop, don't buffer: the engine rolls back via cancel_last_flush and
       // regenerates from sync state after the next handshake.
       throw new Error("cloud sync socket is not open");
+    }
+    if (!this.connectionReady) {
+      // The open→ready handshake window: frames sent now would go out under
+      // the PREVIOUS connection's sync state and actor (re-establish runs on
+      // cloud_room_ready). Drop-don't-buffer governs here too — the engine
+      // rolls back and the post-ready resync regenerates everything.
+      throw new Error("cloud sync connection is not ready");
     }
     const frame = new Uint8Array(payload.byteLength + 1);
     frame[0] = frameType;
@@ -936,6 +1047,9 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private handleRoomReady(control: CloudRoomReady): void {
     this.failedAttempts = 0; // backoff resets on the app-level ack
     this.everReady = true;
+    // Before the roomReady$ emission: subscribers' resync flush sends on
+    // this connection within the same tick.
+    this.connectionReady = true;
     this.clearHandshakeTimer();
     this.setStatus("online");
     if (!this.readySettled) {
