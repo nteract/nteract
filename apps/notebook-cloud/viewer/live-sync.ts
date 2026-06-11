@@ -9,6 +9,7 @@ import {
   type NotebookRequestOptions,
   type NotebookResponse,
   type NotebookTransport,
+  type NotebookDocChunkInfo,
   type NotebookDocPersistenceMeta,
   type PersistedNotebookDoc,
   type SyncableHandle,
@@ -64,6 +65,12 @@ export interface CloudSyncRuntime {
    */
   persistenceSeedMeta?: NotebookDocPersistenceMeta;
   /**
+   * Chunk inventory the handle was seeded from (chunked store only) —
+   * becomes the save controller's compaction-deletable starting set,
+   * under the same first-arm/principal gate as `persistenceSeedMeta`.
+   */
+  persistenceSeedChunks?: NotebookDocChunkInfo[];
+  /**
    * Adopt a reconnect handshake on the PRESERVED runtime: update identity,
    * `set_actor` with the fresh label, reset engine caches and sync state.
    * Returns false when the ready belongs to the connection already adopted
@@ -110,10 +117,27 @@ export interface CloudSyncConnectOptions {
 }
 
 export interface CloudSyncPersistenceSeed {
-  /** Read the persisted NotebookDoc record for this notebook, if any. */
-  loadPersisted: () => Promise<PersistedNotebookDoc | undefined>;
+  /**
+   * Read the persisted NotebookDoc seed for this notebook, if any. The
+   * connection's authenticated principal is passed so chunk-aware loaders
+   * can apply the chunk-level principal guard (mismatched or unverifiable
+   * chunk meta clears ONLY the chunk range and falls back to the envelope
+   * record); the resolver still applies the record-level guard to
+   * whatever record comes back.
+   */
+  loadPersisted: (principal: string) => Promise<PersistedCloudNotebookSeed | undefined>;
   /** Discard the persisted record (principal mismatch, corrupt bytes). */
   clear: () => Promise<void>;
+}
+
+export interface PersistedCloudNotebookSeed extends PersistedNotebookDoc {
+  /**
+   * Inventory of the chunk records backing `bytes` when the seed came
+   * from the chunked store. Flows into the save controller as
+   * compaction-deletable chunks — only ever populated for bytes the
+   * handle actually loaded.
+   */
+  chunks?: NotebookDocChunkInfo[];
 }
 
 /**
@@ -136,6 +160,12 @@ export interface ResolvedCloudNotebookHandle<Handle> {
    * unchanged notebook never re-writes the identical envelope it loaded.
    */
   seedMeta?: NotebookDocPersistenceMeta;
+  /**
+   * Chunk inventory the handle was seeded from (outcome `"seeded"` via
+   * the chunked store only) — the save controller's compaction-deletable
+   * starting set.
+   */
+  seedChunks?: NotebookDocChunkInfo[];
 }
 
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
@@ -223,6 +253,7 @@ export async function connectCloudSyncRuntime({
       handle,
       outcome: persistenceSeedOutcome,
       seedMeta,
+      seedChunks,
     } = await resolveCloudNotebookHandle({
       actorLabel: ready.actor_label,
       persistence,
@@ -275,6 +306,7 @@ export async function connectCloudSyncRuntime({
       seededFromPersistence: persistenceSeedOutcome === "seeded",
       persistenceSeedOutcome,
       persistenceSeedMeta: seedMeta,
+      persistenceSeedChunks: seedChunks,
       applyRoomReady: (nextReady) =>
         applyCloudRoomReady(identity, nextReady, () =>
           reestablishCloudConnection(handle, engine, nextReady.actor_label),
@@ -525,14 +557,15 @@ export async function resolveCloudNotebookHandle<Handle>({
   loadFromBytes: (bytes: Uint8Array) => Promise<Handle>;
   readTimeoutMs?: number;
 }): Promise<ResolvedCloudNotebookHandle<Handle>> {
-  if (!persistence || isAnonymousCloudPrincipal(cloudPrincipalFromActorLabel(actorLabel))) {
+  const principal = cloudPrincipalFromActorLabel(actorLabel);
+  if (!persistence || isAnonymousCloudPrincipal(principal)) {
     return { handle: await createBootstrap(), outcome: "bootstrap" };
   }
 
-  let persisted: PersistedNotebookDoc | undefined;
+  let persisted: PersistedCloudNotebookSeed | undefined;
   try {
     persisted = await withReadyTimeout(
-      persistence.loadPersisted(),
+      persistence.loadPersisted(principal),
       readTimeoutMs,
       `persisted NotebookDoc read did not settle within ${readTimeoutMs}ms`,
     );
@@ -544,11 +577,7 @@ export async function resolveCloudNotebookHandle<Handle>({
     return { handle: await createBootstrap(), outcome: "bootstrap" };
   }
 
-  if (
-    !persisted.meta ||
-    !persisted.bytes ||
-    persisted.meta.principal !== cloudPrincipalFromActorLabel(actorLabel)
-  ) {
+  if (!persisted.meta || !persisted.bytes || persisted.meta.principal !== principal) {
     await clearPersistedSeed(persistence);
     return { handle: await createBootstrap(), outcome: "cleared" };
   }
@@ -558,6 +587,7 @@ export async function resolveCloudNotebookHandle<Handle>({
       handle: await loadFromBytes(persisted.bytes),
       outcome: "seeded",
       seedMeta: persisted.meta,
+      ...(persisted.chunks ? { seedChunks: persisted.chunks } : {}),
     };
   } catch (error) {
     // A WASM client/asset failure does not incriminate the persisted bytes:

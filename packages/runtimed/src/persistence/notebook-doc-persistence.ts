@@ -22,16 +22,55 @@
  * and the write; a failed write forgets its recorded heads so the next
  * signal retries instead of deduping against a record that never landed.
  *
- * Two records exist per notebook:
- * - `[notebookId, "snapshot"]` — NotebookDoc bytes, the seed record. The
- *   only record ever loaded back into a SYNCING handle.
+ * Three record families exist per notebook:
+ * - `[notebookId, "snapshot"]` — the PR-1 envelope record: NotebookDoc
+ *   bytes behind a meta header. Still written by envelope-mode
+ *   controllers (the runtime-state cache) and kept as the load fallback
+ *   for chunk-less storage; the chunked seed store supersedes it.
+ * - `[notebookId, "chunks", ...]` — the chunked NotebookDoc seed store
+ *   (automerge-repo's storage model; see "Chunked NotebookDoc store"
+ *   below). The only store ever loaded back into a SYNCING handle, via
+ *   `loadPersistedNotebookDocChunks`.
  * - `[notebookId, "runtime-state-cache"]` — RuntimeStateDoc bytes as a
  *   render-only paint source for instant first paint. NEVER loaded into
  *   the syncing handle, never flushed, never synced: the syncing handle
  *   still bootstraps RuntimeStateDoc empty and the daemon/room remains the
  *   only writer. The authority invariant forbids restoring runtime state
- *   into the sync path, not caching pixels. CommsDoc and Automerge sync
- *   states are never written to storage.
+ *   into the sync path, not caching pixels. Stays an envelope record —
+ *   it is a rewrite-whole paint cache, not a history store. CommsDoc and
+ *   Automerge sync states are never written to storage.
+ *
+ * ## Chunked NotebookDoc store (`chunked` option)
+ *
+ * automerge-repo's proven chunk/compaction model, multi-tab safe by
+ * construction rather than by coordination:
+ *
+ * - `[notebookId, "chunks", "snapshot", <headsKey>]` — a full
+ *   `handle.save()` at those heads. Same heads ⇒ same key in every tab,
+ *   so concurrent compactions collide idempotently.
+ * - `[notebookId, "chunks", "incremental", <sha256hex(bytes)>]` —
+ *   `save_since_heads(lastCommittedHeads)` output, content-addressed:
+ *   two tabs writing identical bytes write the same record (a no-op
+ *   collision, never a clobber).
+ * - `[notebookId, "chunks", "meta"]` — plain meta JSON (the principal
+ *   guard). `headsHex` here is the newest WRITER's heads, an
+ *   informational dedupe hint — the chunk union is the truth and may be
+ *   ahead of it when several tabs write.
+ *
+ * Every save is ONE `saveBatch` (atomic on IndexedDB; chunk-then-meta
+ * crash-ordering under the sequential fallback). Compaction follows
+ * automerge-repo's rule — `snapshotSize < 1024 || incrementalSize >=
+ * snapshotSize`, bounding storage at ~2× doc size — and is write-before-
+ * delete: the new snapshot commits before old chunks are removed, and
+ * only chunks THIS controller knows about (its load inventory + its own
+ * writes) are ever deleted. A chunk another tab wrote concurrently is
+ * unknown here and therefore survives until a controller that has loaded
+ * it compacts. Incremental saves always cut from the last COMMITTED
+ * heads, so a failed write can produce overlapping chunks (deduplicated
+ * on load) but never a dependency gap. With no committed basis the save
+ * falls back to a full snapshot — `save_since_heads([])` would serialize
+ * the entire history as an incremental (automerge-repo's documented
+ * pitfall).
  *
  * Failures never propagate into the live session: every error routes to
  * the `onError` callback and the logger, and after
@@ -41,7 +80,7 @@
 
 import type { Observable, Subscription } from "rxjs";
 
-import { saveBatch, type StorageAdapter } from "./storage-adapter";
+import { saveBatch, type StorageAdapter, type StorageKey } from "./storage-adapter";
 
 const DEFAULT_SAVE_THROTTLE_MS = 1_000;
 
@@ -53,6 +92,20 @@ export const NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT = "snapshot";
  * source for instant first paint, never a sync seed.
  */
 export const RUNTIME_STATE_CACHE_KEY_SEGMENT = "runtime-state-cache";
+
+/** Key segment of the chunked NotebookDoc seed store. */
+export const NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT = "chunks";
+
+/** Chunk-kind key segments under the chunks prefix. */
+const CHUNK_KIND_SNAPSHOT = "snapshot";
+const CHUNK_KIND_INCREMENTAL = "incremental";
+const CHUNK_META_KEY_SEGMENT = "meta";
+
+/**
+ * automerge-repo's compaction floor: while the snapshot is tiny, always
+ * compact (covers "one huge change on an empty doc").
+ */
+const CHUNK_COMPACTION_MIN_SNAPSHOT_BYTES = 1024;
 
 /** Consecutive save failures tolerated before persistence self-disables. */
 const MAX_CONSECUTIVE_SAVE_FAILURES = 3;
@@ -77,6 +130,58 @@ export interface PersistedNotebookDoc {
   meta: NotebookDocPersistenceMeta | null;
 }
 
+/** One chunk of the chunked NotebookDoc store, as tracked for compaction. */
+export interface NotebookDocChunkInfo {
+  key: StorageKey;
+  size: number;
+  kind: "snapshot" | "incremental";
+}
+
+export interface PersistedNotebookDocChunks {
+  /**
+   * Concatenated chunk bytes, snapshots first then incrementals — the
+   * order `NotebookHandle.load()` accepts (a document chunk first allows
+   * partial dependencies; automerge deduplicates overlap).
+   */
+  bytes: Uint8Array;
+  /**
+   * Decoded `[notebookId, "chunks", "meta"]` record; null when missing or
+   * unparseable — callers must treat that as unverifiable provenance.
+   */
+  meta: NotebookDocPersistenceMeta | null;
+  /**
+   * Inventory of the data chunks backing `bytes`. Hand this to the save
+   * controller as `chunked.initialChunks` ONLY when the doc was actually
+   * seeded from these bytes — compaction deletes known chunks, and a
+   * chunk the doc does not contain must never become deletable.
+   */
+  chunks: NotebookDocChunkInfo[];
+}
+
+export interface NotebookDocChunkedOptions {
+  /**
+   * `NotebookHandle.save_since_heads` binding: every change that is not a
+   * transitive dependency of the given heads. Never called with an empty
+   * basis — the controller takes a full snapshot instead.
+   */
+  getSaveBytesSince: (headsHex: string[]) => Uint8Array;
+
+  /**
+   * Chunks already in storage that the seeded doc PROVABLY contains (the
+   * `chunks` inventory returned by `loadPersistedNotebookDocChunks` when
+   * the session seeded from it). These become compaction-deletable; chunks
+   * discovered any other way must not be passed here.
+   */
+  initialChunks?: NotebookDocChunkInfo[];
+
+  /**
+   * Content-hash override for tests; defaults to WebCrypto SHA-256.
+   * Must be collision-resistant — chunk keys are content addresses and a
+   * collision would silently alias two different byte streams.
+   */
+  digest?: (bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array;
+}
+
 export interface NotebookDocPersistenceLogger {
   warn(msg: string, ...args: unknown[]): void;
 }
@@ -99,9 +204,17 @@ export interface NotebookDocPersistenceOptions {
 
   /**
    * Record key segment under the notebook id; defaults to the NotebookDoc
-   * snapshot record (`"snapshot"`).
+   * snapshot record (`"snapshot"`). Ignored in chunked mode, which owns
+   * the `[notebookId, "chunks", ...]` layout.
    */
   keySegment?: string;
+
+  /**
+   * Switch this controller from the single envelope record to the chunked
+   * NotebookDoc store (see the module docs). Only the NotebookDoc seed
+   * store goes chunked; the runtime-state paint cache stays an envelope.
+   */
+  chunked?: NotebookDocChunkedOptions;
 
   /** Trailing-edge save throttle in milliseconds (default 1000). */
   throttleMs?: number;
@@ -151,12 +264,33 @@ export class NotebookDocPersistence {
    * then failed — errors are swallowed and the handle is freed right after.
    */
   private lastCommittedHeadsKey: string | null = null;
+  /**
+   * Chunked mode: the heads array behind `lastCommittedHeadsKey` — the
+   * basis for the next incremental cut. Committed-only on purpose: a
+   * capture racing an in-flight write cuts from the last DURABLE heads,
+   * producing overlap (deduplicated on load) rather than a gap if the
+   * in-flight write then fails.
+   */
+  private lastCommittedHeadsHex: string[] | null = null;
+  /**
+   * Chunked mode: chunks this controller may delete at compaction — the
+   * seed inventory plus its own committed writes. Never grows from
+   * observation of other tabs' records.
+   */
+  private chunkInfos: NotebookDocChunkInfo[] = [];
+  /**
+   * Single-flight compaction guard (automerge-repo's `#compacting`): while
+   * a snapshot write is captured-but-unsettled, further captures take the
+   * incremental path instead of queueing redundant full saves.
+   */
+  private compactionInFlight = false;
 
   constructor(opts: NotebookDocPersistenceOptions) {
     this.opts = opts;
     this.keySegment = opts.keySegment ?? NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT;
     this.throttleMs = opts.throttleMs ?? DEFAULT_SAVE_THROTTLE_MS;
     this.logger = opts.logger ?? console;
+    this.chunkInfos = [...(opts.chunked?.initialChunks ?? [])];
     // An empty heads array is treated as unknown, not as an identity: a
     // freshly-bootstrapped doc (RuntimeStateDoc starts empty by design)
     // would otherwise match a stale prior-session record's empty heads and
@@ -166,6 +300,7 @@ export class NotebookDocPersistence {
       const initialKey = headsCacheKey(initialHeads);
       this.lastSavedHeadsKey = initialKey;
       this.lastCommittedHeadsKey = initialKey;
+      this.lastCommittedHeadsHex = [...initialHeads];
     }
     this.subscription = opts.changes$.subscribe(() => this.onChanged());
   }
@@ -236,9 +371,7 @@ export class NotebookDocPersistence {
   private captureAndEnqueue(dedupeAgainst: "newest" | "committed" = "newest"): Promise<void> {
     this.dirty = false;
 
-    // Capture synchronously: getSaveBytes touches the WASM handle, which a
-    // disposing session may free as soon as this call returns.
-    let envelope: Uint8Array;
+    let meta: NotebookDocPersistenceMeta;
     let headsKey: string;
     try {
       const headsHex = this.opts.getHeadsHex();
@@ -253,12 +386,27 @@ export class NotebookDocPersistence {
         // the heads and never land here.
         return this.writeChain;
       }
-      const meta: NotebookDocPersistenceMeta = {
+      meta = {
         headsHex,
         savedAt: Date.now(),
         principal: this.opts.principal,
         schemaVersion: 1,
       };
+    } catch (error) {
+      this.reportSaveFailure("snapshot capture failed", error);
+      return this.writeChain;
+    }
+
+    return this.opts.chunked
+      ? this.enqueueChunkedSave(this.opts.chunked, meta, headsKey)
+      : this.enqueueEnvelopeSave(meta, headsKey);
+  }
+
+  private enqueueEnvelopeSave(meta: NotebookDocPersistenceMeta, headsKey: string): Promise<void> {
+    // Capture synchronously: getSaveBytes touches the WASM handle, which a
+    // disposing session may free as soon as this call returns.
+    let envelope: Uint8Array;
+    try {
       envelope = encodePersistedNotebookDoc(meta, this.opts.getSaveBytes());
     } catch (error) {
       this.reportSaveFailure("snapshot capture failed", error);
@@ -289,6 +437,143 @@ export class NotebookDocPersistence {
     return write;
   }
 
+  private enqueueChunkedSave(
+    chunked: NotebookDocChunkedOptions,
+    meta: NotebookDocPersistenceMeta,
+    headsKey: string,
+  ): Promise<void> {
+    // Capture synchronously — only hashing and the writes are async, and
+    // they touch plain byte arrays, never the (possibly freed) handle.
+    let capture: { kind: "snapshot" | "incremental"; bytes: Uint8Array };
+    try {
+      const basis = this.lastCommittedHeadsHex;
+      if (!basis || this.shouldCompactChunks()) {
+        // Full snapshot: the compaction rule fired, or there is no
+        // committed basis to cut from — `save_since_heads([])` would
+        // serialize the entire history as an incremental.
+        capture = { kind: "snapshot", bytes: this.opts.getSaveBytes() };
+      } else {
+        const bytes = chunked.getSaveBytesSince(basis);
+        if (bytes.byteLength === 0) {
+          // Nothing beyond the committed basis: the signal over-fired.
+          // The optimistic key is left alone so a later real change at
+          // these heads (unreachable today, cheap insurance) retries.
+          return this.writeChain;
+        }
+        capture = { kind: "incremental", bytes };
+      }
+    } catch (error) {
+      this.reportSaveFailure("chunk capture failed", error);
+      return this.writeChain;
+    }
+
+    if (capture.kind === "snapshot") {
+      this.compactionInFlight = true;
+    }
+    this.lastSavedHeadsKey = headsKey;
+
+    const write = this.writeChain.then(async () => {
+      try {
+        if (capture.kind === "snapshot") {
+          await this.commitSnapshotChunk(capture.bytes, meta);
+        } else {
+          await this.commitIncrementalChunk(chunked, capture.bytes, meta);
+        }
+        this.consecutiveSaveFailures = 0;
+        this.lastCommittedHeadsKey = headsKey;
+        this.lastCommittedHeadsHex = meta.headsHex;
+      } catch (error) {
+        if (this.lastSavedHeadsKey === headsKey) {
+          this.lastSavedHeadsKey = null;
+        }
+        this.reportSaveFailure("chunk save failed", error);
+      } finally {
+        if (capture.kind === "snapshot") {
+          this.compactionInFlight = false;
+        }
+      }
+    });
+    this.writeChain = write;
+    return write;
+  }
+
+  /**
+   * automerge-repo's compaction rule: compact while the doc is tiny, or
+   * once accumulated incrementals reach snapshot size — bounding storage
+   * at roughly twice the document size.
+   */
+  private shouldCompactChunks(): boolean {
+    if (this.compactionInFlight) return false;
+    let snapshotSize = 0;
+    let incrementalSize = 0;
+    for (const chunk of this.chunkInfos) {
+      if (chunk.kind === "snapshot") {
+        snapshotSize += chunk.size;
+      } else {
+        incrementalSize += chunk.size;
+      }
+    }
+    return snapshotSize < CHUNK_COMPACTION_MIN_SNAPSHOT_BYTES || incrementalSize >= snapshotSize;
+  }
+
+  /**
+   * Compaction commit: write the new snapshot (plus meta) in one batch,
+   * THEN delete the old chunks — write-before-delete, so a crash between
+   * the two leaves redundant-but-loadable data, never a hole. Deletions
+   * touch only chunks this controller knows about; a chunk another tab
+   * wrote concurrently is not in the inventory and survives. Delete
+   * failures are non-fatal (the data is durable, merely redundant) and
+   * the chunk stays inventoried so the next compaction retries.
+   */
+  private async commitSnapshotChunk(
+    bytes: Uint8Array,
+    meta: NotebookDocPersistenceMeta,
+  ): Promise<void> {
+    const { adapter, notebookId } = this.opts;
+    const key = notebookDocSnapshotChunkKey(notebookId, meta.headsHex);
+    await saveBatch(adapter, [
+      [key, bytes],
+      [notebookDocChunkMetaKey(notebookId), encodeNotebookDocChunkMeta(meta)],
+    ]);
+
+    const keyId = chunkKeyId(key);
+    const retained: NotebookDocChunkInfo[] = [];
+    for (const old of this.chunkInfos) {
+      // A same-heads snapshot (another tab compacted at identical heads,
+      // or a retried compaction) collides on its own key — never delete
+      // the chunk just written.
+      if (chunkKeyId(old.key) === keyId) continue;
+      try {
+        await adapter.remove(old.key);
+      } catch (error) {
+        this.logger.warn(
+          "[notebook-persistence] stale chunk delete failed (kept for retry):",
+          error,
+        );
+        retained.push(old);
+      }
+    }
+    this.chunkInfos = [...retained, { key, size: bytes.byteLength, kind: "snapshot" }];
+  }
+
+  private async commitIncrementalChunk(
+    chunked: NotebookDocChunkedOptions,
+    bytes: Uint8Array,
+    meta: NotebookDocPersistenceMeta,
+  ): Promise<void> {
+    const { adapter, notebookId } = this.opts;
+    const digest = await (chunked.digest ?? sha256)(bytes);
+    const key = notebookDocIncrementalChunkKey(notebookId, bytesToHex(digest));
+    await saveBatch(adapter, [
+      [key, bytes],
+      [notebookDocChunkMetaKey(notebookId), encodeNotebookDocChunkMeta(meta)],
+    ]);
+    const keyId = chunkKeyId(key);
+    if (!this.chunkInfos.some((chunk) => chunkKeyId(chunk.key) === keyId)) {
+      this.chunkInfos.push({ key, size: bytes.byteLength, kind: "incremental" });
+    }
+  }
+
   private reportSaveFailure(label: string, error: unknown): void {
     this.logger.warn(`[notebook-persistence] ${label}:`, error);
     try {
@@ -313,7 +598,135 @@ export class NotebookDocPersistence {
  * joining matches automerge-repo's exact-array `headsAreSame`.
  */
 function headsCacheKey(headsHex: string[]): string {
-  return headsHex.join(" ");
+  return headsHex.join("\u0000");
+}
+
+// ── Chunked NotebookDoc store keys + codec ───────────────────────────
+
+export function notebookDocChunksPrefix(notebookId: string): StorageKey {
+  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT];
+}
+
+export function notebookDocChunkMetaKey(notebookId: string): StorageKey {
+  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT, CHUNK_META_KEY_SEGMENT];
+}
+
+/**
+ * Snapshot chunk key. The heads segment is the canonically-sorted heads
+ * joined verbatim (automerge-repo hashes them; plain joining keeps the
+ * same property — every tab derives the identical key for identical
+ * heads — without an async hash on the capture path).
+ */
+export function notebookDocSnapshotChunkKey(notebookId: string, headsHex: string[]): StorageKey {
+  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT, CHUNK_KIND_SNAPSHOT, headsHex.join("-")];
+}
+
+/** Incremental chunk key, content-addressed by the chunk bytes' SHA-256. */
+export function notebookDocIncrementalChunkKey(
+  notebookId: string,
+  contentHashHex: string,
+): StorageKey {
+  return [notebookId, NOTEBOOK_DOC_CHUNKS_KEY_SEGMENT, CHUNK_KIND_INCREMENTAL, contentHashHex];
+}
+
+/** Identity string for chunk-key comparison (unambiguous across segments). */
+function chunkKeyId(key: StorageKey): string {
+  return JSON.stringify(key);
+}
+
+/** Chunk meta is plain meta JSON — no envelope, the chunks carry the bytes. */
+export function encodeNotebookDocChunkMeta(meta: NotebookDocPersistenceMeta): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(meta));
+}
+
+/** Decode the chunk meta record; any damage degrades to null (unverifiable). */
+export function decodeNotebookDocChunkMeta(bytes: Uint8Array): NotebookDocPersistenceMeta | null {
+  return decodeMeta(bytes);
+}
+
+/**
+ * Load the chunked NotebookDoc store for a notebook.
+ *
+ * Returns undefined when no data chunks exist (callers fall back to the
+ * PR-1 envelope record). Snapshots are concatenated before incrementals;
+ * `NotebookHandle.load()` accepts the combined buffer and deduplicates
+ * overlap. Records under unknown sub-keys are ignored — and, like every
+ * read path here, never deleted: another writer (a newer version, a
+ * concurrent tab) may own them.
+ */
+export async function loadPersistedNotebookDocChunks(
+  adapter: StorageAdapter,
+  notebookId: string,
+): Promise<PersistedNotebookDocChunks | undefined> {
+  const range = await adapter.loadRange(notebookDocChunksPrefix(notebookId));
+  const snapshots: Array<{ key: StorageKey; data: Uint8Array }> = [];
+  const incrementals: Array<{ key: StorageKey; data: Uint8Array }> = [];
+  let metaBytes: Uint8Array | undefined;
+  for (const { key, data } of range) {
+    if (!data) continue;
+    if (key.length === 3 && key[2] === CHUNK_META_KEY_SEGMENT) {
+      metaBytes = data;
+      continue;
+    }
+    if (key.length !== 4) continue;
+    if (key[2] === CHUNK_KIND_SNAPSHOT) {
+      snapshots.push({ key, data });
+    } else if (key[2] === CHUNK_KIND_INCREMENTAL) {
+      incrementals.push({ key, data });
+    }
+  }
+  if (snapshots.length === 0 && incrementals.length === 0) {
+    return undefined;
+  }
+
+  const ordered = [...snapshots, ...incrementals];
+  const total = ordered.reduce((sum, chunk) => sum + chunk.data.byteLength, 0);
+  const bytes = new Uint8Array(total);
+  const chunks: NotebookDocChunkInfo[] = [];
+  let offset = 0;
+  for (const { key, data } of ordered) {
+    bytes.set(data, offset);
+    offset += data.byteLength;
+    chunks.push({
+      key,
+      size: data.byteLength,
+      kind: key[2] === CHUNK_KIND_SNAPSHOT ? "snapshot" : "incremental",
+    });
+  }
+  return { bytes, meta: metaBytes ? decodeMeta(metaBytes) : null, chunks };
+}
+
+/**
+ * Remove ONLY the chunked store (`[notebookId, "chunks"]` range). Used by
+ * the chunk-level principal guard, which falls back to the envelope
+ * record rather than discarding the whole notebook's records.
+ */
+export function clearPersistedNotebookDocChunks(
+  adapter: StorageAdapter,
+  notebookId: string,
+): Promise<void> {
+  return adapter.removeRange(notebookDocChunksPrefix(notebookId));
+}
+
+/** WebCrypto SHA-256 (Node ≥ 20 and every secure browser context). */
+async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    // No silent weak-hash fallback: chunk keys are content addresses and
+    // a collision would alias different byte streams. Failing routes
+    // through the controller's normal save-failure degradation.
+    throw new Error("WebCrypto subtle digest unavailable for chunk content addressing");
+  }
+  const digest = await subtle.digest("SHA-256", bytes as BufferSource);
+  return new Uint8Array(digest);
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let hex = "";
+  for (const byte of bytes) {
+    hex += byte.toString(16).padStart(2, "0");
+  }
+  return hex;
 }
 
 /**

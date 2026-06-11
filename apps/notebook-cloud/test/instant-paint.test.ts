@@ -450,7 +450,12 @@ describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
       remove: async (key) => {
         records.delete(keyOf(key));
       },
-      loadRange: async () => [],
+      loadRange: async (prefix) => {
+        const rangePrefix = `${keyOf(prefix)}/`;
+        return Array.from(records.entries())
+          .filter(([key]) => key.startsWith(rangePrefix))
+          .map(([key, data]) => ({ key: key.split("/"), data }));
+      },
       removeRange: async (prefix) => {
         const rangePrefix = `${keyOf(prefix)}/`;
         const doomed = Array.from(records.keys()).filter(
@@ -497,6 +502,65 @@ describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
 
     assert.deepEqual(resolved, { handle: "cells-only-handle", outcome: "painted_cells_only" });
     assert.deepEqual([...adapter.records.keys()], ["nb-1/snapshot"]);
+  });
+
+  it("paints from the chunk store when present — fresher than the legacy envelope", async () => {
+    const adapter = createRecordingAdapter();
+    const meta = {
+      headsHex: ["aa"],
+      savedAt: 1,
+      principal: "user:dev:alice",
+      schemaVersion: 1 as const,
+    };
+    // Stale envelope + live chunk store: the chunks must win.
+    await adapter.save(["nb-1", "snapshot"], encodePersistedNotebookDoc(meta, new Uint8Array([1])));
+    await adapter.save(["nb-1", "chunks", "snapshot", "aa"], new Uint8Array([7, 8]));
+    await adapter.save(["nb-1", "chunks", "meta"], new TextEncoder().encode(JSON.stringify(meta)));
+
+    let paintedBytes: Uint8Array | undefined;
+    const resolved = await resolveCloudInstantPaintHandle<string>({
+      matchesPrincipal: (principal) => principal === "user:dev:alice",
+      ...cloudInstantPaintStorageOptions(adapter, "nb-1"),
+      loadRenderHandle: async (notebookBytes) => {
+        paintedBytes = notebookBytes;
+        return "painted-handle";
+      },
+    });
+
+    assert.equal(resolved.outcome, "painted_cells_only");
+    assert.deepEqual(paintedBytes, new Uint8Array([7, 8]));
+  });
+
+  it("an unverifiable chunk store degrades to the envelope WITHOUT clearing anything", async () => {
+    const adapter = createRecordingAdapter();
+    const meta = {
+      headsHex: ["aa"],
+      savedAt: 1,
+      principal: "user:dev:alice",
+      schemaVersion: 1 as const,
+    };
+    await adapter.save(["nb-1", "snapshot"], encodePersistedNotebookDoc(meta, new Uint8Array([1])));
+    await adapter.save(["nb-1", "chunks", "snapshot", "aa"], new Uint8Array([7, 8]));
+    // No chunk meta: unverifiable. The paint is read-only — seeding owns
+    // every discard decision, so both stores must survive untouched.
+
+    let paintedBytes: Uint8Array | undefined;
+    const resolved = await resolveCloudInstantPaintHandle<string>({
+      matchesPrincipal: (principal) => principal === "user:dev:alice",
+      ...cloudInstantPaintStorageOptions(adapter, "nb-1"),
+      loadRenderHandle: async (notebookBytes) => {
+        paintedBytes = notebookBytes;
+        return "painted-handle";
+      },
+    });
+
+    assert.equal(resolved.outcome, "painted_cells_only");
+    assert.deepEqual(paintedBytes, new Uint8Array([1]), "envelope bytes painted");
+    assert.deepEqual(
+      [...adapter.records.keys()].sort(),
+      ["nb-1/chunks/snapshot/aa", "nb-1/snapshot"],
+      "read path cleared nothing",
+    );
   });
 });
 

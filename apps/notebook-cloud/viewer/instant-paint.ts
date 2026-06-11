@@ -30,6 +30,7 @@ import {
   RUNTIME_STATE_CACHE_KEY_SEGMENT,
   clearPersistedNotebookRecord,
   loadPersistedNotebookDoc,
+  loadPersistedNotebookDocChunks,
   loadPersistedNotebookRecord,
   type PersistedNotebookDoc,
   type StorageAdapter,
@@ -316,7 +317,19 @@ export function cloudInstantPaintStorageOptions(
   "loadNotebookRecord" | "loadRuntimeStateCacheRecord" | "clearRuntimeStateCacheRecord"
 > {
   return {
-    loadNotebookRecord: () => loadPersistedNotebookDoc(adapter, notebookId),
+    // Chunk-preferred, strictly read-only: the chunked store is the live
+    // seed store, so its union is fresher than the legacy envelope. An
+    // unverifiable chunk meta degrades to the envelope WITHOUT clearing —
+    // post-handshake seeding owns every discard decision; the paint
+    // (which runs pre-handshake under the principal-matcher heuristic)
+    // must never delete what may be the only copy of offline edits.
+    loadNotebookRecord: async () => {
+      const chunked = await loadPersistedNotebookDocChunks(adapter, notebookId);
+      if (chunked?.meta) {
+        return { bytes: chunked.bytes, meta: chunked.meta };
+      }
+      return loadPersistedNotebookDoc(adapter, notebookId);
+    },
     loadRuntimeStateCacheRecord: () =>
       loadPersistedNotebookRecord(adapter, notebookId, RUNTIME_STATE_CACHE_KEY_SEGMENT),
     clearRuntimeStateCacheRecord: () =>

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import {
   IndexedDbStorageAdapter,
   clearPersistedNotebookDoc,
-  loadPersistedNotebookDoc,
   type BlobResolver,
   type CommChanges,
 } from "runtimed";
@@ -66,6 +65,7 @@ import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
   createCloudNotebookPersistence,
+  loadCloudPersistedNotebookSeed,
   type CloudNotebookPersistenceController,
 } from "./notebook-persistence";
 import {
@@ -538,7 +538,12 @@ export function useCloudViewerSession({
     let notebookPersistenceEverArmed = false;
     const persistenceSeed = persistenceAdapter
       ? {
-          loadPersisted: () => loadPersistedNotebookDoc(persistenceAdapter, config.notebookId),
+          // Chunk-preferred read with the chunk-level principal guard;
+          // falls back to the PR-1 envelope record when no chunks exist.
+          loadPersisted: (principal: string) =>
+            loadCloudPersistedNotebookSeed(persistenceAdapter, config.notebookId, principal),
+          // The record-level discard stays whole-notebook: envelope,
+          // chunks, and the runtime-state paint cache all go together.
           clear: () => clearPersistedNotebookDoc(persistenceAdapter, config.notebookId),
         }
       : undefined;
@@ -627,10 +632,12 @@ export function useCloudViewerSession({
         // matching the armed one — a mismatched record would be re-stamped,
         // which dedupe must not suppress.
         const seedMeta = liveRuntime.persistenceSeedMeta;
-        const seedSavedHeadsHex =
-          !notebookPersistenceEverArmed && seedMeta?.principal === principal
-            ? seedMeta.headsHex
-            : undefined;
+        const seedTrusted = !notebookPersistenceEverArmed && seedMeta?.principal === principal;
+        const seedSavedHeadsHex = seedTrusted ? seedMeta?.headsHex : undefined;
+        // The chunk inventory rides the same gate: it is only
+        // compaction-deletable while the seeded bytes are the ones in
+        // storage and stamped with the armed principal.
+        const seedChunks = seedTrusted ? liveRuntime.persistenceSeedChunks : undefined;
         notebookPersistence = createCloudNotebookPersistence({
           adapter: persistenceAdapter,
           notebookId: config.notebookId,
@@ -638,6 +645,7 @@ export function useCloudViewerSession({
           engine: liveRuntime.engine,
           handle: liveRuntime.handle,
           seedSavedHeadsHex,
+          seedChunks,
           onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
         });
         if (notebookPersistence !== null) {
