@@ -106,22 +106,69 @@ type PredicateModule = {
 
 let mod: PredicateModule | null = null;
 let configuredWasmUrl: string | undefined;
+let configuredWasmFallbackUrl: string | undefined;
+
+type SiftWasmModuleLoader = () => Promise<{
+  default: (options: { module_or_path?: string }) => Promise<unknown>;
+}>;
+
+const defaultWasmModuleLoader: SiftWasmModuleLoader = () =>
+  import("sift-wasm/sift_wasm.js") as ReturnType<SiftWasmModuleLoader>;
+
+let wasmModuleLoader: SiftWasmModuleLoader = defaultWasmModuleLoader;
 
 /**
  * Configure an explicit URL for the WASM binary.
  * Must be called before the first WASM operation.
  * Used in iframe contexts where import.meta.url doesn't resolve.
+ *
+ * `fallbackUrl` (optional) is retried once when loading `url` fails —
+ * hosts pass the stable-name copy here so a content-hashed URL that
+ * vanished across a deploy window degrades to the stable asset instead
+ * of failing terminally. An ABI mismatch on the fallback still fails
+ * loudly at instantiation, which is no worse than no fallback.
  */
-export function setWasmUrl(url: string): void {
+export function setWasmUrl(url: string, fallbackUrl?: string): void {
   configuredWasmUrl = url;
+  configuredWasmFallbackUrl = fallbackUrl;
 }
 
 export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
-  const wasm = await import("sift-wasm/sift_wasm.js");
-  await wasm.default({ module_or_path: configuredWasmUrl });
+  const wasm = await wasmModuleLoader();
+  try {
+    await wasm.default({ module_or_path: configuredWasmUrl });
+  } catch (error) {
+    if (!configuredWasmFallbackUrl || configuredWasmFallbackUrl === configuredWasmUrl) {
+      throw error;
+    }
+    console.warn(
+      `[sift] wasm load failed from ${configuredWasmUrl}; falling back to ${configuredWasmFallbackUrl}`,
+      error,
+    );
+    await wasm.default({ module_or_path: configuredWasmFallbackUrl });
+  }
   mod = wasm as unknown as PredicateModule;
   return mod;
+}
+
+/**
+ * Swap the wasm module loader (the dynamic import is not interceptable in
+ * unit tests). Pass `null` to restore the real loader.
+ * @internal
+ */
+export function _setWasmModuleLoaderForTests(loader: SiftWasmModuleLoader | null): void {
+  wasmModuleLoader = loader ?? defaultWasmModuleLoader;
+}
+
+/**
+ * Reset the module/url singletons between tests.
+ * @internal
+ */
+export function _resetPredicateModuleForTests(): void {
+  mod = null;
+  configuredWasmUrl = undefined;
+  configuredWasmFallbackUrl = undefined;
 }
 
 /**

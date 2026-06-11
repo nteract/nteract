@@ -47,3 +47,27 @@ export function resolveSiftWasmUrl({
   }
   return wasmUrl.toString();
 }
+
+export interface ResolvedSiftWasmUrls {
+  url: string;
+  /**
+   * Stable-name copy (`sift_wasm.wasm?v=...`) to retry once when the
+   * primary URL fails to load. Only set when the primary name is
+   * content-hashed: the stable copies are deployed alongside the hashed
+   * ones precisely so a stale tab whose hashed name vanished across a
+   * deploy window can still render its first sift output.
+   */
+  fallbackUrl: string | null;
+}
+
+export function resolveSiftWasmUrls(options: ResolveSiftWasmUrlOptions): ResolvedSiftWasmUrls {
+  const url = resolveSiftWasmUrl(options);
+  const requestedName = options.siftWasmAssetName?.trim();
+  const usesHashedName = Boolean(requestedName && CONTENT_HASHED_SIFT_WASM_RE.test(requestedName));
+  return {
+    url,
+    fallbackUrl: usesHashedName
+      ? resolveSiftWasmUrl({ ...options, siftWasmAssetName: undefined })
+      : null,
+  };
+}

@@ -33,7 +33,7 @@ import type {
   RendererInstallContext,
   RendererProps,
 } from "@/lib/renderer-registry";
-import { resolveSiftWasmUrl } from "./sift-assets";
+import { resolveSiftWasmUrls } from "./sift-assets";
 
 const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
@@ -65,14 +65,16 @@ function configureWasm(blobUrl: string): void {
   lastTableUrl = blobUrl;
   try {
     const hostNteract = getHostContext?.()?.nteract;
-    const nextUrl = resolveSiftWasmUrl({
+    const next = resolveSiftWasmUrls({
       tableUrl: blobUrl,
       rendererAssetsBaseUrl: hostNteract?.rendererAssetsBaseUrl,
       siftWasmAssetName: hostNteract?.siftWasmAssetName,
     });
-    if (wasmConfigured && configuredWasmUrl === nextUrl) return;
-    setWasmUrl(nextUrl);
-    configuredWasmUrl = nextUrl;
+    if (wasmConfigured && configuredWasmUrl === next.url) return;
+    // The stable-name fallback rides into the sandboxed loader — sift's
+    // lazy wasm fetch is the seam that actually sees a hashed-name 404.
+    setWasmUrl(next.url, next.fallbackUrl ?? undefined);
+    configuredWasmUrl = next.url;
     wasmConfigured = true;
   } catch (err) {
     console.warn("[sift-renderer] configureWasm failed, using defaults:", err);
