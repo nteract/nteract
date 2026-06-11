@@ -13,7 +13,10 @@ import {
 } from "@/components/widgets/comm-changes-store-bridge";
 import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import type { WidgetStore } from "@/components/widgets/widget-store";
-import { diagnoseCloudConnectionAccess } from "./connection-diagnostics";
+import {
+  cloudConnectionErrorAcceptsAccessDiagnostic,
+  diagnoseCloudConnectionAccess,
+} from "./connection-diagnostics";
 import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
@@ -924,22 +927,26 @@ export function useCloudViewerSession({
         setConnectionPeerId(null);
         resetRuntimeState();
         setConnectionError(message);
-        void diagnoseCloudConnectionAccess({
-          accessRequestsEndpoint: config.accessRequestsEndpoint,
-          authState,
-          hasAppSession,
-        })
-          .then((diagnostic) => {
-            if (disposed || !diagnostic) return;
-            if (materializedCellCount() === 0) {
-              setStatus({
-                kind: "error",
-                message: `Unable to load live notebook room: ${diagnostic}`,
-              });
-            }
-            setConnectionError(diagnostic);
+        // Terminal WASM asset failures own the notice (Retry affordance):
+        // a coinciding access diagnostic must not overwrite them.
+        if (cloudConnectionErrorAcceptsAccessDiagnostic(message)) {
+          void diagnoseCloudConnectionAccess({
+            accessRequestsEndpoint: config.accessRequestsEndpoint,
+            authState,
+            hasAppSession,
           })
-          .catch(() => undefined);
+            .then((diagnostic) => {
+              if (disposed || !diagnostic) return;
+              if (materializedCellCount() === 0) {
+                setStatus({
+                  kind: "error",
+                  message: `Unable to load live notebook room: ${diagnostic}`,
+                });
+              }
+              setConnectionError(diagnostic);
+            })
+            .catch(() => undefined);
+        }
         console.warn("[notebook-cloud] live room connection failed", error);
       });
 

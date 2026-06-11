@@ -4,8 +4,10 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 import {
+  CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC,
   CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC,
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
+  cloudConnectionErrorAcceptsAccessDiagnostic,
 } from "../viewer/connection-diagnostics";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "../viewer/notices";
 
@@ -222,6 +224,33 @@ test("terminal wasm-asset failures get a dedicated notice with a non-destructive
   assert.doesNotMatch(html, /Use anonymous/);
   assert.doesNotMatch(html, /Sign in again/);
   assert.doesNotMatch(html, /Live room needs attention/);
+});
+
+test("a resolved access diagnostic never overwrites the wasm-failure Retry notice", () => {
+  // The session applies an access diagnostic only when the guard allows it;
+  // a terminal asset failure refuses, so the connection error — and the
+  // notice rendered from it — keeps the WASM-failure Retry shape.
+  const assetFailure =
+    "runtimed WASM asset failed: Failed to fetch runtimed WASM (404): https://wasm.example/assets/runtimed_wasm_bg.wasm";
+  const connectionError = cloudConnectionErrorAcceptsAccessDiagnostic(assetFailure)
+    ? CLOUD_CONNECTION_EDIT_ACCESS_PENDING_DIAGNOSTIC
+    : assetFailure;
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onRetryConnection: () => {},
+      onSignInAgain: () => {},
+    }),
+  );
+
+  assert.match(html, /Notebook engine failed to load/);
+  assert.match(html, /Retry/);
+  assert.doesNotMatch(html, /Edit access pending/);
 });
 
 test("wasm-asset failures keep the legacy action when no retry callback is wired", () => {
