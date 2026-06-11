@@ -912,6 +912,51 @@ never writes storage), arms only when the deployed WASM bundle ships
 `save_since_heads` (older bundles degrade to single-tab), and its
 channel closes before the WASM handle frees.
 
+### PR 8 — Resync heal loop + persistence single heal (landed)
+
+Slice 5 of #3585 — the two operational prior-art patterns (per-doc
+heal-retry with an exhaustion signal; "confirmation is just another
+sync") applied to our shapeless spot: resync verification.
+
+**Resync heal loop** (`apps/notebook-cloud/viewer/sync-heal.ts`,
+upstream `SyncScheduler` shape). Both fire-and-forget `resetAndResync()`
+sites — the per-roomReady re-establish and the rejection tracker's
+strike-1 in-place recovery — now arm a verification deadline. The
+confirmation primitive is the #3588 pair: `notebook_doc_caught_up()`
+polled on each `notebookSyncApplied$` emission — a re-verification that
+returns true iff the previous exchange landed. Not caught up within the
+deadline → re-kick the resync on a bounded ladder (2 s → 60 s, factor 2,
+± 25 % jitter, 10 attempts) → exhaustion is ONE terminal signal: the
+quiet "Sync is stalled." notices line (info tone, never a modal, yields
+to the sustained-reconnecting line, clears the moment convergence lands)
+plus a `[sync-heal]` warn. The scheduler is per-doc keyed —
+RuntimeStateDoc/CommsDoc adoption is open follow-up; only the
+NotebookDoc is wired.
+
+Deliberate non-couplings, pinned by tests: heal re-kicks never count as
+rejection strikes and cannot disturb the tracker's delivery-gated absorb
+window (strikes count inbound rejections only); re-kicks are gated on
+the link being `online`, so a held deadline neither kicks nor consumes
+attempts while the transport reconnects (offline stalls belong to the
+sustained-reconnecting line, and a kick's flush during the offline-merge
+window would be miscounted as local authoring); heal exhaustion never
+touches the tab-bridge quarantine (separate failure domains); a
+`roomReady$` adoption resets the ladder like reconnect backoff resets on
+the app-level ack — but a standing exhaustion notice clears only on real
+convergence, never on a reset (same stall, one signal).
+
+**Persistence single heal.** The save controller's 3-failure
+self-dispose was terminal-silent; it now emits `onSelfDisabled` (once
+per controller pair — both share one backend), and the session grants
+exactly ONE re-arm, consumed on the next `online` transition or a
+heal-loop recovery (the successful-resync trigger): a fresh controller
+pair with no seed trust, whose first save takes the unconditional
+snapshot arm (chunk-safe by design). A second self-disable in the same
+session stays disabled with the existing one-line warn. Single heal, not
+a loop — storage that failed three times is usually quota or a dead
+backend; the one retry exists for the transient-network IndexedDB
+hiccup.
+
 ## Prior-art trajectory: subduction / sedimentree
 
 The automerge ecosystem's successor sync line (Ink & Switch
@@ -942,9 +987,11 @@ moves when the time comes:
    slot in as new records under the same `[notebookId, "chunks", ...]`
    prefix (unknown sub-keys are already ignored, never deleted, by every
    read path), so the swap needs no migration.
-3. Operational patterns worth stealing regardless: per-doc heal-retry with
-   an exhaustion signal, and "confirmation is just another sync"
-   idempotence.
+3. ~~Operational patterns worth stealing regardless: per-doc heal-retry
+   with an exhaustion signal, and "confirmation is just another sync"
+   idempotence~~ — landed as PR 8's resync heal loop (NotebookDoc only;
+   RuntimeStateDoc/Comms adoption of the per-doc-keyed scheduler is open
+   follow-up).
 
 ## Out of scope (recorded, no PR planned)
 
