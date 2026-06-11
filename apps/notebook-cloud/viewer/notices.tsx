@@ -20,10 +20,29 @@ export interface CloudNotebookNoticesProps {
   connectionError: string | null;
   hasAppSession?: boolean;
   hasReadableSnapshot?: boolean;
+  /**
+   * The live-room status has been "reconnecting" past the debounce window
+   * (`useSustainedReconnecting`). Renders the single quiet reconnect line;
+   * transport-loss `connectionError` strings are routed here instead of
+   * the per-drop connection notice, so brief blips surface nothing and a
+   * real outage surfaces one calm sentence.
+   */
+  sustainedReconnecting?: boolean;
   status: ViewerStatus;
   diagnostics?: ReactNode;
   onResetAuth: () => void;
   onSignInAgain?: () => void | Promise<void>;
+}
+
+/**
+ * Transport-level connection-loss reasons (socket drops, handshake
+ * timeouts, missed liveness pongs, the browser offline event). The retry
+ * loop owns recovery, so these surface through the debounced sustained-
+ * reconnecting line rather than an immediate per-drop warning. Access and
+ * sign-in diagnostics keep their dedicated notices.
+ */
+export function isTransportReconnectError(error: string): boolean {
+  return error === "browser reported offline" || /^cloud (sync|room) /.test(error);
 }
 
 export function cloudNotebookHasNotices({
@@ -32,6 +51,7 @@ export function cloudNotebookHasNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  sustainedReconnecting = false,
   status,
   diagnostics,
 }: Omit<CloudNotebookNoticesProps, "onResetAuth">): boolean {
@@ -50,6 +70,7 @@ export function cloudNotebookHasNotices({
   return (
     shouldShowAuthNotice ||
     shouldShowAuthRenewalNotice ||
+    sustainedReconnecting ||
     Boolean(connectionNotice) ||
     Boolean(diagnostics) ||
     shouldShowStatusNotice
@@ -62,6 +83,7 @@ export function CloudNotebookNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  sustainedReconnecting = false,
   status,
   diagnostics,
   onResetAuth,
@@ -74,6 +96,7 @@ export function CloudNotebookNotices({
       connectionError,
       hasAppSession,
       hasReadableSnapshot,
+      sustainedReconnecting,
       status,
       diagnostics,
     })
@@ -123,6 +146,12 @@ export function CloudNotebookNotices({
           }
         >
           {authRenewal.message}
+        </NotebookNotice>
+      ) : null}
+
+      {sustainedReconnecting ? (
+        <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
+          Your edits are kept locally and will sync when the connection returns.
         </NotebookNotice>
       ) : null}
 
@@ -238,7 +267,14 @@ function cloudConnectionNoticeDisplay(
   title: string;
   message: string;
   tone: "warning";
-} {
+} | null {
+  if (isTransportReconnectError(error)) {
+    // The transport retries forever on its own; the debounced sustained-
+    // reconnecting line is the user-facing surface for these. Rendering a
+    // warning per drop turned every sub-second blip into notice flap.
+    return null;
+  }
+
   if (error === CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC) {
     return {
       title: "Sign in required.",
