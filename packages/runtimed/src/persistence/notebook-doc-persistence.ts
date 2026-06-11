@@ -1,13 +1,13 @@
 /**
- * NotebookDocPersistence — trailing-edge throttled NotebookDoc snapshots.
+ * NotebookDocPersistence — trailing-edge throttled document snapshots.
  *
  * Subscribes a narrow change signal (`SyncEngine.notebookDocChanged$`) and
  * persists one self-contained envelope record under
- * `[notebookId, "snapshot"]`: a 4-byte little-endian meta-JSON length, the
- * meta JSON (utf8), then the full `handle.save()` NotebookDoc bytes. A
- * single record means a single IDB transaction — meta and bytes can never
- * tear apart, so the principal guard always describes the bytes it sits
- * next to.
+ * `[notebookId, keySegment]`: a 4-byte little-endian meta-JSON length, the
+ * meta JSON (utf8), then the full `handle.save()` doc bytes. A single
+ * record means a single IDB transaction — meta and bytes can never tear
+ * apart, so the principal guard always describes the bytes it sits next
+ * to.
  *
  * Save semantics mirror automerge-repo's `asyncThrottle`: trailing edge,
  * never two concurrent writes, latest state wins. `flushNow()` (pagehide,
@@ -15,9 +15,16 @@
  * flush debounce have not emitted yet, but `handle.save()` already sees
  * them, and saves are idempotent.
  *
- * Persists NotebookDoc bytes only — RuntimeStateDoc/CommsDoc are
- * daemon/room-authoritative and must never be written to storage, and
- * Automerge sync states are per-connection and not persisted either.
+ * Two records exist per notebook:
+ * - `[notebookId, "snapshot"]` — NotebookDoc bytes, the seed record. The
+ *   only record ever loaded back into a SYNCING handle.
+ * - `[notebookId, "runtime-state-cache"]` — RuntimeStateDoc bytes as a
+ *   render-only paint source for instant first paint. NEVER loaded into
+ *   the syncing handle, never flushed, never synced: the syncing handle
+ *   still bootstraps RuntimeStateDoc empty and the daemon/room remains the
+ *   only writer. The authority invariant forbids restoring runtime state
+ *   into the sync path, not caching pixels. CommsDoc and Automerge sync
+ *   states are never written to storage.
  *
  * Failures never propagate into the live session: every error routes to
  * the `onError` callback and the logger, and after
@@ -30,7 +37,15 @@ import type { Observable, Subscription } from "rxjs";
 import type { StorageAdapter } from "./storage-adapter";
 
 const DEFAULT_SAVE_THROTTLE_MS = 1_000;
-const SNAPSHOT_KEY_SEGMENT = "snapshot";
+
+/** Key segment of the NotebookDoc snapshot record (the seed record). */
+export const NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT = "snapshot";
+
+/**
+ * Key segment of the render-only RuntimeStateDoc cache record — a paint
+ * source for instant first paint, never a sync seed.
+ */
+export const RUNTIME_STATE_CACHE_KEY_SEGMENT = "runtime-state-cache";
 
 /** Consecutive save failures tolerated before persistence self-disables. */
 const MAX_CONSECUTIVE_SAVE_FAILURES = 3;
@@ -69,11 +84,17 @@ export interface NotebookDocPersistenceOptions {
   /** Change signal, typically `SyncEngine.notebookDocChanged$`. */
   changes$: Observable<void>;
 
-  /** Full NotebookDoc snapshot bytes (raw `NotebookHandle.save()`). */
+  /** Full doc snapshot bytes (raw `NotebookHandle.save()` or `save_state_doc()`). */
   getSaveBytes: () => Uint8Array;
 
-  /** Current notebook heads (`NotebookHandle.get_heads_hex()`). */
+  /** Current doc heads (`get_heads_hex()` / `get_runtime_state_heads_hex()`). */
   getHeadsHex: () => string[];
+
+  /**
+   * Record key segment under the notebook id; defaults to the NotebookDoc
+   * snapshot record (`"snapshot"`).
+   */
+  keySegment?: string;
 
   /** Trailing-edge save throttle in milliseconds (default 1000). */
   throttleMs?: number;
@@ -86,6 +107,7 @@ export interface NotebookDocPersistenceOptions {
 
 export class NotebookDocPersistence {
   private readonly opts: NotebookDocPersistenceOptions;
+  private readonly keySegment: string;
   private readonly throttleMs: number;
   private readonly logger: NotebookDocPersistenceLogger;
   private readonly subscription: Subscription;
@@ -98,6 +120,7 @@ export class NotebookDocPersistence {
 
   constructor(opts: NotebookDocPersistenceOptions) {
     this.opts = opts;
+    this.keySegment = opts.keySegment ?? NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT;
     this.throttleMs = opts.throttleMs ?? DEFAULT_SAVE_THROTTLE_MS;
     this.logger = opts.logger ?? console;
     this.subscription = opts.changes$.subscribe(() => this.onChanged());
@@ -174,9 +197,10 @@ export class NotebookDocPersistence {
     }
 
     const { adapter, notebookId } = this.opts;
+    const key = [notebookId, this.keySegment];
     const write = this.writeChain.then(async () => {
       try {
-        await adapter.save([notebookId, SNAPSHOT_KEY_SEGMENT], envelope);
+        await adapter.save(key, envelope);
         this.consecutiveSaveFailures = 0;
       } catch (error) {
         this.reportSaveFailure("save failed", error);
@@ -212,21 +236,50 @@ export class NotebookDocPersistence {
  * bytes) — callers must treat that as unverifiable provenance
  * (clear + bootstrap), never as a match.
  */
-export async function loadPersistedNotebookDoc(
+export function loadPersistedNotebookDoc(
   adapter: StorageAdapter,
   notebookId: string,
 ): Promise<PersistedNotebookDoc | undefined> {
-  const envelope = await adapter.load([notebookId, SNAPSHOT_KEY_SEGMENT]);
+  return loadPersistedNotebookRecord(adapter, notebookId, NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT);
+}
+
+/**
+ * Load one persisted envelope record (`[notebookId, keySegment]`); same
+ * decode degradation rules as `loadPersistedNotebookDoc`.
+ */
+export async function loadPersistedNotebookRecord(
+  adapter: StorageAdapter,
+  notebookId: string,
+  keySegment: string,
+): Promise<PersistedNotebookDoc | undefined> {
+  const envelope = await adapter.load([notebookId, keySegment]);
   if (!envelope) return undefined;
   return decodePersistedNotebookDoc(envelope);
 }
 
-/** Remove every persisted record for a notebook. */
+/**
+ * Remove every persisted record for a notebook (snapshot AND the
+ * runtime-state render cache — a discard of one user's seed must not
+ * leave their cached pixels behind).
+ */
 export function clearPersistedNotebookDoc(
   adapter: StorageAdapter,
   notebookId: string,
 ): Promise<void> {
   return adapter.removeRange([notebookId]);
+}
+
+/**
+ * Remove exactly one persisted record. Used when only the render-only
+ * runtime-state cache is corrupt — the NotebookDoc snapshot record (which
+ * may hold offline edits) must survive.
+ */
+export function clearPersistedNotebookRecord(
+  adapter: StorageAdapter,
+  notebookId: string,
+  keySegment: string,
+): Promise<void> {
+  return adapter.remove([notebookId, keySegment]);
 }
 
 /** Encode meta + doc bytes into one atomic envelope record. */

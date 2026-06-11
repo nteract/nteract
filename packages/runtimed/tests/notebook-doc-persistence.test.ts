@@ -9,10 +9,13 @@ import { Subject } from "rxjs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   NotebookDocPersistence,
+  RUNTIME_STATE_CACHE_KEY_SEGMENT,
   clearPersistedNotebookDoc,
+  clearPersistedNotebookRecord,
   decodePersistedNotebookDoc,
   encodePersistedNotebookDoc,
   loadPersistedNotebookDoc,
+  loadPersistedNotebookRecord,
   type NotebookDocPersistenceMeta,
 } from "../src/persistence/notebook-doc-persistence";
 import type { StorageAdapter, StorageKey } from "../src/persistence/storage-adapter";
@@ -253,6 +256,30 @@ describe("NotebookDocPersistence", () => {
     controller.dispose();
   });
 
+  it("writes the runtime-state render cache under its own record key", async () => {
+    // The cache record shares the envelope codec end to end: a throttled
+    // save under [id, "runtime-state-cache"] round-trips through the
+    // segment-aware loader with meta intact and the snapshot key untouched.
+    saveBytes = new Uint8Array([42, 43]);
+    headsHex = ["state-head"];
+    const controller = createController({ keySegment: RUNTIME_STATE_CACHE_KEY_SEGMENT });
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(adapter.saves.map((s) => s.key)).toEqual([["nb-1", "runtime-state-cache"]]);
+    const record = await loadPersistedNotebookRecord(
+      adapter,
+      "nb-1",
+      RUNTIME_STATE_CACHE_KEY_SEGMENT,
+    );
+    expect(record?.bytes).toEqual(new Uint8Array([42, 43]));
+    expect(record?.meta?.headsHex).toEqual(["state-head"]);
+    expect(record?.meta?.principal).toBe("user:test:alice");
+    expect(await loadPersistedNotebookDoc(adapter, "nb-1")).toBeUndefined();
+    controller.dispose();
+  });
+
   it("routes adapter save failures to onError without throwing", async () => {
     const onError = vi.fn();
     const failure = new Error("quota exceeded");
@@ -446,5 +473,26 @@ describe("clearPersistedNotebookDoc", () => {
 
     expect(adapter.removeRange).toHaveBeenCalledWith(["nb-1"]);
     expect(await loadPersistedNotebookDoc(adapter, "nb-1")).toBeUndefined();
+  });
+});
+
+describe("clearPersistedNotebookRecord", () => {
+  it("removes only the targeted record — the snapshot seed survives", async () => {
+    const adapter = createRecordingAdapter();
+    await adapter.save(
+      ["nb-1", "snapshot"],
+      encodePersistedNotebookDoc(testMeta(), new Uint8Array([9])),
+    );
+    await adapter.save(
+      ["nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT],
+      encodePersistedNotebookDoc(testMeta(), new Uint8Array([10])),
+    );
+
+    await clearPersistedNotebookRecord(adapter, "nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT);
+
+    expect(
+      await loadPersistedNotebookRecord(adapter, "nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT),
+    ).toBeUndefined();
+    expect((await loadPersistedNotebookDoc(adapter, "nb-1"))?.bytes).toEqual(new Uint8Array([9]));
   });
 });
