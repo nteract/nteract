@@ -248,6 +248,45 @@ describe("notebook workstation launch readiness projection", () => {
     });
   });
 
+  it("keeps stale ready attachments unavailable when the registered workstation is offline", () => {
+    const selection = projectNotebookWorkstationSelection({
+      activeAttachment: {
+        workstation_id: "ws-lab2",
+        display_name: "Lab2 workstation",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: "ready",
+      },
+      canSelectWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          ...lab2Workstation,
+          status: "offline",
+          statusMessage: "No heartbeat from this workstation recently.",
+        },
+      ],
+    });
+    const projection = projectNotebookWorkstationLaunchReadiness({
+      capabilities: cloudUnavailableCapabilities,
+      selection,
+    });
+
+    expect(projection).toMatchObject({
+      canRun: false,
+      detail: "No heartbeat from this workstation recently.",
+      primaryAction: {
+        kind: "open_workstations",
+        label: "Review compute",
+      },
+      state: "workstation_unavailable",
+      statusLabel: "Offline",
+      targetLabel: "Lab2 workstation",
+      workstationId: "ws-lab2",
+    });
+  });
+
   it("projects registered workstations without a selected/default target as selection needed", () => {
     const selection = projectNotebookWorkstationSelection({
       canSelectWorkstation: true,

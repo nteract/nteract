@@ -139,12 +139,16 @@ export function projectNotebookWorkstationSelection({
 }: ProjectNotebookWorkstationSelectionOptions): NotebookWorkstationSelectionProjection {
   const selectedId = trimToNull(selectedWorkstationId);
   const defaultId = trimToNull(defaultWorkstationId);
-  const activeTarget = projectNotebookRuntimeTargetFromWorkstationAttachment(activeAttachment);
   const activeWorkstationId = trimToNull(activeAttachment?.workstation_id);
+  const normalizedEntries = normalizeRegisteredWorkstations(registeredWorkstations);
+  const activeTarget = projectAttachmentTargetWithRegisteredWorkstationStatus({
+    activeAttachment,
+    activeWorkstationId,
+    registeredWorkstations: normalizedEntries,
+  });
   const attachedWorkstationId = activeTargetCountsAsAttached(activeTarget)
     ? activeWorkstationId
     : null;
-  const normalizedEntries = normalizeRegisteredWorkstations(registeredWorkstations);
   const cacheKey = stableCacheKey([
     activeWorkstationId,
     activeTargetCacheKey(activeTarget),
@@ -168,7 +172,7 @@ export function projectNotebookWorkstationSelection({
   const selectedWorkstation = entries.find((entry) => entry.id === selectedId) ?? null;
   const defaultWorkstation = entries.find((entry) => entry.id === defaultId) ?? null;
   const launchCandidate = selectedWorkstation ?? defaultWorkstation;
-  const state: NotebookWorkstationSelectionState = activeTarget
+  const state: NotebookWorkstationSelectionState = attachedWorkstationId
     ? "attached"
     : selectedWorkstation
       ? "selected"
@@ -214,6 +218,34 @@ function activeTargetCountsAsAttached(
   return (
     target.status === "ready" || target.status === "attached" || target.status === "connecting"
   );
+}
+
+function projectAttachmentTargetWithRegisteredWorkstationStatus({
+  activeAttachment,
+  activeWorkstationId,
+  registeredWorkstations,
+}: {
+  activeAttachment: WorkstationAttachmentState | null;
+  activeWorkstationId: string | null;
+  registeredWorkstations: readonly NotebookRegisteredWorkstation[];
+}): NotebookShellRuntimeTargetProjection | null {
+  const target = projectNotebookRuntimeTargetFromWorkstationAttachment(activeAttachment);
+  if (!target || !activeWorkstationId) return target;
+  const registeredWorkstation =
+    registeredWorkstations.find((workstation) => workstation.id === activeWorkstationId) ?? null;
+  const registeredStatus = normalizeWorkstationStatus(registeredWorkstation?.status);
+  if (registeredStatus !== "offline" && registeredStatus !== "attention") {
+    return target;
+  }
+
+  return Object.freeze({
+    ...target,
+    status: registeredStatus,
+    statusLabel: workstationStatusLabel(registeredStatus),
+    detail:
+      trimToNull(registeredWorkstation?.statusMessage) ??
+      `The ${target.label} attachment is stale because the workstation is ${registeredStatus}.`,
+  });
 }
 
 function projectRegisteredWorkstation(

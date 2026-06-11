@@ -37,7 +37,7 @@ import {
   getPublicPublishedNotebookRow,
   getWorkstationRow,
   grantNotebookAclRow,
-  listPendingWorkstationAttachJobs,
+  listActiveWorkstationAttachJobs,
   listNotebooksForPrincipal,
   listWorkstationsForPrincipal,
   recordBlob,
@@ -1141,7 +1141,7 @@ async function routeWorkstationAttachJobs(
   if (limit instanceof Response) {
     return limit;
   }
-  const jobs = await listPendingWorkstationAttachJobs(env, ownerPrincipal, workstationId, limit);
+  const jobs = await listActiveWorkstationAttachJobs(env, ownerPrincipal, workstationId, limit);
   return json({
     ok: true,
     workstation: workstationResponseRow(workstation, {
