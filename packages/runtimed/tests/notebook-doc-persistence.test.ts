@@ -349,6 +349,53 @@ describe("NotebookDocPersistence", () => {
     expect(getSaveBytes).toHaveBeenCalledTimes(3);
   });
 
+  it("fires onSelfDisabled exactly once at the self-disable threshold", async () => {
+    adapter.save = vi.fn(async () => {
+      throw new Error("quota exceeded");
+    });
+    const onSelfDisabled = vi.fn();
+    const controller = createController({ logger: silentLogger, onSelfDisabled });
+
+    for (let i = 0; i < 2; i++) {
+      changes$.next();
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(onSelfDisabled).not.toHaveBeenCalled();
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onSelfDisabled).toHaveBeenCalledTimes(1);
+
+    // Already disposed: nothing can re-fire the signal.
+    await controller.flushNow();
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(onSelfDisabled).toHaveBeenCalledTimes(1);
+  });
+
+  it("never fires onSelfDisabled for a manual dispose or sub-threshold failures", async () => {
+    const onSelfDisabled = vi.fn();
+    let failing = true;
+    adapter.save = vi.fn(async (key: StorageKey, data: Uint8Array) => {
+      if (failing) throw new Error("transient");
+      adapter.saves.push({ key, data });
+    });
+    const controller = createController({ logger: silentLogger, onSelfDisabled });
+
+    // Two failures, then recovery: the count resets, no signal.
+    for (let i = 0; i < 2; i++) {
+      changes$.next();
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    failing = false;
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(1);
+
+    controller.dispose();
+    expect(onSelfDisabled).not.toHaveBeenCalled();
+  });
+
   it("skips the save when heads are unchanged since the last save", async () => {
     // notebookDocChanged$ over-fires for protocol-only flushes; identical
     // heads mean identical doc state, so the snapshot would be a no-op.

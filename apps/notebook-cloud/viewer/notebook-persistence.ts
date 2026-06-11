@@ -91,6 +91,13 @@ export interface CreateCloudNotebookPersistenceOptions {
    */
   seedGeneration?: number;
   onError?: (error: unknown) => void;
+  /**
+   * Fired AT MOST ONCE per controller pair when either controller
+   * self-disables after repeated save failures (never on manual
+   * dispose). The session consumes it through PersistenceRearmGate's
+   * single-heal discipline.
+   */
+  onSelfDisabled?: () => void;
   /** Test hook: trailing-edge throttle for both controllers. */
   throttleMs?: number;
   /** Test hook: content-hash override for incremental chunk keys. */
@@ -107,12 +114,25 @@ export function createCloudNotebookPersistence({
   seedChunks,
   seedGeneration,
   onError,
+  onSelfDisabled,
   throttleMs,
   chunkDigest,
 }: CreateCloudNotebookPersistenceOptions): CloudNotebookPersistenceController | null {
   if (isAnonymousCloudPrincipal(principal)) {
     return null;
   }
+
+  // Both controllers share one backend; if it is dead enough to disable
+  // one, the other follows within its own failure budget — surface ONE
+  // signal for the pair so the single-heal gate is consumed once.
+  let selfDisabledSignaled = false;
+  const signalSelfDisabledOnce = onSelfDisabled
+    ? () => {
+        if (selfDisabledSignaled) return;
+        selfDisabledSignaled = true;
+        onSelfDisabled();
+      }
+    : undefined;
 
   const notebookDoc = new NotebookDocPersistence({
     adapter,
@@ -129,6 +149,7 @@ export function createCloudNotebookPersistence({
       ...(chunkDigest ? { digest: chunkDigest } : {}),
     },
     onError,
+    onSelfDisabled: signalSelfDisabledOnce,
     ...(throttleMs !== undefined ? { throttleMs } : {}),
   });
   const runtimeStateCache = new NotebookDocPersistence({
@@ -140,6 +161,7 @@ export function createCloudNotebookPersistence({
     getSaveBytes: () => handle.save_state_doc(),
     getHeadsHex: () => handle.get_runtime_state_heads_hex(),
     onError,
+    onSelfDisabled: signalSelfDisabledOnce,
     ...(throttleMs !== undefined ? { throttleMs } : {}),
   });
 
@@ -216,4 +238,32 @@ export async function loadCloudPersistedNotebookSeed(
     return { bytes: chunkSeed.bytes, meta: chunkSeed.meta, chunks: chunkSeed.chunks };
   }
   return envelope;
+}
+
+/**
+ * One-shot heal gate for a self-disabled persistence controller pair.
+ *
+ * The controller's 3-failure self-dispose is usually quota or a dead
+ * backend — but a transient-network IndexedDB hiccup deserves exactly one
+ * second chance. The session notes the self-disable here and consumes the
+ * single re-arm on the next `online` transition or successful resync
+ * (heal-loop recovery); a second self-disable within the same session
+ * stays disabled with the controller's existing one-line warn. Single
+ * heal, not a loop.
+ */
+export class PersistenceRearmGate {
+  private selfDisabled = false;
+  private used = false;
+
+  noteSelfDisabled(): void {
+    this.selfDisabled = true;
+  }
+
+  /** Consume the single re-arm if one is owed (true at most once). */
+  takeRearm(): boolean {
+    if (!this.selfDisabled || this.used) return false;
+    this.used = true;
+    this.selfDisabled = false;
+    return true;
+  }
 }
