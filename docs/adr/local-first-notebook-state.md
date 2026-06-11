@@ -536,10 +536,51 @@ actor**. The pinned-snapshot path already proves bytes → throwaway handle →
   handle and never flushed. The authority invariant forbids restoring
   runtime state into the sync path, not caching pixels; the syncing handle
   still bootstraps RuntimeStateDoc empty and the room remains the only
-  writer. Blob-backed outputs still need their blob fetches; everything
-  inline paints instantly.
+  writer. Blob-backed output *bytes* are already solved: blob refs are
+  content-addressed and immutable, and the cloud blob endpoints serve
+  `Cache-Control: immutable`, so the browser HTTP cache makes
+  `<img src="blobURL">` instant on revisit with no IndexedDB involvement.
+  The gap is **addressing**, not bytes: which execution is current per cell
+  and which manifest/blob refs to resolve all live in RuntimeStateDoc — the
+  render cache is what preserves the execution-id → output → manifest →
+  blob-ref chain, and the real work is running the output-resolution path
+  (manifest decode, execution-id tracking — see
+  [blob-ref-and-chunk-manifest-protocol](./blob-ref-and-chunk-manifest-protocol.md),
+  [arrow-manifest-durable-storage-design](./arrow-manifest-durable-storage-design.md))
+  against cached bytes with no live room. Cloud-only; desktop has the local
+  daemon.
 - Offline *editing* before the first-ever handshake stays out of scope
   (below) — this PR is about read latency, not offline authoring.
+
+## Prior-art trajectory: subduction / sedimentree
+
+The automerge ecosystem's successor sync line (Ink & Switch
+[subduction](https://github.com/inkandswitch/subduction), the Beelay
+successor; integrated on automerge-repo's `subductionjs` branch, with the
+fragments API on automerge core's `next` tag as `3.3.0-fragments.1`)
+replaces per-peer bloom-filter `sync::State` with content-addressed
+**sedimentree** sync: commit hashes deterministically partition history into
+fragments, batch sync is a 1.5-RT fingerprint diff, and **no durable
+per-peer sync state exists** — reconnect is a re-handshake plus one summary
+exchange. Explicitly experimental upstream ("DO NOT use for production");
+not adoptable now. What this ADR already gets right relative to it: the
+`StorageAdapter` interface here is the same interface subduction's storage
+bridge wraps upstream, and subduction writes under its own
+`["subduction", ...]` key prefix — coexistence requires zero migration, and
+our snapshot envelope degrades into a bootstrap cache. Cheap alignment
+moves when the time comes:
+
+1. Optional `saveBatch(entries)` on `StorageAdapter` (upstream's exact
+   extension; sequential-save fallback) with crash-ordered writes
+   (blobs → metadata → id-marker: a crash leaves invisible orphans, never a
+   visible-but-incomplete record).
+2. Fill the reserved "incremental chunks later" slot against the automerge
+   3.3 fragments API (`getFragmentMetadata`/`bundleFragmentMetadata` via new
+   `NotebookHandle` WASM exports) instead of inventing a chunk format —
+   core-driven, deterministic compaction for free.
+3. Operational patterns worth stealing regardless: per-doc heal-retry with
+   an exhaustion signal, and "confirmation is just another sync"
+   idempotence.
 
 ## Out of scope (recorded, no PR planned)
 
