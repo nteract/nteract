@@ -42,6 +42,7 @@ import {
   DebugBanner,
   EnvBuildDecisionDialog,
   KernelLaunchErrorBanner,
+  NotebookConnectionIdentity,
   NotebookDocumentRail,
   NotebookDocumentShell,
   PoolErrorBanner,
@@ -1514,6 +1515,15 @@ function AppContent() {
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
+          trailingControls={
+            // Connection/identity slot: renders nothing for a purely local
+            // session (isRemoteNotebookContext) — conditionality is the
+            // point. The host transport is stable for the app's lifetime.
+            <NotebookConnectionIdentity
+              capabilities={shellCapabilities}
+              connectionStatus$={host.transport.connectionStatus$}
+            />
+          }
         />
         {globalFind.isOpen && (
           <GlobalFindBar
