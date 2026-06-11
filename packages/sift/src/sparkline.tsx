@@ -746,7 +746,7 @@ function CategoryPopoverContent({
   }, [searchInput]);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
   }, []);
 
   const filtered = useMemo(() => {
@@ -836,7 +836,7 @@ function CategoryPopoverContent({
     focusSearch();
   }
   function focusSearch() {
-    requestAnimationFrame(() => inputRef.current?.focus());
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
   }
 
   return (
