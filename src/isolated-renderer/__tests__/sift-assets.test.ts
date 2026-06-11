@@ -27,4 +27,34 @@ describe("Sift renderer assets", () => {
       }),
     ).toBe("http://127.0.0.1:49152/plugins/sift_wasm.wasm?v=dev");
   });
+
+  it("uses a content-hashed manifest name without the ?v= query", () => {
+    expect(
+      resolveSiftWasmUrl({
+        tableUrl: "https://notebooks.example/api/n/demo/blobs/sha256-abc",
+        rendererAssetsBaseUrl: "https://outputs.example/renderer-assets/",
+        siftWasmAssetName: "sift_wasm.0123456789abcdef.wasm",
+      }),
+    ).toBe("https://outputs.example/renderer-assets/sift_wasm.0123456789abcdef.wasm");
+  });
+
+  it("keeps the ?v= cache buster when the manifest hands back the stable name", () => {
+    expect(
+      resolveSiftWasmUrl({
+        tableUrl: "https://notebooks.example/api/n/demo/blobs/sha256-abc",
+        rendererAssetsBaseUrl: "https://outputs.example/renderer-assets/",
+        siftWasmAssetName: "sift_wasm.wasm",
+      }),
+    ).toBe("https://outputs.example/renderer-assets/sift_wasm.wasm?v=dev");
+  });
+
+  it("rejects asset names that are not sift_wasm variants (host context is sandbox input)", () => {
+    expect(
+      resolveSiftWasmUrl({
+        tableUrl: "https://notebooks.example/api/n/demo/blobs/sha256-abc",
+        rendererAssetsBaseUrl: "https://outputs.example/renderer-assets/",
+        siftWasmAssetName: "../secrets.wasm",
+      }),
+    ).toBe("https://outputs.example/renderer-assets/sift_wasm.wasm?v=dev");
+  });
 });

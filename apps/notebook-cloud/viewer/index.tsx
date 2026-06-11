@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -88,9 +88,18 @@ function CloudNotebookProviders({
     loadSupplementalViewerCss();
   }, []);
 
+  // Manifest filenames (content-hashed when deployed) keep the renderer
+  // bundle on the asset origin's immutable cache path; the stable names
+  // remain the fallback for shells without manifest names.
+  const rendererAssetNames = useMemo(
+    () => ({ js: config.rendererAssets.js, css: config.rendererAssets.css }),
+    [config.rendererAssets.css, config.rendererAssets.js],
+  );
+
   return (
     <IsolatedRendererProvider
       basePath={rendererAssetBasePathForProvider(config.rendererAssetsBasePath)}
+      assetNames={rendererAssetNames}
     >
       <CloudWidgetStoreProvider>
         <MediaProvider priority={CLOUD_VIEWER_PRIORITY} renderers={CLOUD_WIDGET_RENDERERS}>

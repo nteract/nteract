@@ -27,6 +27,7 @@ export interface RendererHostContext {
   };
   nteract?: {
     rendererAssetsBaseUrl?: string;
+    siftWasmAssetName?: string;
   };
 }
 

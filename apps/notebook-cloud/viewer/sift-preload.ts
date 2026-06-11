@@ -8,6 +8,8 @@ import type { ResolvedCell } from "./render-resolution";
 interface SiftWasmPreloadOptions {
   blobBasePath: string;
   rendererAssetsBasePath: string;
+  /** Manifest filename (content-hashed when deployed); stable name fallback. */
+  siftWasmAssetName?: string;
   pageUrl: string;
 }
 
@@ -17,13 +19,14 @@ export function cellsUseSift(cells: readonly ResolvedCell[]): boolean {
 
 export function siftWasmPreloadUrlForCells(
   cells: readonly ResolvedCell[],
-  { blobBasePath, rendererAssetsBasePath, pageUrl }: SiftWasmPreloadOptions,
+  { blobBasePath, rendererAssetsBasePath, siftWasmAssetName, pageUrl }: SiftWasmPreloadOptions,
 ): string | null {
   if (!cellsUseSift(cells)) return null;
 
   return resolveSiftWasmUrl({
     tableUrl: new URL(blobBasePath, pageUrl).href,
     rendererAssetsBaseUrl: new URL(rendererAssetsBasePath, pageUrl).href,
+    siftWasmAssetName,
   });
 }
 

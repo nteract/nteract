@@ -127,6 +127,10 @@ const DEFAULT_RUNTIMED_WASM_BASE_PATH = "/assets/";
 const VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH = "/assets/runtime-wasm-assets.json";
 const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
+const VIEWER_RENDERER_SIDECAR_MANIFEST_PATH = "/assets/renderer-sidecar-assets.json";
+const VIEWER_ISOLATED_RENDERER_JS_NAME = "isolated-renderer.js";
+const VIEWER_ISOLATED_RENDERER_CSS_NAME = "isolated-renderer.css";
+const VIEWER_SIFT_WASM_NAME = "sift_wasm.wasm";
 const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
 // One R2 HEAD is issued per referenced blob during snapshot-pair validation.
 // Cap the total so a single publish cannot fan out unbounded billable R2
@@ -145,6 +149,12 @@ interface MissingSnapshotBlob {
 interface RuntimeWasmAssetNames {
   module: string;
   wasm: string;
+}
+
+interface RendererSidecarAssetNames {
+  js: string;
+  css: string;
+  siftWasm: string;
 }
 
 type SnapshotPairValidationResult =
@@ -3576,6 +3586,7 @@ async function viewer(
   const shellMetadata = await publicViewerShellMetadata(env, notebookId, headsHash);
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const runtimeWasmAssets = await runtimeWasmAssetNames(env);
+  const rendererSidecarAssets = await rendererSidecarAssetNames(env);
   const session = await readCloudAppSession(env, request).catch(() => null);
   const config = {
     notebookId,
@@ -3597,6 +3608,7 @@ async function viewer(
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
+    rendererAssets: rendererSidecarAssets,
     outputDocumentBaseUrl: outputDocumentBaseUrl(env),
     runtimedWasmModulePath: runtimedWasmAssetPath(env, runtimeWasmAssets.module),
     runtimedWasmPath: runtimedWasmAssetPath(env, runtimeWasmAssets.wasm),
@@ -3610,6 +3622,7 @@ async function viewer(
 interface ViewerShellConfig extends Record<string, unknown> {
   outputDocumentBaseUrl?: string | null;
   rendererAssetsBasePath?: string;
+  rendererAssets?: RendererSidecarAssetNames;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;
   workstationAttachEndpoint?: string;
@@ -3917,6 +3930,69 @@ function isRuntimeWasmModuleName(value: unknown): value is string {
 
 function isRuntimeWasmBinaryName(value: unknown): value is string {
   return typeof value === "string" && /^runtimed_wasm_bg(?:\.[a-f0-9]{12,64})?\.wasm$/.test(value);
+}
+
+/**
+ * Content-hashed renderer sidecar names from the deploy manifest. The
+ * hashed pathnames ride the renderer-assets worker's immutable caching;
+ * a missing/invalid manifest falls back to the stable names, which stay
+ * deployed alongside the hashed copies.
+ */
+async function rendererSidecarAssetNames(env: Env): Promise<RendererSidecarAssetNames> {
+  if (!env.ASSETS) {
+    return defaultRendererSidecarAssetNames();
+  }
+
+  try {
+    const manifestRequest = new Request(
+      `https://notebook-cloud.local${VIEWER_RENDERER_SIDECAR_MANIFEST_PATH}`,
+    );
+    const response = await env.ASSETS.fetch(manifestRequest);
+    if (!response.ok) {
+      return defaultRendererSidecarAssetNames();
+    }
+    const manifest = await response.json();
+    if (isRendererSidecarAssetManifest(manifest)) {
+      return manifest;
+    }
+    cloudLog("warn", "viewer.renderer_sidecar_manifest.invalid", {
+      manifest_path: VIEWER_RENDERER_SIDECAR_MANIFEST_PATH,
+    });
+  } catch (error) {
+    cloudLog("warn", "viewer.renderer_sidecar_manifest.failed", {
+      manifest_path: VIEWER_RENDERER_SIDECAR_MANIFEST_PATH,
+      error: errorMessage(error),
+    });
+  }
+
+  return defaultRendererSidecarAssetNames();
+}
+
+function defaultRendererSidecarAssetNames(): RendererSidecarAssetNames {
+  return {
+    js: VIEWER_ISOLATED_RENDERER_JS_NAME,
+    css: VIEWER_ISOLATED_RENDERER_CSS_NAME,
+    siftWasm: VIEWER_SIFT_WASM_NAME,
+  };
+}
+
+function isRendererSidecarAssetManifest(value: unknown): value is RendererSidecarAssetNames {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const manifest = value as Record<string, unknown>;
+  return (
+    isSidecarAssetName(manifest.js, "isolated-renderer", "js") &&
+    isSidecarAssetName(manifest.css, "isolated-renderer", "css") &&
+    isSidecarAssetName(manifest.siftWasm, "sift_wasm", "wasm")
+  );
+}
+
+function isSidecarAssetName(value: unknown, stem: string, extension: string): value is string {
+  return (
+    typeof value === "string" &&
+    new RegExp(`^${stem}(?:\\.[a-f0-9]{12,64})?\\.${extension}$`).test(value)
+  );
 }
 
 function debugViewer(notebookId: string, request: Request): Response {

@@ -232,6 +232,63 @@ describe("IsolatedRendererProvider retry behavior", () => {
     vi.unstubAllGlobals();
   });
 
+  it("fetches manifest-named (content-hashed) bundle files when assetNames are provided", async () => {
+    const fetched: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      fetched.push(String(input));
+      return new Response(String(input).endsWith(".css") ? "css-code" : "js-code");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <IsolatedRendererProvider
+        basePath="/renderer-assets"
+        assetNames={{
+          js: "isolated-renderer.0123456789abcdef.js",
+          css: "isolated-renderer.fedcba9876543210.css",
+        }}
+      >
+        <Probe id="a" />
+      </IsolatedRendererProvider>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(fetched).toEqual([
+      "/renderer-assets/isolated-renderer.0123456789abcdef.js",
+      "/renderer-assets/isolated-renderer.fedcba9876543210.css",
+    ]);
+    expect(probeState("a")).toMatchObject({ loading: "false", error: "", code: "js-code" });
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to the stable bundle filenames without assetNames", async () => {
+    const fetched: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      fetched.push(String(input));
+      return new Response("ok");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <IsolatedRendererProvider basePath="/renderer-assets">
+        <Probe id="a" />
+      </IsolatedRendererProvider>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(fetched).toEqual([
+      "/renderer-assets/isolated-renderer.js",
+      "/renderer-assets/isolated-renderer.css",
+    ]);
+    vi.unstubAllGlobals();
+  });
+
   it("reports a configuration error when neither basePath nor loader is provided", async () => {
     render(
       <IsolatedRendererProvider>

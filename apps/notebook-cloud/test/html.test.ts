@@ -101,6 +101,10 @@ describe("HTML script serialization", () => {
     assert.doesNotMatch(html, /"canSubmitExecutionRequests":true/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
     assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);
+    assert.match(
+      html,
+      /"rendererAssets":\{"js":"isolated-renderer\.js","css":"isolated-renderer\.css","siftWasm":"sift_wasm\.wasm"\}/,
+    );
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);
     assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
     assert.doesNotMatch(html, /function renderNotebook/);
@@ -112,10 +116,12 @@ describe("HTML script serialization", () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/demo/r/heads-123"),
       fakeEnv({
-        ASSETS: fakeRuntimeWasmManifestAssets(
+        ASSETS: fakeViewerAssetManifests(
           {
-            module: "runtimed_wasm.0123456789abcdef.js",
-            wasm: "runtimed_wasm_bg.fedcba9876543210.wasm",
+            runtimeWasm: {
+              module: "runtimed_wasm.0123456789abcdef.js",
+              wasm: "runtimed_wasm_bg.fedcba9876543210.wasm",
+            },
           },
           seenPaths,
         ),
@@ -125,7 +131,10 @@ describe("HTML script serialization", () => {
     const html = await response.text();
 
     assert.equal(response.status, 200);
-    assert.deepEqual(seenPaths, ["/assets/runtime-wasm-assets.json"]);
+    assert.deepEqual(seenPaths, [
+      "/assets/runtime-wasm-assets.json",
+      "/assets/renderer-sidecar-assets.json",
+    ]);
     assert.match(
       html,
       /rel="modulepreload" href="\/assets\/runtimed_wasm\.0123456789abcdef\.js" crossorigin/,
@@ -136,6 +145,62 @@ describe("HTML script serialization", () => {
     );
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.0123456789abcdef\.js"/);
     assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.fedcba9876543210\.wasm"/);
+    // No sidecar manifest deployed: stable renderer asset names remain.
+    assert.match(
+      html,
+      /"rendererAssets":\{"js":"isolated-renderer\.js","css":"isolated-renderer\.css","siftWasm":"sift_wasm\.wasm"\}/,
+    );
+  });
+
+  it("uses content-hashed renderer sidecar assets from the deploy manifest", async () => {
+    const seenPaths: string[] = [];
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo/r/heads-123"),
+      fakeEnv({
+        ASSETS: fakeViewerAssetManifests(
+          {
+            rendererSidecar: {
+              js: "isolated-renderer.0123456789abcdef.js",
+              css: "isolated-renderer.fedcba9876543210.css",
+              siftWasm: "sift_wasm.a1b2c3d4e5f60718.wasm",
+            },
+          },
+          seenPaths,
+        ),
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.ok(seenPaths.includes("/assets/renderer-sidecar-assets.json"));
+    assert.match(
+      html,
+      /"rendererAssets":\{"js":"isolated-renderer\.0123456789abcdef\.js","css":"isolated-renderer\.fedcba9876543210\.css","siftWasm":"sift_wasm\.a1b2c3d4e5f60718\.wasm"\}/,
+    );
+  });
+
+  it("falls back to stable renderer sidecar names when the manifest is invalid", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo/r/heads-123"),
+      fakeEnv({
+        ASSETS: fakeViewerAssetManifests({
+          rendererSidecar: {
+            js: "../assets/notebook-cloud-viewer.js",
+            css: "isolated-renderer.css",
+            siftWasm: "sift_wasm.wasm",
+          },
+        }),
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(
+      html,
+      /"rendererAssets":\{"js":"isolated-renderer\.js","css":"isolated-renderer\.css","siftWasm":"sift_wasm\.wasm"\}/,
+    );
   });
 
   it("does not serve legacy one-segment notebook viewer URLs", async () => {
@@ -363,16 +428,24 @@ function fakeEnv(overrides: Partial<Env> = {}): Env {
   };
 }
 
-function fakeRuntimeWasmManifestAssets(
-  manifest: { module: string; wasm: string },
+function fakeViewerAssetManifests(
+  manifests: {
+    runtimeWasm?: { module: string; wasm: string };
+    rendererSidecar?: { js: string; css: string; siftWasm: string } | Record<string, unknown>;
+  },
   seenPaths: string[] = [],
 ): Env["ASSETS"] {
   return {
     fetch: async (request: Request) => {
       const pathname = new URL(request.url).pathname;
       seenPaths.push(pathname);
-      if (pathname === "/assets/runtime-wasm-assets.json") {
-        return new Response(JSON.stringify(manifest), {
+      if (manifests.runtimeWasm && pathname === "/assets/runtime-wasm-assets.json") {
+        return new Response(JSON.stringify(manifests.runtimeWasm), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (manifests.rendererSidecar && pathname === "/assets/renderer-sidecar-assets.json") {
+        return new Response(JSON.stringify(manifests.rendererSidecar), {
           headers: { "Content-Type": "application/json" },
         });
       }

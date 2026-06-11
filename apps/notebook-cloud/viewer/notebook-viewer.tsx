@@ -171,10 +171,11 @@ export function NotebookViewer({
       preloadSiftWasmForCells(nextCells, {
         blobBasePath: config.blobBasePath,
         rendererAssetsBasePath: config.rendererAssetsBasePath,
+        siftWasmAssetName: config.rendererAssets.siftWasm,
         pageUrl: location.href,
       });
     },
-    [config.blobBasePath, config.rendererAssetsBasePath],
+    [config.blobBasePath, config.rendererAssetsBasePath, config.rendererAssets.siftWasm],
   );
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
@@ -249,12 +250,13 @@ export function NotebookViewer({
     () => ({
       nteract: {
         rendererAssetsBaseUrl: new URL(config.rendererAssetsBasePath, location.href).href,
+        siftWasmAssetName: config.rendererAssets.siftWasm,
         outputDocumentUrl: config.outputDocumentBaseUrl
           ? new URL(config.outputDocumentBaseUrl, location.href).href
           : undefined,
       },
     }),
-    [config.outputDocumentBaseUrl, config.rendererAssetsBasePath],
+    [config.outputDocumentBaseUrl, config.rendererAssetsBasePath, config.rendererAssets.siftWasm],
   );
 
   useEffect(() => {

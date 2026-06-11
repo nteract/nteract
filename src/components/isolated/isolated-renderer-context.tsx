@@ -32,6 +32,12 @@ interface IsolatedRendererProviderProps {
   children: ReactNode;
   /** Base path to fetch isolated-renderer.js and isolated-renderer.css from */
   basePath?: string;
+  /**
+   * Bundle filenames under `basePath` — content-hashed names from a deploy
+   * manifest (e.g. `isolated-renderer.<sha16>.js`) get immutable caching on
+   * the renderer-assets origin. Defaults to the stable names.
+   */
+  assetNames?: { js?: string; css?: string };
   /** Custom loader function (e.g., for Vite virtual modules) */
   loader?: () => Promise<IsolatedRendererBundle>;
 }
@@ -70,7 +76,7 @@ function subscribeLoadState(listener: () => void): () => void {
 
 function setLoadState(next: RendererBundleLoadState): void {
   loadState = next;
-  for (const listener of [...loadListeners]) {
+  for (const listener of loadListeners) {
     listener();
   }
 }
@@ -121,13 +127,20 @@ async function runRendererBundleLoad(
   }
 }
 
-async function fetchRendererBundle(basePath: string): Promise<IsolatedRendererBundle> {
+const ISOLATED_RENDERER_JS_STABLE_NAME = "isolated-renderer.js";
+const ISOLATED_RENDERER_CSS_STABLE_NAME = "isolated-renderer.css";
+
+async function fetchRendererBundle(
+  basePath: string,
+  jsName: string,
+  cssName: string,
+): Promise<IsolatedRendererBundle> {
   const [rendererCode, rendererCss] = await Promise.all([
-    fetch(`${basePath}/isolated-renderer.js`).then((r) => {
+    fetch(`${basePath}/${jsName}`).then((r) => {
       if (!r.ok) throw new Error(`Failed to fetch renderer JS: ${r.status}`);
       return r.text();
     }),
-    fetch(`${basePath}/isolated-renderer.css`).then((r) => {
+    fetch(`${basePath}/${cssName}`).then((r) => {
       if (!r.ok) throw new Error(`Failed to fetch renderer CSS: ${r.status}`);
       return r.text();
     }),
@@ -164,13 +177,16 @@ const noopRetry = () => {};
 export function IsolatedRendererProvider({
   children,
   basePath,
+  assetNames,
   loader,
 }: IsolatedRendererProviderProps) {
+  const jsName = assetNames?.js || ISOLATED_RENDERER_JS_STABLE_NAME;
+  const cssName = assetNames?.css || ISOLATED_RENDERER_CSS_STABLE_NAME;
   const loadBundle = useMemo(() => {
     if (loader) return loader;
-    if (basePath) return () => fetchRendererBundle(basePath);
+    if (basePath) return () => fetchRendererBundle(basePath, jsName, cssName);
     return null;
-  }, [basePath, loader]);
+  }, [basePath, cssName, jsName, loader]);
 
   const snapshot = useSyncExternalStore(subscribeLoadState, getLoadState, getLoadState);
 

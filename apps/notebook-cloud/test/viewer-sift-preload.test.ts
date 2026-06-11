@@ -69,6 +69,32 @@ describe("cloud viewer Sift WASM preload", () => {
     );
   });
 
+  it("prefetches the content-hashed manifest name without the ?v= query", () => {
+    const cells = [
+      cell([
+        {
+          output_type: "execute_result",
+          execution_count: 1,
+          data: {
+            "application/vnd.apache.arrow.stream": "https://cloud.test/api/n/demo/blobs/sha256",
+          },
+          metadata: {},
+        },
+      ]),
+    ];
+
+    assert.equal(
+      siftWasmPreloadUrlForCells(
+        cells,
+        preloadOptions({
+          rendererAssetsBasePath: "https://outputs.example/renderer-assets/",
+          siftWasmAssetName: "sift_wasm.0123456789abcdef.wasm",
+        }),
+      ),
+      "https://outputs.example/renderer-assets/sift_wasm.0123456789abcdef.wasm",
+    );
+  });
+
   it("uses prefetch so sandboxed output frames do not trigger unused-preload warnings", () => {
     const targetDocument = fakeDocument();
     const cells = [

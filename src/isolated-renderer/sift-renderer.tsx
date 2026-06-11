@@ -64,9 +64,11 @@ let unsubscribeHostContext: (() => void) | undefined;
 function configureWasm(blobUrl: string): void {
   lastTableUrl = blobUrl;
   try {
+    const hostNteract = getHostContext?.()?.nteract;
     const nextUrl = resolveSiftWasmUrl({
       tableUrl: blobUrl,
-      rendererAssetsBaseUrl: getHostContext?.()?.nteract?.rendererAssetsBaseUrl,
+      rendererAssetsBaseUrl: hostNteract?.rendererAssetsBaseUrl,
+      siftWasmAssetName: hostNteract?.siftWasmAssetName,
     });
     if (wasmConfigured && configuredWasmUrl === nextUrl) return;
     setWasmUrl(nextUrl);
