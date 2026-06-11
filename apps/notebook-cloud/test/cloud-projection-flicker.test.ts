@@ -1,75 +1,155 @@
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { shouldPreserveBootstrapProjection } from "../../notebook/src/lib/bootstrap-preservation.ts";
+import { getCellIdsSnapshot } from "@/components/notebook/state/cell-store";
+import {
+  getCellExecutionId,
+  getExecutionById,
+  resetNotebookExecutions,
+} from "@/components/notebook/state/execution-store";
+import { getOutputById, resetNotebookOutputs } from "@/components/notebook/state/output-store";
+import {
+  projectCloudCellsIntoNotebookViewStores,
+  resetCloudProjectionUnlessPreserved,
+  resetCloudViewStoreProjection,
+} from "../viewer/notebook-view-store-bridge.ts";
+import type { ResolvedCell } from "../viewer/render-resolution.ts";
 
 // Field-observed flicker: with IndexedDB seeding, the persisted snapshot
-// paints cells well before the live-room effect settles. The effect re-runs
-// for reasons that are NOT a notebook switch (the mount-time session-status
-// fetch replacing the session object identity), and its cleanup used to clear
-// the projection unconditionally — full notebook → one empty frame → full
-// notebook. The cleanup now reuses the desktop bootstrap-preservation gate:
-// same painted notebook with visible cells is preserved; a real notebook
-// switch or a never-painted projection still clears.
+// paints cells (and their outputs) well before the live-room effect
+// settles. The effect re-runs for reasons that are NOT a notebook switch,
+// and clearing ANY of the projected stores on those re-runs blanks the
+// notebook into a full→empty→full flash. CodeCell renders outputs and
+// execution counts exclusively through the execution/output stores, so the
+// gate must keep or clear ALL projected stores together — these tests run
+// the real gate against the real stores.
 describe("cloud projection flicker gate", () => {
-  const cloudIdentity = (notebookId: string) => `id:${notebookId}`;
+  const PAINTED = "id:nb-1";
 
-  it("preserves a painted projection when the SAME notebook reconnects", () => {
-    assert.equal(
-      shouldPreserveBootstrapProjection({
-        previousIdentity: cloudIdentity("nb-1"),
-        nextIdentity: cloudIdentity("nb-1"),
-        visibleCellCount: 4,
-      }),
-      true,
-    );
+  afterEach(() => {
+    resetCloudViewStoreProjection();
+    resetNotebookExecutions();
+    resetNotebookOutputs();
   });
 
-  it("clears when the effect re-run targets a DIFFERENT notebook", () => {
-    assert.equal(
-      shouldPreserveBootstrapProjection({
-        previousIdentity: cloudIdentity("nb-1"),
-        nextIdentity: cloudIdentity("nb-2"),
-        visibleCellCount: 4,
-      }),
-      false,
-    );
+  function paintNotebook(): void {
+    projectCloudCellsIntoNotebookViewStores([
+      {
+        id: "cell-code",
+        cellType: "code",
+        source: "print('painted')",
+        language: "python",
+        executionId: "exec-1",
+        executionCount: 3,
+        outputs: [
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "painted output\n",
+            output_id: "out-1",
+          },
+        ],
+        metadata: {},
+      },
+      {
+        id: "cell-md",
+        cellType: "markdown",
+        source: "# Painted",
+        language: null,
+        executionId: null,
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+    ] satisfies ResolvedCell[]);
+  }
+
+  function assertPainted(): void {
+    assert.deepEqual(getCellIdsSnapshot(), ["cell-code", "cell-md"]);
+    assert.equal(getCellExecutionId("cell-code"), "exec-1");
+    assert.equal(getExecutionById("exec-1")?.execution_count, 3);
+    assert.deepEqual(getExecutionById("exec-1")?.output_ids, ["out-1"]);
+    const output = getOutputById("out-1");
+    assert.equal(output?.output_type, "stream");
+  }
+
+  it("preserves cells, outputs, and execution pointers across a same-notebook re-run", () => {
+    paintNotebook();
+    assertPainted();
+
+    const preserved = resetCloudProjectionUnlessPreserved({
+      paintedNotebookIdentity: PAINTED,
+      nextNotebookIdentity: PAINTED,
+    });
+
+    assert.equal(preserved, true);
+    // The whole painted surface survives — not just the cell list. Wiping
+    // the execution/output stores while keeping cells still flickers every
+    // output and execution count (the dominant visual mass).
+    assertPainted();
   });
 
-  it("clears when nothing was ever painted", () => {
-    assert.equal(
-      shouldPreserveBootstrapProjection({
-        previousIdentity: null,
-        nextIdentity: cloudIdentity("nb-1"),
-        visibleCellCount: 0,
-      }),
-      false,
-    );
+  it("clears every projected store on a real notebook switch", () => {
+    paintNotebook();
+
+    const preserved = resetCloudProjectionUnlessPreserved({
+      paintedNotebookIdentity: PAINTED,
+      nextNotebookIdentity: "id:nb-2",
+    });
+
+    assert.equal(preserved, false);
+    assert.deepEqual(getCellIdsSnapshot(), [] as string[]);
+    assert.equal(getCellExecutionId("cell-code"), null);
+    assert.equal(getExecutionById("exec-1"), undefined);
+    assert.equal(getOutputById("out-1"), undefined);
   });
 
-  it("clears when the painted projection has no visible cells", () => {
-    assert.equal(
-      shouldPreserveBootstrapProjection({
-        previousIdentity: cloudIdentity("nb-1"),
-        nextIdentity: cloudIdentity("nb-1"),
-        visibleCellCount: 0,
-      }),
-      false,
-    );
+  it("fails closed when no painted identity was recorded", () => {
+    paintNotebook();
+
+    const preserved = resetCloudProjectionUnlessPreserved({
+      paintedNotebookIdentity: null,
+      nextNotebookIdentity: PAINTED,
+    });
+
+    assert.equal(preserved, false);
+    assert.deepEqual(getCellIdsSnapshot(), [] as string[]);
+    assert.equal(getOutputById("out-1"), undefined);
   });
 
-  // Source guardrails: pin the session wiring that composes the gate, so a
-  // refactor cannot silently reintroduce the unconditional cleanup clear.
+  it("does not preserve an empty projection", () => {
+    const preserved = resetCloudProjectionUnlessPreserved({
+      paintedNotebookIdentity: PAINTED,
+      nextNotebookIdentity: PAINTED,
+    });
+
+    assert.equal(preserved, false);
+    assert.deepEqual(getCellIdsSnapshot(), [] as string[]);
+  });
+
+  // Source pins for the session wiring that cannot run under node (the hook
+  // imports the component-bearing notebook surface): the cleanup and the
+  // next run's body must both route through the shared gate.
   describe("cloud-viewer-session wiring", () => {
     const sessionSource = readFileSync(
       new URL("../viewer/cloud-viewer-session.ts", import.meta.url),
       "utf8",
     );
 
-    it("gates the live-effect cleanup clear on bootstrap preservation", () => {
+    it("clears real notebook switches in the next run's body, before connecting", () => {
+      // The cleanup closes over its own run's config, so switch-clearing
+      // can only happen here — and a cleared switch also drops the painted
+      // identity so later gates fail closed.
       assert.match(
         sessionSource,
-        /const preserveProjection = shouldPreserveBootstrapProjection\(\{\s*previousIdentity: paintedNotebookIdentityRef\.current,\s*nextIdentity: `id:\$\{config\.notebookId\}`,\s*visibleCellCount: getCellIdsSnapshot\(\)\.length,\s*\}\);\s*if \(!preserveProjection\) \{\s*resetCloudViewStoreProjection\(\);\s*\}/,
+        /const preservedAcrossRuns = resetCloudProjectionUnlessPreserved\(\{\s*paintedNotebookIdentity: paintedNotebookIdentityRef\.current,\s*nextNotebookIdentity: `id:\$\{config\.notebookId\}`,\s*\}\);\s*if \(!preservedAcrossRuns\) \{\s*paintedNotebookIdentityRef\.current = null;\s*\}/,
+      );
+    });
+
+    it("gates the cleanup on the shared store gate with only the pool reset unconditional", () => {
+      assert.match(
+        sessionSource,
+        /resetCloudProjectionUnlessPreserved\(\{\s*paintedNotebookIdentity: paintedNotebookIdentityRef\.current,\s*nextNotebookIdentity: `id:\$\{config\.notebookId\}`,\s*\}\);\s*resetPoolState\(\);/,
       );
     });
 
@@ -80,20 +160,10 @@ describe("cloud projection flicker gate", () => {
       );
     });
 
-    it("keeps the unconditional unmount-scoped projection clear", () => {
-      assert.match(sessionSource, /useEffect\(\(\) => resetCloudViewStoreProjection, \[\]\);/);
-    });
-
-    it("shares the desktop bootstrap-preservation helper through the public surface", () => {
-      const surfaceImport = sessionSource.match(
-        /import \{[\s\S]*?\} from "\.\.\/\.\.\/notebook\/src\/notebook-surface";/,
-      );
-      assert.ok(surfaceImport, "expected a notebook-surface import");
-      assert.match(surfaceImport[0], /\bshouldPreserveBootstrapProjection\b/);
-      assert.doesNotMatch(
+    it("keeps an unconditional full clear on true unmount", () => {
+      assert.match(
         sessionSource,
-        /notebook\/src\/lib\/bootstrap-preservation/,
-        "viewer must import the helper via notebook-surface, not desktop internals",
+        /useEffect\(\s*\(\) => \(\) => \{\s*resetCloudViewStoreProjection\(\);\s*resetRuntimeState\(\);\s*resetRuntimeStoresProjection\(\);\s*\},\s*\[\],\s*\);/,
       );
     });
   });

@@ -27,7 +27,6 @@ import {
   startCursorDispatch,
   setPoolState,
   setRuntimeState,
-  shouldPreserveBootstrapProjection,
   type CellChangeset,
   type JupyterOutput as NotebookStoreJupyterOutput,
 } from "../../notebook/src/notebook-surface";
@@ -55,6 +54,7 @@ import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
   projectCloudCellsIntoNotebookViewStores,
+  resetCloudProjectionUnlessPreserved,
   resetCloudViewStoreProjection,
 } from "./notebook-view-store-bridge";
 import { CloudViewerPresenceStore } from "./presence";
@@ -188,7 +188,17 @@ export function useCloudViewerSession({
     [config.notebookId],
   );
 
-  useEffect(() => resetCloudViewStoreProjection, []);
+  // True unmount: nothing is preserved across a session teardown — clear
+  // every store the projection paints (the live effect's cleanup preserves
+  // them for same-notebook re-runs, so it cannot be the unmount janitor).
+  useEffect(
+    () => () => {
+      resetCloudViewStoreProjection();
+      resetRuntimeState();
+      resetRuntimeStoresProjection();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (authRenewalKind === "refreshing") {
@@ -667,6 +677,21 @@ export function useCloudViewerSession({
     };
     materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
+    // Notebook-switch gate (desktop beforeBootstrap placement): the effect
+    // CLEANUP closes over its own run's config, so it can only ever compare
+    // the painted identity against itself — a real switch is visible only
+    // here, to the NEXT run. Before connecting, clear every projected store
+    // when the painted cells belong to a different notebook (or nothing
+    // usable is painted); a same-notebook re-run's paint survives untouched
+    // and is replaced wholesale by this run's materialization.
+    const preservedAcrossRuns = resetCloudProjectionUnlessPreserved({
+      paintedNotebookIdentity: paintedNotebookIdentityRef.current,
+      nextNotebookIdentity: `id:${config.notebookId}`,
+    });
+    if (!preservedAcrossRuns) {
+      paintedNotebookIdentityRef.current = null;
+    }
+
     presenceStore.reset();
     resetRuntimeState();
     setConnectionError(null);
@@ -908,24 +933,22 @@ export function useCloudViewerSession({
       }
       setCrdtCommWriter(null);
       // Flicker gate (desktop bootstrap-preservation pattern): the live
-      // effect re-runs for reasons that are NOT a notebook switch — the
-      // mount-time /api/auth/session fetch replacing the session object
-      // identity, OIDC refreshes, manual retries. With IDB seeding, paint
-      // #1 lands before those re-runs, and an unconditional clear here
-      // blanked a painted notebook into a full→empty→full flicker. Same
-      // notebook + visible cells ⇒ preserve; run #2's materialization
-      // replaces in place. True unmount still clears via the mount-scoped
-      // effect above, and a different notebook identity still clears here.
-      const preserveProjection = shouldPreserveBootstrapProjection({
-        previousIdentity: paintedNotebookIdentityRef.current,
-        nextIdentity: `id:${config.notebookId}`,
-        visibleCellCount: getCellIdsSnapshot().length,
+      // effect re-runs for reasons that are NOT a notebook switch — OIDC
+      // refreshes, manual retries. With IDB seeding, paint #1 lands before
+      // those re-runs, and an unconditional clear here blanked a painted
+      // notebook into a full→empty→full flicker. The gate covers EVERY
+      // projected store together: CodeCell reads outputs and execution
+      // counts from the execution/output stores, so preserving cells while
+      // wiping those still flickered the dominant visual mass. Within this
+      // closure nextNotebookIdentity always equals the painted identity
+      // whenever cells are painted, so this honestly reduces to "painted
+      // with visible cells ⇒ preserve"; REAL notebook switches are cleared
+      // by the next run's body gate, and true unmount clears via the
+      // mount-scoped effect above.
+      resetCloudProjectionUnlessPreserved({
+        paintedNotebookIdentity: paintedNotebookIdentityRef.current,
+        nextNotebookIdentity: `id:${config.notebookId}`,
       });
-      if (!preserveProjection) {
-        resetCloudViewStoreProjection();
-      }
-      resetRuntimeState();
-      resetRuntimeStoresProjection();
       resetPoolState();
       livePresenceStore = null;
       presenceStore.reduceConnection("disconnected");
