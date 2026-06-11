@@ -48,6 +48,24 @@ export {
 // Reactive runtime-state store (framework-agnostic RxJS projections)
 export { BUSY_THROTTLE_MS, RuntimeStateStore, throttleBusyStatus } from "./runtime-state-store";
 
+// Local-first persistence (NotebookDoc bytes only; see notebookDocChanged$)
+export {
+  IndexedDbStorageAdapter,
+  type IndexedDbStorageAdapterOptions,
+} from "./persistence/indexeddb-storage-adapter";
+export {
+  NotebookDocPersistence,
+  clearPersistedNotebookDoc,
+  decodePersistedNotebookDoc,
+  encodePersistedNotebookDoc,
+  loadPersistedNotebookDoc,
+  type NotebookDocPersistenceLogger,
+  type NotebookDocPersistenceMeta,
+  type NotebookDocPersistenceOptions,
+  type PersistedNotebookDoc,
+} from "./persistence/notebook-doc-persistence";
+export type { StorageAdapter, StorageChunk, StorageKey } from "./persistence/storage-adapter";
+
 // Scope capabilities (generated from nteract_identity::ConnectionScope)
 export {
   CONNECTION_SCOPES,

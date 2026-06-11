@@ -1,10 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import type { PersistedNotebookDoc } from "runtimed";
 import {
   CloudWebSocketTransport,
+  cloudPrincipalFromActorLabel,
   cloudRoomReadyPeerLabel,
+  isAnonymousCloudPrincipal,
   isRecoverableCloudFrameRejection,
   normalizeConnectionScope,
+  resolveCloudNotebookHandle,
+  shouldDiscardPersistedSeedOnRejection,
   startCloudBootstrapSync,
   syncUrl,
   syncableCloudHandle,
@@ -229,6 +234,22 @@ describe("cloud live sync", () => {
     }
 
     assert.equal(warnings.length, 1);
+  });
+
+  it("derives the connection principal from the actor label", () => {
+    assert.equal(
+      cloudPrincipalFromActorLabel("user:dev:alice/browser:session-1"),
+      "user:dev:alice",
+    );
+    assert.equal(cloudPrincipalFromActorLabel("anonymous:abc/browser:abc"), "anonymous:abc");
+    // No operator segment: the whole label is the principal.
+    assert.equal(cloudPrincipalFromActorLabel("user:dev:alice"), "user:dev:alice");
+  });
+
+  it("classifies anonymous principals", () => {
+    assert.equal(isAnonymousCloudPrincipal("anonymous:abc"), true);
+    assert.equal(isAnonymousCloudPrincipal("user:dev:alice"), false);
+    assert.equal(isAnonymousCloudPrincipal("user:anaconda:uuid-123"), false);
   });
 
   it("notifies disconnect when a send sees a closing socket before the close event", async () => {
@@ -481,6 +502,206 @@ describe("cloud live sync", () => {
     } finally {
       fake.restore();
     }
+  });
+});
+
+describe("cloud persisted-seed handle resolution", () => {
+  const ACTOR_LABEL = "user:dev:alice/browser:session-1";
+
+  function persistedRecord(principal: string): PersistedNotebookDoc {
+    return {
+      bytes: new Uint8Array([7, 8, 9]),
+      meta: { headsHex: ["aa"], savedAt: 123, principal, schemaVersion: 1 },
+    };
+  }
+
+  function createHarness(record: PersistedNotebookDoc | undefined) {
+    const calls: string[] = [];
+    const loadedBytes: Uint8Array[] = [];
+    return {
+      calls,
+      loadedBytes,
+      options: {
+        actorLabel: ACTOR_LABEL,
+        persistence: {
+          loadPersisted: async () => {
+            calls.push("loadPersisted");
+            return record;
+          },
+          clear: async () => {
+            calls.push("clear");
+          },
+        },
+        createBootstrap: async () => {
+          calls.push("createBootstrap");
+          return "bootstrap-handle";
+        },
+        loadFromBytes: async (bytes: Uint8Array) => {
+          calls.push("loadFromBytes");
+          loadedBytes.push(bytes);
+          return "seeded-handle";
+        },
+      },
+    };
+  }
+
+  async function withSilencedWarnings<T>(run: () => Promise<T>): Promise<T> {
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      return await run();
+    } finally {
+      console.warn = originalWarn;
+    }
+  }
+
+  it("bootstraps when no persistence is wired", async () => {
+    const harness = createHarness(undefined);
+    const resolved = await resolveCloudNotebookHandle({
+      ...harness.options,
+      persistence: undefined,
+    });
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "bootstrap" });
+    assert.deepEqual(harness.calls, ["createBootstrap"]);
+  });
+
+  it("bootstraps without touching persistence for anonymous principals", async () => {
+    // Anonymous principals are per-connection: a record can never match the
+    // next session, and an anonymous session must never clear a signed-in
+    // user's record on principal mismatch.
+    const harness = createHarness(persistedRecord("anonymous:other-session"));
+    const resolved = await resolveCloudNotebookHandle({
+      ...harness.options,
+      actorLabel: "anonymous:session-1/browser:session-1",
+    });
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "bootstrap" });
+    assert.deepEqual(harness.calls, ["createBootstrap"]);
+  });
+
+  it("bootstraps without clearing when no record exists", async () => {
+    const harness = createHarness(undefined);
+    const resolved = await resolveCloudNotebookHandle(harness.options);
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "bootstrap" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "createBootstrap"]);
+  });
+
+  it("seeds from persisted bytes when the principal matches", async () => {
+    const harness = createHarness(persistedRecord("user:dev:alice"));
+    const resolved = await resolveCloudNotebookHandle(harness.options);
+
+    assert.deepEqual(resolved, { handle: "seeded-handle", outcome: "seeded" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "loadFromBytes"]);
+    assert.deepEqual(harness.loadedBytes, [new Uint8Array([7, 8, 9])]);
+  });
+
+  it("clears the record and bootstraps on principal mismatch", async () => {
+    const harness = createHarness(persistedRecord("user:dev:mallory"));
+    const resolved = await resolveCloudNotebookHandle(harness.options);
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+  });
+
+  it("clears the record and bootstraps when meta is missing or corrupt", async () => {
+    const harness = createHarness({ bytes: new Uint8Array([7, 8, 9]), meta: null });
+    const resolved = await resolveCloudNotebookHandle(harness.options);
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+  });
+
+  it("clears the record and bootstraps when a torn envelope has no bytes", async () => {
+    const record = persistedRecord("user:dev:alice");
+    const harness = createHarness({ meta: record.meta });
+    const resolved = await resolveCloudNotebookHandle(harness.options);
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+  });
+
+  it("clears the record and bootstraps when the persisted bytes fail to load", async () => {
+    const harness = createHarness(persistedRecord("user:dev:alice"));
+    harness.options.loadFromBytes = async () => {
+      harness.calls.push("loadFromBytes");
+      throw new Error("automerge load failed");
+    };
+
+    const resolved = await withSilencedWarnings(() => resolveCloudNotebookHandle(harness.options));
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "loadFromBytes", "clear", "createBootstrap"]);
+  });
+
+  it("fails open as read_failed without clearing when the storage read fails", async () => {
+    const harness = createHarness(undefined);
+    harness.options.persistence = {
+      loadPersisted: async () => {
+        harness.calls.push("loadPersisted");
+        throw new Error("indexedDB unavailable mid-session");
+      },
+      clear: async () => {
+        harness.calls.push("clear");
+      },
+    };
+
+    const resolved = await withSilencedWarnings(() => resolveCloudNotebookHandle(harness.options));
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "read_failed" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "createBootstrap"]);
+  });
+
+  it("fails open as read_failed when the storage read never settles", async () => {
+    const harness = createHarness(undefined);
+    harness.options.persistence = {
+      loadPersisted: () => {
+        harness.calls.push("loadPersisted");
+        return new Promise(() => undefined); // hung IDB open
+      },
+      clear: async () => {
+        harness.calls.push("clear");
+      },
+    };
+
+    const resolved = await withSilencedWarnings(() =>
+      resolveCloudNotebookHandle({ ...harness.options, readTimeoutMs: 5 }),
+    );
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "read_failed" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "createBootstrap"]);
+  });
+
+  it("still bootstraps when clearing a rejected record fails", async () => {
+    const harness = createHarness(persistedRecord("user:dev:mallory"));
+    harness.options.persistence.clear = async () => {
+      harness.calls.push("clear");
+      throw new Error("removeRange failed");
+    };
+
+    const resolved = await withSilencedWarnings(() => resolveCloudNotebookHandle(harness.options));
+
+    assert.deepEqual(resolved, { handle: "bootstrap-handle", outcome: "cleared" });
+    assert.deepEqual(harness.calls, ["loadPersisted", "clear", "createBootstrap"]);
+  });
+
+  it("discards the persisted seed only for seeded sessions hitting sync rejections", () => {
+    const rejection = {
+      type: "cloud_frame_rejected" as const,
+      notebook_id: "room",
+      peer_id: "peer-1",
+      frame_type: FrameType.AUTOMERGE_SYNC,
+      reason: "connection scope cannot write NotebookDoc changes",
+      timestamp: "2026-06-11T00:00:00.000Z",
+    };
+
+    assert.equal(shouldDiscardPersistedSeedOnRejection(rejection, true), true);
+    assert.equal(shouldDiscardPersistedSeedOnRejection(rejection, false), false);
+    assert.equal(
+      shouldDiscardPersistedSeedOnRejection({ ...rejection, frame_type: FrameType.REQUEST }, true),
+      false,
+    );
   });
 });
 

@@ -1384,6 +1384,175 @@ describe("SyncEngine", () => {
     });
   });
 
+  // ── notebookDocChanged$ ───────────────────────────────────────
+
+  describe("notebookDocChanged$", () => {
+    it("fires on inbound sync_applied with changed=true", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({ changed: true }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      transport.deliver(Array.from([0x00, 1]));
+      expect(emissions).toBe(1);
+      engine.stop();
+    });
+
+    it("does not fire on sync_applied with changed=false", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({ changed: false, reply: [10, 20] }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      transport.deliver(Array.from([0x00, 1]));
+      expect(emissions).toBe(0);
+      engine.stop();
+    });
+
+    it("fires on a local flush that produces bytes", () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      engine.flush();
+      expect(emissions).toBe(1);
+      engine.stop();
+    });
+
+    it("does not fire on a no-op flush", () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(null);
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      engine.flush();
+      expect(emissions).toBe(0);
+      engine.stop();
+    });
+
+    it("fires on the flush attempt even when delivery fails", async () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+      transport.simulateFailure = true;
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      engine.flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // The doc changed locally either way — cancel_last_flush rolled back
+      // sync bookkeeping, not the document.
+      expect(emissions).toBe(1);
+      expect(handle.cancel_last_flush).toHaveBeenCalled();
+      engine.stop();
+    });
+
+    it("fires on flushAndWait when it produces bytes", async () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      await engine.flushAndWait();
+      expect(emissions).toBe(1);
+      engine.stop();
+    });
+
+    it("does not fire for runtime-state or comms doc sync events", () => {
+      // ADR invariant: persist NotebookDoc bytes only. Output/widget churn
+      // arrives as runtime_state/comms sync events and must never become
+      // full-doc snapshot writes.
+      (handle.receive_frame as ReturnType<typeof vi.fn>)
+        .mockReturnValueOnce([
+          runtimeStateSyncEvent(
+            makeRuntimeState({
+              "exec-1": { status: "running", execution_count: 1, success: null },
+            }),
+          ),
+        ])
+        .mockReturnValueOnce([commsDocSyncEvent({ "comm-1": { value: 1 } })]);
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      transport.deliver(Array.from([0x05, 1]));
+      transport.deliver(Array.from([0x09, 1]));
+      expect(emissions).toBe(0);
+      engine.stop();
+    });
+
+    it("does not fire when only non-notebook flushes produce bytes", () => {
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      (handle.flush_runtime_state_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([4, 5, 6]),
+      );
+      (handle.flush_comms_doc_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([8, 9, 10]),
+      );
+      (handle.flush_pool_state_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([7, 8, 9]),
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      let emissions = 0;
+      engine.notebookDocChanged$.subscribe(() => {
+        emissions++;
+      });
+
+      engine.flush();
+      expect(emissions).toBe(0);
+      engine.stop();
+    });
+  });
+
   // ── resetAndResync ────────────────────────────────────────────
 
   describe("resetAndResync", () => {

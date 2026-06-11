@@ -53,6 +53,30 @@ export async function createBootstrapNotebookHandle(
   return module.NotebookHandle.create_bootstrap(actorLabel);
 }
 
+export async function loadNotebookHandleFromBytes(
+  notebookBytes: Uint8Array,
+  actorLabel: string,
+  modulePath: string | URL,
+  moduleOrPath: WasmModuleOrPath,
+): Promise<NotebookHandle> {
+  const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
+  const handle = module.NotebookHandle.load(notebookBytes);
+  try {
+    // load() restores NotebookDoc bytes only (state/comms docs start empty)
+    // and leaves a random actor — the connection's label must be set before
+    // any authoring. Actor labels must never be reused across doc instances
+    // (DuplicateSeqNumber); freshness comes from the CLIENT-minted operator
+    // nonce (`browser:<sessionId>`, re-minted per connect effect run) — the
+    // worker only rewrites the principal segment, it does not mint the
+    // operator. Keep sessionId per-run or this invariant silently breaks.
+    handle.set_actor(actorLabel);
+  } catch (error) {
+    handle.free();
+    throw error;
+  }
+  return handle;
+}
+
 export async function loadSnapshotPairHandle(
   notebookBytes: Uint8Array,
   runtimeStateBytes: Uint8Array,
