@@ -35,8 +35,12 @@ interface CrdtBridgeContextValue {
   getHandle: () => NotebookHandle | null;
   /** Host capability gate for outbound source mutations for a specific cell. */
   canWriteSource?: (cellId: string) => boolean;
-  /** Signal that the CRDT was mutated and needs syncing to daemon. */
-  onSyncNeeded: () => void;
+  /**
+   * Signal that the CRDT was mutated and needs syncing to daemon. The hook
+   * supplies the mutated cell's id; hosts that only trigger sync may ignore
+   * it (the cloud viewer's offline-merge tracking consumes it).
+   */
+  onSyncNeeded: (cellId?: string) => void;
   /** Local actor label (e.g. "local:kyle/desktop:abcd1234") for filtering self-echo attributions. */
   localActor: string;
 }
@@ -48,7 +52,7 @@ const CrdtBridgeContext = createContext<CrdtBridgeContextValue | null>(null);
 interface CrdtBridgeProviderProps {
   getHandle: () => NotebookHandle | null;
   canWriteSource?: (cellId: string) => boolean;
-  onSyncNeeded: () => void;
+  onSyncNeeded: (cellId?: string) => void;
   localActor: string;
   children: ReactNode;
 }
@@ -112,7 +116,7 @@ export function useCrdtBridge(cellId: string): {
         updateCellSourceById(cellId, source);
       },
       onSyncNeeded: () => {
-        ctxRef.current.onSyncNeeded();
+        ctxRef.current.onSyncNeeded(cellId);
       },
     });
   }, [cellId]);

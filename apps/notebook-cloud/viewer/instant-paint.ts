@@ -26,8 +26,15 @@
  * NotebookDoc seed record (which may hold offline edits).
  */
 
-import type { PersistedNotebookDoc } from "runtimed";
-import type { CloudPrototypeAuthState } from "./collaborator-auth";
+import {
+  RUNTIME_STATE_CACHE_KEY_SEGMENT,
+  clearPersistedNotebookRecord,
+  loadPersistedNotebookDoc,
+  loadPersistedNotebookRecord,
+  type PersistedNotebookDoc,
+  type StorageAdapter,
+} from "runtimed";
+import { devPrincipalLabel, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { isAnonymousCloudPrincipal, withReadyTimeout } from "./live-sync";
 
 /**
@@ -37,15 +44,6 @@ import { isAnonymousCloudPrincipal, withReadyTimeout } from "./live-sync";
 const INSTANT_PAINT_READ_TIMEOUT_MS = 2_000;
 
 const DEV_PRINCIPAL_PREFIX = "user:dev:";
-
-/**
- * Mirrors the worker's `principalForDevUser` (src/identity.ts):
- * `user:dev:<encodePrincipalComponent(user)>`, where the encoder is
- * `encodeURIComponent`.
- */
-function devPrincipalForUser(user: string): string {
-  return `${DEV_PRINCIPAL_PREFIX}${encodeURIComponent(user.trim() || "browser-editor")}`;
-}
 
 /**
  * Derive a principal matcher from locally stored auth material, WITHOUT
@@ -61,6 +59,21 @@ function devPrincipalForUser(user: string): string {
  *   as the principal's id segment and rejects the namespaces it cannot
  *   belong to (anonymous, dev).
  *
+ * HEURISTIC, deliberately weaker than the post-handshake guard. The
+ * full-principal equality check in `resolveCloudNotebookHandle` compares
+ * against the handshake's actual principal; this matcher cannot, because
+ * the OIDC namespace is server configuration that is not client-derivable
+ * before the first handshake. Its namespace-agnostic id-segment match is
+ * sound today only because browser-written records carry exactly one of:
+ * `user:dev:*` (rejected here unless dev-derived), the deployment's
+ * single OIDC/API-key namespace, or anonymous (never persisted at all).
+ * Adding a browser-reachable auth provider whose subject space overlaps
+ * the OIDC sub space widens this match — revisit then. The backstops if
+ * it ever false-positives: the post-handshake guard clears the mismatched
+ * seed, the live materialization replaces the paint wholesale, and an
+ * authoritative EMPTY room displaces it too (the zero-cell guard's
+ * caught-up displacement) — a foreign paint cannot outlive the handshake.
+ *
  * Anonymous principals never match any matcher: they are per-connection
  * nonces and persisted records are never written for them anyway.
  */
@@ -69,7 +82,7 @@ export function cloudInstantPaintPrincipalMatcher(
   options: { hasAppSession?: boolean } = {},
 ): ((principal: string) => boolean) | null {
   if (authState.mode === "dev" && authState.token) {
-    const expected = devPrincipalForUser(authState.user ?? "browser-editor");
+    const expected = devPrincipalLabel(authState.user ?? "browser-editor");
     return (principal) => !isAnonymousCloudPrincipal(principal) && principal === expected;
   }
 
@@ -86,6 +99,48 @@ export function cloudInstantPaintPrincipalMatcher(
   }
 
   return null;
+}
+
+/**
+ * Zero-cell displacement policy for the live materialization path.
+ *
+ * An empty SYNCING handle usually means the bootstrap exchange has not
+ * delivered the room's content yet, and applying it would blank a painted
+ * (instant paint) or preserved notebook — so a zero-cell materialization
+ * is skipped while cells are showing. But once the handle has provably
+ * caught up to the room's advertised heads, zero cells IS the room's
+ * truth: live emptiness must displace whatever is showing. This is the
+ * principal-matcher heuristic's backstop — a false-positive paint must
+ * not outlive the handshake, even over a room with nothing to send. With
+ * nothing painted, the empty state may always show once the pinned
+ * snapshot path has resolved.
+ */
+export function shouldDisplayEmptyLiveNotebook({
+  snapshotResolved,
+  paintedCellCount,
+  handleCaughtUp,
+}: {
+  snapshotResolved: boolean;
+  paintedCellCount: number;
+  handleCaughtUp: boolean;
+}): boolean {
+  if (!snapshotResolved) return false;
+  return paintedCellCount === 0 || handleCaughtUp;
+}
+
+/**
+ * `notebook_doc_caught_up()` with deployed-handle tolerance: an older WASM
+ * bundle without the export reports not-caught-up, degrading to the
+ * previous behavior (painted cells are never displaced by emptiness).
+ */
+export function cloudNotebookHandleCaughtUp(handle: {
+  notebook_doc_caught_up?: () => boolean;
+}): boolean {
+  try {
+    return handle.notebook_doc_caught_up?.() ?? false;
+  } catch {
+    return false;
+  }
 }
 
 export type CloudInstantPaintOutcome =
@@ -116,9 +171,13 @@ export interface CloudInstantPaintOptions<Handle> {
     runtimeStateBytes: Uint8Array | undefined,
   ) => Promise<Handle>;
   /**
-   * Race guard: re-checked after every await. A live materialization that
-   * wins the race against the cache read flips this to false and the
-   * paint is skipped — stale cache must never overwrite live pixels.
+   * Race guard: re-checked after every await that precedes a paintable
+   * decision or a destructive step (the cache-record clear). A handle may
+   * still be returned after a late flip — callers must re-check before
+   * materializing and must always free the handle. A live materialization
+   * that wins the race flips this to false and the paint is skipped —
+   * stale cache must never overwrite live pixels, and a stale ATTEMPT
+   * must never clear a record the live session may have just rewritten.
    */
   shouldContinue?: () => boolean;
   /**
@@ -196,6 +255,13 @@ export async function resolveCloudInstantPaintHandle<Handle>({
     return { handle, outcome: runtimeStateBytes ? "painted" : "painted_cells_only" };
   } catch (error) {
     if (runtimeStateBytes && !isTransientLoadFailure(error)) {
+      // Seconds can elapse inside loadRenderHandle (the WASM init ladder),
+      // and the clear decision was made against the OLD bytes: a stale
+      // attempt must not delete a fresh record the live session's save
+      // loop may have just written under the same key.
+      if (!shouldContinue()) {
+        return { handle: null, outcome: "skipped_superseded" };
+      }
       // load_snapshot rejected with cache bytes in play: treat the cache
       // as corrupt, clear ONLY that record, and retry cells-only — the
       // notebook envelope may be fine.
@@ -231,5 +297,102 @@ async function clearCacheRecord(clear: () => Promise<void>): Promise<void> {
     await clear();
   } catch (error) {
     console.warn("[notebook-cloud] failed to clear runtime-state cache record", error);
+  }
+}
+
+/**
+ * The instant paint's storage bindings: which record each resolver
+ * dependency reads, and — load-bearing — that the corrupt-cache clear
+ * targets ONLY `[notebookId, "runtime-state-cache"]`. The NotebookDoc
+ * seed record may hold the only copy of offline edits; a paint-side
+ * clear must never be able to touch it. Built here (not inline in the
+ * session) so the binding is testable against a real adapter.
+ */
+export function cloudInstantPaintStorageOptions(
+  adapter: StorageAdapter,
+  notebookId: string,
+): Pick<
+  CloudInstantPaintOptions<never>,
+  "loadNotebookRecord" | "loadRuntimeStateCacheRecord" | "clearRuntimeStateCacheRecord"
+> {
+  return {
+    loadNotebookRecord: () => loadPersistedNotebookDoc(adapter, notebookId),
+    loadRuntimeStateCacheRecord: () =>
+      loadPersistedNotebookRecord(adapter, notebookId, RUNTIME_STATE_CACHE_KEY_SEGMENT),
+    clearRuntimeStateCacheRecord: () =>
+      clearPersistedNotebookRecord(adapter, notebookId, RUNTIME_STATE_CACHE_KEY_SEGMENT),
+  };
+}
+
+export type CloudInstantPaintRunOutcome = CloudInstantPaintOutcome | "skipped_empty_snapshot";
+
+export interface CloudInstantPaintRunOptions<Handle, Materialized extends { cells: unknown[] }> {
+  /** Typically `resolveCloudInstantPaintHandle` — yields the throwaway handle. */
+  resolveHandle: () => Promise<ResolvedCloudInstantPaint<Handle>>;
+  /**
+   * The freshness flag (`!disposed && !liveMaterialized`). Re-checked here
+   * after EVERY await: a live materialization that lands first — or while
+   * the cache decodes, materializes, or projects widgets — wins, and no
+   * later step applies stale cache over it.
+   */
+  isFresh: () => boolean;
+  /**
+   * Progressive materialization of the render handle. Receives the
+   * freshness flag for its progressive-apply callbacks (`shouldContinue`).
+   */
+  materialize: (handle: Handle, shouldContinue: () => boolean) => Promise<Materialized>;
+  /** Synchronous adoption of notebook language + metadata. */
+  acceptMetadata: (materialized: Materialized) => void;
+  /** Async widget-comm projection; receives the freshness flag. */
+  projectWidgets: (materialized: Materialized, shouldContinue: () => boolean) => Promise<void>;
+  /** Final wholesale apply + status + milestone. Only invoked while fresh. */
+  applyPaint: (materialized: Materialized) => void;
+  /** Free the throwaway handle; runs whenever a handle was resolved. */
+  freeHandle: (handle: Handle) => void;
+}
+
+/**
+ * Drive one instant-paint attempt end to end: resolve the throwaway
+ * handle, materialize it, project widget comms, apply the final cells —
+ * with the freshness re-check between every step and the handle freed on
+ * every exit path. The session injects its store/status effects; the
+ * sequencing and the race guard live here, under test.
+ */
+export async function runCloudInstantPaint<Handle, Materialized extends { cells: unknown[] }>({
+  resolveHandle,
+  isFresh,
+  materialize,
+  acceptMetadata,
+  projectWidgets,
+  applyPaint,
+  freeHandle,
+}: CloudInstantPaintRunOptions<Handle, Materialized>): Promise<CloudInstantPaintRunOutcome> {
+  const resolved = await resolveHandle();
+  const handle = resolved.handle;
+  if (handle === null) {
+    return resolved.outcome;
+  }
+  try {
+    if (!isFresh()) {
+      return "skipped_superseded";
+    }
+    const materialized = await materialize(handle, isFresh);
+    if (!isFresh()) {
+      return "skipped_superseded";
+    }
+    if (materialized.cells.length === 0) {
+      // An empty persisted snapshot paints nothing: the room decides what
+      // an empty notebook means.
+      return "skipped_empty_snapshot";
+    }
+    acceptMetadata(materialized);
+    await projectWidgets(materialized, isFresh);
+    if (!isFresh()) {
+      return "skipped_superseded";
+    }
+    applyPaint(materialized);
+    return resolved.outcome;
+  } finally {
+    freeHandle(handle);
   }
 }

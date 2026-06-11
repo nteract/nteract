@@ -682,4 +682,32 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       loaded.free();
     });
   });
+
+  // ── notebook_doc_caught_up (sync authority fact) ─────────────────
+
+  describe("notebook_doc_caught_up", () => {
+    it("is false before any exchange and true after a zero-change handshake settles", async () => {
+      // The no-change convergence is the load-bearing case: an empty room
+      // answers the bootstrap handshake heads-only, with no cellChanges$
+      // ever firing — caught-up is the only proof its emptiness is truth.
+      expect(h.client.notebook_doc_caught_up()).toBe(false);
+
+      await h.startAndCompleteSync();
+
+      expect(h.client.notebook_doc_caught_up()).toBe(true);
+    });
+
+    it("stays false while the peer has advertised heads whose changes have not arrived", async () => {
+      // Drive the protocol by hand: the first sync message carries heads
+      // and bloom only — the client learns what the server HAS before it
+      // has it, and must not report caught-up on that knowledge alone.
+      h.serverAddCell("cell-1", "code");
+      const firstMessage = h.server.flush_local_changes();
+      expect(firstMessage).toBeTruthy();
+
+      h.client.receive_sync_message(firstMessage!);
+
+      expect(h.client.notebook_doc_caught_up()).toBe(false);
+    });
+  });
 });

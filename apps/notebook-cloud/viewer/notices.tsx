@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertCircle, CloudOff, ImageOff, Loader2, LogIn, RotateCcw } from "lucide-react";
+import { AlertCircle, Cloud, CloudOff, ImageOff, Loader2, LogIn, RotateCcw } from "lucide-react";
 import {
   NotebookNotice,
   NotebookNoticeAction,
@@ -14,6 +14,7 @@ import {
 } from "./connection-diagnostics";
 import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
+import type { OfflineMergeNoticeData } from "./offline-merge-tracker";
 
 export interface CloudNotebookNoticesProps {
   authState: CloudPrototypeAuthState;
@@ -29,6 +30,15 @@ export interface CloudNotebookNoticesProps {
    * real outage surfaces one calm sentence.
    */
   sustainedReconnecting?: boolean;
+  /**
+   * One quiet line per outage after a reconnect completed with
+   * locally-authored work pending across the gap (offline-merge tracker).
+   * Cleared by the next user action or a short timeout; a reconnect with
+   * nothing pending never sets it. Coexists with the sustained-reconnecting
+   * line naturally: that one clears the moment the room is back, exactly
+   * when this one can first appear.
+   */
+  offlineMergeNotice?: OfflineMergeNoticeData | null;
   status: ViewerStatus;
   diagnostics?: ReactNode;
   /**
@@ -89,6 +99,7 @@ export function cloudNotebookHasNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
   status,
@@ -110,6 +121,7 @@ export function cloudNotebookHasNotices({
     shouldShowAuthNotice ||
     shouldShowAuthRenewalNotice ||
     sustainedReconnecting ||
+    Boolean(offlineMergeNotice) ||
     Boolean(connectionNotice) ||
     Boolean(rendererAssetError) ||
     Boolean(diagnostics) ||
@@ -123,6 +135,7 @@ export function CloudNotebookNotices({
   connectionError,
   hasAppSession = false,
   hasReadableSnapshot = false,
+  offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
   status,
@@ -139,6 +152,7 @@ export function CloudNotebookNotices({
       connectionError,
       hasAppSession,
       hasReadableSnapshot,
+      offlineMergeNotice,
       rendererAssetError,
       sustainedReconnecting,
       status,
@@ -196,6 +210,16 @@ export function CloudNotebookNotices({
       {sustainedReconnecting ? (
         <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
           Your edits are kept locally and will sync when the connection returns.
+        </NotebookNotice>
+      ) : null}
+
+      {offlineMergeNotice ? (
+        <NotebookNotice
+          tone="info"
+          icon={<Cloud className="h-4 w-4" />}
+          title={offlineMergeNoticeTitle(offlineMergeNotice)}
+        >
+          {offlineMergeRemovedCellsLine(offlineMergeNotice.removedEditedCellCount)}
         </NotebookNotice>
       ) : null}
 
@@ -330,6 +354,36 @@ function ConnectionNoticeAction({
   // signed-in session for errors auth could never fix. With no retry wired,
   // the notice text stands on its own.
   return null;
+}
+
+/**
+ * Calm one-liner for the offline-merge notice. The collaborator suffix
+ * appears only when the count is known AND non-zero — a null count means a
+ * full-materialization changeset made it unknowable, and the quiet rules
+ * say drop the suffix rather than guess.
+ */
+export function offlineMergeNoticeTitle(notice: OfflineMergeNoticeData): string {
+  const count = notice.mergedRemoteCellCount;
+  if (count === null || count === 0) {
+    return "Synced your offline edits.";
+  }
+  const noun = count === 1 ? "update" : "updates";
+  return `Synced your offline edits — ${count} ${noun} from collaborators merged.`;
+}
+
+/**
+ * The sharp edge, stated once and plainly: a cell that carried offline
+ * edits is gone from the post-resync notebook. Automerge does not
+ * resurrect it, so the user deserves one line saying where the work went.
+ */
+export function offlineMergeRemovedCellsLine(removedEditedCellCount: number): string | null {
+  if (removedEditedCellCount <= 0) {
+    return null;
+  }
+  if (removedEditedCellCount === 1) {
+    return "A cell you edited offline was removed by a collaborator.";
+  }
+  return `${removedEditedCellCount} cells you edited offline were removed by a collaborator.`;
 }
 
 function isStatusDerivedFromConnectionError(

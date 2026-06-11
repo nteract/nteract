@@ -72,6 +72,7 @@ import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { cloudPresenceHasRuntimePeer, cloudPresenceRuntimePeerCount } from "./presence";
 import type { ResolvedCell } from "./render-resolution";
 import { CloudNotebookNotices, cloudNotebookHasNotices } from "./notices";
+import { useOfflineMergeNoticeAutoClear } from "./use-offline-merge-notice";
 import { useSustainedReconnecting } from "./use-sustained-reconnecting";
 import type { ViewerStatus } from "./notice-types";
 import type { CloudNotebookAccessRequest } from "./sharing-client";
@@ -207,6 +208,10 @@ export function NotebookViewer({
     liveRuntimeRef,
     notebookLanguageRef,
     notebookMetadata,
+    offlineMergeNotice,
+    clearOfflineMergeNotice,
+    noteLocalCellEdit,
+    noteLocalCellDelete,
     presenceStore,
     requestCloudMaterialization,
     retryLiveConnection,
@@ -235,6 +240,9 @@ export function NotebookViewer({
   // dot by design, so once "reconnecting" outlives the debounce the notices
   // stack carries the one calm line (and clears it when the room is back).
   const sustainedReconnecting = useSustainedReconnecting(connectionStatus$);
+  // The offline-merge notice is a confirmation, not a warning: it clears on
+  // the next user action or a short timeout, never demanding a dismissal.
+  useOfflineMergeNoticeAutoClear(offlineMergeNotice, clearOfflineMergeNotice);
   // Shared renderer-bundle state from the root IsolatedRendererProvider
   // (CloudNotebookProviders): drives the single asset-health notice below.
   const isolatedRenderer = useIsolatedRenderer();
@@ -452,9 +460,12 @@ export function NotebookViewer({
   );
   const handleCloudDeleteCell = useCallback(
     (cellId: string) => {
+      // The user's own delete must never read as a collaborator removal in
+      // the offline-merge notice.
+      noteLocalCellDelete(cellId);
       cloudNotebookController.deleteCell(cellId);
     },
-    [cloudNotebookController],
+    [cloudNotebookController, noteLocalCellDelete],
   );
   const handleCloudMoveCell = useCallback(
     (cellId: string, afterCellId?: string | null) => {
@@ -614,10 +625,19 @@ export function NotebookViewer({
         : null,
     [connectionPeerId],
   );
-  const handleSourceSyncNeeded = useCallback(() => {
-    if (!shellCapabilities.canEditCells && !shellCapabilities.canEditMarkdown) return;
-    liveRuntimeRef.current?.engine.scheduleFlush();
-  }, [shellCapabilities.canEditCells, shellCapabilities.canEditMarkdown]);
+  const handleSourceSyncNeeded = useCallback(
+    (cellId?: string) => {
+      if (!shellCapabilities.canEditCells && !shellCapabilities.canEditMarkdown) return;
+      if (cellId) {
+        // Offline-merge tracking: the bridge only signals after a real
+        // handle mutation, so this is an honest "this cell carried a local
+        // edit" fact (counted only while the offline window is open).
+        noteLocalCellEdit(cellId);
+      }
+      liveRuntimeRef.current?.engine.scheduleFlush();
+    },
+    [shellCapabilities.canEditCells, shellCapabilities.canEditMarkdown, noteLocalCellEdit],
+  );
   const resetPrototypeAuth = useCallback(() => {
     void clearCloudAppSession().catch((error: unknown) => {
       console.warn("[notebook-cloud] app session clear failed", error);
@@ -936,6 +956,7 @@ export function NotebookViewer({
     diagnostics: accessRequestNotice,
     hasAppSession: Boolean(appSessionStatus.session),
     hasReadableSnapshot: notebookHasReadableSnapshot,
+    offlineMergeNotice,
     rendererAssetError,
     sustainedReconnecting,
     status: noticeStatus,
@@ -948,6 +969,7 @@ export function NotebookViewer({
       diagnostics={accessRequestNotice}
       hasAppSession={Boolean(appSessionStatus.session)}
       hasReadableSnapshot={notebookHasReadableSnapshot}
+      offlineMergeNotice={offlineMergeNotice}
       rendererAssetError={rendererAssetError}
       sustainedReconnecting={sustainedReconnecting}
       status={noticeStatus}

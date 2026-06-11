@@ -24,6 +24,25 @@ export function cloudConnectionErrorAcceptsAccessDiagnostic(message: string): bo
   return !isRuntimedWasmAssetFailure(message);
 }
 
+/**
+ * Merge a LATE-resolving access diagnostic into the connection error that
+ * is current at resolution time. Guarding only at kick time is not
+ * enough: `diagnoseCloudConnectionAccess` has no deadline, and by the
+ * time it resolves a terminal WASM asset failure may own the notice — its
+ * Retry affordance must not be replaced with auth-flavored copy whose
+ * "Use anonymous" action can destroy a signed-in session without fixing
+ * the asset load.
+ */
+export function cloudConnectionErrorWithAccessDiagnostic(
+  current: string | null,
+  diagnostic: string,
+): string {
+  if (current !== null && !cloudConnectionErrorAcceptsAccessDiagnostic(current)) {
+    return current;
+  }
+  return diagnostic;
+}
+
 export interface DiagnoseCloudConnectionAccessOptions {
   accessRequestsEndpoint: string;
   authState: CloudPrototypeAuthState;

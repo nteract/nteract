@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   IndexedDbStorageAdapter,
-  RUNTIME_STATE_CACHE_KEY_SEGMENT,
   clearPersistedNotebookDoc,
-  clearPersistedNotebookRecord,
   loadPersistedNotebookDoc,
-  loadPersistedNotebookRecord,
   type BlobResolver,
   type CommChanges,
 } from "runtimed";
@@ -17,6 +14,7 @@ import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import type { WidgetStore } from "@/components/widgets/widget-store";
 import {
   cloudConnectionErrorAcceptsAccessDiagnostic,
+  cloudConnectionErrorWithAccessDiagnostic,
   diagnoseCloudConnectionAccess,
 } from "./connection-diagnostics";
 import {
@@ -56,13 +54,25 @@ import {
   type CloudSyncRuntime,
   type CloudWebSocketTransport,
 } from "./live-sync";
-import { cloudInstantPaintPrincipalMatcher, resolveCloudInstantPaintHandle } from "./instant-paint";
+import {
+  cloudInstantPaintPrincipalMatcher,
+  cloudInstantPaintStorageOptions,
+  cloudNotebookHandleCaughtUp,
+  resolveCloudInstantPaintHandle,
+  runCloudInstantPaint,
+  shouldDisplayEmptyLiveNotebook,
+} from "./instant-paint";
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
   createCloudNotebookPersistence,
   type CloudNotebookPersistenceController,
 } from "./notebook-persistence";
+import {
+  OFFLINE_MERGE_RESYNC_SETTLE_MS,
+  OfflineMergeTracker,
+  type OfflineMergeNoticeData,
+} from "./offline-merge-tracker";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudProjectionUnlessPreserved,
@@ -132,6 +142,17 @@ export interface CloudViewerSession {
   liveRuntimeRef: MutableRefObject<CloudSyncRuntime | null>;
   notebookLanguageRef: MutableRefObject<string>;
   notebookMetadata: unknown;
+  /**
+   * Quiet offline-merge surfacing (notices stack only): set once per outage
+   * after a reconnect completes with locally-authored work pending across
+   * the gap. The viewer clears it on user action or a short timeout.
+   */
+  offlineMergeNotice: OfflineMergeNoticeData | null;
+  clearOfflineMergeNotice: () => void;
+  /** A local source edit reached the handle for this cell (CRDT bridge). */
+  noteLocalCellEdit: (cellId: string) => void;
+  /** The user deleted this cell locally — never a collaborator removal. */
+  noteLocalCellDelete: (cellId: string) => void;
   presenceStore: CloudViewerPresenceStore;
   requestCloudMaterialization: (liveRuntime: CloudSyncRuntime) => void;
   retryLiveConnection: () => void;
@@ -183,6 +204,12 @@ export function useCloudViewerSession({
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const materializeLiveRuntimeRef = useRef<((runtime: CloudSyncRuntime) => void) | null>(null);
   const liveMaterializedRef = useRef(false);
+  // True while the cells in the view stores were last applied by the
+  // instant paint (paint-origin pixels); any live apply clears it. Gates
+  // the live-changeset tail's status labeling and the empty-room
+  // displacement: paint-origin content is never RELABELED as live — it is
+  // replaced (or displaced by authoritative emptiness) wholesale.
+  const paintOriginRef = useRef(false);
   const snapshotResolvedRef = useRef(false);
   // Set when a seeded session's replayed changes were rejected by the room:
   // the next connect attempt must bootstrap (survives the effect re-run).
@@ -206,6 +233,47 @@ export function useCloudViewerSession({
     connectionStatusBridgeRef.current = new CloudConnectionStatusBridge();
   }
   const connectionStatusBridge = connectionStatusBridgeRef.current;
+  // Offline-merge surfacing: one tracker per session (stable across effect
+  // re-runs and escalation teardowns, like the bridge — an outage that
+  // spans a transport replacement is still ONE outage). It derives
+  // everything from signals that already exist; see offline-merge-tracker.
+  const [offlineMergeNotice, setOfflineMergeNotice] = useState<OfflineMergeNoticeData | null>(null);
+  const offlineMergeTrackerRef = useRef<OfflineMergeTracker | null>(null);
+  if (offlineMergeTrackerRef.current === null) {
+    offlineMergeTrackerRef.current = new OfflineMergeTracker({
+      settleMs: OFFLINE_MERGE_RESYNC_SETTLE_MS,
+      getProjectedCellIds: () => getCellIdsSnapshot(),
+      onNotice: (notice) => setOfflineMergeNotice(notice),
+    });
+  }
+  const offlineMergeTracker = offlineMergeTrackerRef.current;
+  // The bridge replays the current status on subscribe and survives
+  // transport replacement, so one mount-scoped subscription covers every
+  // connect attempt and teardown-retry transition.
+  useEffect(() => {
+    const subscription = connectionStatusBridge.subscribe((connectionStatus) => {
+      offlineMergeTracker.noteConnectionStatus(connectionStatus);
+    });
+    return () => {
+      subscription.unsubscribe();
+      offlineMergeTracker.dispose();
+    };
+  }, [connectionStatusBridge, offlineMergeTracker]);
+  const clearOfflineMergeNotice = useCallback(() => {
+    setOfflineMergeNotice(null);
+  }, []);
+  const noteLocalCellEdit = useCallback(
+    (cellId: string) => {
+      offlineMergeTracker.noteLocalCellEdit(cellId);
+    },
+    [offlineMergeTracker],
+  );
+  const noteLocalCellDelete = useCallback(
+    (cellId: string) => {
+      offlineMergeTracker.noteLocalCellDelete(cellId);
+    },
+    [offlineMergeTracker],
+  );
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [connectionPeerId, setConnectionPeerId] = useState<string | null>(null);
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
@@ -454,6 +522,11 @@ export function useCloudViewerSession({
     // escalates.
     const rejectionTracker = new CloudRecoverableRejectionTracker();
     let ranConnectionDiagnostics = false;
+    // One full-materialization kick per runtime when the syncing doc first
+    // catches up to the room's advertised heads (see the notebookSyncApplied$
+    // subscription) — the only path that displaces painted cells when the
+    // room converges with zero cell changes.
+    let caughtUpMaterializeKicked = false;
     // Local-first persistence is fail-open: no IndexedDB (private mode,
     // SSR) means no adapter and the session runs exactly as before.
     const persistenceAdapter = IndexedDbStorageAdapter.create();
@@ -574,7 +647,12 @@ export function useCloudViewerSession({
         })
           .then((diagnostic) => {
             if (disposed || !diagnostic) return;
-            setConnectionError(diagnostic);
+            // Resolution-time guard: this fetch has no deadline, and a
+            // terminal WASM asset failure may own the notice by now — its
+            // Retry affordance must survive the late diagnostic.
+            setConnectionError((current) =>
+              cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
+            );
           })
           .catch(() => undefined);
       }
@@ -611,14 +689,29 @@ export function useCloudViewerSession({
 
     const materializedCellCount = () => getCellIdsSnapshot().length;
 
+    // Zero-cell guard for both checkpoints below: blocks an empty handle
+    // from blanking painted/preserved cells until the handle has provably
+    // caught up to the room's advertised heads — after which live
+    // emptiness DISPLACES whatever is showing (instant paint included).
+    const mayShowEmptyLiveNotebook = (liveRuntime: CloudSyncRuntime) =>
+      shouldDisplayEmptyLiveNotebook({
+        snapshotResolved: snapshotResolvedRef.current,
+        paintedCellCount: materializedCellCount(),
+        handleCaughtUp: cloudNotebookHandleCaughtUp(liveRuntime.handle),
+      });
+
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime) => {
       const sequence = ++materializeSequence;
       const previousNotebookLanguage = notebookLanguageRef.current;
       const outputResolutionCache = outputResolutionCacheRef.current;
       const rawCellCount = liveRuntime.handle.cell_count();
-      if (rawCellCount === 0 && (!snapshotResolvedRef.current || materializedCellCount() > 0)) {
+      if (rawCellCount === 0 && !mayShowEmptyLiveNotebook(liveRuntime)) {
         return;
       }
+      // Warm loads: a painted notebook is already on screen as 'ready';
+      // the live pass replaces it in place, so don't demote the status to
+      // a 'loading' notice over fully visible content.
+      const paintedContentShowing = paintOriginRef.current && materializedCellCount() > 0;
       const materialized = await materializeCloudNotebookView(liveRuntime.handle, {
         blobResolver,
         defaultNotebookLanguage: previousNotebookLanguage ?? "python",
@@ -628,24 +721,28 @@ export function useCloudViewerSession({
           onInitialCells(syncCells) {
             if (syncCells.length === 0) return;
             liveMaterializedRef.current = true;
+            paintOriginRef.current = false;
             markCloudViewerLoadMilestone("live-initial-cells");
             preloadSiftWasm(syncCells);
             applyResolvedCells(syncCells);
-            setStatus({
-              kind: "loading",
-              message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
-            });
+            if (!paintedContentShowing) {
+              setStatus({
+                kind: "loading",
+                message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
+              });
+            }
           },
           onCellResolved(resolvedCell, _index, progressiveCells) {
             if (progressiveCells.length === 0) return;
             liveMaterializedRef.current = true;
+            paintOriginRef.current = false;
             preloadSiftWasm([resolvedCell]);
             applyResolvedCells(progressiveCells);
           },
         },
       });
       if (materialized.rawCellCount === 0) {
-        if (!snapshotResolvedRef.current || materializedCellCount() > 0) {
+        if (!mayShowEmptyLiveNotebook(liveRuntime)) {
           return;
         }
       }
@@ -665,6 +762,7 @@ export function useCloudViewerSession({
       );
       if (disposed || sequence !== materializeSequence) return;
       liveMaterializedRef.current = true;
+      paintOriginRef.current = false;
       const resolvedCells = materialized.cells;
       preloadSiftWasm(resolvedCells);
       applyResolvedCells(resolvedCells);
@@ -704,6 +802,15 @@ export function useCloudViewerSession({
         return;
       }
 
+      if (paintOriginRef.current) {
+        // Paint-origin cells are still on screen: the full-materialization
+        // fallback above was skipped by the zero-cell guard or has not
+        // applied yet. Never RELABEL the instant paint as live content —
+        // the live status (and the race flag) belong to the apply that
+        // actually replaces or displaces it.
+        return;
+      }
+
       liveMaterializedRef.current = true;
       setStatus({
         kind: "ready",
@@ -727,92 +834,86 @@ export function useCloudViewerSession({
     // wins: stale cache never overwrites a live materialization, and the
     // live materialization replaces the paint wholesale when sync lands
     // (the preservation gate keeps the paint until then, no blanking).
+    // Sequencing, freshness re-checks, and handle freeing live in
+    // runCloudInstantPaint (under test); this wires the session effects.
     const instantPaintFresh = () => !disposed && !liveMaterializedRef.current;
     const paintFromPersistedSnapshot = async () => {
       if (!persistenceAdapter) return;
-      const resolved = await resolveCloudInstantPaintHandle({
-        // Pre-handshake principal gate from locally stored auth material;
-        // null (no derivable principal) skips the paint entirely.
-        matchesPrincipal: cloudInstantPaintPrincipalMatcher(authState, { hasAppSession }),
-        loadNotebookRecord: () => loadPersistedNotebookDoc(persistenceAdapter, config.notebookId),
-        loadRuntimeStateCacheRecord: () =>
-          loadPersistedNotebookRecord(
-            persistenceAdapter,
-            config.notebookId,
-            RUNTIME_STATE_CACHE_KEY_SEGMENT,
+      await runCloudInstantPaint({
+        resolveHandle: () =>
+          resolveCloudInstantPaintHandle({
+            // Pre-handshake principal gate from locally stored auth
+            // material; null (no derivable principal) skips the paint.
+            matchesPrincipal: cloudInstantPaintPrincipalMatcher(authState, { hasAppSession }),
+            // Record bindings — including that the corrupt-cache clear
+            // targets ONLY the runtime-state-cache record, never the seed.
+            ...cloudInstantPaintStorageOptions(persistenceAdapter, config.notebookId),
+            loadRenderHandle: (notebookBytes, runtimeStateBytes) =>
+              loadRenderSnapshotHandle(
+                notebookBytes,
+                runtimeStateBytes,
+                config.runtimedWasmModulePath,
+                config.runtimedWasmPath,
+              ),
+            shouldContinue: instantPaintFresh,
+            // Asset-load failures do not incriminate the cached bytes:
+            // never clear the cache record for them.
+            isTransientLoadFailure: (error) =>
+              isRuntimedWasmAssetFailure(error instanceof Error ? error.message : String(error)),
+          }),
+        isFresh: instantPaintFresh,
+        materialize: (renderHandle, shouldContinue) =>
+          materializeCloudNotebookView(renderHandle, {
+            blobResolver,
+            defaultNotebookLanguage: notebookLanguageRef.current ?? "python",
+            outputResolutionCache: outputResolutionCacheRef.current,
+            callbacks: {
+              shouldContinue,
+              onInitialCells(syncCells) {
+                if (syncCells.length === 0) return;
+                markCloudViewerLoadMilestone("instant-paint-initial-cells");
+                preloadSiftWasm(syncCells);
+                applyResolvedCells(syncCells);
+                paintOriginRef.current = true;
+                setStatus({
+                  kind: "loading",
+                  message: `Rendering ${syncCells.length} cells from the local snapshot while connecting...`,
+                });
+              },
+              onCellResolved(resolvedCell, _index, progressiveCells) {
+                if (progressiveCells.length === 0) return;
+                preloadSiftWasm([resolvedCell]);
+                applyResolvedCells(progressiveCells);
+                paintOriginRef.current = true;
+              },
+            },
+          }),
+        acceptMetadata: (materialized) => {
+          notebookLanguageRef.current = materialized.notebookLanguage;
+          setNotebookMetadata(materialized.metadata);
+        },
+        projectWidgets: (materialized, shouldContinue) =>
+          projectCloudWidgetComms(
+            widgetStore,
+            materialized.widgetComms,
+            projectedWidgetCommIdsRef,
+            {
+              isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+              shouldContinue,
+            },
           ),
-        clearRuntimeStateCacheRecord: () =>
-          clearPersistedNotebookRecord(
-            persistenceAdapter,
-            config.notebookId,
-            RUNTIME_STATE_CACHE_KEY_SEGMENT,
-          ),
-        loadRenderHandle: (notebookBytes, runtimeStateBytes) =>
-          loadRenderSnapshotHandle(
-            notebookBytes,
-            runtimeStateBytes,
-            config.runtimedWasmModulePath,
-            config.runtimedWasmPath,
-          ),
-        shouldContinue: instantPaintFresh,
-        // Asset-load failures do not incriminate the cached bytes: never
-        // clear the cache record for them.
-        isTransientLoadFailure: (error) =>
-          isRuntimedWasmAssetFailure(error instanceof Error ? error.message : String(error)),
+        applyPaint: (materialized) => {
+          preloadSiftWasm(materialized.cells);
+          applyResolvedCells(materialized.cells);
+          paintOriginRef.current = true;
+          setStatus({
+            kind: "ready",
+            message: `Rendering ${materialized.cells.length} cells from the locally persisted snapshot while the live room connects.`,
+          });
+          markCloudViewerLoadMilestone("instant-paint-ready");
+        },
+        freeHandle: (renderHandle) => renderHandle.free(),
       });
-      const renderHandle = resolved.handle;
-      if (!renderHandle) return;
-      try {
-        if (!instantPaintFresh()) return;
-        const materialized = await materializeCloudNotebookView(renderHandle, {
-          blobResolver,
-          defaultNotebookLanguage: notebookLanguageRef.current ?? "python",
-          outputResolutionCache: outputResolutionCacheRef.current,
-          callbacks: {
-            shouldContinue: instantPaintFresh,
-            onInitialCells(syncCells) {
-              if (syncCells.length === 0) return;
-              markCloudViewerLoadMilestone("instant-paint-initial-cells");
-              preloadSiftWasm(syncCells);
-              applyResolvedCells(syncCells);
-              setStatus({
-                kind: "loading",
-                message: `Rendering ${syncCells.length} cells from the local snapshot while connecting...`,
-              });
-            },
-            onCellResolved(resolvedCell, _index, progressiveCells) {
-              if (progressiveCells.length === 0) return;
-              preloadSiftWasm([resolvedCell]);
-              applyResolvedCells(progressiveCells);
-            },
-          },
-        });
-        if (!instantPaintFresh()) return;
-        // An empty persisted snapshot paints nothing: the room decides
-        // what an empty notebook means.
-        if (materialized.cells.length === 0) return;
-        notebookLanguageRef.current = materialized.notebookLanguage;
-        setNotebookMetadata(materialized.metadata);
-        await projectCloudWidgetComms(
-          widgetStore,
-          materialized.widgetComms,
-          projectedWidgetCommIdsRef,
-          {
-            isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
-            shouldContinue: instantPaintFresh,
-          },
-        );
-        if (!instantPaintFresh()) return;
-        preloadSiftWasm(materialized.cells);
-        applyResolvedCells(materialized.cells);
-        setStatus({
-          kind: "ready",
-          message: `Rendering ${materialized.cells.length} cells from the locally persisted snapshot while the live room connects.`,
-        });
-        markCloudViewerLoadMilestone("instant-paint-ready");
-      } finally {
-        renderHandle.free();
-      }
     };
 
     // Notebook-switch gate (desktop beforeBootstrap placement): the effect
@@ -828,6 +929,12 @@ export function useCloudViewerSession({
     });
     if (!preservedAcrossRuns) {
       paintedNotebookIdentityRef.current = null;
+      // A cleared projection means no live pixels are on screen: the race
+      // flag must not gate the NEXT notebook's instant paint (or its
+      // zero-cell handling) on the previous notebook's materialization,
+      // and nothing paint-origin is showing either.
+      liveMaterializedRef.current = false;
+      paintOriginRef.current = false;
     }
 
     presenceStore.reset();
@@ -937,6 +1044,11 @@ export function useCloudViewerSession({
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
         armPersistence(liveRuntime);
+        // Anonymous sessions are out of scope for offline-merge surfacing
+        // (per-connection principals; persistence never arms for them).
+        offlineMergeTracker.noteSessionEligibility(
+          !isAnonymousCloudPrincipal(cloudPrincipalFromActorLabel(liveRuntime.actorLabel)),
+        );
         const stopWidgetLiveRuntimeDiagnostics =
           installCloudWidgetLiveRuntimeDiagnostics(liveRuntime);
         setConnectionScope(liveRuntime.connectionScope);
@@ -966,6 +1078,11 @@ export function useCloudViewerSession({
             // The persistence principal follows the latest identity;
             // same-principal reconnects keep the controller.
             armPersistence(liveRuntime);
+            // Re-resolution can change the principal mid-session; the
+            // offline-merge eligibility follows the latest identity too.
+            offlineMergeTracker.noteSessionEligibility(
+              !isAnonymousCloudPrincipal(cloudPrincipalFromActorLabel(liveRuntime.actorLabel)),
+            );
           }),
           liveRuntime.engine.broadcasts$.subscribe((payload) => {
             emitBroadcast(payload);
@@ -1011,6 +1128,31 @@ export function useCloudViewerSession({
           liveRuntime.engine.poolState$.subscribe((state) => {
             setPoolState(state);
           }),
+          // The bootstrap exchange can settle with ZERO cellChanges$
+          // emissions — a room at genesis answers the handshake heads-only
+          // — and the changeset stream is the only other trigger for a
+          // full materialization. Once the syncing doc first catches up to
+          // the room's advertised heads, run one full materialization so
+          // live truth INCLUDING EMPTINESS displaces painted or preserved
+          // cells (see the zero-cell guard above).
+          liveRuntime.engine.notebookSyncApplied$.subscribe(() => {
+            if (caughtUpMaterializeKicked) return;
+            if (!cloudNotebookHandleCaughtUp(liveRuntime.handle)) return;
+            caughtUpMaterializeKicked = true;
+            materializeLiveCellsSafely(liveRuntime);
+          }),
+          // Offline-merge derivation taps (no new engine observables):
+          // notebookDocChanged$ emissions are local flush attempts while
+          // the offline window is open (no inbound frames offline), and
+          // cellChanges$ is remote-authored by construction (sync_applied
+          // pipeline) — during the settle window it is the collaborator
+          // backlog that interleaved with the user's offline edits.
+          liveRuntime.engine.notebookDocChanged$.subscribe(() => {
+            offlineMergeTracker.noteLocalDocActivity();
+          }),
+          liveRuntime.engine.cellChanges$.subscribe((changeset) => {
+            offlineMergeTracker.noteRemoteCellChanges(changeset);
+          }),
           { unsubscribe: () => stopCursorDispatch() },
           { unsubscribe: stopWidgetLiveRuntimeDiagnostics },
         ];
@@ -1048,7 +1190,11 @@ export function useCloudViewerSession({
                   message: `Unable to load live notebook room: ${diagnostic}`,
                 });
               }
-              setConnectionError(diagnostic);
+              // Resolution-time sibling of the kick-time guard above: a
+              // WASM failure surfaced meanwhile keeps the notice.
+              setConnectionError((current) =>
+                cloudConnectionErrorWithAccessDiagnostic(current, diagnostic),
+              );
             })
             .catch(() => undefined);
         }
@@ -1156,6 +1302,10 @@ export function useCloudViewerSession({
     liveRuntimeRef,
     notebookLanguageRef,
     notebookMetadata,
+    offlineMergeNotice,
+    clearOfflineMergeNotice,
+    noteLocalCellEdit,
+    noteLocalCellDelete,
     presenceStore,
     requestCloudMaterialization,
     retryLiveConnection,
