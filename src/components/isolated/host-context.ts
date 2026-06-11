@@ -46,6 +46,13 @@ export interface NteractEmbedHostContext {
      */
     rendererAssetsBaseUrl?: string;
     /**
+     * Sift WASM filename under the renderer asset base, from the host's
+     * deploy manifest. Content-hashed names (`sift_wasm.<sha16>.wasm`)
+     * ride immutable caching and drop the `?v=` query; the stable
+     * `sift_wasm.wasm` + `?v=` remains the fallback.
+     */
+    siftWasmAssetName?: string;
+    /**
      * Absolute or host-relative URL for the isolated output document shell.
      * Hosted deployments can use this to load the sandboxed frame from a
      * separate output-document origin instead of browser `srcDoc`.

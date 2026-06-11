@@ -159,4 +159,9 @@ export {
 export type { RendererPluginInfo, RendererPluginName } from "./renderer-plugin-info";
 export type { IdentifiedJupyterOutput } from "./output-payloads";
 // Provider and hook for renderer bundle
-export { IsolatedRendererProvider, useIsolatedRenderer } from "./isolated-renderer-context";
+export {
+  IsolatedRendererProvider,
+  useHasIsolatedOutputs,
+  useIsolatedRenderer,
+  useRegisterIsolatedOutput,
+} from "./isolated-renderer-context";

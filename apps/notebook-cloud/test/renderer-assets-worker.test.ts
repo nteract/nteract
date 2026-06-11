@@ -79,6 +79,46 @@ describe("renderer assets Worker", () => {
     assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
   });
 
+  it("serves content-hashed renderer sidecars with immutable caching", async () => {
+    const cases = [
+      "https://assets.test/renderer-assets/isolated-renderer.0123456789abcdef.js",
+      "https://assets.test/renderer-assets/isolated-renderer.fedcba9876543210.css",
+      "https://assets.test/renderer-assets/sift_wasm.a1b2c3d4e5f60718.wasm",
+    ];
+
+    for (const url of cases) {
+      const response = await rendererAssetsWorker.fetch(
+        new Request(url),
+        fakeEnv({
+          ASSETS: {
+            fetch: async () => new Response("sidecar"),
+          },
+        }),
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    }
+  });
+
+  it("keeps stable-name renderer sidecars on must-revalidate", async () => {
+    for (const name of ["isolated-renderer.js", "isolated-renderer.css"]) {
+      const response = await rendererAssetsWorker.fetch(
+        new Request(`https://assets.test/renderer-assets/${name}`),
+        fakeEnv({
+          ASSETS: {
+            fetch: async () => new Response("sidecar"),
+          },
+        }),
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("Cache-Control"), "public, max-age=0, must-revalidate");
+    }
+  });
+
   it("does not expose the notebook app bundle from the renderer asset origin", async () => {
     const response = await rendererAssetsWorker.fetch(
       new Request("https://assets.test/assets/notebook-cloud-viewer.js"),

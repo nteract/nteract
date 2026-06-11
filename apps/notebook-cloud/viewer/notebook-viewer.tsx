@@ -10,6 +10,10 @@ import {
 import { NotebookHostProvider } from "@nteract/notebook-host";
 import { AlertCircle, Check, Loader2, X } from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import {
+  useHasIsolatedOutputs,
+  useIsolatedRenderer,
+} from "@/components/isolated/isolated-renderer-context";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
@@ -170,10 +174,11 @@ export function NotebookViewer({
       preloadSiftWasmForCells(nextCells, {
         blobBasePath: config.blobBasePath,
         rendererAssetsBasePath: config.rendererAssetsBasePath,
+        siftWasmAssetName: config.rendererAssets.siftWasm,
         pageUrl: location.href,
       });
     },
-    [config.blobBasePath, config.rendererAssetsBasePath],
+    [config.blobBasePath, config.rendererAssetsBasePath, config.rendererAssets.siftWasm],
   );
   const resolveSyncAuth = useCallback(
     async (sessionId: string) => {
@@ -230,6 +235,12 @@ export function NotebookViewer({
   // dot by design, so once "reconnecting" outlives the debounce the notices
   // stack carries the one calm line (and clears it when the room is back).
   const sustainedReconnecting = useSustainedReconnecting(connectionStatus$);
+  // Shared renderer-bundle state from the root IsolatedRendererProvider
+  // (CloudNotebookProviders): drives the single asset-health notice below.
+  const isolatedRenderer = useIsolatedRenderer();
+  // The provider preloads the bundle for every notebook; only surface its
+  // failure when something on screen actually renders isolated outputs.
+  const hasIsolatedOutputs = useHasIsolatedOutputs();
   const presenceSnapshot = useSyncExternalStore(
     presenceStore.subscribe,
     presenceStore.getSnapshot,
@@ -245,12 +256,13 @@ export function NotebookViewer({
     () => ({
       nteract: {
         rendererAssetsBaseUrl: new URL(config.rendererAssetsBasePath, location.href).href,
+        siftWasmAssetName: config.rendererAssets.siftWasm,
         outputDocumentUrl: config.outputDocumentBaseUrl
           ? new URL(config.outputDocumentBaseUrl, location.href).href
           : undefined,
       },
     }),
-    [config.outputDocumentBaseUrl, config.rendererAssetsBasePath],
+    [config.outputDocumentBaseUrl, config.rendererAssetsBasePath, config.rendererAssets.siftWasm],
   );
 
   useEffect(() => {
@@ -907,6 +919,16 @@ export function NotebookViewer({
       ? { kind: "loading", message: "Preparing notebook view..." }
       : status;
   const accessRequestNotice = cloudAccessRequestNotice(latestAccessRequest, accessRequestError);
+  // Asset health is its own quiet surface: N identical renderer failures
+  // collapse into ONE notice (the provider state is module-level shared)
+  // plus per-output fallbacks. It never feeds the connection dot or
+  // CloudConnectionStatusBridge — that bridge models room transport health.
+  // `lastError` keeps the notice steady through an in-flight retry (no
+  // per-click flap); the presence gate keeps pure-markdown/text notebooks
+  // free of a warning about outputs they do not have.
+  const rendererAssetError = hasIsolatedOutputs
+    ? (isolatedRenderer.error ?? isolatedRenderer.lastError)
+    : null;
   const hasNotices = cloudNotebookHasNotices({
     authState,
     authRenewal,
@@ -914,6 +936,7 @@ export function NotebookViewer({
     diagnostics: accessRequestNotice,
     hasAppSession: Boolean(appSessionStatus.session),
     hasReadableSnapshot: notebookHasReadableSnapshot,
+    rendererAssetError,
     sustainedReconnecting,
     status: noticeStatus,
   });
@@ -925,9 +948,12 @@ export function NotebookViewer({
       diagnostics={accessRequestNotice}
       hasAppSession={Boolean(appSessionStatus.session)}
       hasReadableSnapshot={notebookHasReadableSnapshot}
+      rendererAssetError={rendererAssetError}
       sustainedReconnecting={sustainedReconnecting}
       status={noticeStatus}
       onResetAuth={resetPrototypeAuth}
+      onRetryConnection={retryLiveConnection}
+      onRetryRendererAssets={isolatedRenderer.retry}
       onSignInAgain={authConfig.oidc ? beginNotebookOidcAuth : undefined}
     />
   ) : null;

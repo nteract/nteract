@@ -67,6 +67,17 @@ import { projectCloudWidgetComms } from "./widget-comm-projection";
 import type { CloudAppSession } from "./app-session";
 import type { CloudAuthRenewalState, ViewerStatus } from "./notice-types";
 
+/**
+ * Renderer sidecar filenames from the deploy manifest. Content-hashed
+ * names ride immutable caching on the renderer-assets origin; the stable
+ * names are the documented fallback when no manifest was deployed.
+ */
+export interface CloudRendererAssetNames {
+  js: string;
+  css: string;
+  siftWasm: string;
+}
+
 export interface CloudViewerConfig {
   notebookId: string;
   headsHash: string | null;
@@ -88,6 +99,7 @@ export interface CloudViewerConfig {
   syncEndpoint: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
+  rendererAssets: CloudRendererAssetNames;
   outputDocumentBaseUrl: string | null;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;

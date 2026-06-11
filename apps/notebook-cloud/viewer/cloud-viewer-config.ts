@@ -1,5 +1,5 @@
 import { isCloudAppSession } from "./app-session";
-import type { CloudViewerConfig } from "./cloud-viewer-session";
+import type { CloudRendererAssetNames, CloudViewerConfig } from "./cloud-viewer-session";
 import { isCloudNotebookListItem } from "./notebook-dashboard";
 import { normalizeOidcAuthConfig, type CloudOidcAuthConfig } from "./oidc-auth";
 import type {
@@ -60,9 +60,33 @@ function loadConfig(): CloudViewerConfig {
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
+    rendererAssets: normalizeRendererAssetNames(parsed.rendererAssets),
     outputDocumentBaseUrl: parsed.outputDocumentBaseUrl ?? null,
     runtimedWasmModulePath: parsed.runtimedWasmModulePath,
     runtimedWasmPath: parsed.runtimedWasmPath,
+  };
+}
+
+const STABLE_RENDERER_ASSET_NAMES: CloudRendererAssetNames = {
+  js: "isolated-renderer.js",
+  css: "isolated-renderer.css",
+  siftWasm: "sift_wasm.wasm",
+};
+
+/**
+ * Shells without manifest names (older workers, missing manifest) keep
+ * loading the stable-name copies — the documented fallback. The viewer
+ * bundle ships under a stable name, so NEW viewer JS routinely executes
+ * against OLD shell config during gradual worker deploys; this guard is
+ * that skew's client half and must stay tolerant of an absent key.
+ */
+export function normalizeRendererAssetNames(
+  value: Partial<CloudRendererAssetNames> | undefined,
+): CloudRendererAssetNames {
+  return {
+    js: value?.js || STABLE_RENDERER_ASSET_NAMES.js,
+    css: value?.css || STABLE_RENDERER_ASSET_NAMES.css,
+    siftWasm: value?.siftWasm || STABLE_RENDERER_ASSET_NAMES.siftWasm,
   };
 }
 
