@@ -55,12 +55,12 @@ describe("NotebookRail", () => {
   it("renders outline items and reports selection through the adapter callback", () => {
     const onSelectOutlineItem = vi.fn();
 
-    render(
+    const { container } = render(
       <NotebookRail
         activePanelId="outline"
         collapsed={false}
         outlineItems={outlineItems}
-        selectedOutlineCellId="cell-a"
+        selectedOutlineCellId="cell-b"
         packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
         onActivePanelChange={vi.fn()}
         onCollapsedChange={vi.fn()}
@@ -68,14 +68,14 @@ describe("NotebookRail", () => {
       />,
     );
 
-    expect(screen.getByRole("link", { name: "Load data" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Clean columns" })).toHaveAttribute(
       "aria-current",
       "location",
     );
-    expect(screen.getByRole("link", { name: "Load data" })).toHaveClass(
-      "font-medium",
-      "before:bg-primary",
-    );
+    expect(screen.getByRole("link", { name: "Clean columns" })).toHaveClass("font-medium");
+    expect(container.querySelector('[data-slot="notebook-outline-selected-marker"]')).toHaveStyle({
+      left: "-29px",
+    });
     expect(screen.queryByText("2 items")).not.toBeInTheDocument();
     expect(screen.queryByText("1 item")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Load data" })).toHaveAttribute(
@@ -404,6 +404,88 @@ describe("NotebookRail", () => {
     const outlineTitle = container.querySelector('[data-slot="notebook-outline-item-title"]');
     expect(outlineTitle).toHaveClass("line-clamp-2");
     expect(outlineTitle).not.toHaveClass("truncate");
+  });
+
+  it("renders projected inline formatting inside outline headings", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          {
+            id: "cell-a:heading:0",
+            cellId: "cell-a",
+            title: "Load fast data",
+            titleSegments: [
+              { text: "Load ", semantic: "text" },
+              { text: "fast", semantic: "strong" },
+              { text: " ", semantic: "text" },
+              { text: "data", semantic: "inline-code" },
+            ],
+            level: 1,
+            kind: "heading" as const,
+            cellAnchorId: "notebook-cell-cell-a",
+            headingAnchorId: "notebook-cell-cell-a-heading-load-fast-data",
+            href: "#notebook-cell-cell-a",
+            anchor: "load-fast-data",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Load fast data" })).toBeInTheDocument();
+    expect(screen.getByText("fast")).toHaveAttribute("data-inline-semantic", "strong");
+    expect(screen.getByText("fast")).toHaveClass("font-semibold");
+    expect(screen.getByText("data")).toHaveAttribute("data-inline-semantic", "inline-code");
+    expect(screen.getByText("data")).toHaveClass("font-mono");
+  });
+
+  it("renders raster output outline items as thumbnail-only links", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          {
+            id: "plot:output:plot-output",
+            cellId: "plot",
+            cellType: "code",
+            outputId: "plot-output",
+            title: "Image output",
+            level: 2,
+            kind: "output" as const,
+            cellAnchorId: "notebook-cell-plot",
+            outputAnchorId: "notebook-cell-plot-output-plot-output",
+            headingAnchorId: null,
+            href: "#notebook-cell-plot-output-plot-output",
+            anchor: null,
+            detail: "PNG",
+            imagePreview: {
+              mimeType: "image/png",
+              src: "data:image/png;base64,iVBORw0KGgo=",
+              alt: "Image output",
+            },
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "Image output" });
+    expect(link).toHaveAttribute("href", "#notebook-cell-plot-output-plot-output");
+    expect(screen.queryByText("Image output")).not.toBeInTheDocument();
+    expect(screen.queryByText("PNG")).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="notebook-outline-item-title"]')).toBeNull();
+    expect(container.querySelector('[data-slot="notebook-outline-item-meta"]')).toBeNull();
+    const image = container.querySelector('[data-slot="notebook-outline-item-image"]');
+    expect(image).toHaveAttribute("src", "data:image/png;base64,iVBORw0KGgo=");
+    expect(image).toHaveClass("max-h-12", "max-w-full", "object-contain");
+    expect(image).not.toHaveClass("size-8", "object-cover");
   });
 
   it("renders code cell fallback outline items as single-line code without status badges", () => {

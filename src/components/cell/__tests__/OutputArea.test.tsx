@@ -306,6 +306,17 @@ describe("OutputArea iframe theme sync", () => {
     restoreMarkdownProjector = undefined;
   });
 
+  it("stamps stable output anchor ids on in-DOM output items", () => {
+    const { container } = render(
+      <OutputArea cellId="plot-cell" outputs={makeStreamOutput()} isolated={false} />,
+    );
+
+    expect(container.querySelector('[data-slot="output-item"]')).toHaveAttribute(
+      "id",
+      "notebook-cell-plot-cell-output-stream-output",
+    );
+  });
+
   it("re-sends the current cream color theme when the iframe becomes ready", async () => {
     mockColorTheme = "cream";
 

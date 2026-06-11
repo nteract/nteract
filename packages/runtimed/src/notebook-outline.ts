@@ -4,7 +4,7 @@
  * This lives in `runtimed` rather than the rail UI so desktop, cloud, and
  * future document surfaces share one deterministic heading/cell outline shape.
  */
-export type NotebookOutlineItemKind = "heading" | "cell";
+export type NotebookOutlineItemKind = "heading" | "cell" | "output";
 export type NotebookOutlineHrefTarget = "cell" | "heading";
 
 export interface NotebookOutlineSourceCell {
@@ -15,6 +15,7 @@ export interface NotebookOutlineSourceCell {
   execution_count?: number | null;
   metadata?: NotebookOutlineSourceMetadata | null;
   markdownProjection?: NotebookOutlineMarkdownProjection | null;
+  outputs?: readonly NotebookOutlineSourceOutput[] | null;
 }
 
 export type NotebookOutlineSourceMetadata = Record<string, unknown> & {
@@ -25,27 +26,60 @@ export type NotebookOutlineSourceMetadata = Record<string, unknown> & {
 
 export interface NotebookOutlineMarkdownProjection {
   anchors?: readonly NotebookOutlineMarkdownAnchor[] | null;
+  runs?: readonly NotebookOutlineMarkdownRun[] | null;
 }
 
 export interface NotebookOutlineMarkdownAnchor {
+  blockId?: string | null;
   slug: string;
   title: string;
   level: number;
+}
+
+export interface NotebookOutlineMarkdownRun {
+  blockId?: string | null;
+  renderedText?: string | null;
+  semantic?: string | null;
+  href?: string | null;
+  title?: string | null;
+}
+
+export interface NotebookOutlineSourceOutput {
+  output_id?: string | null;
+  output_type?: string | null;
+  data?: Record<string, unknown> | null;
+}
+
+export interface NotebookOutlineTitleSegment {
+  text: string;
+  semantic?: string | null;
+  href?: string | null;
+  title?: string | null;
+}
+
+export interface NotebookOutlineImagePreview {
+  mimeType: string;
+  src: string;
+  alt: string;
 }
 
 export interface NotebookOutlineItem {
   id: string;
   cellId: string;
   cellType?: string | null;
+  outputId?: string | null;
   title: string;
+  titleSegments?: readonly NotebookOutlineTitleSegment[];
   level: number;
   kind: NotebookOutlineItemKind;
   cellAnchorId: string;
+  outputAnchorId?: string | null;
   headingAnchorId: string | null;
   href: string;
   anchor?: string | null;
   detail?: string | null;
   statusLabel?: string | null;
+  imagePreview?: NotebookOutlineImagePreview | null;
 }
 
 export interface NotebookOutlineProjection {
@@ -79,33 +113,64 @@ export function projectNotebookOutline<TCell extends NotebookOutlineSourceCell>(
 ): NotebookOutlineProjection {
   const fallbackToCells = options.fallbackToCells ?? true;
   const hrefTarget = options.hrefTarget ?? "cell";
-  const headings: NotebookOutlineItem[] = [];
+  const documentItems: NotebookOutlineItem[] = [];
+  let headingCount = 0;
+  let currentHeadingLevel = 0;
 
   for (const cell of cells) {
-    if (isSourceHiddenForOutline(cell)) continue;
-    if (cellKind(cell) !== "markdown") continue;
-    const parsed = markdownHeadingAnchorsForOutline(cell, options);
-    parsed.forEach((heading, index) => {
-      const anchor = cleanHeadingAnchorSlug(heading.slug) || slugifyNotebookHeading(heading.title);
-      const cellAnchorId = notebookCellAnchorId(cell.id);
-      const headingAnchorId = notebookHeadingAnchorId(cell.id, anchor);
-      headings.push({
-        id: `${cell.id}:heading:${index}`,
-        cellId: cell.id,
-        title: heading.title,
-        level: heading.level,
-        kind: "heading",
-        cellAnchorId,
-        headingAnchorId,
-        href: notebookOutlineHref(cellAnchorId, headingAnchorId, hrefTarget),
-        anchor,
-        statusLabel: options.getStatusLabel?.(cell) ?? null,
+    const kind = cellKind(cell);
+    if (!isSourceHiddenForOutline(cell) && kind === "markdown") {
+      const parsed = markdownHeadingAnchorsForOutline(cell, options);
+      parsed.forEach((heading, index) => {
+        const anchor =
+          cleanHeadingAnchorSlug(heading.slug) || slugifyNotebookHeading(heading.title);
+        const cellAnchorId = notebookCellAnchorId(cell.id);
+        const headingAnchorId = notebookHeadingAnchorId(cell.id, anchor);
+        const titleSegments = markdownHeadingTitleSegmentsForOutline(cell, heading);
+        documentItems.push({
+          id: `${cell.id}:heading:${index}`,
+          cellId: cell.id,
+          title: heading.title,
+          ...(titleSegments ? { titleSegments } : {}),
+          level: heading.level,
+          kind: "heading",
+          cellAnchorId,
+          headingAnchorId,
+          href: notebookOutlineHref(cellAnchorId, headingAnchorId, hrefTarget),
+          anchor,
+          statusLabel: options.getStatusLabel?.(cell) ?? null,
+        });
+        headingCount += 1;
+        currentHeadingLevel = heading.level;
       });
-    });
+    }
+
+    if (isOutputsHiddenForOutline(cell)) continue;
+    for (const image of rasterImageOutputsForOutline(cell)) {
+      const cellAnchorId = notebookCellAnchorId(cell.id);
+      const outputAnchorId = notebookOutputAnchorId(cell.id, image.outputAnchor);
+      documentItems.push({
+        id: `${cell.id}:output:${image.outputAnchor}`,
+        cellId: cell.id,
+        cellType: kind,
+        outputId: image.outputId,
+        title: image.title,
+        level: currentHeadingLevel === 0 ? 1 : Math.min(6, currentHeadingLevel + 1),
+        kind: "output",
+        cellAnchorId,
+        outputAnchorId,
+        headingAnchorId: null,
+        href: `#${outputAnchorId}`,
+        anchor: null,
+        detail: image.detail,
+        statusLabel: options.getStatusLabel?.(cell) ?? null,
+        imagePreview: image.preview,
+      });
+    }
   }
 
-  if (headings.length > 0) {
-    return { items: headings, source: "headings" };
+  if (documentItems.length > 0) {
+    return { items: documentItems, source: headingCount > 0 ? "headings" : "cells" };
   }
 
   if (!fallbackToCells) {
@@ -196,6 +261,10 @@ export function notebookHeadingAnchorId(cellId: string, headingAnchor: string): 
   return `${notebookCellAnchorId(cellId)}-heading-${encodeNotebookAnchorComponent(headingAnchor)}`;
 }
 
+export function notebookOutputAnchorId(cellId: string, outputId: string): string {
+  return `${notebookCellAnchorId(cellId)}-output-${encodeNotebookAnchorComponent(outputId)}`;
+}
+
 export function notebookHeadingAnchorHref(cellId: string, headingAnchor: string): string {
   return `#${notebookHeadingAnchorId(cellId, headingAnchor)}`;
 }
@@ -258,15 +327,55 @@ export function resolveNotebookOutlineContextItemId(
 function markdownHeadingAnchorsForOutline<TCell extends NotebookOutlineSourceCell>(
   cell: TCell,
   options: ProjectNotebookOutlineOptions<TCell>,
-): NotebookOutlineMarkdownAnchor[] {
+): Array<NotebookOutlineMarkdownAnchor & { title: string; level: number; slug: string }> {
   const anchors = options.getMarkdownAnchors?.(cell) ?? cell.markdownProjection?.anchors ?? [];
   return anchors.flatMap((anchor) => {
     if (!anchor || typeof anchor !== "object") return [];
     const title = typeof anchor.title === "string" ? cleanOutlineTitle(anchor.title) : "";
     const level = normalizeMarkdownHeadingLevel(anchor.level);
     if (!title || level === null) return [];
-    return [{ title, level, slug: cleanHeadingAnchorSlug(anchor.slug) }];
+    return [
+      {
+        ...anchor,
+        title,
+        level,
+        slug: cleanHeadingAnchorSlug(anchor.slug),
+      },
+    ];
   });
+}
+
+function markdownHeadingTitleSegmentsForOutline(
+  cell: NotebookOutlineSourceCell,
+  heading: NotebookOutlineMarkdownAnchor,
+): NotebookOutlineTitleSegment[] | null {
+  if (!heading.blockId) return null;
+  const runs = cell.markdownProjection?.runs ?? [];
+  const titleSegments = runs.flatMap((run) => {
+    if (run.blockId !== heading.blockId) return [];
+    const text = typeof run.renderedText === "string" ? run.renderedText : "";
+    if (!text) return [];
+    const semantic = typeof run.semantic === "string" ? run.semantic : null;
+    if (
+      semantic === "image" ||
+      semantic === "html-fragment" ||
+      semantic === "isolated-placeholder"
+    ) {
+      return [];
+    }
+    return [
+      {
+        text,
+        ...(semantic ? { semantic } : {}),
+        ...(typeof run.href === "string" && run.href ? { href: run.href } : {}),
+        ...(typeof run.title === "string" && run.title ? { title: run.title } : {}),
+      },
+    ];
+  });
+
+  if (titleSegments.length === 0) return null;
+  const renderedTitle = cleanOutlineTitle(titleSegments.map((segment) => segment.text).join(""));
+  return renderedTitle === heading.title ? titleSegments : null;
 }
 
 function normalizeMarkdownHeadingLevel(level: unknown): number | null {
@@ -343,8 +452,88 @@ function isSourceHiddenForOutline(cell: NotebookOutlineSourceCell): boolean {
   return jupyter.source_hidden === true;
 }
 
+function isOutputsHiddenForOutline(cell: NotebookOutlineSourceCell): boolean {
+  const jupyter = cell.metadata?.jupyter;
+  if (!isRecord(jupyter)) return false;
+  return jupyter.outputs_hidden === true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+const RASTER_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+
+function rasterImageOutputsForOutline(cell: NotebookOutlineSourceCell): Array<{
+  outputAnchor: string;
+  outputId: string | null;
+  title: string;
+  detail: string;
+  preview: NotebookOutlineImagePreview;
+}> {
+  return (cell.outputs ?? []).flatMap((output, index) => {
+    if (!output || typeof output !== "object") return [];
+    if (output.output_type !== "display_data" && output.output_type !== "execute_result") return [];
+    const data = output.data;
+    if (!data || typeof data !== "object") return [];
+    for (const mimeType of RASTER_IMAGE_MIME_TYPES) {
+      const src = imageDataToSrc(data[mimeType], mimeType);
+      if (!src) continue;
+      const outputId =
+        typeof output.output_id === "string" && output.output_id.trim()
+          ? output.output_id.trim()
+          : null;
+      return [
+        {
+          outputAnchor: outputId ?? String(index),
+          outputId,
+          title: "Image output",
+          detail: mimeLabel(mimeType),
+          preview: {
+            mimeType,
+            src,
+            alt: "Image output",
+          },
+        },
+      ];
+    }
+    return [];
+  });
+}
+
+function imageDataToSrc(value: unknown, mimeType: string): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^(?:data:|https?:|blob:)/.test(trimmed)) return trimmed;
+    return `data:${mimeType};base64,${trimmed.replace(/\s+/g, "")}`;
+  }
+
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+    const joined = value.join("").trim();
+    return joined ? `data:${mimeType};base64,${joined.replace(/\s+/g, "")}` : null;
+  }
+
+  if (isRecord(value) && typeof value.url === "string" && value.url.trim()) {
+    return value.url.trim();
+  }
+
+  return null;
+}
+
+function mimeLabel(mimeType: string): string {
+  switch (mimeType) {
+    case "image/png":
+      return "PNG";
+    case "image/jpeg":
+      return "JPEG";
+    case "image/gif":
+      return "GIF";
+    case "image/webp":
+      return "WebP";
+    default:
+      return "Image";
+  }
 }
 
 function metadataOutlineTitle(

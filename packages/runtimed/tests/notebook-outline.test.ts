@@ -59,6 +59,67 @@ describe("projectNotebookOutline", () => {
     ]);
   });
 
+  it("projects inline formatting runs for single-line heading titles", () => {
+    const projection = projectNotebookOutline([
+      markdownCell(
+        "a",
+        "# Load **fast** `data`",
+        [{ blockId: "block-a", title: "Load fast data", level: 1, slug: "load-fast-data" }],
+        [
+          { blockId: "block-a", renderedText: "Load ", semantic: "text" },
+          { blockId: "block-a", renderedText: "fast", semantic: "strong" },
+          { blockId: "block-a", renderedText: " ", semantic: "text" },
+          { blockId: "block-a", renderedText: "data", semantic: "inline-code" },
+        ],
+      ),
+    ]);
+
+    expect(projection.items[0]).toMatchObject({
+      title: "Load fast data",
+      titleSegments: [
+        { text: "Load ", semantic: "text" },
+        { text: "fast", semantic: "strong" },
+        { text: " ", semantic: "text" },
+        { text: "data", semantic: "inline-code" },
+      ],
+    });
+  });
+
+  it("projects raster image outputs as outline entries", () => {
+    const projection = projectNotebookOutline([
+      markdownCell("intro", "# Results", [{ title: "Results", level: 1, slug: "results" }]),
+      {
+        id: "plot",
+        cell_type: "code",
+        source: "plot()",
+        outputs: [
+          {
+            output_id: "plot-output",
+            output_type: "display_data",
+            data: { "image/png": "iVBORw0KGgo=" },
+          },
+        ],
+      },
+    ]);
+
+    expect(projection.items.map((item) => [item.id, item.kind, item.level, item.title])).toEqual([
+      ["intro:heading:0", "heading", 1, "Results"],
+      ["plot:output:plot-output", "output", 2, "Image output"],
+    ]);
+    expect(projection.items[1]).toMatchObject({
+      cellId: "plot",
+      outputId: "plot-output",
+      outputAnchorId: "notebook-cell-plot-output-plot-output",
+      href: "#notebook-cell-plot-output-plot-output",
+      detail: "PNG",
+      imagePreview: {
+        mimeType: "image/png",
+        src: "data:image/png;base64,iVBORw0KGgo=",
+        alt: "Image output",
+      },
+    });
+  });
+
   it("omits source-hidden markdown headings from the outline", () => {
     const projection = projectNotebookOutline([
       {
@@ -400,12 +461,17 @@ describe("buildNotebookOutlineTree", () => {
 function markdownCell(
   id: string,
   source: string,
-  anchors: readonly { title: string; level: number; slug: string }[],
+  anchors: readonly { blockId?: string; title: string; level: number; slug: string }[],
+  runs: readonly {
+    blockId: string;
+    renderedText: string;
+    semantic: string;
+  }[] = [],
 ) {
   return {
     id,
     cell_type: "markdown" as const,
     source,
-    markdownProjection: { anchors },
+    markdownProjection: { anchors, runs },
   };
 }

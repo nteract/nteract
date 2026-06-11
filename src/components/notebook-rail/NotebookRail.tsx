@@ -4,6 +4,7 @@ import {
   buildNotebookOutlineTree,
   resolveNotebookOutlineSelection,
   type NotebookOutlineItem,
+  type NotebookOutlineTitleSegment,
   type NotebookOutlineTreeNode,
 } from "runtimed";
 import {
@@ -21,6 +22,9 @@ export const NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY = RAIL_TAKEOVER_MEDIA_QUERY;
 export const NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME = RAIL_TAKEOVER_STAGE_CLASS_NAME;
 export const NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES = RAIL_TAKEOVER_PANEL_CLASS_NAMES;
 const NOTEBOOK_RAIL_PANEL_CLASS_NAME = "w-[clamp(16rem,20vw,18rem)] min-w-64";
+const NOTEBOOK_OUTLINE_PANEL_SHIFT_PX = 4;
+const NOTEBOOK_OUTLINE_BODY_PADDING_PX = 12;
+const NOTEBOOK_OUTLINE_NESTED_STEP_PX = 21;
 
 export interface NotebookRailProps {
   activePanelId: NotebookRailPanelId;
@@ -157,6 +161,7 @@ export function NotebookOutlinePanel({
   return (
     <nav
       aria-label="Notebook outline"
+      className="-ml-1"
       data-testid="notebook-outline-panel"
       data-drag-policy="navigation-only"
       onDragStartCapture={handleDragStart}
@@ -166,6 +171,7 @@ export function NotebookOutlinePanel({
           <NotebookOutlineNode
             key={node.item.id}
             node={node}
+            depth={0}
             selectedItemId={currentItemId}
             onSelectItem={onSelectItem}
             onNavigateItem={onNavigateItem}
@@ -179,12 +185,14 @@ export function NotebookOutlinePanel({
 
 function NotebookOutlineNode({
   node,
+  depth,
   selectedItemId,
   onSelectItem,
   onNavigateItem,
   getItemHref,
 }: {
   node: NotebookOutlineTreeNode;
+  depth: number;
   selectedItemId: string | null;
   onSelectItem?: (item: NotebookOutlineItem) => void;
   onNavigateItem?: (item: NotebookOutlineItem, href: string) => boolean | void;
@@ -195,31 +203,41 @@ function NotebookOutlineNode({
   const itemHref = getItemHref?.(item) ?? item.href ?? null;
   const isCodeCellOutlineItem = item.kind === "cell" && item.cellType === "code";
   const isMarkdownCellOutlineItem = item.kind === "cell" && item.cellType === "markdown";
+  const isImageOutputItem = item.kind === "output" && item.imagePreview;
   const metaLabel =
-    isCodeCellOutlineItem || isMarkdownCellOutlineItem
+    isCodeCellOutlineItem || isMarkdownCellOutlineItem || isImageOutputItem
       ? null
       : (item.statusLabel ?? item.detail ?? null);
   const className = cn(
     "relative flex min-h-8 w-full items-start gap-2 rounded-md py-1.5 pl-3 pr-2 text-left text-sm transition-colors",
     "cursor-pointer select-none touch-manipulation [-webkit-user-drag:none] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-    "before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-0.5 before:rounded-full before:bg-transparent before:transition-colors",
     selected
-      ? "font-medium text-foreground before:bg-primary"
+      ? "font-medium text-foreground"
       : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
   );
   const content = (
     <>
-      <span
-        data-slot="notebook-outline-item-title"
-        className={cn(
-          "min-w-0 flex-1 leading-snug",
-          isCodeCellOutlineItem
-            ? "truncate font-mono text-[13px] tracking-normal"
-            : "line-clamp-2 break-words [overflow-wrap:anywhere]",
-        )}
-      >
-        {item.title}
-      </span>
+      {isImageOutputItem ? (
+        <img
+          src={item.imagePreview?.src}
+          alt=""
+          data-slot="notebook-outline-item-image"
+          className="mt-0.5 max-h-12 max-w-full rounded border border-border bg-muted object-contain"
+        />
+      ) : null}
+      {isImageOutputItem ? null : (
+        <span
+          data-slot="notebook-outline-item-title"
+          className={cn(
+            "min-w-0 flex-1 leading-snug",
+            isCodeCellOutlineItem
+              ? "truncate font-mono text-[13px] tracking-normal"
+              : "line-clamp-2 break-words [overflow-wrap:anywhere]",
+          )}
+        >
+          <NotebookOutlineTitle item={item} />
+        </span>
+      )}
       {metaLabel ? (
         <span
           data-slot="notebook-outline-item-meta"
@@ -240,6 +258,7 @@ function NotebookOutlineNode({
           <NotebookOutlineNode
             key={child.item.id}
             node={child}
+            depth={depth + 1}
             selectedItemId={selectedItemId}
             onSelectItem={onSelectItem}
             onNavigateItem={onNavigateItem}
@@ -258,10 +277,12 @@ function NotebookOutlineNode({
     };
 
     return (
-      <li data-outline-level={item.level}>
+      <li className="relative" data-outline-level={item.level}>
+        <NotebookOutlineSelectedMarker selected={selected} depth={depth} />
         <a
           href={itemHref}
           draggable={false}
+          aria-label={isImageOutputItem ? item.title : undefined}
           aria-current={selected ? "location" : undefined}
           onDragStart={(event) => event.preventDefault()}
           onClick={handleClick}
@@ -275,7 +296,8 @@ function NotebookOutlineNode({
   }
 
   return (
-    <li data-outline-level={item.level}>
+    <li className="relative" data-outline-level={item.level}>
+      <NotebookOutlineSelectedMarker selected={selected} depth={depth} />
       <button
         type="button"
         aria-current={selected ? "location" : undefined}
@@ -287,6 +309,64 @@ function NotebookOutlineNode({
       {children}
     </li>
   );
+}
+
+function NotebookOutlineSelectedMarker({ selected, depth }: { selected: boolean; depth: number }) {
+  if (!selected) return null;
+
+  const leftPx =
+    NOTEBOOK_OUTLINE_BODY_PADDING_PX -
+    NOTEBOOK_OUTLINE_PANEL_SHIFT_PX +
+    depth * NOTEBOOK_OUTLINE_NESTED_STEP_PX;
+
+  return (
+    <span
+      aria-hidden="true"
+      data-slot="notebook-outline-selected-marker"
+      className="absolute bottom-1.5 top-1.5 z-10 w-0.5 rounded-full bg-primary"
+      style={{ left: `-${leftPx}px` }}
+    />
+  );
+}
+
+function NotebookOutlineTitle({ item }: { item: NotebookOutlineItem }) {
+  if (item.kind === "cell" && item.cellType === "code") return item.title;
+  if (!item.titleSegments || item.titleSegments.length === 0) return item.title;
+
+  return item.titleSegments.map((segment, index) => (
+    <NotebookOutlineTitleSegmentView key={`${index}:${segment.text}`} segment={segment} />
+  ));
+}
+
+function NotebookOutlineTitleSegmentView({ segment }: { segment: NotebookOutlineTitleSegment }) {
+  const className = outlineTitleSegmentClassName(segment.semantic);
+  if (!className) return <>{segment.text}</>;
+  return (
+    <span
+      className={className}
+      title={segment.title ?? undefined}
+      data-inline-semantic={segment.semantic ?? undefined}
+    >
+      {segment.text}
+    </span>
+  );
+}
+
+function outlineTitleSegmentClassName(semantic: string | null | undefined): string | null {
+  switch (semantic) {
+    case "strong":
+      return "font-semibold text-foreground";
+    case "emphasis":
+      return "italic";
+    case "delete":
+      return "line-through decoration-muted-foreground/70";
+    case "inline-code":
+      return "rounded border border-border/70 bg-muted/80 px-1 py-0.5 font-mono text-[0.9em] text-foreground";
+    case "math-source":
+      return "font-serif";
+    default:
+      return null;
+  }
 }
 
 export interface NotebookPackagesPanelProps {

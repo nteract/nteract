@@ -344,6 +344,38 @@ describe("notebook shell view model", () => {
     });
   });
 
+  it("projects raster output waypoints through the shared outline", () => {
+    const outline = notebookViewCellsToOutlineItems([
+      markdownViewCell("intro", "# Results", [{ title: "Results", level: 1, slug: "results" }]),
+      {
+        id: "plot",
+        cellType: "code",
+        source: "plot()",
+        language: "python",
+        executionId: "exec-plot",
+        executionCount: 2,
+        outputs: [
+          {
+            output_id: "plot-output",
+            output_type: "display_data",
+            data: { "image/png": "iVBORw0KGgo=" },
+            metadata: {},
+          },
+        ],
+        metadata: {},
+      },
+    ]);
+
+    expect(outline.map((item) => [item.id, item.kind, item.title])).toEqual([
+      ["intro:heading:0", "heading", "Results"],
+      ["plot:output:plot-output", "output", "Image output"],
+    ]);
+    expect(outline[1]).toMatchObject({
+      href: "#notebook-cell-plot-output-plot-output",
+      imagePreview: { mimeType: "image/png" },
+    });
+  });
+
   it("builds a normalized view model for host adapters", () => {
     const cells: NotebookViewCell[] = [
       {
