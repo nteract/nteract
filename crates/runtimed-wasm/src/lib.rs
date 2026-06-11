@@ -748,6 +748,17 @@ impl RoomHostHandle {
         })
     }
 
+    /// Return the current room-host-owned workstation attachment snapshot.
+    ///
+    /// The Worker uses this before accepting a runtime peer so only the
+    /// workstation selected for the notebook can refresh the live attachment
+    /// projection. This is read-only; mutations still go through
+    /// `set_workstation_attachment_json` or runtime-peer-gone reconciliation.
+    pub fn get_workstation_attachment_json(&self) -> Result<String, JsError> {
+        serde_json::to_string(&self.state_doc.workstation_attachment())
+            .map_err(|e| JsError::new(&format!("serialize workstation attachment: {e}")))
+    }
+
     /// Generate current sync frames for a peer.
     ///
     /// The Worker calls this immediately after accepting a socket and after the
@@ -4432,6 +4443,34 @@ mod tests {
         assert_eq!(
             state.workstation.as_ref().map(|ws| ws.provider.as_str()),
             Some("runtime_peer")
+        );
+    }
+
+    #[test]
+    fn get_workstation_attachment_json_reads_current_attachment() {
+        let mut host = RoomHostHandle::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        assert_eq!(
+            host.get_workstation_attachment_json()
+                .expect("read empty attachment"),
+            "null"
+        );
+
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .expect("set attachment");
+        let attachment = serde_json::from_str::<Option<WorkstationAttachmentState>>(
+            &host
+                .get_workstation_attachment_json()
+                .expect("read attachment"),
+        )
+        .expect("attachment json");
+        assert_eq!(
+            attachment.map(|ws| (ws.workstation_id, ws.provider, ws.status)),
+            Some((
+                "runtime-peer".to_string(),
+                "runtime_peer".to_string(),
+                "ready".to_string(),
+            ))
         );
     }
 

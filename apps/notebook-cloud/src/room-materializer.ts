@@ -83,6 +83,12 @@ export class RoomMaterializer {
     return this.withHost((host) => normalizeResult(host.reconcile_runtime_peer_gone(reason)));
   }
 
+  async getWorkstationAttachment(): Promise<WorkstationAttachmentState | null> {
+    return this.withHost((host) =>
+      normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json()),
+    );
+  }
+
   /// Publish the room-host-owned active workstation attachment into the
   /// RuntimeStateDoc. Runtime peers do not mutate this map directly; the room
   /// host owns the notebook-visible selected-compute projection.
@@ -551,6 +557,29 @@ function normalizeResult(value: unknown): RoomHostFrameResult {
     runtime_state_changed: result?.runtime_state_changed ?? false,
     outbound: result?.outbound ?? [],
   };
+}
+
+function normalizeWorkstationAttachmentJson(value: string): WorkstationAttachmentState | null {
+  const parsed = JSON.parse(value) as unknown;
+  if (parsed === null || isWorkstationAttachmentState(parsed)) {
+    return parsed;
+  }
+  throw new Error("RoomHostHandle returned an invalid workstation attachment");
+}
+
+function isWorkstationAttachmentState(value: unknown): value is WorkstationAttachmentState {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.workstation_id === "string" &&
+    typeof record.display_name === "string" &&
+    typeof record.provider === "string" &&
+    typeof record.default_environment_label === "string" &&
+    typeof record.environment_policy === "string" &&
+    typeof record.status === "string"
+  );
 }
 
 function checkpointKeepReasonForRevisionMismatch(

@@ -151,6 +151,10 @@ export class NotebookRoom {
     if (workstationAttachmentNotebookId) {
       return this.handleWorkstationAttachmentControl(workstationAttachmentNotebookId, request);
     }
+    const runtimeStateRepairNotebookId = runtimeStateRepairControlNotebookId(url.pathname);
+    if (runtimeStateRepairNotebookId) {
+      return this.handleRuntimeStateRepairControl(runtimeStateRepairNotebookId, request);
+    }
 
     const notebookId = notebookIdFromPath(url.pathname);
 
@@ -171,6 +175,14 @@ export class NotebookRoom {
 
     await this.restoredPeersReady;
 
+    const workstation = runtimePeerWorkstationMetadataFromRequest(request, identity);
+    if (identity.scope === "runtime_peer") {
+      const authorityError = await this.runtimePeerAuthorityError(notebookId, workstation);
+      if (authorityError) {
+        return json({ error: authorityError }, 409);
+      }
+    }
+
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -179,7 +191,7 @@ export class NotebookRoom {
       socket: server,
       identity,
       connectedAt: new Date().toISOString(),
-      workstation: runtimePeerWorkstationMetadataFromRequest(request, identity),
+      workstation,
       consecutiveRejectedFrames: 0,
     };
 
@@ -291,6 +303,85 @@ export class NotebookRoom {
     }
   }
 
+  private async handleRuntimeStateRepairControl(
+    notebookId: string,
+    request: Request,
+  ): Promise<Response> {
+    // Worker-internal/admin control path only. External traffic reaches this
+    // Durable Object through the Worker's strict `/n/:notebookId/sync`
+    // WebSocket route; the public alpha admin API calls this path from the
+    // Worker after owner authorization.
+    if (request.method !== "POST") {
+      return json({ error: "method not allowed" }, 405);
+    }
+
+    const payload = await readOptionalJsonObject(request, "runtime state repair body");
+    if (payload instanceof Response) {
+      return payload;
+    }
+    const force = payload?.force === true;
+    const reason =
+      optionalBoundedStringField(payload?.reason, "reason", 240) ?? "manual runtime state repair";
+    if (reason instanceof Response) {
+      return reason;
+    }
+
+    if (this.hasRuntimePeer()) {
+      if (!force) {
+        return json(
+          {
+            error: "runtime peer is connected; reconnecting compute should reconcile live state",
+            runtime_peer_count: this.runtimePeerCount(),
+          },
+          409,
+        );
+      }
+      this.removeRuntimePeers(notebookId, {
+        code: 1008,
+        reason: "runtime state repair",
+      });
+    }
+
+    const startedAt = Date.now();
+    try {
+      const materializer = this.materializerFor(notebookId);
+      const result = await materializer.reconcileRuntimePeerGone(reason);
+      if (result.changed) {
+        this.deliverRoomHostFrames(notebookId, result);
+        await materializer.checkpoint();
+      }
+      cloudLog("info", "room.runtime_state_repair.completed", {
+        notebook_id: notebookId,
+        changed: result.changed,
+        forced: force,
+        runtime_peer_count: this.runtimePeerCount(),
+        duration_ms: durationMs(startedAt),
+        outbound_frame_count: result.outbound.length,
+        counter: "runtime_state_repairs_completed",
+        counter_delta: 1,
+      });
+      return json(
+        {
+          ok: true,
+          changed: result.changed,
+          forced: force,
+          runtime_peer_count: this.runtimePeerCount(),
+        },
+        200,
+      );
+    } catch (error) {
+      cloudLog("warn", "room.runtime_state_repair.failed", {
+        notebook_id: notebookId,
+        forced: force,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(error),
+        counter: "runtime_state_repairs_failed",
+        counter_delta: 1,
+      });
+      return json({ error: "runtime state repair failed" }, 500);
+    }
+  }
+
   async webSocketMessage(
     socket: CloudflareWebSocket,
     message: string | ArrayBuffer | ArrayBufferView,
@@ -344,9 +435,29 @@ export class NotebookRoom {
     }
     await Promise.all(
       restored.map(async ({ notebookId, peer }) => {
+        if (peer.identity.scope === "runtime_peer") {
+          const authorityError = await this.runtimePeerAuthorityError(notebookId, peer.workstation);
+          if (authorityError) {
+            cloudLog("warn", "room.runtime_peer.rejected_on_restore", {
+              notebook_id: notebookId,
+              peer_id: peer.id,
+              principal: peer.identity.principal,
+              reason: authorityError,
+              workstation_id: runtimePeerWorkstationId(peer.workstation),
+              counter: "runtime_peers_rejected_on_restore",
+              counter_delta: 1,
+            });
+            this.removePeer(notebookId, peer, {
+              code: 1008,
+              reason: "workstation mismatch",
+            });
+            return;
+          }
+        }
         await this.syncPeerFromRoomHost(notebookId, peer);
         if (peer.identity.scope === "runtime_peer") {
           this.refreshRuntimePeerWatch(notebookId);
+          await this.publishRuntimePeerAttachment(notebookId, peer);
         }
       }),
     );
@@ -684,6 +795,36 @@ export class NotebookRoom {
         counter: "workstation_attachment_publish_failed",
         counter_delta: 1,
       });
+    }
+  }
+
+  private async runtimePeerAuthorityError(
+    notebookId: string,
+    workstation: RuntimePeerWorkstationMetadata | null,
+  ): Promise<string | null> {
+    const attachment = await this.materializerFor(notebookId).getWorkstationAttachment();
+    if (!attachment) {
+      return null;
+    }
+
+    const selectedWorkstationId = attachment.workstation_id.trim();
+    if (!selectedWorkstationId || selectedWorkstationId === "runtime-peer") {
+      return null;
+    }
+
+    const presentedWorkstationId = runtimePeerWorkstationId(workstation);
+    if (presentedWorkstationId === selectedWorkstationId) {
+      return null;
+    }
+
+    return `runtime peer workstation ${presentedWorkstationId} does not match selected workstation ${selectedWorkstationId}`;
+  }
+
+  private removeRuntimePeers(notebookId: string, closeOptions: PeerCloseOptions): void {
+    for (const peer of Array.from(this.peers.values())) {
+      if (peer.identity.scope === "runtime_peer") {
+        this.removePeer(notebookId, peer, closeOptions);
+      }
     }
   }
 
@@ -1185,6 +1326,11 @@ function runtimePeerWorkstationAttachment(peer: Peer): WorkstationAttachmentStat
   };
 }
 
+function runtimePeerWorkstationId(workstation: RuntimePeerWorkstationMetadata | null): string {
+  const workstationId = workstation?.workstationId?.trim();
+  return workstationId && workstationId.length > 0 ? workstationId : "runtime-peer";
+}
+
 export function runtimePeerWorkstationMetadataFromRequest(
   request: Request,
   identity: AuthenticatedConnection,
@@ -1288,8 +1434,54 @@ function workstationAttachmentControlNotebookId(pathname: string): string | unde
   return decodeURIComponent(match[1]);
 }
 
+function runtimeStateRepairControlNotebookId(pathname: string): string | undefined {
+  const match = pathname.match(/^\/internal\/n\/([^/]+)\/runtime-state-repair\/?$/);
+  if (!match) {
+    return undefined;
+  }
+  return decodeURIComponent(match[1]);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readOptionalJsonObject(
+  request: Request,
+  label: string,
+): Promise<Record<string, unknown> | null | Response> {
+  const text = await request.text();
+  if (!text.trim()) {
+    return null;
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return json({ error: `${label} must be JSON` }, 400);
+  }
+  if (!isRecord(payload)) {
+    return json({ error: `${label} must be a JSON object` }, 400);
+  }
+  return payload;
+}
+
+function optionalBoundedStringField(
+  value: unknown,
+  fieldName: string,
+  maxLength: number,
+): string | null | Response {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return json({ error: `${fieldName} must be a string` }, 400);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.slice(0, maxLength);
 }
 
 function webSocketMessageByteLength(message: string | ArrayBuffer | ArrayBufferView): number {
