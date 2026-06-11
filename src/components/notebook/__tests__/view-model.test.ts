@@ -204,30 +204,27 @@ describe("notebook shell view model", () => {
       return JSON.stringify(
         testMarkdownProjection(
           source,
-          source.includes("Deep in the emoji train")
+          source.includes("Model diagnostics")
             ? [
-                { title: "Later section", level: 2, slug: "later-section" },
-                { title: "Deep in the emoji train", level: 3, slug: "deep-in-the-emoji-train" },
-                { title: "Deeper note", level: 3, slug: "deeper-note" },
+                { title: "Results", level: 2, slug: "results" },
+                { title: "Model diagnostics", level: 3, slug: "model-diagnostics" },
+                { title: "Review outputs", level: 3, slug: "review-outputs" },
               ]
             : [
-                { title: "Later section", level: 2, slug: "later-section" },
-                { title: "Deeper note", level: 3, slug: "deeper-note" },
+                { title: "Results", level: 2, slug: "results" },
+                { title: "Review outputs", level: 3, slug: "review-outputs" },
               ],
         ),
       );
     });
 
     try {
-      const currentSource = "## Later section\n\n### Deep in the emoji train\n\n### Deeper note";
-      const staleSource = "## Later section\n\n### Deeper note\n\n".padEnd(
-        currentSource.length,
-        "X",
-      );
+      const currentSource = "## Results\n\n### Model diagnostics\n\n### Review outputs";
+      const staleSource = "## Results\n\n### Review outputs\n\n".padEnd(currentSource.length, "X");
       expect(currentSource.length).toBe(staleSource.length);
       const staleCell = markdownViewCell("later", staleSource, [
-        { title: "Later section", level: 2, slug: "later-section" },
-        { title: "Deeper note", level: 3, slug: "deeper-note" },
+        { title: "Results", level: 2, slug: "results" },
+        { title: "Review outputs", level: 3, slug: "review-outputs" },
       ]);
       const outline = notebookViewCellsToOutlineItems([
         {
@@ -238,9 +235,9 @@ describe("notebook shell view model", () => {
 
       expect(calls).toBe(1);
       expect(outline.map((item) => [item.id, item.title, item.anchor])).toEqual([
-        ["later:heading:0", "Later section", "later-section"],
-        ["later:heading:1", "Deep in the emoji train", "deep-in-the-emoji-train"],
-        ["later:heading:2", "Deeper note", "deeper-note"],
+        ["later:heading:0", "Results", "results"],
+        ["later:heading:1", "Model diagnostics", "model-diagnostics"],
+        ["later:heading:2", "Review outputs", "review-outputs"],
       ]);
     } finally {
       restore();
