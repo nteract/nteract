@@ -46,8 +46,10 @@ describe("Sift renderer plugin", () => {
       />,
     );
 
+    // Stable names carry no hashed fallback URL.
     expect(siftMocks.setWasmUrl).toHaveBeenLastCalledWith(
       "https://notebooks.example/plugins/sift_wasm.wasm?v=dev",
+      undefined,
     );
 
     hostContext = {
@@ -60,6 +62,38 @@ describe("Sift renderer plugin", () => {
     }
 
     expect(siftMocks.setWasmUrl).toHaveBeenLastCalledWith(
+      "https://outputs.example/renderer-assets/sift_wasm.wasm?v=dev",
+      undefined,
+    );
+  });
+
+  it("threads the stable fallback URL alongside a hashed manifest name", () => {
+    let Renderer: ComponentType<RendererProps> | undefined;
+
+    install({
+      register: (_mimeTypes, component) => {
+        Renderer = component;
+      },
+      registerPattern: vi.fn(),
+      getHostContext: () => ({
+        nteract: {
+          rendererAssetsBaseUrl: "https://outputs.example/renderer-assets/",
+          siftWasmAssetName: "sift_wasm.0123456789abcdef.wasm",
+        },
+      }),
+      subscribeHostContext: () => () => {},
+    });
+
+    expect(Renderer).toBeDefined();
+    render(
+      <Renderer
+        data="https://notebooks.example/api/n/demo/blobs/sha256-abc"
+        mimeType="application/vnd.apache.parquet"
+      />,
+    );
+
+    expect(siftMocks.setWasmUrl).toHaveBeenLastCalledWith(
+      "https://outputs.example/renderer-assets/sift_wasm.0123456789abcdef.wasm",
       "https://outputs.example/renderer-assets/sift_wasm.wasm?v=dev",
     );
   });

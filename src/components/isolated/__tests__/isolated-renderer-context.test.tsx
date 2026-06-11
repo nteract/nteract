@@ -123,10 +123,35 @@ describe("IsolatedRendererProvider retry behavior", () => {
       </IsolatedRendererProvider>,
     );
 
+    // Boundary-pin every rung of THIS ladder (it has its own constant,
+    // separate from the wasm client's): 150 / 500 / 1500 exactly.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(150 + 500 + 1500);
+      await vi.advanceTimersByTimeAsync(0);
     });
-
+    expect(loader).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(149);
+    });
+    expect(loader).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(loader).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(499);
+    });
+    expect(loader).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(loader).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1499);
+    });
+    expect(loader).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
     // 4 attempts (1 + 3 retries), then the error reaches every consumer.
     expect(loader).toHaveBeenCalledTimes(4);
     expect(probeState("a")).toMatchObject({
