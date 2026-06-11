@@ -693,32 +693,59 @@ live connection. As landed:
   `loadRenderSnapshotHandle` — `load_snapshot(notebook, runtimeState)`
   with the cache, plain `load(notebook)` without it, **no `set_actor`** —
   then materialized through `materializeCloudNotebookView` and freed.
-- **Pre-handshake principal gate:** before `cloud_room_ready` the
-  connection's principal is unknown, and IDB may hold another user's
-  notebook on a shared machine. `cloudInstantPaintPrincipalMatcher`
-  derives a matcher from locally stored auth material: the dev-token user
-  maps to the exact `user:dev:<encoded user>` principal (the worker's
-  derivation is deterministic); OIDC matches the stored subject claim as
-  the principal's encoded id segment (the namespace prefix is
-  server-configured and not client-derivable), with expired claims
-  accepted only when the app-session cookie backs them. No derivable
-  principal, or a mismatch on **either** envelope, skips the paint without
-  clearing — post-handshake seeding owns clear decisions. Anonymous
-  principals never match.
+- **Pre-handshake principal gate (a documented heuristic):** before
+  `cloud_room_ready` the connection's principal is unknown, and IDB may
+  hold another user's notebook on a shared machine.
+  `cloudInstantPaintPrincipalMatcher` derives a matcher from locally
+  stored auth material: the dev-token user maps to the exact
+  `user:dev:<encoded user>` principal (the worker's derivation is
+  deterministic); OIDC matches the stored subject claim as the
+  principal's encoded id segment — the namespace prefix is
+  server-configured and **not client-derivable before the first
+  handshake**, so this is deliberately weaker than the post-handshake
+  full-principal guard. The namespace-agnostic match is sound while
+  browser-written records carry only `user:dev:*`, the deployment's
+  single OIDC/API-key namespace, or anonymous (never persisted); adding a
+  browser-reachable provider with an overlapping subject space widens it
+  (the invariant is asserted at the matcher and must be revisited then).
+  Expired claims are accepted only when the app-session cookie backs
+  them. No derivable principal, or a mismatch on **either** envelope,
+  skips the paint without clearing — post-handshake seeding owns clear
+  decisions. Anonymous principals never match.
 - **Degradations:** notebook envelope without a cache record paints
   cells-only. A torn cache envelope, or `load_snapshot` rejecting with
   cache bytes in play, clears **only** the `runtime-state-cache` record
   and retries cells-only; corrupt notebook bytes skip the paint without
-  clearing; transient WASM asset failures clear nothing.
+  clearing; transient WASM asset failures clear nothing; an attempt that
+  lost the freshness race never clears (the live session's save loop may
+  have just rewritten the record).
 - **Race + handoff:** if the live connect wins the race against the cache
-  read, the paint is skipped (`liveMaterializedRef` guards every apply) —
-  stale cache never overwrites a live materialization. When the paint
-  wins, it lands through the same `applyResolvedCells` path, so the #3577
-  preservation gate keeps it across effect re-runs and the live
-  materialization replaces it wholesale in place (no blanking). The paint
-  runs only on the live-room path; the pinned-revision URL keeps its
-  snapshot fetch (mutually exclusive by loading policy). Poison-pill
-  attempts (seed discard in flight) skip the paint along with the seed.
+  read, the paint is skipped — stale cache never overwrites a live
+  materialization. The sequencing (resolve → materialize → widget
+  projection → final apply, with the freshness flag re-checked between
+  every step and the throwaway handle freed on every exit path) lives in
+  `runCloudInstantPaint`; the session injects its store/status effects.
+  When the paint wins, it lands through the same `applyResolvedCells`
+  path, so the #3577 preservation gate keeps it across effect re-runs and
+  the live materialization replaces it wholesale in place (no blanking).
+  The paint runs only on the live-room path; the pinned-revision URL
+  keeps its snapshot fetch (mutually exclusive by loading policy).
+  Poison-pill attempts (seed discard in flight) skip the paint along with
+  the seed.
+- **Empty-room displacement (the heuristic's backstop):** painted cells
+  block a zero-cell live apply only until the syncing handle has provably
+  caught up to the room's advertised heads
+  (`NotebookHandle.notebook_doc_caught_up()`, polled on the engine's
+  `notebookSyncApplied$` — a room at genesis converges with zero
+  `cellChanges$` emissions, so a dedicated kick runs one full
+  materialization on first catch-up). After that, zero cells IS the
+  room's truth: the stage clears to status `empty`, displacing the paint
+  (including a matcher false-positive) and fixing the pre-existing
+  seeded-session shape where a room emptied to zero could never blank the
+  stale projection. `paintOriginRef` tracks paint-origin pixels so the
+  live-changeset tail never relabels them as live content, and the live
+  pass keeps a painted `ready` status instead of flapping back to a
+  loading notice over visible cells.
 - Offline *editing* before the first-ever handshake stays out of scope
   (below) — this PR is about read latency, not offline authoring.
 

@@ -59,6 +59,21 @@ const DEV_PRINCIPAL_PREFIX = "user:dev:";
  *   as the principal's id segment and rejects the namespaces it cannot
  *   belong to (anonymous, dev).
  *
+ * HEURISTIC, deliberately weaker than the post-handshake guard. The
+ * full-principal equality check in `resolveCloudNotebookHandle` compares
+ * against the handshake's actual principal; this matcher cannot, because
+ * the OIDC namespace is server configuration that is not client-derivable
+ * before the first handshake. Its namespace-agnostic id-segment match is
+ * sound today only because browser-written records carry exactly one of:
+ * `user:dev:*` (rejected here unless dev-derived), the deployment's
+ * single OIDC/API-key namespace, or anonymous (never persisted at all).
+ * Adding a browser-reachable auth provider whose subject space overlaps
+ * the OIDC sub space widens this match — revisit then. The backstops if
+ * it ever false-positives: the post-handshake guard clears the mismatched
+ * seed, the live materialization replaces the paint wholesale, and an
+ * authoritative EMPTY room displaces it too (the zero-cell guard's
+ * caught-up displacement) — a foreign paint cannot outlive the handshake.
+ *
  * Anonymous principals never match any matcher: they are per-connection
  * nonces and persisted records are never written for them anyway.
  */
