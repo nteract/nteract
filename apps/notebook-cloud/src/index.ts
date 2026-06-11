@@ -335,12 +335,23 @@ async function routeHealth(
     status: "ok",
     service: "nteract-notebook-cloud",
     deployment_env: env.DEPLOYMENT_ENV ?? "development",
+    build: {
+      sha: normalizedBuildSha(env.NOTEBOOK_CLOUD_BUILD_SHA),
+    },
     auth: {
       anaconda_api_key: anacondaApiKeyHealth(env),
       app_session: appSessionHealth(env),
       oidc: oidcHealth(env),
     },
   });
+}
+
+function normalizedBuildSha(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^[0-9a-f]{7,40}$/i.test(trimmed)) {
+    return null;
+  }
+  return trimmed.toLowerCase();
 }
 
 async function routeAsset(request: Request, env: Env): Promise<Response | null> {

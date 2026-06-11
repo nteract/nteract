@@ -52,6 +52,7 @@ before(async () => {
 describe("Worker artifact routes", () => {
   it("reports direct OIDC readiness without exposing configured values", async () => {
     const env = fakeEnv({
+      NOTEBOOK_CLOUD_BUILD_SHA: "9C0CE3594ED68F773A40E1A8FD9352A46BE48F69",
       NOTEBOOK_CLOUD_OIDC_AUDIENCE: "aud-secret-ish-value",
       NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-secret-ish-value",
       NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
@@ -67,6 +68,9 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     const body = (await response.json()) as {
+      build: {
+        sha: string;
+      };
       auth: {
         oidc: {
           audience: string;
@@ -76,6 +80,9 @@ describe("Worker artifact routes", () => {
         };
       };
     };
+    assert.deepEqual(body.build, {
+      sha: "9c0ce3594ed68f773a40e1a8fd9352a46be48f69",
+    });
     assert.deepEqual(body.auth.oidc, {
       status: "configured",
       jwks: "pinned",
@@ -86,6 +93,18 @@ describe("Worker artifact routes", () => {
       JSON.stringify(body),
       /auth\.stage\.anaconda\.com|client-secret-ish-value|aud-secret-ish-value|user:anaconda/,
     );
+  });
+
+  it("reports an unknown build SHA when deployment metadata is absent", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { build: { sha: string | null } };
+    assert.deepEqual(body.build, { sha: null });
   });
 
   it("reports Anaconda API key readiness without exposing configured values", async () => {
