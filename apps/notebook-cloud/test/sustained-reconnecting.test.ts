@@ -198,12 +198,17 @@ describe("sustained reconnecting notice", () => {
   });
 
   it("renders the actionable warning for non-link transport failures", () => {
+    // The production viewer wires onRetryConnection (retryLiveConnection);
+    // since #3587 retired the destructive "Use anonymous" fallback, Retry is
+    // the action that keeps non-link failures actionable.
     const html = renderNotices({
       connectionError: "cloud sync connect target failed: Unable to read app session",
+      onRetryConnection: () => {},
     });
     assert.match(html, /Live room needs attention/);
     assert.match(html, /cloud sync connect target failed/);
-    assert.match(html, /Use anonymous/, "the warning keeps its action");
+    assert.match(html, /Retry/, "the warning keeps its action");
+    assert.doesNotMatch(html, /Use anonymous/);
     assert.doesNotMatch(html, /Your edits are kept locally/);
 
     const rejectionHtml = renderNotices({
