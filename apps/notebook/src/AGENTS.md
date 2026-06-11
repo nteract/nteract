@@ -47,6 +47,8 @@ Put host, transport, sync, and lifecycle mechanisms in packages such as `@nterac
 
 Put code in `apps/notebook/src/` when it owns notebook app policy: stores, routes, layout, UI state, materialization choices, and closures that connect package mechanisms to app-specific state.
 
+When iterating on a shared surface (rail, outline, toolbar, cells), keep the *interaction* layer shared too: scroll observers, selection coupling, and status projections belong as hooks colocated with the shared component, not as hooks inside `App.tsx`. Interaction logic written here reaches only desktop — the cloud viewer renders the same component with whatever props it knows about and silently lacks the new behavior. If you add an optional interaction prop to a shared component, also wire it in `apps/notebook-cloud/viewer/` or record why not (see the outline case study in `docs/adr/notebook-host-shell-convergence.md`). Known intentional asymmetry: desktop omits the workstations panel while remote compute matures on hosted.
+
 ## NotebookHost — platform abstraction
 
 Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through `@nteract/notebook-host`. React code uses `const host = useNotebookHost()`. Import `@tauri-apps/*` only inside the Tauri host implementation and narrow relay glue — the notebook frontend stays host-agnostic.

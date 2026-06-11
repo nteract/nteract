@@ -54,6 +54,15 @@ stores, not from using document boundaries as a rerender workaround.
 - Keep notebook UI behavior in shared notebook surfaces where possible. Cloud
   code should adapt host capabilities and routes, not fork cell/output/runtime
   UI semantics.
+- **Wiring parity, not just component parity.** When desktop iterates on a
+  shared surface (rail, outline, toolbar, cells), check that the viewer passes
+  the same interaction props and hooks — a shared component rendered with a
+  thinner prop set silently lacks the new behavior even though the shared code
+  ships in the bundle. Optional interaction props on shared components are the
+  smell; prefer shared hooks colocated with the component (see the outline
+  case study in `docs/adr/notebook-host-shell-convergence.md`). Known
+  intentional asymmetry: desktop does not render the workstations panel while
+  remote compute matures on hosted first.
 - Public viewer state must be explicit: unauthenticated users only become
   anonymous viewers when the D1 ACL has a public `viewer` row. Anonymous
   presence is local-only unless product policy changes.
