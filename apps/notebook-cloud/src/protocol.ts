@@ -65,6 +65,8 @@ export type SessionControlMessage =
       peer_id: string;
       actor_label: string;
       connection_scope?: string;
+      display_name?: string;
+      email?: string;
       room_peer_count: number;
       runtime_peer_count?: number;
       timestamp: string;

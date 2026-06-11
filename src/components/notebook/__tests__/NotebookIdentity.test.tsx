@@ -36,6 +36,23 @@ describe("NotebookIdentity", () => {
     expect(container.querySelector(".rounded-full")).toBeNull();
   });
 
+  it("keeps pure email identities out of visible badge text and initials", () => {
+    const actor = notebookActorIdentityFromAccess({
+      level: "owner",
+      source: "cloud",
+      isPublic: false,
+      actorLabel: "user:anaconda:rgbkrk/browser:tab",
+      identityLabel: "rgbkrk@gmail.com",
+    });
+
+    const { container } = render(<NotebookIdentityBadge actor={actor} />);
+
+    expect(screen.getByText("User")).toBeVisible();
+    expect(screen.queryByText("rgbkrk@gmail.com")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-slot='avatar-fallback']")?.textContent).toBe("U");
+    expect(screen.getByTitle("rgbkrk@gmail.com - Owner")).toBeVisible();
+  });
+
   it("projects agent access as acting for an identity", () => {
     const actor = notebookActorIdentityFromAccess({
       level: "editor",

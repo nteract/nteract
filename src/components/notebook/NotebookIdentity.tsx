@@ -50,7 +50,7 @@ export function NotebookIdentityBadge({
   const Icon = actorIcon(actor.kind);
   const avatarSize = size === "sm" ? "sm" : "default";
   const inline = variant === "inline";
-  const label = inline ? compactPublicIdentityLabel(actor.label) : actor.label;
+  const label = publicIdentityVisualLabel(actor.label);
 
   return (
     <div
@@ -94,11 +94,10 @@ export function NotebookIdentityBadge({
   );
 }
 
-function compactPublicIdentityLabel(label: string): string {
+function publicIdentityVisualLabel(label: string): string {
   const trimmed = label.trim();
-  const emailMatch = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/.exec(trimmed);
-  if (emailMatch?.[1]) {
-    return emailMatch[1];
+  if (looksLikeEmailAddress(trimmed)) {
+    return "User";
   }
   return trimmed;
 }
@@ -230,8 +229,16 @@ function statusTone(status: NonNullable<NotebookActorIdentity["status"]>): strin
 }
 
 function initials(label: string): string {
-  const parts = label.trim().split(/\s+/).filter(Boolean);
+  const trimmed = label.trim();
+  if (looksLikeEmailAddress(trimmed)) {
+    return "U";
+  }
+  const parts = trimmed.split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
+function looksLikeEmailAddress(label: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(label);
 }

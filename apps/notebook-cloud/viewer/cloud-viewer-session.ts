@@ -130,6 +130,7 @@ export interface CloudViewerSession {
   connectionActorLabel: string | null;
   connectionError: string | null;
   connectionPeerId: string | null;
+  connectionPeerLabel: string | null;
   connectionScope: string | null;
   /**
    * Stable connection lifecycle across transport replacements (initial
@@ -276,6 +277,7 @@ export function useCloudViewerSession({
   );
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [connectionPeerId, setConnectionPeerId] = useState<string | null>(null);
+  const [connectionPeerLabel, setConnectionPeerLabel] = useState<string | null>(null);
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
@@ -961,6 +963,7 @@ export function useCloudViewerSession({
     setConnectionError(null);
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
+    setConnectionPeerLabel(null);
     connectCloudSyncRuntime({
       // Per-attempt target: re-resolves auth and mints a fresh operator
       // nonce on every retry (see createCloudConnectTarget).
@@ -996,6 +999,7 @@ export function useCloudViewerSession({
           setConnectionError(null);
           setConnectionScope(message.connection_scope);
           setConnectionActorLabel(message.actor_label);
+          setConnectionPeerLabel(presenceStore.getSnapshot().ownPeerLabel);
         }
         if (message.type === "cloud_frame_rejected") {
           if (isRecoverableCloudFrameRejection(message)) {
@@ -1073,6 +1077,7 @@ export function useCloudViewerSession({
         setConnectionScope(liveRuntime.connectionScope);
         setConnectionActorLabel(liveRuntime.actorLabel);
         setConnectionPeerId(liveRuntime.peerId);
+        setConnectionPeerLabel(liveRuntime.peerLabel);
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
         let stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
         subscriptions = [
@@ -1090,6 +1095,7 @@ export function useCloudViewerSession({
             setConnectionScope(liveRuntime.connectionScope);
             setConnectionActorLabel(liveRuntime.actorLabel);
             setConnectionPeerId(liveRuntime.peerId);
+            setConnectionPeerLabel(liveRuntime.peerLabel);
             // Presence identity is per-connection (server-assigned peer id).
             livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
             stopCursorDispatch();
@@ -1191,6 +1197,7 @@ export function useCloudViewerSession({
         setConnectionScope(null);
         setConnectionActorLabel(null);
         setConnectionPeerId(null);
+        setConnectionPeerLabel(null);
         resetRuntimeState();
         setConnectionError(message);
         // Terminal WASM asset failures own the notice (Retry affordance):
@@ -1283,6 +1290,7 @@ export function useCloudViewerSession({
       livePresenceStore = null;
       presenceStore.reduceConnection("disconnected");
       setConnectionPeerId(null);
+      setConnectionPeerLabel(null);
     };
   }, [
     authRenewalKind,
@@ -1316,6 +1324,7 @@ export function useCloudViewerSession({
     connectionError,
     connectionStatus$: connectionStatusBridge,
     connectionPeerId,
+    connectionPeerLabel,
     connectionScope,
     liveMaterializedRef,
     liveRuntimeRef,

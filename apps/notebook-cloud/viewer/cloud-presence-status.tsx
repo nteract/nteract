@@ -8,6 +8,7 @@ import {
   AvatarGroupCount,
 } from "@/components/ui/avatar";
 import {
+  cloudPresenceInitials,
   cloudViewerPresenceDisplay,
   type CloudViewerPresencePeer,
   type CloudViewerPresenceStore,
@@ -100,16 +101,4 @@ function CloudPresenceAvatar({
       <AvatarBadge data-status={status} />
     </Avatar>
   );
-}
-
-function cloudPresenceInitials(label: string): string {
-  const words = label
-    .split(/[\s@._-]+/g)
-    .map((word) => word.trim())
-    .filter(Boolean);
-  const initials = words
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
-  return initials || "?";
 }

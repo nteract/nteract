@@ -18,6 +18,7 @@ export interface CloudNotebookShellCapabilityInput {
   authState: CloudPrototypeAuthState;
   connectionScope: string | null;
   connectionActorLabel?: string | null;
+  connectionPeerLabel?: string | null;
   hasAppSession?: boolean;
   hasCodeCells: boolean;
   selectedMode?: NotebookEditMode;
@@ -65,6 +66,7 @@ export function cloudNotebookShellCapabilities({
   authState,
   connectionScope,
   connectionActorLabel = null,
+  connectionPeerLabel = null,
   hasAppSession = false,
   hasCodeCells,
   selectedMode = "view",
@@ -88,7 +90,7 @@ export function cloudNotebookShellCapabilities({
   const authenticated = hasAppSession || authState.mode === "dev" || authState.mode === "oidc";
   const authNeedsAttention =
     !hasAppSession && (authState.mode === "invalid" || authState.mode === "oidc_expired");
-  const identityLabel = cloudIdentityDisplayLabel(authState);
+  const identityLabel = connectionPeerLabel?.trim() || cloudIdentityDisplayLabel(authState);
   const identityImageUrl = cloudIdentityImageUrl(authState);
   const attachmentConnected = workstationAttachmentIsConnected(workstationAttachment);
   const attachmentExecutionAvailable = workstationAttachmentCanExecute(workstationAttachment);
@@ -229,22 +231,22 @@ function cloudIdentityDisplayLabel(authState: CloudPrototypeAuthState): string |
   if (claimName) {
     return claimName;
   }
-  const claimEmail = compactEmailLabel(authState.oidcClaims?.email);
+  const claimEmail = identityEmailLabel(authState.oidcClaims?.email);
   if (claimEmail) {
     return claimEmail;
   }
-  return compactEmailLabel(authState.user) ?? authState.user;
+  const user = authState.user?.trim();
+  return identityEmailLabel(user) ?? user ?? null;
 }
 
 function cloudIdentityImageUrl(authState: CloudPrototypeAuthState): string | null {
   return authState.oidcClaims?.picture?.trim() || null;
 }
 
-function compactEmailLabel(value: string | null | undefined): string | null {
+function identityEmailLabel(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed) {
     return null;
   }
-  const match = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/.exec(trimmed);
-  return match?.[1] ?? null;
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmed) ? trimmed : null;
 }

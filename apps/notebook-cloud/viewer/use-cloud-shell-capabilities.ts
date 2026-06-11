@@ -17,6 +17,7 @@ interface UseCloudShellCapabilitiesInput {
   connectionScope: string | null;
   connectionActorLabel: string | null;
   connectionPeerId: string | null;
+  connectionPeerLabel: string | null;
   connectionError: string | null;
   status: ViewerStatus;
   selectedMode: NotebookInteractionMode;
@@ -46,6 +47,7 @@ export function useCloudShellCapabilities({
   connectionScope,
   connectionActorLabel,
   connectionPeerId,
+  connectionPeerLabel,
   connectionError,
   status,
   selectedMode,
@@ -79,6 +81,7 @@ export function useCloudShellCapabilities({
         authState,
         connectionScope,
         connectionActorLabel,
+        connectionPeerLabel,
         hasAppSession,
         hasCodeCells: codeCellCount > 0,
         selectedMode,
@@ -96,6 +99,7 @@ export function useCloudShellCapabilities({
       codeCellCount,
       hostCapabilities,
       connectionActorLabel,
+      connectionPeerLabel,
       connectionScope,
       editAccessRequestPending,
       runtimePeerCount,
