@@ -494,3 +494,57 @@ describe("runtimed WASM client retry ladder", () => {
     );
   });
 });
+
+describe("runtimed WASM source normalization", () => {
+  beforeEach(() => {
+    _resetRuntimedWasmClientForTests();
+  });
+  afterEach(() => {
+    _setRuntimedWasmModuleImporterForTests(null);
+    _setRuntimedWasmFetchForTests(null);
+    _resetRuntimedWasmClientForTests();
+    delete (globalThis as { location?: unknown }).location;
+  });
+
+  it("accepts the same wasm spelled relative then absolute (preview field failure)", async () => {
+    (globalThis as { location?: unknown }).location = {
+      href: "https://preview.runt.run/n/topic-viz/Topic%20Visualization",
+    };
+    _setRuntimedWasmModuleImporterForTests(async () => stubModule());
+    const { fetch } = okFetch();
+    _setRuntimedWasmFetchForTests(fetch);
+
+    const first = await initializeRuntimedWasmClient(
+      "/assets/runtimed_wasm.716993c935bb1411.js",
+      "/assets/runtimed_wasm_bg.716993c935bb1411.wasm",
+    );
+    // The live path resolves the identical assets to absolute URLs; the
+    // single-init guard must treat them as the same resource, not refuse.
+    const second = await initializeRuntimedWasmClient(
+      new URL("/assets/runtimed_wasm.716993c935bb1411.js", "https://preview.runt.run/"),
+      new URL("/assets/runtimed_wasm_bg.716993c935bb1411.wasm", "https://preview.runt.run/"),
+    );
+    assert.equal(first, second);
+  });
+
+  it("still refuses a genuinely different wasm source", async () => {
+    (globalThis as { location?: unknown }).location = {
+      href: "https://preview.runt.run/n/x",
+    };
+    _setRuntimedWasmModuleImporterForTests(async () => stubModule());
+    const { fetch } = okFetch();
+    _setRuntimedWasmFetchForTests(fetch);
+
+    await initializeRuntimedWasmClient(
+      "/assets/runtimed_wasm.aaaa.js",
+      "/assets/runtimed_wasm_bg.aaaa.wasm",
+    );
+    await assert.rejects(
+      initializeRuntimedWasmClient(
+        "/assets/runtimed_wasm.aaaa.js",
+        "/assets/runtimed_wasm_bg.bbbb.wasm",
+      ),
+      /already initialized from .*; refusing/,
+    );
+  });
+});

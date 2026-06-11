@@ -253,7 +253,7 @@ test("a resolved access diagnostic never overwrites the wasm-failure Retry notic
   assert.doesNotMatch(html, /Edit access pending/);
 });
 
-test("wasm-asset failures keep the legacy action when no retry callback is wired", () => {
+test("wasm-asset failures show no action when no retry callback is wired", () => {
   const html = renderToStaticMarkup(
     React.createElement(CloudNotebookNotices, {
       authState: authState("anonymous"),
@@ -265,7 +265,8 @@ test("wasm-asset failures keep the legacy action when no retry callback is wired
   );
 
   assert.match(html, /Notebook engine failed to load/);
-  assert.match(html, /Use anonymous/);
+  // The prototype-era "Use anonymous" fallback is gone: no destructive CTA.
+  assert.doesNotMatch(html, /Use anonymous/);
 });
 
 test("connection notice sanitizer redacts http(s) URLs down to host and path", () => {

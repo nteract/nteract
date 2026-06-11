@@ -4,7 +4,10 @@ import {
 } from "runtimed";
 import { setMarkdownProjectionProjector } from "../../../src/lib/markdown-projection";
 import type { NotebookHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
-import { asRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
+import {
+  asRuntimedWasmAssetFailure,
+  RUNTIMED_WASM_ASSET_FAILURE_PREFIX,
+} from "./runtimed-wasm-failure";
 
 type RuntimedWasmModule = typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
 type WasmModuleOrPath = string | URL | Request | Response | ArrayBuffer | WebAssembly.Module;
@@ -80,11 +83,11 @@ export async function initializeRuntimedWasmClient(
   modulePath: string | URL,
   moduleOrPath: WasmModuleOrPath,
 ): Promise<RuntimedWasmModule> {
-  const source = wasmSourceLabel(moduleOrPath);
+  const source = normalizedWasmSource(wasmSourceLabel(moduleOrPath));
   if (initialized && initializedSource !== source) {
     return Promise.reject(
       new Error(
-        `runtimed WASM is already initialized from ${initializedSource}; refusing ${source}`,
+        `${RUNTIMED_WASM_ASSET_FAILURE_PREFIX}already initialized from ${initializedSource}; refusing ${source}`,
       ),
     );
   }
@@ -242,11 +245,11 @@ export function encodeInteractionPresenceAfterInit(
 export type { NotebookHandle };
 
 function loadRuntimedWasmModule(modulePath: string | URL): Promise<RuntimedWasmModule> {
-  const href = typeof modulePath === "string" ? modulePath : modulePath.href;
+  const href = normalizedWasmSource(typeof modulePath === "string" ? modulePath : modulePath.href);
   if (loadedModule && loadedModuleSource !== href) {
     return Promise.reject(
       new Error(
-        `runtimed WASM module is already loaded from ${loadedModuleSource}; refusing ${href}`,
+        `${RUNTIMED_WASM_ASSET_FAILURE_PREFIX}module already loaded from ${loadedModuleSource}; refusing ${href}`,
       ),
     );
   }
@@ -548,6 +551,26 @@ function runtimedWasmModuleAfterInit(): RuntimedWasmModule {
     throw new Error("runtimed WASM is not initialized");
   }
   return resolvedModule;
+}
+
+/**
+ * Normalize a source label to an absolute href so the single-init guards
+ * compare resources, not string forms. The instant-paint path passes the
+ * shell config's relative "/assets/..." while the live path passes a
+ * resolved absolute URL — the same wasm in two spellings must never be
+ * "refused" as a different source (observed on preview: slow connections
+ * let the paint initialize first, then the live connect was refused over
+ * the relative-vs-absolute spelling of the identical hashed binary).
+ * Bracketed sentinel labels ("[wasm-bytes]" etc.) pass through untouched.
+ */
+function normalizedWasmSource(label: string): string {
+  if (label.startsWith("[")) return label;
+  if (typeof location === "undefined") return label;
+  try {
+    return new URL(label, location.href).href;
+  } catch {
+    return label;
+  }
 }
 
 function wasmSourceLabel(moduleOrPath: WasmModuleOrPath): string {

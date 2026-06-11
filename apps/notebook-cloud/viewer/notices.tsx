@@ -207,7 +207,6 @@ export function CloudNotebookNotices({
           actions={
             <ConnectionNoticeAction
               connectionError={connectionError ?? ""}
-              onResetAuth={onResetAuth}
               onRetryConnection={onRetryConnection}
               onSignInAgain={onSignInAgain}
             />
@@ -288,12 +287,10 @@ function AuthNoticeAction({
 
 function ConnectionNoticeAction({
   connectionError,
-  onResetAuth,
   onRetryConnection,
   onSignInAgain,
 }: {
   connectionError: string;
-  onResetAuth: () => void;
   onRetryConnection?: () => void;
   onSignInAgain?: () => void | Promise<void>;
 }) {
@@ -321,11 +318,18 @@ function ConnectionNoticeAction({
     );
   }
 
-  return (
-    <NotebookNoticeAction onClick={onResetAuth} icon={<RotateCcw className="h-3 w-3" />}>
-      Use anonymous
-    </NotebookNoticeAction>
-  );
+  if (onRetryConnection) {
+    return (
+      <NotebookNoticeAction onClick={onRetryConnection} icon={<RotateCcw className="h-3 w-3" />}>
+        Retry
+      </NotebookNoticeAction>
+    );
+  }
+
+  // No destructive fallback: "Use anonymous" (a prototype-era relic) reset a
+  // signed-in session for errors auth could never fix. With no retry wired,
+  // the notice text stands on its own.
+  return null;
 }
 
 function isStatusDerivedFromConnectionError(
