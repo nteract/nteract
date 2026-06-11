@@ -699,15 +699,30 @@ describe("OutputArea iframe theme sync", () => {
     expect(screen.queryByRole("button", { name: "Click inside the table to scroll" })).toBeNull();
   });
 
-  it("releases sift iframe scrolling on outside pointer down", () => {
+  it("releases sift iframe scrolling on outside pointer down", async () => {
     const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
     const frame = getByTestId("isolated-frame");
     const activationWell = frame.parentElement as HTMLElement;
+
+    await waitFor(() => {
+      expect(mockFrameHandle.send).toHaveBeenCalledWith({
+        type: "interaction_state",
+        payload: { active: false },
+      });
+    });
+    mockFrameHandle.send.mockClear();
 
     fireEvent.pointerDown(activationWell);
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    await waitFor(() => {
+      expect(mockFrameHandle.send).toHaveBeenCalledWith({
+        type: "interaction_state",
+        payload: { active: true },
+      });
+    });
+    mockFrameHandle.send.mockClear();
 
     fireEvent.pointerDown(document.body);
 
@@ -718,6 +733,12 @@ describe("OutputArea iframe theme sync", () => {
     expect(
       screen.getByRole("button", { name: "Click inside the table to scroll" }),
     ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockFrameHandle.send).toHaveBeenCalledWith({
+        type: "interaction_state",
+        payload: { active: false },
+      });
+    });
   });
 
   it("forces focused iframe outputs off scroll passthrough and wheel-boundary forwarding", () => {

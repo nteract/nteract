@@ -10,7 +10,7 @@
  */
 
 import * as React from "react";
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import * as jsxRuntime from "react/jsx-runtime";
 
@@ -60,6 +60,7 @@ import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
+import { dispatchHostOutsideInteractionOnRelease } from "./host-interaction";
 import { measureDocumentHeight } from "./layout-measure";
 import { outputEntryIdForPayload } from "./output-identity";
 // Import widget support
@@ -531,6 +532,7 @@ function IsolatedRendererApp() {
     isDark: document.documentElement.classList.contains("dark"),
     interactionActive: false,
   });
+  const interactionActiveRef = useRef(false);
 
   // Handle messages from parent
   const handleMessage = useCallback((type: string, payload: unknown) => {
@@ -625,9 +627,12 @@ function IsolatedRendererApp() {
       }
       case "interaction_state": {
         const interactionPayload = payload as { active?: boolean };
+        const active = interactionPayload.active ?? false;
+        dispatchHostOutsideInteractionOnRelease(interactionActiveRef.current, active);
+        interactionActiveRef.current = active;
         setState((prev) => ({
           ...prev,
-          interactionActive: interactionPayload.active ?? false,
+          interactionActive: active,
         }));
         break;
       }

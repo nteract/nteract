@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
+import { NTERACT_HOST_OUTSIDE_INTERACTION_EVENT } from "./events";
 import type {
   BooleanColumnSummary,
   CategoricalColumnSummary,
@@ -920,6 +921,22 @@ function CategoricalBars({
   onFilter: FilterCallback;
 }) {
   const [popoverOpen, setPopoverOpen] = useState(false);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+
+    function handleHostOutsideInteraction() {
+      setPopoverOpen(false);
+    }
+
+    window.addEventListener(NTERACT_HOST_OUTSIDE_INTERACTION_EVENT, handleHostOutsideInteraction);
+    return () => {
+      window.removeEventListener(
+        NTERACT_HOST_OUTSIDE_INTERACTION_EVENT,
+        handleHostOutsideInteraction,
+      );
+    };
+  }, [popoverOpen]);
 
   const items = summary.topCategories.map((c) => ({
     label: c.label,

@@ -3,6 +3,7 @@
  * Positioned manually at click coordinates, rendered as a portal.
  */
 import { useEffect, useRef } from "react";
+import { NTERACT_HOST_OUTSIDE_INTERACTION_EVENT } from "../events";
 import type { ColumnType } from "../table";
 
 export type ColumnAction =
@@ -43,6 +44,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
+    window.addEventListener(NTERACT_HOST_OUTSIDE_INTERACTION_EVENT, onClose);
     const timer = setTimeout(() => {
       document.addEventListener("mousedown", onClick, true);
       document.addEventListener("keydown", onKey, true);
@@ -51,6 +53,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
       clearTimeout(timer);
       document.removeEventListener("mousedown", onClick, true);
       document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener(NTERACT_HOST_OUTSIDE_INTERACTION_EVENT, onClose);
     };
   }, [state, onClose]);
 
