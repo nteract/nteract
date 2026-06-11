@@ -145,10 +145,23 @@ describe("sustained reconnecting notice", () => {
     );
   }
 
-  it("classifies transport-loss reasons, not diagnostics", () => {
+  it("classifies exactly the transport's own link-loss shapes", () => {
+    // The calm-reconnect funnel: link-level losses the retry loop owns.
     assert.equal(isTransportReconnectError("browser reported offline"), true);
     assert.equal(isTransportReconnectError("cloud sync socket closed (1006)"), true);
+    assert.equal(
+      isTransportReconnectError("cloud sync socket closed (1008): too many rejected frames"),
+      true,
+    );
     assert.equal(isTransportReconnectError("cloud sync socket failed"), true);
+    assert.equal(
+      isTransportReconnectError("cloud sync socket send failed: socket is closing"),
+      true,
+    );
+    assert.equal(
+      isTransportReconnectError("cloud sync liveness ping failed: synthetic send failure"),
+      true,
+    );
     assert.equal(
       isTransportReconnectError("cloud sync liveness pong missed (no reply within 10000ms)"),
       true,
@@ -157,8 +170,46 @@ describe("sustained reconnecting notice", () => {
       isTransportReconnectError("cloud room handshake did not complete within 30000ms"),
       true,
     );
+  });
+
+  it("keeps terminal-looking failures on the actionable diagnostic route", () => {
+    // The transport wraps NON-link failures in similar prefixes; a broad
+    // prefix match routed mid-session terminal auth/access failures into
+    // the perpetual calm "Reconnecting." line with no CTA. These must keep
+    // the warning notice.
+    assert.equal(
+      isTransportReconnectError("cloud sync connect target failed: Unable to read app session"),
+      false,
+    );
+    assert.equal(
+      isTransportReconnectError("cloud sync socket creation failed: invalid URL"),
+      false,
+    );
+    assert.equal(
+      isTransportReconnectError("cloud sync socket message failed: unexpected token"),
+      false,
+    );
+    assert.equal(
+      isTransportReconnectError("cloud room rejected frame: notebook sync rejected"),
+      false,
+    );
     assert.equal(isTransportReconnectError(CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC), false);
     assert.equal(isTransportReconnectError("websocket failed"), false);
+  });
+
+  it("renders the actionable warning for non-link transport failures", () => {
+    const html = renderNotices({
+      connectionError: "cloud sync connect target failed: Unable to read app session",
+    });
+    assert.match(html, /Live room needs attention/);
+    assert.match(html, /cloud sync connect target failed/);
+    assert.match(html, /Use anonymous/, "the warning keeps its action");
+    assert.doesNotMatch(html, /Your edits are kept locally/);
+
+    const rejectionHtml = renderNotices({
+      connectionError: "cloud room rejected frame: notebook sync rejected",
+    });
+    assert.match(rejectionHtml, /Live room needs attention/);
   });
 
   it("shows the single quiet line while reconnecting is sustained", () => {

@@ -35,14 +35,33 @@ export interface CloudNotebookNoticesProps {
 }
 
 /**
- * Transport-level connection-loss reasons (socket drops, handshake
- * timeouts, missed liveness pongs, the browser offline event). The retry
- * loop owns recovery, so these surface through the debounced sustained-
- * reconnecting line rather than an immediate per-drop warning. Access and
- * sign-in diagnostics keep their dedicated notices.
+ * EXACT connection-loss shapes minted by CloudWebSocketTransport when the
+ * LINK itself drops (socket close/failure, browser offline, liveness
+ * probe misses, handshake that never completed). The retry loop owns
+ * recovery for these, so they surface through the debounced sustained-
+ * reconnecting line rather than an immediate per-drop warning.
+ *
+ * Anchored shape-by-shape on purpose: the transport wraps OTHER failures
+ * in similar prefixes — connect-target resolution ("cloud sync connect
+ * target failed: ..."), socket creation, protocol decode, and the session
+ * escalation's "cloud room rejected frame: ..." — and those carry
+ * actionable detail that must keep the warning notice and its action.
+ * A terminal auth/access failure routed into the perpetual calm
+ * "Reconnecting." line would loop forever with no CTA. Keep this list in
+ * lockstep with the connectionLost reasons in live-sync.ts.
  */
+const TRANSPORT_RECONNECT_ERROR_SHAPES: readonly RegExp[] = [
+  /^browser reported offline$/,
+  /^cloud sync socket failed$/,
+  /^cloud sync socket closed \(\d+\)/,
+  /^cloud sync socket send failed: /,
+  /^cloud room handshake did not complete within \d+ms$/,
+  /^cloud sync liveness ping failed: /,
+  /^cloud sync liveness pong missed \(no reply within \d+ms\)$/,
+];
+
 export function isTransportReconnectError(error: string): boolean {
-  return error === "browser reported offline" || /^cloud (sync|room) /.test(error);
+  return TRANSPORT_RECONNECT_ERROR_SHAPES.some((shape) => shape.test(error));
 }
 
 export function cloudNotebookHasNotices({
