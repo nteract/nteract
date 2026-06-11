@@ -338,6 +338,20 @@ describe("NotebookRoom peer lifecycle", () => {
       assert.equal(pairs.length, 1);
       assert.equal(pairs[0].request, LIVENESS_PING);
       assert.equal(pairs[0].response, LIVENESS_PONG);
+
+      // Hibernation wake = a fresh constructor run against the SAME durable
+      // state. Re-arming per wake must be an idempotent re-set of the same
+      // pair — the load-bearing claim behind arming in the constructor.
+      new NotebookRoom(state, {} as Env);
+      assert.equal(pairs.length, 2);
+      assert.equal(pairs[1].request, pairs[0].request);
+      assert.equal(pairs[1].response, pairs[0].response);
+
+      // Older runtime shape: the global constructor exists but the state
+      // lacks setWebSocketAutoResponse. The second conjunct of the feature
+      // detection must keep the constructor from throwing — a TypeError
+      // here is a total room outage, not a degraded probe.
+      assert.doesNotThrow(() => new NotebookRoom(fakeState(), {} as Env));
     } finally {
       globals.WebSocketRequestResponsePair = original;
     }
