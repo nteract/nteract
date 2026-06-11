@@ -66,7 +66,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 min-w-[12rem] overflow-hidden rounded-lg border border-[var(--sift-rule)] bg-[var(--sift-panel)] p-1 shadow-lg"
+      className="sift-overlay-surface fixed z-50 min-w-[12rem] overflow-hidden rounded-lg border p-1 shadow-lg"
       style={{ left: x, top: y }}
     >
       <div className="px-2 py-1.5 text-xs font-semibold text-[var(--sift-muted)] uppercase tracking-wider">
