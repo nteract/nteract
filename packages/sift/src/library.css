@@ -435,6 +435,21 @@
   gap: 3px;
 }
 
+.sift-cat-summary-trigger {
+  cursor: pointer;
+  border-radius: 4px;
+  outline: none;
+}
+
+.sift-cat-summary-trigger:hover .sift-cat-row {
+  color: var(--sift-ink);
+}
+
+.sift-cat-summary-trigger:focus-visible {
+  outline: 1px solid var(--sift-accent);
+  outline-offset: 2px;
+}
+
 .sift-cat-row {
   display: flex;
   align-items: center;
