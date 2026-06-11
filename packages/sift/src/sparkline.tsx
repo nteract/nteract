@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "./components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import type {
   BooleanColumnSummary,
   CategoricalColumnSummary,
@@ -776,6 +776,7 @@ function CategoryPopoverContent({
     // Case 1: No filter active (null) — start exclusion filter
     if (activeSet === null && exclusionSet === null) {
       onFilter({ kind: "not-in", values: new Set([label]) });
+      focusSearch();
       return;
     }
 
@@ -802,6 +803,7 @@ function CategoryPopoverContent({
           onFilter({ kind: "not-in", values: next });
         }
       }
+      focusSearch();
       return;
     }
 
@@ -821,13 +823,19 @@ function CategoryPopoverContent({
         }
       }
     }
+    focusSearch();
   }
 
   function selectAll() {
     onFilter(null);
+    focusSearch();
   }
   function clearAll() {
     onFilter({ kind: "set", values: new Set<string>() });
+    focusSearch();
+  }
+  function focusSearch() {
+    requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   return (
@@ -923,13 +931,13 @@ function CategoricalBars({
   // Whether the column has an "others" bucket at all is a property of
   // the *unfiltered* data, not the current filter. Without this, any
   // filter that narrows the set to only the top categories — or an
-  // all-empty "None" selection — unmounts the trigger and leaves the
-  // user with no button to reopen the popover and adjust their filter.
+  // all-empty "None" selection — would hide the row that tells users
+  // more values are available in the editor.
   // Fall back to the current summary's lists when the unfiltered
   // snapshot isn't available.
   const unfilteredUniqueCount = unfilteredAllCategories?.length ?? summary.allCategories.length;
-  const hasOthersTrigger = unfilteredUniqueCount > summary.topCategories.length;
-  if (hasOthersTrigger) {
+  const hasOthersRow = unfilteredUniqueCount > summary.topCategories.length;
+  if (hasOthersRow) {
     items.push({
       label: `${unfilteredUniqueCount - summary.topCategories.length} others`,
       count: summary.othersCount,
@@ -943,82 +951,37 @@ function CategoricalBars({
 
   return (
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-      {/*
-        Anchor the popover to the whole category summary area rather than
-        the "others" row itself. The summary box is a stable position
-        directly below the column heading, so the popover stays pinned
-        there even as individual category bars reflow with the filter.
-        Wrapping the same div makes its position track the column's
-        scroll/layout while the trigger remains the "others" row click.
-      */}
-      <PopoverAnchor asChild>
-        <div className="sift-cat-summary">
-          {items.map((item) => {
-            const row = (
-              <div
-                key={item.label}
-                className={`sift-cat-row sift-cat-clickable`}
-                style={{
-                  opacity: (() => {
-                    if (item.isOthers) return 1;
-                    if (exclusionSet) return exclusionSet.has(item.label) ? 0.3 : 1;
-                    if (activeSet) return activeSet.has(item.label) ? 1 : 0.3;
-                    return 1;
-                  })(),
-                }}
-                onClick={
-                  item.isOthers
-                    ? undefined
-                    : () => {
-                        // Top-category bars use "click to filter to this"
-                        // semantics (the bar highlight / dim affordance signals
-                        // selection, not a checkbox). Unlike the popover rows
-                        // inside CategoryPopoverContent — those are checkboxes
-                        // and need the implicit-full-set subtract behavior —
-                        // clicking a bar while nothing is filtered should
-                        // filter to that single category.
-                        if (exclusionSet) {
-                          if (exclusionSet.has(item.label)) {
-                            const next = new Set(exclusionSet);
-                            next.delete(item.label);
-                            onFilter(next.size > 0 ? { kind: "not-in", values: next } : null);
-                          } else {
-                            const next = new Set(exclusionSet);
-                            next.add(item.label);
-                            onFilter({ kind: "not-in", values: next });
-                          }
-                        } else if (activeSet?.has(item.label)) {
-                          const next = new Set(activeSet);
-                          next.delete(item.label);
-                          onFilter(next.size > 0 ? { kind: "set", values: next } : null);
-                        } else {
-                          const next = new Set(activeSet ?? []);
-                          next.add(item.label);
-                          onFilter({ kind: "set", values: next });
-                        }
-                      }
-                }
-              >
-                <div className="sift-cat-bar-track">
-                  <div className="sift-cat-bar-fill" style={{ width: `${item.pct}%` }} />
-                </div>
-                <span className="sift-cat-label">
-                  {item.isOthers ? item.label + " ▾" : truncate(item.label, 16)}
-                </span>
-                <span className="sift-cat-pct">{item.pct}%</span>
+      <PopoverTrigger asChild>
+        <div
+          className="sift-cat-summary sift-cat-summary-trigger"
+          role="button"
+          tabIndex={0}
+          aria-label="Open category filter editor"
+        >
+          {items.map((item) => (
+            <div
+              key={item.label}
+              className="sift-cat-row"
+              style={{
+                opacity: (() => {
+                  if (item.isOthers) return 1;
+                  if (exclusionSet) return exclusionSet.has(item.label) ? 0.3 : 1;
+                  if (activeSet) return activeSet.has(item.label) ? 1 : 0.3;
+                  return 1;
+                })(),
+              }}
+            >
+              <div className="sift-cat-bar-track">
+                <div className="sift-cat-bar-fill" style={{ width: `${item.pct}%` }} />
               </div>
-            );
-            if (item.isOthers) {
-              return (
-                <PopoverTrigger key={item.label} asChild>
-                  {row}
-                </PopoverTrigger>
-              );
-            }
-            return row;
-          })}
+              <span className="sift-cat-label">
+                {item.isOthers ? item.label + " ▾" : truncate(item.label, 16)}
+              </span>
+              <span className="sift-cat-pct">{item.pct}%</span>
+            </div>
+          ))}
         </div>
-      </PopoverAnchor>
+      </PopoverTrigger>
       <PopoverContent side="bottom" align="start">
         <CategoryPopoverContent
           allCategories={unfilteredAllCategories ?? summary.allCategories}
