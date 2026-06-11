@@ -27,6 +27,12 @@ import {
   typedFrameFromRoomHostOutbound,
   type RoomHostFrameResult,
 } from "./room-materializer.ts";
+import {
+  syncFrameBudgetLogFields,
+  SyncFrameBudgetTracker,
+  type SyncFrameBudgetDirection,
+  type SyncFrameBudgetSummary,
+} from "./sync-frame-budget.ts";
 
 interface Peer {
   id: string;
@@ -85,6 +91,7 @@ export class NotebookRoom {
   private broadcastDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
   private readonly restoredPeersReady: Promise<void>;
+  private readonly frameBudget = new SyncFrameBudgetTracker();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -353,7 +360,9 @@ export class NotebookRoom {
     peer: Peer,
     message: string | ArrayBuffer | ArrayBufferView,
   ): Promise<void> {
+    const incomingByteLength = webSocketMessageByteLength(message);
     if (typeof message === "string") {
+      this.recordFrameBudget(notebookId, peer, "incoming", "text", incomingByteLength);
       this.rejectFrame(
         notebookId,
         peer,
@@ -367,9 +376,17 @@ export class NotebookRoom {
     try {
       frame = splitTypedFrame(message);
     } catch (error) {
+      this.recordFrameBudget(notebookId, peer, "incoming", "malformed", incomingByteLength);
       this.rejectFrame(notebookId, peer, undefined, String(error));
       return;
     }
+    this.recordFrameBudget(
+      notebookId,
+      peer,
+      "incoming",
+      frameTypeName(frame.type),
+      incomingByteLength,
+    );
 
     const sizeLimits = frameSizeLimits(frame.type);
     if (frame.payload.byteLength > sizeLimits.cap) {
@@ -721,7 +738,7 @@ export class NotebookRoom {
     this.broadcastDepth += 1;
     try {
       for (const peer of peers) {
-        if (!this.trySendFrame(peer, frame)) {
+        if (!this.trySendFrame(notebookId, peer, frame)) {
           this.queuePeerRemoval(notebookId, peer);
         }
       }
@@ -734,7 +751,7 @@ export class NotebookRoom {
   }
 
   private sendFrameToPeer(notebookId: string, peer: Peer, frame: Uint8Array): void {
-    if (!this.trySendFrame(peer, frame)) {
+    if (!this.trySendFrame(notebookId, peer, frame)) {
       cloudLog("warn", "room.peer_send.failed", {
         notebook_id: notebookId,
         peer_id: peer.id,
@@ -748,7 +765,14 @@ export class NotebookRoom {
     }
   }
 
-  private trySendFrame(peer: Peer, frame: Uint8Array): boolean {
+  private trySendFrame(notebookId: string, peer: Peer, frame: Uint8Array): boolean {
+    this.recordFrameBudget(
+      notebookId,
+      peer,
+      "outgoing",
+      frameTypeName(frame[0] ?? -1),
+      frame.byteLength,
+    );
     try {
       peer.socket.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength));
       return true;
@@ -805,6 +829,7 @@ export class NotebookRoom {
       counter: "connections_closed",
       counter_delta: 1,
     });
+    this.logPeerFrameBudget(notebookId, peer);
 
     this.broadcastControl(notebookId, {
       type: "cloud_peer_left",
@@ -823,6 +848,54 @@ export class NotebookRoom {
     if (peer.identity.scope === "runtime_peer") {
       this.refreshRuntimePeerWatch(notebookId);
     }
+  }
+
+  private recordFrameBudget(
+    notebookId: string,
+    peer: Peer,
+    direction: SyncFrameBudgetDirection,
+    frameType: string,
+    byteLength: number,
+  ): void {
+    const nowMs = Date.now();
+    this.frameBudget.record({
+      peerId: peer.id,
+      scope: peer.identity.scope,
+      direction,
+      frameType,
+      byteLength,
+      nowMs,
+    });
+    const summary = this.frameBudget.summarizeWindowIfNeeded(nowMs);
+    if (summary) {
+      this.logFrameBudgetSummary(notebookId, "periodic", summary);
+    }
+  }
+
+  private logFrameBudgetSummary(
+    notebookId: string,
+    reason: "periodic" | "peer_closed",
+    summary: SyncFrameBudgetSummary,
+    peer?: Peer,
+  ): void {
+    cloudLog("info", "room.sync_frame_budget.summary", {
+      notebook_id: notebookId,
+      reason,
+      peer_id: peer?.id,
+      scope: peer?.identity.scope,
+      ...syncFrameBudgetLogFields(summary),
+      counter:
+        reason === "peer_closed" ? "sync_frame_budget_peer_summaries" : "sync_frame_budget_windows",
+      counter_delta: 1,
+    });
+  }
+
+  private logPeerFrameBudget(notebookId: string, peer: Peer): void {
+    const summary = this.frameBudget.consumePeer(peer.id);
+    if (!summary) {
+      return;
+    }
+    this.logFrameBudgetSummary(notebookId, "peer_closed", summary, peer);
   }
 
   /// Whether any currently-attached peer is a `runtime_peer`.
@@ -1090,6 +1163,16 @@ function workstationAttachmentControlNotebookId(pathname: string): string | unde
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function webSocketMessageByteLength(message: string | ArrayBuffer | ArrayBufferView): number {
+  if (typeof message === "string") {
+    return new TextEncoder().encode(message).byteLength;
+  }
+  if (message instanceof ArrayBuffer) {
+    return message.byteLength;
+  }
+  return message.byteLength;
 }
 
 function json(value: unknown, status: number): Response {
