@@ -12,6 +12,7 @@ import {
 import {
   NotebookRoom,
   presencePeerLabel,
+  rejectedFramePolicy,
   runtimePeerWorkstationMetadataFromRequest,
   rewritePresenceFrame,
   shouldBroadcastFrame,
@@ -191,6 +192,30 @@ describe("NotebookRoom presence rewrite", () => {
   });
 });
 
+describe("NotebookRoom rejected frame policy", () => {
+  it("allows a bounded streak of rejected frames before closing the peer", () => {
+    let consecutiveRejectedFrames = 0;
+    for (let i = 1; i < 8; i += 1) {
+      const policy = rejectedFramePolicy(consecutiveRejectedFrames, 8);
+      consecutiveRejectedFrames = policy.consecutiveRejectedFrames;
+      assert.equal(policy.shouldClose, false);
+      assert.equal(policy.consecutiveRejectedFrames, i);
+    }
+
+    const policy = rejectedFramePolicy(consecutiveRejectedFrames, 8);
+    assert.equal(policy.consecutiveRejectedFrames, 8);
+    assert.equal(policy.shouldClose, true);
+  });
+
+  it("normalizes invalid limits to one rejected frame", () => {
+    assert.deepEqual(rejectedFramePolicy(0, 0), {
+      consecutiveRejectedFrames: 1,
+      limit: 1,
+      shouldClose: true,
+    });
+  });
+});
+
 describe("NotebookRoom peer lifecycle", () => {
   it("echoes only the trusted non-sensitive WebSocket subprotocol in upgrade headers", () => {
     const identity = {
@@ -244,6 +269,48 @@ describe("NotebookRoom peer lifecycle", () => {
     assert.equal(metadata?.environmentPolicy, "current_python");
     assert.equal(metadata?.workingDirectory?.length, 512);
     assert.equal(runtimePeerWorkstationMetadataFromRequest(request, viewerIdentity), null);
+  });
+
+  it("closes peers after repeated rejected frames without echoing the threshold rejection", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "peer-a",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+
+    for (let i = 0; i < 7; i += 1) {
+      await harness.handleMessage("demo", peer, "not-a-binary-frame");
+    }
+
+    assert.equal(socket.closed, false);
+    assert.equal(socket.sent.length, 7);
+    assert(
+      socket.sent.every(
+        (frame) =>
+          frame[0] === FrameType.SESSION_CONTROL &&
+          decodeJsonPayload<Record<string, unknown>>(frame.slice(1)).type ===
+            "cloud_frame_rejected",
+      ),
+    );
+
+    await harness.handleMessage("demo", peer, "not-a-binary-frame");
+
+    assert.equal(socket.closed, true);
+    assert.equal(harness.peers.has(peer.id), false);
+    assert.equal(
+      socket.sent.length,
+      7,
+      "the close-triggering rejection should not echo another control frame",
+    );
   });
 
   it("does not silently resurrect a removed hibernated peer", () => {
@@ -986,6 +1053,7 @@ interface RoomHarness {
     {
       receiveFrame(): Promise<RoomHostFrameResult>;
       checkpoint(): Promise<void>;
+      removePeer?(peerId: string): Promise<void>;
       reconcileRuntimePeerGone?(reason: string): Promise<RoomHostFrameResult>;
       setWorkstationAttachment?(attachment: unknown): Promise<RoomHostFrameResult>;
     }
@@ -1121,10 +1189,12 @@ function noopMaterializedResult(): RoomHostFrameResult {
 function fakeMaterializer(result: RoomHostFrameResult): {
   receiveFrame(): Promise<RoomHostFrameResult>;
   checkpoint(): Promise<void>;
+  removePeer(): Promise<void>;
 } {
   return {
     receiveFrame: async () => result,
     checkpoint: async () => undefined,
+    removePeer: async () => undefined,
   };
 }
 

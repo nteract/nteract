@@ -40,6 +40,7 @@ interface Peer {
   identity: AuthenticatedConnection;
   connectedAt: string;
   workstation: RuntimePeerWorkstationMetadata | null;
+  consecutiveRejectedFrames: number;
 }
 
 interface StoredRoomFrame {
@@ -76,6 +77,7 @@ const MAX_STORED_FRAMES = 500;
 /// kernel that is about to come back: if a `runtime_peer` rejoins inside the
 /// window the alarm is disarmed.
 const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
+const MAX_CONSECUTIVE_REJECTED_FRAMES = 8;
 
 /// Storage key holding the notebook id whose `runtime_peer` departure armed the
 /// reconciliation alarm. Persisted so a DO that hibernates between the alarm
@@ -140,6 +142,7 @@ export class NotebookRoom {
       identity,
       connectedAt: new Date().toISOString(),
       workstation: runtimePeerWorkstationMetadataFromRequest(request, identity),
+      consecutiveRejectedFrames: 0,
     };
 
     this.acceptPeerSocket(notebookId, peer);
@@ -291,6 +294,7 @@ export class NotebookRoom {
         identity: attachment.identity,
         connectedAt: attachment.connectedAt,
         workstation: normalizeRuntimePeerWorkstationMetadata(attachment.workstation),
+        consecutiveRejectedFrames: 0,
       };
       this.peers.set(attachment.peerId, peer);
       restored.push({ notebookId: attachment.notebookId, peer });
@@ -460,6 +464,7 @@ export class NotebookRoom {
         byte_length: normalizedFrame.payload.byteLength,
         timestamp: receivedAt,
       });
+      this.resetRejectedFrameStreak(peer);
       return;
     }
 
@@ -513,6 +518,7 @@ export class NotebookRoom {
         byte_length: normalizedFrame.payload.byteLength,
         timestamp: receivedAt,
       });
+      this.resetRejectedFrameStreak(peer);
       return;
     }
 
@@ -541,6 +547,7 @@ export class NotebookRoom {
       byte_length: normalizedFrame.payload.byteLength,
       timestamp: receivedAt,
     });
+    this.resetRejectedFrameStreak(peer);
   }
 
   private scopeAllowsFrame(identity: AuthenticatedConnection, frame: TypedFrame): boolean {
@@ -703,6 +710,27 @@ export class NotebookRoom {
     frameType: number | undefined,
     reason: string,
   ): void {
+    const policy = rejectedFramePolicy(peer.consecutiveRejectedFrames);
+    peer.consecutiveRejectedFrames = policy.consecutiveRejectedFrames;
+
+    if (policy.shouldClose) {
+      cloudLog("warn", "room.peer.closed_for_rejected_frames", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        frame_type: frameType === undefined ? "unknown" : frameTypeName(frameType),
+        reason,
+        consecutive_rejected_frame_count: policy.consecutiveRejectedFrames,
+        consecutive_rejected_frame_limit: policy.limit,
+        room_peer_count: this.peers.size,
+        counter: "peers_closed_for_rejected_frames",
+        counter_delta: 1,
+      });
+      this.removePeer(notebookId, peer);
+      return;
+    }
+
     cloudLog("warn", "room.frame.rejected", {
       notebook_id: notebookId,
       peer_id: peer.id,
@@ -710,6 +738,8 @@ export class NotebookRoom {
       scope: peer.identity.scope,
       frame_type: frameType === undefined ? "unknown" : frameTypeName(frameType),
       reason,
+      consecutive_rejected_frame_count: policy.consecutiveRejectedFrames,
+      consecutive_rejected_frame_limit: policy.limit,
       room_peer_count: this.peers.size,
       counter: "rejected_frames",
       counter_delta: 1,
@@ -722,6 +752,10 @@ export class NotebookRoom {
       reason,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  private resetRejectedFrameStreak(peer: Peer): void {
+    peer.consecutiveRejectedFrames = 0;
   }
 
   private sendControl(notebookId: string, peer: Peer, message: SessionControlMessage): void {
@@ -1011,6 +1045,26 @@ export function shouldPersistMaterializedSyncFrame(
   result: Pick<RoomHostFrameResult, "notebook_changed" | "runtime_state_changed">,
 ): boolean {
   return result.notebook_changed || result.runtime_state_changed;
+}
+
+export function rejectedFramePolicy(
+  consecutiveRejectedFrames: number,
+  limit = MAX_CONSECUTIVE_REJECTED_FRAMES,
+): { consecutiveRejectedFrames: number; limit: number; shouldClose: boolean } {
+  const normalizedLimit = Math.max(1, normalizeNonNegativeInteger(limit, 1));
+  const nextCount = normalizeNonNegativeInteger(consecutiveRejectedFrames, 0) + 1;
+  return {
+    consecutiveRejectedFrames: nextCount,
+    limit: normalizedLimit,
+    shouldClose: nextCount >= normalizedLimit,
+  };
+}
+
+function normalizeNonNegativeInteger(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.trunc(value));
 }
 
 export function webSocketUpgradeHeaders(identity: AuthenticatedConnection): Headers {
