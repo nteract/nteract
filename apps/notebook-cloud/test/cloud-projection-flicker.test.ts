@@ -89,6 +89,42 @@ describe("cloud projection flicker gate", () => {
     assertPainted();
   });
 
+  it("hands an instant paint to the live effect: survives the gate, replaced in place", () => {
+    // Instant first paint lands before the live effect settles; the gate
+    // must keep it (no full→empty→full flash), and the live
+    // materialization then replaces the painted cells wholesale — through
+    // the same projection, never via a clearing reset.
+    paintNotebook();
+    const preserved = resetCloudProjectionUnlessPreserved({
+      paintedNotebookIdentity: PAINTED,
+      nextNotebookIdentity: PAINTED,
+    });
+    assert.equal(preserved, true);
+    assertPainted();
+
+    projectCloudCellsIntoNotebookViewStores([
+      {
+        id: "cell-code",
+        cellType: "code",
+        source: "print('live')",
+        language: "python",
+        executionId: "exec-2",
+        executionCount: 4,
+        outputs: [
+          { output_type: "stream", name: "stdout", text: "live output\n", output_id: "out-2" },
+        ],
+        metadata: {},
+      },
+    ] satisfies ResolvedCell[]);
+
+    assert.deepEqual(getCellIdsSnapshot(), ["cell-code"]);
+    assert.equal(getCellExecutionId("cell-code"), "exec-2");
+    assert.equal(getOutputById("out-2")?.output_type, "stream");
+    // The painted snapshot's stale cloud-owned ids were swept by the
+    // replacement, not by a blanking reset.
+    assert.equal(getOutputById("out-1"), undefined);
+  });
+
   it("clears every projected store on a real notebook switch", () => {
     paintNotebook();
 

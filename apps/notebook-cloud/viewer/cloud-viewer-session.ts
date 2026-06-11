@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   IndexedDbStorageAdapter,
+  RUNTIME_STATE_CACHE_KEY_SEGMENT,
   clearPersistedNotebookDoc,
+  clearPersistedNotebookRecord,
   loadPersistedNotebookDoc,
+  loadPersistedNotebookRecord,
   type BlobResolver,
   type CommChanges,
 } from "runtimed";
@@ -53,6 +56,7 @@ import {
   type CloudSyncRuntime,
   type CloudWebSocketTransport,
 } from "./live-sync";
+import { cloudInstantPaintPrincipalMatcher, resolveCloudInstantPaintHandle } from "./instant-paint";
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
@@ -66,7 +70,8 @@ import {
 } from "./notebook-view-store-bridge";
 import { CloudViewerPresenceStore } from "./presence";
 import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
-import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
+import { loadRenderSnapshotHandle, loadSnapshotPairHandle } from "./runtimed-wasm-client";
+import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import { subscribeSerializedCloudCellChanges } from "./serialized-cell-changes";
 import { cloudWidgetUpdateManager } from "./widget-runtime";
 import { projectCloudWidgetComms } from "./widget-comm-projection";
@@ -714,6 +719,102 @@ export function useCloudViewerSession({
     };
     materializeLiveRuntimeRef.current = materializeLiveCellsSafely;
 
+    // Instant first paint from the persisted snapshot: runs in parallel
+    // with the WS dial (never delaying it) and paints cells AND outputs
+    // from the local envelope records through a THROWAWAY render handle —
+    // the pinned-snapshot path's exact shape, freed after materialization.
+    // The race guard (`liveMaterializedRef`) ensures a fast live connect
+    // wins: stale cache never overwrites a live materialization, and the
+    // live materialization replaces the paint wholesale when sync lands
+    // (the preservation gate keeps the paint until then, no blanking).
+    const instantPaintFresh = () => !disposed && !liveMaterializedRef.current;
+    const paintFromPersistedSnapshot = async () => {
+      if (!persistenceAdapter) return;
+      const resolved = await resolveCloudInstantPaintHandle({
+        // Pre-handshake principal gate from locally stored auth material;
+        // null (no derivable principal) skips the paint entirely.
+        matchesPrincipal: cloudInstantPaintPrincipalMatcher(authState, { hasAppSession }),
+        loadNotebookRecord: () => loadPersistedNotebookDoc(persistenceAdapter, config.notebookId),
+        loadRuntimeStateCacheRecord: () =>
+          loadPersistedNotebookRecord(
+            persistenceAdapter,
+            config.notebookId,
+            RUNTIME_STATE_CACHE_KEY_SEGMENT,
+          ),
+        clearRuntimeStateCacheRecord: () =>
+          clearPersistedNotebookRecord(
+            persistenceAdapter,
+            config.notebookId,
+            RUNTIME_STATE_CACHE_KEY_SEGMENT,
+          ),
+        loadRenderHandle: (notebookBytes, runtimeStateBytes) =>
+          loadRenderSnapshotHandle(
+            notebookBytes,
+            runtimeStateBytes,
+            config.runtimedWasmModulePath,
+            config.runtimedWasmPath,
+          ),
+        shouldContinue: instantPaintFresh,
+        // Asset-load failures do not incriminate the cached bytes: never
+        // clear the cache record for them.
+        isTransientLoadFailure: (error) =>
+          isRuntimedWasmAssetFailure(error instanceof Error ? error.message : String(error)),
+      });
+      const renderHandle = resolved.handle;
+      if (!renderHandle) return;
+      try {
+        if (!instantPaintFresh()) return;
+        const materialized = await materializeCloudNotebookView(renderHandle, {
+          blobResolver,
+          defaultNotebookLanguage: notebookLanguageRef.current ?? "python",
+          outputResolutionCache: outputResolutionCacheRef.current,
+          callbacks: {
+            shouldContinue: instantPaintFresh,
+            onInitialCells(syncCells) {
+              if (syncCells.length === 0) return;
+              markCloudViewerLoadMilestone("instant-paint-initial-cells");
+              preloadSiftWasm(syncCells);
+              applyResolvedCells(syncCells);
+              setStatus({
+                kind: "loading",
+                message: `Rendering ${syncCells.length} cells from the local snapshot while connecting...`,
+              });
+            },
+            onCellResolved(resolvedCell, _index, progressiveCells) {
+              if (progressiveCells.length === 0) return;
+              preloadSiftWasm([resolvedCell]);
+              applyResolvedCells(progressiveCells);
+            },
+          },
+        });
+        if (!instantPaintFresh()) return;
+        // An empty persisted snapshot paints nothing: the room decides
+        // what an empty notebook means.
+        if (materialized.cells.length === 0) return;
+        notebookLanguageRef.current = materialized.notebookLanguage;
+        setNotebookMetadata(materialized.metadata);
+        await projectCloudWidgetComms(
+          widgetStore,
+          materialized.widgetComms,
+          projectedWidgetCommIdsRef,
+          {
+            isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+            shouldContinue: instantPaintFresh,
+          },
+        );
+        if (!instantPaintFresh()) return;
+        preloadSiftWasm(materialized.cells);
+        applyResolvedCells(materialized.cells);
+        setStatus({
+          kind: "ready",
+          message: `Rendering ${materialized.cells.length} cells from the locally persisted snapshot while the live room connects.`,
+        });
+        markCloudViewerLoadMilestone("instant-paint-ready");
+      } finally {
+        renderHandle.free();
+      }
+    };
+
     // Notebook-switch gate (desktop beforeBootstrap placement): the effect
     // CLEANUP closes over its own run's config, so it can only ever compare
     // the painted identity against itself — a real switch is visible only
@@ -953,6 +1054,18 @@ export function useCloudViewerSession({
         }
         console.warn("[notebook-cloud] live room connection failed", error);
       });
+
+    // Kicked AFTER the connect call so the WS dial is never delayed, and
+    // only on the live-room path (the pinned-revision URL path keeps its
+    // snapshot fetch; the two paints are mutually exclusive by policy).
+    // A poison-pill attempt (its record discard is in flight) skips the
+    // paint along with the seed.
+    if (persistenceAdapter && !skipSeedOnThisAttempt) {
+      void paintFromPersistedSnapshot().catch((error: unknown) => {
+        if (disposed) return;
+        console.warn("[notebook-cloud] instant paint from persisted snapshot failed", error);
+      });
+    }
 
     return () => {
       disposed = true;

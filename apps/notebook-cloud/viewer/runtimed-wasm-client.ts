@@ -146,6 +146,26 @@ export async function loadNotebookHandleFromBytes(
   return handle;
 }
 
+/**
+ * Render-only handle for instant first paint from locally persisted
+ * envelopes: NotebookDoc bytes plus, when the render cache is present,
+ * RuntimeStateDoc bytes (so outputs paint too). Deliberately no
+ * `set_actor` — painting needs no actor. The handle exists to materialize
+ * pixels and is freed right after; it must never author or sync, and the
+ * runtime-state cache bytes are a paint source, never a sync seed.
+ */
+export async function loadRenderSnapshotHandle(
+  notebookBytes: Uint8Array,
+  runtimeStateBytes: Uint8Array | undefined,
+  modulePath: string | URL,
+  moduleOrPath: WasmModuleOrPath,
+): Promise<NotebookHandle> {
+  const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
+  return runtimeStateBytes
+    ? module.NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes)
+    : module.NotebookHandle.load(notebookBytes);
+}
+
 export async function loadSnapshotPairHandle(
   notebookBytes: Uint8Array,
   runtimeStateBytes: Uint8Array,

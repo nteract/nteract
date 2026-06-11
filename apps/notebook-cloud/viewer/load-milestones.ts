@@ -4,6 +4,8 @@ export type CloudViewerLoadMilestone =
   | "viewer-start"
   | "snapshot-initial-cells"
   | "snapshot-ready"
+  | "instant-paint-initial-cells"
+  | "instant-paint-ready"
   | "live-room-ready"
   | "live-initial-cells"
   | "live-ready";

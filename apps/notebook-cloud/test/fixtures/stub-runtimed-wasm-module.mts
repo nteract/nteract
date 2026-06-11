@@ -16,12 +16,22 @@ export function project_markdown_json(): null {
 
 export class StubNotebookHandle {
   loadedBytes: Uint8Array = new Uint8Array(0);
+  loadedRuntimeStateBytes: Uint8Array | null = null;
   actors: string[] = [];
   freed = 0;
 
   static load(bytes: Uint8Array): StubNotebookHandle {
     const handle = new StubNotebookHandle();
     handle.loadedBytes = bytes;
+    return handle;
+  }
+
+  static load_snapshot(
+    notebookBytes: Uint8Array,
+    runtimeStateBytes: Uint8Array,
+  ): StubNotebookHandle {
+    const handle = StubNotebookHandle.load(notebookBytes);
+    handle.loadedRuntimeStateBytes = runtimeStateBytes;
     return handle;
   }
 

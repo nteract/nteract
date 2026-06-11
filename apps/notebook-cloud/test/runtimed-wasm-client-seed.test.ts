@@ -13,7 +13,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { loadNotebookHandleFromBytes } from "../viewer/runtimed-wasm-client.ts";
+import {
+  loadNotebookHandleFromBytes,
+  loadRenderSnapshotHandle,
+} from "../viewer/runtimed-wasm-client.ts";
 import { stubCalls, type StubNotebookHandle } from "./fixtures/stub-runtimed-wasm-module.mts";
 
 const STUB_MODULE_URL = new URL("./fixtures/stub-runtimed-wasm-module.mts", import.meta.url);
@@ -47,5 +50,35 @@ describe("loadNotebookHandleFromBytes", () => {
 
     assert.equal(stubCalls.freedHandles.length, 1);
     assert.equal(stubCalls.freedHandles[0].freed, 1);
+  });
+});
+
+describe("loadRenderSnapshotHandle", () => {
+  it("loads the notebook/runtime-state pair without ever setting an actor", async () => {
+    const handle = (await loadRenderSnapshotHandle(
+      new Uint8Array([1, 2]),
+      new Uint8Array([3, 4]),
+      STUB_MODULE_URL,
+      STUB_MODULE_URL,
+    )) as unknown as StubNotebookHandle;
+
+    assert.deepEqual(handle.loadedBytes, new Uint8Array([1, 2]));
+    assert.deepEqual(handle.loadedRuntimeStateBytes, new Uint8Array([3, 4]));
+    // Render-only: painting needs no actor, and the handle must never
+    // author or sync.
+    assert.deepEqual(handle.actors, []);
+  });
+
+  it("degrades to a cells-only load when no runtime-state cache bytes exist", async () => {
+    const handle = (await loadRenderSnapshotHandle(
+      new Uint8Array([5]),
+      undefined,
+      STUB_MODULE_URL,
+      STUB_MODULE_URL,
+    )) as unknown as StubNotebookHandle;
+
+    assert.deepEqual(handle.loadedBytes, new Uint8Array([5]));
+    assert.equal(handle.loadedRuntimeStateBytes, null);
+    assert.deepEqual(handle.actors, []);
   });
 });
