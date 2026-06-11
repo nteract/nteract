@@ -161,6 +161,33 @@ whether cloud should receive the same typed projection and provide different
 callbacks. Divergence is justified for authority and side effects, not for
 duplicating notebook chrome.
 
+### Case study: outline interaction wiring (2026-06)
+
+The 2026-06 outline iteration (#3553–#3564) showed a subtler divergence mode
+than duplicated components: **shared components, unshared wiring.** The outline
+data model, rail panel, and rail wrapper were all shared and both hosts shipped
+the new rendering — but the *interaction* layer (scroll-synced active item,
+outline↔focused-cell selection coupling, execution status labels via
+`getOutlineStatusLabel`) lived as ~150 lines of hooks and callbacks inside
+`apps/notebook/src/App.tsx`. Cloud rendered the same rail with a thinner prop
+set and read as "the old outline," even though its deployed bundle contained
+all the new shared code.
+
+The lesson extends the decision above: a shared component whose behavior
+depends on host-side hooks is only half-shared. When iterating on a shared
+surface, interaction state machines (scroll observers, selection coupling,
+status projection) belong next to the component — as shared hooks with
+host-neutral inputs — not in a host shell. Optional props on a shared
+component (`activeOutlineItemId?`, `outlineCellIds?`) are a divergence smell:
+each optional interaction prop is a behavior one host will silently lack.
+
+Intentional asymmetries still exist and should be recorded rather than
+"fixed": e.g. desktop currently does not render the workstations rail panel
+while remote-compute UX evolves on hosted first (`workstationsPanel` stays an
+optional slot by design). The test for "is this divergence intentional?" is
+whether someone can point to a product reason, not whether the code happens
+to compile on both hosts.
+
 ## Anchor And Navigation Contract
 
 Every rendered notebook cell surface that participates in outline or traceback
