@@ -593,6 +593,22 @@ export class CloudConnectionStatusBridge {
     return this._status$.getValue();
   }
 
+  /** Synchronous snapshot (NotebookConnectionStatusSource contract). */
+  getCurrent(): ConnectionStatus {
+    return this._status$.getValue();
+  }
+
+  /**
+   * Subscribe with a plain callback (NotebookConnectionStatusSource
+   * contract) — the bridge is handed to the connection/identity slot
+   * directly, so first paint can read getCurrent() instead of flashing
+   * "connecting".
+   */
+  subscribe(next: (status: ConnectionStatus) => void): { unsubscribe(): void } {
+    const subscription = this._status$.subscribe(next);
+    return { unsubscribe: () => subscription.unsubscribe() };
+  }
+
   /** Follow a (replacement) transport's connection status. */
   attach(transport: Pick<CloudWebSocketTransport, "connectionStatus$">): void {
     this.subscription?.unsubscribe();

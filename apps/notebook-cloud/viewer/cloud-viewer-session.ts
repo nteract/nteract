@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import type { Observable } from "rxjs";
 import {
   IndexedDbStorageAdapter,
   NotebookDocPersistence,
@@ -7,7 +6,6 @@ import {
   loadPersistedNotebookDoc,
   type BlobResolver,
   type CommChanges,
-  type ConnectionStatus,
 } from "runtimed";
 import {
   applyWidgetCommBroadcastToStore,
@@ -102,10 +100,11 @@ export interface CloudViewerSession {
   connectionScope: string | null;
   /**
    * Stable connection lifecycle across transport replacements (initial
-   * connect attempts and escalation teardowns) — fed by the session's
-   * CloudConnectionStatusBridge, the slot's connectivity-dot source.
+   * connect attempts and escalation teardowns) — the session's
+   * CloudConnectionStatusBridge, the slot's connectivity-dot source
+   * (subscribe + getCurrent for first paint).
    */
-  connectionStatus$: Observable<ConnectionStatus>;
+  connectionStatus$: CloudConnectionStatusBridge;
   liveMaterializedRef: MutableRefObject<boolean>;
   liveRuntimeRef: MutableRefObject<CloudSyncRuntime | null>;
   notebookLanguageRef: MutableRefObject<string>;
@@ -943,9 +942,13 @@ export function useCloudViewerSession({
       window.removeEventListener("pagehide", flushPersistence);
       document.removeEventListener("visibilitychange", flushPersistenceWhenHidden);
       materializeLiveRuntimeRef.current = null;
-      // Stop following before the teardown disconnects emit "offline"; a
-      // re-running effect re-attaches its replacement transport.
-      connectionStatusBridge.detach();
+      // Detach BEFORE the teardown disconnects emit their terminal
+      // "offline", and report "reconnecting": a re-running effect usually
+      // re-attaches a replacement transport, but the auth-refresh re-run
+      // early-returns without attaching — the bridge must read as a
+      // transition, not as stale "online", for that window. Harmless at
+      // real unmount (no subscribers remain).
+      connectionStatusBridge.noteTeardownRetry();
       const teardownFlush = disposeCurrentRuntime();
       // An in-flight connect (runtime not yet resolved) owns a transport
       // whose retry loop would otherwise run forever after unmount.
@@ -1010,7 +1013,7 @@ export function useCloudViewerSession({
   return {
     connectionActorLabel,
     connectionError,
-    connectionStatus$: connectionStatusBridge.status$,
+    connectionStatus$: connectionStatusBridge,
     connectionPeerId,
     connectionScope,
     liveMaterializedRef,
