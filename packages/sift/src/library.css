@@ -5,6 +5,27 @@
   box-sizing: border-box;
 }
 
+/* --- Shared overlay fallback surface --- */
+
+:root {
+  --sift-overlay-panel-fallback: #ffffff;
+  --sift-overlay-ink-fallback: #1a1a1a;
+  --sift-overlay-rule-fallback: #e5e7eb;
+}
+
+:root[data-theme="dark"],
+:root.dark {
+  --sift-overlay-panel-fallback: #171717;
+  --sift-overlay-ink-fallback: #e5e5e5;
+  --sift-overlay-rule-fallback: #2a2a2a;
+}
+
+.sift-overlay-surface {
+  background-color: var(--sift-panel, var(--sift-overlay-panel-fallback));
+  border-color: var(--sift-rule, var(--sift-overlay-rule-fallback));
+  color: var(--sift-ink, var(--sift-overlay-ink-fallback));
+}
+
 /* --- Demo page shell --- */
 
 .sift-page {
