@@ -1,4 +1,12 @@
-import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
 
 interface IsolatedRendererBundle {
   rendererCode: string;
@@ -10,6 +18,12 @@ interface IsolatedRendererContextValue {
   rendererCss: string | undefined;
   isLoading: boolean;
   error: Error | null;
+  /**
+   * Re-attempt a failed bundle load. The bundle state is module-level, so
+   * one successful retry un-blanks every mounted consumer at once. No-op
+   * while a load is in flight or once the bundle has loaded.
+   */
+  retry: () => void;
 }
 
 const IsolatedRendererContext = createContext<IsolatedRendererContextValue | null>(null);
@@ -22,14 +36,118 @@ interface IsolatedRendererProviderProps {
   loader?: () => Promise<IsolatedRendererBundle>;
 }
 
-// Module-level cache (shared across all provider instances)
-let bundleCache: IsolatedRendererBundle | null = null;
-let loadingPromise: Promise<IsolatedRendererBundle> | null = null;
+/**
+ * Bounded in-load backoff before a failure is surfaced at all. A transient
+ * asset-origin blip or deploy-window 404 recovers invisibly; only a
+ * persistent failure reaches consumers (who then hold `retry()`).
+ */
+const RENDERER_BUNDLE_RETRY_DELAYS_MS = [150, 500, 1500];
+
+interface RendererBundleLoadState {
+  bundle: IsolatedRendererBundle | null;
+  isLoading: boolean;
+  error: Error | null;
+}
+
+// Module-level load state (shared across all provider instances): a single
+// recovery propagates to every mounted consumer because they all subscribe
+// to this store.
+let loadState: RendererBundleLoadState = { bundle: null, isLoading: false, error: null };
+const loadListeners = new Set<() => void>();
+let loadGeneration = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function getLoadState(): RendererBundleLoadState {
+  return loadState;
+}
+
+function subscribeLoadState(listener: () => void): () => void {
+  loadListeners.add(listener);
+  return () => {
+    loadListeners.delete(listener);
+  };
+}
+
+function setLoadState(next: RendererBundleLoadState): void {
+  loadState = next;
+  for (const listener of [...loadListeners]) {
+    listener();
+  }
+}
+
+/**
+ * Idempotent load kick: no-ops while a load is in flight or after success,
+ * starts a fresh attempt (with the backoff ladder) otherwise — including
+ * after a terminal failure, which is what makes `retry()` and the
+ * historical retry-on-next-mount behavior work.
+ */
+function startRendererBundleLoad(load: () => Promise<IsolatedRendererBundle>): void {
+  if (loadState.bundle || loadState.isLoading) return;
+  const generation = ++loadGeneration;
+  setLoadState({ bundle: null, isLoading: true, error: null });
+  void runRendererBundleLoad(load, generation);
+}
+
+async function runRendererBundleLoad(
+  load: () => Promise<IsolatedRendererBundle>,
+  generation: number,
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const bundle = await load();
+      if (generation !== loadGeneration) return;
+      setLoadState({ bundle, isLoading: false, error: null });
+      return;
+    } catch (error) {
+      if (generation !== loadGeneration) return;
+      const delay = RENDERER_BUNDLE_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        console.error("[IsolatedRendererProvider] Bundle load failed:", error);
+        setLoadState({
+          bundle: null,
+          isLoading: false,
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          resolve();
+        }, delay);
+      });
+      if (generation !== loadGeneration) return;
+    }
+  }
+}
+
+async function fetchRendererBundle(basePath: string): Promise<IsolatedRendererBundle> {
+  const [rendererCode, rendererCss] = await Promise.all([
+    fetch(`${basePath}/isolated-renderer.js`).then((r) => {
+      if (!r.ok) throw new Error(`Failed to fetch renderer JS: ${r.status}`);
+      return r.text();
+    }),
+    fetch(`${basePath}/isolated-renderer.css`).then((r) => {
+      if (!r.ok) throw new Error(`Failed to fetch renderer CSS: ${r.status}`);
+      return r.text();
+    }),
+  ]);
+  return { rendererCode, rendererCss };
+}
+
+const MISSING_CONFIG_ERROR_MESSAGE =
+  "IsolatedRendererProvider requires either 'basePath' or 'loader' prop. " +
+  "See: https://elements.nteract.io/docs/outputs/isolated-frame#setup";
+
+const noopRetry = () => {};
 
 /**
  * Provider for the isolated renderer bundle.
  *
  * Wrap your app (or the part that uses IsolatedFrame) with this provider.
+ * Fetch failures retry on a bounded backoff ladder before surfacing an
+ * error; consumers can call `retry()` from the context value to start a
+ * fresh ladder after a terminal failure.
  *
  * @example
  * // Option A: Fetch from a URL path
@@ -48,82 +166,48 @@ export function IsolatedRendererProvider({
   basePath,
   loader,
 }: IsolatedRendererProviderProps) {
-  const [state, setState] = useState<IsolatedRendererContextValue>(() => ({
-    rendererCode: bundleCache?.rendererCode,
-    rendererCss: bundleCache?.rendererCss,
-    isLoading: !bundleCache,
-    error: null,
-  }));
+  const loadBundle = useMemo(() => {
+    if (loader) return loader;
+    if (basePath) return () => fetchRendererBundle(basePath);
+    return null;
+  }, [basePath, loader]);
+
+  const snapshot = useSyncExternalStore(subscribeLoadState, getLoadState, getLoadState);
 
   useEffect(() => {
-    if (bundleCache) {
-      // Already loaded, update state if needed
-      if (state.isLoading) {
-        setState({
-          rendererCode: bundleCache.rendererCode,
-          rendererCss: bundleCache.rendererCss,
-          isLoading: false,
-          error: null,
-        });
-      }
-      return;
+    if (!loadBundle) return;
+    startRendererBundleLoad(loadBundle);
+  }, [loadBundle]);
+
+  const retry = useCallback(() => {
+    if (!loadBundle) return;
+    startRendererBundleLoad(loadBundle);
+  }, [loadBundle]);
+
+  const value = useMemo<IsolatedRendererContextValue>(() => {
+    if (!loadBundle) {
+      return {
+        rendererCode: undefined,
+        rendererCss: undefined,
+        isLoading: false,
+        error: new Error(MISSING_CONFIG_ERROR_MESSAGE),
+        retry: noopRetry,
+      };
     }
-
-    let cancelled = false;
-
-    if (!loadingPromise) {
-      if (loader) {
-        // Use custom loader (Vite plugin, etc.)
-        loadingPromise = loader();
-      } else if (basePath) {
-        // Fetch from URL
-        loadingPromise = Promise.all([
-          fetch(`${basePath}/isolated-renderer.js`).then((r) => {
-            if (!r.ok) throw new Error(`Failed to fetch renderer JS: ${r.status}`);
-            return r.text();
-          }),
-          fetch(`${basePath}/isolated-renderer.css`).then((r) => {
-            if (!r.ok) throw new Error(`Failed to fetch renderer CSS: ${r.status}`);
-            return r.text();
-          }),
-        ]).then(([js, css]) => ({ rendererCode: js, rendererCss: css }));
-      } else {
-        const error = new Error(
-          "IsolatedRendererProvider requires either 'basePath' or 'loader' prop. " +
-            "See: https://elements.nteract.io/docs/outputs/isolated-frame#setup",
-        );
-        setState((s) => ({ ...s, isLoading: false, error }));
-        return;
-      }
-    }
-
-    loadingPromise
-      .then((bundle) => {
-        bundleCache = bundle;
-        if (!cancelled) {
-          setState({
-            rendererCode: bundle.rendererCode,
-            rendererCss: bundle.rendererCss,
-            isLoading: false,
-            error: null,
-          });
-        }
-      })
-      .catch((error) => {
-        console.error("[IsolatedRendererProvider] Bundle load failed:", error);
-        loadingPromise = null; // Allow retry on next mount
-        if (!cancelled) {
-          setState((s) => ({ ...s, isLoading: false, error }));
-        }
-      });
-
-    return () => {
-      cancelled = true;
+    return {
+      rendererCode: snapshot.bundle?.rendererCode,
+      rendererCss: snapshot.bundle?.rendererCss,
+      // Before the mount effect kicks the first load the store is idle;
+      // report that window as loading so consumers never see a false
+      // "no bundle, no error, not loading" state.
+      isLoading: snapshot.isLoading || (!snapshot.bundle && !snapshot.error),
+      error: snapshot.error,
+      retry,
     };
-  }, [basePath, loader, state.isLoading]);
+  }, [loadBundle, retry, snapshot]);
 
   return (
-    <IsolatedRendererContext.Provider value={state}>{children}</IsolatedRendererContext.Provider>
+    <IsolatedRendererContext.Provider value={value}>{children}</IsolatedRendererContext.Provider>
   );
 }
 
@@ -133,6 +217,7 @@ const NO_PROVIDER_STATE: IsolatedRendererContextValue = {
   rendererCss: undefined,
   isLoading: true,
   error: null,
+  retry: noopRetry,
 };
 
 /**
@@ -164,6 +249,10 @@ export function useIsolatedRenderer(): IsolatedRendererContextValue {
  * @internal
  */
 export function _resetBundleCache() {
-  bundleCache = null;
-  loadingPromise = null;
+  loadGeneration += 1;
+  if (retryTimer !== null) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  setLoadState({ bundle: null, isLoading: false, error: null });
 }
