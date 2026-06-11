@@ -20,6 +20,22 @@ const defaultModuleImporter: RuntimedWasmModuleImporter = (href) =>
   import(/* @vite-ignore */ href) as Promise<RuntimedWasmModule>;
 
 let importModule: RuntimedWasmModuleImporter = defaultModuleImporter;
+let fetchImpl: typeof fetch = (input, init) => fetch(input, init);
+
+/**
+ * Retry ladder shared by the module import and the .wasm binary fetch —
+ * the blob-resolver shape with one extra rung for the heavier asset.
+ * 404 is deliberately retryable: freshly deployed hashed assets propagate
+ * eventually, exactly like fresh blobs.
+ */
+const RUNTIMED_WASM_RETRY_DELAYS_MS = [150, 500, 1500];
+
+/**
+ * Hashed deploys keep stable-name copies (`runtimed_wasm.js` /
+ * `runtimed_wasm_bg.wasm`) alongside the content-hashed files precisely so
+ * a viewer holding a stale hashed URL across a deploy window can fall back.
+ */
+const CONTENT_HASHED_RUNTIMED_ASSET_RE = /^(.+)\.[a-f0-9]{12,64}(\.(?:js|wasm))$/;
 
 export async function initializeRuntimedWasmClient(
   modulePath: string | URL,
@@ -37,7 +53,7 @@ export async function initializeRuntimedWasmClient(
   initializedSource = source;
   initialized ??= loadRuntimedWasmModule(modulePath)
     .then(async (module) => {
-      await module.default({ module_or_path: moduleOrPath });
+      await module.default({ module_or_path: await resolveRuntimedWasmBinary(moduleOrPath) });
       setMarkdownProjectionProjector(module.project_markdown_json);
       resolvedModule = module;
       return module;
@@ -175,7 +191,7 @@ function loadRuntimedWasmModule(modulePath: string | URL): Promise<RuntimedWasmM
     // a pinned rejected promise would turn one transient failure into a
     // permanent one — every later attempt (manual retry, reconnect) would
     // re-await the same rejection for the life of the page.
-    const pending = importModule(href).catch((error: unknown) => {
+    const pending = importRuntimedWasmModuleWithRecovery(href).catch((error: unknown) => {
       if (loadedModule === pending) {
         loadedModule = undefined;
         loadedModuleSource = undefined;
@@ -185,6 +201,136 @@ function loadRuntimedWasmModule(modulePath: string | URL): Promise<RuntimedWasmM
     loadedModule = pending;
   }
   return loadedModule;
+}
+
+async function importRuntimedWasmModuleWithRecovery(href: string): Promise<RuntimedWasmModule> {
+  try {
+    return await importRuntimedWasmModuleWithRetries(href);
+  } catch (error) {
+    const stableHref = stableRuntimedAssetHref(href);
+    if (!stableHref) throw error;
+    console.warn(
+      `[notebook-cloud] runtimed WASM module failed from ${href}; falling back to ${stableHref}`,
+      error,
+    );
+    return importRuntimedWasmModuleWithRetries(stableHref);
+  }
+}
+
+async function importRuntimedWasmModuleWithRetries(href: string): Promise<RuntimedWasmModule> {
+  let lastFailure: unknown = null;
+  // import() exposes no response status — every failure shape (network
+  // error, 404 mid-deploy, MIME rejection) surfaces as a rejection, so the
+  // whole ladder applies.
+  for (let attempt = 0; attempt <= RUNTIMED_WASM_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await importModule(href);
+    } catch (error) {
+      lastFailure = error;
+    }
+    const delay = RUNTIMED_WASM_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await sleep(delay);
+  }
+  throw lastFailure instanceof Error ? lastFailure : new Error(String(lastFailure));
+}
+
+/**
+ * Resolve the wasm-bindgen `module_or_path` input. URL-shaped inputs are
+ * fetched here (instead of inside wasm-bindgen's init) so the ladder and
+ * the hashed→stable fallback cover the binary exactly like the module;
+ * everything else (Response, ArrayBuffer, compiled module) passes through.
+ */
+async function resolveRuntimedWasmBinary(
+  moduleOrPath: WasmModuleOrPath,
+): Promise<WasmModuleOrPath> {
+  if (typeof moduleOrPath !== "string" && !(moduleOrPath instanceof URL)) {
+    return moduleOrPath;
+  }
+  const href = typeof moduleOrPath === "string" ? moduleOrPath : moduleOrPath.href;
+  if (!isLadderFetchableHref(href)) {
+    // Non-network schemes (file:, data:, blob: in tests/embeddings) go
+    // straight to wasm-bindgen; the ladder exists for HTTP asset origins.
+    return moduleOrPath;
+  }
+  try {
+    return await fetchRuntimedWasmBinaryWithRetries(href);
+  } catch (error) {
+    const stableHref = stableRuntimedAssetHref(href);
+    if (!stableHref) throw error;
+    console.warn(
+      `[notebook-cloud] runtimed WASM binary failed from ${href}; falling back to ${stableHref}`,
+      error,
+    );
+    return fetchRuntimedWasmBinaryWithRetries(stableHref);
+  }
+}
+
+async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<Response> {
+  let lastFailure: unknown = null;
+  for (let attempt = 0; attempt <= RUNTIMED_WASM_RETRY_DELAYS_MS.length; attempt += 1) {
+    let response: Response | null = null;
+    try {
+      response = await fetchImpl(href);
+    } catch (error) {
+      // Thrown fetch errors (network drop, DNS, CORS) are always retryable.
+      lastFailure = error;
+    }
+    if (response) {
+      if (response.ok) return response;
+      const failure = new Error(`Failed to fetch runtimed WASM (${response.status}): ${href}`);
+      if (!shouldRetryRuntimedWasmResponse(response)) throw failure;
+      lastFailure = failure;
+      await cancelResponseBody(response);
+    }
+    const delay = RUNTIMED_WASM_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await sleep(delay);
+  }
+  throw lastFailure instanceof Error ? lastFailure : new Error(String(lastFailure));
+}
+
+function shouldRetryRuntimedWasmResponse(response: Response): boolean {
+  return (
+    response.status === 404 ||
+    response.status === 409 ||
+    response.status === 425 ||
+    response.status === 429 ||
+    response.status >= 500
+  );
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Best effort; a failed cancel should not mask the retryable response.
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLadderFetchableHref(href: string): boolean {
+  // Bare and root-relative paths resolve against the page origin (http/s).
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href);
+  return !hasScheme || href.startsWith("http:") || href.startsWith("https:");
+}
+
+/**
+ * `runtimed_wasm.<sha16>.js` → `runtimed_wasm.js` (same directory, query
+ * preserved). Returns null when the name carries no content hash — stable
+ * names have nowhere further to fall.
+ */
+function stableRuntimedAssetHref(href: string): string | null {
+  const suffixIndex = href.search(/[?#]/);
+  const path = suffixIndex === -1 ? href : href.slice(0, suffixIndex);
+  const suffix = suffixIndex === -1 ? "" : href.slice(suffixIndex);
+  const nameIndex = path.lastIndexOf("/") + 1;
+  const match = CONTENT_HASHED_RUNTIMED_ASSET_RE.exec(path.slice(nameIndex));
+  if (!match) return null;
+  return `${path.slice(0, nameIndex)}${match[1]}${match[2]}${suffix}`;
 }
 
 /**
@@ -197,6 +343,15 @@ export function _setRuntimedWasmModuleImporterForTests(
   importer: ((href: string) => Promise<unknown>) | null,
 ): void {
   importModule = (importer as RuntimedWasmModuleImporter | null) ?? defaultModuleImporter;
+}
+
+/**
+ * Swap the fetch used for the .wasm binary ladder. Pass `null` to restore
+ * the global fetch.
+ * @internal
+ */
+export function _setRuntimedWasmFetchForTests(impl: typeof fetch | null): void {
+  fetchImpl = impl ?? ((input, init) => fetch(input, init));
 }
 
 /**
