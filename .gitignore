@@ -58,6 +58,7 @@ out/
 **/out/
 **/dist-output-document/
 .wrangler/
+apps/notebook-cloud/wrangler.deploy.*.toml
 *.tsbuildinfo
 
 # Generated isolated-renderer bundle (built from src/isolated-renderer)
