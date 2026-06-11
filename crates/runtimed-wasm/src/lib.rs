@@ -3212,6 +3212,102 @@ impl NotebookHandle {
         self.doc.save()
     }
 
+    /// Serialize every NotebookDoc change that is not a transitive
+    /// dependency of `heads_hex` (hex change hashes, as returned by
+    /// `get_heads_hex()`).
+    ///
+    /// Empty heads = full `save()` — the compressed document chunk, never
+    /// an incremental dump of the entire history (automerge-repo's
+    /// documented `saveSince(empty)` pitfall). Non-empty heads produce a
+    /// concatenation of raw change chunks suitable for content-addressed
+    /// incremental persistence and the cross-tab bridge; `load()` /
+    /// `apply_change_bytes()` accept them directly, including concatenated
+    /// snapshot + incremental buffers.
+    ///
+    /// Stateless by design: the caller owns the heads bookkeeping. This
+    /// never touches automerge's internal `save_incremental` cursor —
+    /// other code paths call `save()`, which would silently move shared
+    /// bookkeeping. Heads unknown to this doc are ignored by the
+    /// dependency filter, so a stale basis degrades to a larger
+    /// (overlapping) payload, never a gap.
+    pub fn save_since_heads(&mut self, heads_hex: Vec<String>) -> Result<Vec<u8>, JsError> {
+        self.save_since_heads_inner(&heads_hex)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    fn save_since_heads_inner(&mut self, heads_hex: &[String]) -> Result<Vec<u8>, String> {
+        if heads_hex.is_empty() {
+            return Ok(self.doc.save());
+        }
+        let heads = parse_heads_hex(heads_hex)?;
+        Ok(self.doc.doc_mut().save_after(&heads))
+    }
+
+    /// Apply serialized NotebookDoc changes (from `save_since_heads()` or
+    /// `save()`, possibly concatenated) and return the same event shape as
+    /// a `sync_applied` frame so the engine can route it through the
+    /// existing materialization path — heads compare for `changed`, one
+    /// `diff_doc` walk for the changeset, attributions from the same
+    /// patches, execution-view projection. No second diff path.
+    ///
+    /// Changes the document already knows are deduplicated by
+    /// `load_incremental`, reporting `changed: false` — the property that
+    /// keeps the cross-tab bridge from ping-ponging. An unparseable buffer
+    /// on a non-empty doc degrades to a partial load of zero changes
+    /// (automerge warns and applies what parsed), so a bad peer message
+    /// can never corrupt the doc or report `changed: true`. Sync state is
+    /// untouched: the next ordinary flush/sync round carries the applied
+    /// changes to the room. The returned event's `reply` is always absent.
+    pub fn apply_change_bytes(&mut self, bytes: &[u8]) -> Result<JsValue, JsError> {
+        let event = self
+            .apply_change_bytes_inner(bytes)
+            .map_err(|e| JsError::new(&e))?;
+        Ok(serialize_to_js(&event).unwrap_or(JsValue::UNDEFINED))
+    }
+
+    fn apply_change_bytes_inner(&mut self, bytes: &[u8]) -> Result<FrameEvent, String> {
+        let heads_before = self.doc.doc_mut().get_heads();
+        self.doc
+            .doc_mut()
+            .load_incremental(bytes)
+            .map_err(|e| format!("apply change bytes failed: {e}"))?;
+        let heads_after = self.doc.doc_mut().get_heads();
+        let changed = heads_before != heads_after;
+
+        // Mirror the AUTOMERGE_SYNC arm of receive_frame exactly: one
+        // diff_doc walk covers cells + metadata + text patches.
+        let (changeset, attributions) = if changed {
+            let doc_changeset = diff_doc(self.doc.doc_mut(), &heads_before, &heads_after);
+            if doc_changeset.metadata_changed {
+                self.metadata_fingerprint_cache = None;
+            }
+            let attrs = build_text_attributions(
+                self.doc.doc_mut(),
+                &heads_before,
+                &doc_changeset.text_patches,
+            );
+            (Some(doc_changeset.cells), attrs)
+        } else {
+            (None, Vec::new())
+        };
+
+        let execution_view_changeset = if changed {
+            let state = self.state_doc.read_state();
+            self.execution_view_projector
+                .project_all(notebook_execution_pointers(&self.doc), &state)
+        } else {
+            ExecutionViewChangeset::default()
+        };
+
+        Ok(FrameEvent::SyncApplied {
+            changed,
+            changeset,
+            attributions,
+            reply: None,
+            execution_view_changeset,
+        })
+    }
+
     /// Export the full RuntimeStateDoc as bytes.
     pub fn save_state_doc(&mut self) -> Vec<u8> {
         self.state_doc.doc_mut().save()
@@ -3845,6 +3941,18 @@ impl NotebookHandle {
 
         serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED)
     }
+}
+
+/// Parse hex change hashes (the `get_heads_hex()` format) into
+/// `ChangeHash`es, naming the offending value on failure.
+fn parse_heads_hex(heads_hex: &[String]) -> Result<Vec<automerge::ChangeHash>, String> {
+    heads_hex
+        .iter()
+        .map(|head| {
+            head.parse::<automerge::ChangeHash>()
+                .map_err(|e| format!("invalid change hash {head:?}: {e}"))
+        })
+        .collect()
 }
 
 // ── Attribution extraction ───────────────────────────────────────────
@@ -5253,5 +5361,201 @@ mod tests {
             &expected_actor,
             "rebuild_comms_doc should preserve the actor"
         );
+    }
+
+    // -- save_since_heads / apply_change_bytes (chunked persistence + tab bridge) --
+
+    fn handle_with_cell(cell_id: &str, source: &str) -> NotebookHandle {
+        let mut handle = NotebookHandle::new("chunks-test").expect("create handle");
+        handle.set_actor("user:dev:test/browser:a");
+        handle
+            .add_cell(handle.cell_count(), cell_id, "code")
+            .expect("add cell");
+        handle.update_source(cell_id, source).expect("set source");
+        handle
+    }
+
+    #[test]
+    fn save_since_heads_with_empty_basis_is_a_full_loadable_save() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+        let bytes = handle
+            .save_since_heads_inner(&[])
+            .expect("save with empty basis");
+        assert_eq!(bytes, handle.save(), "empty basis must equal save()");
+
+        let loaded = NotebookHandle::load(&bytes).expect("load full bytes");
+        assert_eq!(loaded.cell_count(), 1);
+        assert_eq!(loaded.get_cell_source("cell-1").as_deref(), Some("x = 1"));
+    }
+
+    #[test]
+    fn save_since_heads_yields_only_the_tail_and_concatenated_chunks_load() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+        let snapshot = handle.save_since_heads_inner(&[]).expect("full save");
+        let basis = handle.get_heads_hex();
+
+        handle
+            .add_cell(handle.cell_count(), "cell-2", "markdown")
+            .expect("add second cell");
+        handle.update_source("cell-2", "# title").expect("source");
+
+        let incremental = handle
+            .save_since_heads_inner(&basis)
+            .expect("incremental save");
+        assert!(!incremental.is_empty(), "tail changes must serialize");
+        assert!(
+            incremental.len() < snapshot.len(),
+            "incremental must not re-serialize the whole doc"
+        );
+
+        // The chunk-store load path: snapshot chunk first, then the
+        // incremental chunk, one load over the concatenation.
+        let mut concatenated = snapshot.clone();
+        concatenated.extend_from_slice(&incremental);
+        let loaded = NotebookHandle::load(&concatenated).expect("load concatenated chunks");
+        assert_eq!(loaded.cell_count(), 2);
+        assert_eq!(loaded.get_cell_source("cell-2").as_deref(), Some("# title"));
+    }
+
+    #[test]
+    fn save_since_heads_at_current_heads_is_empty() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+        let heads = handle.get_heads_hex();
+        let bytes = handle
+            .save_since_heads_inner(&heads)
+            .expect("save at current heads");
+        assert!(bytes.is_empty(), "no changes beyond the current heads");
+    }
+
+    #[test]
+    fn save_since_heads_rejects_malformed_heads() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+        let err = handle
+            .save_since_heads_inner(&["not-hex".to_string()])
+            .expect_err("malformed hash must error");
+        assert!(err.contains("invalid change hash"), "{err}");
+    }
+
+    #[test]
+    fn save_since_heads_ignores_unknown_heads_yielding_overlap_never_a_gap() {
+        let mut handle = handle_with_cell("cell-1", "x = 1");
+        // A valid-format hash this doc has never seen (a stale basis from
+        // another session). The dependency filter drops it, degrading to
+        // a full-history payload.
+        let unknown = "ab".repeat(32);
+        let bytes = handle
+            .save_since_heads_inner(&[unknown])
+            .expect("unknown heads are filtered, not fatal");
+        assert!(!bytes.is_empty(), "stale basis must still serialize");
+
+        let mut fresh = NotebookHandle::create_bootstrap("user:dev:test/browser:b")
+            .expect("create bootstrap peer");
+        let event = fresh
+            .apply_change_bytes_inner(&bytes)
+            .expect("apply overlap payload");
+        assert!(matches!(
+            event,
+            FrameEvent::SyncApplied { changed: true, .. }
+        ));
+        assert_eq!(fresh.cell_count(), 1);
+    }
+
+    #[test]
+    fn apply_change_bytes_reports_sync_applied_shape_then_dedupes_known_changes() {
+        let mut author = handle_with_cell("cell-1", "x = 1");
+        let bytes = author.save_since_heads_inner(&[]).expect("full save");
+
+        let mut peer = NotebookHandle::create_bootstrap("user:dev:test/browser:b")
+            .expect("create bootstrap peer");
+        let first = peer
+            .apply_change_bytes_inner(&bytes)
+            .expect("first apply succeeds");
+        match first {
+            FrameEvent::SyncApplied {
+                changed,
+                changeset,
+                reply,
+                ..
+            } => {
+                assert!(changed, "fresh changes must report changed=true");
+                assert!(reply.is_none(), "apply path never carries a sync reply");
+                let changeset = changeset.expect("changed apply carries a changeset");
+                assert!(
+                    changeset.added.contains(&"cell-1".to_string()),
+                    "changeset must surface the added cell: {changeset:?}"
+                );
+            }
+            _ => panic!("expected sync_applied event"),
+        }
+        assert_eq!(peer.cell_count(), 1);
+        assert_eq!(peer.get_cell_source("cell-1").as_deref(), Some("x = 1"));
+
+        // Re-applying the identical bytes is the two-tab ping-pong case:
+        // load_incremental dedupes, changed must be false, and no
+        // changeset may be emitted (nothing to re-trigger a broadcast).
+        let second = peer
+            .apply_change_bytes_inner(&bytes)
+            .expect("re-apply succeeds");
+        match second {
+            FrameEvent::SyncApplied {
+                changed, changeset, ..
+            } => {
+                assert!(!changed, "known changes must report changed=false");
+                assert!(changeset.is_none(), "no changeset for a no-op apply");
+            }
+            _ => panic!("expected sync_applied event"),
+        }
+    }
+
+    #[test]
+    fn apply_change_bytes_applies_incremental_tails() {
+        let mut author = handle_with_cell("cell-1", "x = 1");
+        let snapshot = author.save_since_heads_inner(&[]).expect("full save");
+        let basis = author.get_heads_hex();
+        author.update_source("cell-1", "x = 2").expect("edit");
+        let tail = author.save_since_heads_inner(&basis).expect("tail save");
+
+        let mut peer = NotebookHandle::create_bootstrap("user:dev:test/browser:b")
+            .expect("create bootstrap peer");
+        peer.apply_change_bytes_inner(&snapshot)
+            .expect("apply snapshot");
+        let event = peer.apply_change_bytes_inner(&tail).expect("apply tail");
+        match event {
+            FrameEvent::SyncApplied {
+                changed, changeset, ..
+            } => {
+                assert!(changed);
+                let changeset = changeset.expect("tail apply carries a changeset");
+                assert!(
+                    changeset
+                        .changed
+                        .iter()
+                        .any(|cell| cell.cell_id == "cell-1"),
+                    "edited cell must appear in the changeset: {changeset:?}"
+                );
+            }
+            _ => panic!("expected sync_applied event"),
+        }
+        assert_eq!(peer.get_cell_source("cell-1").as_deref(), Some("x = 2"));
+        assert_eq!(peer.get_heads_hex(), author.get_heads_hex());
+    }
+
+    #[test]
+    fn apply_change_bytes_treats_garbage_as_a_no_op() {
+        let mut peer = handle_with_cell("cell-1", "x = 1");
+        let heads = peer.get_heads_hex();
+        // On a non-empty doc, automerge's incremental load degrades an
+        // unparseable buffer to a partial load of zero changes (it warns
+        // and applies what parsed) — the bridge contract is that a bad
+        // peer message can never corrupt the doc or report changed=true.
+        let event = peer
+            .apply_change_bytes_inner(&[1, 2, 3, 4])
+            .expect("garbage degrades to a no-op apply");
+        assert!(matches!(
+            event,
+            FrameEvent::SyncApplied { changed: false, .. }
+        ));
+        assert_eq!(peer.get_heads_hex(), heads, "doc heads must be untouched");
+        assert_eq!(peer.cell_count(), 1);
     }
 }
