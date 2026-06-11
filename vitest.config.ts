@@ -49,6 +49,9 @@ export default defineConfig({
     include: [
       "src/**/__tests__/**/*.test.{ts,tsx}",
       "apps/notebook/src/**/__tests__/**/*.test.{ts,tsx}",
+      // Cloud viewer React hooks need a DOM renderer; the rest of the cloud
+      // suite stays on node:test (apps/notebook-cloud/test).
+      "apps/notebook-cloud/viewer/__tests__/**/*.test.{ts,tsx}",
       "apps/mcp-app/src/**/__tests__/**/*.test.{js,ts,tsx}",
       "packages/**/tests/**/*.test.{ts,tsx}",
       "plugins/nteract/pi/**/*.test.{ts,tsx}",
