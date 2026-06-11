@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   IndexedDbStorageAdapter,
-  NotebookDocPersistence,
   clearPersistedNotebookDoc,
   loadPersistedNotebookDoc,
   type BlobResolver,
@@ -56,6 +55,10 @@ import {
 } from "./live-sync";
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
+import {
+  createCloudNotebookPersistence,
+  type CloudNotebookPersistenceController,
+} from "./notebook-persistence";
 import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudProjectionUnlessPreserved,
@@ -449,7 +452,7 @@ export function useCloudViewerSession({
     // Local-first persistence is fail-open: no IndexedDB (private mode,
     // SSR) means no adapter and the session runs exactly as before.
     const persistenceAdapter = IndexedDbStorageAdapter.create();
-    let notebookPersistence: NotebookDocPersistence | null = null;
+    let notebookPersistence: CloudNotebookPersistenceController | null = null;
     let notebookPersistencePrincipal: string | null = null;
     const persistenceSeed = persistenceAdapter
       ? {
@@ -530,19 +533,20 @@ export function useCloudViewerSession({
       void pendingSeedDiscardRef.current.then(() => {
         if (disposed || liveRuntimeRef.current !== liveRuntime) return;
         if (notebookPersistence && notebookPersistencePrincipal === principal) return;
-        // Snapshot the raw NotebookHandle (full NotebookDoc bytes) on every
-        // doc change; the controller throttles, self-disables after repeated
-        // failures, and never throws into the session.
-        notebookPersistence = new NotebookDocPersistence({
+        // Snapshot the raw NotebookHandle on every doc change: the
+        // NotebookDoc seed record plus the render-only RuntimeStateDoc
+        // paint cache (instant first paint's outputs). The controllers
+        // throttle, self-disable after repeated failures, and never throw
+        // into the session.
+        notebookPersistence = createCloudNotebookPersistence({
           adapter: persistenceAdapter,
           notebookId: config.notebookId,
           principal,
-          changes$: liveRuntime.engine.notebookDocChanged$,
-          getSaveBytes: () => liveRuntime.handle.save(),
-          getHeadsHex: () => liveRuntime.handle.get_heads_hex(),
+          engine: liveRuntime.engine,
+          handle: liveRuntime.handle,
           onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
         });
-        notebookPersistencePrincipal = principal;
+        notebookPersistencePrincipal = notebookPersistence ? principal : null;
       });
     };
     // Transport-level connection losses are informational: the transport
