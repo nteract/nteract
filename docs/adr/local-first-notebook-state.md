@@ -423,11 +423,54 @@ connection resilience lives.
 - Store projections are not blanked during reconnect; cell list keeps stable
   DOM order while projections update in place.
 
-## Out of scope (recorded for follow-ups)
+## Planned follow-ups (beyond the stack)
 
-- Offline-first render before the first `cloud_room_ready` (needs an
-  actor-label strategy that does not depend on the server handshake, e.g.
-  locally-minted operator nonces — deliberate follow-up).
+### PR 5 — Surface offline merges (conflicts are silent today)
+
+Offline edits merge silently on reconnect: the returning user gets no signal
+that their changes interleaved with remote ones, that a same-key write lost
+deterministically, or — the sharp edge — that a cell they edited offline was
+deleted remotely and stays deleted (Automerge does not resurrect). The
+ingredients to surface this already exist: heads before/after resync, the
+text-attribution stream, and the PR 3 slot/notices stack as the quiet mount
+point ("merged N offline changes" affordance, never a modal). We will
+inevitably hit this as collaborative offline use grows; scoped follow-up
+once the stack lands.
+
+### PR 6 — Instant first paint from the persisted snapshot
+
+The persistence layer's second purpose (and a primary motivation for using
+IndexedDB at all): page load should paint the notebook *immediately* from
+the local envelope instead of waiting for the WS dial + `cloud_room_ready` +
+full bootstrap sync. PR 1 deliberately seeds *after* the handshake because
+authoring needs the server-assigned actor label — but **painting needs no
+actor**. The pinned-snapshot path already proves bytes → throwaway handle →
+`materializeCloudNotebookView` works without a live connection. Sketch:
+
+- Read the envelope in parallel with the WS dial; if present, materialize a
+  render-only view at once (ms, zero network), letting the live engine's
+  first materialization take over when ready (respecting the no-blanking
+  rules).
+- **Pre-handshake principal gate:** before `cloud_room_ready` we don't know
+  the connection's principal, and IDB may hold another user's notebook on a
+  shared machine. Gate the paint on the principal derivable from the locally
+  stored auth material (collaborator-auth token) matching the envelope meta;
+  no match → skip paint, wait for the room.
+- **Outputs:** the envelope holds NotebookDoc only, so first paint shows
+  cells/sources/metadata without outputs (RuntimeStateDoc is authority-owned
+  and unpersisted); outputs fill in when room sync lands. If outputs-less
+  paint proves too bare, a strictly render-only RuntimeStateDoc *cache*
+  (never loaded into the syncing handle, never flushed) is the compatible
+  extension — the authority invariant forbids restoring runtime state into
+  the sync path, not caching pixels.
+- Offline *editing* before the first-ever handshake stays out of scope
+  (below) — this PR is about read latency, not offline authoring.
+
+## Out of scope (recorded, no PR planned)
+
+- Offline *authoring* before the first `cloud_room_ready` of a session
+  (needs an actor-label strategy that does not depend on the server
+  handshake, e.g. locally-minted operator nonces).
 - Incremental chunk persistence + compaction (key scheme reserves room; add
   `save_incremental`-style WASM exports when doc sizes justify it).
 - Desktop adoption of the persistence module for remote-attached notebooks.
