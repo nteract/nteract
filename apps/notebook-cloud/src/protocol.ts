@@ -11,6 +11,17 @@ export type { FrameSizeLimits, FrameTypeValue };
 
 export const NOTEBOOK_PROTOCOL = "v4";
 
+/**
+ * Liveness probe text messages. The client pings on an interval; the room
+ * DO answers via the runtime's WebSocket auto-response (no DO wake), with
+ * a manual fallback in the room's message handler for runtimes without
+ * auto-response support. Text (not typed binary frames) on purpose: the
+ * auto-response API matches string messages, and the typed-frame channel
+ * stays binary-only.
+ */
+export const LIVENESS_PING = "nteract-liveness-ping";
+export const LIVENESS_PONG = "nteract-liveness-pong";
+
 export interface TypedFrame {
   type: FrameTypeValue;
   payload: Uint8Array;

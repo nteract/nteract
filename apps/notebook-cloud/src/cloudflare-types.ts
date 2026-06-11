@@ -52,6 +52,15 @@ export interface DurableObjectState {
   waitUntil(promise: Promise<unknown>): void;
   acceptWebSocket?(socket: CloudflareWebSocket, tags?: string[]): void;
   getWebSockets?(tag?: string): CloudflareWebSocket[];
+  // Optional like the other hibernation APIs: the runtime answers matching
+  // text messages without waking the DO; fakes in tests need not implement
+  // it (the room feature-detects before calling).
+  setWebSocketAutoResponse?(pair: WebSocketRequestResponsePair): void;
+}
+
+export interface WebSocketRequestResponsePair {
+  readonly request: string;
+  readonly response: string;
 }
 
 export interface DurableObjectStorage {

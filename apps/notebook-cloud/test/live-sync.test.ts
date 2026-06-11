@@ -23,7 +23,7 @@ import {
   withReadyTimeout,
   type CloudWebSocketTransportOptions,
 } from "../viewer/live-sync.ts";
-import { FrameType } from "../src/protocol.ts";
+import { FrameType, LIVENESS_PING, LIVENESS_PONG } from "../src/protocol.ts";
 
 describe("cloud live sync", () => {
   it("accepts known connection scopes", () => {
@@ -981,6 +981,148 @@ describe("cloud transport reconnect loop", () => {
     }
   });
 
+  it("recycles the live socket when the browser reports offline and recovers on online", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const fake = installFakeWebSocket();
+    const fakeWindow = installFakeWindow();
+    try {
+      const lost: Error[] = [];
+      const statuses: string[] = [];
+      const transport = createTransport({
+        random: () => 0.5,
+        onConnectionLost: (reason) => lost.push(reason),
+      });
+      transport.connectionStatus$.subscribe((status) => statuses.push(status));
+      const first = await waitForSocket(0);
+      first.open();
+      first.ready("peer-1");
+      await transport.ready;
+      assert.equal(statuses.at(-1), "online");
+
+      // OS-level offline: the zombie socket would never fire close/error.
+      // The browser event proactively tears it down and flips status.
+      fakeWindow.dispatchEvent(new Event("offline"));
+      assert.equal(lost.length, 1);
+      assert.match(lost[0].message, /browser reported offline/);
+      assert.equal(first.readyState, FakeWebSocket.CLOSED);
+      assert.equal(statuses.at(-1), "reconnecting");
+
+      // A second offline event with no socket is a no-op (no double loss).
+      fakeWindow.dispatchEvent(new Event("offline"));
+      assert.equal(lost.length, 1);
+
+      // Connectivity returns: the online handler short-circuits the backoff.
+      fakeWindow.dispatchEvent(new Event("online"));
+      const second = await waitForSocket(1);
+      second.open();
+      second.ready("peer-2");
+      await drainMicrotasks();
+      assert.equal(statuses.at(-1), "online");
+
+      transport.disconnect();
+      // After manual disconnect the offline listener is unregistered.
+      fakeWindow.dispatchEvent(new Event("offline"));
+      assert.equal(lost.length, 1);
+      assert.equal(statuses.at(-1), "offline");
+    } finally {
+      fakeWindow.restore();
+      fake.restore();
+    }
+  });
+
+  it("sends liveness pings after ready and a timely pong keeps the connection alive", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const fake = installFakeWebSocket();
+    try {
+      const lost: Error[] = [];
+      const transport = createTransport({
+        livenessPingIntervalMs: 20_000,
+        livenessPongDeadlineMs: 10_000,
+        onConnectionLost: (reason) => lost.push(reason),
+      });
+      const socket = await waitForSocket(0);
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+      assert.deepEqual(socket.sentText, [], "no ping before the interval elapses");
+
+      t.mock.timers.tick(20_000);
+      assert.deepEqual(socket.sentText, [LIVENESS_PING]);
+
+      // Pong arrives within the deadline: the connection stays healthy
+      // past the would-be deadline, and the next interval pings again.
+      socket.message(LIVENESS_PONG);
+      await drainMicrotasks();
+      t.mock.timers.tick(10_000);
+      await drainMicrotasks();
+      assert.equal(lost.length, 0, "answered ping must not count as loss");
+
+      t.mock.timers.tick(10_000);
+      assert.deepEqual(socket.sentText, [LIVENESS_PING, LIVENESS_PING]);
+
+      // Manual disconnect stops the probe.
+      socket.message(LIVENESS_PONG);
+      await drainMicrotasks();
+      transport.disconnect();
+      t.mock.timers.tick(60_000);
+      assert.equal(socket.sentText.length, 2, "no pings after disconnect");
+      assert.equal(lost.length, 0);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("treats a missed liveness pong as connection loss and restarts the probe on reconnect", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const fake = installFakeWebSocket();
+    try {
+      const lost: Error[] = [];
+      const statuses: string[] = [];
+      const transport = createTransport({
+        livenessPingIntervalMs: 20_000,
+        livenessPongDeadlineMs: 10_000,
+        random: () => 0,
+        onConnectionLost: (reason) => lost.push(reason),
+      });
+      transport.connectionStatus$.subscribe((status) => statuses.push(status));
+      const first = await waitForSocket(0);
+      first.open();
+      first.ready("peer-1");
+      await transport.ready;
+
+      t.mock.timers.tick(20_000);
+      assert.deepEqual(first.sentText, [LIVENESS_PING]);
+
+      // The zombie socket stays OPEN and never answers. One tick before
+      // the deadline nothing happens; at the deadline the link is declared
+      // dead even though no close/error event ever fired.
+      t.mock.timers.tick(9_999);
+      await drainMicrotasks();
+      assert.equal(lost.length, 0);
+      t.mock.timers.tick(1);
+      assert.equal(lost.length, 1);
+      assert.match(lost[0].message, /liveness pong missed/);
+      assert.equal(statuses.at(-1), "reconnecting");
+
+      // Retry (random()=0 → 0.5×base = 500ms), then the probe restarts on
+      // the NEW connection — the old interval is gone.
+      t.mock.timers.tick(500);
+      const second = await waitForSocket(1);
+      second.open();
+      second.ready("peer-2");
+      await drainMicrotasks();
+      assert.equal(statuses.at(-1), "online");
+
+      t.mock.timers.tick(20_000);
+      assert.deepEqual(second.sentText, [LIVENESS_PING]);
+      assert.equal(first.sentText.length, 1, "stale probe must not ping the dead socket");
+
+      transport.disconnect();
+    } finally {
+      fake.restore();
+    }
+  });
+
   it("processes a sync frame arriving immediately after a reconnect ready AFTER the re-establish", async () => {
     const fake = installFakeWebSocket();
     const order: string[] = [];
@@ -1640,6 +1782,8 @@ class FakeWebSocket extends EventTarget {
   readyState = FakeWebSocket.CONNECTING;
   throwOnSend = false;
   sent: Uint8Array[] = [];
+  /** Text sends (liveness pings) recorded separately from binary frames. */
+  sentText: string[] = [];
   readonly url: string;
 
   constructor(url?: unknown) {
@@ -1651,6 +1795,10 @@ class FakeWebSocket extends EventTarget {
   send(data: unknown): void {
     if (this.throwOnSend) {
       throw new Error("synthetic send failure");
+    }
+    if (typeof data === "string") {
+      this.sentText.push(data);
+      return;
     }
     if (data instanceof Uint8Array) {
       this.sent.push(data);

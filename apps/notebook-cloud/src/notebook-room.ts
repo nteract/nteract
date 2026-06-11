@@ -1,4 +1,9 @@
-import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
+import type {
+  CloudflareWebSocket,
+  DurableObjectState,
+  Env,
+  WebSocketRequestResponsePair,
+} from "./cloudflare-types.ts";
 import type { WorkstationAttachmentState } from "runtimed";
 import { identityDisplayLabel } from "./display-label.ts";
 import {
@@ -15,6 +20,8 @@ import {
   frameSizeLimits,
   frameTypeName,
   isClientWritableFrame,
+  LIVENESS_PING,
+  LIVENESS_PONG,
   splitTypedFrame,
   type SessionControlMessage,
   type TypedFrame,
@@ -117,6 +124,23 @@ export class NotebookRoom {
     private readonly state: DurableObjectState,
     private readonly env: Env,
   ) {
+    // CF-native liveness: the runtime answers the client's text ping for
+    // hibernatable sockets WITHOUT waking the DO. The pair persists across
+    // hibernation, so re-setting it per wake is idempotent; matching pings
+    // never reach webSocketMessage, so frame budgets and the hibernation
+    // restore path are untouched. Feature-detected like the other
+    // hibernation APIs (handleMessage answers manually as the fallback).
+    const pairCtor = (
+      globalThis as {
+        WebSocketRequestResponsePair?: new (
+          request: string,
+          response: string,
+        ) => WebSocketRequestResponsePair;
+      }
+    ).WebSocketRequestResponsePair;
+    if (pairCtor && this.state.setWebSocketAutoResponse) {
+      this.state.setWebSocketAutoResponse(new pairCtor(LIVENESS_PING, LIVENESS_PONG));
+    }
     this.restoredPeersReady = this.restoreHibernatedPeers();
     this.state.waitUntil(this.restoredPeersReady);
   }
@@ -383,6 +407,17 @@ export class NotebookRoom {
     message: string | ArrayBuffer | ArrayBufferView,
   ): Promise<void> {
     const incomingByteLength = webSocketMessageByteLength(message);
+    if (message === LIVENESS_PING) {
+      // Fallback for non-hibernation sockets and runtimes without
+      // setWebSocketAutoResponse — must answer BEFORE the binary-only
+      // rejection so pings never count toward consecutiveRejectedFrames.
+      try {
+        peer.socket.send(LIVENESS_PONG);
+      } catch {
+        // socket is closing; the close handler owns cleanup
+      }
+      return;
+    }
     if (typeof message === "string") {
       this.recordFrameBudget(notebookId, peer, "incoming", "text", incomingByteLength);
       this.rejectFrame(
