@@ -302,3 +302,130 @@ test("cloud notebook notices keep dev diagnostics inside the shared stack", () =
   assert.match(html, /data-slot="notebook-notice-stack"/);
   assert.match(html, /data-kind="diagnostics"/);
 });
+
+// ── Offline-merge surfacing (local-first ADR, PR 5) ────────────────────
+
+import { offlineMergeNoticeTitle, offlineMergeRemovedCellsLine } from "../viewer/notices";
+
+test("offline merge notice copy drops the suffix when the count is unknown or zero", () => {
+  assert.equal(
+    offlineMergeNoticeTitle({ mergedRemoteCellCount: null, removedEditedCellCount: 0 }),
+    "Synced your offline edits.",
+  );
+  assert.equal(
+    offlineMergeNoticeTitle({ mergedRemoteCellCount: 0, removedEditedCellCount: 0 }),
+    "Synced your offline edits.",
+  );
+  assert.equal(
+    offlineMergeNoticeTitle({ mergedRemoteCellCount: 1, removedEditedCellCount: 0 }),
+    "Synced your offline edits — 1 update from collaborators merged.",
+  );
+  assert.equal(
+    offlineMergeNoticeTitle({ mergedRemoteCellCount: 3, removedEditedCellCount: 0 }),
+    "Synced your offline edits — 3 updates from collaborators merged.",
+  );
+});
+
+test("offline merge removed-cells line appears only for a real removal", () => {
+  assert.equal(offlineMergeRemovedCellsLine(0), null);
+  assert.equal(
+    offlineMergeRemovedCellsLine(1),
+    "A cell you edited offline was removed by a collaborator.",
+  );
+  assert.equal(
+    offlineMergeRemovedCellsLine(2),
+    "2 cells you edited offline were removed by a collaborator.",
+  );
+});
+
+test("cloud notebook notices render the offline merge line as one quiet info notice", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      offlineMergeNotice: { mergedRemoteCellCount: 2, removedEditedCellCount: 1 },
+      status: { kind: "ready", message: "Ready" },
+    }),
+    true,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      offlineMergeNotice: { mergedRemoteCellCount: 2, removedEditedCellCount: 1 },
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /data-slot="notebook-notice-stack"/);
+  assert.match(html, /data-tone="info"/);
+  assert.match(html, /Synced your offline edits — 2 updates from collaborators merged\./);
+  assert.match(html, /A cell you edited offline was removed by a collaborator\./);
+  // One quiet notice, no modal-ish chrome: no actions and no error tone.
+  assert.doesNotMatch(html, /data-tone="error"/);
+  assert.doesNotMatch(html, /data-tone="warning"/);
+});
+
+test("offline merge notice omits the removed-cells line when nothing vanished", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      offlineMergeNotice: { mergedRemoteCellCount: null, removedEditedCellCount: 0 },
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Synced your offline edits\./);
+  assert.doesNotMatch(html, /from collaborators merged/);
+  assert.doesNotMatch(html, /removed by a collaborator/);
+});
+
+test("offline merge notice stacks with (and does not disturb) the reconnect line", () => {
+  // In practice they are sequential — the sustained line clears the moment
+  // the room is back, exactly when the merge notice can first appear — but
+  // the stack must keep both legible if state ever overlaps mid-render.
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      offlineMergeNotice: { mergedRemoteCellCount: 0, removedEditedCellCount: 0 },
+      sustainedReconnecting: true,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Reconnecting\./);
+  assert.match(html, /Your edits are kept locally/);
+  assert.match(html, /Synced your offline edits\./);
+});
+
+test("no offline merge notice means no offline merge markup", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      offlineMergeNotice: null,
+      sustainedReconnecting: true,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Reconnecting\./);
+  assert.doesNotMatch(html, /Synced your offline edits/);
+});

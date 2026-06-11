@@ -64,6 +64,11 @@ import {
   type CloudNotebookPersistenceController,
 } from "./notebook-persistence";
 import {
+  OFFLINE_MERGE_RESYNC_SETTLE_MS,
+  OfflineMergeTracker,
+  type OfflineMergeNoticeData,
+} from "./offline-merge-tracker";
+import {
   projectCloudCellsIntoNotebookViewStores,
   resetCloudProjectionUnlessPreserved,
   resetCloudViewStoreProjection,
@@ -132,6 +137,17 @@ export interface CloudViewerSession {
   liveRuntimeRef: MutableRefObject<CloudSyncRuntime | null>;
   notebookLanguageRef: MutableRefObject<string>;
   notebookMetadata: unknown;
+  /**
+   * Quiet offline-merge surfacing (notices stack only): set once per outage
+   * after a reconnect completes with locally-authored work pending across
+   * the gap. The viewer clears it on user action or a short timeout.
+   */
+  offlineMergeNotice: OfflineMergeNoticeData | null;
+  clearOfflineMergeNotice: () => void;
+  /** A local source edit reached the handle for this cell (CRDT bridge). */
+  noteLocalCellEdit: (cellId: string) => void;
+  /** The user deleted this cell locally — never a collaborator removal. */
+  noteLocalCellDelete: (cellId: string) => void;
   presenceStore: CloudViewerPresenceStore;
   requestCloudMaterialization: (liveRuntime: CloudSyncRuntime) => void;
   retryLiveConnection: () => void;
@@ -206,6 +222,47 @@ export function useCloudViewerSession({
     connectionStatusBridgeRef.current = new CloudConnectionStatusBridge();
   }
   const connectionStatusBridge = connectionStatusBridgeRef.current;
+  // Offline-merge surfacing: one tracker per session (stable across effect
+  // re-runs and escalation teardowns, like the bridge — an outage that
+  // spans a transport replacement is still ONE outage). It derives
+  // everything from signals that already exist; see offline-merge-tracker.
+  const [offlineMergeNotice, setOfflineMergeNotice] = useState<OfflineMergeNoticeData | null>(null);
+  const offlineMergeTrackerRef = useRef<OfflineMergeTracker | null>(null);
+  if (offlineMergeTrackerRef.current === null) {
+    offlineMergeTrackerRef.current = new OfflineMergeTracker({
+      settleMs: OFFLINE_MERGE_RESYNC_SETTLE_MS,
+      getProjectedCellIds: () => getCellIdsSnapshot(),
+      onNotice: (notice) => setOfflineMergeNotice(notice),
+    });
+  }
+  const offlineMergeTracker = offlineMergeTrackerRef.current;
+  // The bridge replays the current status on subscribe and survives
+  // transport replacement, so one mount-scoped subscription covers every
+  // connect attempt and teardown-retry transition.
+  useEffect(() => {
+    const subscription = connectionStatusBridge.subscribe((connectionStatus) => {
+      offlineMergeTracker.noteConnectionStatus(connectionStatus);
+    });
+    return () => {
+      subscription.unsubscribe();
+      offlineMergeTracker.dispose();
+    };
+  }, [connectionStatusBridge, offlineMergeTracker]);
+  const clearOfflineMergeNotice = useCallback(() => {
+    setOfflineMergeNotice(null);
+  }, []);
+  const noteLocalCellEdit = useCallback(
+    (cellId: string) => {
+      offlineMergeTracker.noteLocalCellEdit(cellId);
+    },
+    [offlineMergeTracker],
+  );
+  const noteLocalCellDelete = useCallback(
+    (cellId: string) => {
+      offlineMergeTracker.noteLocalCellDelete(cellId);
+    },
+    [offlineMergeTracker],
+  );
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [connectionPeerId, setConnectionPeerId] = useState<string | null>(null);
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
@@ -937,6 +994,11 @@ export function useCloudViewerSession({
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
         armPersistence(liveRuntime);
+        // Anonymous sessions are out of scope for offline-merge surfacing
+        // (per-connection principals; persistence never arms for them).
+        offlineMergeTracker.noteSessionEligibility(
+          !isAnonymousCloudPrincipal(cloudPrincipalFromActorLabel(liveRuntime.actorLabel)),
+        );
         const stopWidgetLiveRuntimeDiagnostics =
           installCloudWidgetLiveRuntimeDiagnostics(liveRuntime);
         setConnectionScope(liveRuntime.connectionScope);
@@ -966,6 +1028,11 @@ export function useCloudViewerSession({
             // The persistence principal follows the latest identity;
             // same-principal reconnects keep the controller.
             armPersistence(liveRuntime);
+            // Re-resolution can change the principal mid-session; the
+            // offline-merge eligibility follows the latest identity too.
+            offlineMergeTracker.noteSessionEligibility(
+              !isAnonymousCloudPrincipal(cloudPrincipalFromActorLabel(liveRuntime.actorLabel)),
+            );
           }),
           liveRuntime.engine.broadcasts$.subscribe((payload) => {
             emitBroadcast(payload);
@@ -1010,6 +1077,18 @@ export function useCloudViewerSession({
           }),
           liveRuntime.engine.poolState$.subscribe((state) => {
             setPoolState(state);
+          }),
+          // Offline-merge derivation taps (no new engine observables):
+          // notebookDocChanged$ emissions are local flush attempts while
+          // the offline window is open (no inbound frames offline), and
+          // cellChanges$ is remote-authored by construction (sync_applied
+          // pipeline) — during the settle window it is the collaborator
+          // backlog that interleaved with the user's offline edits.
+          liveRuntime.engine.notebookDocChanged$.subscribe(() => {
+            offlineMergeTracker.noteLocalDocActivity();
+          }),
+          liveRuntime.engine.cellChanges$.subscribe((changeset) => {
+            offlineMergeTracker.noteRemoteCellChanges(changeset);
           }),
           { unsubscribe: () => stopCursorDispatch() },
           { unsubscribe: stopWidgetLiveRuntimeDiagnostics },
@@ -1156,6 +1235,10 @@ export function useCloudViewerSession({
     liveRuntimeRef,
     notebookLanguageRef,
     notebookMetadata,
+    offlineMergeNotice,
+    clearOfflineMergeNotice,
+    noteLocalCellEdit,
+    noteLocalCellDelete,
     presenceStore,
     requestCloudMaterialization,
     retryLiveConnection,
