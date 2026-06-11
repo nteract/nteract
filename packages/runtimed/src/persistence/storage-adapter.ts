@@ -75,11 +75,16 @@ export async function saveBatch(
 export class SaveBatchEntryError extends Error {
   readonly key: StorageKey;
   readonly index: number;
+  // Declared and assigned directly rather than via the ES2022 ErrorOptions
+  // constructor argument — apps/notebook compiles this package under
+  // lib: ES2020, where Error has no `cause` member.
+  readonly cause: unknown;
 
   constructor(key: StorageKey, index: number, cause: unknown) {
-    super(`saveBatch fallback failed at entry ${index} (${key.join("/")})`, { cause });
+    super(`saveBatch fallback failed at entry ${index} (${key.join("/")})`);
     this.name = "SaveBatchEntryError";
     this.key = key;
     this.index = index;
+    this.cause = cause;
   }
 }
