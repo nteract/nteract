@@ -88,6 +88,48 @@ export function cloudInstantPaintPrincipalMatcher(
   return null;
 }
 
+/**
+ * Zero-cell displacement policy for the live materialization path.
+ *
+ * An empty SYNCING handle usually means the bootstrap exchange has not
+ * delivered the room's content yet, and applying it would blank a painted
+ * (instant paint) or preserved notebook — so a zero-cell materialization
+ * is skipped while cells are showing. But once the handle has provably
+ * caught up to the room's advertised heads, zero cells IS the room's
+ * truth: live emptiness must displace whatever is showing. This is the
+ * principal-matcher heuristic's backstop — a false-positive paint must
+ * not outlive the handshake, even over a room with nothing to send. With
+ * nothing painted, the empty state may always show once the pinned
+ * snapshot path has resolved.
+ */
+export function shouldDisplayEmptyLiveNotebook({
+  snapshotResolved,
+  paintedCellCount,
+  handleCaughtUp,
+}: {
+  snapshotResolved: boolean;
+  paintedCellCount: number;
+  handleCaughtUp: boolean;
+}): boolean {
+  if (!snapshotResolved) return false;
+  return paintedCellCount === 0 || handleCaughtUp;
+}
+
+/**
+ * `notebook_doc_caught_up()` with deployed-handle tolerance: an older WASM
+ * bundle without the export reports not-caught-up, degrading to the
+ * previous behavior (painted cells are never displaced by emptiness).
+ */
+export function cloudNotebookHandleCaughtUp(handle: {
+  notebook_doc_caught_up?: () => boolean;
+}): boolean {
+  try {
+    return handle.notebook_doc_caught_up?.() ?? false;
+  } catch {
+    return false;
+  }
+}
+
 export type CloudInstantPaintOutcome =
   | "painted"
   | "painted_cells_only"

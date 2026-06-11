@@ -56,7 +56,12 @@ import {
   type CloudSyncRuntime,
   type CloudWebSocketTransport,
 } from "./live-sync";
-import { cloudInstantPaintPrincipalMatcher, resolveCloudInstantPaintHandle } from "./instant-paint";
+import {
+  cloudInstantPaintPrincipalMatcher,
+  cloudNotebookHandleCaughtUp,
+  resolveCloudInstantPaintHandle,
+  shouldDisplayEmptyLiveNotebook,
+} from "./instant-paint";
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
@@ -199,6 +204,12 @@ export function useCloudViewerSession({
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const materializeLiveRuntimeRef = useRef<((runtime: CloudSyncRuntime) => void) | null>(null);
   const liveMaterializedRef = useRef(false);
+  // True while the cells in the view stores were last applied by the
+  // instant paint (paint-origin pixels); any live apply clears it. Gates
+  // the live-changeset tail's status labeling and the empty-room
+  // displacement: paint-origin content is never RELABELED as live — it is
+  // replaced (or displaced by authoritative emptiness) wholesale.
+  const paintOriginRef = useRef(false);
   const snapshotResolvedRef = useRef(false);
   // Set when a seeded session's replayed changes were rejected by the room:
   // the next connect attempt must bootstrap (survives the effect re-run).
@@ -511,6 +522,11 @@ export function useCloudViewerSession({
     // escalates.
     const rejectionTracker = new CloudRecoverableRejectionTracker();
     let ranConnectionDiagnostics = false;
+    // One full-materialization kick per runtime when the syncing doc first
+    // catches up to the room's advertised heads (see the notebookSyncApplied$
+    // subscription) — the only path that displaces painted cells when the
+    // room converges with zero cell changes.
+    let caughtUpMaterializeKicked = false;
     // Local-first persistence is fail-open: no IndexedDB (private mode,
     // SSR) means no adapter and the session runs exactly as before.
     const persistenceAdapter = IndexedDbStorageAdapter.create();
@@ -668,14 +684,29 @@ export function useCloudViewerSession({
 
     const materializedCellCount = () => getCellIdsSnapshot().length;
 
+    // Zero-cell guard for both checkpoints below: blocks an empty handle
+    // from blanking painted/preserved cells until the handle has provably
+    // caught up to the room's advertised heads — after which live
+    // emptiness DISPLACES whatever is showing (instant paint included).
+    const mayShowEmptyLiveNotebook = (liveRuntime: CloudSyncRuntime) =>
+      shouldDisplayEmptyLiveNotebook({
+        snapshotResolved: snapshotResolvedRef.current,
+        paintedCellCount: materializedCellCount(),
+        handleCaughtUp: cloudNotebookHandleCaughtUp(liveRuntime.handle),
+      });
+
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime) => {
       const sequence = ++materializeSequence;
       const previousNotebookLanguage = notebookLanguageRef.current;
       const outputResolutionCache = outputResolutionCacheRef.current;
       const rawCellCount = liveRuntime.handle.cell_count();
-      if (rawCellCount === 0 && (!snapshotResolvedRef.current || materializedCellCount() > 0)) {
+      if (rawCellCount === 0 && !mayShowEmptyLiveNotebook(liveRuntime)) {
         return;
       }
+      // Warm loads: a painted notebook is already on screen as 'ready';
+      // the live pass replaces it in place, so don't demote the status to
+      // a 'loading' notice over fully visible content.
+      const paintedContentShowing = paintOriginRef.current && materializedCellCount() > 0;
       const materialized = await materializeCloudNotebookView(liveRuntime.handle, {
         blobResolver,
         defaultNotebookLanguage: previousNotebookLanguage ?? "python",
@@ -685,24 +716,28 @@ export function useCloudViewerSession({
           onInitialCells(syncCells) {
             if (syncCells.length === 0) return;
             liveMaterializedRef.current = true;
+            paintOriginRef.current = false;
             markCloudViewerLoadMilestone("live-initial-cells");
             preloadSiftWasm(syncCells);
             applyResolvedCells(syncCells);
-            setStatus({
-              kind: "loading",
-              message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
-            });
+            if (!paintedContentShowing) {
+              setStatus({
+                kind: "loading",
+                message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
+              });
+            }
           },
           onCellResolved(resolvedCell, _index, progressiveCells) {
             if (progressiveCells.length === 0) return;
             liveMaterializedRef.current = true;
+            paintOriginRef.current = false;
             preloadSiftWasm([resolvedCell]);
             applyResolvedCells(progressiveCells);
           },
         },
       });
       if (materialized.rawCellCount === 0) {
-        if (!snapshotResolvedRef.current || materializedCellCount() > 0) {
+        if (!mayShowEmptyLiveNotebook(liveRuntime)) {
           return;
         }
       }
@@ -722,6 +757,7 @@ export function useCloudViewerSession({
       );
       if (disposed || sequence !== materializeSequence) return;
       liveMaterializedRef.current = true;
+      paintOriginRef.current = false;
       const resolvedCells = materialized.cells;
       preloadSiftWasm(resolvedCells);
       applyResolvedCells(resolvedCells);
@@ -758,6 +794,15 @@ export function useCloudViewerSession({
         if (snapshotResolvedRef.current) {
           setStatus({ kind: "empty", message: "This notebook room has no cells yet." });
         }
+        return;
+      }
+
+      if (paintOriginRef.current) {
+        // Paint-origin cells are still on screen: the full-materialization
+        // fallback above was skipped by the zero-cell guard or has not
+        // applied yet. Never RELABEL the instant paint as live content —
+        // the live status (and the race flag) belong to the apply that
+        // actually replaces or displaces it.
         return;
       }
 
@@ -832,6 +877,7 @@ export function useCloudViewerSession({
               markCloudViewerLoadMilestone("instant-paint-initial-cells");
               preloadSiftWasm(syncCells);
               applyResolvedCells(syncCells);
+              paintOriginRef.current = true;
               setStatus({
                 kind: "loading",
                 message: `Rendering ${syncCells.length} cells from the local snapshot while connecting...`,
@@ -841,6 +887,7 @@ export function useCloudViewerSession({
               if (progressiveCells.length === 0) return;
               preloadSiftWasm([resolvedCell]);
               applyResolvedCells(progressiveCells);
+              paintOriginRef.current = true;
             },
           },
         });
@@ -862,6 +909,7 @@ export function useCloudViewerSession({
         if (!instantPaintFresh()) return;
         preloadSiftWasm(materialized.cells);
         applyResolvedCells(materialized.cells);
+        paintOriginRef.current = true;
         setStatus({
           kind: "ready",
           message: `Rendering ${materialized.cells.length} cells from the locally persisted snapshot while the live room connects.`,
@@ -885,6 +933,12 @@ export function useCloudViewerSession({
     });
     if (!preservedAcrossRuns) {
       paintedNotebookIdentityRef.current = null;
+      // A cleared projection means no live pixels are on screen: the race
+      // flag must not gate the NEXT notebook's instant paint (or its
+      // zero-cell handling) on the previous notebook's materialization,
+      // and nothing paint-origin is showing either.
+      liveMaterializedRef.current = false;
+      paintOriginRef.current = false;
     }
 
     presenceStore.reset();
@@ -1077,6 +1131,19 @@ export function useCloudViewerSession({
           }),
           liveRuntime.engine.poolState$.subscribe((state) => {
             setPoolState(state);
+          }),
+          // The bootstrap exchange can settle with ZERO cellChanges$
+          // emissions — a room at genesis answers the handshake heads-only
+          // — and the changeset stream is the only other trigger for a
+          // full materialization. Once the syncing doc first catches up to
+          // the room's advertised heads, run one full materialization so
+          // live truth INCLUDING EMPTINESS displaces painted or preserved
+          // cells (see the zero-cell guard above).
+          liveRuntime.engine.notebookSyncApplied$.subscribe(() => {
+            if (caughtUpMaterializeKicked) return;
+            if (!cloudNotebookHandleCaughtUp(liveRuntime.handle)) return;
+            caughtUpMaterializeKicked = true;
+            materializeLiveCellsSafely(liveRuntime);
           }),
           // Offline-merge derivation taps (no new engine observables):
           // notebookDocChanged$ emissions are local flush attempts while

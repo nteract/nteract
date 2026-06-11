@@ -175,10 +175,16 @@ describe("cloud projection flicker gate", () => {
     it("clears real notebook switches in the next run's body, before connecting", () => {
       // The cleanup closes over its own run's config, so switch-clearing
       // can only happen here — and a cleared switch also drops the painted
-      // identity so later gates fail closed.
+      // identity AND the live/paint-origin race flags (a cleared stage has
+      // no pixels for either flag to describe), so the next notebook's
+      // instant paint is not gated on the previous notebook's history.
       assert.match(
         sessionSource,
-        /const preservedAcrossRuns = resetCloudProjectionUnlessPreserved\(\{\s*paintedNotebookIdentity: paintedNotebookIdentityRef\.current,\s*nextNotebookIdentity: `id:\$\{config\.notebookId\}`,\s*\}\);\s*if \(!preservedAcrossRuns\) \{\s*paintedNotebookIdentityRef\.current = null;\s*\}/,
+        /const preservedAcrossRuns = resetCloudProjectionUnlessPreserved\(\{\s*paintedNotebookIdentity: paintedNotebookIdentityRef\.current,\s*nextNotebookIdentity: `id:\$\{config\.notebookId\}`,\s*\}\);\s*if \(!preservedAcrossRuns\) \{\s*paintedNotebookIdentityRef\.current = null;/,
+      );
+      assert.match(
+        sessionSource,
+        /if \(!preservedAcrossRuns\) \{[\s\S]*?liveMaterializedRef\.current = false;\s*paintOriginRef\.current = false;\s*\}/,
       );
     });
 

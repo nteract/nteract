@@ -5,7 +5,9 @@ import type { PersistedNotebookDoc } from "runtimed";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth.ts";
 import {
   cloudInstantPaintPrincipalMatcher,
+  cloudNotebookHandleCaughtUp,
   resolveCloudInstantPaintHandle,
+  shouldDisplayEmptyLiveNotebook,
   type CloudInstantPaintOptions,
 } from "../viewer/instant-paint.ts";
 import { cloudViewerLoadingPolicy } from "../viewer/loading-policy.ts";
@@ -267,6 +269,81 @@ describe("resolveCloudInstantPaintHandle", () => {
     assert.equal(
       harness.calls.some((call) => call.startsWith("load(")),
       false,
+    );
+  });
+});
+
+describe("empty live room displacement", () => {
+  it("displaces painted cells only once the handle has caught up to the room", () => {
+    // The matcher heuristic's backstop: a (possibly false-positive) paint
+    // may block a zero-cell apply only while the bootstrap exchange could
+    // still deliver content. Once the room's advertised heads are all
+    // applied, zero cells IS the room's truth.
+    const painted = { snapshotResolved: true, paintedCellCount: 3 };
+
+    assert.equal(shouldDisplayEmptyLiveNotebook({ ...painted, handleCaughtUp: false }), false);
+    assert.equal(shouldDisplayEmptyLiveNotebook({ ...painted, handleCaughtUp: true }), true);
+    // Nothing painted: the empty state may always show once resolved.
+    assert.equal(
+      shouldDisplayEmptyLiveNotebook({
+        snapshotResolved: true,
+        paintedCellCount: 0,
+        handleCaughtUp: false,
+      }),
+      true,
+    );
+    // Pinned-snapshot path still resolving: never blank under it.
+    assert.equal(
+      shouldDisplayEmptyLiveNotebook({
+        snapshotResolved: false,
+        paintedCellCount: 0,
+        handleCaughtUp: true,
+      }),
+      false,
+    );
+  });
+
+  it("treats handles without the caught-up export (or a throwing one) as not caught up", () => {
+    assert.equal(cloudNotebookHandleCaughtUp({}), false);
+    assert.equal(
+      cloudNotebookHandleCaughtUp({
+        notebook_doc_caught_up: () => {
+          throw new Error("freed handle");
+        },
+      }),
+      false,
+    );
+    assert.equal(cloudNotebookHandleCaughtUp({ notebook_doc_caught_up: () => true }), true);
+  });
+
+  // Session wiring pins (the hook cannot run under node). Count-based:
+  // BOTH zero-cell checkpoints must route through the displacement policy,
+  // the caught-up kick must exist, and the changeset tail must never
+  // relabel paint-origin content as live.
+  const sessionSource = readFileSync(
+    new URL("../viewer/cloud-viewer-session.ts", import.meta.url),
+    "utf8",
+  );
+
+  it("routes both zero-cell checkpoints through the displacement policy", () => {
+    assert.ok(
+      (sessionSource.match(/mayShowEmptyLiveNotebook\(liveRuntime\)/g) ?? []).length >= 2,
+      "both rawCellCount === 0 checkpoints must consult mayShowEmptyLiveNotebook",
+    );
+    assert.match(sessionSource, /shouldDisplayEmptyLiveNotebook\(\{/);
+  });
+
+  it("kicks one full materialization when the doc first catches up to the room", () => {
+    assert.match(
+      sessionSource,
+      /notebookSyncApplied\$\.subscribe\(\(\) => \{\s*if \(caughtUpMaterializeKicked\) return;\s*if \(!cloudNotebookHandleCaughtUp\(liveRuntime\.handle\)\) return;\s*caughtUpMaterializeKicked = true;\s*materializeLiveCellsSafely\(liveRuntime\);/,
+    );
+  });
+
+  it("never relabels paint-origin content as live in the changeset tail", () => {
+    assert.match(
+      sessionSource,
+      /if \(paintOriginRef\.current\) \{[\s\S]*?return;\s*\}\s*liveMaterializedRef\.current = true;\s*setStatus\(\{\s*kind: "ready",\s*message: `Rendering \$\{currentCellCount\} cells from the live notebook room\.`/,
     );
   });
 });
