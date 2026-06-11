@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import { type BlobResolver, type CommChanges } from "runtimed";
+import {
+  IndexedDbStorageAdapter,
+  NotebookDocPersistence,
+  clearPersistedNotebookDoc,
+  loadPersistedNotebookDoc,
+  type BlobResolver,
+  type CommChanges,
+} from "runtimed";
 import {
   applyWidgetCommBroadcastToStore,
   applyWidgetCommChangesToStore,
@@ -32,6 +39,7 @@ import {
 import { materializeCloudNotebookView } from "./cloud-view-model";
 import { CloudLivePresenceStore } from "./live-presence";
 import {
+  cloudPrincipalFromActorLabel,
   connectCloudSyncRuntime,
   isRecoverableCloudFrameRejection,
   type CloudSyncRuntime,
@@ -369,6 +377,28 @@ export function useCloudViewerSession({
     let livePresenceStore: CloudLivePresenceStore | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    // Local-first persistence is fail-open: no IndexedDB (private mode,
+    // SSR) means no adapter and the session runs exactly as before.
+    const persistenceAdapter = IndexedDbStorageAdapter.create();
+    let notebookPersistence: NotebookDocPersistence | null = null;
+    const persistenceSeed = persistenceAdapter
+      ? {
+          loadPersisted: () => loadPersistedNotebookDoc(persistenceAdapter, config.notebookId),
+          clear: () => clearPersistedNotebookDoc(persistenceAdapter, config.notebookId),
+        }
+      : undefined;
+    // Shrink the tab-kill loss window: commit pending persistence state
+    // when the page hides or unloads.
+    const flushPersistence = () => {
+      void notebookPersistence?.flushNow();
+    };
+    const flushPersistenceWhenHidden = () => {
+      if (document.visibilityState === "hidden") {
+        flushPersistence();
+      }
+    };
+    window.addEventListener("pagehide", flushPersistence);
+    document.addEventListener("visibilitychange", flushPersistenceWhenHidden);
     const installCloudWidgetCommWriter = (liveRuntime: CloudSyncRuntime) => {
       setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
         if (liveRuntimeRef.current !== liveRuntime) return;
@@ -385,6 +415,12 @@ export function useCloudViewerSession({
       if (!liveRuntime) return;
       liveRuntimeRef.current = null;
       setCrdtCommWriter(null);
+      // Capture unsaved persistence state before the handle is freed —
+      // flushNow reads the snapshot bytes synchronously, and dispose()
+      // guarantees no later capture touches the freed handle.
+      flushPersistence();
+      notebookPersistence?.dispose();
+      notebookPersistence = null;
       disposeCloudSyncRuntime(liveRuntime);
     };
     const scheduleReconnect = (reason: Error) => {
@@ -532,6 +568,7 @@ export function useCloudViewerSession({
         auth: resolveSyncAuth
           ? await resolveSyncAuth(sessionId)
           : cloudSyncAuthFromPrototypeAuthState(authState),
+        persistence: persistenceSeed,
         onDisconnect: scheduleReconnect,
         onControl: (message) => {
           if (disposed) return;
@@ -569,6 +606,19 @@ export function useCloudViewerSession({
         }
         liveRuntimeRef.current = liveRuntime;
         installCloudWidgetCommWriter(liveRuntime);
+        if (persistenceAdapter) {
+          // Snapshot the raw NotebookHandle (full NotebookDoc bytes) on
+          // every doc change; the controller throttles and never throws
+          // into the session.
+          notebookPersistence = new NotebookDocPersistence({
+            adapter: persistenceAdapter,
+            notebookId: config.notebookId,
+            principal: cloudPrincipalFromActorLabel(liveRuntime.actorLabel),
+            changes$: liveRuntime.engine.notebookDocChanged$,
+            getSaveBytes: () => liveRuntime.handle.save(),
+            getHeadsHex: () => liveRuntime.handle.get_heads_hex(),
+          });
+        }
         const stopWidgetLiveRuntimeDiagnostics =
           installCloudWidgetLiveRuntimeDiagnostics(liveRuntime);
         setConnectionScope(liveRuntime.connectionScope);
@@ -669,6 +719,8 @@ export function useCloudViewerSession({
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
       }
+      window.removeEventListener("pagehide", flushPersistence);
+      document.removeEventListener("visibilitychange", flushPersistenceWhenHidden);
       materializeLiveRuntimeRef.current = null;
       disposeCurrentRuntime();
       setCrdtCommWriter(null);

@@ -1,12 +1,14 @@
 import { BehaviorSubject, type Observable } from "rxjs";
 import {
   SyncEngine,
+  splitNotebookActorPrincipalOperator,
   type ConnectionStatus,
   type FrameTypeValue,
   type NotebookRequest,
   type NotebookRequestOptions,
   type NotebookResponse,
   type NotebookTransport,
+  type PersistedNotebookDoc,
   type SyncableHandle,
   type NotebookInteractionTarget,
 } from "runtimed";
@@ -24,6 +26,7 @@ import {
   encodeHeartbeatPresenceAfterInit,
   encodeInteractionPresenceAfterInit,
   encodeSelectionPresenceAfterInit,
+  loadNotebookHandleFromBytes,
   type NotebookHandle,
 } from "./runtimed-wasm-client";
 
@@ -52,8 +55,17 @@ export interface CloudSyncConnectOptions {
   runtimedWasmPath: string;
   sessionId: string;
   auth: CloudSyncAuth;
+  /** Locally persisted NotebookDoc seed; omitted when storage is unavailable. */
+  persistence?: CloudSyncPersistenceSeed;
   onControl?: (message: SessionControlMessage) => void;
   onDisconnect?: (reason: Error) => void;
+}
+
+export interface CloudSyncPersistenceSeed {
+  /** Read the persisted NotebookDoc record for this notebook, if any. */
+  loadPersisted: () => Promise<PersistedNotebookDoc | undefined>;
+  /** Discard the persisted record (principal mismatch, corrupt bytes). */
+  clear: () => Promise<void>;
 }
 
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
@@ -89,6 +101,7 @@ export async function connectCloudSyncRuntime({
   runtimedWasmPath,
   sessionId,
   auth,
+  persistence,
   onControl,
   onDisconnect,
 }: CloudSyncConnectOptions): Promise<CloudSyncRuntime> {
@@ -100,11 +113,16 @@ export async function connectCloudSyncRuntime({
       LIVE_SYNC_READY_TIMEOUT_MS,
       `notebook cloud WebSocket did not become ready within ${LIVE_SYNC_READY_TIMEOUT_MS}ms`,
     );
-    const handle = await createBootstrapNotebookHandle(
-      ready.actor_label,
-      new URL(runtimedWasmModulePath, location.href),
-      new URL(runtimedWasmPath, location.href),
-    );
+    const wasmModuleUrl = new URL(runtimedWasmModulePath, location.href);
+    const wasmUrl = new URL(runtimedWasmPath, location.href);
+    const handle = await resolveCloudNotebookHandle({
+      actorLabel: ready.actor_label,
+      persistence,
+      createBootstrap: () =>
+        createBootstrapNotebookHandle(ready.actor_label, wasmModuleUrl, wasmUrl),
+      loadFromBytes: (bytes) =>
+        loadNotebookHandleFromBytes(bytes, ready.actor_label, wasmModuleUrl, wasmUrl),
+    });
     const syncHandle = syncableCloudHandle(handle);
     const peerLabel = cloudRoomReadyPeerLabel(ready);
     const heartbeatPeerId = ready.peer_id;
@@ -201,6 +219,91 @@ export function startCloudBootstrapSync(
   // changes apply locally; the room host rejects any viewer-authored changes.
   engine.resetForBootstrap();
   engine.flush();
+}
+
+/**
+ * The connection's authenticated principal, derived from the
+ * server-assigned actor label.
+ *
+ * `cloud_room_ready.actor_label` is `${principal}/${operator}` and the
+ * worker rewrites the principal segment to the authenticated principal on
+ * every connection (`rewriteActorLabelPrincipal` in src/identity.ts), so
+ * the segment before the first "/" is the authoritative principal. The
+ * other ready fields (identity_provider, principal_namespace,
+ * display_name, email) describe the principal but never carry its full
+ * value.
+ */
+export function cloudPrincipalFromActorLabel(actorLabel: string): string {
+  const [principal] = splitNotebookActorPrincipalOperator(actorLabel);
+  return principal;
+}
+
+/**
+ * Choose the initial NotebookHandle for a live cloud session: seed from
+ * locally persisted NotebookDoc bytes when their authoring principal
+ * matches the connection's, else create a bootstrap skeleton.
+ *
+ * A seeded doc and the room host share the frozen genesis, so the normal
+ * `startCloudBootstrapSync` exchange converges by sending only the delta —
+ * offline edits captured in the persisted bytes flow to the room as
+ * ordinary sync.
+ *
+ * Records that cannot be verified (missing/corrupt meta) or whose
+ * principal mismatches are cleared — the room's actor-principal
+ * authorization would reject their replayed changes on every reconnect,
+ * looping forever. Corrupt bytes (`load()` throwing) likewise clear and
+ * fall back to bootstrap. Storage read failures fail open to bootstrap
+ * without clearing.
+ */
+export async function resolveCloudNotebookHandle<Handle>({
+  actorLabel,
+  persistence,
+  createBootstrap,
+  loadFromBytes,
+}: {
+  actorLabel: string;
+  persistence?: CloudSyncPersistenceSeed;
+  createBootstrap: () => Promise<Handle>;
+  loadFromBytes: (bytes: Uint8Array) => Promise<Handle>;
+}): Promise<Handle> {
+  if (!persistence) {
+    return createBootstrap();
+  }
+
+  let persisted: PersistedNotebookDoc | undefined;
+  try {
+    persisted = await persistence.loadPersisted();
+  } catch (error) {
+    console.warn("[notebook-cloud] persisted NotebookDoc read failed; bootstrapping", error);
+    return createBootstrap();
+  }
+  if (!persisted) {
+    return createBootstrap();
+  }
+
+  if (!persisted.meta || persisted.meta.principal !== cloudPrincipalFromActorLabel(actorLabel)) {
+    await clearPersistedSeed(persistence);
+    return createBootstrap();
+  }
+
+  try {
+    return await loadFromBytes(persisted.bytes);
+  } catch (error) {
+    console.warn(
+      "[notebook-cloud] persisted NotebookDoc bytes failed to load; clearing and bootstrapping",
+      error,
+    );
+    await clearPersistedSeed(persistence);
+    return createBootstrap();
+  }
+}
+
+async function clearPersistedSeed(persistence: CloudSyncPersistenceSeed): Promise<void> {
+  try {
+    await persistence.clear();
+  } catch (error) {
+    console.warn("[notebook-cloud] failed to clear persisted NotebookDoc record", error);
+  }
 }
 
 export function isRecoverableCloudFrameRejection(message: SessionControlMessage): boolean {

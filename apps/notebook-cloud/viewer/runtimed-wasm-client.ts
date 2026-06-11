@@ -53,6 +53,27 @@ export async function createBootstrapNotebookHandle(
   return module.NotebookHandle.create_bootstrap(actorLabel);
 }
 
+export async function loadNotebookHandleFromBytes(
+  notebookBytes: Uint8Array,
+  actorLabel: string,
+  modulePath: string | URL,
+  moduleOrPath: WasmModuleOrPath,
+): Promise<NotebookHandle> {
+  const module = await initializeRuntimedWasmClient(modulePath, moduleOrPath);
+  const handle = module.NotebookHandle.load(notebookBytes);
+  try {
+    // load() restores NotebookDoc bytes only (state/comms docs start empty)
+    // and leaves a random actor — the server-assigned label must be set
+    // before any authoring (actor labels are never reused across doc
+    // instances; the room mints a fresh one per connection).
+    handle.set_actor(actorLabel);
+  } catch (error) {
+    handle.free();
+    throw error;
+  }
+  return handle;
+}
+
 export async function loadSnapshotPairHandle(
   notebookBytes: Uint8Array,
   runtimeStateBytes: Uint8Array,
