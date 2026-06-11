@@ -408,6 +408,25 @@ export class SyncEngine {
    */
   readonly initialSyncComplete$: Observable<void>;
 
+  /**
+   * Fires whenever the notebook CRDT document has changed.
+   *
+   * Emitted from two sources:
+   * - the `sync_applied` pipeline when `changed=true` (remote changes), and
+   * - the outbound flush path whenever `flush_local_changes()` yields bytes
+   *   (local changes). Emission happens on the flush *attempt*, regardless
+   *   of delivery success — `cancel_last_flush()` rolls back sync-state
+   *   bookkeeping, not the document, and offline flush attempts are exactly
+   *   the ones persistence must capture.
+   *
+   * Persistence consumers should throttle this and call `handle.save()` to
+   * snapshot the `NotebookDoc` bytes for local storage.
+   *
+   * Note: only `NotebookDoc` bytes should be persisted — `RuntimeStateDoc` is
+   * daemon-authoritative and must not be stored locally.
+   */
+  readonly notebookDocChanged$: Observable<void>;
+
   // Backing subjects for public observables
   private readonly _cellChanges$ = new Subject<CellChangeset | null>();
   private readonly _broadcasts$ = new Subject<unknown>();
@@ -423,6 +442,7 @@ export class SyncEngine {
     removed_ids: string[];
   }>();
   private readonly _executionViewChanges$ = new Subject<ExecutionViewChangeset>();
+  private readonly _notebookDocChanged$ = new Subject<void>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -444,6 +464,7 @@ export class SyncEngine {
     this.commChanges$ = this._commChanges$.asObservable();
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
     this.executionViewChanges$ = this._executionViewChanges$.asObservable();
+    this.notebookDocChanged$ = this._notebookDocChanged$.asObservable();
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
@@ -598,6 +619,7 @@ export class SyncEngine {
                 );
               }
               materialize$.next(cs ?? null);
+              this._notebookDocChanged$.next();
             }
             this.emitExecutionViewChanges(e.execution_view_changeset);
             return EMPTY;
@@ -1121,6 +1143,10 @@ export class SyncEngine {
 
     const msg = handle.flush_local_changes();
     if (msg) {
+      // Local changes exist — notify persistence on the flush attempt
+      // regardless of delivery outcome (cancel_last_flush rolls back sync
+      // bookkeeping, not the doc).
+      this._notebookDocChanged$.next();
       this.opts.logger.debug(`[sync-engine] flushing sync message (${msg.byteLength}B)`);
       const done = this.awaitFrameDelivery(
         this.opts.transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg),
@@ -1199,6 +1225,9 @@ export class SyncEngine {
     // Flush any remaining notebook doc changes (may be none if debounce got them).
     const msg = handle.flush_local_changes();
     if (msg) {
+      // Same persistence notification contract as flush(): emit on the
+      // attempt, before delivery resolves.
+      this._notebookDocChanged$.next();
       this.opts.logger.debug(`[sync-engine] flushAndWait: sending ${msg.byteLength}B sync message`);
       const delivered = await this.awaitFrameDelivery(
         this.opts.transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg),
