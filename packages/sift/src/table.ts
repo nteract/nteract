@@ -127,6 +127,10 @@ export type TableEngineOptions = {
   onChange?: (state: TableEngineState) => void;
   /** Optional control rendered in the stats/footer bar before built-in buttons. */
   footerControl?: HTMLElement;
+  /** Whether the table is mounted before all rows are loaded. */
+  streaming?: boolean;
+  /** Logical total row count when streaming/sampled data has loaded fewer rows. */
+  streamingTotalRows?: number | null;
 };
 
 export type ReplaceDataOptions = {
@@ -138,6 +142,8 @@ export type ReplaceDataOptions = {
 
 export type TableEngine = {
   onBatchAppended(): void;
+  /** Signal that more batches may arrive and row counts are provisional. */
+  setStreamingActive(totalRows?: number | null): void;
   /** Signal that all batches have been loaded and streaming is complete. */
   setStreamingDone(): void;
   replaceData(newData: TableData, options?: ReplaceDataOptions): void;
@@ -694,8 +700,12 @@ export function createTable(
   container.setAttribute("aria-rowcount", String(rowCount));
   container.setAttribute("aria-colcount", String(columns.length));
 
-  // Streaming state — progress bar is appended after stats bar below
-  let streaming = true;
+  // Streaming state — progress bar is appended after stats bar below when active.
+  let streaming = options?.streaming ?? false;
+  let streamingTotalRows =
+    typeof options?.streamingTotalRows === "number" && Number.isFinite(options.streamingTotalRows)
+      ? options.streamingTotalRows
+      : null;
   const progressBar = document.createElement("div");
   progressBar.className = "sift-progress-bar";
   progressBar.innerHTML = '<div class="sift-progress-bar-fill"></div>';
@@ -943,9 +953,11 @@ export function createTable(
 
   // Status indicator (streaming dot → checkmark)
   const statusIndicator = document.createElement("span");
-  statusIndicator.className = "sift-status-indicator sift-status-streaming";
-  statusIndicator.textContent = "●";
-  statusIndicator.title = "Loading data…";
+  statusIndicator.className = streaming
+    ? "sift-status-indicator sift-status-streaming"
+    : "sift-status-indicator sift-status-ready";
+  statusIndicator.textContent = streaming ? "●" : "✓";
+  statusIndicator.title = streaming ? "Loading data…" : "All data loaded";
 
   const statRows = makeStatSpan("sift-stat-rows");
   // Debug stats (DOM rows, FPS) — hidden by default
@@ -1083,10 +1095,22 @@ export function createTable(
   const rowsOdometer = createOdometer(statRows);
 
   function updateRowCountDisplay() {
+    const hasStreamingTotal =
+      streaming && streamingTotalRows !== null && streamingTotalRows > rowCount;
     if (hasActiveFilters()) {
-      rowsOdometer.update(`${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`);
+      rowsOdometer.update(
+        streaming
+          ? `${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows loaded`
+          : `${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`,
+      );
     } else {
-      rowsOdometer.update(`${rowCount.toLocaleString()} rows`);
+      rowsOdometer.update(
+        hasStreamingTotal
+          ? `${rowCount.toLocaleString()} of ${streamingTotalRows.toLocaleString()} rows loaded`
+          : streaming
+            ? `${rowCount.toLocaleString()} rows loaded`
+            : `${rowCount.toLocaleString()} rows`,
+      );
     }
     // Keep ARIA row count in sync
     container.setAttribute("aria-rowcount", String(filteredCount + 1)); // +1 for header row
@@ -1160,8 +1184,10 @@ export function createTable(
   );
   container.appendChild(statsEl);
 
-  // Streaming progress bar — at the bottom of the table, below the stats bar
-  container.appendChild(progressBar);
+  // Streaming progress bar — at the bottom of the table, below the stats bar.
+  if (streaming) {
+    container.appendChild(progressBar);
+  }
 
   // Expand columns to fill container width when there are few columns
   {
@@ -2162,9 +2188,29 @@ export function createTable(
     scheduleRender();
   }
 
+  function setStreamingActive(totalRows?: number | null) {
+    streamingTotalRows =
+      typeof totalRows === "number" && Number.isFinite(totalRows) ? totalRows : streamingTotalRows;
+    if (streaming) {
+      updateRowCountDisplay();
+      return;
+    }
+    streaming = true;
+    progressBar.classList.remove("sift-progress-bar-done");
+    if (!progressBar.isConnected) {
+      container.appendChild(progressBar);
+    }
+    statusIndicator.classList.remove("sift-status-ready");
+    statusIndicator.classList.add("sift-status-streaming");
+    statusIndicator.textContent = "●";
+    statusIndicator.title = "Loading data…";
+    updateRowCountDisplay();
+  }
+
   function setStreamingDone() {
     if (!streaming) return;
     streaming = false;
+    streamingTotalRows = null;
     progressBar.classList.add("sift-progress-bar-done");
     updateRowCountDisplay();
     // Switch status indicator from streaming dot to checkmark
@@ -2910,6 +2956,7 @@ export function createTable(
 
   const api: TableEngine = {
     onBatchAppended,
+    setStreamingActive,
     setStreamingDone,
     replaceData,
     destroy,

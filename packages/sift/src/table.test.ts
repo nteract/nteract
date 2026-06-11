@@ -177,7 +177,30 @@ describe("createTable", () => {
     it("shows row count in stats bar", async () => {
       await flushRAF();
       const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
-      expect(stats?.dataset.value).toContain("50");
+      expect(stats?.dataset.value).toBe("50 rows");
+    });
+
+    it("labels streaming row counts as loaded until streaming completes", async () => {
+      const streamingContainer = document.createElement("div");
+      document.body.appendChild(streamingContainer);
+      const streamingEngine = createTable(streamingContainer, makeTableData(rows), {
+        streaming: true,
+      });
+
+      const stats = streamingContainer.querySelector(".sift-stat-rows") as HTMLElement;
+      expect(stats?.dataset.value).toBe("50 rows loaded");
+
+      streamingEngine.setStreamingDone();
+      expect(stats?.dataset.value).toBe("50 rows");
+
+      streamingEngine.setStreamingActive();
+      expect(stats?.dataset.value).toBe("50 rows loaded");
+
+      streamingEngine.setStreamingActive(75);
+      expect(stats?.dataset.value).toBe("50 of 75 rows loaded");
+
+      streamingEngine.destroy();
+      streamingContainer.remove();
     });
 
     it("does not let long numeric values expand row height", async () => {

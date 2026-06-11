@@ -45,7 +45,10 @@ interface RendererArrowStreamManifestChunk {
 }
 
 interface RendererArrowStreamManifest {
+  row_count?: unknown;
+  summary?: unknown;
   chunks?: unknown;
+  complete?: unknown;
 }
 
 // --- WASM configuration ---
@@ -210,9 +213,23 @@ function tableManifestForData(data: unknown): ArrowStreamManifest | undefined {
     });
   }
   if (chunks.length === 0) return undefined;
+  const summary = isRecord(manifest.summary)
+    ? {
+        total_rows:
+          typeof manifest.summary.total_rows === "number" ? manifest.summary.total_rows : undefined,
+        included_rows:
+          typeof manifest.summary.included_rows === "number"
+            ? manifest.summary.included_rows
+            : undefined,
+        sampled:
+          typeof manifest.summary.sampled === "boolean" ? manifest.summary.sampled : undefined,
+      }
+    : undefined;
   return {
+    row_count: typeof manifest.row_count === "number" ? manifest.row_count : undefined,
+    summary,
     chunks,
-    complete: typeof data.complete === "boolean" ? data.complete : undefined,
+    complete: typeof manifest.complete === "boolean" ? manifest.complete : undefined,
   };
 }
 

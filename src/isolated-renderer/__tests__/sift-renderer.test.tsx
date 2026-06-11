@@ -10,12 +10,16 @@ import { install } from "../sift-renderer";
 
 const siftMocks = vi.hoisted(() => ({
   setWasmUrl: vi.fn(),
+  SiftTable: vi.fn(),
 }));
 
 vi.mock("@nteract/sift", () => ({
   setWasmUrl: siftMocks.setWasmUrl,
   SiftFocusStatus: () => null,
-  SiftTable: () => <div data-testid="sift-table" />,
+  SiftTable: (props: unknown) => {
+    siftMocks.SiftTable(props);
+    return <div data-testid="sift-table" />;
+  },
 }));
 
 describe("Sift renderer plugin", () => {
@@ -167,5 +171,52 @@ describe("Sift renderer plugin", () => {
     } finally {
       HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
     }
+  });
+
+  it("passes Arrow stream manifest row hints through to Sift", () => {
+    let Renderer: ComponentType<RendererProps> | undefined;
+
+    install({
+      register: (_mimeTypes, component) => {
+        Renderer = component;
+      },
+      registerPattern: vi.fn(),
+      getHostContext: () => undefined,
+      subscribeHostContext: () => () => undefined,
+    });
+
+    expect(Renderer).toBeDefined();
+    render(
+      <Renderer
+        data={{
+          summary: {
+            included_rows: 20_000,
+            total_rows: 27_817,
+            sampled: true,
+          },
+          chunks: [{ url: "https://notebooks.example/blob/chunk-0", row_count: 20_000 }],
+          complete: true,
+        }}
+        mimeType="application/vnd.nteract.arrow-stream-manifest+json"
+      />,
+    );
+
+    expect(siftMocks.SiftTable).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        source: {
+          kind: "arrow-stream-manifest",
+          manifest: {
+            summary: {
+              included_rows: 20_000,
+              total_rows: 27_817,
+              sampled: true,
+            },
+            row_count: undefined,
+            chunks: [{ url: "https://notebooks.example/blob/chunk-0", row_count: 20_000 }],
+            complete: true,
+          },
+        },
+      }),
+    );
   });
 });

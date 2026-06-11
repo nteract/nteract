@@ -45,6 +45,12 @@ export type ArrowStreamManifestChunk = {
 };
 
 export type ArrowStreamManifest = {
+  row_count?: number;
+  summary?: {
+    total_rows?: number;
+    included_rows?: number;
+    sampled?: boolean;
+  };
   chunks: ArrowStreamManifestChunk[];
   complete?: boolean;
 };
@@ -91,10 +97,39 @@ export type SiftTableProps = {
 function arrowStreamManifestKey(manifest: ArrowStreamManifest | undefined): string | null {
   if (!manifest) return null;
   const complete = manifest.complete === false ? "open" : "complete";
+  const rowCount = manifest.row_count ?? "";
+  const summaryRows = `${manifest.summary?.included_rows ?? ""}\u0001${manifest.summary?.total_rows ?? ""}\u0001${manifest.summary?.sampled ?? ""}`;
   const chunks = manifest.chunks
     .map((chunk) => `${chunk.url}\u0001${chunk.row_count ?? ""}`)
     .join("\u0000");
-  return `${complete}\u0002${chunks}`;
+  return `${complete}\u0001${rowCount}\u0001${summaryRows}\u0002${chunks}`;
+}
+
+function finiteNonNegativeRowCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function expectedLoadedRowCount(manifest: ArrowStreamManifest): number | null {
+  const rowCount = finiteNonNegativeRowCount(manifest.row_count);
+  if (rowCount !== null) {
+    return rowCount;
+  }
+  const includedRows = finiteNonNegativeRowCount(manifest.summary?.included_rows);
+  if (includedRows !== null) {
+    return includedRows;
+  }
+  let total = 0;
+  let sawChunkCount = false;
+  for (const chunk of manifest.chunks) {
+    if (typeof chunk.row_count !== "number" || !Number.isFinite(chunk.row_count)) continue;
+    total += chunk.row_count;
+    sawChunkCount = true;
+  }
+  return sawChunkCount ? total : null;
+}
+
+function manifestTotalRowCount(manifest: ArrowStreamManifest): number | null {
+  return finiteNonNegativeRowCount(manifest.summary?.total_rows);
 }
 
 // --- Format detection ---
@@ -372,6 +407,7 @@ export function SiftTable({
 
     if (engineRef.current) {
       engineRef.current.replaceData(dataSource);
+      engineRef.current.setStreamingDone();
       emitLoadMilestone(startedAt, {
         source: "table-data",
         phase: "engine-data-replaced",
@@ -388,6 +424,7 @@ export function SiftTable({
       onChange: stableOnChange,
       footerControl: getFooterControlElement(),
     });
+    engineRef.current.setStreamingDone();
     emitLoadMilestone(startedAt, {
       source: "table-data",
       phase: "engine-mounted",
@@ -407,6 +444,7 @@ export function SiftTable({
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
+        engineRef.current.setStreamingActive();
         engineRef.current.replaceData(tableData);
         disposePendingStore = null;
         return;
@@ -416,6 +454,7 @@ export function SiftTable({
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
         footerControl: getFooterControlElement(),
+        streaming: true,
       });
       disposePendingStore = null;
     }
@@ -438,8 +477,11 @@ export function SiftTable({
     async function loadFromManifest() {
       setStatus("loading");
       setError(null);
+      engineRef.current?.setStreamingActive();
 
       const chunks = manifest.chunks;
+      const expectedRowCount = expectedLoadedRowCount(manifest);
+      const totalRowCount = manifestTotalRowCount(manifest);
       if (chunks.length === 0) {
         throw new Error("Arrow stream manifest has no chunks");
       }
@@ -520,6 +562,7 @@ export function SiftTable({
 
       if (cancelled) return;
       mountEngine(tableData);
+      engineRef.current?.setStreamingActive(totalRowCount);
       emitLoadMilestone(startedAt, {
         source: "arrow-stream-manifest",
         phase: "engine-mounted",
@@ -555,6 +598,35 @@ export function SiftTable({
       }
 
       if (manifest.complete !== false) {
+        tableData.rowCount = mod.num_rows(handle);
+        if (expectedRowCount !== null && tableData.rowCount !== expectedRowCount) {
+          updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+          engineRef.current?.setStreamingActive(totalRowCount ?? expectedRowCount);
+          engineRef.current?.onBatchAppended();
+          emitLoadMilestone(startedAt, {
+            source: "arrow-stream-manifest",
+            phase: "row-count-mismatch",
+            chunkCount: chunks.length,
+            rowCount: tableData.rowCount,
+          });
+          console.warn(
+            `[sift] Arrow stream manifest expected ${expectedRowCount.toLocaleString()} rows, ` +
+              `but WASM loaded ${tableData.rowCount.toLocaleString()}. Leaving table provisional.`,
+          );
+          return;
+        }
+        if (totalRowCount !== null && totalRowCount > tableData.rowCount) {
+          updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+          engineRef.current?.setStreamingActive(totalRowCount);
+          engineRef.current?.onBatchAppended();
+          emitLoadMilestone(startedAt, {
+            source: "arrow-stream-manifest",
+            phase: "partial-row-set",
+            chunkCount: chunks.length,
+            rowCount: tableData.rowCount,
+          });
+          return;
+        }
         mod.finish_arrow_stream_store(handle);
         engineRef.current?.setStreamingDone();
         emitLoadMilestone(startedAt, {
@@ -775,6 +847,7 @@ export function SiftTable({
     async function loadFromUrl() {
       setStatus("loading");
       setError(null);
+      engineRef.current?.setStreamingActive();
       emitLoadMilestone(startedAt, { source: "url", phase: "load-start" });
 
       const response = await fetch(sourceUrl);
