@@ -152,7 +152,14 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /authControls=\{[\s\S]*shouldShowCloudHeaderSignIn\(authState, \{[\s\S]*hasAppSession: Boolean\(appSessionStatus\.session\),[\s\S]*\}\) \? \(/,
   );
   assert.match(sourceText, /authControls=\{[\s\S]*<CloudNotebookSignInButton/);
-  assert.match(sourceText, /identityControls=\{null\}/);
+  // The connection/identity slot is filled by the shared quiet component:
+  // avatar + connectivity dot, driven by the stable status bridge. It must
+  // never regress into a text pill or a second status label surface.
+  assert.match(
+    sourceText,
+    /identityControls=\{[\s\S]*?<NotebookConnectionIdentity[\s\S]*?connectionStatus\$=\{connectionStatus\$\}/,
+  );
+  assert.doesNotMatch(sourceText, /identityControls=\{null\}/);
   assert.match(sourceText, /useState\(initialCloudRailCollapsed\)/);
   assert.match(sourceText, /function initialCloudRailCollapsed/);
   assert.match(sourceText, /function initialCloudRailCollapsed\(\): boolean \{[\s\S]*return true;/);

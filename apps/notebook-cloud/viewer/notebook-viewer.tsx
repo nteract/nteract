@@ -13,6 +13,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import {
+  NotebookConnectionIdentity,
   NotebookDocumentToolbar,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
@@ -193,6 +194,7 @@ export function NotebookViewer({
     connectionError,
     connectionPeerId,
     connectionScope,
+    connectionStatus$,
     liveMaterializedRef,
     liveRuntimeRef,
     notebookLanguageRef,
@@ -845,7 +847,15 @@ export function NotebookViewer({
           onRequestEditAccess={requestCloudEditAccess}
         />
       }
-      identityControls={null}
+      identityControls={
+        // Connection/identity slot: self-identity avatar + connectivity dot
+        // (the stable bridge survives transport replacement; the dot keeps
+        // frozen runtime chrome interpretable while reconnecting).
+        <NotebookConnectionIdentity
+          capabilities={shellCapabilities}
+          connectionStatus$={connectionStatus$}
+        />
+      }
       reserveCommandToolbar={editAccessPending}
       commandToolbar={{
         runtime: toolbarRuntime,
