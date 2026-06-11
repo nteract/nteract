@@ -284,6 +284,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
       routeNotebookWorkstationAttachment(request, env, params.notebookId),
   },
   {
+    match: routePath("/api/n/:notebookId/runtime-state-repair", { trailingSlash: "optional" }),
+    methods: ["POST"],
+    handler: ({ params }, request, env) =>
+      routeNotebookRuntimeStateRepair(request, env, params.notebookId),
+  },
+  {
     match: routePath("/api/n/:notebookId/access-requests/:accessRequestId", {
       trailingSlash: "optional",
     }),
@@ -1138,6 +1144,66 @@ async function routeNotebookWorkstationAttachment(
     },
     202,
   );
+}
+
+async function routeNotebookRuntimeStateRepair(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
+  const identity = await authenticateAndAuthorizeOrAppSessionOrResponse(
+    request,
+    env,
+    notebookId,
+    "owner",
+  );
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  const payload = await readOptionalJsonObject(request, "runtime state repair body");
+  if (payload instanceof Response) {
+    return payload;
+  }
+  const reason = optionalBoundedStringField(payload?.reason, "reason", 240);
+  if (reason instanceof Response) {
+    return reason;
+  }
+  const force = payload?.force === true;
+
+  const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
+  const room = env.NOTEBOOK_ROOMS.get(id);
+  const response = await room.fetch(
+    new Request(
+      `https://notebook-room.internal/internal/n/${encodeURIComponent(
+        notebookId,
+      )}/runtime-state-repair`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          force,
+          reason: reason ?? "manual runtime state repair",
+        }),
+      },
+    ),
+  );
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = { error: "runtime state repair returned a non-JSON response" };
+  }
+  return json(body, response.status);
 }
 
 async function routeWorkstationAttachJobs(

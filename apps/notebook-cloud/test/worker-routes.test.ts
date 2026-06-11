@@ -2071,6 +2071,67 @@ describe("Worker artifact routes", () => {
     assert.equal(attachmentMessage, "Lab2 accepted the request and is starting compute.");
   });
 
+  it("lets notebook owners request a room-host runtime-state repair", async () => {
+    let repairRequest: Request | undefined;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            repairRequest = request;
+            return new Response(
+              JSON.stringify({
+                ok: true,
+                changed: true,
+                forced: false,
+                runtime_peer_count: 0,
+              }),
+              {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              },
+            );
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "repair-demo");
+    seedAcl(env, { notebookId: "repair-demo", subject: "user:dev:alice", scope: "owner" });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n/repair-demo/runtime-state-repair", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "desktop:a",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ reason: "manual repair: stale runtime", force: false }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      changed: true,
+      forced: false,
+      runtime_peer_count: 0,
+    });
+    assert.ok(repairRequest);
+    assert.equal(repairRequest.method, "POST");
+    assert.equal(
+      new URL(repairRequest.url).pathname,
+      "/internal/n/repair-demo/runtime-state-repair",
+    );
+    assert.deepEqual(await repairRequest.json(), {
+      force: false,
+      reason: "manual repair: stale runtime",
+    });
+  });
+
   it("does not let workstation owners update another principal's attach job", async () => {
     const env = fakeEnv();
     seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
