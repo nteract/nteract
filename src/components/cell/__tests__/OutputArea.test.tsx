@@ -7,6 +7,7 @@ import { OutputArea, type JupyterOutput } from "../OutputArea";
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let lastFrameMessageHandler: ((message: unknown) => void) | undefined;
+let lastFrameMouseDown: (() => void) | undefined;
 let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 let isolatedFrameMountCount = 0;
 let restoreMarkdownProjector: (() => void) | undefined;
@@ -49,6 +50,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
       forwardWheelBoundaryScroll?: boolean;
       hostContext?: unknown;
       onMessage?: (message: unknown) => void;
+      onMouseDown?: () => void;
       onMouseUp?: (params: { hasSelection?: boolean }) => void;
       scrollPassthrough?: boolean;
       onReady?: () => void;
@@ -60,6 +62,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
       forwardWheelBoundaryScroll,
       hostContext,
       onMessage,
+      onMouseDown,
       onMouseUp,
       scrollPassthrough,
       onReady,
@@ -84,6 +87,15 @@ vi.mock("@/components/isolated", async (importOriginal) => {
         }
       };
     }, [onMessage]);
+
+    React.useEffect(() => {
+      lastFrameMouseDown = onMouseDown;
+      return () => {
+        if (lastFrameMouseDown === onMouseDown) {
+          lastFrameMouseDown = undefined;
+        }
+      };
+    }, [onMouseDown]);
 
     React.useEffect(() => {
       lastFrameMouseUp = onMouseUp;
@@ -292,6 +304,7 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.searchNavigate.mockClear();
     mockFrameHandle.measureElement.mockClear();
     lastFrameMessageHandler = undefined;
+    lastFrameMouseDown = undefined;
     lastFrameMouseUp = undefined;
     isolatedFrameMountCount = 0;
     vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
@@ -641,7 +654,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
   });
 
-  it("aligns sift before engaging iframe scrolling and releases on Escape", () => {
+  it("engages sift iframe clicks without scrolling the notebook", () => {
     const scrollBy = vi.fn();
     Object.defineProperty(window, "scrollBy", {
       configurable: true,
@@ -669,7 +682,7 @@ describe("OutputArea iframe theme sync", () => {
 
     fireEvent.pointerDown(activationWell);
 
-    expect(scrollBy).toHaveBeenCalledWith({ top: 604, behavior: "auto" });
+    expect(scrollBy).not.toHaveBeenCalled();
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
@@ -685,13 +698,73 @@ describe("OutputArea iframe theme sync", () => {
     ).toBeInTheDocument();
   });
 
-  it("activates sift iframe scrolling from the magnetize cue", () => {
+  it("engages sift iframe mouse down without scrolling the notebook", () => {
+    const scrollBy = vi.fn();
+    Object.defineProperty(window, "scrollBy", {
+      configurable: true,
+      value: scrollBy,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
+
     const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
     const frame = getByTestId("isolated-frame");
     const activationWell = frame.parentElement as HTMLElement;
+    vi.spyOn(activationWell, "getBoundingClientRect").mockReturnValue({
+      top: 700,
+      bottom: 1420,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height: 720,
+      x: 0,
+      y: 700,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    act(() => {
+      lastFrameMouseDown?.();
+    });
+
+    expect(scrollBy).not.toHaveBeenCalled();
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Click inside the table to scroll" })).toBeNull();
+  });
+
+  it("aligns sift iframe scrolling from the magnetize cue", () => {
+    const scrollBy = vi.fn();
+    Object.defineProperty(window, "scrollBy", {
+      configurable: true,
+      value: scrollBy,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
+
+    const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+    vi.spyOn(activationWell, "getBoundingClientRect").mockReturnValue({
+      top: 700,
+      bottom: 1420,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height: 720,
+      x: 0,
+      y: 700,
+      toJSON: () => ({}),
+    } as DOMRect);
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Click inside the table to scroll" }));
 
+    expect(scrollBy).toHaveBeenCalledWith({ top: 604, behavior: "auto" });
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");

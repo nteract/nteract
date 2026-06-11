@@ -148,3 +148,52 @@ describe("histogram brushing", () => {
     }
   });
 });
+
+describe("category filter popover", () => {
+  it("focuses the search field without asking the browser to scroll", async () => {
+    const focusSpy = vi.spyOn(HTMLInputElement.prototype, "focus");
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    try {
+      await act(async () => {
+        renderColumnSummary(
+          container,
+          {
+            kind: "categorical",
+            uniqueCount: 3,
+            topCategories: [
+              { label: "core", count: 4, pct: 40 },
+              { label: "sift", count: 3, pct: 30 },
+              { label: "cloud", count: 3, pct: 30 },
+            ],
+            othersCount: 0,
+            othersPct: 0,
+            allCategories: [
+              { label: "core", count: 4, pct: 40 },
+              { label: "sift", count: 3, pct: 30 },
+              { label: "cloud", count: 3, pct: 30 },
+            ],
+            medianTextLength: 5,
+          },
+          180,
+        );
+      });
+
+      const trigger = container.querySelector<HTMLElement>(".sift-cat-summary-trigger");
+      expect(trigger).toBeTruthy();
+
+      await act(async () => {
+        trigger!.click();
+      });
+
+      expect(document.querySelector(".sift-cat-popover-search")).toBeTruthy();
+      expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+    } finally {
+      focusSpy.mockRestore();
+      unmountColumnSummary(container);
+      container.remove();
+      document.querySelector(".sift-cat-popover")?.remove();
+    }
+  });
+});
