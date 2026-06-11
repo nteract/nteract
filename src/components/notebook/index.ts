@@ -191,6 +191,8 @@ export {
   navigateNotebookOutlineItem,
   type NavigateNotebookOutlineItemOptions,
 } from "./outline-navigation";
+export { useActiveOutlineItemId, useOutlineSelection } from "./outline-interaction";
+export { useOutlineStatusLabel } from "./outline-status-label";
 export {
   getCellById,
   getCellIdsSnapshot,
