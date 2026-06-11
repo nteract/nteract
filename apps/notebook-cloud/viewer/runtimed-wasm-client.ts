@@ -4,6 +4,7 @@ import {
 } from "runtimed";
 import { setMarkdownProjectionProjector } from "../../../src/lib/markdown-projection";
 import type { NotebookHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import { asRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 
 type RuntimedWasmModule = typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
 type WasmModuleOrPath = string | URL | Request | Response | ArrayBuffer | WebAssembly.Module;
@@ -27,8 +28,26 @@ let fetchImpl: typeof fetch = (input, init) => fetch(input, init);
  * the blob-resolver shape with one extra rung for the heavier asset.
  * 404 is deliberately retryable: freshly deployed hashed assets propagate
  * eventually, exactly like fresh blobs.
+ *
+ * Bounds (accepted): the ladders are sequential (module, then binary) and
+ * each name tier runs its own ladder, so a fully-skewed page (hashed module
+ * AND hashed binary both falling back to stable) pays ~4.3s of sleeps plus
+ * up to ~10 round trips before a NotebookHandle exists. The healthy path
+ * pays zero sleeps. Each rung is also time-bounded (see
+ * RUNTIMED_WASM_RUNG_TIMEOUT_MS) so a black-holed request becomes a failed
+ * rung instead of wedging the shared init promise forever.
  */
 const RUNTIMED_WASM_RETRY_DELAYS_MS = [150, 500, 1500];
+
+/**
+ * Per-rung time bound. A stalled (slow-loris) attempt that never settles
+ * would otherwise park every caller — including retryLiveConnection, which
+ * awaits the same cached singleton promise — in a permanent loading state.
+ * fetch rungs also get an AbortSignal so the network request is actually
+ * cancelled; import() cannot be aborted, so its rung is abandoned via the
+ * same race and left to the module map.
+ */
+const RUNTIMED_WASM_RUNG_TIMEOUT_MS = 20_000;
 
 /**
  * Hashed deploys keep stable-name copies (`runtimed_wasm.js` /
@@ -36,6 +55,26 @@ const RUNTIMED_WASM_RETRY_DELAYS_MS = [150, 500, 1500];
  * a viewer holding a stale hashed URL across a deploy window can fall back.
  */
 const CONTENT_HASHED_RUNTIMED_ASSET_RE = /^(.+)\.[a-f0-9]{12,64}(\.(?:js|wasm))$/;
+
+/**
+ * True when the currently cached module was imported from the STABLE name
+ * after its hashed name failed. The module and binary must fall back as a
+ * PAIR: hashed wasm-bindgen glue against a stable binary (or vice versa)
+ * is exactly the silent missing-export skew class from PR #3416.
+ */
+let moduleLoadedFromStableFallback = false;
+
+/**
+ * Monotonic cache-buster for module import retries. Same-specifier
+ * import() retries are served from the browser module map — the HTML spec
+ * caches FAILED module fetches for the life of the page (whatwg/html#6768)
+ * and Chromium/WebKit conform — so rungs >= 1 would replay the pinned
+ * rejection without touching the network. A unique query per retry rung
+ * forces a fresh fetch; the module is side-effect-light glue, so a second
+ * evaluation under a different specifier is benign, and
+ * stableRuntimedAssetHref preserves queries on fallback.
+ */
+let moduleImportBusterSequence = 0;
 
 export async function initializeRuntimedWasmClient(
   modulePath: string | URL,
@@ -53,7 +92,14 @@ export async function initializeRuntimedWasmClient(
   initializedSource = source;
   initialized ??= loadRuntimedWasmModule(modulePath)
     .then(async (module) => {
-      await module.default({ module_or_path: await resolveRuntimedWasmBinary(moduleOrPath) });
+      const binary = await resolveRuntimedWasmBinary(moduleOrPath);
+      if (binary.usedStableFallback && !moduleLoadedFromStableFallback) {
+        // Couple the fallback decision: the binary fell back to its stable
+        // copy, so the (hashed) glue must follow or the pair can silently
+        // mix deploys (#3416's missing-export class).
+        module = await reloadModuleFromStablePair(module);
+      }
+      await module.default({ module_or_path: binary.value });
       setMarkdownProjectionProjector(module.project_markdown_json);
       resolvedModule = module;
       return module;
@@ -62,7 +108,7 @@ export async function initializeRuntimedWasmClient(
       initialized = undefined;
       initializedSource = undefined;
       resolvedModule = undefined;
-      throw error;
+      throw asRuntimedWasmAssetFailure(error);
     });
   return initialized;
 }
@@ -195,6 +241,7 @@ function loadRuntimedWasmModule(modulePath: string | URL): Promise<RuntimedWasmM
       if (loadedModule === pending) {
         loadedModule = undefined;
         loadedModuleSource = undefined;
+        moduleLoadedFromStableFallback = false;
       }
       throw error;
     });
@@ -205,7 +252,9 @@ function loadRuntimedWasmModule(modulePath: string | URL): Promise<RuntimedWasmM
 
 async function importRuntimedWasmModuleWithRecovery(href: string): Promise<RuntimedWasmModule> {
   try {
-    return await importRuntimedWasmModuleWithRetries(href);
+    const module = await importRuntimedWasmModuleWithRetries(href);
+    moduleLoadedFromStableFallback = false;
+    return module;
   } catch (error) {
     const stableHref = stableRuntimedAssetHref(href);
     if (!stableHref) throw error;
@@ -213,8 +262,41 @@ async function importRuntimedWasmModuleWithRecovery(href: string): Promise<Runti
       `[notebook-cloud] runtimed WASM module failed from ${href}; falling back to ${stableHref}`,
       error,
     );
-    return importRuntimedWasmModuleWithRetries(stableHref);
+    const module = await importRuntimedWasmModuleWithRetries(stableHref);
+    moduleLoadedFromStableFallback = true;
+    return module;
   }
+}
+
+/**
+ * The binary fell back to its stable copy while the cached module came
+ * from a hashed name: re-import the module from ITS stable name so the
+ * glue/binary pair stays deploy-consistent. No-op when the module name
+ * carries no hash (already stable — the pair is consistent).
+ */
+async function reloadModuleFromStablePair(module: RuntimedWasmModule): Promise<RuntimedWasmModule> {
+  const requestedHref = loadedModuleSource;
+  const stableHref = requestedHref ? stableRuntimedAssetHref(requestedHref) : null;
+  if (!stableHref) return module;
+  console.warn(
+    `[notebook-cloud] runtimed WASM binary fell back to stable; reloading module from ${stableHref} to keep the pair consistent`,
+  );
+  const pending = importRuntimedWasmModuleWithRetries(stableHref)
+    .then((stableModule) => {
+      moduleLoadedFromStableFallback = true;
+      return stableModule;
+    })
+    .catch((error: unknown) => {
+      if (loadedModule === pending) {
+        loadedModule = undefined;
+        loadedModuleSource = undefined;
+        moduleLoadedFromStableFallback = false;
+      }
+      throw error;
+    });
+  // Cache stays keyed on the REQUESTED href; only the resolution swaps.
+  loadedModule = pending;
+  return pending;
 }
 
 async function importRuntimedWasmModuleWithRetries(href: string): Promise<RuntimedWasmModule> {
@@ -224,9 +306,103 @@ async function importRuntimedWasmModuleWithRetries(href: string): Promise<Runtim
   // whole ladder applies.
   for (let attempt = 0; attempt <= RUNTIMED_WASM_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      return await importModule(href);
+      // Rungs >= 1 carry a unique ?retry= query: the module map pins failed
+      // fetches per specifier (see moduleImportBusterSequence), so a bare
+      // same-href retry would replay the cached rejection network-free.
+      return await withRungTimeout(
+        importModule(bustedModuleHref(href, attempt)),
+        `runtimed WASM module import (${href})`,
+      );
     } catch (error) {
       lastFailure = error;
+    }
+    const delay = RUNTIMED_WASM_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await sleep(delay);
+  }
+  throw lastFailure instanceof Error ? lastFailure : new Error(String(lastFailure));
+}
+
+function bustedModuleHref(href: string, attempt: number): string {
+  if (attempt === 0) return href;
+  const separator = href.includes("?") ? "&" : "?";
+  moduleImportBusterSequence += 1;
+  return `${href}${separator}retry=${moduleImportBusterSequence}`;
+}
+
+interface ResolvedRuntimedWasmBinary {
+  value: WasmModuleOrPath;
+  usedStableFallback: boolean;
+}
+
+/**
+ * Resolve the wasm-bindgen `module_or_path` input. URL-shaped inputs are
+ * fetched here (instead of inside wasm-bindgen's init) so the ladder and
+ * the hashed→stable fallback cover the binary exactly like the module;
+ * everything else (Response, ArrayBuffer, compiled module) passes through.
+ * When the module already fell back to its stable name, the hashed binary
+ * name is skipped outright — fallback decisions are coupled pairwise.
+ */
+async function resolveRuntimedWasmBinary(
+  moduleOrPath: WasmModuleOrPath,
+): Promise<ResolvedRuntimedWasmBinary> {
+  if (typeof moduleOrPath !== "string" && !(moduleOrPath instanceof URL)) {
+    return { value: moduleOrPath, usedStableFallback: false };
+  }
+  const href = typeof moduleOrPath === "string" ? moduleOrPath : moduleOrPath.href;
+  if (!isLadderFetchableHref(href)) {
+    // Non-network schemes (file:, data:, blob: in tests/embeddings) go
+    // straight to wasm-bindgen; the ladder exists for HTTP asset origins.
+    return { value: moduleOrPath, usedStableFallback: false };
+  }
+  const stableHref = stableRuntimedAssetHref(href);
+  if (stableHref && moduleLoadedFromStableFallback) {
+    console.warn(
+      `[notebook-cloud] runtimed WASM module fell back to stable; fetching binary from ${stableHref} to keep the pair consistent`,
+    );
+    return {
+      value: await fetchRuntimedWasmBinaryWithRetries(stableHref),
+      usedStableFallback: true,
+    };
+  }
+  try {
+    return { value: await fetchRuntimedWasmBinaryWithRetries(href), usedStableFallback: false };
+  } catch (error) {
+    if (!stableHref) throw error;
+    console.warn(
+      `[notebook-cloud] runtimed WASM binary failed from ${href}; falling back to ${stableHref}`,
+      error,
+    );
+    return {
+      value: await fetchRuntimedWasmBinaryWithRetries(stableHref),
+      usedStableFallback: true,
+    };
+  }
+}
+
+async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<Response> {
+  let lastFailure: unknown = null;
+  for (let attempt = 0; attempt <= RUNTIMED_WASM_RETRY_DELAYS_MS.length; attempt += 1) {
+    let response: Response | null = null;
+    try {
+      response = await withRungTimeout(
+        fetchImpl(href, rungAbortInit()),
+        `runtimed WASM fetch (${href})`,
+      );
+    } catch (error) {
+      // Thrown fetch errors (network drop, DNS, CORS, rung timeout) are
+      // always retryable.
+      lastFailure = error;
+    }
+    if (response) {
+      if (response.ok) return response;
+      const failure = new Error(`Failed to fetch runtimed WASM (${response.status}): ${href}`);
+      if (!shouldRetryRuntimedWasmResponse(response)) {
+        await cancelResponseBody(response);
+        throw failure;
+      }
+      lastFailure = failure;
+      await cancelResponseBody(response);
     }
     const delay = RUNTIMED_WASM_RETRY_DELAYS_MS[attempt];
     if (delay === undefined) break;
@@ -236,58 +412,37 @@ async function importRuntimedWasmModuleWithRetries(href: string): Promise<Runtim
 }
 
 /**
- * Resolve the wasm-bindgen `module_or_path` input. URL-shaped inputs are
- * fetched here (instead of inside wasm-bindgen's init) so the ladder and
- * the hashed→stable fallback cover the binary exactly like the module;
- * everything else (Response, ArrayBuffer, compiled module) passes through.
+ * Bound a rung with a settle deadline. The race (not just AbortSignal)
+ * carries the bound so a hung attempt advances the ladder even where
+ * abort is unsupported (dynamic import) — the loser is abandoned.
  */
-async function resolveRuntimedWasmBinary(
-  moduleOrPath: WasmModuleOrPath,
-): Promise<WasmModuleOrPath> {
-  if (typeof moduleOrPath !== "string" && !(moduleOrPath instanceof URL)) {
-    return moduleOrPath;
-  }
-  const href = typeof moduleOrPath === "string" ? moduleOrPath : moduleOrPath.href;
-  if (!isLadderFetchableHref(href)) {
-    // Non-network schemes (file:, data:, blob: in tests/embeddings) go
-    // straight to wasm-bindgen; the ladder exists for HTTP asset origins.
-    return moduleOrPath;
-  }
+async function withRungTimeout<T>(work: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await fetchRuntimedWasmBinaryWithRetries(href);
-  } catch (error) {
-    const stableHref = stableRuntimedAssetHref(href);
-    if (!stableHref) throw error;
-    console.warn(
-      `[notebook-cloud] runtimed WASM binary failed from ${href}; falling back to ${stableHref}`,
-      error,
-    );
-    return fetchRuntimedWasmBinaryWithRetries(stableHref);
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          // The abandoned loser may still settle later; observe its
+          // rejection so it never surfaces as unhandled.
+          void Promise.resolve(work).catch(() => undefined);
+          reject(new Error(`${label} timed out after ${RUNTIMED_WASM_RUNG_TIMEOUT_MS}ms`));
+        }, RUNTIMED_WASM_RUNG_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<Response> {
-  let lastFailure: unknown = null;
-  for (let attempt = 0; attempt <= RUNTIMED_WASM_RETRY_DELAYS_MS.length; attempt += 1) {
-    let response: Response | null = null;
-    try {
-      response = await fetchImpl(href);
-    } catch (error) {
-      // Thrown fetch errors (network drop, DNS, CORS) are always retryable.
-      lastFailure = error;
-    }
-    if (response) {
-      if (response.ok) return response;
-      const failure = new Error(`Failed to fetch runtimed WASM (${response.status}): ${href}`);
-      if (!shouldRetryRuntimedWasmResponse(response)) throw failure;
-      lastFailure = failure;
-      await cancelResponseBody(response);
-    }
-    const delay = RUNTIMED_WASM_RETRY_DELAYS_MS[attempt];
-    if (delay === undefined) break;
-    await sleep(delay);
+function rungAbortInit(): RequestInit | undefined {
+  // Best-effort network cancellation alongside the race; the race is the
+  // load-bearing bound (AbortSignal.timeout is not mockable in tests and
+  // unsupported in some embedders).
+  if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
+    return undefined;
   }
-  throw lastFailure instanceof Error ? lastFailure : new Error(String(lastFailure));
+  return { signal: AbortSignal.timeout(RUNTIMED_WASM_RUNG_TIMEOUT_MS) };
 }
 
 function shouldRetryRuntimedWasmResponse(response: Response): boolean {
@@ -364,6 +519,8 @@ export function _resetRuntimedWasmClientForTests(): void {
   initialized = undefined;
   initializedSource = undefined;
   resolvedModule = undefined;
+  moduleLoadedFromStableFallback = false;
+  moduleImportBusterSequence = 0;
 }
 
 function runtimedWasmModuleAfterInit(): RuntimedWasmModule {
