@@ -218,6 +218,7 @@ export function NotebookViewer({
     retryLiveConnection,
     snapshotResolvedRef,
     status,
+    syncHealStalled,
   } = useCloudViewerSession({
     authRenewalKind: authRenewal.kind,
     authState,
@@ -961,6 +962,7 @@ export function NotebookViewer({
     offlineMergeNotice,
     rendererAssetError,
     sustainedReconnecting,
+    syncHealStalled,
     status: noticeStatus,
   });
   const notices = hasNotices ? (
@@ -974,6 +976,7 @@ export function NotebookViewer({
       offlineMergeNotice={offlineMergeNotice}
       rendererAssetError={rendererAssetError}
       sustainedReconnecting={sustainedReconnecting}
+      syncHealStalled={syncHealStalled}
       status={noticeStatus}
       onResetAuth={resetPrototypeAuth}
       onRetryConnection={retryLiveConnection}

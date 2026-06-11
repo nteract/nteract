@@ -429,3 +429,69 @@ test("no offline merge notice means no offline merge markup", () => {
   assert.match(html, /Reconnecting\./);
   assert.doesNotMatch(html, /Synced your offline edits/);
 });
+
+test("sync-heal exhaustion renders ONE calm stalled line and counts as a notice", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      syncHealStalled: true,
+      status: { kind: "ready", message: "Ready" },
+    }),
+    true,
+  );
+
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      syncHealStalled: true,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Sync is stalled\./);
+  assert.match(html, /Your edits are kept locally\./);
+  // Quiet rules: one occurrence, info tone, never a modal or action.
+  assert.equal(html.match(/Sync is stalled\./g)?.length, 1);
+});
+
+test("the sustained-reconnecting line owns the surface while the link is down", () => {
+  // The heal loop does not even re-kick while the transport is
+  // reconnecting, and two "edits are kept locally" lines would be noise:
+  // the stalled line yields to the reconnect line.
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      sustainedReconnecting: true,
+      syncHealStalled: true,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Reconnecting\./);
+  assert.doesNotMatch(html, /Sync is stalled\./);
+});
+
+test("a cleared stall renders nothing (late convergence clears the line)", () => {
+  assert.equal(
+    cloudNotebookHasNotices({
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      syncHealStalled: false,
+      status: { kind: "ready", message: "Ready" },
+    }),
+    false,
+  );
+});

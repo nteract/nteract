@@ -64,10 +64,12 @@ import {
 import type { CloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
+  PersistenceRearmGate,
   createCloudNotebookPersistence,
   loadCloudPersistedNotebookSeed,
   type CloudNotebookPersistenceController,
 } from "./notebook-persistence";
+import { NOTEBOOK_DOC_HEAL_KEY, SyncHealScheduler } from "./sync-heal";
 import { createCloudNotebookTabBridge } from "./tab-bridge";
 import {
   OFFLINE_MERGE_RESYNC_SETTLE_MS,
@@ -160,6 +162,12 @@ export interface CloudViewerSession {
   retryLiveConnection: () => void;
   snapshotResolvedRef: MutableRefObject<boolean>;
   status: ViewerStatus;
+  /**
+   * The resync heal loop exhausted its ladder without the NotebookDoc
+   * catching up to the room (sync-heal.ts). Drives the quiet
+   * "Sync is stalled" notices line; clears the moment convergence lands.
+   */
+  syncHealStalled: boolean;
 }
 
 interface UseCloudViewerSessionOptions {
@@ -283,6 +291,8 @@ export function useCloudViewerSession({
     },
     [offlineMergeTracker],
   );
+  // Terminal heal-exhaustion surface (one quiet line; see sync-heal.ts).
+  const [syncHealStalled, setSyncHealStalled] = useState(false);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [connectionPeerId, setConnectionPeerId] = useState<string | null>(null);
   const [connectionPeerLabel, setConnectionPeerLabel] = useState<string | null>(null);
@@ -531,6 +541,53 @@ export function useCloudViewerSession({
     // that cannot have observed the resync absorb, a post-resync repeat
     // escalates.
     const rejectionTracker = new CloudRecoverableRejectionTracker();
+    // Resync heal loop (slice 5): verify that resync kicks actually
+    // converge, re-kick on a bounded ladder, surface ONE quiet stall
+    // signal at exhaustion. Deliberately decoupled from the rejection
+    // tracker (kicks are not strikes), the offline-merge tracker (no
+    // kicks while the link is down), and the tab-bridge quarantine
+    // (separate failure domains) — see sync-heal.ts.
+    const syncHeal = new SyncHealScheduler({
+      kick: () => {
+        liveRuntimeRef.current?.engine.resetAndResync();
+      },
+      shouldKick: () =>
+        !disposed &&
+        liveRuntimeRef.current !== null &&
+        connectionStatusBridge.getCurrent() === "online",
+      onExhausted: () => {
+        if (disposed) return;
+        setSyncHealStalled(true);
+      },
+      onRecovered: () => {
+        if (disposed) return;
+        setSyncHealStalled(false);
+        // A converged resync is also the "successful resync" trigger for
+        // the persistence single heal.
+        attemptPersistenceRearm();
+      },
+      logger: console,
+    });
+    // Persistence single heal: one re-arm after a self-disable, consumed
+    // on the next online transition or heal-loop recovery.
+    const persistenceRearmGate = new PersistenceRearmGate();
+    const attemptPersistenceRearm = () => {
+      if (disposed || !persistenceRearmGate.takeRearm()) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime) return;
+      console.warn("[notebook-persistence] re-arming once after self-disable");
+      // Force a fresh controller pair: no seed trust (the first save
+      // takes the unconditional snapshot arm — chunk-safe by design).
+      notebookPersistence?.dispose();
+      notebookPersistence = null;
+      notebookPersistencePrincipal = null;
+      armPersistence(liveRuntime);
+    };
+    const persistenceRearmSubscription = connectionStatusBridge.subscribe((status) => {
+      if (status === "online") {
+        attemptPersistenceRearm();
+      }
+    });
     let ranConnectionDiagnostics = false;
     // One full-materialization kick per runtime when the syncing doc first
     // catches up to the room's advertised heads (see the notebookSyncApplied$
@@ -693,6 +750,9 @@ export function useCloudViewerSession({
           seedChunks,
           seedGeneration,
           onError: (error) => console.warn("[notebook-cloud] notebook persistence error", error),
+          // Single heal: the gate notes the self-disable; the next online
+          // transition or heal-loop recovery consumes the one re-arm.
+          onSelfDisabled: () => persistenceRearmGate.noteSelfDisabled(),
         });
         if (notebookPersistence !== null) {
           notebookPersistenceEverArmed = true;
@@ -1081,6 +1141,11 @@ export function useCloudViewerSession({
               // delivered, so only rejections that could have observed it
               // count toward escalation.
               liveRuntime.engine.resetAndResync();
+              // Heal verification for the fire-and-forget kick. The heal
+              // loop never feeds back into the tracker: its re-kicks are
+              // not strikes and cannot disturb the delivery-gated absorb
+              // window above.
+              syncHeal.noteResyncKicked(NOTEBOOK_DOC_HEAL_KEY);
               void liveRuntime.engine
                 .flushAndWait()
                 .catch(() => undefined)
@@ -1157,6 +1222,12 @@ export function useCloudViewerSession({
             // this tick yields, ahead of the new connection's first sync
             // frame. Everything after it is async-safe.
             if (!liveRuntime.applyRoomReady(ready)) return;
+            // Fresh connection: reset the heal ladder (like reconnect
+            // backoff resets on the app-level ack) and verify the
+            // re-establish's resetAndResync that just ran inside
+            // applyRoomReady.
+            syncHeal.reset(NOTEBOOK_DOC_HEAL_KEY);
+            syncHeal.noteResyncKicked(NOTEBOOK_DOC_HEAL_KEY);
             setConnectionError(null);
             setConnectionScope(liveRuntime.connectionScope);
             setConnectionActorLabel(liveRuntime.actorLabel);
@@ -1229,8 +1300,13 @@ export function useCloudViewerSession({
           // live truth INCLUDING EMPTINESS displaces painted or preserved
           // cells (see the zero-cell guard above).
           liveRuntime.engine.notebookSyncApplied$.subscribe(() => {
+            const caughtUp = cloudNotebookHandleCaughtUp(liveRuntime.handle);
+            // Confirmation is just another sync: caught_up === true means
+            // the previous exchange provably landed — it settles the heal
+            // loop (and clears a standing stall notice).
+            syncHeal.noteVerification(NOTEBOOK_DOC_HEAL_KEY, caughtUp);
             if (caughtUpMaterializeKicked) return;
-            if (!cloudNotebookHandleCaughtUp(liveRuntime.handle)) return;
+            if (!caughtUp) return;
             caughtUpMaterializeKicked = true;
             materializeLiveCellsSafely(liveRuntime);
           }),
@@ -1309,6 +1385,9 @@ export function useCloudViewerSession({
 
     return () => {
       disposed = true;
+      syncHeal.dispose();
+      persistenceRearmSubscription.unsubscribe();
+      setSyncHealStalled(false);
       for (const subscription of subscriptions) {
         subscription.unsubscribe();
       }
@@ -1407,6 +1486,7 @@ export function useCloudViewerSession({
     retryLiveConnection,
     snapshotResolvedRef,
     status,
+    syncHealStalled,
   };
 }
 

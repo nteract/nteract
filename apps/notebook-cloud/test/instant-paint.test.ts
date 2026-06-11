@@ -691,7 +691,7 @@ describe("empty live room displacement", () => {
   it("kicks one full materialization when the doc first catches up to the room", () => {
     assert.match(
       sessionSource,
-      /notebookSyncApplied\$\.subscribe\(\(\) => \{\s*if \(caughtUpMaterializeKicked\) return;\s*if \(!cloudNotebookHandleCaughtUp\(liveRuntime\.handle\)\) return;\s*caughtUpMaterializeKicked = true;\s*materializeLiveCellsSafely\(liveRuntime\);/,
+      /notebookSyncApplied\$\.subscribe\(\(\) => \{\s*const caughtUp = cloudNotebookHandleCaughtUp\(liveRuntime\.handle\);[\s\S]{0,400}?if \(caughtUpMaterializeKicked\) return;\s*if \(!caughtUp\) return;\s*caughtUpMaterializeKicked = true;\s*materializeLiveCellsSafely\(liveRuntime\);/,
     );
   });
 
