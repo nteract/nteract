@@ -1924,6 +1924,12 @@ class TestDocumentFirstExecution:
             await session.create_cell("c = 3"),
         ]
 
+        async def cells_are_visible():
+            cells = await session.get_cells()
+            found_ids = {c.id for c in cells}
+            return all(cid in found_ids for cid in cell_ids)
+
+        await async_wait_for_sync(cells_are_visible, description="created cells visible")
         cells = await session.get_cells()
         assert len(cells) >= 3
 
