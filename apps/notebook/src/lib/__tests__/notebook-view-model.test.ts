@@ -50,25 +50,25 @@ describe("createNotebookViewModelFromNotebookCells", () => {
     restoreMarkdownProjectionProjector = setMarkdownProjectionProjector(testMarkdownProjector);
     replaceNotebookCells([
       {
-        ...markdownCell("later", "## Later section\n\n# LMAO\n\n### Deeper note"),
+        ...markdownCell("later", "## Analysis\n\n# Draft checkpoint\n\n### Supporting detail"),
         markdownProjection: testMarkdownProjection(
-          "## Later section\n\n# LMAO\n\n### Deeper note",
+          "## Analysis\n\n# Draft checkpoint\n\n### Supporting detail",
         ),
       },
     ]);
 
-    expect(outlineTitles()).toEqual(["Later section", "LMAO", "Deeper note"]);
+    expect(outlineTitles()).toEqual(["Analysis", "Draft checkpoint", "Supporting detail"]);
 
     updateCellSourceById(
       "later",
-      "## Later section\n\n# ANother one\n\n# LMAO this is fine\n\n### Deeper note",
+      "## Analysis\n\n# Updated checkpoint\n\n# Final review\n\n### Supporting detail",
     );
 
     expect(outlineTitles()).toEqual([
-      "Later section",
-      "ANother one",
-      "LMAO this is fine",
-      "Deeper note",
+      "Analysis",
+      "Updated checkpoint",
+      "Final review",
+      "Supporting detail",
     ]);
   });
 
