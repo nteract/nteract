@@ -1,7 +1,7 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import worker from "../src/index.ts";
+import worker, { snapshotBlobRefsOverCap } from "../src/index.ts";
 import { NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME } from "../src/app-session.ts";
 import {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -4275,6 +4275,16 @@ describe("Worker artifact routes", () => {
       (warnings[0][1] as { event: string }).event,
       "snapshot_pair.validation.missing_blobs",
     );
+  });
+
+  it("rejects snapshot renders that reference more blobs than the cap", () => {
+    const over = {
+      blob_urls: Object.fromEntries(
+        Array.from({ length: 5 }, (_, i) => [`sha256:${i}`, `https://x/${i}`]),
+      ),
+    };
+    assert.deepEqual(snapshotBlobRefsOverCap(over, 4), { count: 5, cap: 4, over: true });
+    assert.deepEqual(snapshotBlobRefsOverCap(over, 5), { count: 5, cap: 5, over: false });
   });
 });
 
