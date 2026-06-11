@@ -1483,6 +1483,68 @@ describe("RoomMaterializer", () => {
     assert.equal(resolved.state?.value, 2);
   });
 
+  it("allows loaded owner handles to author CommsDoc changes with the connection actor", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const runtimePeerConnection = { id: "peer-runtime", identity: runtimeIdentity };
+    const runtimePeer = new RuntimeStatePeerHandle(runtimeIdentity.actorLabel);
+    await syncMaterializerWithRuntimePeer(materializer, runtimePeerConnection, runtimePeer);
+    runtimePeer.put_comm_json(
+      "comm-widget",
+      "jupyter.widget",
+      "@jupyter-widgets/controls",
+      "IntSliderModel",
+      JSON.stringify({ value: 7, description: "probe" }),
+      0,
+    );
+    assert.equal(
+      (
+        await applyRuntimePeerChangesToMaterializer(
+          materializer,
+          runtimePeerConnection,
+          runtimePeer,
+        )
+      ).changed,
+      true,
+    );
+    assert.equal(
+      (await applyCommsPeerChangesToMaterializer(materializer, runtimePeerConnection, runtimePeer))
+        .changed,
+      true,
+    );
+
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const ownerPeerConnection = { id: "peer-owner", identity: ownerIdentity };
+    const loadedOwner = NotebookHandle.load(
+      NotebookHandle.create_bootstrap("user:dev:seed/browser:seed").save(),
+    );
+    loadedOwner.set_actor(ownerIdentity.actorLabel);
+    await syncMaterializerRuntimeStateWithClient(materializer, ownerPeerConnection, loadedOwner);
+    await syncMaterializerCommsDocWithClient(materializer, ownerPeerConnection, loadedOwner);
+
+    assert.equal(
+      loadedOwner.set_comm_state_property("comm-widget", "value", JSON.stringify(11)),
+      true,
+    );
+    const accepted = await applyCommsClientChangesToMaterializer(
+      materializer,
+      ownerPeerConnection,
+      loadedOwner,
+    );
+    assert.equal(
+      accepted.changed,
+      true,
+      "loaded browser handles must not author CommsDoc changes with a raw random actor id",
+    );
+  });
+
   it("fans out owner CommsDoc changes to already-open peers", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);

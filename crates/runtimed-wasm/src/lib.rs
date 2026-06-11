@@ -2256,6 +2256,9 @@ impl NotebookHandle {
     pub fn set_actor(&mut self, actor_label: &str) {
         self.doc.set_actor(actor_label);
         self.state_doc.set_actor(actor_label);
+        self.comms_doc
+            .doc_mut()
+            .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
     }
 
     /// Return the deduplicated, sorted list of actor labels that have
