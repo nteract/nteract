@@ -109,6 +109,108 @@ describe("IndexedDbStorageAdapter", () => {
     expect(await adapter.load(["nb-2", "snapshot"])).toEqual(new Uint8Array([3]));
   });
 
+  it("saveBatch commits all entries in one transaction", async () => {
+    const adapter = createAdapter();
+
+    await adapter.saveBatch([
+      [["nb-1", "snapshot"], new Uint8Array([1])],
+      [["nb-1", "meta"], new Uint8Array([2])],
+    ]);
+
+    expect(await adapter.load(["nb-1", "snapshot"])).toEqual(new Uint8Array([1]));
+    expect(await adapter.load(["nb-1", "meta"])).toEqual(new Uint8Array([2]));
+  });
+
+  it("saveBatch of no entries resolves without opening a transaction", async () => {
+    const factory = new IDBFactory();
+    const opens = vi.spyOn(factory, "open");
+    const adapter = IndexedDbStorageAdapter.create({ indexedDB: factory });
+    if (!adapter) throw new Error("expected adapter for injected factory");
+
+    await adapter.saveBatch([]);
+
+    expect(opens).not.toHaveBeenCalled();
+  });
+
+  it("saveBatch surfaces the failing request's error when the transaction aborts with error: null", async () => {
+    // Async per-request failures (quota aborts) can leave transaction.error
+    // null; the rejection must still name the real cause from the request.
+    const adapter = createAdapter();
+    const quotaError = new DOMException("quota exceeded", "QuotaExceededError");
+    type PutRequest = { error: DOMException | null; onerror: (() => void) | null };
+    type FakeTransaction = {
+      error: DOMException | null;
+      oncomplete: (() => void) | null;
+      onabort: (() => void) | null;
+      onerror: (() => void) | null;
+      objectStore: () => { put: () => PutRequest };
+    };
+    // Warm the connection first: a prototype-level transaction mock would
+    // otherwise break fake-indexeddb's internal versionchange transaction
+    // during open.
+    await adapter.save(["warm"], new Uint8Array([0]));
+
+    let fake: FakeTransaction | null = null;
+    const requests: PutRequest[] = [];
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementationOnce(function () {
+      fake = {
+        error: null,
+        oncomplete: null,
+        onabort: null,
+        onerror: null,
+        objectStore: () => ({
+          put: () => {
+            const request: PutRequest = { error: null, onerror: null };
+            requests.push(request);
+            return request;
+          },
+        }),
+      };
+      return fake as unknown as IDBTransaction;
+    });
+
+    const attempt = adapter.saveBatch([
+      [["nb-1", "a"], new Uint8Array([1])],
+      [["nb-1", "b"], new Uint8Array([2])],
+    ]);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    requests[1]!.error = quotaError;
+    requests[1]!.onerror?.();
+    fake!.onabort?.(); // transaction.error stays null
+
+    await expect(attempt).rejects.toBe(quotaError);
+  });
+
+  it("saveBatch is all-or-nothing when a put fails mid-batch", async () => {
+    const onError = vi.fn();
+    const adapter = createAdapter({ onError });
+    const quotaError = new DOMException("quota exceeded", "QuotaExceededError");
+    const realPut = IDBObjectStore.prototype.put;
+    let puts = 0;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<typeof realPut>
+    ) {
+      puts += 1;
+      if (puts === 2) throw quotaError;
+      return realPut.apply(this, args);
+    });
+
+    await expect(
+      adapter.saveBatch([
+        [["nb-1", "snapshot"], new Uint8Array([1])],
+        [["nb-1", "meta"], new Uint8Array([2])],
+      ]),
+    ).rejects.toBe(quotaError);
+    expect(onError).toHaveBeenCalledWith(quotaError);
+
+    // The first entry's put was issued on the same aborted transaction, so
+    // nothing from the batch is observable.
+    vi.restoreAllMocks();
+    expect(await adapter.load(["nb-1", "snapshot"])).toBeUndefined();
+    expect(await adapter.load(["nb-1", "meta"])).toBeUndefined();
+  });
+
   it("create returns null when indexedDB is unavailable", () => {
     vi.stubGlobal("indexedDB", undefined);
     expect(IndexedDbStorageAdapter.create()).toBeNull();

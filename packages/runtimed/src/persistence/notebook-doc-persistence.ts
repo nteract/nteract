@@ -15,6 +15,13 @@
  * flush debounce have not emitted yet, but `handle.save()` already sees
  * them, and saves are idempotent.
  *
+ * Change signals over-fire by design (`notebookDocChanged$` also emits for
+ * protocol-only flushes), so every capture first compares the doc heads
+ * against the last heads handed to the adapter — automerge-repo's
+ * `#shouldSave` shape. Unchanged heads skip both the full-doc serialization
+ * and the write; a failed write forgets its recorded heads so the next
+ * signal retries instead of deduping against a record that never landed.
+ *
  * Two records exist per notebook:
  * - `[notebookId, "snapshot"]` — NotebookDoc bytes, the seed record. The
  *   only record ever loaded back into a SYNCING handle.
@@ -34,7 +41,7 @@
 
 import type { Observable, Subscription } from "rxjs";
 
-import type { StorageAdapter } from "./storage-adapter";
+import { saveBatch, type StorageAdapter } from "./storage-adapter";
 
 const DEFAULT_SAVE_THROTTLE_MS = 1_000;
 
@@ -99,6 +106,17 @@ export interface NotebookDocPersistenceOptions {
   /** Trailing-edge save throttle in milliseconds (default 1000). */
   throttleMs?: number;
 
+  /**
+   * Heads of the record already sitting in storage, when the session
+   * seeded from it (`meta.headsHex`). Lets the first capture dedupe
+   * against the existing record instead of unconditionally re-writing
+   * identical bytes on the handshake's protocol-only change signal —
+   * automerge-repo records loaded heads the same way (`loadDoc` updates
+   * its stored-heads handle). Only pass heads that describe the record
+   * currently in storage.
+   */
+  initialSavedHeadsHex?: string[];
+
   /** Persistence failures route here; they never throw into the session. */
   onError?: (error: unknown) => void;
 
@@ -117,12 +135,38 @@ export class NotebookDocPersistence {
   private consecutiveSaveFailures = 0;
   /** Serializes adapter writes so two saves never interleave (latest wins). */
   private writeChain: Promise<void> = Promise.resolve();
+  /**
+   * Heads of the newest capture handed to the write chain (null = none).
+   * Recorded optimistically at capture so a protocol-only signal during an
+   * in-flight write cannot queue a duplicate; a failed write forgets its
+   * own heads (only if no newer capture has superseded them) so the next
+   * signal retries.
+   */
+  private lastSavedHeadsKey: string | null = null;
+  /**
+   * Heads of the newest write that COMMITTED (or of the seeded record, which
+   * is committed by definition). `flushNow` dedupes against this key, never
+   * the optimistic one: a teardown flush that skipped because an in-flight
+   * write "covered" its state would lose that state forever if the write
+   * then failed — errors are swallowed and the handle is freed right after.
+   */
+  private lastCommittedHeadsKey: string | null = null;
 
   constructor(opts: NotebookDocPersistenceOptions) {
     this.opts = opts;
     this.keySegment = opts.keySegment ?? NOTEBOOK_DOC_SNAPSHOT_KEY_SEGMENT;
     this.throttleMs = opts.throttleMs ?? DEFAULT_SAVE_THROTTLE_MS;
     this.logger = opts.logger ?? console;
+    // An empty heads array is treated as unknown, not as an identity: a
+    // freshly-bootstrapped doc (RuntimeStateDoc starts empty by design)
+    // would otherwise match a stale prior-session record's empty heads and
+    // skip its first save.
+    const initialHeads = opts.initialSavedHeadsHex;
+    if (initialHeads && initialHeads.length > 0) {
+      const initialKey = headsCacheKey(initialHeads);
+      this.lastSavedHeadsKey = initialKey;
+      this.lastCommittedHeadsKey = initialKey;
+    }
     this.subscription = opts.changes$.subscribe(() => this.onChanged());
   }
 
@@ -146,12 +190,16 @@ export class NotebookDocPersistence {
   /**
    * Commit the current document state immediately (pagehide, teardown).
    *
-   * Captures unconditionally, ignoring the change-signal dirty flag: local
-   * edits inside the engine's flush debounce have not emitted yet, but
-   * `getSaveBytes()` already sees them. Bytes are captured synchronously,
-   * so a handle freed right after this call returns is never touched by
-   * the queued write; the returned promise resolves once the write chain
-   * has committed.
+   * Captures ignoring the change-signal dirty flag: local edits inside
+   * the engine's flush debounce have not emitted yet, but `getSaveBytes()`
+   * already sees them. The heads-dedupe applies only against COMMITTED
+   * writes — an in-flight write may still fail after this call returns
+   * (errors are swallowed, the handle freed), so "covered by a pending
+   * write" must not skip the teardown's last chance to persist. A flush
+   * racing an identical in-flight write costs one redundant idempotent
+   * write. Bytes are captured synchronously, so a handle freed right after
+   * this call returns is never touched by the queued write; the returned
+   * promise resolves once the write chain has committed.
    */
   async flushNow(): Promise<void> {
     if (this.disposed) return;
@@ -159,7 +207,7 @@ export class NotebookDocPersistence {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    await this.captureAndEnqueue();
+    await this.captureAndEnqueue("committed");
   }
 
   private onChanged(): void {
@@ -177,15 +225,36 @@ export class NotebookDocPersistence {
     return this.captureAndEnqueue();
   }
 
-  private captureAndEnqueue(): Promise<void> {
+  /**
+   * `dedupeAgainst` selects which heads key may skip the capture:
+   * change-signal saves use `"newest"` (the optimistic key — prevents
+   * queueing duplicates behind an identical in-flight write, and a late
+   * failure self-heals through the next signal), while `flushNow` uses
+   * `"committed"` (an in-flight write is not proof of durability, and a
+   * teardown flush gets no next signal).
+   */
+  private captureAndEnqueue(dedupeAgainst: "newest" | "committed" = "newest"): Promise<void> {
     this.dirty = false;
 
     // Capture synchronously: getSaveBytes touches the WASM handle, which a
     // disposing session may free as soon as this call returns.
     let envelope: Uint8Array;
+    let headsKey: string;
     try {
+      const headsHex = this.opts.getHeadsHex();
+      headsKey = headsCacheKey(headsHex);
+      const skipKey =
+        dedupeAgainst === "newest" ? this.lastSavedHeadsKey : this.lastCommittedHeadsKey;
+      if (headsKey === skipKey) {
+        // Heads unchanged since the newest capture (or, for flushes, the
+        // newest COMMITTED write): the signal over-fired (protocol-only
+        // flush) — skip the no-op snapshot. Edits inside the engine's
+        // flush debounce are already committed to the doc, so they move
+        // the heads and never land here.
+        return this.writeChain;
+      }
       const meta: NotebookDocPersistenceMeta = {
-        headsHex: this.opts.getHeadsHex(),
+        headsHex,
         savedAt: Date.now(),
         principal: this.opts.principal,
         schemaVersion: 1,
@@ -196,13 +265,23 @@ export class NotebookDocPersistence {
       return this.writeChain;
     }
 
+    // Record optimistically so signals during the in-flight write dedupe
+    // against this capture rather than queueing an identical envelope.
+    this.lastSavedHeadsKey = headsKey;
+
     const { adapter, notebookId } = this.opts;
     const key = [notebookId, this.keySegment];
     const write = this.writeChain.then(async () => {
       try {
-        await adapter.save(key, envelope);
+        await saveBatch(adapter, [[key, envelope]]);
         this.consecutiveSaveFailures = 0;
+        this.lastCommittedHeadsKey = headsKey;
       } catch (error) {
+        // Forget this capture's heads so the next signal retries — unless
+        // a newer capture already superseded them.
+        if (this.lastSavedHeadsKey === headsKey) {
+          this.lastSavedHeadsKey = null;
+        }
         this.reportSaveFailure("save failed", error);
       }
     });
@@ -226,6 +305,15 @@ export class NotebookDocPersistence {
       this.dispose();
     }
   }
+}
+
+/**
+ * Comparison key for a heads array. Heads from `get_heads_hex()` are
+ * already canonically sorted (automerge sorts `get_heads()`), so plain
+ * joining matches automerge-repo's exact-array `headsAreSame`.
+ */
+function headsCacheKey(headsHex: string[]): string {
+  return headsHex.join(" ");
 }
 
 /**

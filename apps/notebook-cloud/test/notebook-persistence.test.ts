@@ -63,13 +63,14 @@ function createHarness() {
     setStateBytes: (bytes: Uint8Array) => {
       stateBytes = bytes;
     },
-    arm: (principal = "user:dev:alice") =>
+    arm: (principal = "user:dev:alice", seedSavedHeadsHex?: string[]) =>
       createCloudNotebookPersistence({
         adapter,
         notebookId: "nb-1",
         principal,
         engine: { notebookDocChanged$, runtimeState$ },
         handle,
+        seedSavedHeadsHex,
         throttleMs: 5,
       }),
   };
@@ -111,6 +112,24 @@ describe("createCloudNotebookPersistence", () => {
     await sleep(30);
 
     assert.deepEqual([...harness.adapter.records.keys()], ["nb-1/snapshot"]);
+    controller.dispose();
+  });
+
+  it("seedSavedHeadsHex dedupes only the seed record, never the cache", async () => {
+    const harness = createHarness();
+    // The runtime seeded from a record at the handle's current doc heads.
+    const controller = harness.arm("user:dev:alice", ["doc-head"]);
+    assert.ok(controller);
+
+    // The handshake's protocol-only change signal: unchanged doc heads must
+    // not re-write the seed record the session just loaded.
+    harness.notebookDocChanged$.next();
+    // The cache controller's heads space is the RuntimeStateDoc's — the
+    // seed's NotebookDoc heads must not suppress its first write.
+    harness.runtimeState$.next({});
+    await sleep(30);
+
+    assert.deepEqual([...harness.adapter.records.keys()], ["nb-1/runtime-state-cache"]);
     controller.dispose();
   });
 

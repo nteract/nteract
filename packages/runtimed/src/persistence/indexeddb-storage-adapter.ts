@@ -115,6 +115,47 @@ export class IndexedDbStorageAdapter implements StorageAdapter {
     );
   }
 
+  /**
+   * All entries commit in one readwrite transaction — IDB transactions
+   * are atomic, so this is all-or-nothing (strictly stronger than the
+   * staged two-phase minimum the interface asks for).
+   */
+  saveBatch(entries: Array<[StorageKey, Uint8Array]>): Promise<void> {
+    if (entries.length === 0) return Promise.resolve();
+    return this.withStore(
+      "readwrite",
+      (store, transaction) =>
+        new Promise<void>((resolve, reject) => {
+          // `transaction.error` can be null when an async put fails (seen
+          // with quota aborts); remember the failing request's error so the
+          // rejection names the real cause.
+          let requestError: unknown = null;
+          transaction.oncomplete = () => resolve();
+          transaction.onabort = () =>
+            reject(transaction.error ?? requestError ?? new Error("indexedDB saveBatch aborted"));
+          transaction.onerror = () =>
+            reject(transaction.error ?? requestError ?? new Error("indexedDB saveBatch failed"));
+          try {
+            for (const [key, data] of entries) {
+              const request = store.put(data, key);
+              request.onerror = () => {
+                requestError ??= request.error;
+              };
+            }
+          } catch (error) {
+            // A synchronous put failure (DataError, quota in some engines)
+            // must not let already-issued puts auto-commit a partial batch.
+            reject(error);
+            try {
+              transaction.abort();
+            } catch {
+              // already aborted/finished — the rejection above stands
+            }
+          }
+        }),
+    );
+  }
+
   remove(key: StorageKey): Promise<void> {
     return this.withStore(
       "readwrite",

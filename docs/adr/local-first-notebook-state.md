@@ -73,7 +73,23 @@ over-fire, because `generate_sync_message` also yields bytes for
 protocol-only messages (the initial handshake on a fresh `sync::State`,
 resync negotiation). It never under-fires for committed local changes.
 Consumers must treat saves as idempotent; the persistence throttle makes the
-occasional no-op snapshot cheap.
+occasional no-op snapshot cheap, and the controller's heads-dedupe
+(automerge-repo's `#shouldSave` shape, #3585 slice 2) removes it entirely.
+Two keys with different trust levels: change-signal captures dedupe against
+the heads of the newest capture handed to the write chain (optimistic —
+prevents queueing duplicates behind an identical in-flight write; a late
+failure self-heals through the next signal), while `flushNow` dedupes only
+against the newest **committed** write — an in-flight write is not proof of
+durability, and a teardown flush gets no next signal, so skipping on its
+behalf could lose the only copy of offline edits if it then failed. A
+failed write forgets its recorded heads (unless a newer capture superseded
+them) so the next signal retries. A seeded session initializes both keys
+from the loaded record's `meta.headsHex` (first arm only, principal-gated,
+and only when the heads are non-empty — an empty heads array also describes
+a freshly-bootstrapped doc and must read as unknown, not as a match) so the
+handshake's protocol-only signal does not re-write the envelope it just
+loaded; the runtime-state cache controller never inherits these heads (its
+heads space is the RuntimeStateDoc's).
 
 This stays consistent with the projection-convergence ADR: a narrow,
 cross-host observable derived from already-computed WASM facts (the heads
@@ -94,8 +110,21 @@ export interface StorageAdapter {
   remove(key: StorageKey): Promise<void>;
   loadRange(prefix: StorageKey): Promise<StorageChunk[]>;
   removeRange(prefix: StorageKey): Promise<void>;
+  saveBatch?(entries: Array<[StorageKey, Uint8Array]>): Promise<void>;
 }
 ```
+
+`saveBatch` is upstream's exact `StorageAdapterInterface` extension (#3585
+slice 1), optional here with a sequential-`save` fallback via the
+`saveBatch(adapter, entries)` helper. The contract is per-batch atomicity at
+minimum (staged two-phase where the backend allows; the IndexedDB
+implementation gets all-or-nothing from a single transaction); cross-batch
+crash-ordering stays the caller's job — payload chunks first, metadata
+second, the visibility marker last, so a crash leaves invisible orphans
+rather than a visible-but-incomplete record. The envelope write goes through
+the helper; today's single-record envelope is a one-entry batch, and the
+incremental-chunk future gets multi-entry writes without an interface
+change.
 
 `IndexedDbStorageAdapter`: database `"nteract-local-first"`, object store
 `"notebook-docs"`, out-of-line `string[]` keys (IDB array-key ordering gives
@@ -767,10 +796,11 @@ bridge wraps upstream, and subduction writes under its own
 our snapshot envelope degrades into a bootstrap cache. Cheap alignment
 moves when the time comes:
 
-1. Optional `saveBatch(entries)` on `StorageAdapter` (upstream's exact
+1. ~~Optional `saveBatch(entries)` on `StorageAdapter` (upstream's exact
    extension; sequential-save fallback) with crash-ordered writes
    (blobs → metadata → id-marker: a crash leaves invisible orphans, never a
-   visible-but-incomplete record).
+   visible-but-incomplete record).~~ **Adopted** (#3585 slice 1) — see the
+   storage-layer section above.
 2. Fill the reserved "incremental chunks later" slot against the automerge
    3.3 fragments API (`getFragmentMetadata`/`bundleFragmentMetadata` via new
    `NotebookHandle` WASM exports) instead of inventing a chunk format —

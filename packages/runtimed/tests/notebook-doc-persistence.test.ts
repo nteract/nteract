@@ -18,7 +18,11 @@ import {
   loadPersistedNotebookRecord,
   type NotebookDocPersistenceMeta,
 } from "../src/persistence/notebook-doc-persistence";
-import type { StorageAdapter, StorageKey } from "../src/persistence/storage-adapter";
+import {
+  saveBatch,
+  type StorageAdapter,
+  type StorageKey,
+} from "../src/persistence/storage-adapter";
 
 interface RecordingAdapter extends StorageAdapter {
   saves: Array<{ key: StorageKey; data: Uint8Array }>;
@@ -146,7 +150,9 @@ describe("NotebookDocPersistence", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(adapter.saves).toHaveLength(1); // first envelope write in flight
 
-    // A second change while the first write is stuck queues a second save.
+    // A second change (heads moved) while the first write is stuck queues
+    // a second save.
+    headsHex = ["bb"];
     changes$.next();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(adapter.saves).toHaveLength(1); // still queued behind write one
@@ -292,8 +298,12 @@ describe("NotebookDocPersistence", () => {
     changes$.next();
     await controller.flushNow();
 
-    expect(onError).toHaveBeenCalledWith(failure);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("[notebook-persistence]"), failure);
+    // The sequential fallback wraps the failure with the entry's key and
+    // index; the original error rides along as `cause`.
+    expect(onError).toHaveBeenCalledTimes(1);
+    const reported = onError.mock.calls[0]![0] as Error;
+    expect(reported.cause).toBe(failure);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("[notebook-persistence]"), reported);
     controller.dispose();
   });
 
@@ -339,6 +349,280 @@ describe("NotebookDocPersistence", () => {
     expect(getSaveBytes).toHaveBeenCalledTimes(3);
   });
 
+  it("skips the save when heads are unchanged since the last save", async () => {
+    // notebookDocChanged$ over-fires for protocol-only flushes; identical
+    // heads mean identical doc state, so the snapshot would be a no-op.
+    const getSaveBytes = vi.fn(() => saveBytes);
+    const controller = createController({ getSaveBytes });
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(1);
+
+    // Same heads: the signal was protocol-only churn.
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(1);
+    expect(getSaveBytes).toHaveBeenCalledTimes(1); // no doomed serialization either
+
+    // Heads moved: a real doc change saves again.
+    headsHex = ["bb"];
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(2);
+    controller.dispose();
+  });
+
+  it("dedupes against in-flight writes, not just committed ones", async () => {
+    const resolvers: Array<() => void> = [];
+    adapter.save = vi.fn((key: StorageKey, data: Uint8Array) => {
+      adapter.saves.push({ key, data });
+      return new Promise<void>((resolve) => {
+        resolvers.push(resolve);
+      });
+    });
+    const controller = createController();
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(1); // write one stuck in flight
+
+    // A protocol-only signal while write one is still pending must not
+    // queue an identical envelope behind it.
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    while (resolvers.length > 0) {
+      resolvers.shift()?.();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(adapter.saves).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("distinguishes heads sets, not just lengths or prefixes", async () => {
+    const controller = createController();
+
+    headsHex = ["aa", "bb"];
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    headsHex = ["aa"];
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(adapter.saves).toHaveLength(2);
+    controller.dispose();
+  });
+
+  it("a failed save forgets its heads so the next signal retries", async () => {
+    let failNext = true;
+    adapter.save = vi.fn(async (key: StorageKey, data: Uint8Array) => {
+      if (failNext) throw new Error("quota exceeded");
+      adapter.saves.push({ key, data });
+    });
+    const controller = createController();
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(0); // write failed
+
+    // Same heads, but the failed write must not count as saved.
+    failNext = false;
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("a failed write does not clobber a newer capture's recorded heads", async () => {
+    // Write one (heads aa) fails AFTER write two (heads bb) was captured:
+    // the failure must not reset the dedupe to null and reopen writes for
+    // heads bb state that write two already covers.
+    const outcomes: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+    adapter.save = vi.fn((key: StorageKey, data: Uint8Array) => {
+      adapter.saves.push({ key, data });
+      return new Promise<void>((resolve, reject) => {
+        outcomes.push({ resolve, reject: (e) => reject(e) });
+      });
+    });
+    const controller = createController();
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000); // capture aa, write one in flight
+
+    headsHex = ["bb"];
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000); // capture bb, queued behind one
+
+    outcomes.shift()?.reject(new Error("disk full")); // write one fails late
+    await vi.advanceTimersByTimeAsync(0);
+    outcomes.shift()?.resolve(); // write two commits
+    await vi.advanceTimersByTimeAsync(0);
+    expect(adapter.saves).toHaveLength(2);
+
+    // Protocol-only signal at heads bb: still deduped.
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(2);
+    controller.dispose();
+  });
+
+  it("flushNow skips the write when heads are unchanged", async () => {
+    const getSaveBytes = vi.fn(() => saveBytes);
+    const controller = createController({ getSaveBytes });
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(1);
+
+    await controller.flushNow(); // pagehide with nothing new
+    expect(adapter.saves).toHaveLength(1);
+    expect(getSaveBytes).toHaveBeenCalledTimes(1);
+
+    headsHex = ["bb"]; // committed edit inside the engine's flush debounce
+    await controller.flushNow();
+    expect(adapter.saves).toHaveLength(2);
+    controller.dispose();
+  });
+
+  it("flushNow does not trust an in-flight write that then fails", async () => {
+    // Teardown sequence: capture H1, write W1 in flight, flushNow() at H1.
+    // If the flush deduped against the OPTIMISTIC key it would skip — and
+    // when W1 then fails (errors are swallowed, handle freed) the H1 state,
+    // possibly the only copy of offline edits, would never be persisted.
+    // The flush must dedupe only against COMMITTED writes.
+    const outcomes: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+    adapter.save = vi.fn((key: StorageKey, data: Uint8Array) => {
+      return new Promise<void>((resolve, reject) => {
+        outcomes.push({
+          resolve: () => {
+            adapter.saves.push({ key, data });
+            resolve();
+          },
+          reject,
+        });
+      });
+    });
+    const controller = createController();
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000); // capture H1, W1 in flight
+
+    const flushed = controller.flushNow(); // H1 again — must NOT skip
+    controller.dispose();
+
+    outcomes.shift()?.reject(new Error("quota exceeded")); // W1 fails late
+    await vi.advanceTimersByTimeAsync(0);
+    outcomes.shift()?.resolve(); // the flush's write commits
+    await flushed;
+
+    expect(adapter.saves).toHaveLength(1);
+    expect(decodePersistedNotebookDoc(adapter.saves[0]!.data).meta?.headsHex).toEqual(["aa"]);
+  });
+
+  it("flushNow dedupes against a write that has committed", async () => {
+    const controller = createController();
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000); // W1 committed
+    expect(adapter.saves).toHaveLength(1);
+
+    await controller.flushNow(); // same heads, durably saved — skip
+    expect(adapter.saves).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("initialSavedHeadsHex dedupes the first save against the seeded record", async () => {
+    const getSaveBytes = vi.fn(() => saveBytes);
+    const controller = createController({
+      getSaveBytes,
+      initialSavedHeadsHex: ["aa"],
+    });
+
+    // The handshake's protocol-only change signal at the seeded heads.
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(0);
+    expect(getSaveBytes).not.toHaveBeenCalled();
+
+    headsHex = ["bb"];
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(adapter.saves).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("treats empty initialSavedHeadsHex as unknown, never an identity", async () => {
+    // decodeMeta accepts headsHex: [] and a freshly-bootstrapped doc
+    // (RuntimeStateDoc starts empty by design) also reports empty heads —
+    // matching the two would skip the first save over a stale record.
+    headsHex = [];
+    const controller = createController({ initialSavedHeadsHex: [] });
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(adapter.saves).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("a deduped skip neither increments nor resets the failure counter", async () => {
+    // Three consecutive failures self-dispose; a skip is not a save and
+    // must count for nothing. Observed through the threshold: with the
+    // counter at 2, a skip must not dispose (no increment) and the NEXT
+    // failure must (no reset).
+    const disposedMsg = "[notebook-persistence] disabled after repeated save failures";
+    adapter.save = vi.fn(async () => {
+      throw new Error("quota exceeded");
+    });
+    const warn = vi.fn();
+    const controller = createController({
+      logger: { warn },
+      initialSavedHeadsHex: ["aa"], // committed key for the flush skip below
+    });
+
+    // Two failures bring the counter to 2.
+    for (const head of ["h1", "h2"]) {
+      headsHex = [head];
+      changes$.next();
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(warn).not.toHaveBeenCalledWith(disposedMsg);
+
+    // A flush at the seeded (committed) heads skips. An incrementing skip
+    // would hit 3 and dispose here.
+    headsHex = ["aa"];
+    await controller.flushNow();
+    expect(warn).not.toHaveBeenCalledWith(disposedMsg);
+
+    // The next failure must be the third — a resetting skip would leave
+    // the counter at 1 and keep the controller alive.
+    headsHex = ["h3"];
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(warn).toHaveBeenCalledWith(disposedMsg);
+  });
+
+  it("prefers the adapter's saveBatch over plain save when available", async () => {
+    const batches: Array<Array<[StorageKey, Uint8Array]>> = [];
+    adapter.saveBatch = vi.fn(async (entries: Array<[StorageKey, Uint8Array]>) => {
+      batches.push(entries);
+      for (const [key, data] of entries) {
+        adapter.records.set(key.join("\u0000"), data);
+      }
+    });
+    const controller = createController();
+
+    changes$.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(adapter.save).not.toHaveBeenCalled();
+    expect(batches).toHaveLength(1);
+    expect(batches[0]!.map(([key]) => key)).toEqual([["nb-1", "snapshot"]]);
+    controller.dispose();
+  });
+
   it("a successful save resets the consecutive-failure count", async () => {
     const getSaveBytes = vi.fn(() => saveBytes);
     let failNext = true;
@@ -349,18 +633,116 @@ describe("NotebookDocPersistence", () => {
     const controller = createController({ getSaveBytes });
 
     // Two failures, then a success, then two more failures: never three
-    // consecutive, so persistence stays alive.
+    // consecutive, so persistence stays alive. Heads move on every change
+    // so the dedupe never absorbs a capture.
+    let head = 0;
     for (const fail of [true, true, false, true, true]) {
       failNext = fail;
+      headsHex = [`head-${head++}`];
       changes$.next();
       await vi.advanceTimersByTimeAsync(1_000);
     }
 
     failNext = false;
+    headsHex = [`head-${head++}`];
     changes$.next();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(getSaveBytes).toHaveBeenCalledTimes(6);
     controller.dispose();
+  });
+});
+
+describe("saveBatch helper", () => {
+  it("falls back to sequential saves when the adapter lacks saveBatch", async () => {
+    const adapter = createRecordingAdapter();
+
+    await saveBatch(adapter, [
+      [["nb-1", "a"], new Uint8Array([1])],
+      [["nb-1", "b"], new Uint8Array([2])],
+    ]);
+
+    expect(adapter.saves.map((s) => s.key)).toEqual([
+      ["nb-1", "a"],
+      ["nb-1", "b"],
+    ]);
+  });
+
+  it("preserves entry order in the sequential fallback", async () => {
+    // Crash-ordering proper lives ACROSS batches (callers sequence
+    // dependent record kinds as separate saveBatch calls; a native batch
+    // is atomic, so within-batch order is moot there). The fallback is
+    // per-entry, where order is the only structure left: keeping it means
+    // a crash mid-fallback leaves a clean prefix, never an arbitrary
+    // subset.
+    const adapter = createRecordingAdapter();
+    const order: string[] = [];
+    let release: (() => void) | null = null;
+    adapter.save = vi.fn(async (key: StorageKey) => {
+      order.push(key.join("/"));
+      if (!release) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+    });
+
+    const done = saveBatch(adapter, [
+      [["nb-1", "blob"], new Uint8Array([1])],
+      [["nb-1", "marker"], new Uint8Array([2])],
+    ]);
+    await Promise.resolve();
+    expect(order).toEqual(["nb-1/blob"]); // marker not started while blob pends
+    release!();
+    await done;
+    expect(order).toEqual(["nb-1/blob", "nb-1/marker"]);
+  });
+
+  it("uses the adapter's saveBatch when present", async () => {
+    const adapter = createRecordingAdapter();
+    const entries: Array<[StorageKey, Uint8Array]> = [[["nb-1", "a"], new Uint8Array([1])]];
+    adapter.saveBatch = vi.fn(async () => {});
+
+    await saveBatch(adapter, entries);
+
+    expect(adapter.saveBatch).toHaveBeenCalledWith(entries);
+    expect(adapter.save).not.toHaveBeenCalled();
+  });
+
+  it("fallback failure names the failed entry and leaves a clean prefix", async () => {
+    const adapter = createRecordingAdapter();
+    const failure = new Error("disk full");
+    let saves = 0;
+    adapter.save = vi.fn(async (key: StorageKey, data: Uint8Array) => {
+      if (++saves === 2) throw failure;
+      adapter.records.set(key.join("/"), data);
+    });
+
+    const attempt = saveBatch(adapter, [
+      [["nb-1", "a"], new Uint8Array([1])],
+      [["nb-1", "b"], new Uint8Array([2])],
+      [["nb-1", "c"], new Uint8Array([3])],
+    ]);
+
+    await expect(attempt).rejects.toMatchObject({
+      name: "SaveBatchEntryError",
+      key: ["nb-1", "b"],
+      index: 1,
+      cause: failure,
+    });
+    // Entries before the failure are durable; the failed entry and
+    // everything after were never written.
+    expect([...adapter.records.keys()]).toEqual(["nb-1/a"]);
+    expect(adapter.save).toHaveBeenCalledTimes(2);
+  });
+
+  it("is a no-op for an empty batch", async () => {
+    const adapter = createRecordingAdapter();
+    adapter.saveBatch = vi.fn(async () => {});
+
+    await saveBatch(adapter, []);
+
+    expect(adapter.saveBatch).not.toHaveBeenCalled();
+    expect(adapter.save).not.toHaveBeenCalled();
   });
 });
 

@@ -54,6 +54,15 @@ export interface CreateCloudNotebookPersistenceOptions {
   principal: string;
   engine: CloudPersistenceChangeSignals;
   handle: CloudPersistenceHandleSurface;
+  /**
+   * `meta.headsHex` of the snapshot record this runtime seeded from, when
+   * that record is still the one in storage. Initializes the NotebookDoc
+   * controller's heads-dedupe so the handshake's protocol-only change
+   * signal does not re-write the identical envelope it just loaded. Never
+   * applies to the runtime-state cache (the seed meta describes the
+   * snapshot record only).
+   */
+  seedSavedHeadsHex?: string[];
   onError?: (error: unknown) => void;
   /** Test hook: trailing-edge throttle for both controllers. */
   throttleMs?: number;
@@ -65,6 +74,7 @@ export function createCloudNotebookPersistence({
   principal,
   engine,
   handle,
+  seedSavedHeadsHex,
   onError,
   throttleMs,
 }: CreateCloudNotebookPersistenceOptions): CloudNotebookPersistenceController | null {
@@ -79,6 +89,7 @@ export function createCloudNotebookPersistence({
     changes$: engine.notebookDocChanged$,
     getSaveBytes: () => handle.save(),
     getHeadsHex: () => handle.get_heads_hex(),
+    initialSavedHeadsHex: seedSavedHeadsHex,
     onError,
     ...(throttleMs !== undefined ? { throttleMs } : {}),
   });
