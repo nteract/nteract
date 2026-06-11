@@ -28,8 +28,18 @@ function createRecordingAdapter(): StorageAdapter & { records: Map<string, Uint8
       records.delete(key.join("/"));
     },
     loadRange: async () => [],
-    removeRange: async () => {
-      records.clear();
+    // Prefix-faithful (mirrors the runtimed test adapter): a future
+    // range-clear assertion in this file must never pass vacuously
+    // against a clear-everything stub.
+    removeRange: async (prefix: StorageKey) => {
+      const exact = prefix.join("/");
+      const rangePrefix = `${exact}/`;
+      const doomed = Array.from(records.keys()).filter(
+        (key) => key === exact || key.startsWith(rangePrefix),
+      );
+      for (const key of doomed) {
+        records.delete(key);
+      }
     },
   };
 }

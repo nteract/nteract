@@ -453,10 +453,11 @@ describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
       loadRange: async () => [],
       removeRange: async (prefix) => {
         const rangePrefix = `${keyOf(prefix)}/`;
-        for (const key of [...records.keys()]) {
-          if (key === keyOf(prefix) || key.startsWith(rangePrefix)) {
-            records.delete(key);
-          }
+        const doomed = Array.from(records.keys()).filter(
+          (key) => key === keyOf(prefix) || key.startsWith(rangePrefix),
+        );
+        for (const key of doomed) {
+          records.delete(key);
         }
       },
     };

@@ -462,17 +462,32 @@ describe("loadPersistedNotebookDoc", () => {
 });
 
 describe("clearPersistedNotebookDoc", () => {
-  it("removes the whole notebook prefix", async () => {
+  it("removes the whole notebook prefix — seed AND render cache, neighbors untouched", async () => {
+    // The poison-pill discard rides this: a discarded seed must not leave
+    // its cached pixels behind to repaint rejected content on the next
+    // load, and another notebook's records must survive.
     const adapter = createRecordingAdapter();
     await adapter.save(
       ["nb-1", "snapshot"],
       encodePersistedNotebookDoc(testMeta(), new Uint8Array([9])),
+    );
+    await adapter.save(
+      ["nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT],
+      encodePersistedNotebookDoc(testMeta(), new Uint8Array([10])),
+    );
+    await adapter.save(
+      ["nb-2", "snapshot"],
+      encodePersistedNotebookDoc(testMeta(), new Uint8Array([11])),
     );
 
     await clearPersistedNotebookDoc(adapter, "nb-1");
 
     expect(adapter.removeRange).toHaveBeenCalledWith(["nb-1"]);
     expect(await loadPersistedNotebookDoc(adapter, "nb-1")).toBeUndefined();
+    expect(
+      await loadPersistedNotebookRecord(adapter, "nb-1", RUNTIME_STATE_CACHE_KEY_SEGMENT),
+    ).toBeUndefined();
+    expect((await loadPersistedNotebookDoc(adapter, "nb-2"))?.bytes).toEqual(new Uint8Array([11]));
   });
 });
 
