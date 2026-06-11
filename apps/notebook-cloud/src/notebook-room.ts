@@ -27,6 +27,12 @@ import {
   typedFrameFromRoomHostOutbound,
   type RoomHostFrameResult,
 } from "./room-materializer.ts";
+import {
+  syncFrameBudgetLogFields,
+  SyncFrameBudgetTracker,
+  type SyncFrameBudgetDirection,
+  type SyncFrameBudgetSummary,
+} from "./sync-frame-budget.ts";
 
 interface Peer {
   id: string;
@@ -34,6 +40,7 @@ interface Peer {
   identity: AuthenticatedConnection;
   connectedAt: string;
   workstation: RuntimePeerWorkstationMetadata | null;
+  consecutiveRejectedFrames: number;
 }
 
 interface StoredRoomFrame {
@@ -62,6 +69,15 @@ interface RuntimePeerWorkstationMetadata {
   workingDirectory?: string;
 }
 
+interface RejectFrameOptions {
+  countsTowardStreak?: boolean;
+}
+
+interface PeerCloseOptions {
+  code?: number;
+  reason?: string;
+}
+
 const MAX_STORED_FRAMES = 500;
 
 /// Grace window after the last `runtime_peer` leaves before the room reconciles
@@ -70,6 +86,9 @@ const MAX_STORED_FRAMES = 500;
 /// kernel that is about to come back: if a `runtime_peer` rejoins inside the
 /// window the alarm is disarmed.
 const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
+const MAX_CONSECUTIVE_REJECTED_FRAMES = 8;
+const REJECTED_FRAME_POLICY_CLOSE_CODE = 1008;
+const REJECTED_FRAME_POLICY_CLOSE_REASON = "too many rejected frames";
 
 /// Storage key holding the notebook id whose `runtime_peer` departure armed the
 /// reconciliation alarm. Persisted so a DO that hibernates between the alarm
@@ -78,13 +97,21 @@ const RUNTIME_PEER_WATCH_KEY = "runtime_peer_gone_watch";
 
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
-  private readonly pendingRemovals = new Map<string, { notebookId: string; peer: Peer }>();
+  private readonly pendingRemovals = new Map<
+    string,
+    { notebookId: string; peer: Peer; closeOptions: PeerCloseOptions }
+  >();
   private nextFrameSequence = 0;
   private frameSequenceReady: Promise<void> | undefined;
   private framePersistQueue: Promise<void> = Promise.resolve();
   private broadcastDepth = 0;
   private readonly materializers = new Map<string, RoomMaterializer>();
   private readonly restoredPeersReady: Promise<void>;
+  // In-memory only by design: persisting on the frame hot path would cost more
+  // than the data is worth. Hibernation resets it, so peer_closed summaries
+  // under-count peers whose connection outlives the DO instance — treat the
+  // numbers as trend data, not billing-exact totals.
+  private readonly frameBudget = new SyncFrameBudgetTracker();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -129,6 +156,7 @@ export class NotebookRoom {
       identity,
       connectedAt: new Date().toISOString(),
       workstation: runtimePeerWorkstationMetadataFromRequest(request, identity),
+      consecutiveRejectedFrames: 0,
     };
 
     this.acceptPeerSocket(notebookId, peer);
@@ -280,6 +308,7 @@ export class NotebookRoom {
         identity: attachment.identity,
         connectedAt: attachment.connectedAt,
         workstation: normalizeRuntimePeerWorkstationMetadata(attachment.workstation),
+        consecutiveRejectedFrames: 0,
       };
       this.peers.set(attachment.peerId, peer);
       restored.push({ notebookId: attachment.notebookId, peer });
@@ -353,7 +382,9 @@ export class NotebookRoom {
     peer: Peer,
     message: string | ArrayBuffer | ArrayBufferView,
   ): Promise<void> {
+    const incomingByteLength = webSocketMessageByteLength(message);
     if (typeof message === "string") {
+      this.recordFrameBudget(notebookId, peer, "incoming", "text", incomingByteLength);
       this.rejectFrame(
         notebookId,
         peer,
@@ -367,9 +398,17 @@ export class NotebookRoom {
     try {
       frame = splitTypedFrame(message);
     } catch (error) {
+      this.recordFrameBudget(notebookId, peer, "incoming", "malformed", incomingByteLength);
       this.rejectFrame(notebookId, peer, undefined, String(error));
       return;
     }
+    this.recordFrameBudget(
+      notebookId,
+      peer,
+      "incoming",
+      frameTypeName(frame.type),
+      incomingByteLength,
+    );
 
     const sizeLimits = frameSizeLimits(frame.type);
     if (frame.payload.byteLength > sizeLimits.cap) {
@@ -439,6 +478,7 @@ export class NotebookRoom {
         byte_length: normalizedFrame.payload.byteLength,
         timestamp: receivedAt,
       });
+      this.resetRejectedFrameStreak(peer);
       return;
     }
 
@@ -454,6 +494,7 @@ export class NotebookRoom {
           peer,
           normalizedFrame.type,
           `room host rejected ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
+          { countsTowardStreak: false },
         );
         return;
       }
@@ -492,6 +533,7 @@ export class NotebookRoom {
         byte_length: normalizedFrame.payload.byteLength,
         timestamp: receivedAt,
       });
+      this.resetRejectedFrameStreak(peer);
       return;
     }
 
@@ -503,6 +545,7 @@ export class NotebookRoom {
         peer,
         normalizedFrame.type,
         `failed to persist ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
+        { countsTowardStreak: false },
       );
       return;
     }
@@ -520,6 +563,7 @@ export class NotebookRoom {
       byte_length: normalizedFrame.payload.byteLength,
       timestamp: receivedAt,
     });
+    this.resetRejectedFrameStreak(peer);
   }
 
   private scopeAllowsFrame(identity: AuthenticatedConnection, frame: TypedFrame): boolean {
@@ -681,7 +725,41 @@ export class NotebookRoom {
     peer: Peer,
     frameType: number | undefined,
     reason: string,
+    options: RejectFrameOptions = {},
   ): void {
+    const countsTowardStreak = options.countsTowardStreak ?? true;
+    const policy = countsTowardStreak
+      ? rejectedFramePolicy(peer.consecutiveRejectedFrames)
+      : {
+          consecutiveRejectedFrames: peer.consecutiveRejectedFrames,
+          limit: MAX_CONSECUTIVE_REJECTED_FRAMES,
+          shouldClose: false,
+        };
+    if (countsTowardStreak) {
+      peer.consecutiveRejectedFrames = policy.consecutiveRejectedFrames;
+    }
+
+    if (policy.shouldClose) {
+      cloudLog("warn", "room.peer.closed_for_rejected_frames", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        frame_type: frameType === undefined ? "unknown" : frameTypeName(frameType),
+        reason,
+        consecutive_rejected_frame_count: policy.consecutiveRejectedFrames,
+        consecutive_rejected_frame_limit: policy.limit,
+        room_peer_count: this.peers.size,
+        counter: "peers_closed_for_rejected_frames",
+        counter_delta: 1,
+      });
+      this.removePeer(notebookId, peer, {
+        code: REJECTED_FRAME_POLICY_CLOSE_CODE,
+        reason: REJECTED_FRAME_POLICY_CLOSE_REASON,
+      });
+      return;
+    }
+
     cloudLog("warn", "room.frame.rejected", {
       notebook_id: notebookId,
       peer_id: peer.id,
@@ -689,6 +767,9 @@ export class NotebookRoom {
       scope: peer.identity.scope,
       frame_type: frameType === undefined ? "unknown" : frameTypeName(frameType),
       reason,
+      counts_toward_rejected_frame_streak: countsTowardStreak,
+      consecutive_rejected_frame_count: policy.consecutiveRejectedFrames,
+      consecutive_rejected_frame_limit: policy.limit,
       room_peer_count: this.peers.size,
       counter: "rejected_frames",
       counter_delta: 1,
@@ -701,6 +782,10 @@ export class NotebookRoom {
       reason,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  private resetRejectedFrameStreak(peer: Peer): void {
+    peer.consecutiveRejectedFrames = 0;
   }
 
   private sendControl(notebookId: string, peer: Peer, message: SessionControlMessage): void {
@@ -721,7 +806,7 @@ export class NotebookRoom {
     this.broadcastDepth += 1;
     try {
       for (const peer of peers) {
-        if (!this.trySendFrame(peer, frame)) {
+        if (!this.trySendFrame(notebookId, peer, frame)) {
           this.queuePeerRemoval(notebookId, peer);
         }
       }
@@ -734,7 +819,7 @@ export class NotebookRoom {
   }
 
   private sendFrameToPeer(notebookId: string, peer: Peer, frame: Uint8Array): void {
-    if (!this.trySendFrame(peer, frame)) {
+    if (!this.trySendFrame(notebookId, peer, frame)) {
       cloudLog("warn", "room.peer_send.failed", {
         notebook_id: notebookId,
         peer_id: peer.id,
@@ -748,7 +833,14 @@ export class NotebookRoom {
     }
   }
 
-  private trySendFrame(peer: Peer, frame: Uint8Array): boolean {
+  private trySendFrame(notebookId: string, peer: Peer, frame: Uint8Array): boolean {
+    this.recordFrameBudget(
+      notebookId,
+      peer,
+      "outgoing",
+      frameTypeName(frame[0] ?? -1),
+      frame.byteLength,
+    );
     try {
       peer.socket.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength));
       return true;
@@ -757,27 +849,31 @@ export class NotebookRoom {
     }
   }
 
-  private queuePeerRemoval(notebookId: string, peer: Peer): void {
+  private queuePeerRemoval(
+    notebookId: string,
+    peer: Peer,
+    closeOptions: PeerCloseOptions = {},
+  ): void {
     if (!this.peers.has(peer.id)) {
       return;
     }
 
-    this.pendingRemovals.set(peer.id, { notebookId, peer });
+    this.pendingRemovals.set(peer.id, { notebookId, peer, closeOptions });
   }
 
   private flushPendingRemovals(): void {
     while (this.pendingRemovals.size > 0) {
       const removals = Array.from(this.pendingRemovals.values());
       this.pendingRemovals.clear();
-      for (const { notebookId, peer } of removals) {
-        this.removePeer(notebookId, peer);
+      for (const { notebookId, peer, closeOptions } of removals) {
+        this.removePeer(notebookId, peer, closeOptions);
       }
     }
   }
 
-  private removePeer(notebookId: string, peer: Peer): void {
+  private removePeer(notebookId: string, peer: Peer, closeOptions: PeerCloseOptions = {}): void {
     if (this.broadcastDepth > 0) {
-      this.queuePeerRemoval(notebookId, peer);
+      this.queuePeerRemoval(notebookId, peer, closeOptions);
       return;
     }
 
@@ -791,7 +887,7 @@ export class NotebookRoom {
     );
 
     try {
-      peer.socket.close();
+      peer.socket.close(closeOptions.code, closeOptions.reason);
     } catch {
       // Socket is already gone; the peer has still been removed from room state.
     }
@@ -805,6 +901,7 @@ export class NotebookRoom {
       counter: "connections_closed",
       counter_delta: 1,
     });
+    this.logPeerFrameBudget(notebookId, peer);
 
     this.broadcastControl(notebookId, {
       type: "cloud_peer_left",
@@ -823,6 +920,54 @@ export class NotebookRoom {
     if (peer.identity.scope === "runtime_peer") {
       this.refreshRuntimePeerWatch(notebookId);
     }
+  }
+
+  private recordFrameBudget(
+    notebookId: string,
+    peer: Peer,
+    direction: SyncFrameBudgetDirection,
+    frameType: string,
+    byteLength: number,
+  ): void {
+    const nowMs = Date.now();
+    this.frameBudget.record({
+      peerId: peer.id,
+      scope: peer.identity.scope,
+      direction,
+      frameType,
+      byteLength,
+      nowMs,
+    });
+    const summary = this.frameBudget.summarizeWindowIfNeeded(nowMs);
+    if (summary) {
+      this.logFrameBudgetSummary(notebookId, "periodic", summary);
+    }
+  }
+
+  private logFrameBudgetSummary(
+    notebookId: string,
+    reason: "periodic" | "peer_closed",
+    summary: SyncFrameBudgetSummary,
+    peer?: Peer,
+  ): void {
+    cloudLog("info", "room.sync_frame_budget.summary", {
+      notebook_id: notebookId,
+      reason,
+      peer_id: peer?.id,
+      scope: peer?.identity.scope,
+      ...syncFrameBudgetLogFields(summary),
+      counter:
+        reason === "peer_closed" ? "sync_frame_budget_peer_summaries" : "sync_frame_budget_windows",
+      counter_delta: 1,
+    });
+  }
+
+  private logPeerFrameBudget(notebookId: string, peer: Peer): void {
+    const summary = this.frameBudget.consumePeer(peer.id);
+    if (!summary) {
+      return;
+    }
+    this.logFrameBudgetSummary(notebookId, "peer_closed", summary, peer);
   }
 
   /// Whether any currently-attached peer is a `runtime_peer`.
@@ -934,6 +1079,26 @@ export function shouldPersistMaterializedSyncFrame(
   result: Pick<RoomHostFrameResult, "notebook_changed" | "runtime_state_changed">,
 ): boolean {
   return result.notebook_changed || result.runtime_state_changed;
+}
+
+export function rejectedFramePolicy(
+  consecutiveRejectedFrames: number,
+  limit = MAX_CONSECUTIVE_REJECTED_FRAMES,
+): { consecutiveRejectedFrames: number; limit: number; shouldClose: boolean } {
+  const normalizedLimit = Math.max(1, normalizeNonNegativeInteger(limit, 1));
+  const nextCount = normalizeNonNegativeInteger(consecutiveRejectedFrames, 0) + 1;
+  return {
+    consecutiveRejectedFrames: nextCount,
+    limit: normalizedLimit,
+    shouldClose: nextCount >= normalizedLimit,
+  };
+}
+
+function normalizeNonNegativeInteger(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.trunc(value));
 }
 
 export function webSocketUpgradeHeaders(identity: AuthenticatedConnection): Headers {
@@ -1090,6 +1255,19 @@ function workstationAttachmentControlNotebookId(pathname: string): string | unde
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function webSocketMessageByteLength(message: string | ArrayBuffer | ArrayBufferView): number {
+  if (typeof message === "string") {
+    // Text frames are rejected unconditionally, so an exact UTF-8 byte count
+    // is not worth an encoder allocation + full copy on a path a misbehaving
+    // client can hammer. UTF-16 code-unit length is close enough for budgets.
+    return message.length;
+  }
+  if (message instanceof ArrayBuffer) {
+    return message.byteLength;
+  }
+  return message.byteLength;
 }
 
 function json(value: unknown, status: number): Response {
