@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -180,7 +180,11 @@ async function pollAttachJobs(pythonPath) {
   assertResponse(response, body, "poll attach jobs", [200]);
   for (const job of normalizeJobs(body)) {
     if (activeJobs.has(job.job_id)) continue;
-    await startAttachJob(job, pythonPath);
+    if (job.status === "pending") {
+      await startAttachJob(job, pythonPath);
+      continue;
+    }
+    await reconcileActiveAttachJob(job, pythonPath);
   }
   return true;
 }
@@ -200,6 +204,7 @@ async function startAttachJob(job, pythonPath) {
   await patchAttachJob(job.job_id, {
     status: "accepted",
   });
+  const acceptedAt = Date.now();
 
   const logFd = openSync(plan.logPath, "a");
   const child = spawn(runtimedBin, plan.args, {
@@ -209,7 +214,28 @@ async function startAttachJob(job, pythonPath) {
   });
   closeSync(logFd);
 
-  const active = { child, logPath: plan.logPath, lastRunningPatchAt: 0, ready: false };
+  const pidPath = attachJobPidPath(plan);
+  if (Number.isInteger(child.pid)) {
+    await writeFile(pidPath, `${child.pid}\n`, { mode: 0o600 }).catch((error) => {
+      console.error(
+        JSON.stringify({
+          event: "attach_job_pid_write_failed",
+          jobId: job.job_id,
+          message: error instanceof Error ? error.message : String(error),
+          pidPath,
+        }),
+      );
+    });
+  }
+
+  const active = {
+    child,
+    lastStatusPatchAt: acceptedAt,
+    logPath: plan.logPath,
+    pid: Number.isInteger(child.pid) ? child.pid : null,
+    ready: false,
+    status: "accepted",
+  };
   activeJobs.set(job.job_id, active);
   console.log(
     JSON.stringify({
@@ -225,11 +251,72 @@ async function startAttachJob(job, pythonPath) {
     console.error(
       JSON.stringify({
         event: "attach_job_watch_failed",
-        jobId: job.id,
+        jobId: job.job_id,
         message: error instanceof Error ? error.message : String(error),
       }),
     );
   });
+}
+
+async function reconcileActiveAttachJob(job, pythonPath) {
+  const plan = buildAttachJobSpawnPlan({
+    job,
+    pythonPath,
+    agentRoot,
+    baseUrl,
+    workingDirectory,
+    workstationId,
+    displayName,
+    authKind,
+  });
+  const pidPath = attachJobPidPath(plan);
+  const pid = await readRuntimePeerPid(pidPath);
+  if (pid && processExists(pid)) {
+    const active = {
+      child: null,
+      lastStatusPatchAt: 0,
+      logPath: plan.logPath,
+      pid,
+      ready: job.status === "running",
+      status: job.status === "running" ? "running" : "accepted",
+    };
+    activeJobs.set(job.job_id, active);
+    if (!active.ready) {
+      watchAdoptedRuntimePeer(job.job_id, active).catch((error) => {
+        console.error(
+          JSON.stringify({
+            event: "attach_job_adopted_watch_failed",
+            jobId: job.job_id,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
+    }
+    console.log(
+      JSON.stringify({
+        event: "attach_job_adopted",
+        jobId: job.job_id,
+        notebookId: job.notebook_id,
+        pid,
+        status: active.status,
+      }),
+    );
+    return;
+  }
+
+  await patchAttachJob(job.job_id, {
+    status: "failed",
+    error_message: `Runtime peer for ${job.status} attach job was not running after workstation agent restart`,
+  });
+  console.warn(
+    JSON.stringify({
+      event: "attach_job_recovery_failed",
+      jobId: job.job_id,
+      notebookId: job.notebook_id,
+      status: job.status,
+      pidPath,
+    }),
+  );
 }
 
 async function watchRuntimePeer(jobId, active) {
@@ -239,10 +326,11 @@ async function watchRuntimePeer(jobId, active) {
       const output = await readFile(active.logPath, "utf8").catch(() => "");
       if (!output.includes("Infrastructure ready, entering main loop")) return;
       active.ready = true;
-      active.lastRunningPatchAt = Date.now();
+      active.status = "running";
       await patchAttachJob(jobId, {
         status: "running",
       });
+      active.lastStatusPatchAt = Date.now();
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -290,18 +378,63 @@ async function watchRuntimePeer(jobId, active) {
   });
 }
 
+async function watchAdoptedRuntimePeer(jobId, active) {
+  const readyPoll = setInterval(async () => {
+    try {
+      if (active.ready) {
+        clearInterval(readyPoll);
+        return;
+      }
+      if (active.pid && !processExists(active.pid)) {
+        clearInterval(readyPoll);
+        activeJobs.delete(jobId);
+        await patchAttachJob(jobId, {
+          status: "failed",
+          error_message: "Runtime peer exited before completing workstation agent recovery",
+        });
+        return;
+      }
+      const output = await readFile(active.logPath, "utf8").catch(() => "");
+      if (!output.includes("Infrastructure ready, entering main loop")) return;
+      active.ready = true;
+      active.status = "running";
+      await patchAttachJob(jobId, {
+        status: "running",
+      });
+      active.lastStatusPatchAt = Date.now();
+      clearInterval(readyPoll);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "attach_job_adopted_ready_patch_failed",
+          jobId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }, 250);
+}
+
 async function heartbeatActiveJobs() {
   const now = Date.now();
-  const runningJobs = [...activeJobs.entries()].filter(
-    ([, active]) => active.ready && now - active.lastRunningPatchAt >= heartbeatIntervalMs,
+  const jobs = [...activeJobs.entries()].filter(
+    ([, active]) => now - active.lastStatusPatchAt >= heartbeatIntervalMs,
   );
-  for (const [jobId, active] of runningJobs) {
+  for (const [jobId, active] of jobs) {
+    if (active.child === null && active.pid && !processExists(active.pid)) {
+      activeJobs.delete(jobId);
+      await patchAttachJob(jobId, {
+        status: "failed",
+        error_message: "Runtime peer exited before the workstation agent could observe it",
+      });
+      continue;
+    }
     await patchAttachJob(jobId, {
-      status: "running",
+      status: active.status,
     });
-    active.lastRunningPatchAt = now;
+    active.lastStatusPatchAt = now;
   }
-  return runningJobs.length > 0;
+  return jobs.length > 0;
 }
 
 async function patchAttachJob(jobId, patch) {
@@ -461,6 +594,25 @@ function normalizeJobs(body) {
   if (Array.isArray(body?.jobs)) return body.jobs;
   if (Array.isArray(body?.attach_jobs)) return body.attach_jobs;
   return [];
+}
+
+function attachJobPidPath(plan) {
+  return path.join(plan.runRoot, "runtime-peer.pid");
+}
+
+async function readRuntimePeerPid(pidPath) {
+  const raw = await readFile(pidPath, "utf8").catch(() => "");
+  const pid = Number(raw.trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function quoteShell(value) {
