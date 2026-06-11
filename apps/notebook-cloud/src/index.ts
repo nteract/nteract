@@ -128,6 +128,11 @@ const VIEWER_RUNTIME_WASM_ASSET_MANIFEST_PATH = "/assets/runtime-wasm-assets.jso
 const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
 const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
 const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
+// One R2 HEAD is issued per referenced blob during snapshot-pair validation.
+// Cap the total so a single publish cannot fan out unbounded billable R2
+// operations. Sized ~10x the largest blob_ref_count observed in
+// snapshot_pair.validation.completed logs; raise it if legitimate notebooks hit it.
+const MAX_SNAPSHOT_BLOB_REFS = 2000;
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CREATE_NOTEBOOK_ID_ATTEMPTS = 8;
 
@@ -2807,6 +2812,29 @@ async function validateSnapshotPair(options: {
     };
   }
 
+  const blobRefs = snapshotBlobRefsOverCap(render);
+  if (blobRefs.over) {
+    cloudLog("warn", "snapshot_pair.validation.blob_refs_over_cap", {
+      notebook_id: options.notebookId,
+      notebook_heads_hash: options.notebookHeadsHash,
+      runtime_heads_hash: options.runtimeHeadsHash,
+      duration_ms: durationMs(startedAt),
+      blob_ref_count: blobRefs.count,
+      blob_ref_cap: blobRefs.cap,
+      counter: "snapshot_pair_validation_blob_ref_cap_rejections",
+      counter_delta: 1,
+    });
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        error: "snapshot references too many blobs",
+        blob_ref_count: blobRefs.count,
+        blob_ref_cap: blobRefs.cap,
+      },
+    };
+  }
+
   const missingBlobs = await findMissingSnapshotBlobs(bucket, options.notebookId, render);
   if (missingBlobs.length > 0) {
     cloudLog("warn", "snapshot_pair.validation.missing_blobs", {
@@ -2848,6 +2876,9 @@ async function findMissingSnapshotBlobs(
   render: unknown,
 ): Promise<MissingSnapshotBlob[]> {
   const refs = collectSnapshotBlobRefs(render);
+  if (refs.length > MAX_SNAPSHOT_BLOB_REFS) {
+    throw new Error(`snapshot blob ref count ${refs.length} exceeds cap ${MAX_SNAPSHOT_BLOB_REFS}`);
+  }
   const missing: Array<MissingSnapshotBlob | null> = [];
 
   for (let index = 0; index < refs.length; index += SNAPSHOT_BLOB_HEAD_CONCURRENCY) {
@@ -2882,6 +2913,14 @@ function collectSnapshotBlobRefs(render: unknown): BlobRef[] {
     }
   }
   return Object.values(refs);
+}
+
+export function snapshotBlobRefsOverCap(
+  render: unknown,
+  cap = MAX_SNAPSHOT_BLOB_REFS,
+): { count: number; cap: number; over: boolean } {
+  const count = collectSnapshotBlobRefs(render).length;
+  return { count, cap, over: count > cap };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
